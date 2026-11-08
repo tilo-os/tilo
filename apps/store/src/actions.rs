@@ -64,12 +64,6 @@ pub fn tapp_staging_dir() -> Option<PathBuf> {
 /// re-verifies the content hash + publisher signature before it
 /// extracts anything, so a truncated or tampered download fails
 /// closed at the install step.
-///
-/// # Errors
-///
-/// Returns an error message if the HTTP client can't be built, the request
-/// fails or comes back with a non-success status or an empty body, or `dest`
-/// (or its parent directory) can't be written.
 pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, String> {
     const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
     if expected_size == 0 || expected_size > MAX_PACKAGE_BYTES {

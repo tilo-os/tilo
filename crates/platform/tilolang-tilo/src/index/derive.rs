@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::{ObjId, ReadDoc};
-use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::ids::{AppId, DocId, ItemId, TypeId};
 use tilolang_runtime::place::{Place, Resolved};
 use tilolang_runtime::store::{
     ANY_FIELD, FieldKey, FieldValue, LINKS, Left, LinkHow, Scalar, Version, VersionKind, doc_of,
@@ -20,7 +20,7 @@ use super::lists::Entry;
 use super::reflect::{self, CREATED, Ends, Stamp, UPDATED};
 use super::{CHUNK, CYCLES, IN, IndexError, KEY, LEFT, TYPE, Writer, removed_field};
 use crate::chunk::{ChunkNo, Chunks};
-use crate::items::{Items, Nested, fits};
+use crate::items::{Found, Items, Nested, fits};
 use crate::reads::{Placed, default_value, field_of_slot, type_at};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
 
@@ -74,9 +74,6 @@ fn linked_by(value: &FieldValue) -> Vec<String> {
 
 /// Take the links the resource `resource` makes out of the [`linked_list`]s of their targets,
 /// before what it holds goes.
-///
-/// # Errors
-/// The sink cannot be read or written.
 pub(super) fn unlink(sink: &mut impl Sink, resource: &str) -> Result<(), IndexError> {
     if let Some(held) = sink.text(resource, LINKS)? {
         unlink_held(sink, resource, &held)?;
@@ -155,9 +152,6 @@ pub fn split_in(held: &str) -> Option<(&str, &str)> {
 
 /// Where the item at `path` is, as `sink` holds it: the resource holding its collection, the
 /// collection's field and its order key there. `None` for an item in no collection.
-///
-/// # Errors
-/// What it holds cannot be read.
 pub fn placed_in(
     sink: &mut impl Sink,
     path: &str,
@@ -171,15 +165,9 @@ pub fn placed_in(
 /// Where what is derived goes: the index being written, or the store's open writes.
 pub trait Sink {
     /// The value the sink holds of `field` of `resource`.
-    ///
-    /// # Errors
-    /// What it holds cannot be read.
     fn field(&mut self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError>;
 
     /// The type (`$type`) or order key (`$key`) of `resource`.
-    ///
-    /// # Errors
-    /// What it holds cannot be read.
     fn text(&mut self, resource: &str, key: &str) -> Result<Option<String>, IndexError>;
 
     /// # Errors
@@ -197,9 +185,6 @@ pub trait Sink {
 
     /// Drop the text `key` of `resource`: what the index holds there is no more. A sink that
     /// holds this pass's writes over the index keeps the empty text, which reads as none.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn drop_text(&mut self, resource: &str, key: &str) -> Result<(), IndexError> {
         self.put_text(resource, key, "")
     }
@@ -207,32 +192,20 @@ pub trait Sink {
     /// Keep `stamp`'s version as the newest version of `resource`, unless one it holds comes
     /// after it ([`super::Snapshot::newest`]): what a mark of it, or of the document holding
     /// it, reads without the resource's log.
-    ///
-    /// # Errors
-    /// It cannot be read or written.
     fn put_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError>;
 
     /// Drop `resource` and everything inside it: fields, lists, and what search finds them by.
     /// The newest version kept of it stays, as the record's log keeps its versions.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn remove(&mut self, resource: &str) -> Result<(), IndexError>;
 
     /// Drop `resource` and everything inside it to derive it anew: as [`Sink::remove`], but
     /// the versions kept of each ([`reflect`]) stay, as they are not in the record.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn clear(&mut self, resource: &str) -> Result<(), IndexError> {
         self.remove(resource)
     }
 
     /// Drop what is held of the resources within the record `doc` that hold no type: the
     /// versions [`Sink::clear`] kept of items a derivation anew finds in no collection.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn prune(&mut self, doc: &str) -> Result<(), IndexError> {
         let _ = doc;
         Ok(())
@@ -240,9 +213,6 @@ pub trait Sink {
 
     /// That the package's record `doc` is of the type `ty` (else `None`) and stored in the chunk
     /// `chunk`.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn doc(&mut self, doc: &str, ty: Option<&str>, chunk: ChunkNo) -> Result<(), IndexError>;
 
     /// # Errors
@@ -258,28 +228,16 @@ pub trait Sink {
     fn replace(&mut self, list: &str, entries: Vec<Entry>) -> Result<(), IndexError>;
 
     /// Every entry of `list`.
-    ///
-    /// # Errors
-    /// What it holds cannot be read.
     fn entries(&mut self, list: &str) -> Result<Vec<Entry>, IndexError>;
 
     /// How many entries `list` holds.
-    ///
-    /// # Errors
-    /// What it holds cannot be read.
     fn len(&mut self, list: &str) -> Result<usize, IndexError>;
 
     /// Add `delta` to how many entries of the column list `list` hold `value`
     /// ([`columns::counted`]).
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn count(&mut self, list: &str, value: &str, delta: i64) -> Result<(), IndexError>;
 
     /// Drop every list whose name starts with `prefix`.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError>;
 
     /// Whether it keeps filter columns, or (the store's open writes) fields and membership
@@ -290,9 +248,6 @@ pub trait Sink {
     /// ([`super::clock`]), unless the index records one: the first one written is the one every
     /// later one is past. A sink that keeps no columns of its own (`keeps_columns`) records
     /// nothing.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn set_written_at(&mut self, ty: &str, clock: super::Clock) -> Result<(), IndexError> {
         let _ = (ty, clock);
         Ok(())
@@ -507,6 +462,17 @@ pub struct Derive<'d> {
     /// The chunk each item's map is stored in, by its path in the index: a collection derives
     /// where the items of its runs are, and each item's fields are read there.
     chunks_of: BTreeMap<String, ChunkNo>,
+    /// The chunks the step derives, when it derives some: a change is read of the chunks it is
+    /// in, and each item it names is read where those chunks hold it.
+    part: Option<&'d [ChunkNo]>,
+    /// Where the items of the chunks the step derives are, by record and id: read once, so that
+    /// deriving each item a change names is a lookup rather than a search of every chunk the
+    /// store holds (which, an item at a time, is the workspace read once an item).
+    found: BTreeMap<DocId, BTreeMap<ItemId, Found>>,
+    /// Whether a record derives only the items of the chunks the step reads: the first step of
+    /// a build, which is where the window's first rows are, the rest of the record derived as
+    /// the chunks holding it are read.
+    opening: bool,
 }
 
 /// The collection an item is in, and its order key: where its columns' entries go.
@@ -836,7 +802,101 @@ impl<'d> Derive<'d> {
             chunks_of: BTreeMap::new(),
             notified: BTreeMap::new(),
             left: Vec::new(),
+            part: None,
+            found: BTreeMap::new(),
+            opening: false,
         }
+    }
+
+    /// [`Self::new`] for a step that derives the chunks `part`: the items of those chunks are
+    /// read once, where they are, and each item a change of them names is looked up rather than
+    /// searched for in every chunk the store holds.
+    pub fn step(
+        chunks: &'d Chunks,
+        docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
+        nested: &'d Nested,
+        clock: super::Clock,
+        part: &'d [ChunkNo],
+    ) -> Self {
+        let mut derive = Self::new(chunks, docs, nested, clock);
+        derive.read_part(part);
+        derive.part = Some(part);
+        derive
+    }
+
+    /// [`Self::step`] for the first step of a build: a record derives only the items of the
+    /// chunks it reads, which is what a window's first rows are made of, the rest of the record
+    /// derived as the chunks holding it are read.
+    pub fn opening(
+        chunks: &'d Chunks,
+        docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
+        nested: &'d Nested,
+        clock: super::Clock,
+        part: &'d [ChunkNo],
+    ) -> Self {
+        let mut derive = Self::step(chunks, docs, nested, clock, part);
+        derive.opening = true;
+        derive
+    }
+
+    /// Read where the items of the chunks `part` hold them, by record and id.
+    fn read_part(&mut self, part: &[ChunkNo]) {
+        for chunk in part {
+            let Some(doc) = self.chunks.mirror(*chunk) else {
+                continue;
+            };
+            // The records this chunk holds, never every record of the store: a chunk holds the
+            // items of a few of them.
+            for record in crate::reads::held_ids(doc) {
+                let Some((app, ty)) = self.docs.get(&record) else {
+                    continue;
+                };
+                let (app, ty) = (app.clone(), ty.clone());
+                let Some(schema) = lookup(&ty) else {
+                    continue;
+                };
+                let Some(root) = crate::reads::resource_obj(doc, &app, &record) else {
+                    continue;
+                };
+                let found = self.found.entry(record).or_default();
+                for (id, item) in Items::scan(doc, &root, schema, *chunk).found {
+                    let was = found.remove(&id);
+                    found.insert(id, crate::items::later(was, item));
+                }
+            }
+        }
+    }
+
+    /// The item `id` of the record `doc` (of `app`, of type `schema`): where the chunks the step
+    /// reads hold it, and the index reads it from there, else searched for across the chunks the
+    /// store holds, and kept for the items the step names again.
+    fn item(
+        &mut self,
+        sink: &mut impl Sink,
+        (app, doc): (&str, &str),
+        schema: &TypeSchema,
+        id: &str,
+    ) -> Result<Option<Found>, IndexError> {
+        let derived: Option<ChunkNo> = sink
+            .text(&item_path(doc, id), CHUNK)?
+            .map(|held| held.parse::<ChunkNo>().map_err(|_| IndexError::Corrupt))
+            .transpose()?;
+        let held = self.found.get(doc).and_then(|found| found.get(id));
+        if let Some(found) = held
+            && derived.is_none_or(|derived| derived == found.chunk)
+        {
+            return Ok(Some(found.clone()));
+        }
+        // An item the store holds two copies of (a move made on two replicas at once) is read
+        // from the copy that is later in the record's order, wherever it stands.
+        let found = crate::items::find_across(self.chunks, app, doc, schema, self.nested, id);
+        if let Some(found) = &found {
+            self.found
+                .entry(doc.to_owned())
+                .or_default()
+                .insert(id.to_owned(), found.clone());
+        }
+        Ok(found)
     }
 
     /// The document the resource `id` is stored in, when the store holds its chunk.
@@ -858,9 +918,6 @@ impl<'d> Derive<'d> {
     }
 
     /// Derive every record of `app` into `sink`, which holds none of them.
-    ///
-    /// # Errors
-    /// The sink cannot be written.
     pub fn all(&mut self, sink: &mut impl Sink, app: &str) -> Result<(), IndexError> {
         let records: Vec<(String, TypeId)> = self
             .docs
@@ -884,9 +941,6 @@ impl<'d> Derive<'d> {
     /// `ends` holds of its resources: the first and last of the record's whole log and the
     /// last change of each field ([`reflect::ends_of`]), and the items `removed` holds that
     /// left their collections ([`super::REMOVED`]).
-    ///
-    /// # Errors
-    /// The sink cannot be written.
     pub fn all_with_versions(
         &mut self,
         sink: &mut impl Sink,
@@ -938,9 +992,6 @@ impl<'d> Derive<'d> {
     /// that removed each, and drop those that came back ([`super::REMOVED`]): what a list shows
     /// struck until the person has seen them go. Called after [`Self::changes`]: what a row is
     /// is where the item is now.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn removed(
         &mut self,
         sink: &mut impl Sink,
@@ -979,9 +1030,6 @@ impl<'d> Derive<'d> {
     /// removed it are derived: where an item was is in the record the changes take away, and a
     /// record derived anew holds no item it lost. [`Self::removed`] writes the rows afterwards,
     /// when each item's place is read again.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn removed_before(
         &mut self,
         sink: &mut impl Sink,
@@ -1028,9 +1076,6 @@ impl<'d> Derive<'d> {
 
     /// [`Self::removed`], for the collections `moved` names: what a local write's plan placed
     /// and took out, derived into the overlay before the record holds its change.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn removed_of(
         &mut self,
         sink: &mut impl Sink,
@@ -1073,9 +1118,6 @@ impl<'d> Derive<'d> {
     /// the changes themselves were derived: each resource's first version stays unless one
     /// came before it, its last is replaced by a later one, and the columns of the collection
     /// it is in follow.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn versions(
         &mut self,
         sink: &mut impl Sink,
@@ -1188,8 +1230,16 @@ impl<'d> Derive<'d> {
         match (obj, schema) {
             (Some(obj), Some(schema)) => {
                 sink.doc(doc, Some(ty), chunk)?;
-                // A collection's items are spread over the chunks of its runs.
-                let items = Items::across(self.chunks, app, doc, schema);
+                // A collection's items are spread over the chunks of its runs: all of them, or
+                // — the first step of a build — the ones this step reads, where the window's
+                // first rows are, the rest of the items derived as their chunks are read.
+                let items = Items::across_in(
+                    self.chunks,
+                    app,
+                    doc,
+                    schema,
+                    self.opening.then_some(self.part).flatten(),
+                );
                 self.reads.listings = self.reads.listings.saturating_add(1);
                 self.reads.entries = self
                     .reads
@@ -1469,23 +1519,34 @@ impl<'d> Derive<'d> {
     /// Where the resource at `path` is in the record, and its type: `None` when it is not
     /// there. The chunk holding the item's map is kept with it: it is where its fields are read
     /// and its writes go, and an item of a run is in a chunk above the record's.
-    fn locate(&mut self, path: &str) -> Option<(Option<ObjId>, &'static TypeSchema)> {
+    fn locate(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+    ) -> Result<Option<(Option<ObjId>, &'static TypeSchema)>, IndexError> {
         let doc = doc_of(path);
-        let (root, schema) = self.record_of(doc)?;
-        let Some(item) = id_of(path) else {
-            return Some((Some(root), schema));
+        let Some((root, schema)) = self.record_of(doc) else {
+            return Ok(None);
         };
-        let (app, _) = self.docs.get(doc)?;
-        let found = crate::items::find_across(self.chunks, app, doc, schema, self.nested, item)?;
+        let Some(item) = id_of(path) else {
+            return Ok(Some((Some(root), schema)));
+        };
+        let Some((app, _)) = self.docs.get(doc) else {
+            return Ok(None);
+        };
+        let app = app.clone();
+        let Some(found) = self.item(sink, (&app, doc), schema, item)? else {
+            return Ok(None);
+        };
         self.chunks_of.insert(path.to_owned(), found.chunk);
-        Some((found.obj, found.ty.as_deref().and_then(lookup)?))
+        let Some(item_schema) = found.ty.as_deref().and_then(lookup) else {
+            return Ok(None);
+        };
+        Ok(Some((found.obj, item_schema)))
     }
 
     /// Apply what changes to the record reached, of the records of `app`, to `sink`, which
     /// held the record as it was before them.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn changes(
         &mut self,
         sink: &mut impl Sink,
@@ -1604,14 +1665,7 @@ impl<'d> Derive<'d> {
                     continue;
                 }
                 self.reads.located = self.reads.located.saturating_add(1);
-                let found = crate::items::find_across(
-                    self.chunks,
-                    &held_app,
-                    doc,
-                    schema,
-                    self.nested,
-                    &id,
-                );
+                let found = self.item(sink, (&held_app, doc), schema, &id)?;
                 let item_schema = found
                     .as_ref()
                     .and_then(|found| found.ty.as_deref())
@@ -1880,7 +1934,7 @@ impl<'d> Derive<'d> {
         let Some(placed) = placed_in(sink, path)? else {
             return Ok(());
         };
-        let Some((obj, schema)) = self.locate(path) else {
+        let Some((obj, schema)) = self.locate(sink, path)? else {
             return Ok(());
         };
         let own = self.own_fields(sink, path, obj.as_ref(), schema)?;
@@ -1896,9 +1950,6 @@ impl<'d> Derive<'d> {
     /// ([`tilolang_runtime::store::Store::linked`]). The set it made before is kept under
     /// [`LINKS`], so a change takes out of the lists exactly what it no longer links to; a target
     /// whose links moved is told of it, so a view reading them runs again.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     fn links(
         &mut self,
         sink: &mut impl Sink,
@@ -1981,7 +2032,7 @@ impl<'d> Derive<'d> {
         if id_of(path).is_some() && sink.text(path, TYPE)?.is_none() {
             return Ok(());
         }
-        let Some((obj, schema)) = self.locate(path) else {
+        let Some((obj, schema)) = self.locate(sink, path)? else {
             return Ok(());
         };
         let Some(spec) = schema.field(field) else {

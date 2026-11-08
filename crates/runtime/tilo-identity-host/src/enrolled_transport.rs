@@ -272,10 +272,6 @@ fn read_source_device_seed(
 
 impl EnrolledDevice {
     /// Review the exact already enrolled device in isolated owner-private source custody.
-    ///
-    /// # Errors
-    /// Refuses redirected/unavailable custody, a human root secret, mismatched keys,
-    /// invalid certification, revoked membership or invalid public projections.
     pub fn review(
         system_root: &Path,
         identity_record: &Path,
@@ -345,12 +341,6 @@ impl EnrolledDevice {
     }
     /// Public native authority from this already password-authenticated transport.
     /// This does not expose device seeds or permit caller-authored fleet claims.
-    ///
-    /// # Errors
-    /// Returns an error if the clock is unavailable or payload validation fails:
-    /// malformed schema/seed, mismatched device key, disallowed capabilities,
-    /// invalid or expired certification, an invalid public member record,
-    /// invalid/revoked fleet membership, or invalid home-peer registrations.
     pub fn public_native_material(
         &self,
     ) -> io::Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>)> {
@@ -383,9 +373,6 @@ impl EnrolledDevice {
         &self.identity_directory
     }
     /// Reattest the selected source and current device certification.
-    ///
-    /// # Errors
-    /// Refuses changed source authority, expired certification or revoked membership.
     pub fn validate(&self) -> io::Result<()> {
         self.validate_source()?;
         self.payload.validate(
@@ -434,10 +421,6 @@ impl EnrolledDevice {
         Ok(())
     }
     /// Seal the exact selected device under its setup binding and publish exclusively.
-    ///
-    /// # Errors
-    /// Refuses invalid passwords/bindings, changed source custody, excessive payloads,
-    /// overlapping destinations, existing output or failed authenticated readback.
     pub fn export_password_sealed(
         &self,
         destination: &Path,
@@ -495,12 +478,6 @@ pub struct AuthenticatedEnrolledDevice {
 impl AuthenticatedEnrolledDevice {
     /// Public native authority from this already password-authenticated transport.
     /// This does not expose device seeds or permit caller-authored fleet claims.
-    ///
-    /// # Errors
-    /// Returns an error if the clock is unavailable or payload validation fails:
-    /// malformed schema/seed, mismatched device key, disallowed capabilities,
-    /// invalid or expired certification, an invalid public member record,
-    /// invalid/revoked fleet membership, or invalid home-peer registrations.
     pub fn public_native_material(
         &self,
     ) -> io::Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>)> {
@@ -518,10 +495,6 @@ impl AuthenticatedEnrolledDevice {
         &self.payload.certificate.device_label
     }
     /// Authenticate bounded transport for one exact expected person and device.
-    ///
-    /// # Errors
-    /// Refuses unavailable private ciphertext, wrong password/binding/authority,
-    /// malformed payloads, expired certification or revoked membership.
     pub fn open(
         artifact: &Path,
         password: &[u8],
@@ -711,10 +684,6 @@ impl AuthenticatedEnrolledDevice {
     /// System-root publication is a privileged installer operation, never a
     /// target-user privilege escalation. All existing files must match before
     /// any write; exact partial retries resume without replacing other custody.
-    ///
-    /// # Errors
-    /// Refuses unauthorized or overlapping roots, conflicting existing files,
-    /// concurrent custody operations or incomplete durable publication.
     pub fn import_into(
         &self,
         system_root: &Path,
@@ -763,9 +732,6 @@ impl AuthenticatedEnrolledDevice {
     /// Verify public member identity against already installed machine custody.
     /// This read-only target-user operation neither imports a machine key nor
     /// generates one. Privileged import must have completed beforehand.
-    ///
-    /// # Errors
-    /// Refuses unavailable target custody or any missing/mismatched installed file.
     pub fn verify_installed(
         &self,
         system_root: &Path,
@@ -829,10 +795,6 @@ impl AuthenticatedEnrolledDevice {
     /// Privileged machine publication. No personal identity or human root key
     /// is imported. The existing OS firstboot permission service publishes the
     /// public projection and grants its broker group device-key read access.
-    ///
-    /// # Errors
-    /// Refuses non-root authority, insecure namespaces, conflicting machine custody,
-    /// concurrent publication or failed durability and permission normalization.
     pub fn import_system(&self, system_root: &Path) -> io::Result<()> {
         self.payload.validate(
             self.public_key(),
@@ -896,10 +858,6 @@ impl AuthenticatedEnrolledDevice {
     /// Import public member custody only after the privileged publisher has
     /// installed the exact public machine certificate. No machine-key read or
     /// write occurs here; the canonical broker proves device possession later.
-    ///
-    /// # Errors
-    /// Refuses mismatched root-owned public machine certification, unavailable
-    /// private persona custody, conflicting records or concurrent publication.
     pub fn import_public_identity(
         &self,
         system_root: &Path,

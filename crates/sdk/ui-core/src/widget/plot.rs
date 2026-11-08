@@ -139,6 +139,23 @@ pub trait PlotMarks: 'static {
     /// Paints the marks. Call [`Self::follow_keyboard_anchor`] once the
     /// geometry is current and before painting the inspector.
     fn paint(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme);
+    /// Takes the events the shell's own inspection cannot drive — zoom,
+    /// pan, brush, focus loss — before the shell inspects. Whether the
+    /// event was consumed.
+    fn event(
+        &mut self,
+        _event: &WindowEvent,
+        _ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        false
+    }
+    /// Whether a gesture is in flight and must keep receiving the pointer.
+    fn wants_pointer_capture(&self) -> bool {
+        false
+    }
+    /// A series was shown or hidden: marks that cache their domain or their
+    /// geometry drop it.
+    fn visible_changed(&mut self) {}
     /// Keeps the pointer on a mark the keyboard chose while the geometry
     /// changes under it, so its inspector shows there.
     fn follow_keyboard_anchor(&mut self) {
@@ -197,6 +214,17 @@ impl<M: PlotMarks> Plot<M> {
     pub fn take_activated(&mut self) -> Option<M::Activated> {
         self.activated.take()
     }
+    /// The activation waiting to be read, without taking it.
+    pub(crate) fn activation(&self) -> Option<&M::Activated> {
+        self.activated.as_ref()
+    }
+    pub(crate) fn clear_activation(&mut self) {
+        self.activated = None;
+    }
+    /// Repaints once on the next frame: for a mark that changed its data.
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
     pub fn clear_inspection(&mut self) {
         self.marks.frame_mut().inspection.clear();
     }
@@ -240,6 +268,7 @@ impl<M: PlotMarks> Plot<M> {
         if hovered_hidden {
             self.marks.frame_mut().inspection.hovered = None;
         }
+        self.marks.visible_changed();
         true
     }
     /// The latest series a legend showed or hid, once.
@@ -358,11 +387,17 @@ impl<M: PlotMarks> Widget for Plot<M> {
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.dirty = true;
+        if self.marks.event(event, ctx) {
+            return;
+        }
         // Keys inspect the chart only while it has focus; otherwise they
         // belong to whatever does.
         if self.focused || chart_nav_action(event).is_none() {
             handle_chart_event(self, event, ctx);
         }
+    }
+    fn wants_pointer_capture(&self) -> bool {
+        self.marks.wants_pointer_capture()
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let legend = self.marks.series();

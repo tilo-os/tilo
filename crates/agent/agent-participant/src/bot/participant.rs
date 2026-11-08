@@ -297,10 +297,6 @@ impl BotParticipant {
     }
 
     /// Take the change the record at `route` made and publish it.
-    ///
-    /// # Errors
-    ///
-    /// The change was not admitted or the session refused it.
     pub fn commit(&mut self, route: &DocumentRoute) -> Result<(), String> {
         let Some(app) = self.replicas.get(route) else {
             return Ok(());

@@ -1,12 +1,11 @@
-//! Seats beside the person's: two of them type into their own windows at the
-//! same time, and the person's pointer, focus and keyboard are where they
-//! left them.
+//! Seats beside the person's: two of them type into their own windows at the same time, and the
+//! person's pointer, focus and keyboard are where they left them.
 
 use super::*;
 use tilo_compositor::Seat;
 
-/// Windows side by side, three to a row, each 200 wide: so a seat's own
-/// point is over its own window and no other.
+/// Windows side by side, three to a row, each 200 wide: so a seat's own point is over its own
+/// window and no other.
 struct SideBySide;
 
 impl WindowPolicy for SideBySide {
@@ -33,7 +32,7 @@ impl WindowPolicy for SideBySide {
     }
 }
 
-/// The client of `app`'s window: where it stands and how it is.
+/// The client of `app` 's window: where it stands and how it is.
 fn window_of(compositor: &Compositor, app: &str) -> ((i32, i32, i32, i32), u64) {
     compositor
         .windows()
@@ -45,8 +44,7 @@ fn window_of(compositor: &Compositor, app: &str) -> ((i32, i32, i32, i32), u64) 
         )
 }
 
-/// The person clicks into the window of `clients[index]`, which then has the
-/// keyboard.
+/// The person clicks into the window of `clients[index]` , which then has the keyboard.
 fn person_clicks_into(
     compositor: &mut Compositor,
     clients: &mut [&mut TestClient],
@@ -73,8 +71,8 @@ fn person_clicks_into(
     });
 }
 
-/// The person presses and lets go of `keycode` once, their window hearing
-/// the keystroke's `heard` keys in all.
+/// The person presses and lets go of `keycode` once, their window hearing the keystroke's `heard`
+/// keys in all.
 fn person_types(
     compositor: &mut Compositor,
     clients: &mut [&mut TestClient],
@@ -92,8 +90,7 @@ fn person_types(
     });
 }
 
-/// The person holds `keycode` down, their window hearing the keystroke's
-/// `heard` keys in all.
+/// The person holds `keycode` down, their window hearing the keystroke's `heard` keys in all.
 fn person_holds(
     compositor: &mut Compositor,
     clients: &mut [&mut TestClient],
@@ -179,8 +176,8 @@ fn two_seats_type_into_their_own_windows_and_leave_the_persons_focus_alone() {
         .seat_aim_app(b, Some("so.tilo.test.second"))
         .expect("the second window");
 
-    // Each types into its own window, one after the other and at the same
-    // time as far as the desktop is concerned.
+    // Each types into its own window, one after the other and at the same time as far as the
+    // desktop is concerned.
     assert!(
         compositor
             .seat_text(a, "kkk")
@@ -211,8 +208,8 @@ fn two_seats_type_into_their_own_windows_and_leave_the_persons_focus_alone() {
         person.seen.keys
     );
 
-    // Their pointer never moved the person's, and the person's own keyboard
-    // still reaches the person's window.
+    // Their pointer never moved the person's, and the person's own keyboard still reaches the
+    // person's window.
     assert_eq!(
         compositor.pointer_location(),
         at,
@@ -266,8 +263,8 @@ fn a_seats_key_is_typed_once_in_its_window_and_never_the_persons() {
     let held = 30;
     person_holds(&mut compositor, &mut [&mut first, &mut person], 1, held, 1);
 
-    // A seat types its own key into its own window: one press and its
-    // release, not a second press on the way out.
+    // A seat types its own key into its own window: one press and its release, not a second press
+    // on the way out.
     let seat = compositor.open_seat();
     compositor
         .seat_aim_app(seat, Some("so.tilo.test.first"))

@@ -42,19 +42,10 @@ pub trait CompatibilityProvider: Send {
     /// Queue the separately authorized VM fallback action.
     fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String>;
     /// Open one portal-selected document in a published VM application.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the route is not a published VM application or
-    /// the compatibility session cannot accept the descriptor.
     fn launch_vm_with_file(&mut self, _app_id: &str, _source: File) -> Result<(), String> {
         Err("Opening portal files is unavailable for this Windows route.".to_string())
     }
     /// Transfer a portal-open installer descriptor to the service.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker cannot accept the descriptor.
     fn install(&mut self, source: File, source_name: &str) -> Result<(), String>;
     fn confirm_capsule_install(&mut self) -> Result<(), String>;
     fn confirm_vm_install(&mut self) -> Result<(), String>;

@@ -1,9 +1,4 @@
-use std::collections::HashMap;
-
-use taffy::{NodeId, TaffyTree};
-
 use super::*;
-use crate::Theme;
 use crate::a11y::{AccessNode, Role};
 
 struct Node {
@@ -14,19 +9,7 @@ struct Node {
 }
 
 impl Widget for Node {
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        _: &Theme,
-        map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = tree.new_leaf(taffy::Style::default()).unwrap();
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn name(&self) -> &'static str {
-        self.name
-    }
+    crate::testing::inert_widget_methods!(leaf_layout, name_field);
     fn get_rect(&self) -> Rect {
         self.rect
     }

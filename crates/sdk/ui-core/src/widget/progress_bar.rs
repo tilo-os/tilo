@@ -493,9 +493,21 @@ impl Widget for ProgressBar {
 
     /// Indeterminate bars must keep the redraw loop pumping so the
     /// segment continues to advance — without this, the animation
-    /// would freeze on the first frame after an unrelated event.
+    /// would freeze on the first frame after an unrelated event. A segment
+    /// that holds still asks for no frame: under reduced motion, and on a
+    /// capture's frozen clock, where the segment stands in the middle of the
+    /// track (see `ProgressBarFace::phase`) and a window waiting on it — one
+    /// laid out without a paint, as a capture lays it out — would wait
+    /// forever.
     fn needs_animation_frame(&self) -> bool {
-        self.indeterminate && !self.reduce_motion
+        self.indeterminate && !self.reduce_motion && !crate::time::wall_frozen()
+    }
+
+    /// The framework delivers the motion policy before it asks for a frame, so
+    /// a bar built after the theme was applied holds still without waiting to
+    /// learn it from a paint.
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.reduce_motion = reduced;
     }
 
     /// Determinate bars never change size; indeterminate ones
@@ -792,5 +804,39 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn a_segment_that_holds_still_asks_for_no_frames() {
+        // A window laid out without a paint — a layout check staging a screen —
+        // asks every widget whether it moves before it draws any: a bar that
+        // kept asking would wait forever there. Reduced motion is the
+        // framework's policy, delivered before the question, so it holds the
+        // segment still without waiting to learn it from a paint.
+        let mut reduced = ProgressBar::indeterminate();
+        reduced.set_motion_reduced(true);
+        assert!(
+            !reduced.needs_animation_frame(),
+            "reduced motion holds the segment still"
+        );
+
+        // A capture pins the wall clock so every shot shows the same frame; the
+        // segment then stands in the middle of the track, as
+        // `ProgressBarFace::phase` paints it, and the bar stops asking for
+        // frames.
+        let at = crate::clock::capture_wall().expect("the capture time exists in this zone");
+        crate::time::testing::with_wall(at, || {
+            assert!(crate::time::wall_frozen());
+            assert!(
+                !ProgressBar::indeterminate().needs_animation_frame(),
+                "a capture's clock holds the segment still"
+            );
+        });
+
+        // A live window's bar keeps the loop pumping.
+        assert!(
+            ProgressBar::indeterminate().needs_animation_frame(),
+            "a live segment moves"
+        );
     }
 }

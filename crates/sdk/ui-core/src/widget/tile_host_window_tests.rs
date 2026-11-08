@@ -164,14 +164,7 @@ struct WindowProbe {
 }
 
 impl Widget for WindowProbe {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _: &Theme,
-        _: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.new_leaf(Style::default()).unwrap()
-    }
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout);
     fn visit_components(
         &mut self,
         _: &mut crate::bound_dispatch::ComponentRequest<'_>,

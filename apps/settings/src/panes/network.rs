@@ -928,9 +928,6 @@ pub(crate) trait NetworkService: Send + Sync {
     /// long as the hardware needs, so it runs on its own worker (the open
     /// page's periodic look, an explicit refresh) and no reading waits for
     /// it.
-    ///
-    /// # Errors
-    /// Why the device could not scan.
     fn scan(&self) -> Result<(), String> {
         Ok(())
     }
@@ -960,45 +957,21 @@ pub(crate) trait NetworkService: Send + Sync {
         None
     }
     /// Carry out `change`.
-    ///
-    /// # Errors
-    /// Why the device refused or failed it.
     fn change(&self, change: &NetworkChange) -> Result<(), String>;
     /// Set up a VPN; its new profile's id.
-    ///
-    /// # Errors
-    /// Why it could not be set up.
     fn create_vpn(&self, setup: &VpnSetup) -> Result<String, String>;
     /// A VPN profile's settings.
-    ///
-    /// # Errors
-    /// Why they could not be read.
     fn vpn_settings(&self, uuid: &str) -> Result<VpnProfileSettings, String>;
     /// A VPN profile as the file Export writes, its secrets included.
-    ///
-    /// # Errors
-    /// Why it could not be exported.
     fn export_vpn(&self, uuid: &str) -> Result<Zeroizing<String>, String>;
     /// A saved Wi-Fi network's password, which asks the person to
     /// authenticate where the system requires it.
-    ///
-    /// # Errors
-    /// Why it could not be read.
     fn wifi_password(&self, uuid: &str) -> Result<Zeroizing<String>, String>;
     /// Ask the person's Wi-Fi continuity service.
-    ///
-    /// # Errors
-    /// Why the service could not be asked.
     fn continuity(&self, command: WifiContinuityCommand) -> Result<WifiContinuityReply, String>;
     /// Diagnose the connection.
-    ///
-    /// # Errors
-    /// Why it could not be diagnosed.
     fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String>;
     /// The captive portal's sign-in page.
-    ///
-    /// # Errors
-    /// Why there is none to open.
     fn sign_in_page(&self) -> Result<String, String>;
 }
 

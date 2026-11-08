@@ -66,9 +66,6 @@ pub trait ProviderKeys: Send + Sync {
 /// Where `profile`'s key is kept: its id and the origin of its endpoint, so
 /// a key typed for one provider is never sent to another one the profile was
 /// later pointed at.
-///
-/// # Errors
-/// An endpoint that is not an http(s) URL.
 pub fn key_slot(profile: &ProviderProfile) -> Result<String, ModelError> {
     let url = tilo_net::Url::parse(&profile.endpoint)
         .map_err(|_| ModelError::new(ErrorKind::InvalidRequest))?;

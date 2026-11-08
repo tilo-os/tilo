@@ -27,10 +27,6 @@ pub fn diskseq(sys_root: &Path, disk: &str) -> Option<u64> {
 
 impl BootDisks {
     /// Every disk attached now.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if the disk list cannot be read.
     pub fn record(sys_root: &Path) -> io::Result<Self> {
         let mut disks = BTreeMap::new();
         for entry in fs::read_dir(sys_root.join("block"))? {
@@ -52,10 +48,6 @@ impl BootDisks {
     }
 
     /// Write the record.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if the file cannot be written.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;

@@ -1,23 +1,16 @@
 //! The runs a person's conversations give this session's agents.
-//!
-//! An agent works inside a turn: a person's message in a conversation the
-//! agent takes part in ([`tilo_action_policy::turn`]). A run is that turn, as
-//! the broker's run channel delivers it to the agent: the person's newest
-//! message in the conversation that the agent has not answered yet.
-//!
-//! Nothing here keeps a record of its own: the conversation's own record says
-//! what is asked and what was answered. A message summons its conversation's
-//! agents, and an agent's answer is the reply with the id its summons and its
-//! id derive ([`chat::record::reply_id`]), so a turn is over when its reply
-//! exists and a later message is a turn of its own. What the run's ops carry
-//! is the turn; what the receiving device looked up about its cause (who wrote
-//! it, whether the agent takes part, whether the turn ended) is read from the
-//! same record here.
-//!
-//! Conversations are items of Chat's workspace record and their messages are
-//! its parts ([`chat::parts`]), so this reads Chat's record through the same
-//! store every app of the workspace opens, as the workspace's settings tabs
-//! read the workspace's agents.
+//! An agent works inside a turn: a person's message in a conversation the agent takes part in
+//! ([`tilo_action_policy::turn`]). A run is that turn, as the broker's run channel delivers it to
+//! the agent: the person's newest message in the conversation that the agent has not answered yet.
+//! Nothing here keeps a record of its own: the conversation's own record says what is asked and
+//! what was answered. A message summons its conversation's agents, and an agent's answer is the
+//! reply with the id its summons and its id derive ([`chat::record::reply_id`]), so a turn is over
+//! when its reply exists and a later message is a turn of its own. What the run's ops carry is the
+//! turn; what the receiving device looked up about its cause (who wrote it, whether the agent takes
+//! part, whether the turn ended) is read from the same record here.
+//! Conversations are items of Chat's workspace record and their messages are its parts
+//! ([`chat::parts`]), so this reads Chat's record through the same store every app of the workspace
+//! opens, as the workspace's settings tabs read the workspace's agents.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -39,8 +32,7 @@ const CHAT_OWNER: &str = "so.tilo.chat";
 /// How the run source names Chat where a record is opened.
 const CHAT_APP: (&str, &str) = ("chat", "Chat");
 
-/// One workspace's conversations as the pass read them, and the runs they
-/// give.
+/// One workspace's conversations as the pass read them, and the runs they give.
 #[derive(Clone, Default)]
 struct Facts {
     workspace: String,
@@ -52,8 +44,8 @@ struct Facts {
     turns: Vec<Entry>,
 }
 
-/// A turn going, as this device read it: the run the broker delivers, and what
-/// the same read says about its cause.
+/// A turn going, as this device read it: the run the broker delivers, and what the same read says
+/// about its cause.
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
     run: TrackerRun,
@@ -75,18 +67,17 @@ impl Held {
     }
 }
 
-/// The turns, as the broker's run channel reads them, and what their agents
-/// spent.
+/// The turns, as the broker's run channel reads them, and what their agents spent.
 pub(crate) struct Runs {
     held: Mutex<Held>,
-    /// What the runs' agents spent since the last pass, in millionths of the
-    /// currency, by workspace and agent: the pass charges it to their day.
+    /// What the runs' agents spent since the last pass, in millionths of the currency, by workspace
+    /// and agent: the pass charges it to their day.
     spent: Mutex<BTreeMap<(String, String), u64>>,
-    /// The total each run last reported, by workspace, task and epoch, so a
-    /// report charges only what it added.
+    /// The total each run last reported, by workspace, task and epoch, so a report charges only
+    /// what it added.
     reported: Mutex<BTreeMap<(String, String, u64), u64>>,
-    /// Wakes the session's loop when a run reported what it spent, so the day
-    /// it is charged to is the day the agent then works in.
+    /// Wakes the session's loop when a run reported what it spent, so the day it is charged to is
+    /// the day the agent then works in.
     wake: Option<tilo_service::Wake>,
 }
 
@@ -101,8 +92,8 @@ impl Runs {
         }
     }
 
-    /// What the runs' agents spent since the last pass, by workspace and
-    /// agent, in millionths of the currency, ready to be charged to their day.
+    /// What the runs' agents spent since the last pass, by workspace and agent, in millionths of
+    /// the currency, ready to be charged to their day.
     pub(crate) fn take_spent(&self) -> Vec<(String, String, u64)> {
         let Ok(mut spent) = self.spent.lock() else {
             return Vec::new();
@@ -113,8 +104,8 @@ impl Runs {
             .collect()
     }
 
-    /// Keep only the reports of the turns `held` names: a run that ended is
-    /// charged for what it spent, and its total is no longer followed.
+    /// Keep only the reports of the turns `held` names: a run that ended is charged for what it
+    /// spent, and its total is no longer followed.
     fn prune_reported(&self, held: &Held) {
         let Ok(mut reported) = self.reported.lock() else {
             return;
@@ -151,8 +142,8 @@ impl TrackerRuns for Runs {
         })
     }
 
-    /// An agent works only inside its turns, never on a workspace grant
-    /// alone: what it may do is its person's grants inside the turn.
+    /// An agent works only inside its turns, never on a workspace grant alone: what it may do is
+    /// its person's grants inside the turn.
     fn confines_agents_to_tasks(&self, workspace: &str) -> bool {
         self.requires_workspace(workspace)
     }
@@ -166,9 +157,8 @@ impl TrackerRuns for Runs {
             .collect())
     }
 
-    /// Whether the agent still takes part in a conversation of this
-    /// workspace: that is where it works, and an agent a conversation no
-    /// longer takes in has no turn to answer.
+    /// Whether the agent still takes part in a conversation of this workspace: that is where it
+    /// works, and an agent a conversation no longer takes in has no turn to answer.
     fn check_agent(&self, workspace: &str, run: &TrackerRun) -> Result<(), String> {
         let facts = self.workspace(workspace)?;
         if facts.agents.contains(&run.agent) {
@@ -200,9 +190,8 @@ impl TrackerRuns for Runs {
         requirement.check_tracker_policy(policy, workspace, &entry.run, Some(&entry.looked), wall())
     }
 
-    /// What a run spent, as its agent reported it: charged to the agent's day
-    /// by the pass, and only for what it added to the total it reported
-    /// before.
+    /// What a run spent, as its agent reported it: charged to the agent's day by the pass, and only
+    /// for what it added to the total it reported before.
     fn reported(
         &self,
         workspace: &str,
@@ -226,8 +215,7 @@ impl TrackerRuns for Runs {
                 .map(|entry| entry.run.agent.clone())
         });
         let Some(agent) = agent else {
-            // The turn is over: what it spent was charged when the pass read
-            // the report before it.
+            // The turn is over: what it spent was charged when the pass read the report before it.
             return;
         };
         let added = {
@@ -251,15 +239,14 @@ impl TrackerRuns for Runs {
     }
 }
 
-/// One workspace as the pass hands it over: the grants its turns are decided
-/// against.
+/// One workspace as the pass hands it over: the grants its turns are decided against.
 pub(crate) struct WorkspaceFacts {
     pub(crate) workspace: String,
     pub(crate) policy: WorkspacePolicy,
 }
 
-/// The conversations this session's agents answer in, read from Chat's record
-/// of each workspace it holds.
+/// The conversations this session's agents answer in, read from Chat's record of each workspace it
+/// holds.
 pub(crate) struct Conversations {
     runs: Arc<Runs>,
     /// Where this device keeps its apps' records.
@@ -272,8 +259,8 @@ pub(crate) struct Conversations {
 
 /// A workspace's records as they are open here, and what was read of them.
 struct Opened {
-    /// The grants they were opened with: a workspace whose grants changed has
-    /// them opened again, so its decisions follow.
+    /// The grants they were opened with: a workspace whose grants changed has them opened again, so
+    /// its decisions follow.
     policy: WorkspacePolicy,
     records: WorkspaceRecords,
     chat: Option<WorkspaceRecord<chat::Chat>>,
@@ -282,8 +269,8 @@ struct Opened {
 }
 
 impl Conversations {
-    /// The conversations over the store at `root`, waking the session's loop
-    /// through `wake` when a change lands.
+    /// The conversations over the store at `root` , waking the session's loop through `wake` when a
+    /// change lands.
     pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
         let waking = Arc::clone(&wake);
@@ -303,16 +290,15 @@ impl Conversations {
         Arc::clone(&self.runs)
     }
 
-    /// What the runs' agents spent since the last pass, by workspace and
-    /// agent, in millionths of the currency, for their day to be charged.
+    /// What the runs' agents spent since the last pass, by workspace and agent, in millionths of
+    /// the currency, for their day to be charged.
     pub(crate) fn take_spent(&self) -> Vec<(String, String, u64)> {
         self.runs.take_spent()
     }
 
-    /// Chat's record of `workspace`, as this session holds it open: the
-    /// conversations a person asked in and their messages, read through the
-    /// same open record the pass reads turns from — never a second writer on
-    /// the store. `None` where the workspace holds no Chat record here.
+    /// Chat's record of `workspace` , as this session holds it open: the conversations a person
+    /// asked in and their messages, read through the same open record the pass reads turns from —
+    /// never a second writer on the store. `None` where the workspace holds no Chat record here.
     #[must_use]
     pub fn chat(&self, workspace: &str) -> Option<chat::Chat> {
         let open = self.open.borrow();
@@ -352,27 +338,25 @@ impl Conversations {
             tracing::warn!(%workspace, "the ask opened no Chat record");
             return None;
         };
-        // The conversation is the person's and the agent's, by their keys: a
-        // participant key is what a conversation is with
-        // (`Conversation::participants`), and the agent's answers the
+        // The conversation is the person's and the agent's, by their keys: a participant key is
+        // what a conversation is with (`Conversation::participants`), and the agent's answers the
         // person's messages in it.
         let participants = vec![
             chat::record::Participant::person(person).key(),
             chat::record::Participant::agent(agent).key(),
         ];
-        // The id a kept conversation with these participants has, derived the
-        // same on every device: a channel id, because the conversation is one
-        // — it is made once and named in the place's address — never a direct
-        // conversation's id, which names its participants and is nothing the
-        // record can hold.
+        // The id a kept conversation with these participants has, derived the same on every device:
+        // a channel id, because the conversation is one — it is made once and named in the place's
+        // address — never a direct conversation's id, which names its participants and is nothing
+        // the record can hold.
         let id = chat::record::Chat::conversation_channel_id(
             participants
                 .iter()
                 .filter_map(|key| chat::record::Participant::parse(key)),
         );
         let channel = id.as_str().to_owned();
-        // The conversation is made once, with Chat's own `create-channel-with-id`:
-        // a second ask meets the one that is there, as a step run again does.
+        // The conversation is made once, with Chat's own `create-channel-with-id` : a second ask
+        // meets the one that is there, as a step run again does.
         let name = tilo_resource::NonBlank::parse(&crate::i18n::t("session-ask-conversation"))?;
         let made = chat.invoke(&chat::Chat::CREATE_CHANNEL_WITH_ID.with(
             chat::record::chat::CreateChannelWithId {
@@ -388,9 +372,8 @@ impl Conversations {
             tracing::warn!(%error, %workspace, "the ask conversation was not made");
             return None;
         }
-        // The person's question, as the post Chat's composer makes: the
-        // message is theirs, so the agent's reply is the one its id derives
-        // (`reply_id`), and the turn is the message's.
+        // The person's question, as the post Chat's composer makes: the message is theirs, so the
+        // agent's reply is the one its id derives (`reply_id`), and the turn is the message's.
         let posted = part.invoke(&chat::parts::ChatPart::POST.with(
             chat::messages::chat_part::Post {
                 message: chat::messages::NewMessage {
@@ -408,17 +391,16 @@ impl Conversations {
             tracing::warn!(%error, %workspace, "the person's question was not posted");
             return None;
         }
-        // The conversation as Chat publishes a channel: its item resource, so a
-        // place of it is the channel Chat's own window shows, drawn by Chat's
-        // `conversation` view (`chat.workspace/channels/<id>`), never the
-        // record as a whole.
+        // The conversation as Chat publishes a channel: its item resource, so a place of it is the
+        // channel Chat's own window shows, drawn by Chat's `conversation` view
+        // (`chat.workspace/channels/<id>`), never the record as a whole.
         Some(tilo_resource::items::item_resource_id::<chat::Chat>(
             "channels", &id,
         ))
     }
 
-    /// Read each workspace's conversations as `person`, and hand the turns
-    /// they give to the run channel.
+    /// Read each workspace's conversations as `person` , and hand the turns they give to the run
+    /// channel.
     pub(crate) fn feed(&self, person: &str, workspaces: Vec<WorkspaceFacts>) {
         let read = workspaces
             .into_iter()
@@ -439,8 +421,8 @@ impl Conversations {
         }
     }
 
-    /// The turns `workspace`'s conversations give, read at the revisions its
-    /// records are at now, and the agents those conversations take in.
+    /// The turns `workspace` 's conversations give, read at the revisions its records are at now,
+    /// and the agents those conversations take in.
     fn turns(&self, workspace: &WorkspaceFacts, person: &str) -> (Vec<Entry>, Vec<String>) {
         match self.opened(workspace, person) {
             Some((chat, part)) => {
@@ -452,9 +434,8 @@ impl Conversations {
         }
     }
 
-    /// The workspace's chat record and the head of its messages, opened here
-    /// where they are not, and the turns read from them at the revisions they
-    /// are at.
+    /// The workspace's chat record and the head of its messages, opened here where they are not,
+    /// and the turns read from them at the revisions they are at.
     fn opened(
         &self,
         workspace: &WorkspaceFacts,
@@ -466,12 +447,11 @@ impl Conversations {
         self.opened_with(workspace, person, false)
     }
 
-    /// [`Self::opened`], and `create`: whether a workspace that holds no Chat
-    /// yet is given one, with the genesis every device derives the same, and
-    /// the first part of its messages. What asking does — a person who never
-    /// opened Chat still has a conversation to ask in (shell.md §8.1, "Asking
-    /// from the canvas") — and reading never does: the pass creates no record
-    /// of an app no one used.
+    /// [`Self::opened`], and `create` : whether a workspace that holds no Chat yet is given one,
+    /// with the genesis every device derives the same, and the first part of its messages. What
+    /// asking does — a person who never opened Chat still has a conversation to ask in (shell.md
+    /// §8.1, "Asking from the canvas") — and reading never does: the pass creates no record of an
+    /// app no one used.
     fn opened_with(
         &self,
         workspace: &WorkspaceFacts,
@@ -506,9 +486,9 @@ impl Conversations {
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let chat_id = RecordId::package_primary();
         if create && opened.chat.is_none() {
-            // The workspace holds no Chat, and the person asked in it: the
-            // record is made here, with the genesis every device derives the
-            // same, so a second device's first ask meets the one this made.
+            // The workspace holds no Chat, and the person asked in it: the record is made here,
+            // with the genesis every device derives the same, so a second device's first ask meets
+            // the one this made.
             opened.chat = WorkspaceRecord::<chat::Chat>::open_primary(
                 &opened.records,
                 CHAT_OWNER,
@@ -518,8 +498,7 @@ impl Conversations {
             );
         }
         if opened.chat.is_none() {
-            // A workspace whose person never opened Chat holds no record: the
-            // reader creates none.
+            // A workspace whose person never opened Chat holds no record: the reader creates none.
             let held = opened
                 .records
                 .holds_record(CHAT_OWNER, chat_id.as_str(), chat::Chat::KIND)
@@ -566,12 +545,11 @@ impl Conversations {
     }
 }
 
-/// The person a message's author names, when it names one: the participant key
-/// (`person:<root>`, what a conversation's fields keep) or the bare id a record
-/// write attributes its change to ([`ActionCx::author`](tilo_resource::action)).
-/// Both spell one person — the second is what Chat writes a message's author
-/// as — so a message a person posted summons its conversation's agent however
-/// it was written, and the run answers for the person it names.
+/// The person a message's author names, when it names one: the participant key (`person:<root>`,
+/// what a conversation's fields keep) or the bare id a record write attributes its change to
+/// ([`ActionCx::author`](tilo_resource::action)). Both spell one person — the second is what Chat
+/// writes a message's author as — so a message a person posted summons its conversation's agent
+/// however it was written, and the run answers for the person it names.
 fn person_of(author: &str) -> Option<String> {
     match chat::record::Participant::parse(author) {
         Some(chat::record::Participant::Person(root)) if !root.is_empty() => return Some(root),
@@ -588,8 +566,10 @@ fn person_of(author: &str) -> Option<String> {
     .then(|| author.to_owned())
 }
 
-/// The turns `chat`'s conversations give, read from `part`'s messages, and the
-/// agents the conversations take in.
+/// The turns `chat` 's conversations give, read from `part` 's messages, and the agents the
+/// conversations take in.
+/// A conversation the pass has no message for is none: a direct conversation exists only as the id
+/// its messages carry ([`chat::Chat::direct_id`]).
 fn turns(
     chat: &chat::Chat,
     part: &chat::parts::ChatPart,
@@ -604,8 +584,8 @@ fn turns(
     let mut turns = Vec::new();
     let mut agents = Vec::new();
     for id in &conversations {
-        // An archived conversation takes no message, and one the record does
-        // not list is a direct conversation the record derives from its id.
+        // An archived conversation takes no message, and one the record does not list is a direct
+        // conversation the record derives from its id.
         if chat
             .channels
             .get(id)
@@ -626,12 +606,10 @@ fn turns(
             if !agents.contains(&agent) {
                 agents.push(agent.clone());
             }
-            // The person's newest message the agent has not answered: the
-            // reply its id and the agent's derive, which only the agent's
-            // answer to that message carries. An agent's reply that is still
-            // working (its work is not finished) leaves the turn going, so a
-            // runner that records "taken" before it acts is not read as
-            // having answered.
+            // The person's newest message the agent has not answered: the reply its id and the
+            // agent's derive, which only the agent's answer to that message carries. An agent's
+            // reply that is still working (its work is not finished) leaves the turn going, so a
+            // runner that records "taken" before it acts is not read as having answered.
             let summons = messages
                 .iter()
                 .copied()
@@ -641,8 +619,8 @@ fn turns(
                         && part
                             .messages
                             .get(&chat::record::reply_id(message_id, &key))
-                            // A reply without work is a plain answer; one
-                            // that keeps work is going until its work ends.
+                            // A reply without work is a plain answer; one that keeps work is going
+                            // until its work ends.
                             .is_none_or(|reply| {
                                 reply.work.as_ref().is_some_and(|work| {
                                     let streamed = work
@@ -664,8 +642,8 @@ fn turns(
             let Some(starter) = person_of(&message.author.0) else {
                 continue;
             };
-            // The conversation's address in the workspace, as the desk and the
-            // apps name it, and the message's own beneath it.
+            // The conversation's address in the workspace, as the desk and the apps name it, and
+            // the message's own beneath it.
             let address = format!("{}/channels/{id}", chat::Chat::KIND);
             turns.push(Entry {
                 run: TrackerRun {
@@ -707,7 +685,7 @@ mod tests {
     /// The conversation the two of them have.
     const CONVERSATION: &str = "c_tide";
 
-    /// A workspace holding one conversation between `ME` and `AGENT`.
+    /// A workspace holding one conversation between `ME` and `AGENT` .
     fn workspace() -> chat::Chat {
         let mut chat = chat::Chat::default();
         chat.channels.push(
@@ -721,7 +699,7 @@ mod tests {
         chat
     }
 
-    /// A message `author` wrote in `CONVERSATION` at `ts`.
+    /// A message `author` wrote in `CONVERSATION` at `ts` .
     fn message(author: &str, text: &str, ts: i64) -> chat::record::Message {
         chat::record::Message {
             channel: Id::from_raw(CONVERSATION),
@@ -732,7 +710,7 @@ mod tests {
         }
     }
 
-    /// The head part of the messages, holding `messages`.
+    /// The head part of the messages, holding `messages` .
     fn part(messages: Vec<(&str, chat::record::Message)>) -> chat::parts::ChatPart {
         let mut part = chat::parts::ChatPart::default();
         for (id, message) in messages {
@@ -741,7 +719,7 @@ mod tests {
         part
     }
 
-    /// The turns `chat`'s conversations give for the messages of `head`.
+    /// The turns `chat` 's conversations give for the messages of `head` .
     fn read(chat: &chat::Chat, head: &chat::parts::ChatPart) -> Vec<Entry> {
         turns(chat, head, ME).0
     }

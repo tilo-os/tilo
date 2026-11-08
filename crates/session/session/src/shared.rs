@@ -1,7 +1,6 @@
-//! What the session's desk keeps between frames, and the passes that fold
-//! what arrived into it: each workspace's shared desktop, the workspace's
-//! history, the windows left open, and what the sheets and settings asked
-//! for.
+//! What the session's desk keeps between frames, and the passes that fold what arrived into it:
+//! each workspace's shared desktop, the workspace's history, the windows left open, and what the
+//! sheets and settings asked for.
 
 use tilo_sheets::Seat as _;
 use tilo_surface_host::WidgetHost;
@@ -9,9 +8,8 @@ use tilo_surface_host::WidgetHost;
 use crate::{Shared, arrangement, workspace_settings, workspaces};
 
 impl Shared {
-    /// Show each workspace's shared desktop as the workspace holds it, and
-    /// write back what this device changed there: what every device in a
-    /// workspace sees of its strips and windows
+    /// Show each workspace's shared desktop as the workspace holds it, and write back what this
+    /// device changed there: what every device in a workspace sees of its strips and windows
     /// ([`shared_desktop::SharedDesktops`]).
     pub(crate) fn follow_shared_desktops(&self) {
         let Some(engine) = &self.engine else {
@@ -26,13 +24,13 @@ impl Shared {
         {
             return;
         }
-        // What the records hold, folded into a copy of the desk: what this
-        // device opened or moved since was written first, so the fold comes
-        // back with this device's own change in it and nothing is undone.
+        // What the records hold, folded into a copy of the desk: what this device opened or moved
+        // since was written first, so the fold comes back with this device's own change in it and
+        // nothing is undone.
         let mut tree = self.handle.read(Clone::clone);
         self.desktops.capture(engine, self.sync.as_deref(), &tree);
-        // What the workspace did not take of this desk is on the desk the
-        // person used: they hear it once, naming the workspace and why.
+        // What the workspace did not take of this desk is on the desk the person used: they hear it
+        // once, naming the workspace and why.
         if let Some(refusal) = self.desktops.take_refusal() {
             crate::notices::tell_desk_not_taken(&self.notifications, &tree, refusal);
         }
@@ -41,20 +39,19 @@ impl Shared {
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
         if self.desktops.follow(engine, &device, &mut tree) {
-            // The tree this device drew is the tree it shows: what the record
-            // holds is already placed, and swapping it in whole keeps the
-            // windows this device shows where its own view left them.
+            // The tree this device drew is the tree it shows: what the record holds is already
+            // placed, and swapping it in whole keeps the windows this device shows where its own
+            // view left them.
             self.handle.replace_tree(tree.clone());
         }
-        // A window the person opens here is this device's to place: the
-        // record lacks it until the next write, and folding keeps it.
+        // A window the person opens here is this device's to place: the record lacks it until the
+        // next write, and folding keeps it.
         self.desktops.note_unrecorded(engine, &tree);
     }
 
-    /// Run what waited for the person to finish their gesture or their
-    /// typing: an arranging action that arrived then, in the order it came.
-    /// The arrangement is the desk, so what the desk did meanwhile needs no
-    /// taking in.
+    /// Run what waited for the person to finish their gesture or their typing: an arranging action
+    /// that arrived then, in the order it came. The arrangement is the desk, so what the desk did
+    /// meanwhile needs no taking in.
     pub(crate) fn follow_arrangement(&self, underway: arrangement::Busy) {
         let mut arrangement = self.arrangement.borrow_mut();
         if !underway.holds()
@@ -65,8 +62,7 @@ impl Shared {
         }
     }
 
-    /// The workspace in front, as its id: where a chosen notification's app
-    /// opens.
+    /// The workspace in front, as its id: where a chosen notification's app opens.
     pub(crate) fn active_workspace_id(&self) -> String {
         self.handle.read(|tree| {
             tree.active_workspace()
@@ -75,10 +71,9 @@ impl Shared {
         })
     }
 
-    /// Take up what the workspace's history wrote back and what the person
-    /// opened from it, and tell the apps following it what moved. A window
-    /// that asked, or a change of what the history reads, asks the desk for
-    /// the frame that serves it.
+    /// Take up what the workspace's history wrote back and what the person opened from it, and tell
+    /// the apps following it what moved. A window that asked, or a change of what the history
+    /// reads, asks the desk for the frame that serves it.
     pub(crate) fn serve_activity(&self) {
         if let Some(tree) = self.activity.take_restored() {
             self.handle.replace_tree(tree);
@@ -88,13 +83,12 @@ impl Shared {
         }
         self.activity.keep_unlock();
         self.activity.serve(&self.notifications.borrow());
-        // What the history says its changes were, and the names over the runs
-        // of them, are written into the desk's document as models answer; the
-        // desk draws a frame to read them.
+        // What the history says its changes were, and the names over the runs of them, are written
+        // into the desk's document as models answer; the desk draws a frame to read them.
         let described = self.activity.describe();
         if self.activity.take_woken() || described {
-            // A window asked the activity model something, or what the
-            // history reads moved: the desk draws a frame, which serves it.
+            // A window asked the activity model something, or what the history reads moved: the
+            // desk draws a frame, which serves it.
             self.desktop.with_widgets(WidgetHost::relayout);
         }
     }
@@ -126,14 +120,14 @@ impl Shared {
         let workspace = apps.workspace_named(&workspace_id.to_string());
         if let Err(error) = apps.start(&launch, &workspace) {
             tracing::warn!(%error, %app, "an app is not opened from the history");
-            // The change is still in the history, so the person reads it
-            // there: what they chose did not happen, and why.
+            // The change is still in the history, so the person reads it there: what they chose did
+            // not happen, and why.
             self.answer_failed(&crate::i18n::t("action-failed-that-change"), &error);
         }
     }
 
-    /// The windows this device left open: ask for the next one once the one
-    /// before it came, each into the tab it was in.
+    /// The windows this device left open: ask for the next one once the one before it came, each
+    /// into the tab it was in.
     pub(crate) fn follow_restore(&self) {
         self.restore
             .borrow_mut()
@@ -142,9 +136,9 @@ impl Shared {
 
     /// Carry out what the person chose in the sheets.
     pub(crate) fn follow_sheets(&self, look: &mut tilo_surface_host::Look<'_>) {
-        // What a place can show, as the arrangement published it: an
-        // agent's `find` leads with the resource typing the text would
-        // place, so it reads the same catalogue the canvas places through.
+        // What a place can show, as the arrangement published it: an agent's `find` leads with the
+        // resource typing the text would place, so it reads the same catalogue the canvas places
+        // through.
         let catalog = self.arrangement.borrow().targets();
         self.session_doors.answer(
             &self.doors,
@@ -181,9 +175,8 @@ impl Shared {
         self.refresh_invite();
         self.follow_delete_workspace();
         self.follow_boot_join();
-        // A program of this login asking to work as an agent is a question
-        // of the person's: their answer admits it, and the client is served
-        // from the next pass on.
+        // A program of this login asking to work as an agent is a question of the person's: their
+        // answer admits it, and the client is served from the next pass on.
         if !self.boot_join.borrow().waiting()
             && let Some(door) = self.agent_door.borrow_mut().as_mut()
         {
@@ -195,12 +188,10 @@ impl Shared {
         self.app_sheets.follow(self.downloaded_apps().as_ref());
     }
     /// One anchored surface at a time, whichever side opened it.
-    ///
-    /// The desk's own popovers and the shell's views are two stacks that meet
-    /// here: a popover that came up over a shell surface takes that surface
-    /// down — the person is looking at the menu they just opened — and a
-    /// shell surface that came up closes the roster, which the roster's own
-    /// host draws over everything.
+    /// The desk's own popovers and the shell's views are two stacks that meet here: a popover that
+    /// came up over a shell surface takes that surface down — the person is looking at the menu
+    /// they just opened — and a shell surface that came up closes the roster, which the roster's
+    /// own host draws over everything.
     pub(crate) fn lone_surface(&self) {
         if self.surfaces.beside_up() {
             self.surfaces.clear_shell();

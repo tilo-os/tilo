@@ -40,8 +40,8 @@ const ALWAYS_DENIES: &[libc::c_long] = &[
     libc::SYS_delete_module,
 ];
 
-/// The guest deny-list. Compiled by
-/// [`sandbox_core::seccomp::compile_deny_list`]: default-allow, `EPERM`
+/// The guest deny-list. Compiled
+/// by [`sandbox_core::seccomp::compile_deny_list`]: default-allow, `EPERM`
 /// rather than `SIGSYS` — a shell hosts arbitrary programs against
 /// arbitrary libcs, so an allow-list would break on the next syscall nobody
 /// enumerated, killing the process as if it crashed.

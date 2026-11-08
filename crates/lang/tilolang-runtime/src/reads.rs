@@ -877,10 +877,6 @@ fn describe_action(a: &crate::meta::ActionMeta, app: &str, alias: &str) -> Strin
 impl Runtime {
     /// The answer to `req`, read from this runtime's records: what an app's host gives a
     /// program that runs elsewhere.
-    ///
-    /// # Errors
-    /// What it cannot read: a pattern that is no regular expression, a resource or a name it
-    /// does not hold.
     pub fn answer_read(&self, req: &ReadRequest) -> Result<Json, String> {
         self.core.answer_local(req)
     }

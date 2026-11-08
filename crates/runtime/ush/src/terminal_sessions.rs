@@ -53,9 +53,6 @@ pub fn dir(runtime_dir: Option<OsString>) -> Option<PathBuf> {
 /// and drop the records of sessions that have ended. A record outliving its
 /// session counts for nothing (its leader is no longer the process it
 /// names), so it is only tidied here, never relied on to be gone.
-///
-/// # Errors
-/// Either process is gone, or the record cannot be written.
 pub fn mark(dir: &Path, leader_pid: u32, requester_pid: u32, session: &str) -> io::Result<Session> {
     let gone = || io::Error::new(io::ErrorKind::NotFound, "the process is gone");
     let (_, leader_start) = proc_stat(leader_pid).ok_or_else(gone)?;

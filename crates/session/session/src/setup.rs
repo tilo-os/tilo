@@ -1,10 +1,9 @@
-//! What stands over everything before the desk is used: the first-use
-//! ceremony ([`tilo_onboarding_host::view::OnboardingView`]) on a layer
-//! covering the outputs, above the desktop and every window, taking the
-//! keyboard until the person finished it, or the wait for the clock to admit
-//! this device's certificate, which goes away by itself. Its actions are the
-//! setup app's, through its door; what setup needs of the session it reads
-//! through [`tilo_onboarding_host::host::SessionHost`].
+//! What stands over everything before the desk is used: the first-use ceremony
+//! ([`tilo_onboarding_host::view::OnboardingView`]) on a layer covering the outputs, above the
+//! desktop and every window, taking the keyboard until the person finished it, or the wait for the
+//! clock to admit this device's certificate, which goes away by itself. Its actions are the setup
+//! app's, through its door; what setup needs of the session it reads through
+//! [`tilo_onboarding_host::host::SessionHost`].
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -21,8 +20,8 @@ use ui::host_operation::ResourceOperationStart;
 
 use crate::clock_wait::{ClockWait, ClockWaitStep};
 
-/// What this session lends setup. One per process, as setup reads it
-/// through a process-wide hook; each session started points it at itself.
+/// What this session lends setup. One per process, as setup reads it through a process-wide hook;
+/// each session started points it at itself.
 struct Lent {
     waker: Mutex<Option<Waker>>,
     person: Mutex<String>,
@@ -60,16 +59,14 @@ impl tilo_onboarding_host::host::SessionHost for Lent {
     }
 }
 
-/// Point what setup reads of its session at this one: its loop and its
-/// person.
+/// Point what setup reads of its session at this one: its loop and its person.
 pub(crate) fn lend(waker: Waker, person: &str) {
     *LENT.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(waker);
     person.clone_into(&mut LENT.person.lock().unwrap_or_else(PoisonError::into_inner));
     tilo_onboarding_host::host::install(&LENT);
 }
 
-/// The verified browser projection a carried-over setup brought, which the
-/// browser starts with.
+/// The verified browser projection a carried-over setup brought, which the browser starts with.
 pub(crate) fn browser_continuity() -> Option<PathBuf> {
     LENT.browser
         .lock()
@@ -79,18 +76,18 @@ pub(crate) fn browser_continuity() -> Option<PathBuf> {
 
 /// What this session shows before its desk is used.
 pub enum BeforeDesk {
-    /// Setup the person goes through once: the first use of this device, or
-    /// the recovery of its identity.
+    /// Setup the person goes through once: the first use of this device, or the recovery of its
+    /// identity.
     Ceremony(Box<OnboardingView>),
-    /// The wait for the clock to admit this device's certificate. It goes
-    /// away by itself, and what a verified identity opens takes its place.
+    /// The wait for the clock to admit this device's certificate. It goes away by itself, and what
+    /// a verified identity opens takes its place.
     WaitForClock(ClockWait),
 }
 
 /// What the layer shows, while it shows anything.
 enum Surface {
-    /// The setup app's own view: its door publishes its actions, and its own
-    /// signal says when the person finished it.
+    /// The setup app's own view: its door publishes its actions, and its own signal says when the
+    /// person finished it.
     Ceremony {
         widgets: WidgetHost,
         door: SharedDoor,
@@ -106,15 +103,14 @@ enum Surface {
 /// The setup view on its layer, while the person has not finished it.
 pub(crate) struct Setup {
     surface: Surface,
-    /// The outputs this layer covers, as the compositor last told a view:
-    /// replayed to a view that replaces another, which is only told when the
-    /// outputs themselves change.
+    /// The outputs this layer covers, as the compositor last told a view: replayed to a view that
+    /// replaces another, which is only told when the outputs themselves change.
     outputs: Vec<tilo_compositor::HostedOutput>,
 }
 
 impl Setup {
-    /// Show `surface` over the outputs, waking `waiter` when the wait for the
-    /// clock has something new to answer.
+    /// Show `surface` over the outputs, waking `waiter` when the wait for the clock has something
+    /// new to answer.
     pub(crate) fn new(surface: BeforeDesk, scale: f64, waiter: Waker) -> Self {
         let placement = Placement {
             origin: (0, 0),
@@ -146,9 +142,8 @@ impl Setup {
         }
     }
 
-    /// Advance what the layer shows: the wait for the clock finishes itself
-    /// once the identity verifies, and gives the layer to the setup the
-    /// device still needs, or back to the desk.
+    /// Advance what the layer shows: the wait for the clock finishes itself once the identity
+    /// verifies, and gives the layer to the setup the device still needs, or back to the desk.
     pub(crate) fn step(&mut self) {
         let Surface::WaitForClock { wait, .. } = &mut self.surface else {
             return;
@@ -162,8 +157,8 @@ impl Setup {
         }
     }
 
-    /// Show `view` in place of what the layer shows now, on the same
-    /// rectangle and over the same outputs.
+    /// Show `view` in place of what the layer shows now, on the same rectangle and over the same
+    /// outputs.
     fn hand_over(&mut self, view: OnboardingView) {
         let placement = self.widgets().placement();
         let mut replacement = ceremony(view, placement);
@@ -188,9 +183,8 @@ impl Setup {
         }
     }
 
-    /// Run what its door holds now, and publish what setup offers: the
-    /// view does both on each pass of its own. The wait for the clock has no
-    /// door and nothing of its own to publish.
+    /// Run what its door holds now, and publish what setup offers: the view does both on each pass
+    /// of its own. The wait for the clock has no door and nothing of its own to publish.
     fn serve(&mut self) {
         if let Surface::Ceremony {
             widgets,
@@ -216,8 +210,8 @@ fn ceremony(view: OnboardingView, placement: Placement) -> Surface {
     }
 }
 
-/// A tree covering every output and taking the keyboard: what stands in front
-/// of the desk withholds it.
+/// A tree covering every output and taking the keyboard: what stands in front of the desk withholds
+/// it.
 fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetHost {
     WidgetHost::new(root, placement, false)
         .named("Setup")
@@ -256,9 +250,8 @@ impl Published for Setup {
             .collect()
     }
 
-    /// Setup's controls by name, so a tool that goes through the first
-    /// login — `tilo-vmd`'s `--identity device` — presses the page the
-    /// person sees, never a guessed point.
+    /// Setup's controls by name, so a tool that goes through the first login — `tilo-vmd` 's
+    /// `--identity device` — presses the page the person sees, never a guessed point.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         self.serve();
         Published::controls(self.widgets_mut())
@@ -308,8 +301,7 @@ impl SurfaceHost for Setup {
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        // What stands before the desk withholds it: the pointer reaches
-        // nothing under the layer.
+        // What stands before the desk withholds it: the pointer reaches nothing under the layer.
         self.up() && {
             let (ox, oy) = self.widgets().placement().origin;
             let (w, h) = self.widgets().placement().size;

@@ -42,8 +42,8 @@ const VERSION: u32 = 1;
 /// The warmest and coolest colour temperatures night light takes, kelvin.
 pub const NIGHT_LIGHT_KELVIN: std::ops::RangeInclusive<u32> = 2_000..=6_500;
 
-/// One lookup table per channel, each of the output's ramp size: entry `i`
-/// is what a signal of `i / (size - 1)` of full scale is sent as.
+/// One lookup table per channel, each of the output's ramp size: entry `i` is what a signal of
+/// `i / (size - 1)` of full scale is sent as.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ramp {
     pub red: Vec<u16>,
@@ -63,9 +63,8 @@ impl Ramp {
         Self::night_light(size, *NIGHT_LIGHT_KELVIN.end())
     }
 
-    /// A gamma control's table: the red, green and blue ramps one after
-    /// the other, native-endian `u16`s. `None` unless it holds exactly
-    /// three ramps of `size`.
+    /// A gamma control's table: the red, green and blue ramps one after the other, native-endian
+    /// `u16` s. `None` unless it holds exactly three ramps of `size` .
     fn from_table(table: &[u8], size: usize) -> Option<Self> {
         if size == 0 || table.len() != size.checked_mul(6)? {
             return None;
@@ -81,11 +80,10 @@ impl Ramp {
         })
     }
 
-    /// Night light at `kelvin` (clamped to [`NIGHT_LIGHT_KELVIN`]) as a
-    /// ramp of `size`: red stays at unity while green and blue fall as
-    /// warmth rises. The multipliers are deliberately conservative: the
-    /// temperature is a comfort target, not a claim that an uncalibrated
-    /// panel now shows reference colours. 6500 K changes nothing.
+    /// Night light at `kelvin` (clamped to [`NIGHT_LIGHT_KELVIN`]) as a ramp of `size` : red stays
+    /// at unity while green and blue fall as warmth rises. The multipliers are deliberately
+    /// conservative: the temperature is a comfort target, not a claim that an uncalibrated panel
+    /// now shows reference colours. 6500 K changes nothing.
     pub fn night_light(size: usize, kelvin: u32) -> Self {
         let (coolest, warmest) = (*NIGHT_LIGHT_KELVIN.end(), *NIGHT_LIGHT_KELVIN.start());
         let warmth = f64::from(coolest.saturating_sub(kelvin.clamp(warmest, coolest)))
@@ -114,8 +112,7 @@ impl Ramp {
         }
     }
 
-    /// Map 8-bit R, G, B, A pixels through the ramp as a display engine
-    /// would (alpha untouched).
+    /// Map 8-bit R, G, B, A pixels through the ramp as a display engine would (alpha untouched).
     pub fn apply(&self, rgba: &mut [u8]) {
         let size = self.size();
         if size < 2 {
@@ -139,11 +136,9 @@ impl Ramp {
         }
     }
 
-    /// `self` with the panel dimmed to `light` of its linear light on top:
-    /// what a display engine holding a second lookup table would show. A
-    /// monitor without a backlight or DDC/CI is dimmed this way
-    /// ([`tilo_color_pipeline::software_dim`]), under any tint it is already
-    /// given.
+    /// `self` with the panel dimmed to `light` of its linear light on top: what a display engine
+    /// holding a second lookup table would show. A monitor without a backlight or DDC/CI is dimmed
+    /// this way ([`tilo_color_pipeline::software_dim`]), under any tint it is already given.
     #[must_use]
     pub fn dimmed(&self, light: f32) -> Self {
         use tilo_color_pipeline::software_dim::{Transfer, dims, gamma_lut};
@@ -156,8 +151,7 @@ impl Ramp {
         if table.len() != size {
             return self.clone();
         }
-        // What the tint sends for a signal, mapped through the dimming: one
-        // lookup table does both.
+        // What the tint sends for a signal, mapped through the dimming: one lookup table does both.
         let last = size.saturating_sub(1);
         let across = |ramp: &[u16]| -> Vec<u16> {
             ramp.iter()
@@ -219,7 +213,7 @@ impl Gamma {
         }
     }
 
-    /// Turn night light on at `kelvin`, or off.
+    /// Turn night light on at `kelvin` , or off.
     pub(crate) fn set_night_light(&mut self, kelvin: Option<u32>) {
         self.night_light = kelvin;
     }
@@ -228,10 +222,9 @@ impl Gamma {
         self.night_light
     }
 
-    /// Dim the outputs named in `dims` in software to their linear light
-    /// (`1.0`: not dimmed), as the brightness service asks for the monitors
-    /// with neither a backlight nor DDC/CI. Outputs not named are left
-    /// undimmed.
+    /// Dim the outputs named in `dims` in software to their linear light (`1.0`: not dimmed), as
+    /// the brightness service asks for the monitors with neither a backlight nor DDC/CI. Outputs
+    /// not named are left undimmed.
     pub(crate) fn set_software_dim(&mut self, dims: &[(String, f32)]) {
         self.software_dim.clear();
         for (name, light) in dims {
@@ -241,8 +234,8 @@ impl Gamma {
         }
     }
 
-    /// The ramp `name` should show: a tool's, else night light's, else
-    /// none, dimmed in software where the brightness service asked for it.
+    /// The ramp `name` should show: a tool's, else night light's, else none, dimmed in software
+    /// where the brightness service asked for it.
     pub(crate) fn wanted(&self, name: &str) -> Option<Ramp> {
         let light = self.software_dim.get(name).copied().unwrap_or(1.0);
         if let Some(ramp) = self.set.get(name) {
@@ -270,9 +263,8 @@ impl Gamma {
             .collect()
     }
 
-    /// The ramps the backend has to write so the outputs named in
-    /// `outputs` show what is wanted (`None`: take the ramp off). Forgets
-    /// outputs that are gone and fails their controls.
+    /// The ramps the backend has to write so the outputs named in `outputs` show what is wanted
+    /// (`None`: take the ramp off). Forgets outputs that are gone and fails their controls.
     pub(crate) fn changes(&mut self, outputs: &[String]) -> Vec<(String, Option<Ramp>)> {
         let gone: Vec<String> = self
             .sizes
@@ -293,14 +285,13 @@ impl Gamma {
             .collect()
     }
 
-    /// The backend wrote `ramp` to `name`.
+    /// The backend wrote `ramp` to `name` .
     pub(crate) fn applied(&mut self, name: &str, ramp: Option<Ramp>) {
         self.applied.insert(name.to_owned(), ramp);
     }
 
-    /// The backend could not write `name`'s ramp: a tool's control fails
-    /// (it is no longer in effect) and the output is not tried again until
-    /// what is wanted changes.
+    /// The backend could not write `name` 's ramp: a tool's control fails (it is no longer in
+    /// effect) and the output is not tried again until what is wanted changes.
     pub(crate) fn refused(&mut self, name: &str) {
         if self.set.remove(name).is_some() {
             self.fail_controls(name);
@@ -309,8 +300,8 @@ impl Gamma {
         self.applied(name, wanted);
     }
 
-    /// What the device holds is unknown (another session had the display):
-    /// every ramp is written again.
+    /// What the device holds is unknown (another session had the display): every ramp is written
+    /// again.
     pub(crate) fn forget_applied(&mut self) {
         self.applied.clear();
     }
@@ -327,8 +318,7 @@ impl Gamma {
     }
 }
 
-/// The output a control holds; `None` when it never held one (it failed at
-/// once and stays inert).
+/// The output a control holds; `None` when it never held one (it failed at once and stays inert).
 pub struct ControlData {
     output: Option<String>,
 }
@@ -438,7 +428,7 @@ impl Dispatch<ZwlrGammaControlV1, ControlData> for State {
     }
 }
 
-/// Read a control's table from the start of `fd`: three ramps of `size`.
+/// Read a control's table from the start of `fd` : three ramps of `size` .
 fn read_table(fd: OwnedFd, size: usize) -> Option<Ramp> {
     let file = std::fs::File::from(fd);
     let mut table = vec![0_u8; size.checked_mul(6)?];

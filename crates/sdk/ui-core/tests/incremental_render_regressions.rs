@@ -356,7 +356,6 @@ impl Harness {
 f64's 2^53 exact-integer range"
 )]
 fn cached_subtrees_stay_visible_at_scale_and_on_animation_frames() {
-    // Case `column_row_subtree_cache_renders_correctly_at_dpi_scale_2`.
     {
         let mut h = Harness::new(1600, 1200, 2.0);
 
@@ -387,7 +386,6 @@ fn cached_subtrees_stay_visible_at_scale_and_on_animation_frames() {
         );
     }
 
-    // Case `static_widgets_stay_visible_on_animation_only_frames`.
     {
         let mut h = Harness::new(1600, 1200, 2.0);
 

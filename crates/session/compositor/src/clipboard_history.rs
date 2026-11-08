@@ -21,12 +21,12 @@ use std::time::{Duration, Instant};
 
 pub use crate::selection::TEXT_MIME;
 
-/// Marks a Tilo copy as a secret: kept out of the history and never shared
-/// with the person's other devices.
+/// Marks a Tilo copy as a secret: kept out of the history and never shared with the person's other
+/// devices.
 pub const SECRET_MIME: &str = "application/x-tilo-secret";
 
-/// The password-manager convention other Linux clipboard managers honour: an
-/// offer carrying it is kept out of their histories, and out of this one.
+/// The password-manager convention other Linux clipboard managers honour: an offer carrying it is
+/// kept out of their histories, and out of this one.
 pub const PASSWORD_MANAGER_HINT_MIME: &str = "x-kde-passwordManagerHint";
 
 /// The most copies the history keeps.
@@ -36,10 +36,9 @@ pub const MAX_COPY_BYTES: usize = 256 * 1024;
 /// How long a read waits for the app that owns the copy to answer.
 pub const PULL_DEADLINE: Duration = Duration::from_secs(2);
 
-/// The formats a history keeps, most preferred first: what a person copies
-/// to paste again. A list of files comes before its text rendering, because
-/// the files are what was copied; a file manager that offers both would
-/// otherwise have its copy kept as the names it wrote for the screen.
+/// The formats a history keeps, most preferred first: what a person copies to paste again. A list
+/// of files comes before its text rendering, because the files are what was copied; a file manager
+/// that offers both would otherwise have its copy kept as the names it wrote for the screen.
 const KEPT_MIMES: [&str; 7] = [
     "x-special/gnome-copied-files",
     "text/uri-list",
@@ -58,9 +57,8 @@ pub fn is_secret(mimes: &[String]) -> bool {
         .any(|mime| mime == SECRET_MIME || mime == PASSWORD_MANAGER_HINT_MIME)
 }
 
-/// The format the history keeps `mimes` in, most preferred first: what a
-/// person copies to paste again. `None` for an offer worth remembering in
-/// none of them, and for one marked secret.
+/// The format the history keeps `mimes` in, most preferred first: what a person copies to paste
+/// again. `None` for an offer worth remembering in none of them, and for one marked secret.
 #[must_use]
 pub fn kept_mime(mimes: &[String]) -> Option<&'static str> {
     if is_secret(mimes) {
@@ -72,8 +70,8 @@ pub fn kept_mime(mimes: &[String]) -> Option<&'static str> {
         .find(|mime| mimes.iter().any(|offered| offered == mime))
 }
 
-/// The id of a copy of `bytes`: content-addressed, so the same copy made
-/// twice is one copy, whoever the app that made it was.
+/// The id of a copy of `bytes` : content-addressed, so the same copy made twice is one copy,
+/// whoever the app that made it was.
 fn id_of(mime: &str, bytes: &[u8]) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(b"tilo-clipboard-copy-v1\0");
@@ -100,7 +98,7 @@ pub struct Copy {
 }
 
 impl Copy {
-    /// The copy of `mime`'s `bytes`, with its id taken from the bytes.
+    /// The copy of `mime` 's `bytes` , with its id taken from the bytes.
     #[must_use]
     pub fn new(mime: &str, bytes: Vec<u8>, created_ms: u64) -> Self {
         Self {
@@ -124,7 +122,7 @@ impl Copy {
         key
     }
 
-    /// The copy a panel named as `key`, when it is [`Self::key`]'s.
+    /// The copy a panel named as `key` , when it is [`Self::key`]'s.
     #[must_use]
     pub fn id_of_key(key: &str) -> Option<[u8; 32]> {
         if key.len() != 64 {
@@ -174,12 +172,10 @@ pub struct History {
 }
 
 impl History {
-    /// Keep what the selection offered: `mimes` as they are offered, and the
-    /// bytes of `mime`, the format [`kept_mime`] chose. Returns whether the
-    /// history changed.
-    ///
-    /// A copy of the same bytes moves to the front and keeps what the
-    /// person made of it (its pin), as a clipboard manager does.
+    /// Keep what the selection offered: `mimes` as they are offered, and the bytes of `mime` , the
+    /// format [`kept_mime`] chose. Returns whether the history changed.
+    /// A copy of the same bytes moves to the front and keeps what the person made of it (its pin),
+    /// as a clipboard manager does.
     pub fn record(
         &mut self,
         mimes: &[String],
@@ -212,9 +208,8 @@ impl History {
     }
 
     /// Import a copy another of the person's devices shared.
-    ///
-    /// Returns whether the history changed. A copy of the same bytes already
-    /// here keeps its own origin and place.
+    /// Returns whether the history changed. A copy of the same bytes already here keeps its own
+    /// origin and place.
     pub fn import(&mut self, copy: Copy) -> bool {
         if self.copies.iter().any(|here| here.id == copy.id) {
             return false;
@@ -222,8 +217,8 @@ impl History {
         if !self.make_room() {
             return false;
         }
-        // Newest first, like a copy made here: the person's next choice is
-        // the one they made last, wherever they made it.
+        // Newest first, like a copy made here: the person's next choice is the one they made last,
+        // wherever they made it.
         self.copies.push_front(copy);
         true
     }
@@ -266,13 +261,13 @@ impl History {
         self.get(Copy::id_of_key(key)?)
     }
 
-    /// The whole text of the text copy `id`.
+    /// The whole text of the text copy `id` .
     #[must_use]
     pub fn text(&self, id: [u8; 32]) -> Option<&str> {
         self.get(id)?.text()
     }
 
-    /// Pin or unpin copy `id`: `false` when there is no such copy.
+    /// Pin or unpin copy `id` : `false` when there is no such copy.
     pub fn pin(&mut self, id: [u8; 32], pinned: bool) -> bool {
         match self.copies.iter_mut().find(|copy| copy.id == id) {
             Some(copy) => {
@@ -283,7 +278,7 @@ impl History {
         }
     }
 
-    /// Remove copy `id`: `false` when there is no such copy.
+    /// Remove copy `id` : `false` when there is no such copy.
     pub fn remove(&mut self, id: [u8; 32]) -> bool {
         let before = self.copies.len();
         self.copies.retain(|copy| copy.id != id);
@@ -297,15 +292,14 @@ impl History {
         before.saturating_sub(self.copies.len())
     }
 
-    /// Take up copies kept by the settings store, newest first, replacing
-    /// what is here.
+    /// Take up copies kept by the settings store, newest first, replacing what is here.
     pub fn restore(&mut self, kept: impl IntoIterator<Item = Copy>) {
         self.copies = kept.into_iter().collect();
     }
 }
 
-/// Reading `selection` off the loop: the bytes arrive when the app that owns
-/// it gets round to writing them.
+/// Reading `selection` off the loop: the bytes arrive when the app that owns it gets round to
+/// writing them.
 pub struct Pull {
     reader: std::io::PipeReader,
     started: Instant,
@@ -381,8 +375,8 @@ impl Pull {
 mod tests {
     use super::*;
 
-    /// What the session does with an offer: keep the format the history
-    /// prefers, or nothing when it keeps none.
+    /// What the session does with an offer: keep the format the history prefers, or nothing when it
+    /// keeps none.
     fn keep(history: &mut History, offer: &[(&str, &[u8])], created_ms: u64) -> bool {
         let mimes: Vec<String> = offer.iter().map(|(mime, _)| (*mime).to_owned()).collect();
         let Some(mime) = kept_mime(&mimes) else {

@@ -433,11 +433,6 @@ pub struct OfflineDownload {
 
 impl OfflineDownload {
     /// Start downloading a resolved source into the device-local cache.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when this build cannot perform network transfers or
-    /// when the local transfer thread cannot be created.
     pub fn start(
         track_id: String,
         uri: String,

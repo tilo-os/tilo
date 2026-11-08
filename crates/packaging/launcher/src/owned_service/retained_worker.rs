@@ -191,8 +191,6 @@ impl RetainedWorkerWitness {
     /// Observe only the already-held source task/program/namespace for teardown.
     /// This grants no access and cannot connect, arm, or export a capability.
     /// Consumer cancellation/role loss must not prevent releasing an owned realm.
-    /// # Errors
-    /// Refuses non-root callers, departed/reused tasks or changed held program.
     pub fn check_retirement_custody(&self) -> io::Result<()> {
         if rustix::process::getuid().as_raw() != 0
             || rustix::process::geteuid().as_raw() != 0
@@ -323,8 +321,6 @@ impl RetainedWorkerConnector {
         Ok(actual)
     }
     /// Fresh unread same-provider stream with actual signed ELF/peer witness.
-    /// # Errors
-    /// Refuses expired source, different task or missing held signed program.
     pub fn connect_unread(&self) -> io::Result<(UnixStream, RetainedWorkerWitness)> {
         self.custody()?;
         let value = self.endpoint.connect_pending_worker()?;
@@ -336,8 +332,6 @@ impl ServiceEndpoint {
     /// Retain only this genuine signed worker endpoint before moving its
     /// supervisor into projection custody. Cloning cannot prolong source
     /// authority: the exact init/cancellation/current lease are shared.
-    /// # Errors
-    /// Refuses missing signed program, current custody loss or clone failure.
     pub fn retain_worker_connector(&self) -> io::Result<RetainedWorkerConnector> {
         let before = self.custody()?;
         let program = self.retained_program.as_ref().ok_or_else(refused)?.clone();

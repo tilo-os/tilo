@@ -44,17 +44,17 @@ impl WakeStage {
     }
 }
 
-/// What the kernel holds for an output once it was lit, read back after the
-/// wake rather than assumed from the commit.
+/// What the kernel holds for an output once it was lit, read back after the wake rather than
+/// assumed from the commit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LitState {
-    /// The CRTC is active (atomic `ACTIVE`, or a mode bound for a legacy
-    /// CRTC); `None` when it could not be read.
+    /// The CRTC is active (atomic `ACTIVE` , or a mode bound for a legacy CRTC); `None` when it
+    /// could not be read.
     pub crtc_active: Option<bool>,
-    /// The connector's status: `connected`, `disconnected` or `unknown`.
+    /// The connector's status: `connected` , `disconnected` or `unknown` .
     pub connector: &'static str,
-    /// The built-in panel's backlight powered (`bl_power` 0); `None` for an
-    /// output without one, or one that says nothing.
+    /// The built-in panel's backlight powered (`bl_power` 0); `None` for an output without one, or
+    /// one that says nothing.
     pub backlight_powered: Option<bool>,
     /// The backlight as the kernel holds it, for the record.
     pub backlight: Option<String>,
@@ -101,24 +101,23 @@ impl WakeVerdict {
     }
 }
 
-/// One output's wake, from the moment it was asked to light until its first
-/// frame after it reached the screen.
+/// One output's wake, from the moment it was asked to light until its first frame after it reached
+/// the screen.
 #[derive(Debug)]
 pub struct WakeCheck {
     started: Instant,
-    /// Why it woke, for the record: `resume`, `dpms`.
+    /// Why it woke, for the record: `resume` , `dpms` .
     reason: &'static str,
     redone: bool,
-    /// A stage the next judgement takes as failed whatever it observed, so
-    /// the recovery can be proven on hardware that never fails.
+    /// A stage the next judgement takes as failed whatever it observed, so the recovery can be
+    /// proven on hardware that never fails.
     fault: Option<WakeStage>,
-    /// Judged lit; the first frame after the wake is still to reach the
-    /// screen.
+    /// Judged lit; the first frame after the wake is still to reach the screen.
     awaiting_first_flip: bool,
 }
 
 impl WakeCheck {
-    /// A wake asked for at `started`.
+    /// A wake asked for at `started` .
     pub fn new(started: Instant, reason: &'static str, fault: Option<WakeStage>) -> Self {
         Self {
             started,
@@ -129,9 +128,8 @@ impl WakeCheck {
         }
     }
 
-    /// Judge the wake with `failed` the first stage observed not to happen.
-    /// The first failure in a wake asks for the modeset to be redone; a
-    /// second one is final.
+    /// Judge the wake with `failed` the first stage observed not to happen. The first failure in a
+    /// wake asks for the modeset to be redone; a second one is final.
     pub fn judge(&mut self, failed: Option<WakeStage>) -> WakeVerdict {
         let verdict = match self.fault.take().or(failed) {
             None => WakeVerdict::Lit,
@@ -170,8 +168,8 @@ impl WakeCheck {
         )
     }
 
-    /// A frame reached the screen at `now`: the record's closing line when it
-    /// is the first one after a wake judged lit, else `None`.
+    /// A frame reached the screen at `now` : the record's closing line when it is the first one
+    /// after a wake judged lit, else `None` .
     pub fn first_flip(&mut self, connector: u32, now: Instant) -> Option<String> {
         if !std::mem::take(&mut self.awaiting_first_flip) {
             return None;
@@ -183,8 +181,7 @@ impl WakeCheck {
         ))
     }
 
-    /// Whether the wake is over: judged, and its first frame shown (or no
-    /// frame is awaited).
+    /// Whether the wake is over: judged, and its first frame shown (or no frame is awaited).
     pub fn settled(&self) -> bool {
         !self.awaiting_first_flip
     }

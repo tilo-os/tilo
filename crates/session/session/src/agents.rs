@@ -1,17 +1,13 @@
 //! The agents each workspace keeps, as its own record names them.
-//!
-//! An agent works in a workspace because Chat's record of the workspace's
-//! agents ([`tilo_app::tilo_workspace_agent`]) names it and names the person
-//! who keeps it. That record is the agent's admission: the session reads it
-//! every pass, as the person sitting here, and the broker admits an agent's
-//! session only for the keeper the record names
-//! ([`tilo_action_broker::services::AgentRoster`]). Nothing here keeps state
-//! of its own beyond the record this device has open: who works here is the
-//! record's.
-//!
-//! The person who keeps an agent runs it: the pass hands the agents kept
-//! here to the session's launches ([`Kept`]), which start each one's
-//! process — the record is who works, and whose device runs them.
+//! An agent works in a workspace because Chat's record of the workspace's agents
+//! ([`tilo_app::tilo_workspace_agent`]) names it and names the person who keeps it. That record is
+//! the agent's admission: the session reads it every pass, as the person sitting here, and the
+//! broker admits an agent's session only for the keeper the record names
+//! ([`tilo_action_broker::services::AgentRoster`]). Nothing here keeps state of its own beyond the
+//! record this device has open: who works here is the record's.
+//! The person who keeps an agent runs it: the pass hands the agents kept here to the session's
+//! launches ([`Kept`]), which start each one's process — the record is who works, and whose device
+//! runs them.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -28,8 +24,7 @@ use ui::permissions::{LivePermissions, PermissionContext};
 use ui::record::RecordOwners;
 use ui::record::workspace::WorkspaceRecords;
 
-/// How this session names a record it opened, where the record's history is
-/// told.
+/// How this session names a record it opened, where the record's history is told.
 const SESSION_APP: (&str, &str) = ("tilo-session", "Workspace settings");
 
 /// An agent this device runs because the person sitting here keeps it.
@@ -41,8 +36,8 @@ pub(crate) struct Kept {
     pub id: String,
     /// Its name, as people read it.
     pub name: String,
-    /// The model its keeper chose for it, as `provider/model`; `None`
-    /// follows the keeper's default here.
+    /// The model its keeper chose for it, as `provider/model` ; `None` follows the keeper's default
+    /// here.
     pub model: Option<String>,
 }
 
@@ -51,8 +46,8 @@ pub(crate) struct Kept {
 #[derive(Default)]
 pub(crate) struct Roster {
     keepers: Mutex<BTreeMap<(String, String), String>>,
-    /// What each agent may spend today and has, by workspace and agent: what a
-    /// run of its is admitted with.
+    /// What each agent may spend today and has, by workspace and agent: what a run of its is
+    /// admitted with.
     spend: Mutex<BTreeMap<(String, String), runtime_collab::TaskRunSpend>>,
 }
 
@@ -81,14 +76,14 @@ pub(crate) struct Agents {
     owners: RecordOwners,
     /// Wakes the session's loop when a change to a record lands.
     wake: ui::WakeScope,
-    /// Each workspace's records and its agents record, opened here and kept
-    /// at the grants they were opened with.
+    /// Each workspace's records and its agents record, opened here and kept at the grants they were
+    /// opened with.
     open: RefCell<BTreeMap<String, Opened>>,
 }
 
 struct Opened {
-    /// The grants the record was opened with: a workspace whose grants
-    /// changed has it opened again, so its people's reads follow.
+    /// The grants the record was opened with: a workspace whose grants changed has it opened again,
+    /// so its people's reads follow.
     policy: WorkspacePolicy,
     records: WorkspaceRecords,
     /// `None` where the workspace holds no agents record: this reads one,
@@ -97,8 +92,8 @@ struct Opened {
 }
 
 impl Agents {
-    /// The workspaces' agents over the store at `root`, waking the session's
-    /// loop through `wake` when a change lands.
+    /// The workspaces' agents over the store at `root` , waking the session's loop through `wake`
+    /// when a change lands.
     pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
@@ -117,9 +112,8 @@ impl Agents {
         Arc::clone(&self.roster)
     }
 
-    /// Read each workspace's agents record as `person`, hand who keeps each
-    /// agent to the broker, and answer the agents kept here: this device runs
-    /// those.
+    /// Read each workspace's agents record as `person` , hand who keeps each agent to the broker,
+    /// and answer the agents kept here: this device runs those.
     pub(crate) fn feed(&self, person: &str, workspaces: &[(String, WorkspacePolicy)]) -> Vec<Kept> {
         let day = ui::clock::today().to_string();
         let mut keepers = BTreeMap::new();
@@ -162,9 +156,8 @@ impl Agents {
         kept
     }
 
-    /// Charge what the runs' agents spent to their day, on each workspace's
-    /// record of its agents, as the person sitting here: a keeper's device
-    /// counts what the agents it runs spend.
+    /// Charge what the runs' agents spent to their day, on each workspace's record of its agents,
+    /// as the person sitting here: a keeper's device counts what the agents it runs spend.
     pub(crate) fn charge(
         &self,
         workspaces: &[(String, WorkspacePolicy)],
@@ -241,11 +234,10 @@ impl Agents {
         }
     }
 
-    /// The workspace's agents record, opened here where it is not, at the
-    /// grants the pass read. `create` says whether a workspace that keeps none
-    /// is given one: asking does — a person with no agent yet is one ask away
-    /// from having one (shell.md §8.1) — and the pass's reading never does, so
-    /// a workspace nobody set an agent up in costs no record.
+    /// The workspace's agents record, opened here where it is not, at the grants the pass read.
+    /// `create` says whether a workspace that keeps none is given one: asking does — a person with
+    /// no agent yet is one ask away from having one (shell.md §8.1) — and the pass's reading never
+    /// does, so a workspace nobody set an agent up in costs no record.
     fn record(
         &self,
         workspace: &str,

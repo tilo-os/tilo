@@ -504,9 +504,6 @@ impl ResourceKind {
 
     /// Read one existing lazy child from the publishing resource's own resolver.
     /// This returns metadata only and never creates or invokes the child.
-    ///
-    /// # Errors
-    /// Returns why this document does not hold the publishing resource.
     pub fn child(
         &self,
         doc: &Doc,
@@ -579,9 +576,6 @@ impl ResourceKind {
     }
 
     /// Write a brand-new record's genesis ([`Resource::initialize`]).
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     pub fn initialize(&self, doc: &mut Doc) -> Result<(), ModelError> {
         (self.initialize)(doc)
     }
@@ -606,9 +600,6 @@ impl ResourceKind {
     /// One typed action from its JSON form, encoded for replay — read as
     /// the generic `apply` action reads it, so a value naming a declared
     /// action is checked against that declaration.
-    ///
-    /// # Errors
-    /// Returns why the value is not an action of this resource.
     pub fn encode(&self, action: serde_json::Value) -> Result<EncodedAction, String> {
         (self.encode)(action)
     }

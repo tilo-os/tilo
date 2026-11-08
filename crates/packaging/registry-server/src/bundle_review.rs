@@ -134,11 +134,6 @@ pub enum BundleReviewError {
 
 /// Fetch and inspect every version. The caller approves the unchanged signed
 /// submission only after this succeeds.
-///
-/// # Errors
-///
-/// Returns an error when an entry has no versions, a URL is unsafe or cannot
-/// be fetched within policy, or the downloaded bytes fail verification.
 pub fn inspect_entry(
     entry: &RegistryEntry,
     policy: InspectionPolicy,

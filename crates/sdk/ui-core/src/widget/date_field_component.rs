@@ -20,6 +20,9 @@ pub struct DateFieldProps {
     pub label: Option<String>,
     /// The date may be cleared: the calendar offers "Clear date".
     pub optional: bool,
+    /// The field stands beside the entry that tells its day (a moment's field, whose hour the
+    /// entry types): the chip shows the calendar icon alone, opening the calendar and the time.
+    pub compact: bool,
     /// The control that picks the time of day the day is due at: `ui.TimeField(bind: t.at)`.
     #[component(slot)]
     pub time: Vec<crate::widget::Element>,
@@ -36,6 +39,7 @@ impl Default for DateFieldProps {
             at: None,
             label: None,
             optional: false,
+            compact: false,
             time: Vec::new(),
             change: Event::None,
         }
@@ -51,6 +55,7 @@ impl Described for DateField {
             at,
             label,
             optional,
+            compact,
             time,
             ..
         } = props;
@@ -63,6 +68,7 @@ impl Described for DateField {
             at.as_deref(),
             time,
             label.as_deref(),
+            compact,
         )
         .on_change(move |day| {
             // The day changes, the time of day it is due at stays: a moment whose day is

@@ -695,9 +695,6 @@ impl Workbook {
     }
 
     /// The sheet `id`, to change.
-    ///
-    /// # Errors
-    /// Refuses a sheet the workbook does not have.
     pub fn sheet_mut(&mut self, id: &Id) -> Result<&mut Sheet, Refusal> {
         self.sheets
             .get_mut(id)

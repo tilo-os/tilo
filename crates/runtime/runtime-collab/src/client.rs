@@ -223,10 +223,6 @@ impl CollabClient {
 
     /// [`Self::connected`] over the connected Unix socket `fd`, which this
     /// takes ownership of.
-    ///
-    /// # Errors
-    ///
-    /// The socket cannot be handed to the runtime.
     #[cfg(unix)]
     pub fn from_connected_fd(
         fd: std::os::fd::OwnedFd,
@@ -565,9 +561,6 @@ impl ChannelHandle {
     }
 
     /// Send PCM or controls to this launched application's output-only service.
-    ///
-    /// # Errors
-    /// Fails closed when the authenticated output service is absent or refuses the command.
     pub async fn audio_output_command(
         &self,
         command: &audio_output::Command,
@@ -682,10 +675,6 @@ impl ChannelHandle {
     /// must stay open until this returns. A duplicate of it is handed to the
     /// host on this connection's descriptor lane, and the command sent names
     /// it by its lane number instead.
-    ///
-    /// # Errors
-    /// Rejects oversized, malformed or unavailable commands and replies, and
-    /// selected descriptors on a connection without a descriptor lane.
     pub async fn local_file_clipboard_command(
         &self,
         command: &file_clipboard::Command,
@@ -718,9 +707,6 @@ impl ChannelHandle {
 
     /// Submit selected-open routing under its original semantic invocation.
     /// The receipt confirms admission only; it does not confirm app startup.
-    ///
-    /// # Errors
-    /// Refuses missing action custody, malformed requests and mismatched receipts.
     pub async fn local_file_open_selected(
         &self,
         command: &open_selected::Request,
@@ -749,9 +735,6 @@ impl ChannelHandle {
 
     /// Read current selected-file target presentation on the Files lane. No
     /// response conveys a file grant or an observed launch outcome.
-    ///
-    /// # Errors
-    /// Refuses invalid requests, unavailable native hosts or mismatched responses.
     pub async fn local_file_selected_discovery(
         &self,
         command: &open_selected::discovery::Request,
@@ -781,9 +764,6 @@ impl ChannelHandle {
     /// Open with explicit access through original semantic action custody.
     /// The observed result requires namespace admission and normal launch
     /// readiness.
-    ///
-    /// # Errors
-    /// Refuses missing custody, malformed access or mismatched observed results.
     pub async fn local_file_open_selected_v2(
         &self,
         command: &open_selected::v2::Request,
@@ -1279,9 +1259,6 @@ impl ChannelHandle {
     }
 
     /// Observe cancellation and bounded steering on this authenticated run.
-    ///
-    /// # Errors
-    /// The host is unavailable, refuses the run or returns invalid control data.
     pub async fn task_run_status(
         &self,
         run_id: u64,
@@ -1415,9 +1392,6 @@ impl ChannelHandle {
 
     /// Launch an exact installed package through this authenticated channel,
     /// returning its observed startup outcome.
-    ///
-    /// # Errors
-    /// Returns an unavailable or refused launch.
     pub async fn launch_installed_application(
         &self,
         app_id: &str,
@@ -1428,9 +1402,6 @@ impl ChannelHandle {
     }
 
     /// Launch on a live invocation's original caller's behalf.
-    ///
-    /// # Errors
-    /// Returns an unavailable or refused launch.
     pub async fn launch_installed_application_for(
         &self,
         app_id: &str,
@@ -1525,9 +1496,6 @@ impl ChannelHandle {
 
     /// The approved check `request` starts, followed through its reported
     /// progress to its receipt.
-    ///
-    /// # Errors
-    /// Refuses invalid requests or hosts that cannot run the check.
     pub async fn approved_check_reported_progress(
         &self,
         request: &crate::approved_checks::Request,
@@ -1538,9 +1506,6 @@ impl ChannelHandle {
     }
 
     /// Run an approved check and wait for its receipt.
-    ///
-    /// # Errors
-    /// Refuses invalid requests, refused checks or miscorrelated receipts.
     pub(crate) async fn approved_check_command(
         &self,
         request: Vec<u8>,
@@ -1591,10 +1556,6 @@ pub struct OpStream(Feed);
 
 impl OpStream {
     /// The next change.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended.
     pub async fn read(&self) -> Result<OpEvent, NotAvailable> {
         match self.0.event().await? {
             Event::Op {
@@ -1625,10 +1586,6 @@ pub struct BlobStream(Feed);
 
 impl BlobStream {
     /// The next arrival.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended.
     pub async fn read(&self) -> Result<BlobEvent, NotAvailable> {
         match self.0.event().await? {
             Event::Content { hash, state, bytes } => Ok(BlobEvent { hash, bytes, state }),
@@ -1643,10 +1600,6 @@ pub struct ActionCatalogueStream(Feed);
 
 impl ActionCatalogueStream {
     /// The catalogue as it stands next.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended.
     pub async fn read(&self) -> Result<String, NotAvailable> {
         match self.0.event().await? {
             Event::Catalogue(catalogue) => Ok(catalogue),
@@ -1661,10 +1614,6 @@ pub struct InvocationStream(Feed);
 
 impl InvocationStream {
     /// The next invocation.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended.
     pub async fn read(&self) -> Result<Invocation, NotAvailable> {
         match self.0.event().await? {
             Event::Invocation(invocation) => Ok(Invocation {
@@ -1687,10 +1636,6 @@ pub struct RealtimeStream(Feed);
 
 impl RealtimeStream {
     /// The next event.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended.
     pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
         match self.0.event().await? {
             Event::Realtime(event) => Ok(event),
@@ -1705,10 +1650,6 @@ pub struct TaskRunStream(Feed);
 
 impl TaskRunStream {
     /// The next run.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended, or the run does not decode.
     pub async fn read(&self) -> Result<TaskRunEnvelope, NotAvailable> {
         match self.0.event().await? {
             Event::TaskRun(json) => serde_json::from_str(&json)
@@ -1724,10 +1665,6 @@ pub struct WorkspaceControlHandle(Feed);
 
 impl WorkspaceControlHandle {
     /// Wait for the session's next event.
-    ///
-    /// # Errors
-    ///
-    /// The session ended.
     pub async fn read(&self) -> Result<WorkspaceControlEvent, NotAvailable> {
         match self.0.event().await? {
             Event::WorkspaceControl(event) => Ok(event),
@@ -1736,10 +1673,6 @@ impl WorkspaceControlHandle {
     }
 
     /// Send the controlled device one input event.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses the input.
     pub async fn send_input(&self, event: &WorkspaceControlInput) -> Result<(), NotAvailable> {
         let subscription = self.0.0.subscription.lock().await.id();
         match self
@@ -1790,10 +1723,6 @@ impl ServicesHandle {
     }
 
     /// What `resource` reads now; `None` when no service publishes it.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses the read or the connection fails.
     pub async fn snapshot(&self, resource: &str) -> Result<Snapshot, NotAvailable> {
         let services = self.handle().await?;
         match self
@@ -1814,10 +1743,6 @@ impl ServicesHandle {
     }
 
     /// `resource`'s reading now, and each time it changes.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses the watch or the connection fails.
     pub async fn watch(&self, resource: &str) -> Result<ReadingStream, NotAvailable> {
         let services = self.handle().await?;
         let subscription = self
@@ -1889,10 +1814,6 @@ pub struct ReadingStream {
 
 impl ReadingStream {
     /// The next reading.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended.
     pub async fn read(&self) -> Result<Reading, NotAvailable> {
         let event = self
             .subscription
@@ -1942,10 +1863,6 @@ impl PresenceHandle {
     }
 
     /// Publish a pointer position under `key_bytes`.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_pointer(
         &self,
         key_bytes: &[u8],
@@ -1960,20 +1877,12 @@ impl PresenceHandle {
     }
 
     /// Publish a caret position under `key_bytes`.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_caret(&self, key_bytes: &[u8], pos: u64) -> Result<(), NotAvailable> {
         self.publish(key_bytes, collab_types::PeerPresencePayload::Caret { pos })
             .await
     }
 
     /// Publish a selection under `key_bytes`.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_selection(
         &self,
         key_bytes: &[u8],
@@ -1988,10 +1897,6 @@ impl PresenceHandle {
     }
 
     /// Publish a typing span under `key_bytes`.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_typing(
         &self,
         key_bytes: &[u8],
@@ -2006,10 +1911,6 @@ impl PresenceHandle {
     }
 
     /// Publish an action's interaction lifecycle, as JSON.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_interaction(
         &self,
         key_bytes: &[u8],
@@ -2023,10 +1924,6 @@ impl PresenceHandle {
     }
 
     /// Publish a short status; empty text clears it.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_status(
         &self,
         key_bytes: &[u8],
@@ -2046,10 +1943,6 @@ impl PresenceHandle {
     /// Whether the local participant is composing a message under `key_bytes` (a channel, a
     /// direct conversation): a draft is being typed, never what it says. `false` says they
     /// stopped, so no reader is left "typing" after the window closes.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_composing(
         &self,
         key_bytes: &[u8],
@@ -2063,30 +1956,18 @@ impl PresenceHandle {
     }
 
     /// Say `key_bytes` arrived.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_arrived(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
         self.publish(key_bytes, collab_types::PeerPresencePayload::Arrived)
             .await
     }
 
     /// Say `key_bytes` left.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses it.
     pub async fn publish_left(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
         self.publish(key_bytes, collab_types::PeerPresencePayload::Left)
             .await
     }
 
     /// Everyone else's presence.
-    ///
-    /// # Errors
-    ///
-    /// The host refuses or is unavailable.
     pub async fn subscribe_all(&self) -> Result<PresenceStream, NotAvailable> {
         Ok(PresenceStream(self.channel.feed(Topic::Presence).await?))
     }
@@ -2098,10 +1979,6 @@ pub struct PresenceStream(Feed);
 
 impl PresenceStream {
     /// The next presence change; a payload no app receives is skipped.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended.
     pub async fn read(&self) -> Result<PresenceEvent, NotAvailable> {
         use collab_types::PeerPresencePayload as P;
         loop {
@@ -2137,10 +2014,6 @@ pub struct ContextStream(Feed);
 
 impl ContextStream {
     /// The next change.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended.
     pub async fn read(&self) -> Result<ChannelContext, NotAvailable> {
         let update = match self.0.event().await? {
             Event::Context(update) => update,

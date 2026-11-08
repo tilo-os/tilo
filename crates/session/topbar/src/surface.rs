@@ -900,8 +900,8 @@ impl ResourceSurface<TopBar, BarEffect> for TopBarSurface {
         Ok(Effected::done())
     }
 
-    /// The running applications' tray items, each pressed through
-    /// [`BarEffect::ActivateTrayItem`]: what an agent reads to find what to
+    /// The running applications' tray items, each pressed
+    /// through [`BarEffect::ActivateTrayItem`]: what an agent reads to find what to
     /// act on. The workspaces and the desktop's other verbs are the
     /// resources published by the session and the desktop themselves.
     fn live_rows(&self) -> Vec<LiveRow> {

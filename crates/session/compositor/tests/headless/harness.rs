@@ -1,11 +1,10 @@
-//! The harness the headless tests are written against: a client with its
-//! one toplevel, what the compositor told it, and the pumps that let the two
-//! talk until a condition holds.
+//! The harness the headless tests are written against: a client with its one toplevel, what the
+//! compositor told it, and the pumps that let the two talk until a condition holds.
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 
-/// `wl_keyboard.keymap_format`'s XKB v1: what a virtual keyboard is given.
+/// `wl_keyboard.keymap_format` 's XKB v1: what a virtual keyboard is given.
 const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 use std::time::Duration;
 
@@ -99,8 +98,7 @@ pub struct Seen {
     pub seat: Option<WlSeat>,
     pub text_input_manager: Option<ZwpTextInputManagerV3>,
     pub text_input: Option<ZwpTextInputV3>,
-    /// Whether the field has the focus and has asked for typing, as the
-    /// compositor told it.
+    /// Whether the field has the focus and has asked for typing, as the compositor told it.
     pub field_entered: bool,
     /// The strings the field was made to contain.
     pub committed: Vec<String>,
@@ -108,36 +106,33 @@ pub struct Seen {
     pub field_done: u32,
     pub input_method_manager: Option<ZwpInputMethodManagerV2>,
     pub input_method: Option<ZwpInputMethodV2>,
-    /// How many times the compositor applied the input method's state: what
-    /// its next commit is numbered.
+    /// How many times the compositor applied the input method's state: what its next commit is
+    /// numbered.
     pub ime_done: u32,
     /// Whether the compositor asked the input method to type.
     pub ime_activated: bool,
-    /// The seat's keyboard, held as an input method holds it while it
-    /// composes: every key reaches it, and only what it passes on reaches
-    /// the field.
+    /// The seat's keyboard, held as an input method holds it while it composes: every key reaches
+    /// it, and only what it passes on reaches the field.
     pub grab: Option<ZwpInputMethodKeyboardGrabV2>,
-    /// The keys the grab received, as `(keycode, pressed)`.
+    /// The keys the grab received, as `(keycode, pressed)` .
     pub grab_keys: Vec<(u32, bool)>,
-    /// The candidate window's surface, and the rectangles the compositor
-    /// told it the field's text stands at, as `x y width height`.
+    /// The candidate window's surface, and the rectangles the compositor told it the field's text
+    /// stands at, as `x y width height` .
     pub popup: Option<ZwpInputPopupSurfaceV2>,
     pub popup_surface: Option<WlSurface>,
     pub popup_rects: Vec<(i32, i32, i32, i32)>,
-    /// The keyboard an input method types through the keys it does not
-    /// compose itself.
+    /// The keyboard an input method types through the keys it does not compose itself.
     pub virtual_keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
     pub virtual_keyboard: Option<ZwpVirtualKeyboardV1>,
     pub pointer: Option<WlPointer>,
-    /// The absolute positions the pointer was put at here, as
-    /// `wl_pointer.motion` sent them.
+    /// The absolute positions the pointer was put at here, as `wl_pointer.motion` sent them.
     pub pointer_positions: Vec<(f64, f64)>,
     /// Where the pointer entered, as `wl_pointer.enter` placed it.
     pub pointer_entered_at: Option<(f64, f64)>,
     pub keyboard: Option<WlKeyboard>,
     pub touch: Option<WlTouch>,
-    /// Whether this client leaves the seat's touch objects alone, as a
-    /// toolkit that only knows the pointer does.
+    /// Whether this client leaves the seat's touch objects alone, as a toolkit that only knows the
+    /// pointer does.
     pub no_touch: bool,
     pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
     pub locked_pointer: Option<ZwpLockedPointerV1>,
@@ -148,7 +143,7 @@ pub struct Seen {
     pub pointer_confined: bool,
     pub relative_pointer_manager: Option<ZwpRelativePointerManagerV1>,
     pub relative_pointer: Option<ZwpRelativePointerV1>,
-    /// The deltas the compositor sent, as `(dx, dy)`.
+    /// The deltas the compositor sent, as `(dx, dy)` .
     pub relative: Vec<(f64, f64)>,
     pub inhibit_manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
     pub idle_inhibit: Option<ZwpIdleInhibitManagerV1>,
@@ -156,15 +151,15 @@ pub struct Seen {
     pub inhibitor: Option<ZwpKeyboardShortcutsInhibitorV1>,
     /// Whether the compositor lets this client answer the desktop's chords.
     pub shortcuts_inhibited: bool,
-    /// Touch events as `down id x y`, `motion id x y`, `up id`, `frame`.
+    /// Touch events as `down id x y` , `motion id x y` , `up id` , `frame` .
     pub touches: Vec<String>,
     pub configured: bool,
     pub pointer_inside: bool,
     pub buttons: Vec<(u32, bool)>,
     pub keyboard_focused: bool,
     pub keys: Vec<(u32, bool)>,
-    /// The keymap the keyboard sent, as XKB text: the client's own answer to
-    /// which characters its keys type.
+    /// The keymap the keyboard sent, as XKB text: the client's own answer to which characters its
+    /// keys type.
     pub keymap: Option<String>,
     pub frames_done: u32,
     pub closed: bool,
@@ -203,8 +198,7 @@ impl TestClient {
         Self::connect_as(compositor, false)
     }
 
-    /// Connect as a client the session started, which may be its input
-    /// method.
+    /// Connect as a client the session started, which may be its input method.
     pub fn connect_trusted(compositor: &mut Compositor) -> Self {
         Self::connect_as(compositor, true)
     }
@@ -261,8 +255,7 @@ impl TestClient {
         self.toplevel = Some(toplevel);
     }
 
-    /// Ask the compositor to keep the screen on while this window shows:
-    /// what a video player does.
+    /// Ask the compositor to keep the screen on while this window shows: what a video player does.
     pub fn inhibit_idle(&mut self) {
         let qh = self.queue.handle();
         let manager = self
@@ -274,16 +267,15 @@ impl TestClient {
         self.seen.idle_inhibitor = Some(manager.create_inhibitor(surface, &qh, ()));
     }
 
-    /// Attach a buffer of one colour (RGBA) and commit it with a frame
-    /// callback.
+    /// Attach a buffer of one colour (RGBA) and commit it with a frame callback.
     pub fn show(&self, width: i32, height: i32, rgba: [u8; 4]) {
         // ARGB8888 is B, G, R, A in memory.
         let word = u32::from_le_bytes([rgba[2], rgba[1], rgba[0], rgba[3]]);
         self.show_words(width, height, wl_shm::Format::Argb8888, word);
     }
 
-    /// Attach a buffer of `format` holding `word` in every pixel, and commit
-    /// it with a frame callback.
+    /// Attach a buffer of `format` holding `word` in every pixel, and commit it with a frame
+    /// callback.
     pub fn show_words(&self, width: i32, height: i32, format: wl_shm::Format, word: u32) {
         let qh = self.queue.handle();
         let stride = width * 4;
@@ -329,8 +321,7 @@ impl TestClient {
         buffer
     }
 
-    /// Give the window a text field: a `text-input-v3` object on its
-    /// surface, waiting for typing.
+    /// Give the window a text field: a `text-input-v3` object on its surface, waiting for typing.
     pub fn own_text_field(&mut self) {
         self.own_text_field_as(ContentHint::empty(), ContentPurpose::Normal);
     }
@@ -351,8 +342,8 @@ impl TestClient {
         self.seen.text_input = Some(field);
     }
 
-    /// Change what the field declares itself to be, as an app does when the
-    /// person moves to another box.
+    /// Change what the field declares itself to be, as an app does when the person moves to another
+    /// box.
     pub fn set_content_type(&self, hint: ContentHint, purpose: ContentPurpose) {
         if let Some(field) = self.seen.text_input.as_ref() {
             field.set_content_type(hint, purpose);
@@ -361,8 +352,8 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Move to another field of the same window: the client enables the
-    /// text-input object again for it, as it does when the person tabs on.
+    /// Move to another field of the same window: the client enables the text-input object again for
+    /// it, as it does when the person tabs on.
     pub fn focus_another_field(&self, hint: ContentHint, purpose: ContentPurpose) {
         if let Some(field) = self.seen.text_input.as_ref() {
             field.set_content_type(hint, purpose);
@@ -372,8 +363,8 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Move the field's caret: a commit that changes nothing about which
-    /// field this is, as any edit does.
+    /// Move the field's caret: a commit that changes nothing about which field this is, as any edit
+    /// does.
     pub fn move_caret(&self, x: i32) {
         if let Some(field) = self.seen.text_input.as_ref() {
             field.set_cursor_rectangle(x, 0, 1, 20);
@@ -403,8 +394,8 @@ impl TestClient {
         self.seen.input_method = Some(manager.get_input_method(seat, &qh, ()));
     }
 
-    /// Hold the seat's keyboard, as an input method does while it composes:
-    /// what the person types reaches it first.
+    /// Hold the seat's keyboard, as an input method does while it composes: what the person types
+    /// reaches it first.
     pub fn grab_keyboard(&mut self) {
         let qh = self.queue.handle();
         let method = self.seen.input_method.as_ref().expect("input method");
@@ -412,8 +403,8 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Send the composition in progress: `text`, with its cursor or
-    /// selection at `(begin, end)` bytes.
+    /// Send the composition in progress: `text` , with its cursor or selection at `(begin, end)`
+    /// bytes.
     pub fn preedit_with_input_method(&self, text: &str, cursor: Option<(i32, i32)>) {
         let method = self.seen.input_method.as_ref().expect("input method");
         let (begin, end) = cursor.unwrap_or((-1, -1));
@@ -422,9 +413,9 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Type `key` through the input method's virtual keyboard, as an engine
-    /// does with the keys it does not compose itself. `keymap` is the one the
-    /// person's keyboard was given: the compositor reads keys by it.
+    /// Type `key` through the input method's virtual keyboard, as an engine does with the keys it
+    /// does not compose itself. `keymap` is the one the person's keyboard was given: the compositor
+    /// reads keys by it.
     pub fn virtual_key(&mut self, keymap: &str, key: u32, pressed: bool) {
         let qh = self.queue.handle();
         let manager = self
@@ -484,8 +475,7 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Draw the candidate window as one square of one colour, where the
-    /// compositor put it.
+    /// Draw the candidate window as one square of one colour, where the compositor put it.
     pub fn paint_popup(&self, edge: i32, rgba: [u8; 4]) {
         let surface = self.seen.popup_surface.as_ref().expect("popup surface");
         let buffer = self.icon_buffer(edge, rgba);
@@ -495,8 +485,8 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Ask for the pointer to stay where it is while this window has it:
-    /// a game or a remote desktop view.
+    /// Ask for the pointer to stay where it is while this window has it: a game or a remote desktop
+    /// view.
     pub fn lock_pointer(&mut self) {
         let qh = self.queue.handle();
         let constraints = self
@@ -511,8 +501,7 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Ask for the pointer to stay inside `rect` of this window, as a
-    /// remote desktop view does.
+    /// Ask for the pointer to stay inside `rect` of this window, as a remote desktop view does.
     pub fn confine_pointer(&mut self, rect: (i32, i32, i32, i32)) {
         let qh = self.queue.handle();
         let constraints = self
@@ -626,8 +615,8 @@ pub fn mapped_client(
     )
 }
 
-/// A mapped window whose client never binds `wl_touch`, as a toolkit that
-/// only knows the pointer does.
+/// A mapped window whose client never binds `wl_touch` , as a toolkit that only knows the pointer
+/// does.
 pub fn mapped_client_without_touch(
     compositor: &mut Compositor,
     app_id: &str,
@@ -639,8 +628,8 @@ pub fn mapped_client_without_touch(
     map(client, compositor, app_id, size, rgba)
 }
 
-/// Put `client`'s window up: a surface of `size` in `rgba`, mapped as
-/// `app_id` once the compositor has it.
+/// Put `client` 's window up: a surface of `size` in `rgba` , mapped as `app_id` once the
+/// compositor has it.
 fn map(
     mut client: TestClient,
     compositor: &mut Compositor,

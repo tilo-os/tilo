@@ -1,20 +1,15 @@
-//! A message a window sends from its own context: the session makes the
-//! agents it names, carries the message to Chat as one action the person's
-//! own grants decide, and answers the search the box uses to find whom it
-//! goes to.
-//!
-//! The window says what the box held — the recipients, what the message
-//! carries ([`tilo_reference::Attached`]) and its words — and nothing of how
-//! that becomes a conversation: Chat's `send` opens the conversation, posts
-//! what it carries and shows where it landed. Making the agents a send names
-//! is the workspace's governance and Chat's record of its agents, both of
-//! which only the session holds, so it happens here first, so the message
-//! never goes to an agent the workspace does not list.
-//!
-//! A box opened with the one place a report goes on it is the same send with
-//! that place on it: it is filed there as the channel's report
-//! ([`crate::feedback`]), one action of the person's own, and nothing opens
-//! over the window it is about.
+//! A message a window sends from its own context: the session makes the agents it names, carries
+//! the message to Chat as one action the person's own grants decide, and answers the search the box
+//! uses to find whom it goes to.
+//! The window says what the box held — the recipients, what the message carries
+//! ([`tilo_reference::Attached`]) and its words — and nothing of how that becomes a conversation:
+//! Chat's `send` opens the conversation, posts what it carries and shows where it landed. Making
+//! the agents a send names is the workspace's governance and Chat's record of its agents, both of
+//! which only the session holds, so it happens here first, so the message never goes to an agent
+//! the workspace does not list.
+//! A box opened with the one place a report goes on it is the same send with that place on it: it
+//! is filed there as the channel's report ([`crate::feedback`]), one action of the person's own,
+//! and nothing opens over the window it is about.
 
 use tilo_desktop_search::Target;
 use tilo_desktop_search::model::InvokeTarget;
@@ -59,8 +54,8 @@ impl Shared {
                 let target = send_target(&workspace, &resolved, attached, text, bounds)?;
                 (workspace, target)
             }
-            // A report is read where it lands, not floated over the window it
-            // was written over: it is filed in the channel and nothing opens.
+            // A report is read where it lands, not floated over the window it was written over: it
+            // is filed in the channel and nothing opens.
             Addressed::Report(destination) => {
                 let report = destination.report(app, attached, text)?;
                 (
@@ -94,8 +89,8 @@ impl Shared {
         for recipient in to {
             match recipient.kind {
                 RecipientKind::NewAgent => {
-                    // A new agent takes the workspace's default model and the colour
-                    // its identity gives it.
+                    // A new agent takes the workspace's default model and the colour its identity
+                    // gives it.
                     let made = feed.make_agent(Some(workspace), &recipient.name, "", None)?;
                     resolved.push(Recipient::found(
                         RecipientKind::Agent,
@@ -117,38 +112,37 @@ impl Shared {
         Ok(resolved)
     }
 
-    /// The one place a report goes, as the chip its box opens with: nothing
-    /// when this computer is told nowhere.
+    /// The one place a report goes, as the chip its box opens with: nothing when this computer is
+    /// told nowhere.
     pub(crate) fn feedback_recipient(&self) -> Option<Recipient> {
         self.feedback
             .as_ref()
             .map(crate::feedback::Destination::recipient)
     }
 
-    /// Whether the shell asked to report a problem since the last pass, to be
-    /// asked of the window in front then, to open its box to the one place
-    /// reports go.
+    /// Whether the shell asked to report a problem since the last pass, to be asked of the window
+    /// in front then, to open its box to the one place reports go.
     pub(crate) fn take_report_from(&self) -> bool {
         self.report_from.replace(false)
     }
 
-    /// The agents, people and conversations `query` names, as a window's box
-    /// lists them: found by the one search every part of the desk shares.
+    /// The agents, people and conversations `query` names, as a window's box lists them: found by
+    /// the one search every part of the desk shares.
     pub(crate) fn recipients(&self, query: &str) -> Vec<Recipient> {
         self.search.recipients(query)
     }
 
-    /// Whether the shell's send key was pressed since the last pass, to be
-    /// asked of the window in front then, with no menu around its box
+    /// Whether the shell's send key was pressed since the last pass, to be asked of the window in
+    /// front then, with no menu around its box
     /// ([`ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection`]).
     pub(crate) fn take_send_from(&self) -> bool {
         self.send_from.replace(false)
     }
 }
 
-/// Where a box's send goes, as it named whom it goes to: a report goes to the
-/// one place this computer sends reports, and is filed there; any other send
-/// is a message in the workspace the box was opened in.
+/// Where a box's send goes, as it named whom it goes to: a report goes to the one place this
+/// computer sends reports, and is filed there; any other send is a message in the workspace the box
+/// was opened in.
 enum Addressed {
     Message {
         workspace: String,
@@ -185,9 +179,9 @@ fn addressed(
     Ok(Addressed::Report(destination.clone()))
 }
 
-/// The one action a report is: the channel's `submit-feedback` in the
-/// workspace that keeps it, carrying the report as its review filed it —
-/// nothing else, and no window opening over the one reported.
+/// The one action a report is: the channel's `submit-feedback` in the workspace that keeps it,
+/// carrying the report as its review filed it — nothing else, and no window opening over the one
+/// reported.
 fn report_target(
     destination: &crate::feedback::Destination,
     report: &tilo_feedback::Submission,
@@ -204,10 +198,9 @@ fn report_target(
     )))
 }
 
-/// The one action a send is: Chat's `send` in `workspace`, carrying whom the
-/// message goes to, what it carries and its words. Everything else a send
-/// does — making an agent, opening where the message landed — is Chat's part
-/// of that same action, never a second invocation.
+/// The one action a send is: Chat's `send` in `workspace` , carrying whom the message goes to, what
+/// it carries and its words. Everything else a send does — making an agent, opening where the
+/// message landed — is Chat's part of that same action, never a second invocation.
 fn send_target(
     workspace: &str,
     to: &[Recipient],
@@ -231,9 +224,9 @@ mod tests {
     use super::*;
     use tilo_reference::Attached;
 
-    /// What a box holds reaches Chat as one action naming the recipients, what
-    /// the message carries and its words: the app opens the conversation and
-    /// posts there from that one action, nothing else.
+    /// What a box holds reaches Chat as one action naming the recipients, what the message carries
+    /// and its words: the app opens the conversation and posts there from that one action, nothing
+    /// else.
     #[test]
     fn a_send_is_one_action_for_the_chat_naming_who_what_and_the_words() {
         let ada =
@@ -332,8 +325,7 @@ mod tests {
             "and its words go with the report"
         );
 
-        // A report goes to the one place it goes, and a computer told nowhere
-        // sends none.
+        // A report goes to the one place it goes, and a computer told nowhere sends none.
         let ada = Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada");
         assert!(
             addressed(
@@ -348,8 +340,7 @@ mod tests {
             addressed(None, "w_notes", std::slice::from_ref(&report)).is_err(),
             "a computer told nowhere to send a report sends none"
         );
-        // Every other send is a message in the workspace its box was opened
-        // in, to whom it named.
+        // Every other send is a message in the workspace its box was opened in, to whom it named.
         let Addressed::Message { workspace, to } =
             addressed(None, "w_notes", std::slice::from_ref(&ada)).expect("an ordinary send")
         else {

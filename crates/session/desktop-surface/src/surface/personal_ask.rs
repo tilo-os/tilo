@@ -19,16 +19,15 @@ pub struct PersonalAsk {
     pub action: HostAction,
     /// The question ("Keep your name and work?").
     pub title: String,
-    /// What answering brings, for assistive technology and where there is
-    /// room for it.
+    /// What answering brings, for assistive technology and where there is room for it.
     pub body: String,
     /// Shown as the popover; `false` while it waits as the avatar's dot.
     pub open: bool,
 }
 
 impl HostAction {
-    /// Whether an offer of this action is about the person themselves, and
-    /// so asked from their avatar ([`DesktopHandle::ask_personally`]).
+    /// Whether an offer of this action is about the person themselves, and so asked from their
+    /// avatar ([`DesktopHandle::ask_personally`]).
     #[must_use]
     pub fn is_personal(&self) -> bool {
         self.source == Some(HostActionSource::Identity)
@@ -36,8 +35,8 @@ impl HostAction {
 }
 
 impl DesktopHandle {
-    /// Ask the person `title` from their avatar, answered by `action`. It
-    /// replaces an earlier ask and opens at once.
+    /// Ask the person `title` from their avatar, answered by `action` . It replaces an earlier ask
+    /// and opens at once.
     pub fn ask_personally(&self, action: HostAction, title: String, body: String) {
         let mut shared = self.shared.borrow_mut();
         shared.personal_ask = Some(PersonalAsk {
@@ -59,8 +58,8 @@ impl DesktopHandle {
         self.shared.borrow().personal_ask_revision
     }
 
-    /// Show the waiting ask open, or fold it into the avatar's dot. Returns
-    /// whether anything changed.
+    /// Show the waiting ask open, or fold it into the avatar's dot. Returns whether anything
+    /// changed.
     pub fn set_personal_ask_open(&self, open: bool) -> bool {
         let mut shared = self.shared.borrow_mut();
         let Some(ask) = shared.personal_ask.as_mut() else {
@@ -74,8 +73,7 @@ impl DesktopHandle {
         true
     }
 
-    /// The person answered the ask: the host performs its action
-    /// ([`Self::take_host_choices`]).
+    /// The person answered the ask: the host performs its action ([`Self::take_host_choices`]).
     pub fn answer_personal_ask(&self) {
         let mut shared = self.shared.borrow_mut();
         if let Some(ask) = shared.personal_ask.take() {
@@ -84,8 +82,8 @@ impl DesktopHandle {
         }
     }
 
-    /// The person put the ask off: it goes. What it offered stays in search
-    /// and in their profile card.
+    /// The person put the ask off: it goes. What it offered stays in search and in their profile
+    /// card.
     pub fn put_off_personal_ask(&self) {
         let mut shared = self.shared.borrow_mut();
         if shared.personal_ask.take().is_some() {
@@ -93,8 +91,8 @@ impl DesktopHandle {
         }
     }
 
-    /// The host no longer offers `ids` (done, perhaps from search): an ask
-    /// for one of them asks for something already done.
+    /// The host no longer offers `ids` (done, perhaps from search): an ask for one of them asks for
+    /// something already done.
     pub(super) fn withdraw_personal_ask(&self, ids: &[String]) {
         let mut shared = self.shared.borrow_mut();
         if shared

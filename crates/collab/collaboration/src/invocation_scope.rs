@@ -58,9 +58,6 @@ impl WriteAttributionReceipt {
 
     /// Wait at most `timeout` for the host's answer. Whatever it is, the
     /// writes go ahead: a refusal or no answer leaves them the person's.
-    ///
-    /// # Errors
-    /// Returns the host's refusal, or that it did not answer in time.
     pub fn wait(self, timeout: std::time::Duration) -> Result<(), String> {
         self.0
             .recv_timeout(timeout)

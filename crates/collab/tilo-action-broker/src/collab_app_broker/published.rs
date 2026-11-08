@@ -10,9 +10,6 @@ use tokio::sync::{mpsc, oneshot};
 
 /// Refuse `resource` when the workspace's grants do not let `caller` read it: what
 /// its publisher declares the person's own (see [`super::readings`]).
-///
-/// # Errors
-/// The refusal the app is told.
 pub(super) fn gate(
     state: &AppBrokerState,
     published: &dyn PublishedResources,
@@ -35,8 +32,6 @@ pub(super) struct ReadingGate {
 }
 
 impl ReadingGate {
-    /// # Errors
-    /// The refusal, when the caller may no longer read the resource.
     fn admit(&self) -> Result<(), String> {
         gate(
             &self.state,
@@ -49,9 +44,6 @@ impl ReadingGate {
 
 /// What a read of the session's resources answers: the reading and the
 /// services' revision it was read at, once the session's loop made the read.
-///
-/// # Errors
-/// The handle is not this connection's, or the session ended first.
 pub(super) async fn read(
     asking: Result<oneshot::Receiver<Reading>, String>,
 ) -> Result<Reply, String> {
@@ -62,9 +54,6 @@ pub(super) async fn read(
 }
 
 /// What an invocation of one of the session's resources answers.
-///
-/// # Errors
-/// The handle is not this connection's, or the session ended first.
 pub(super) async fn invoke(
     asking: Result<oneshot::Receiver<Receipt>, String>,
 ) -> Result<Reply, String> {

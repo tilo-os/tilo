@@ -1,4 +1,4 @@
-//! [`ActionEmitter`]: the reusable action-intent queue shared controls use, kept apart from the
+//! [`ActionEmitter`] — the reusable action-intent queue shared controls use, kept apart from the
 //! widget toolkit itself so a control only pulls in the custody and binding it queues through.
 
 use std::collections::HashSet;

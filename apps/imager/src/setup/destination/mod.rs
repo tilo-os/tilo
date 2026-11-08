@@ -93,11 +93,6 @@ static LIVE_INSTALLER: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// Run the installer on the live medium (`tilo-installer`): an unattended
 /// installation from a private recipe when the command line names one,
 /// otherwise the imager app showing its destination side.
-///
-/// # Errors
-///
-/// Returns an error for a malformed unattended command line; the window
-/// does not return.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(invocation) = unattended::Invocation::from_args(std::env::args_os().skip(1))? {
         return invocation.run();

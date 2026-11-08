@@ -94,8 +94,8 @@ impl Resumes {
     }
 }
 
-/// Drive a player of `request`'s package to its state within
-/// [`RESUME_DEADLINE`]: the player and the source it now plays, or `None`.
+/// Drive a player of `request`'s package to its state
+/// within [`RESUME_DEADLINE`]: the player and the source it now plays, or `None`.
 pub(super) async fn run(
     mpris: &Mpris,
     request: &ResumeRequest,

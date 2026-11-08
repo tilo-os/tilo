@@ -25,8 +25,6 @@ struct Saved {
 impl SimBinding {
     /// Persist only after the original native permission and SIM were checked.
     /// This never creates a key or permission and writes no public metadata.
-    /// # Errors
-    /// Refuses invalid ownership, relative storage or encrypted publication.
     pub fn save(&self, path: &std::path::Path, owner: &Owner, key: &VaultKey) -> Result<(), Error> {
         if !path.is_absolute() || owner.service != crate::Service::Sms {
             return Err(Error::WrongAccount);
@@ -48,8 +46,6 @@ impl SimBinding {
     /// Resume the exact reviewed physical SIM using a fresh authenticated daemon
     /// owner. No discovery, alternate modem, grant or changed generation is used.
     /// The caller must validate this binding before opening message stores.
-    /// # Errors
-    /// Refuses foreign ciphertext, oversized files, malformed bindings or bus failure.
     pub async fn load(
         path: &std::path::Path,
         owner: &Owner,

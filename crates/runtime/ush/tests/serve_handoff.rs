@@ -29,6 +29,23 @@ use ush::records::Records;
 use ush::store::Store;
 use ush::supervisor::{ServeRequest, ServeResponse, decide_serve, recv_with_fd};
 
+/// The sandbox these tests drive a guest in: a user namespace to make
+/// one and the permission to enter it.
+macro_rules! require_sandbox {
+    () => {
+        tilo_test_env::require_capability!(
+            UserNamespace,
+            tilo_test_env::bubblewrap(),
+            "the guest's sandbox"
+        );
+        tilo_test_env::require_capability!(
+            NamespaceEntry,
+            namespace_entry(),
+            "the guest's network namespace"
+        );
+    };
+}
+
 /// Tests that spawn a guest set process-wide variables the guest inherits.
 static GUEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -330,16 +347,7 @@ fn which_bwrap() -> Option<PathBuf> {
 #[test]
 fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    tilo_test_env::require_capability!(
-        UserNamespace,
-        tilo_test_env::bubblewrap(),
-        "the guest's sandbox"
-    );
-    tilo_test_env::require_capability!(
-        NamespaceEntry,
-        namespace_entry(),
-        "the guest's network namespace"
-    );
+    require_sandbox!();
     assert_eq!(
         guest_unavailable(),
         None,
@@ -354,16 +362,7 @@ fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
 #[test]
 fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    tilo_test_env::require_capability!(
-        UserNamespace,
-        tilo_test_env::bubblewrap(),
-        "the guest's sandbox"
-    );
-    tilo_test_env::require_capability!(
-        NamespaceEntry,
-        namespace_entry(),
-        "the guest's network namespace"
-    );
+    require_sandbox!();
     assert_eq!(
         guest_unavailable(),
         None,
@@ -418,16 +417,7 @@ fn guests_started(store: &Store) -> usize {
 #[test]
 fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    tilo_test_env::require_capability!(
-        UserNamespace,
-        tilo_test_env::bubblewrap(),
-        "the guest's sandbox"
-    );
-    tilo_test_env::require_capability!(
-        NamespaceEntry,
-        namespace_entry(),
-        "the guest's network namespace"
-    );
+    require_sandbox!();
     assert_eq!(
         guest_unavailable(),
         None,
@@ -514,16 +504,7 @@ fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
 #[test]
 fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    tilo_test_env::require_capability!(
-        UserNamespace,
-        tilo_test_env::bubblewrap(),
-        "the guest's sandbox"
-    );
-    tilo_test_env::require_capability!(
-        NamespaceEntry,
-        namespace_entry(),
-        "the guest's network namespace"
-    );
+    require_sandbox!();
     assert_eq!(
         guest_unavailable(),
         None,
@@ -959,16 +940,7 @@ fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
 #[test]
 fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    tilo_test_env::require_capability!(
-        UserNamespace,
-        tilo_test_env::bubblewrap(),
-        "the guest's sandbox"
-    );
-    tilo_test_env::require_capability!(
-        NamespaceEntry,
-        namespace_entry(),
-        "the guest's network namespace"
-    );
+    require_sandbox!();
     assert_eq!(
         guest_unavailable(),
         None,
@@ -1046,16 +1018,7 @@ fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
 #[test]
 fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_terminal() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    tilo_test_env::require_capability!(
-        UserNamespace,
-        tilo_test_env::bubblewrap(),
-        "the guest's sandbox"
-    );
-    tilo_test_env::require_capability!(
-        NamespaceEntry,
-        namespace_entry(),
-        "the guest's network namespace"
-    );
+    require_sandbox!();
     assert_eq!(
         guest_unavailable(),
         None,
@@ -1088,7 +1051,9 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
         cols: 100,
         rows: 30,
         term: Some("xterm-256color".into()),
-        command: Vec::new(),
+        // A program: ush's own shell starts the guest only for the first
+        // program it runs, so a session without one never sets a guest up.
+        command: vec!["bash".into()],
         requested_by: ush::host::RequestedBy::Person,
         runs: None,
         editor_protocol: None,
@@ -1355,16 +1320,7 @@ fn start_reexec_supervisor(
 
 #[test]
 fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
-    tilo_test_env::require_capability!(
-        UserNamespace,
-        tilo_test_env::bubblewrap(),
-        "the guest's sandbox"
-    );
-    tilo_test_env::require_capability!(
-        NamespaceEntry,
-        namespace_entry(),
-        "the guest's network namespace"
-    );
+    require_sandbox!();
     assert!(
         guest_unavailable().is_none(),
         "this regression must observe a real confined guest"

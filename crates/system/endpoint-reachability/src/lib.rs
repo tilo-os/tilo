@@ -12,8 +12,8 @@
 //! So the endpoint binds with an *empty* relay map and the relays wait here
 //! until something needs this device reachable. iroh skips net report, QAD
 //! and port mapping while the map is empty, and keeps the relay transport,
-//! so [`Reachability::wake`] can add them later through the public
-//! [`Endpoint::insert_relay`]: the endpoint, its key and its live
+//! so [`Reachability::wake`] can add them later through the
+//! public [`Endpoint::insert_relay`]: the endpoint, its key and its live
 //! connections stay as they are. Outbound dials work while dormant too: a
 //! peer address that names a relay gets an on-demand connection to it.
 //!

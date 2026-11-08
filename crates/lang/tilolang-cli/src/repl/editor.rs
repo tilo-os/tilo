@@ -314,9 +314,6 @@ impl Editor {
     }
 
     /// Read a line after `prompt`, which may hold colour.
-    ///
-    /// # Errors
-    /// The terminal could not be read or written.
     pub fn read(&self, prompt: &str, completer: &dyn Complete) -> io::Result<Read> {
         if !self.terminal {
             return Self::read_plain(prompt);

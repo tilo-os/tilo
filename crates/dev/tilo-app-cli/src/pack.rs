@@ -10,10 +10,6 @@ use tilo_app_package::{
 };
 
 /// Reads a publisher key file (see [`app_registry::publisher::key`]).
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read or is not a key file.
 pub fn load_identity(path: &Path) -> Result<SigningIdentity> {
     app_registry::publisher::key::load(path).map(SigningIdentity::from_signing_key)
 }

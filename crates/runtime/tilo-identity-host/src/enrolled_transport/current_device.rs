@@ -76,10 +76,6 @@ impl CurrentDeviceDeclaration {
         &self.record_name
     }
     /// Resolve the current owner only if it matches these comparison facts.
-    ///
-    /// # Errors
-    /// Returns an error if current-owner review or revalidation fails, the
-    /// declaration cannot be encoded, or any comparison fact differs.
     pub fn resolve_current(
         &self,
         system: &Path,

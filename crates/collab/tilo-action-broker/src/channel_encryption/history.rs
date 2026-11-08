@@ -21,10 +21,6 @@ pub struct HistoryKeys(ChannelContentKeys);
 impl HistoryKeys {
     /// Open `envelope`, a write of the record's history (a compaction
     /// included), under any epoch these keys carry.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an epoch these keys do not carry and invalid ciphertext.
     pub fn open(&self, envelope: &SignedOp) -> Result<Vec<u8>, String> {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
         let ciphertext =
@@ -55,11 +51,6 @@ impl ChannelKeyAccess {
     /// included), under any epoch whose key this device holds: what a key
     /// holder compacting the history reads. Call it only for writes already
     /// admitted with every envelope check.
-    ///
-    /// # Errors
-    ///
-    /// Refuses unavailable existing channel keys or epochs and invalid ciphertext.
-    /// This read never creates a channel, requests access or rejoins a group.
     pub fn open_history_write(
         &self,
         workspace: WorkspaceId,
@@ -77,10 +68,6 @@ impl ChannelKeyAccess {
     /// record's checkpoint under its channel's current epoch: what a device
     /// compacting a history it takes part in publishes in its place. The
     /// plaintext never leaves this call.
-    ///
-    /// # Errors
-    ///
-    /// This device holds no current key for the record's channel.
     pub fn seal_checkpoint(
         &self,
         workspace: WorkspaceId,

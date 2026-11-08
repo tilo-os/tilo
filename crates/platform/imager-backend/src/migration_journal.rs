@@ -1113,9 +1113,6 @@ impl MigrationJournal {
 /// journal directory outside both copied trees. Existing journal/output names
 /// are conflicts. Windows currently refuses before creating any files because
 /// unprivileged directory-entry persistence is not yet established.
-///
-/// # Errors
-/// Returns an error if grants, journal identity, or initial persistence cannot be validated.
 pub fn copy_folder_with_journal(
     source: &Path,
     destination: &Path,

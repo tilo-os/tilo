@@ -158,10 +158,6 @@ pub(crate) fn show_modal(request: &PickRequest) -> Result<Option<Vec<std::path::
 /// process of its own that becomes a foreground app while it asks: the
 /// runtime's consent prompt for a confined app. The refusing button comes
 /// first, so Return refuses. `true` when they chose `allow`.
-///
-/// # Errors
-///
-/// Not on the main thread.
 pub(crate) fn ask_modal(
     message: &str,
     detail: &str,

@@ -256,12 +256,6 @@ pub fn hash_source_exact(
 /// `on_progress` reports cumulative bytes verified. This is a genuine
 /// post-write read-back — the device is re-opened and its bytes are compared,
 /// not merely re-hashed from memory.
-///
-/// # Errors
-///
-/// Returns an error if `src` or `dst` cannot be opened or seeked to the
-/// start, or if a chunk read during the comparison fails (including a short
-/// read / unexpected EOF).
 pub fn verify_readback(
     src: &Path,
     dst: &Path,

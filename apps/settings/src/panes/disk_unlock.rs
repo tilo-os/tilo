@@ -302,9 +302,6 @@ pub fn valid_network(name: &str) -> bool {
 
 /// Parses the helper's answer, refusing anything that is not a well-formed
 /// enrolment: a volume Settings would hand back to `pkexec` must be one.
-///
-/// # Errors
-/// When the JSON is malformed or names an unusable volume or network.
 pub fn parse_volumes(json: &str) -> Result<Vec<UnlockVolume>, String> {
     let volumes: Vec<UnlockVolume> = serde_json::from_str(json).map_err(|error| {
         t_args(
@@ -391,9 +388,6 @@ pub fn candidates(volume: &UnlockVolume, saved_wifi: &[String]) -> Vec<String> {
 /// The privileged reads and the enrolment, behind a seam for tests.
 pub trait UnlockAuthority: Send + Sync {
     /// Every enrolled volume.
-    ///
-    /// # Errors
-    /// When the helper cannot run or is not authorised.
     fn volumes(&self) -> Result<Vec<UnlockVolume>, String>;
 
     /// The saved Wi-Fi connections, by name.
@@ -403,9 +397,6 @@ pub trait UnlockAuthority: Send + Sync {
     fn saved_wifi(&self) -> Result<Vec<String>, String>;
 
     /// Chooses `volume`'s unlock networks again.
-    ///
-    /// # Errors
-    /// When authentication is refused or the enrolment fails.
     fn set_networks(&self, volume: &UnlockVolume, networks: &[String]) -> Result<(), String>;
 }
 

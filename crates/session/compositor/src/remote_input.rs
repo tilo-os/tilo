@@ -1,24 +1,17 @@
 //! What input from another device crosses before it reaches this seat.
-//!
-//! Input that did not come from this machine's own keyboards, pointers and
-//! touchscreens is not the person's: it arrives from a portal
-//! `RemoteDesktop` or `InputCapture` session, a share, or a remote-typing
-//! link. It reaches the seat only while the person allows it, and one
-//! keystroke — Ctrl+Alt+Escape, pressed on the person's own keyboard —
-//! takes that permission away at once and keeps it away: sharing comes back
-//! only when the person turns it on again
+//! Input that did not come from this machine's own keyboards, pointers and touchscreens is not the
+//! person's: it arrives from a portal `RemoteDesktop` or `InputCapture` session, a share, or a
+//! remote-typing link. It reaches the seat only while the person allows it, and one keystroke —
+//! Ctrl+Alt+Escape, pressed on the person's own keyboard — takes that permission away at once and
+//! keeps it away: sharing comes back only when the person turns it on again
 //! ([`crate::Compositor::allow_remote_input`]).
-//!
-//! Beside the cut, the person's own input wins: a hand on this machine's
-//! keyboard or mouse in the last [`PHYSICAL_PRIORITY`] says the person is
-//! taking over, and remote input waits for them to stop. A locked session
-//! takes no remote input either; the lock screen is not a way into the
+//! Beside the cut, the person's own input wins: a hand on this machine's keyboard or mouse in the
+//! last [`PHYSICAL_PRIORITY`] says the person is taking over, and remote input waits for them to
+//! stop. A locked session takes no remote input either; the lock screen is not a way into the
 //! machine.
-//!
-//! The chord is tracked here, not by the focused window: a window that
-//! wants Escape still gets one, but never the press that completes the cut.
-//! The same chord gives a locked pointer and an inhibited client their
-//! freedom back first ([`crate::state::State::handle_input`]); only when no
+//! The chord is tracked here, not by the focused window: a window that wants Escape still gets one,
+//! but never the press that completes the cut. The same chord gives a locked pointer and an
+//! inhibited client their freedom back first ([`crate::state::State::handle_input`]); only when no
 //! client holds either does it cut.
 
 use std::collections::BTreeSet;
@@ -44,8 +37,7 @@ fn completes_cut(held: &BTreeSet<u32>) -> bool {
     ctrl && alt && held.contains(&keycode::ESCAPE)
 }
 
-/// The firewall remote input crosses, and the person's own keys that shut
-/// it.
+/// The firewall remote input crosses, and the person's own keys that shut it.
 #[derive(Debug, Default)]
 pub(crate) struct Firewall {
     /// The person cut remote input; it stays cut until they allow it again.
@@ -73,15 +65,14 @@ impl Firewall {
         self.cut = false;
     }
 
-    /// Note an event from this machine's own input at `now`.
+    /// Note an event from this machine's own input at `now` .
     pub(crate) fn note_local(&mut self, now: Instant) {
         self.last_local = Some(now);
     }
 
-    /// Track one key of the person's own keyboard; true when it completes
-    /// Ctrl+Alt+Escape, which the caller keeps from the desktop and acts on
-    /// ([`Firewall::cut`], or handing a client's pointer and shortcuts back
-    /// first).
+    /// Track one key of the person's own keyboard; true when it completes Ctrl+Alt+Escape, which
+    /// the caller keeps from the desktop and acts on ([`Firewall::cut`], or handing a client's
+    /// pointer and shortcuts back first).
     pub(crate) fn chord(&mut self, keycode: u32, pressed: bool) -> bool {
         if !pressed {
             self.held.remove(&keycode);
@@ -91,7 +82,7 @@ impl Firewall {
         keycode == keycode::ESCAPE && completes_cut(&self.held)
     }
 
-    /// Whether remote input may reach the seat at `now`.
+    /// Whether remote input may reach the seat at `now` .
     pub(crate) fn admits(&self, now: Instant, locked: bool) -> bool {
         if self.cut || locked {
             return false;

@@ -111,11 +111,6 @@ pub struct Project {
 
 impl Project {
     /// Resolve the app containing `start`.
-    ///
-    /// # Errors
-    ///
-    /// When there is no app, its manifests do not parse, or Cargo cannot
-    /// describe the workspace.
     pub fn load(start: &Path) -> Result<Self> {
         let app_dir = crate::resolve_app_dir(start)?;
         let cargo_manifest = app_dir.join("Cargo.toml");
@@ -401,10 +396,6 @@ pub fn check_targets(start: &Path, targets: &[Target], allow_planned: bool) -> R
 }
 
 /// Whether this machine can build `target`, and the fix when it cannot.
-///
-/// # Errors
-///
-/// When the host lacks the target's toolchain.
 pub fn check_host(target: Target) -> Result<()> {
     match target {
         Target::Macos if !cfg!(target_os = "macos") => bail!(
@@ -418,10 +409,6 @@ pub fn check_host(target: Target) -> Result<()> {
 }
 
 /// Build the runnable artifact for `request.target`.
-///
-/// # Errors
-///
-/// When the target or capability checks fail, or the build does.
 pub fn build(start: &Path, request: &TargetRequest) -> Result<BuildOutcome> {
     let project = Project::load(start)?;
     build_project(&project, request)
@@ -543,10 +530,6 @@ fn build_project(project: &Project, request: &TargetRequest) -> Result<BuildOutc
 
 /// Build and start the app: the binary natively, a local server with
 /// rebuild-on-change and page reload on the web.
-///
-/// # Errors
-///
-/// When the build fails or the app cannot start.
 pub fn run(
     start: &Path,
     request: &TargetRequest,
@@ -581,10 +564,6 @@ pub struct TargetPackageRequest {
 }
 
 /// Produce the distributable for `request.build.target`.
-///
-/// # Errors
-///
-/// When a check, the build, signing or verification fails.
 pub fn package(start: &Path, request: &TargetPackageRequest) -> Result<PathBuf> {
     let project = Project::load(start)?;
     let mut build_request = request.build.clone();
@@ -760,11 +739,6 @@ pub struct CapabilityAdded {
 
 /// Declare `name` in the app's `[capabilities]`, as optional unless
 /// `required`. Moves it between the lists if it is already declared.
-///
-/// # Errors
-///
-/// When the name is unknown (with a suggestion), or a required capability
-/// cannot be provided on one of the app's platforms.
 pub fn add_capability(start: &Path, name: &str, required: bool) -> Result<CapabilityAdded> {
     let app_dir = crate::resolve_app_dir(start)?;
     let manifest_path = app_dir.join("tilo-app.toml");

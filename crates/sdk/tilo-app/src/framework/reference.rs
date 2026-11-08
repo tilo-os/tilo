@@ -21,10 +21,6 @@ use ui_core::{Arrival, InvocationCall, RemoteActions};
 /// Ask the host to open what `href`, a `tilo://open#…` address, names: the
 /// app that keeps that resource shows it, launched first when no window
 /// shows it. An address that names no app of this desktop is refused.
-///
-/// # Errors
-/// Why it cannot be asked: the address names no app, or the window is in no
-/// workspace.
 pub(crate) fn open_link(opener: &Opener, href: &str) -> Result<(), String> {
     let link = tilo_reference::link::Link::parse_native(href).map_err(|error| error.to_string())?;
     let address = link
@@ -112,9 +108,6 @@ impl Call {
     }
 
     /// Where the call goes in this window's workspace, and what it carries.
-    ///
-    /// # Errors
-    /// Arguments that are not named, or a window in no workspace.
     pub(crate) fn request(
         &self,
     ) -> Result<(tilo_actions::remote::RemoteActionTarget, InvokeArgument), String> {
@@ -178,9 +171,6 @@ struct Opening {
 
 impl Opener {
     /// Ask the host to open `reference`, which `app` keeps in `record`.
-    ///
-    /// # Errors
-    /// Why it cannot be asked: the window is in no workspace.
     pub(crate) fn open(
         &self,
         app: &str,

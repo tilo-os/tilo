@@ -6067,9 +6067,6 @@ impl BrowserWidget {
 
     /// Start `operation` for `invocation`: done at once with its output, or
     /// accepted, settling later through [`Self::poll_invocation`].
-    ///
-    /// # Errors
-    /// Returns why the window cannot do it now.
     pub(crate) fn admit(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,

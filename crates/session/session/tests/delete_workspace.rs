@@ -29,14 +29,14 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use common::{HEIGHT, WIDTH};
 
-// An engine admits a workspace's records through an Automerge worker: this
-// binary is that worker, as it is the session's own.
+// An engine admits a workspace's records through an Automerge worker: this binary is that worker,
+// as it is the session's own.
 tilo_automerge_isolate::test_worker!();
 
 /// The workspace this computer holds, and the person deletes.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
-/// `key`'s certificate as a device of the person whose root key is `root`.
+/// `key` 's certificate as a device of the person whose root key is `root` .
 fn certified(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -51,8 +51,8 @@ fn certified(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     cert
 }
 
-/// This computer's person: a device of theirs, certified for their own root
-/// key, kept in an identity root of the test's own.
+/// This computer's person: a device of theirs, certified for their own root key, kept in an
+/// identity root of the test's own.
 fn this_computer(
     env: &mut tilo_test_env::ScopedEnv,
 ) -> (tempfile::TempDir, SigningKey, DeviceCert) {
@@ -71,8 +71,8 @@ fn this_computer(
     (root, device, cert)
 }
 
-/// This computer's copy of `workspace` under `state`, held as `cert`'s
-/// device in a workspace the same device governs, with nobody else in it.
+/// This computer's copy of `workspace` under `state` , held as `cert` 's device in a workspace the
+/// same device governs, with nobody else in it.
 fn workspace_held_here(state: &Path, workspace: WorkspaceId, cert: &DeviceCert, key: &SigningKey) {
     let record = state.join("tilo").join("rooms.json");
     std::fs::create_dir_all(record.parent().expect("the state's workspace directory"))
@@ -122,20 +122,18 @@ fn desk(root: &[u8; 32]) -> DesktopTree {
     }
 }
 
-/// A session of this computer taking part in the collaboration plane, keeping
-/// what it holds under `state`, on the desk showing the workspace.
+/// A session of this computer taking part in the collaboration plane, keeping what it holds under
+/// `state` , on the desk showing the workspace.
 fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: true,
             person: "Ada".to_owned(),
             state: Some(state.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("a session");
+    );
     session.handle().replace_tree(desk(root));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a frame");
@@ -149,8 +147,8 @@ fn settle(session: &mut Session) {
     }
 }
 
-/// Write what the session shows where a person can look at it, when the run
-/// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
+/// Write what the session shows where a person can look at it, when the run asked for shots:
+/// `TILO_SURFACE_SHOTS` names where they go.
 fn capture(session: &mut Session, name: &str) {
     let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
     else {
@@ -219,8 +217,8 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
     settle(&mut session);
     let shown = front(&session);
 
-    // An agent asks the desk to delete it without having answered anything:
-    // the person's own question stands instead, and nothing is deleted.
+    // An agent asks the desk to delete it without having answered anything: the person's own
+    // question stands instead, and nothing is deleted.
     session
         .invoke(
             tilo_desktop::desk_verbs::CHROME_RESOURCE,
@@ -249,8 +247,7 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
     assert!(!delete_sheet_open(&session), "the question is answered");
 }
 
-/// The person's yes is what deletes the workspace, from here and from this
-/// device's record.
+/// The person's yes is what deletes the workspace, from here and from this device's record.
 #[test]
 fn the_persons_yes_deletes_the_workspace() {
     let _settled = ui::motion::testing::settled();
@@ -296,8 +293,8 @@ fn the_persons_yes_deletes_the_workspace() {
     assert!(told, "the person is told the workspace is deleted");
 }
 
-/// The workspace settings of a workspace the person is alone in offer deleting
-/// it, and say why leaving it is not on offer.
+/// The workspace settings of a workspace the person is alone in offer deleting it, and say why
+/// leaving it is not on offer.
 #[test]
 fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
     let _settled = ui::motion::testing::settled();

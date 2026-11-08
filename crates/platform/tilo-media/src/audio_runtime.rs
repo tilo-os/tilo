@@ -55,20 +55,10 @@ pub trait AudioRuntimeControl: Send + Sync {
 
     /// Remap `sink_name` to a virtual mono-mix device and make it the
     /// default output.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic message if the remap module fails to load or the
-    /// default sink cannot be switched to it.
     fn start_mono(&self, sink_name: &str) -> Result<Box<dyn BoundedSession>, String>;
 
     /// Play a short identification tone on `sink_name`'s left or right
     /// channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic message if the playback process cannot be
-    /// spawned or its audio input cannot be written.
     fn start_channel_test(
         &self,
         sink_name: &str,
@@ -76,11 +66,6 @@ pub trait AudioRuntimeControl: Send + Sync {
     ) -> Result<Box<dyn BoundedSession>, String>;
 
     /// Start metering `source_name` for up to `duration`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic message if the capture process cannot be spawned
-    /// or its captured samples cannot be read.
     fn start_microphone_meter(
         &self,
         source_name: &str,
@@ -92,11 +77,6 @@ pub trait AudioRuntimeControl: Send + Sync {
     /// thread, read from the sink's monitor. Nothing is played or linked,
     /// and the capture never keeps an idle sink awake: while nothing plays,
     /// no level comes. Dropping the session ends the capture.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic message if the capture process cannot be spawned
-    /// or its captured samples cannot be read.
     fn start_output_meter(
         &self,
         sink_name: &str,

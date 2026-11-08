@@ -88,10 +88,6 @@ pub fn take_window_door() -> Option<OwnedFd> {
 /// before.
 ///
 /// Drop `command` once it has spawned: it holds the child's end until then.
-///
-/// # Errors
-///
-/// When the socket pair cannot be created.
 pub fn install(command: &mut Command) -> io::Result<RegistrationGate> {
     let (release, wait) = UnixStream::pair()?;
     command
@@ -104,10 +100,6 @@ pub fn install(command: &mut Command) -> io::Result<RegistrationGate> {
 /// [`install`] for a host that starts the child some other way than
 /// `command.spawn()` (the launcher's app spawner): `command` gets the gate's
 /// variable, and the child's end comes back to be placed as its stdin.
-///
-/// # Errors
-///
-/// When the socket pair cannot be created.
 pub fn install_external(command: &mut Command) -> io::Result<(RegistrationGate, OwnedFd)> {
     let (release, wait) = UnixStream::pair()?;
     command

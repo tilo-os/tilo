@@ -245,10 +245,6 @@ pub fn session_chain() -> MimeAppsChain {
 }
 
 /// Replace `path` with `list`, crash-safely, skipping the write when nothing changed.
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be written.
 #[cfg(feature = "host-storage")]
 pub fn publish(path: &Path, list: &MimeAppsList) -> std::io::Result<bool> {
     let mut body = String::from(

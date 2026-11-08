@@ -82,8 +82,6 @@ impl MessagingClient {
         self.history.principal()
     }
     /// Submit once on the exact route. An ambiguous answer is never retried.
-    /// # Errors
-    /// Refuses invalid requests, unavailable authority and mismatched replies.
     pub async fn send(&self, request: SendRequest) -> Result<SendReceipt, SendError> {
         if request.operation.is_empty()
             || request.operation.len() > 512

@@ -164,12 +164,6 @@ pub fn repository_path(destination: &Path) -> PathBuf {
 /// Validate source and destination before creating anything in the repository.
 /// Nested paths are rejected in both directions to prevent recursive backups
 /// and a restore/backup accidentally modifying its own source.
-///
-/// # Errors
-///
-/// Returns an error when the source cannot be resolved to a directory, the
-/// destination cannot be created or resolved, or either path contains the
-/// other.
 pub fn validate_paths(source: &Path, destination: &Path) -> Result<(PathBuf, PathBuf)> {
     let source = source.canonicalize().map_err(|e| {
         BackupError::InvalidSource(format!("Cannot open source {}: {e}", source.display()))

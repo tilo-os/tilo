@@ -94,11 +94,6 @@ pub fn package_id() -> String {
 }
 
 /// Like `fs::create_dir_all`, but the error names the offending path.
-///
-/// # Errors
-///
-/// Returns an error naming `dir` if the directory (and its ancestors)
-/// cannot be created.
 pub fn ensure_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)
         .map_err(|e| anyhow::anyhow!("creating directory {}: {e}", dir.display()))

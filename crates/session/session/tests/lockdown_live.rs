@@ -1,6 +1,5 @@
-//! The person's lockdown policy while the session runs: flipping a switch
-//! stops what is capturing and silences what is playing, without asking any
-//! app to restart.
+//! The person's lockdown policy while the session runs: flipping a switch stops what is capturing
+//! and silences what is playing, without asking any app to restart.
 
 #![cfg(target_os = "linux")]
 #![allow(

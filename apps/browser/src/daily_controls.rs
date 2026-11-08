@@ -295,9 +295,6 @@ impl DailyControls {
     }
     /// Zoom the page a `step` in (`1`) or out (`-1`), or back to its own
     /// size (`0`), as the menu's zoom rows do.
-    ///
-    /// # Errors
-    /// Returns the page's size when the step would not change it.
     pub fn zoom_by(&mut self, step: i32, engine: &SharedEngine) -> Result<(), String> {
         if !self.can_zoom(step) {
             return Err(format!("The page is at {}% already", self.zoom_percent()));

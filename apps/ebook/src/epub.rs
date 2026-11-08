@@ -104,12 +104,6 @@ pub fn content_id(bytes: &[u8]) -> String {
 /// Parse an in-memory EPUB into a [`Book`]. `cover_tint`/`subject` are cosmetic
 /// shelf hints supplied by the caller. The book's id is its content hash
 /// ([`content_id`]) so annotations and progress travel with the file.
-///
-/// # Errors
-///
-/// Returns an error if the bytes are not a readable ZIP, the container/OPF
-/// metadata cannot be located or parsed, or the spine resolves to no
-/// readable chapters.
 pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book> {
     if bytes.len() > MAX_EPUB_BYTES {
         return Err(anyhow!(

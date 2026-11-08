@@ -114,9 +114,6 @@ pub fn rsync_modules(
 }
 
 /// Pack the staged module tree as a layer: `usr/lib/modules/<kver>/`.
-///
-/// # Errors
-/// I/O failures.
 pub fn pack(built: &Built, out: &Path) -> Result<(), CliError> {
     let file =
         std::fs::File::create(out).map_err(CliError::io(format!("create {}", out.display())))?;

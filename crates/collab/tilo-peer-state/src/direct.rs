@@ -14,6 +14,7 @@
 //! owner, the workspace governance and a checkpoint of every document. Then it
 //! carries every message this device publishes while the link lasts.
 
+use crate::actions::now_ns;
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -148,11 +149,6 @@ impl DirectSync {
 
     /// Admit a frame a store replayed, as the retained history of its
     /// author: the same admission a live frame from that device takes.
-    ///
-    /// # Errors
-    ///
-    /// The replica refuses the frame; the caller keeps the session and
-    /// carries on with the frames after it.
     pub fn admit_retained(&self, author: [u8; 32], message: NeighbourMsg) -> Result<(), String> {
         let outcome = self.0.replica.0.lock_recover().receive_from(
             TransportOrigin::RetainedRelayDelta(author),
@@ -174,9 +170,6 @@ impl DirectSync {
 
     /// Dial the device at `addr` from `endpoint` and sync with it until the
     /// link ends.
-    ///
-    /// # Errors
-    /// The device is not in the roster, refused this one, or the link broke.
     pub async fn connect(
         &self,
         endpoint: &Endpoint,
@@ -349,14 +342,6 @@ impl ProtocolHandler for DirectSync {
 
 pub(crate) fn bump(count: &mut u64) {
     *count = count.wrapping_add(1);
-}
-
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()
-        .and_then(|since| u64::try_from(since.as_nanos()).ok())
-        .unwrap_or(u64::MAX)
 }
 
 /// Write `catch_up`, then every message published live, to `send`.

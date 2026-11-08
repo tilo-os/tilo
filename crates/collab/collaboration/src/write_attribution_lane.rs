@@ -23,9 +23,6 @@ static LANE: Lane<Endpoint> = Lane::new("write attribution");
 
 /// Ask the host on `route` to name the agent behind `invocation` as the
 /// cause of the writes to `paths` this app is about to make.
-///
-/// # Errors
-/// Refuses an invalid request, a route without the lane, or a full lane.
 pub fn enqueue(
     route: &str,
     invocation: tilo_actions::InvocationId,
@@ -47,9 +44,6 @@ pub fn enqueue(
 }
 
 /// Serve the lane for `route` over `channel` while the registration lives.
-///
-/// # Errors
-/// Refuses an ambiguous route or too many of them.
 pub(super) fn register(
     route: String,
     channel: runtime_collab::ChannelHandle,

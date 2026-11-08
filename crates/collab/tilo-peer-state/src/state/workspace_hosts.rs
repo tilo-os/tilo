@@ -1,12 +1,9 @@
-//! The hosts serving a workspace beside its governor, which its governor alone
-//! writes and every member reads.
+//! The hosts serving a workspace beside its owner, written by the workspace's
+//! governance and read by every member.
 //!
-//! Each is a host of the governor's own person that serves the workspace as well
-//! (a home relay the person chose for it), named by its own signed address.
-//! A member reaches the workspace at any of them: while the governor is away its
-//! sessions go to one of these, and they come back to the governor when it
-//! returns. Members learn of a host added after they joined as they learn of
-//! any change to the workspace's governance.
+//! Each is a device of the owner's own person that serves the workspace as well
+//! (a home relay the person chose for it), named by its own signed address, so a
+//! member reaches the workspace while the owner's own device is away.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{ROOT, SystemTime, err};
 use crate::join::TransportHint;

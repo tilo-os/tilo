@@ -404,10 +404,6 @@ pub fn replace_trigger_chords(keymap: &mut ShortcutConfig, chords: Vec<ActionCho
 /// An input a trigger's payload ([`TriggerSpec::payload`]) names must have
 /// the payload's type, and an input the shortcut requires must be given by
 /// every one of its triggers: nobody is there to give it.
-///
-/// # Errors
-///
-/// The first problem, for the person saving it.
 pub fn check_triggers(
     shortcut: &Shortcut,
     workspace: &Workspace,
@@ -510,10 +506,6 @@ pub enum LibraryOperation {
 }
 
 /// Decode an invocation of library action `action` from its argument slot.
-///
-/// # Errors
-///
-/// Why the arguments do not satisfy the action's parameters.
 pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOperation, String> {
     let descriptor =
         library_descriptor(action).ok_or_else(|| format!("unknown shortcuts action `{action}`"))?;
@@ -600,11 +592,6 @@ pub enum StopRequest {
 /// A saved shortcut is first checked against what the saving person is
 /// offered now, and its triggers against the chords already taken; it is
 /// stored as saved by them.
-///
-/// # Errors
-///
-/// Every problem the checker found, or why the workspace cannot take the
-/// change.
 pub fn plan_library(
     workspace: &Workspace,
     operation: LibraryOperation,
@@ -1172,10 +1159,6 @@ impl ShortcutRuns {
 pub const MIN_INTERVAL_SECONDS: u64 = 60;
 
 /// Why a trigger cannot be saved on a shortcut, when it cannot.
-///
-/// # Errors
-///
-/// The reason, for the person saving it.
 pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
     match trigger {
         TriggerSpec::Keyboard { chord } => KeyChord::parse(chord)
@@ -1250,10 +1233,6 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
 
 /// The folder capability `capability` of `workspace` shares, when `saver`
 /// may read through it.
-///
-/// # Errors
-///
-/// Why it cannot be watched, for the person saving the trigger.
 pub fn readable_folder(
     workspace: &Workspace,
     capability: &str,

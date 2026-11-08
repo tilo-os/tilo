@@ -632,11 +632,6 @@ pub enum ServeResponse {
 
 /// Decide one request: the environment record it names (`None` for the
 /// default). Pure, so the gate can be tested without a pty.
-///
-/// # Errors
-///
-/// Returns the reason a target cannot be served: the host target (not served
-/// here), or a record key an app may not use.
 pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
     let ServeRequest::OpenSession { target, .. } = req else {
         return Err("not a session request".into());

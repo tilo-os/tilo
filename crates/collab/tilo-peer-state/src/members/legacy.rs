@@ -41,9 +41,6 @@ pub fn needs_genesis(doc: &AutoCommit) -> bool {
 /// The genesis operation for `membership`, written by `device` at the heads
 /// `legacy_heads` of the history the workspace began at (empty for a workspace
 /// created with it).
-///
-/// # Errors
-/// The operation cannot be encoded or signed.
 pub fn genesis_op(
     device: &tilo_user_identity::DeviceCert,
     key: &ed25519_dalek::SigningKey,
@@ -67,9 +64,6 @@ pub fn genesis_op(
 }
 
 /// Write `op` into `doc`'s operation map.
-///
-/// # Errors
-/// The operation cannot be encoded, or the document cannot be written.
 pub fn put_op(doc: &mut AutoCommit, op: &SignedMembershipOp) -> Result<OpId, String> {
     let id = op.id()?;
     let map = match doc

@@ -141,9 +141,6 @@ pub fn provision(
     gpt::binding(file, target_bytes, stable_id)
 }
 /// Recover only a fully consistent provisioned GPT, independently read from the fd.
-///
-/// # Errors
-/// Refuses missing markers, inconsistent copies, geometry or invalid profile gap.
 pub fn binding(
     file: &File,
     target_bytes: u64,

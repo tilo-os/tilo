@@ -488,9 +488,6 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
 }
 
 /// `--min-age`: seconds, from `0`, `90s`, `30m`, `1h` or `2d`.
-///
-/// # Errors
-/// Anything else.
 pub fn parse_age(text: &str) -> Result<u64, String> {
     let text = text.trim();
     let (number, unit) = text.split_at(
@@ -519,9 +516,6 @@ fn parse_awake_duration(text: &str) -> Result<u64, String> {
 }
 
 /// `--resolution`: `WIDTHxHEIGHT`, each 320 to 16384 pixels.
-///
-/// # Errors
-/// Anything else.
 pub fn parse_resolution(text: &str) -> Result<String, String> {
     let size = |part: &str| {
         part.parse::<u16>()
@@ -867,7 +861,7 @@ pub enum VmCommand {
     Create(CreateArgs),
     /// Branch a stopped VM into new VMs that start as copies of it, then diverge: copy-on-write, in seconds.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm branch dev a b c          # three new VMs, each a copy of dev as it is now\n  tilo-vm vm branch dev review --stop  # shut dev down cleanly first\n  tilo-vm vm branch a a2               # a branch of a branch\n\nThe source must be off. Its disk is frozen as a read-only base, and the\nsource and every new VM each get a copy-on-write child of it, so nothing is\ncopied and the VMs never see each other's writes. A base is deleted once no\nVM uses it: vm rm of the source or of any branch never breaks the others.\nEach new VM gets its own name, UUID (the guest's SMBIOS system UUID), MAC\nand SSH port; the guest sees the new UUID on first boot and gives itself a\nnew device identity, keeping everything else on the disk (home, keys,\nvaults, settings). libvirt, whpx and utm. Details: tilo-vm guide concepts."
+        after_help = "Examples:\n  tilo-vm vm branch dev a b c          # three new VMs, each a copy of dev as it is now\n  tilo-vm vm branch dev review --stop  # shut dev down cleanly first\n  tilo-vm vm branch a a2               # a branch of a branch\n\nThe source must be off. Its disk is frozen as a read-only base, and the\nsource and every new VM each get a copy-on-write child of it, so nothing is\ncopied and the VMs never see each other's writes. A base is deleted once no\nVM uses it: vm rm of the source or of any branch never breaks the others.\nEach new VM gets its own name, UUID (the guest's SMBIOS system UUID), MAC\nand SSH port; the guest sees the new UUID on first boot and gives itself a\nnew device identity, keeping everything else on the disk (home, keys,\nvaults, settings). Boot the source once on a current image first: only an\nimage with tilo-device-branch.service records the UUID it compares against.\nlibvirt, whpx and utm. Details: tilo-vm guide concepts."
     )]
     Branch(BranchArgs),
     /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.

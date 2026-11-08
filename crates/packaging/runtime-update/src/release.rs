@@ -66,10 +66,6 @@ impl Release {
     }
 
     /// Check the downloaded archive at `path` against the feed's digest.
-    ///
-    /// # Errors
-    ///
-    /// The archive cannot be read or has another digest.
     pub fn check_archive(&self, path: &Path) -> Result<(), Error> {
         let mut hasher = Sha256::new();
         let mut file = std::fs::File::open(path)?;

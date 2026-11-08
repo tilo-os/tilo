@@ -482,11 +482,6 @@ fn acquire_proof(
 /// 4. pruning comes before the floor: pruning is reversible by re-enrolling, an NV increment
 ///    is reversible by nothing;
 /// 5. the recovery key must still open the device at the end.
-///
-/// # Errors
-///
-/// Returns an error at any of the SAFETY-CRITICAL checks above that fails (recovery path,
-/// enrollment, proof, or pruning), or if there is no rollback enrollment on this device yet.
 pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Outcome> {
     let device = req.device;
     let cfg = req.cfg;

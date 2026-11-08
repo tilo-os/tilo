@@ -16,9 +16,8 @@
 
 use ui::desk_widgets::WidgetId;
 
-/// The width band around a breakpoint across which two stages cross-fade:
-/// wide enough that a card twice as tall in the next stage still grows
-/// only a few pixels for each pixel of drag.
+/// The width band around a breakpoint across which two stages cross-fade: wide enough that a card
+/// twice as tall in the next stage still grows only a few pixels for each pixel of drag.
 pub const BLEND: f64 = 2.0 * ui::tokens::Spacing::BASE.s8 as f64;
 
 /// One of a card's layouts by width.
@@ -51,7 +50,7 @@ impl Sizing {
     }
 }
 
-/// `id`'s widths.
+/// `id` 's widths.
 #[must_use]
 pub fn sizing(id: WidgetId) -> Sizing {
     let card = f64::from(ui::tokens::Metrics::BASE.panel_width_utility);
@@ -80,9 +79,8 @@ pub fn sizing(id: WidgetId) -> Sizing {
     }
 }
 
-/// The stages a card `width` wide shows, and how far from the first to the
-/// second it is (`0..=1`, eased): one stage alone (`(s, s, 0.0)`) outside
-/// the blend bands, two cross-fading inside one.
+/// The stages a card `width` wide shows, and how far from the first to the second it is (`0..=1`,
+/// eased): one stage alone (`(s, s, 0.0)`) outside the blend bands, two cross-fading inside one.
 #[must_use]
 pub fn stages(id: WidgetId, width: f64) -> (Stage, Stage, f64) {
     let sizing = sizing(id);
@@ -106,15 +104,15 @@ pub fn stages(id: WidgetId, width: f64) -> (Stage, Stage, f64) {
     (stage, stage, 0.0)
 }
 
-/// The stage whose controls take a press at `width`: the one more shown.
+/// The stage whose controls take a press at `width` : the one more shown.
 #[must_use]
 pub fn dominant(id: WidgetId, width: f64) -> Stage {
     let (lo, hi, t) = stages(id, width);
     if t < 0.5 { lo } else { hi }
 }
 
-/// The card's height at `width`, given each stage's height there:
-/// continuous across the breakpoints.
+/// The card's height at `width` , given each stage's height there: continuous across the
+/// breakpoints.
 #[must_use]
 pub fn height(id: WidgetId, width: f64, stage_height: impl Fn(Stage, f64) -> f64) -> f64 {
     let (lo, hi, t) = stages(id, width);
@@ -156,8 +154,8 @@ mod tests {
             let widths = std::iter::successors(Some(sizing.min), |width| Some(width + 0.25));
             for width in widths.take_while(|width| *width <= sizing.max) {
                 let h = height(id, width, stepped);
-                // A quarter-pixel step never moves the height more than a
-                // couple of pixels: no jump anywhere.
+                // A quarter-pixel step never moves the height more than a couple of pixels: no jump
+                // anywhere.
                 assert!(
                     (h - last).abs() < 2.5,
                     "{id:?} jumps at {width}: {last} -> {h}"

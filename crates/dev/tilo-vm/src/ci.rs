@@ -37,9 +37,6 @@ fn is_hex(text: &str) -> bool {
 
 /// Parse `--from`. A `sha:` is resolved to a full commit through the
 /// worktree's git when there is one.
-///
-/// # Errors
-/// Unknown forms, and commits that are not hex or too short to tag.
 pub fn parse(from: &str, worktree: Option<&Worktree>) -> Result<Source, CliError> {
     if from == "worktree" {
         return Ok(Source::Worktree);

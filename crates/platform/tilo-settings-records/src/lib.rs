@@ -119,9 +119,6 @@ impl Records {
     }
 
     /// The bytes of document `name`; `None` where it was never saved.
-    ///
-    /// # Errors
-    /// It exists and cannot be read.
     pub fn read(&self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
         match std::fs::read(self.dir.join(name)) {
             Ok(bytes) => Ok(Some(bytes)),
@@ -141,9 +138,6 @@ impl Records {
     }
 
     /// Replace document `name` with `bytes`, crash-safely.
-    ///
-    /// # Errors
-    /// The file cannot be written.
     pub fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
         tilo_files::native::atomic::write(&self.dir.join(name), bytes)
     }

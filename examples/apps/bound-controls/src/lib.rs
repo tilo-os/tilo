@@ -51,9 +51,6 @@ impl Default for Preferences {
 
 impl Preferences {
     /// What every change must leave true, whichever field it edits.
-    ///
-    /// # Errors
-    /// Refuses a refresh interval, volume or region out of range.
     pub fn valid(&self) -> Result<(), Refusal> {
         if !(1.0..=120.0).contains(&self.refresh_minutes) {
             return Err(Refusal::new("the refresh interval is 1 to 120 minutes"));

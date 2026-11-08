@@ -1,9 +1,7 @@
 //! The scene of one output: what is drawn where, front first.
-//!
-//! Everything on screen is a buffer: client surfaces (their popups and
-//! subsurfaces included) and the layers of hosted surfaces. The scene is
-//! renderer-generic, so the same elements feed the CPU renderer of a headless
-//! output and the GPU of a real one, and their damage tracking decides what
+//! Everything on screen is a buffer: client surfaces (their popups and subsurfaces included) and
+//! the layers of hosted surfaces. The scene is renderer-generic, so the same elements feed the CPU
+//! renderer of a headless output and the GPU of a real one, and their damage tracking decides what
 //! is redrawn.
 
 #![allow(
@@ -30,8 +28,7 @@ use crate::effects::WindowEffect;
 use crate::host::HostLayer;
 use crate::state::State;
 
-/// The colour behind every window: the desktop's background before a
-/// wallpaper surface covers it.
+/// The colour behind every window: the desktop's background before a wallpaper surface covers it.
 pub const BACKGROUND: [f32; 4] = [0.102, 0.106, 0.149, 1.0];
 
 smithay::backend::renderer::element::render_elements! {
@@ -39,16 +36,15 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<R> where R: ImportAll + ImportMem;
     /// A client surface.
     Surface=WaylandSurfaceRenderElement<R>,
-    /// A hosted surface's layer, or a client surface's HDR rendition where
-    /// the surface itself would be.
+    /// A hosted surface's layer, or a client surface's HDR rendition where the surface itself would
+    /// be.
     Memory=MemoryRenderBufferRenderElement<R>,
     /// The idle dim over everything, where no backlight dims.
     Dim=SolidColorRenderElement,
-    /// A client surface drawn scaled: under the magnifier, or as the lock
-    /// screen filling a display it was not made for.
+    /// A client surface drawn scaled: under the magnifier, or as the lock screen filling a display
+    /// it was not made for.
     ScaledSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
-    /// A hosted surface's layer, or a client surface's HDR rendition, under
-    /// the magnifier.
+    /// A hosted surface's layer, or a client surface's HDR rendition, under the magnifier.
     ZoomedHosted=RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
     /// A client surface inside the magnifier's lens.
     LensSurface=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>,
@@ -68,8 +64,7 @@ smithay::backend::renderer::element::render_elements! {
     LensSnapshot=CropRenderElement<RescaleRenderElement<crate::effects::SnapshotElement<R::TextureId>>>,
     /// A solid area inside the magnifier's lens.
     LensDim=CropRenderElement<RescaleRenderElement<SolidColorRenderElement>>,
-    /// A window drawn moved, scaled or faded, or pictured by a hosted
-    /// surface.
+    /// A window drawn moved, scaled or faded, or pictured by a hosted surface.
     Transformed=crate::effects::TransformedElement<R>,
     /// A closed window's last frame, drawn moved, scaled or faded.
     Snapshot=crate::effects::SnapshotElement<R::TextureId>,
@@ -77,8 +72,7 @@ smithay::backend::renderer::element::render_elements! {
     Frame=crate::effects::FrameElement<R>,
 }
 
-/// `element` scaled by `zoom` about `centre`, which stays where it is on
-/// screen.
+/// `element` scaled by `zoom` about `centre` , which stays where it is on screen.
 fn scaled<E>(element: E, centre: Point<i32, Physical>, zoom: f64) -> RescaleRenderElement<E>
 where
     E: Element,
@@ -86,9 +80,8 @@ where
     RescaleRenderElement::from_element(element, centre, zoom)
 }
 
-/// `element` scaled by `zoom` about `centre`, kept inside `crop` (output
-/// physical pixels): what the lens shows of it, or nothing where the crop
-/// misses it.
+/// `element` scaled by `zoom` about `centre` , kept inside `crop` (output physical pixels): what
+/// the lens shows of it, or nothing where the crop misses it.
 fn cropped<E>(
     element: E,
     centre: Point<i32, Physical>,
@@ -102,8 +95,8 @@ where
     CropRenderElement::from_element(scaled(element, centre, zoom), scale, crop)
 }
 
-/// `element` as the whole-screen magnifier shows it: scaled by `zoom` about
-/// `centre`, which stays where it is on screen.
+/// `element` as the whole-screen magnifier shows it: scaled by `zoom` about `centre` , which stays
+/// where it is on screen.
 fn zoomed<R>(
     element: OutputRenderElement<R>,
     centre: Point<i32, Physical>,
@@ -150,8 +143,7 @@ where
         OutputRenderElement::Surface(e) => Some(OutputRenderElement::LensSurface(cropped(
             e, centre, zoom, crop, scale,
         )?)),
-        // A memory buffer and a window's frame are drawn the same way: a
-        // crop of a scaled copy.
+        // A memory buffer and a window's frame are drawn the same way: a crop of a scaled copy.
         OutputRenderElement::Memory(e) => Some(OutputRenderElement::Frame(cropped(
             e, centre, zoom, crop, scale,
         )?)),
@@ -171,8 +163,8 @@ where
     }
 }
 
-/// A solid rectangle in output physical pixels, drawn once: the lens's
-/// backing and the visual alert.
+/// A solid rectangle in output physical pixels, drawn once: the lens's backing and the visual
+/// alert.
 fn solid(at: Rectangle<i32, Physical>, color: Color32F) -> SolidColorRenderElement {
     SolidColorRenderElement::new(
         Id::new(),
@@ -183,15 +175,13 @@ fn solid(at: Rectangle<i32, Physical>, color: Color32F) -> SolidColorRenderEleme
     )
 }
 
-/// The crosshair's guides through `pointer` (output physical pixels): a
-/// full-length line on each axis, dark under light so it shows on any
-/// background.
+/// The crosshair's guides through `pointer` (output physical pixels): a full-length line on each
+/// axis, dark under light so it shows on any background.
 fn crosshair_elements(
     geometry: Rectangle<i32, Physical>,
     pointer: Point<i32, Physical>,
 ) -> [SolidColorRenderElement; 4] {
-    /// A half-transparent ink that reads on light and dark backgrounds
-    /// under a brighter core.
+    /// A half-transparent ink that reads on light and dark backgrounds under a brighter core.
     const INK: Color32F = Color32F::new(0.0, 0.0, 0.0, 0.75);
     const CORE: Color32F = Color32F::new(1.0, 1.0, 1.0, 0.9);
     let (w, h) = (geometry.size.w, geometry.size.h);
@@ -213,8 +203,7 @@ fn crosshair_elements(
 /// The idle dim's buffer of one output.
 struct DimBuffer(std::cell::RefCell<SolidColorBuffer>);
 
-/// The dim over all of `output`, when the scene is dimmed without a
-/// backlight.
+/// The dim over all of `output` , when the scene is dimmed without a backlight.
 fn dim_element<R>(state: &State, output: &Output) -> Option<OutputRenderElement<R>>
 where
     R: Renderer + ImportAll + ImportMem,
@@ -240,11 +229,10 @@ where
     ))
 }
 
-/// A hosted surface's layer, drawn at `scale` with the layer's top left
-/// corner at `location` (physical): the part of the frame it shows, at the
-/// pixel of the output the layer covers, so a layer the size of a display
-/// that paints a bar costs its bar rather than the display. `None` when the
-/// layer shows nothing there is to draw.
+/// A hosted surface's layer, drawn at `scale` with the layer's top left corner at `location`
+/// (physical): the part of the frame it shows, at the pixel of the output the layer covers, so a
+/// layer the size of a display that paints a bar costs its bar rather than the display. `None` when
+/// the layer shows nothing there is to draw.
 fn hosted_layer<R>(
     renderer: &mut R,
     layer: &HostLayer,
@@ -264,8 +252,8 @@ where
         return Ok(None);
     };
     let (width, height) = (f64::from(width), f64::from(height));
-    // The frame scaled to the rectangle the layer covers, so a layer drawn at
-    // the output's scale is shown at the pixels it was drawn for.
+    // The frame scaled to the rectangle the layer covers, so a layer drawn at the output's scale is
+    // shown at the pixels it was drawn for.
     let across = f64::from(layer.size.0) / width;
     let down = f64::from(layer.size.1) / height;
     let src = Rectangle::new(
@@ -292,10 +280,9 @@ where
     .map(Some)
 }
 
-/// What lies below hosted surface `host`, front first: the hosts beneath
-/// it and the windows, drawn at `scale` with `origin` (logical) at the
-/// top left of the area `bounds` (physical), as its backdrop sees them —
-/// the windows where their effects draw them, framed as they are drawn.
+/// What lies below hosted surface `host` , front first: the hosts beneath it and the windows, drawn
+/// at `scale` with `origin` (logical) at the top left of the area `bounds` (physical), as its
+/// backdrop sees them — the windows where their effects draw them, framed as they are drawn.
 pub(crate) fn below_host<R>(
     renderer: &mut R,
     state: &State,
@@ -334,10 +321,9 @@ where
     elements
 }
 
-/// The window layer, front first: `stack` (the mapped windows, bottom
-/// first, reversed by the caller) and the windows that closed and are
-/// still drawn where they stood, each drawn at `scale` with `origin` at
-/// the top left of the area `bounds`.
+/// The window layer, front first: `stack` (the mapped windows, bottom first, reversed by the
+/// caller) and the windows that closed and are still drawn where they stood, each drawn at `scale`
+/// with `origin` at the top left of the area `bounds` .
 fn window_elements<R>(
     renderer: &mut R,
     state: &State,
@@ -350,8 +336,8 @@ where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + 'static,
 {
-    // A window that closed keeps the place in the stack it had, so an
-    // animation of it runs where it was drawn, not over the windows above.
+    // A window that closed keeps the place in the stack it had, so an animation of it runs where it
+    // was drawn, not over the windows above.
     let len = stack.len();
     let mut closing: Vec<Vec<&crate::state::Closing>> = vec![Vec::new(); len + 1];
     for gone in &state.closing {
@@ -372,8 +358,8 @@ where
         };
         let effect = state.effect_of(window);
         let framing = state.framing(window);
-        // A window drawn as it stands keeps its buffer's own element, which
-        // a display can scan out; anything else is drawn through its frame.
+        // A window drawn as it stands keeps its buffer's own element, which a display can scan out;
+        // anything else is drawn through its frame.
         if effect != WindowEffect::default() || !framing.frame.is_square() {
             elements.extend(crate::effects::with_effect(
                 renderer,
@@ -405,8 +391,8 @@ where
                 1.0,
             )),
         }
-        // What the window drew is kept while it stands, so its close has a
-        // frame to animate even once its surface is gone.
+        // What the window drew is kept while it stands, so its close has a frame to animate even
+        // once its surface is gone.
         state.record_snapshot(renderer, window);
     }
     for gone in closing.get(len).into_iter().flatten() {
@@ -417,8 +403,8 @@ where
     elements
 }
 
-/// A window that closed, drawn from its last buffer with whatever effect
-/// the desktop is animating it away with.
+/// A window that closed, drawn from its last buffer with whatever effect the desktop is animating
+/// it away with.
 fn closing_elements<R>(
     renderer: &mut R,
     state: &State,
@@ -443,8 +429,7 @@ where
         hdr: &state.hdr,
         state,
     };
-    // The frame the window last drew, kept before its surface went: the
-    // desktop animates that away.
+    // The frame the window last drew, kept before its surface went: the desktop animates that away.
     let Some(snapshot) = closing.snapshot.as_ref() else {
         return Vec::new();
     };
@@ -482,10 +467,9 @@ where
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
         for host in state.hosts.iter().rev().filter(|host| {
             if locked {
-                // While locked only what stands over the lock shows, over the
-                // lock client: the session's own lock view when the lock
-                // screen's app cannot show it, and the readout that answers a
-                // hardware key pressed there.
+                // While locked only what stands over the lock shows, over the lock client: the
+                // session's own lock view when the lock screen's app cannot show it, and the
+                // readout that answers a hardware key pressed there.
                 host.above_lock()
             } else {
                 host.below_windows() == below
@@ -516,9 +500,8 @@ where
         }
     };
     if locked {
-        // The session's own readout answers a key pressed on the lock screen
-        // and shows over the lock: the elements are front first, so it comes
-        // before the lock client's surfaces.
+        // The session's own readout answers a key pressed on the lock screen and shows over the
+        // lock: the elements are front first, so it comes before the lock client's surfaces.
         hosted(renderer, &mut elements, false);
         elements.extend(state.lock_elements(renderer, output));
         return elements;
@@ -547,9 +530,8 @@ where
     elements
 }
 
-/// The elements `output` shows, front first, in its physical pixels: the
-/// scene, with the magnifier, the pointer's crosshair and the visual alert
-/// over it.
+/// The elements `output` shows, front first, in its physical pixels: the scene, with the magnifier,
+/// the pointer's crosshair and the visual alert over it.
 pub(crate) fn output_elements<R>(
     renderer: &mut R,
     state: &State,
@@ -571,17 +553,15 @@ where
         && let Some(centre) = a11y::follow(output, state, geometry, scale, Instant::now())
     {
         match visual.magnifier_view {
-            // The whole scene is scaled about the point, which stays where
-            // it really is on screen.
+            // The whole scene is scaled about the point, which stays where it really is on screen.
             MagnifierView::FullScreen => {
                 elements = elements
                     .into_iter()
                     .map(|element| zoomed(element, centre, state.zoom))
                     .collect();
             }
-            // A lens over the scene: the scene drawn again, magnified and
-            // kept inside a rectangle around the point, over the scene
-            // under it as it is.
+            // A lens over the scene: the scene drawn again, magnified and kept inside a rectangle
+            // around the point, over the scene under it as it is.
             MagnifierView::Lens => {
                 let lens = a11y::lens_rect(centre, bounds.size);
                 let mut stack: Vec<OutputRenderElement<R>> =
@@ -589,9 +569,8 @@ where
                         .into_iter()
                         .filter_map(|element| lensed(element, centre, state.zoom, lens, scale))
                         .collect();
-                // The lens is opaque: where the scene has nothing to show
-                // under it, it shows the background, never the unmagnified
-                // picture showing through.
+                // The lens is opaque: where the scene has nothing to show under it, it shows the
+                // background, never the unmagnified picture showing through.
                 stack.push(OutputRenderElement::Dim(solid(
                     lens,
                     Color32F::new(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0),
@@ -601,8 +580,8 @@ where
             }
         }
     }
-    // The pointer's crosshair, over the scene and its magnifier: guides at
-    // where the pointer really is.
+    // The pointer's crosshair, over the scene and its magnifier: guides at where the pointer really
+    // is.
     if visual.crosshair && !state.locked() {
         let pointer: Point<i32, Physical> =
             (state.pointer - geometry.loc.to_f64()).to_physical_precise_round(scale);
@@ -615,10 +594,9 @@ where
             );
         }
     }
-    // The visual alert lights the inside of the display's edge, over
-    // everything else: it stays obvious without covering what is on screen
-    // or washing the whole display with a luminance change, which is a
-    // photosensitivity risk.
+    // The visual alert lights the inside of the display's edge, over everything else: it stays
+    // obvious without covering what is on screen or washing the whole display with a luminance
+    // change, which is a photosensitivity risk.
     let alert = visual.flash_alpha(Instant::now());
     if alert > 0.0 {
         let width = alert_edge_width(scale.x);
@@ -633,8 +611,8 @@ where
     elements
 }
 
-/// The accent the visual alert's edge wears: the desktop's own accent, which
-/// reads against both a dark and a light wallpaper.
+/// The accent the visual alert's edge wears: the desktop's own accent, which reads against both a
+/// dark and a light wallpaper.
 const ALERT_EDGE: [f32; 3] = [0.246, 0.393, 0.752];
 
 /// How wide the alert's edge is, in logical pixels: a band along each edge,
@@ -642,8 +620,8 @@ const ALERT_EDGE: [f32; 3] = [0.246, 0.393, 0.752];
 /// from across a desk.
 const ALERT_EDGE_WIDTH: f64 = 3.5;
 
-/// The width of the alert's edge in the physical pixels of an output drawn
-/// at `scale`: never nothing, so a fractional scale still shows it.
+/// The width of the alert's edge in the physical pixels of an output drawn at `scale` : never
+/// nothing, so a fractional scale still shows it.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a few pixels of a display, far inside i32"
@@ -652,8 +630,8 @@ fn alert_edge_width(scale: f64) -> i32 {
     (ALERT_EDGE_WIDTH * scale).round().max(1.0) as i32
 }
 
-/// The four bands of the visual alert's edge, inside `bounds` (output
-/// physical pixels), `width` pixels wide.
+/// The four bands of the visual alert's edge, inside `bounds` (output physical pixels), `width`
+/// pixels wide.
 fn alert_bands(
     bounds: Rectangle<i32, Physical>,
     width: i32,

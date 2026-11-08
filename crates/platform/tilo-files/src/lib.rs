@@ -375,10 +375,6 @@ impl Dir {
 
     /// Creates the directory and any missing parents; an existing directory
     /// is success.
-    ///
-    /// # Errors
-    ///
-    /// A file in the way, or the backend's failure.
     pub async fn create_dir_all(&self, path: &VPath) -> Result<(), FsError> {
         match &self.root {
             Root::Local(local) => local.create_dir_all(path),

@@ -51,10 +51,6 @@ impl Bundle {
     }
 
     /// A string value of the bundle's `Info.plist`, or `None` when absent.
-    ///
-    /// # Errors
-    ///
-    /// `plutil` cannot run.
     pub fn info(&self, key: &str) -> io::Result<Option<String>> {
         let output = Command::new("/usr/bin/plutil")
             .args(["-extract", key, "raw", "-o", "-"])
@@ -71,10 +67,6 @@ impl Bundle {
     /// designated requirement. For a Developer ID build that is its
     /// identifier and team; an ad-hoc build's names its exact hash, which no
     /// other bundle satisfies, so ad-hoc builds never update.
-    ///
-    /// # Errors
-    ///
-    /// The bundle is unsigned or `codesign` cannot read it.
     pub fn designated_requirement(&self) -> io::Result<String> {
         let output = run(Command::new("/usr/bin/codesign")
             .args(["--display", "--requirements", "-"])

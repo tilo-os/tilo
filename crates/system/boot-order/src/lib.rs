@@ -76,9 +76,6 @@ pub trait Host {
     }
 
     /// Runs `efibootmgr` with `args` and returns what it did.
-    ///
-    /// # Errors
-    /// `efibootmgr` could not be started.
     fn efibootmgr(&self, args: &[&str]) -> Result<Output, Refusal> {
         Command::new("efibootmgr")
             .args(args)
@@ -394,10 +391,6 @@ fn checked_state(
 
 /// Appends `boot_id` to `BootOrder` after every check, and reads it back.
 /// Returns what to tell the operator.
-///
-/// # Errors
-/// Any refused check, a firmware change between the checks, `efibootmgr`
-/// failing, or a readback that differs.
 pub fn enlist(host: &dyn Host, boot_id: &str, esp: &str, loader: &str) -> Result<String, Refusal> {
     let (order, originals) = checked_state(host, boot_id, esp, loader)?;
     if order.iter().any(|entry| entry == boot_id) {

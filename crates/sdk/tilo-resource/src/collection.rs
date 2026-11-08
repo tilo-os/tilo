@@ -1811,9 +1811,6 @@ fn conflicting_values(doc: &Doc, (map, key): (&ObjId, &str)) -> Vec<ObjId> {
 /// item, each field from the first copy holding it: the same id made on two
 /// devices is one complete item, never one missing what the other copy
 /// holds. `Ok(true)` when it was read so.
-///
-/// # Errors
-/// Why the item does not read, from its winning copy.
 fn fill_item(
     item: &ModelTable,
     doc: &Doc,

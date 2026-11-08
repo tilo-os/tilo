@@ -32,8 +32,6 @@ pub struct SpeechRecognition {
 impl SpeechRecognition {
     /// Decode bounded quiet-boundary segments through the production engine.
     /// Complete consumes the session; failures cannot be retried against a cache.
-    /// # Errors
-    /// Rejects invalid/non-append audio, native failure and oversized text.
     pub fn transcribe(
         &mut self,
         engine: &mut SpeechEngine,
@@ -46,8 +44,6 @@ impl SpeechRecognition {
 
     /// Decode original PCM after independent acoustic admission. Final speech
     /// never waits for the preview context requirement and never loses samples.
-    /// # Errors
-    /// Rejects detector failures as well as the ordinary recognition failures.
     pub fn transcribe_with_activity(
         &mut self,
         engine: &mut SpeechEngine,

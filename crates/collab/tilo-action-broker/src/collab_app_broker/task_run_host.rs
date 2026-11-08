@@ -105,10 +105,6 @@ impl AppBrokerState {
     /// Join `presentation`, a task agent's (the device's certificate, the
     /// task delegation it signed and the task key's proof), and take its
     /// run: the going run of its issue the tracker holds for it.
-    ///
-    /// # Errors
-    /// The presentation does not verify, its task does not go, or the
-    /// tracker delivered it no run.
     pub fn task_run_host(self: &Arc<Self>, presentation: &[u8]) -> Result<TaskRunHost, String> {
         let decoded = runtime_collab::TaskAgentJoinIdentity::decode(presentation)
             .map_err(|error| format!("the task agent's presentation is malformed: {error}"))?
@@ -234,10 +230,6 @@ impl TaskRunHost {
     /// decides its other steps (its delegation, its issue's and its
     /// starter's live grants, only while it goes), for `caller`, this
     /// host's own execution.
-    ///
-    /// # Errors
-    /// The caller is not this host's, the run no longer goes or is paused,
-    /// or the run's grants refuse the step or would ask first.
     pub(super) fn admit_record_step(
         &self,
         caller: &Caller,
@@ -306,9 +298,6 @@ impl TaskRunHost {
 
     /// Whether the run still goes: its issue holds it going, for this
     /// agent. The connection's authority ends with it.
-    ///
-    /// # Errors
-    /// Why it no longer goes.
     pub fn still_goes(&self) -> Result<(), String> {
         let task = self
             .0

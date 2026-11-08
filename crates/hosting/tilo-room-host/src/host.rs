@@ -238,6 +238,7 @@ impl HostSessions {
             autobind,
             app_serving: wrap(&workspaces, own_plane.clone()),
             carried_calls: Arc::default(),
+            admin: Arc::default(),
             agents: Arc::default(),
             compactor: crate::compaction::Compactor::new(
                 identity.device_signing_key.clone(),
@@ -272,6 +273,9 @@ impl HostSessions {
         .await
         .map_err(HostError::Workspaces)?;
         governance.attach(workspaces.clone());
+        // Sessions ask its governance what a device may do; the lock is set
+        // before the endpoint routes any session to a host that governs here.
+        let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
         #[cfg(any(feature = "agents", feature = "web"))]
         sessions
             .handler
@@ -975,6 +979,9 @@ pub struct RelayProtocol {
     /// Set once when the host starts serving browsers: the workspaces whose
     /// calls it carries.
     pub carried_calls: Arc<std::sync::OnceLock<crate::workspaces::WeakWorkspaces>>,
+    /// Set once when the host governs workspaces: what its sessions answer a
+    /// device's workspace administration with.
+    pub admin: Arc<std::sync::OnceLock<Arc<crate::workspaces::Workspaces>>>,
     pub agents: crate::peer::AgentRegistry,
     pub compactor: crate::compaction::Compactor,
     pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
@@ -1007,6 +1014,7 @@ impl RelayProtocol {
             own_device_public_key: self.identity.cert.device_public_key,
             app_serving: self.app_serving.clone(),
             carried_calls: self.carried_calls.get().cloned(),
+            admin: self.admin.get().cloned(),
             agents: self.agents.clone(),
             positions: Some(crate::position::PositionIssuer::new(
                 &self.identity.signing_key.to_bytes(),

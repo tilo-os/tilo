@@ -78,13 +78,13 @@ const KEY_OPERATION: &str = "desktop.peer-surface.key";
 const KEYFRAME_OPERATION: &str = "desktop.peer-surface.keyframe";
 const END_OPERATION: &str = "desktop.peer-surface.end";
 
-/// How many decoded pictures a tile holds for a paint it has not had yet: up
-/// to two, and the oldest goes once a third arrives.
+/// How many decoded pictures a tile holds for a paint it has not had yet: up to two, and the oldest
+/// goes once a third arrives.
 const PENDING_CEILING: u32 = 2;
 /// Decoding never delays the tile: a unit's picture comes out on a later one.
 const PICTURE_WAIT: Duration = Duration::ZERO;
-/// How long a picture still coming is awaited after its unit was pushed. Past
-/// it the stream is not merely slow, and the next unit is the one to wait on.
+/// How long a picture still coming is awaited after its unit was pushed. Past it the stream is not
+/// merely slow, and the next unit is the one to wait on.
 const LATE_PICTURE_WINDOW: Duration = Duration::from_secs(1);
 /// How long an unanswered keyframe request waits before it is asked again.
 const KEYFRAME_REQUEST_RETRY: Duration = Duration::from_millis(300);
@@ -94,21 +94,19 @@ const KEYFRAME_REQUEST_RETRY: Duration = Duration::from_millis(300);
 pub enum PeerOutcome {
     /// Decoded, and now the tile's newest picture.
     Decoded,
-    /// Decoded, but the tile already held [`PENDING_CEILING`] pictures for a
-    /// paint it has not had: the oldest one is gone.
+    /// Decoded, but the tile already held [`PENDING_CEILING`] pictures for a paint it has not had:
+    /// the oldest one is gone.
     DroppedOldest,
-    /// The decoder took the unit and its picture is still coming. Nothing is
-    /// recorded yet: the picture arrives with a later unit, or through
-    /// [`PeerSurface::collect_late_picture`].
+    /// The decoder took the unit and its picture is still coming. Nothing is recorded yet: the
+    /// picture arrives with a later unit, or through [`PeerSurface::collect_late_picture`].
     Pending,
-    /// The decoder rejected the unit. The deltas after it wait for a
-    /// keyframe, as for [`Self::AwaitingKeyframe`].
+    /// The decoder rejected the unit. The deltas after it wait for a keyframe, as for
+    /// [`Self::AwaitingKeyframe`].
     DecodeFailed,
-    /// A delta whose reference chain is broken: a unit before it never
-    /// arrived, or the stream has not reached its first keyframe.
+    /// A delta whose reference chain is broken: a unit before it never arrived, or the stream has
+    /// not reached its first keyframe.
     AwaitingKeyframe,
-    /// A delta older than one already decoded, overtaken on the way or
-    /// repeated.
+    /// A delta older than one already decoded, overtaken on the way or repeated.
     Stale,
     /// The share ended; nothing is decoded any more.
     Ended,
@@ -128,8 +126,8 @@ pub enum Standing {
     },
 }
 
-/// A surface another device announced it streams, and what this desktop knows
-/// of it beyond the announcement itself.
+/// A surface another device announced it streams, and what this desktop knows of it beyond the
+/// announcement itself.
 #[derive(Debug, Clone)]
 pub struct PeerStreamStart {
     /// The shared surface, as the sender names it.
@@ -147,15 +145,14 @@ pub struct PeerStreamStart {
     pub codec: String,
     /// Codec target bit depth; `0` when the sender does not say.
     pub bit_depth: u8,
-    /// What the sender announced its pictures to be; `None` means SDR
-    /// BT.709.
+    /// What the sender announced its pictures to be; `None` means SDR BT.709.
     pub colorimetry: Option<Colorimetry>,
     /// The HDR10 static metadata of an HDR stream.
     pub hdr: Option<Hdr10Metadata>,
     /// The app whose window is shared.
     pub app_id: String,
-    /// The tab the sender shows the window in, the same id on every device of
-    /// the workspace; `0` when it names none.
+    /// The tab the sender shows the window in, the same id on every device of the workspace; `0`
+    /// when it names none.
     pub tab: TabId,
     /// The sharing device's name, as the person knows it.
     pub sharer: String,
@@ -218,8 +215,8 @@ impl PeerStreamStart {
     }
 }
 
-/// What a tile publishes as its state, read by whoever shows it: a view, a
-/// test, or a host that names the window.
+/// What a tile publishes as its state, read by whoever shows it: a view, a test, or a host that
+/// names the window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeerRead {
     /// The tab the tile stands in.
@@ -248,8 +245,7 @@ pub struct PeerRead {
     pub frames_held: u32,
     /// Pictures dropped because a paint was held.
     pub frames_dropped: u64,
-    /// The colour of the display the tile stands on, which its pictures are
-    /// prepared for.
+    /// The colour of the display the tile stands on, which its pictures are prepared for.
     pub display: DisplayCapabilities,
 }
 
@@ -299,8 +295,7 @@ struct Picture {
     height: u32,
 }
 
-/// One shared surface this desktop shows: its stream, and the state its tile
-/// publishes.
+/// One shared surface this desktop shows: its stream, and the state its tile publishes.
 pub struct PeerSurface {
     tab: TabId,
     peer: PeerId,
@@ -312,8 +307,8 @@ pub struct PeerSurface {
     width: u32,
     height: u32,
     writable: bool,
-    /// The share's own rule for this viewer's input, asked before every event
-    /// rather than copied into a second flag.
+    /// The share's own rule for this viewer's input, asked before every event rather than copied
+    /// into a second flag.
     gate: ShareRegistry,
     standing: Standing,
     awaiting_keyframe: bool,
@@ -324,8 +319,7 @@ pub struct PeerSurface {
     since: Instant,
     revision: u64,
     decoder: VideoDecoder,
-    /// What the stream's pictures are, so a change of display re-plans the
-    /// tone-map.
+    /// What the stream's pictures are, so a change of display re-plans the tone-map.
     colorimetry: Colorimetry,
     /// The colour of the display this tile stands on.
     display: DisplayCapabilities,
@@ -334,11 +328,9 @@ pub struct PeerSurface {
     tonemap: Option<HdrTonemapConfig>,
     /// Which units continue the decoder's reference chain.
     chain: UnitChain,
-    /// The newest unit the chain admitted, named when a keyframe is asked
-    /// for.
+    /// The newest unit the chain admitted, named when a keyframe is asked for.
     last_seq: u64,
-    /// Until when the picture of the latest unit is still awaited, while one
-    /// is still coming.
+    /// Until when the picture of the latest unit is still awaited, while one is still coming.
     late_until: Option<Instant>,
     keyframe_asked: Option<Instant>,
     ended: bool,
@@ -347,15 +339,14 @@ pub struct PeerSurface {
 }
 
 impl PeerSurface {
-    /// The tile for `start`. Its pictures are prepared for SDR until the
-    /// desktop says which display the tab stands on, which it does in the
-    /// pass the tile is made in.
+    /// The tile for `start` . Its pictures are prepared for SDR until the desktop says which
+    /// display the tab stands on, which it does in the pass the tile is made in.
     fn new(start: &PeerStreamStart, tab: TabId) -> Self {
         let colorimetry = start.colorimetry.unwrap_or_default();
         let display = DisplayCapabilities::sdr_default();
         let tonemap = tonemap_for(colorimetry, display);
-        // A codec this build cannot decode still shows the window and its
-        // name: the stream stays in `Started`, and its units decode nothing.
+        // A codec this build cannot decode still shows the window and its name: the stream stays in
+        // `Started` , and its units decode nothing.
         let mut decoder = VideoDecoder::for_stream(&start.codec, start.bit_depth)
             .unwrap_or_else(|_| VideoDecoder::h264());
         decoder.set_picture_wait(PICTURE_WAIT);
@@ -414,15 +405,15 @@ impl PeerSurface {
         self.surface
     }
 
-    /// The colour of the display this tile stands on: the pictures it
-    /// decodes from now on are prepared for it.
+    /// The colour of the display this tile stands on: the pictures it decodes from now on are
+    /// prepared for it.
     #[must_use]
     pub fn display(&self) -> DisplayCapabilities {
         self.display
     }
 
-    /// The tile moved to a display showing `display`, or that display's
-    /// colour changed: pictures decoded from now on are prepared for it.
+    /// The tile moved to a display showing `display` , or that display's colour changed: pictures
+    /// decoded from now on are prepared for it.
     fn set_display(&mut self, display: DisplayCapabilities) {
         if self.display == display {
             return;
@@ -443,8 +434,8 @@ impl PeerSurface {
         self.ended
     }
 
-    /// Changes whenever anything the tile shows changes: a picture, the
-    /// stream's standing, a keyframe asked for.
+    /// Changes whenever anything the tile shows changes: a picture, the stream's standing, a
+    /// keyframe asked for.
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.revision
@@ -474,8 +465,8 @@ impl PeerSurface {
         }
     }
 
-    /// The resource this tile publishes: whose window it is, whether viewers
-    /// may type into it, how its stream stands, and the actions that drive it.
+    /// The resource this tile publishes: whose window it is, whether viewers may type into it, how
+    /// its stream stands, and the actions that drive it.
     #[must_use]
     pub fn resource(&self) -> ResourceSpec {
         ResourceSpec::new(self.resource_id(), KIND, self.title.to_string())
@@ -522,9 +513,8 @@ impl PeerSurface {
         }
     }
 
-    /// Take one encoded unit of the stream: decode it into the tile's newest
-    /// picture, or hold it back when it does not continue the decoder's
-    /// reference chain.
+    /// Take one encoded unit of the stream: decode it into the tile's newest picture, or hold it
+    /// back when it does not continue the decoder's reference chain.
     pub fn push(&mut self, seq: u64, unit: &[u8]) -> PeerOutcome {
         if self.ended {
             return PeerOutcome::Ended;
@@ -554,8 +544,7 @@ impl PeerSurface {
             if pending {
                 return PeerOutcome::Pending;
             }
-            // What the decoder kept of a rejected unit is no base for the
-            // deltas after it.
+            // What the decoder kept of a rejected unit is no base for the deltas after it.
             let broke = self.chain.intact();
             self.chain.lose();
             self.request_keyframe(seq, broke);
@@ -564,10 +553,9 @@ impl PeerSurface {
         self.accept(frame).unwrap_or(PeerOutcome::DecodeFailed)
     }
 
-    /// Show the picture of an earlier unit that finished after its push
-    /// returned, without waiting for another: a window that stopped changing
-    /// would otherwise keep its last picture inside the decoder. `None` when
-    /// none has finished.
+    /// Show the picture of an earlier unit that finished after its push returned, without waiting
+    /// for another: a window that stopped changing would otherwise keep its last picture inside the
+    /// decoder. `None` when none has finished.
     pub fn collect_late_picture(&mut self) -> Option<PeerOutcome> {
         if self.ended {
             return None;
@@ -585,10 +573,9 @@ impl PeerSurface {
         self.decoder.picture_pending()
     }
 
-    /// The deadline at which the tile must be looked at again without a unit
-    /// of its own: a picture still owed past [`LATE_PICTURE_WINDOW`], and a
-    /// decoder still starting up, which announces nothing when it gives up. A
-    /// running stream's picture wakes the host instead
+    /// The deadline at which the tile must be looked at again without a unit of its own: a picture
+    /// still owed past [`LATE_PICTURE_WINDOW`], and a decoder still starting up, which announces
+    /// nothing when it gives up. A running stream's picture wakes the host instead
     /// ([`PeerSurfaces::set_picture_wake`]).
     #[must_use]
     pub fn next_wake(&self) -> Option<Instant> {
@@ -608,8 +595,8 @@ impl PeerSurface {
         self.frames_held = 0;
     }
 
-    /// Accept a decoded picture as the tile's newest, dropping the one held
-    /// for a paint that never came once a third arrives.
+    /// Accept a decoded picture as the tile's newest, dropping the one held for a paint that never
+    /// came once a third arrives.
     fn accept(&mut self, frame: DecodedFrame) -> Option<PeerOutcome> {
         let dropped = self.frames_held >= PENDING_CEILING && self.picture.is_some();
         if dropped {
@@ -636,9 +623,9 @@ impl PeerSurface {
             ),
         };
         if rgba.len() != frame_pixels(frame.width, frame.height) {
-            // A picture the image widget would refuse to paint is no picture:
-            // the tile keeps the one it has and the stream waits for a
-            // keyframe, as for any unit the decoder could not use.
+            // A picture the image widget would refuse to paint is no picture: the tile keeps the
+            // one it has and the stream waits for a keyframe, as for any unit the decoder could not
+            // use.
             let broke = self.chain.intact();
             self.chain.lose();
             self.request_keyframe(self.last_seq, broke);
@@ -659,9 +646,8 @@ impl PeerSurface {
         })
     }
 
-    /// Ask the sender for a keyframe: at once when the chain just broke, and
-    /// again once the last request has gone unanswered for
-    /// [`KEYFRAME_REQUEST_RETRY`].
+    /// Ask the sender for a keyframe: at once when the chain just broke, and again once the last
+    /// request has gone unanswered for [`KEYFRAME_REQUEST_RETRY`].
     fn request_keyframe(&mut self, seq: u64, broke: bool) {
         let due = broke
             || self
@@ -745,8 +731,7 @@ impl PeerSurface {
         Ok(ActionOutput::default())
     }
 
-    /// End the tile's share: nothing is decoded after this, and what the tile
-    /// publishes says why.
+    /// End the tile's share: nothing is decoded after this, and what the tile publishes says why.
     pub fn end(&mut self, why: &str) {
         if self.ended {
             return;
@@ -763,9 +748,8 @@ impl PeerSurface {
         std::mem::take(&mut self.outgoing)
     }
 
-    /// What stands in the tile's place: the newest picture as the image widget
-    /// takes it, or - before one is here - the framework's arriving card
-    /// naming the device the window comes from.
+    /// What stands in the tile's place: the newest picture as the image widget takes it, or -
+    /// before one is here - the framework's arriving card naming the device the window comes from.
     fn content(&self) -> Box<dyn Widget> {
         match &self.picture {
             Some(picture) => Box::new(
@@ -783,8 +767,8 @@ impl PeerSurface {
         }
     }
 
-    /// The shape the placeholder reserves for the window: what the sender
-    /// announced, sixteen by nine until it announces anything.
+    /// The shape the placeholder reserves for the window: what the sender announced, sixteen by
+    /// nine until it announces anything.
     fn aspect(&self) -> MediaAspect {
         if self.width == 0 || self.height == 0 {
             return MediaAspect::Wide;
@@ -793,8 +777,8 @@ impl PeerSurface {
     }
 }
 
-/// The tone-map a stream needs to become a picture on `display`: only an HDR
-/// stream on an SDR output needs one.
+/// The tone-map a stream needs to become a picture on `display` : only an HDR stream on an SDR
+/// output needs one.
 fn tonemap_for(colorimetry: Colorimetry, display: DisplayCapabilities) -> Option<HdrTonemapConfig> {
     let output = OutputColorState::from_display(&display);
     match plan_surface_op(colorimetry, &output, None) {
@@ -812,7 +796,7 @@ fn frame_pixels(width: u32, height: u32) -> usize {
         .saturating_mul(4)
 }
 
-/// `text`, cut to `max` bytes at a character boundary.
+/// `text` , cut to `max` bytes at a character boundary.
 fn bounded(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_owned();
@@ -940,33 +924,30 @@ fn flag(
         .ok_or_else(|| format!("`{name}` is not true or false"))
 }
 
-/// The shared surfaces this desktop shows, by tab, and which tab each
-/// stream's units go to.
+/// The shared surfaces this desktop shows, by tab, and which tab each stream's units go to.
 #[derive(Default)]
 pub struct PeerSurfaces {
     tiles: HashMap<TabId, Rc<RefCell<PeerSurface>>>,
     /// Which tile a stream's units belong to.
     streams: HashMap<(PeerId, SurfaceId), TabId>,
-    /// The revision of each tile the desktop last built, so a picture that
-    /// arrived since is built into the tile again.
+    /// The revision of each tile the desktop last built, so a picture that arrived since is built
+    /// into the tile again.
     built: HashMap<TabId, u64>,
     /// Where a picture that comes out late wakes the host.
     wake: Option<PictureWake>,
 }
 
 impl PeerSurfaces {
-    /// The tile in `tab` stands on a display showing `display`: its
-    /// pictures are prepared for that display from now on. The tab the
-    /// desktop gives no such tile has nothing to change.
+    /// The tile in `tab` stands on a display showing `display` : its pictures are prepared for that
+    /// display from now on. The tab the desktop gives no such tile has nothing to change.
     pub fn set_tile_display(&mut self, tab: TabId, display: DisplayCapabilities) {
         if let Some(tile) = self.tiles.get(&tab) {
             tile.borrow_mut().set_display(display);
         }
     }
 
-    /// Wake `wake` when a pushed picture comes out, so it is collected without
-    /// waiting for another unit: every tile open now, and every one opened
-    /// after.
+    /// Wake `wake` when a pushed picture comes out, so it is collected without waiting for another
+    /// unit: every tile open now, and every one opened after.
     pub fn set_picture_wake(&mut self, wake: Option<PictureWake>) {
         for tile in self.tiles.values() {
             tile.borrow_mut().decoder.set_picture_wake(wake.clone());
@@ -974,9 +955,9 @@ impl PeerSurfaces {
         self.wake = wake;
     }
 
-    /// Show the surface `start` announces in the tab that holds its window:
-    /// the tab the sender names, else the first tab showing another device's
-    /// window of that app. `None` when this desktop has no such tab.
+    /// Show the surface `start` announces in the tab that holds its window: the tab the sender
+    /// names, else the first tab showing another device's window of that app. `None` when this
+    /// desktop has no such tab.
     pub fn start(&mut self, tree: &DesktopTree, start: &PeerStreamStart) -> Option<TabId> {
         let tab = {
             let tiles = &self.tiles;
@@ -993,8 +974,8 @@ impl PeerSurfaces {
         Some(tab)
     }
 
-    /// Take one encoded unit of the stream `peer` shares through `surface`.
-    /// `None` for a stream this desktop shows nowhere.
+    /// Take one encoded unit of the stream `peer` shares through `surface` . `None` for a stream
+    /// this desktop shows nowhere.
     pub fn push(
         &mut self,
         peer: PeerId,
@@ -1007,8 +988,7 @@ impl PeerSurfaces {
         Some(tile.borrow_mut().push(seq, unit))
     }
 
-    /// Show every picture that came out after its unit was pushed. Whether
-    /// any tile changed.
+    /// Show every picture that came out after its unit was pushed. Whether any tile changed.
     pub fn collect_pictures(&mut self) -> bool {
         let mut changed = false;
         for tile in self.tiles.values() {
@@ -1019,8 +999,7 @@ impl PeerSurfaces {
         changed
     }
 
-    /// The tabs whose tile changed since the desktop last built it, and each
-    /// one's revision now.
+    /// The tabs whose tile changed since the desktop last built it, and each one's revision now.
     pub fn take_changed_tabs(&mut self) -> Vec<TabId> {
         let mut changed = Vec::new();
         for (tab, tile) in &self.tiles {
@@ -1040,19 +1019,19 @@ impl PeerSurfaces {
         changed
     }
 
-    /// The tab holding `surface`'s tile, if this desktop still shows it.
+    /// The tab holding `surface` 's tile, if this desktop still shows it.
     #[must_use]
     pub fn tab_of(&self, peer: PeerId, surface: SurfaceId) -> Option<TabId> {
         self.streams.get(&(peer, surface)).copied()
     }
 
-    /// The tile standing in `tab`.
+    /// The tile standing in `tab` .
     #[must_use]
     pub fn tile(&self, tab: TabId) -> Option<&Rc<RefCell<PeerSurface>>> {
         self.tiles.get(&tab)
     }
 
-    /// What `tab`'s tile publishes, as of now.
+    /// What `tab` 's tile publishes, as of now.
     #[must_use]
     pub fn read(&self, tab: TabId) -> Option<PeerRead> {
         self.tiles.get(&tab).map(|tile| tile.borrow().read())
@@ -1066,8 +1045,7 @@ impl PeerSurfaces {
         tabs
     }
 
-    /// `tab`'s tile as its window shows it, for a host asking what to build
-    /// there.
+    /// `tab` 's tile as its window shows it, for a host asking what to build there.
     #[must_use]
     pub fn tile_host(&self, tab: TabId) -> Option<TileHost> {
         let tile = Rc::clone(self.tiles.get(&tab)?);
@@ -1076,8 +1054,8 @@ impl PeerSurfaces {
         )))))
     }
 
-    /// End the share of `surface`: its tile goes, so the tab shows what this
-    /// desktop holds for it again. The tab it stood in, when it stood in one.
+    /// End the share of `surface` : its tile goes, so the tab shows what this desktop holds for it
+    /// again. The tab it stood in, when it stood in one.
     pub fn end(&mut self, peer: PeerId, surface: SurfaceId, why: &str) -> Option<TabId> {
         let tab = self.streams.remove(&(peer, surface))?;
         if let Some(tile) = self.tiles.remove(&tab) {
@@ -1096,10 +1074,9 @@ impl PeerSurfaces {
     }
 }
 
-/// The tab of `tree` a peer's stream of `app_id` mounts into: exactly the tab
-/// it names when that tab shows another device's window, else the first such
-/// tab of its app in the active workspace that `unclaimed` says holds no other
-/// stream.
+/// The tab of `tree` a peer's stream of `app_id` mounts into: exactly the tab it names when that
+/// tab shows another device's window, else the first such tab of its app in the active workspace
+/// that `unclaimed` says holds no other stream.
 fn stream_tab_in(
     tree: &DesktopTree,
     app_id: &str,
@@ -1133,7 +1110,7 @@ fn stream_tab_in(
         .map(|candidate| candidate.id)
 }
 
-/// Every tab of `workspace`, window by window.
+/// Every tab of `workspace` , window by window.
 fn workspace_tabs(workspace: &Workspace) -> impl Iterator<Item = &Tab> {
     workspace
         .strips
@@ -1149,8 +1126,7 @@ pub struct PeerView {
     child: Box<dyn Widget>,
     child_node: Option<NodeId>,
     rect: Rect,
-    /// What the window bar calls the tile, owned because the bar asks for it
-    /// by reference.
+    /// What the window bar calls the tile, owned because the bar asks for it by reference.
     title: String,
 }
 
@@ -1169,8 +1145,8 @@ impl PeerView {
         }
     }
 
-    /// Ask the tile to do `action`, as its resource publishes it: the same
-    /// request anything else driving the tile makes. Whether the tile took it.
+    /// Ask the tile to do `action` , as its resource publishes it: the same request anything else
+    /// driving the tile makes. Whether the tile took it.
     fn ask(
         &self,
         action: PeerAction,
@@ -1179,8 +1155,8 @@ impl PeerView {
         self.state.borrow_mut().act(action, arguments).is_ok()
     }
 
-    /// Where a point in the tile is in the sender's own pixels, so a click on
-    /// a scaled picture lands where the person pointed.
+    /// Where a point in the tile is in the sender's own pixels, so a click on a scaled picture
+    /// lands where the person pointed.
     fn stream_point(&self, point: Point) -> (f64, f64) {
         let state = self.state.borrow();
         if self.rect.width() <= 0.0
@@ -1197,8 +1173,8 @@ impl PeerView {
     }
 }
 
-/// One key of the keyboard as the wire names it: a Linux evdev key code, which
-/// the owner translates into its own keyboard.
+/// One key of the keyboard as the wire names it: a Linux evdev key code, which the owner translates
+/// into its own keyboard.
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per key: the wire's code for each key of the keyboard"
@@ -1313,8 +1289,7 @@ fn evdev_keycode(code: winit::keyboard::KeyCode) -> Option<u32> {
     Some(code)
 }
 
-/// The wire's name for a pointer button: the libinput code the owner's
-/// compositor replays.
+/// The wire's name for a pointer button: the libinput code the owner's compositor replays.
 fn evdev_button(button: winit::event::MouseButton) -> u32 {
     use winit::event::MouseButton;
     match button {
@@ -1357,8 +1332,8 @@ impl Widget for PeerView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        // The picture fills the window however the window was sized: a share
-        // that changes resolution keeps its tile's box.
+        // The picture fills the window however the window was sized: a share that changes
+        // resolution keeps its tile's box.
         let mut style = taffy.style(child).cloned().unwrap_or_default();
         style.position = Position::Absolute;
         style.size = Size {
@@ -1413,9 +1388,8 @@ impl Widget for PeerView {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    /// A person's pointer and keys are the tile's own actions, asked exactly
-    /// as anything else driving the tile asks them: the share's rule refuses
-    /// them the same way for both.
+    /// A person's pointer and keys are the tile's own actions, asked exactly as anything else
+    /// driving the tile asks them: the share's rule refuses them the same way for both.
     fn handle_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut EventCtx<'_>) {
         use winit::event::{ElementState, WindowEvent};
         match event {
@@ -1446,8 +1420,8 @@ impl Widget for PeerView {
                 if self.ask(PeerAction::PointerButton, &arguments) {
                     *ctx.handled = true;
                     if *state == ElementState::Pressed {
-                        // Clicking a window puts the keyboard on it: the keys
-                        // that follow are meant for the shared one.
+                        // Clicking a window puts the keyboard on it: the keys that follow are meant
+                        // for the shared one.
                         *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
@@ -1495,8 +1469,8 @@ impl Widget for PeerView {
         self.child.mark_drawn();
     }
 
-    /// The tile's own deadlines besides its child's: a picture still owed, and
-    /// a decoder still starting up.
+    /// The tile's own deadlines besides its child's: a picture still owed, and a decoder still
+    /// starting up.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let own = self.state.borrow().next_wake();
         let child = self.child.next_wake_deadline();
@@ -1567,9 +1541,8 @@ impl ResourceOperations for PeerView {
     }
 }
 
-/// What a host's [`TileSource`](crate::TileSource) answers with while a peer
-/// streams into a tab: the share's own tile there, and everything else from
-/// the host.
+/// What a host's [`TileSource`](crate::TileSource) answers with while a peer streams into a tab:
+/// the share's own tile there, and everything else from the host.
 pub struct PeerTiles {
     inner: Box<dyn crate::TileSource>,
     peers: Rc<RefCell<PeerSurfaces>>,
@@ -1645,9 +1618,8 @@ impl super::DesktopHandle {
         tab
     }
 
-    /// One encoded unit of a shared stream ([`NeighbourMsg::SurfaceFrame`])
-    /// goes to the decoder of the tile showing that surface. `None` for a
-    /// stream this desktop shows nowhere.
+    /// One encoded unit of a shared stream ([`NeighbourMsg::SurfaceFrame`]) goes to the decoder of
+    /// the tile showing that surface. `None` for a stream this desktop shows nowhere.
     pub fn peer_surface_frame(&self, message: &NeighbourMsg) -> Option<PeerOutcome> {
         let NeighbourMsg::SurfaceFrame {
             surface,
@@ -1665,9 +1637,8 @@ impl super::DesktopHandle {
             .push(*source_peer, *surface, *seq, encoded_h264)
     }
 
-    /// The share of `surface` ended ([`NeighbourMsg::SurfaceStreamEnd`]), and
-    /// why: its tile goes, and the tab shows what this desktop holds for it
-    /// again.
+    /// The share of `surface` ended ([`NeighbourMsg::SurfaceStreamEnd`]), and why: its tile goes,
+    /// and the tab shows what this desktop holds for it again.
     pub fn end_peer_surface(&self, peer: PeerId, surface: SurfaceId, why: &str) -> Option<TabId> {
         let peers = Rc::clone(&self.shared.borrow().peers);
         let tab = peers.borrow_mut().end(peer, surface, why);
@@ -1677,22 +1648,22 @@ impl super::DesktopHandle {
         tab
     }
 
-    /// What is left for the owner of each shared window in order: remote input
-    /// and keyframe requests, to be sent as they are.
+    /// What is left for the owner of each shared window in order: remote input and keyframe
+    /// requests, to be sent as they are.
     pub fn take_peer_outgoing(&self) -> Vec<NeighbourMsg> {
         let peers = Rc::clone(&self.shared.borrow().peers);
         peers.borrow().take_outgoing()
     }
 
-    /// What `tab`'s shared window publishes now: whose it is, how its stream
-    /// stands, and the picture it shows.
+    /// What `tab` 's shared window publishes now: whose it is, how its stream stands, and the
+    /// picture it shows.
     pub fn peer_surface_read(&self, tab: TabId) -> Option<PeerRead> {
         let peers = Rc::clone(&self.shared.borrow().peers);
         peers.borrow().read(tab)
     }
 
-    /// Wake `wake` when a pushed picture comes out, so a window that stopped
-    /// changing still shows the last one: this desktop's event loop.
+    /// Wake `wake` when a pushed picture comes out, so a window that stopped changing still shows
+    /// the last one: this desktop's event loop.
     pub fn set_peer_picture_wake(&self, wake: Option<PictureWake>) {
         let peers = Rc::clone(&self.shared.borrow().peers);
         peers.borrow_mut().set_picture_wake(wake);
@@ -1705,9 +1676,8 @@ impl super::DesktopHandle {
         peers.borrow().tabs()
     }
 
-    /// The monitor of the display the tile in `tab` stands on, while the
-    /// desk spreads over several; `None` when one picture is shown on every
-    /// output, or the tile stands nowhere.
+    /// The monitor of the display the tile in `tab` stands on, while the desk spreads over several;
+    /// `None` when one picture is shown on every output, or the tile stands nowhere.
     #[must_use]
     pub fn peer_surface_display(&self, tab: TabId) -> Option<String> {
         self.read(|tree| {
@@ -1720,8 +1690,8 @@ impl super::DesktopHandle {
         })
     }
 
-    /// The tile in `tab` stands on a display showing `display`'s colour:
-    /// the pictures it decodes from now on are prepared for it.
+    /// The tile in `tab` stands on a display showing `display` 's colour: the pictures it decodes
+    /// from now on are prepared for it.
     pub fn set_peer_display(&self, tab: TabId, display: DisplayCapabilities) {
         let peers = Rc::clone(&self.shared.borrow().peers);
         peers.borrow_mut().set_tile_display(tab, display);
@@ -1729,10 +1699,9 @@ impl super::DesktopHandle {
 }
 
 impl super::DesktopSurface {
-    /// Collect the pictures a shared window's decoder finished after its unit
-    /// was pushed, and ask for the tile of every shared window whose stream
-    /// changed to be built again, so the picture that arrived lands in it.
-    /// Whether anything changed.
+    /// Collect the pictures a shared window's decoder finished after its unit was pushed, and ask
+    /// for the tile of every shared window whose stream changed to be built again, so the picture
+    /// that arrived lands in it. Whether anything changed.
     pub(super) fn follow_peer_streams(&self) -> bool {
         let peers = Rc::clone(&self.shared.borrow().peers);
         let (collected, changed) = {

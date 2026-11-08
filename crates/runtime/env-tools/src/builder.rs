@@ -38,10 +38,6 @@ pub const DNF_OPTIONS: &[&str] = &[
 /// built. Implemented over the package store; a fake in tests.
 pub trait ToolStore {
     /// The materialised, read-only root of an env-runtime image.
-    ///
-    /// # Errors
-    ///
-    /// The runtime can't be fetched, verified or materialised.
     fn runtime_tree(&self, runtime: &PackageId) -> anyhow::Result<PathBuf>;
 
     /// Whether `tool` is in the store (so an index entry naming it is good).

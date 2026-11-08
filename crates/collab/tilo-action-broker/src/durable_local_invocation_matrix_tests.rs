@@ -125,6 +125,35 @@ mod durable_local_matrix {
             self.owner_task.abort();
         }
     }
+    impl Environment {
+        /// Moves the environment to its own person's cluster.
+        fn rehome_personal(&mut self) {
+            let personal = collab_types::personal_cluster(&self.cert.user_public_key).to_string();
+            self.rehome(&personal);
+        }
+
+        /// Moves the environment's one workspace to `workspace`, its policy
+        /// rehomed with it.
+        fn rehome(&mut self, workspace: &str) {
+            self.route.cluster_id = workspace.to_string();
+            let workspace_id = tilo_desktop_model::WorkspaceId::parse(workspace).unwrap();
+            let mut membership = self.membership.write();
+            let before = membership
+                .workspaces
+                .first()
+                .cloned()
+                .expect("the environment has one workspace");
+            let mut moved =
+                tilo_desktop_model::Workspace::in_workspace(before.slot, workspace_id, before.name);
+            moved.strips = before.strips;
+            moved.policy = before.policy;
+            moved.policy.rehome(workspace_id.to_string());
+            *membership
+                .workspaces
+                .first_mut()
+                .expect("the environment has one workspace") = moved;
+        }
+    }
     struct Rig {
         state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,

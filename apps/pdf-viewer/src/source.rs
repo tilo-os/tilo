@@ -169,12 +169,6 @@ pub struct LoadedDoc {
 
 /// Load a PDF from `path` through the shared PDF engine. Pages the shared
 /// page plan imports are read from `content` by hash.
-///
-/// # Errors
-///
-/// Returns an error if `path` cannot be read, if the PDF engine is not
-/// available on this host, or if it cannot parse the bytes as a PDF within
-/// the reader's page and geometry limits.
 pub fn open(path: &Path, content: &ContentStore) -> anyhow::Result<LoadedDoc> {
     let t = ui::time::now();
     let bytes = read_file_bounded(path, MAX_OPEN_BYTES)?;
@@ -486,10 +480,6 @@ impl RasterBackend {
 
     /// The markup and form values already in the opened document, for the
     /// record to take over.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the engine cannot read a page's annotations.
     pub fn existing(&self) -> anyhow::Result<crate::adopt::Existing> {
         let source = self
             .sources
@@ -2020,10 +2010,6 @@ impl RasterHandle {
     /// Replace this viewer's read-ahead text layers with `batch`, most
     /// important first; an empty batch cancels them. Served after all
     /// other page work.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped or is unavailable.
     pub fn request_texts(&self, batch: TextBatch) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Texts(batch))
     }

@@ -32,9 +32,6 @@ impl RemoteConnector {
     /// The connector at the far end of `stream`. A thread reads what it says, sets `woken` and
     /// calls `wake` whenever it said something, and sets `reconnected` when the device is online
     /// again.
-    ///
-    /// # Errors
-    /// The socket cannot be shared with the reading thread.
     pub fn new(
         stream: UnixStream,
         woken: Arc<AtomicBool>,

@@ -26,11 +26,6 @@ pub const CONTENT_PUTS_UNAVAILABLE: &str = "content uploads are not available he
 pub trait ContentPuts: Send + Sync {
     /// Open an upload of exactly `size` bytes into the content store of
     /// `caller`'s workspace.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a caller that may not add content to the workspace, a size the
-    /// store does not take, or a store that cannot be reached.
     fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError>;
 }
 
@@ -47,18 +42,8 @@ pub trait ContentPut: Send {
     /// `offset` must be exactly what was accepted so far, so a chunk sent
     /// again is refused, never stored twice; the refusal names the offset
     /// to resume at.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a wrong offset, a chunk past the upload's size, or a store
-    /// failure (which ends the upload).
     fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionHostError>;
 
     /// Store the content and answer its reference, `tilo.content:<hash>`.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an upload short of its size, a caller no longer allowed to
-    /// add content to the workspace, or a store failure. Nothing is stored then.
     fn finish(self: Box<Self>) -> Result<String, ActionHostError>;
 }

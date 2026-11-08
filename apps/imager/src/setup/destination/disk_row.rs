@@ -5,8 +5,8 @@
 //! meta column, and the device path with what the disk holds is the
 //! secondary line. A disk that cannot be chosen says why on its own row,
 //! because a control that is off with no reason reads as a fault. Choosing
-//! it, by click, Enter or Space, or assistive activation, fires its
-//! [`Control`]: the disk's published `select` action, which the
+//! it, by click, Enter or Space, or assistive activation, fires
+//! its [`Control`]: the disk's published `select` action, which the
 //! [`crate::setup::destination::installer_app::InstallerApp`] runs through
 //! its action door.
 

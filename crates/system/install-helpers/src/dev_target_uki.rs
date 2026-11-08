@@ -82,9 +82,6 @@ const PAYLOAD: [&str; 4] = [".linux", ".initrd", ".cmdline", ".dtb"];
 pub trait Host {
     /// A tool's stripped standard output (180 s timeout, nonzero exit
     /// refused with its standard error).
-    ///
-    /// # Errors
-    /// The tool failing, missing or timing out.
     fn command(&self, argv: &[&str]) -> Result<String> {
         let output = crate::process::run(argv, None, TIMEOUT)?;
         let stderr = String::from_utf8_lossy(&output.stderr);

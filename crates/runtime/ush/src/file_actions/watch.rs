@@ -8,10 +8,6 @@ use crate::broker::{BrokerState, Shared, poll_fds, pollfd};
 
 /// Start the thread that carries out the environment's queued file actions
 /// for the session's broker, until the broker stops.
-///
-/// # Errors
-///
-/// The thread could not be started.
 pub(crate) fn spawn(
     state: Arc<Mutex<BrokerState>>,
     shared: Arc<Shared>,

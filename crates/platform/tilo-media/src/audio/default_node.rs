@@ -34,37 +34,21 @@ pub struct VolumeState {
 
 /// Read `node`'s level and mute flag together: a sink at 0.60 that is muted
 /// is silent, and asking twice would race a media key pressed in between.
-///
-/// # Errors
-///
-/// When `wpctl` is missing, fails, or prints something unreadable.
 pub fn volume_state(node: DefaultNode) -> Result<VolumeState, String> {
     parse_volume_state(&capture(&["get-volume", node.token()])?)
 }
 
 /// Set `node`'s level to `pct` percent, clamped to `0..=100`.
-///
-/// # Errors
-///
-/// When `wpctl` is missing or fails.
 pub fn set_volume(node: DefaultNode, pct: f32) -> Result<(), String> {
     run(&["set-volume", node.token(), &volume_arg(pct)])
 }
 
 /// Mute or unmute `node`.
-///
-/// # Errors
-///
-/// When `wpctl` is missing or fails.
 pub fn set_mute(node: DefaultNode, muted: bool) -> Result<(), String> {
     run(&["set-mute", node.token(), if muted { "1" } else { "0" }])
 }
 
 /// Toggle `node`'s mute flag.
-///
-/// # Errors
-///
-/// When `wpctl` is missing or fails.
 pub fn toggle_mute(node: DefaultNode) -> Result<(), String> {
     run(&["set-mute", node.token(), "toggle"])
 }
@@ -77,10 +61,6 @@ pub fn has_output_device() -> bool {
 }
 
 /// `node`'s `object.serial`: the handle a capture stream's `--target` takes.
-///
-/// # Errors
-///
-/// When `wpctl` is missing or fails, or the device has no serial.
 pub fn object_serial(node: DefaultNode) -> Result<String, String> {
     let inspect = capture(&["inspect", node.token()])?;
     parse_object_serial(&inspect).ok_or_else(|| "the default device has no object serial".into())

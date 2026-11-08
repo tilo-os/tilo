@@ -178,11 +178,16 @@ mod page_theme;
 mod page_person;
 #[cfg(target_arch = "wasm32")]
 mod peer;
+// The page's presence on its workspaces' boards.
 #[cfg(target_arch = "wasm32")]
-#[cfg(target_arch = "wasm32")]
+mod peer_presence;
 // The person's own records each window holds: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod person_records;
+// What a page times of the members' presence itself: its tests run on the
+// host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod presence_clock;
 #[cfg(target_arch = "wasm32")]
 mod replication;
 #[cfg(target_arch = "wasm32")]

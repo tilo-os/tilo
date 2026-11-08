@@ -109,8 +109,8 @@ fn serialize(snap: &WorkbookSnapshot, styles: Option<Vec<u8>>) -> Result<Vec<u8>
 }
 
 /// A `styles.xml` declaring `office_styles` — `<style:style>` and
-/// `<number:*-style>` elements — as common styles, for
-/// [`OdsCodec::export_snapshot`]: a cell's style ref can then name any of them.
+/// `<number:*-style>` elements — as common styles,
+/// for [`OdsCodec::export_snapshot`]: a cell's style ref can then name any of them.
 pub fn common_styles_part(office_styles: &str) -> Vec<u8> {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

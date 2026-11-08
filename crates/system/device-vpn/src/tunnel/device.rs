@@ -21,10 +21,6 @@ pub struct TunDevice {
 #[cfg(target_os = "linux")]
 impl TunDevice {
     /// Drive `fd` without blocking. Must be called inside a Tokio runtime.
-    ///
-    /// # Errors
-    ///
-    /// The descriptor cannot be made non-blocking or registered.
     pub fn new(fd: std::os::fd::OwnedFd) -> io::Result<Self> {
         use std::os::fd::AsRawFd as _;
         // SAFETY: plain flag changes on a descriptor this value owns.

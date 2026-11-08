@@ -827,8 +827,8 @@ impl StructureChange {
     }
 }
 
-/// Optional cross-device continuation capability for an app root, deliberately separate from
-/// [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
+/// Optional cross-device continuation capability for an app root, deliberately separate
+/// from [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
 /// [`Widget::provide`] without weakening their UI integration.
 pub trait Continuable {
     /// Return a compact, path-free projection of state that may be resumed on
@@ -1797,8 +1797,8 @@ pub trait Widget {
     /// directly. Content that frames nothing ignores it.
     fn set_full_bleed(&mut self, _full_bleed: bool) {}
 
-    /// The form's validation verdict for this control, set by
-    /// [`Field::with_error`]: an invalid control edges itself in danger ink
+    /// The form's validation verdict for this control, set
+    /// by [`Field::with_error`]: an invalid control edges itself in danger ink
     /// and reports `invalid` to assistive technology. Controls without a
     /// field face ignore it.
     fn set_invalid(&mut self, _invalid: bool) {}
@@ -2377,8 +2377,8 @@ pub trait Widget {
     /// [`Self::take_structure_dirty`], saying whether the frame's damage can
     /// still describe the rebuild ([`StructureChange::Described`]). Reading
     /// clears what `take_structure_dirty` clears; the two must agree on
-    /// whether there is a change. The default is the flag, as a
-    /// [`StructureChange::Rebuild`]: only a widget that knows every pixel its
+    /// whether there is a change. The default is the flag, as
+    /// a [`StructureChange::Rebuild`]: only a widget that knows every pixel its
     /// change touches lands in its own damage says less, and a container
     /// forwards a child's [`StructureChange::Described`] only by overriding
     /// this.
@@ -2387,8 +2387,8 @@ pub trait Widget {
     }
 
     /// This widget's own layout node while the widgets under it are laid
-    /// out again in place, in it, by the coming
-    /// [`Self::remount_children`]: it then names none of them through
+    /// out again in place, in it, by the
+    /// coming [`Self::remount_children`]: it then names none of them through
     /// [`Self::for_each_layout_child`], and the host lets go of every node
     /// under this one, as their widgets may be gone. `None` (the default)
     /// otherwise.
@@ -3043,9 +3043,9 @@ mod layout_info;
 pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
-    Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
-    ManualConflict, ManualLayout, PageLayout, RowLayout, ScrollDirection, ScrollLayout,
-    SectionLayout,
+    Density, Effective, FieldLayout, FormLayout, HeaderRow, HeaderRows, LabelPlacement, LayoutInfo,
+    LayoutOrigin, ManualConflict, ManualLayout, PageLayout, RowLayout, ScrollDirection,
+    ScrollLayout, SectionLayout,
 };
 mod embedded;
 pub use embedded::Embedded;
@@ -3437,6 +3437,7 @@ pub use chart::{
     TrendRange, TrendStyle,
 };
 pub(crate) mod chart_data;
+pub(crate) mod chart_geometry;
 pub(crate) mod chart_labels;
 pub use chart_data::{ChartItem, ChartLink, ChartNode, GraphSelection};
 pub mod chart_legend;
@@ -3516,8 +3517,9 @@ mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
-    RowActionRects, RowGroup, RowRenameField, RowSelection, RowSelectionSink, TREE_DISCLOSURE,
-    TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel, VirtualList, VirtualListProps,
+    RowActionRects, RowBuild, RowGroup, RowRenameField, RowSelection, RowSelectionSink,
+    TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel, VirtualList,
+    VirtualListProps,
 };
 mod activation;
 pub(crate) mod control_verb;

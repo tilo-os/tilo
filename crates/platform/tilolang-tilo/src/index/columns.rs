@@ -201,9 +201,6 @@ pub fn lit(field: &FieldSchema, value: FieldValue) -> Lit {
 /// (as the index holds them, a collection as the [`FieldValue::Counter`] of its items): one
 /// per member of a set, the empty value for none. `clock` is the time the column is written at,
 /// which a filter reading the time reads ([`super::Clock`]).
-///
-/// # Errors
-/// A field cannot be read.
 pub fn values(
     column: &ColumnSchema,
     schema: &TypeSchema,

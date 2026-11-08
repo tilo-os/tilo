@@ -80,8 +80,6 @@ pub fn validate_profile(profile: &Path) -> io::Result<()> {
 }
 
 /// The same persistent profile is used by daemon, app attachment and MCP proxy.
-/// # Errors
-/// Rejects a missing home directory or a relative profile override.
 pub fn default_profile() -> io::Result<PathBuf> {
     let path = if let Some(value) = std::env::var_os("TILO_RUNTIME_PROFILE") {
         PathBuf::from(value)
@@ -101,8 +99,6 @@ pub fn default_profile() -> io::Result<PathBuf> {
 }
 
 /// Parse native modes while preserving opaque application arguments.
-/// # Errors
-/// Rejects ambiguous modes, missing arguments and relative profiles.
 pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Args> {
     let mut arguments = arguments.into_iter();
     let mut profile = None;
@@ -783,8 +779,6 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
 }
 
 /// Start the existing native endpoint under an existing-owner admission policy.
-/// # Errors
-/// Refuses invalid owner/identity, profile, services or endpoint custody.
 pub fn serve_admission<S: RuntimeServices>(profile: &Path, owner_uid: u32) -> io::Result<()> {
     serve_profile::<S>(profile, StartupPolicy::Admission { owner_uid })
 }

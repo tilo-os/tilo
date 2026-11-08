@@ -89,9 +89,6 @@ pub trait ContentShelf: Send + Sync {
     /// The bytes of `hash`, when this device keeps them under `scope`.
     fn read(&self, scope: &ContentScope, hash: &str) -> Option<Vec<u8>>;
     /// Keep `bytes`, whose hash is `hash`, under `scope`.
-    ///
-    /// # Errors
-    /// Returns why the store would not keep them.
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String>;
 }
 

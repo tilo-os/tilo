@@ -32,9 +32,6 @@ pub struct Counter {
 
 impl Counter {
     /// The count stays within a million either way.
-    ///
-    /// # Errors
-    /// Refuses a count past the limit.
     pub fn within_limit(&self) -> Result<(), Refusal> {
         if self.count.abs() > LIMIT {
             return Err(Refusal::new("the count is limited to a million either way"));

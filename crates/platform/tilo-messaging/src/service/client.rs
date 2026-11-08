@@ -118,9 +118,6 @@ impl Connection {
     /// Connect to the service at `socket` as `app_id`, writing the handoff
     /// the launcher writes for a launched app. For a trusted host that shows
     /// Messages in its own process.
-    ///
-    /// # Errors
-    /// The service is not there or refused the handoff.
     pub fn connect(socket: &std::path::Path, app_id: &str) -> std::io::Result<Arc<Self>> {
         let mut stream = UnixStream::connect(socket)?;
         write_handoff(&mut stream, app_id)?;
@@ -128,9 +125,6 @@ impl Connection {
     }
 
     /// A connection over a stream whose handoff was written.
-    ///
-    /// # Errors
-    /// The reading thread could not be started.
     pub fn over(stream: UnixStream) -> std::io::Result<Arc<Self>> {
         let state = Arc::new(State {
             snapshot: RwLock::default(),
@@ -210,9 +204,6 @@ impl Connection {
     }
 
     /// The person's answer to one request; for Passwords.
-    ///
-    /// # Errors
-    /// The request is gone or the service refused the answer.
     pub fn decide(&self, proposal: &str, decision: super::wire::Decision) -> Result<(), SendError> {
         match self.link.call_blocking(
             Call::Decide {
@@ -237,9 +228,6 @@ impl Connection {
 }
 
 /// Write the launcher's handoff for `app_id`.
-///
-/// # Errors
-/// The stream refused the write.
 pub fn write_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let body = serde_json::to_vec(&Handoff {

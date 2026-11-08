@@ -157,10 +157,6 @@ impl AttachedView {
     /// Mount `definition`'s view over the record `document` holds in
     /// `workspace`, for `me` with `permissions`. `created` when `me` just created
     /// the record, so the first [`Self::take_changes`] sends it whole.
-    ///
-    /// # Errors
-    /// Returns why the record could not be held or the view would not open
-    /// over it.
     pub fn open(
         definition: &'static ApplicationDefinition,
         workspace: &str,
@@ -383,11 +379,6 @@ impl AttachedView {
     /// exactly as for a person's click (`confirmed` when the person it acts
     /// for confirmed it). The change it made leaves with
     /// [`Self::take_changes`].
-    ///
-    /// # Errors
-    /// The door's refusal: an address the view does not offer the
-    /// participant, a needed confirmation, bad arguments, or the action's
-    /// own failure.
     pub fn invoke(
         &mut self,
         address: &ActionAddress,

@@ -106,10 +106,6 @@ impl ModerationService {
     }
 
     /// Fetch a pending submission by package id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the durable submission cannot be read.
     pub fn pending(
         &self,
         submission_id: &str,
@@ -118,21 +114,12 @@ impl ModerationService {
     }
 
     /// List pending publisher submissions. Ordering is not defined.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the durable queue cannot be read.
     pub fn pending_submissions(&self) -> Result<Vec<PendingSubmission>, ModerationError> {
         Ok(self.storage.load_pending_submissions()?)
     }
 
     /// Approve a pending request after re-verifying it against the current
     /// owner allowlist, then apply it to the public index.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the submission is missing, no longer trusted,
-    /// conflicts with public state, or cannot be persisted atomically.
     pub fn approve(
         &self,
         reviewed_submission: &PendingSubmission,
@@ -429,11 +416,6 @@ impl ModerationService {
     ///
     /// Rejection intentionally does not re-verify, so a revoked or malformed
     /// publisher request cannot become permanently stuck in `pending/`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the submission is missing or the decision cannot
-    /// be persisted atomically.
     pub fn reject(
         &self,
         submission_id: &str,
@@ -497,11 +479,6 @@ impl ModerationService {
     }
 
     /// Remove a public entry from visibility while retaining it in quarantine.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry is missing or the quarantine transition
-    /// cannot be persisted atomically.
     pub fn quarantine(
         &self,
         package_id: &str,
@@ -553,11 +530,6 @@ impl ModerationService {
 
     /// Return a quarantined entry to visibility after fresh signature and
     /// allowlist verification.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry is not quarantined, is no longer
-    /// trusted, conflicts with public state, or cannot be persisted atomically.
     pub fn restore_quarantined(
         &self,
         package_id: &str,

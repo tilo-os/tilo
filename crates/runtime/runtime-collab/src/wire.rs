@@ -50,8 +50,8 @@ pub enum Operation {
     /// Join a channel, answered with [`Reply::Opened`] once the workspace is
     /// ready for apps to open documents in.
     Join(Join),
-    /// Where the workspace a channel key names stands, answered as
-    /// [`Reply::Workspace`]: now, or once it is no longer `seen`.
+    /// Where the workspace a channel key names stands, answered
+    /// as [`Reply::Workspace`]: now, or once it is no longer `seen`.
     Workspace {
         channel: String,
         seen: Option<WorkspaceStatus>,

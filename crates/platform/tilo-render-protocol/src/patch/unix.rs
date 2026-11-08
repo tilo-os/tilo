@@ -32,9 +32,6 @@ pub struct ChannelTransport {
 
 impl ChannelTransport {
     /// Batches over `channel`, which receives without waiting from now on.
-    ///
-    /// # Errors
-    /// The channel's descriptor cannot be made non-blocking.
     pub fn new(channel: Channel) -> io::Result<Self> {
         channel.set_nonblocking(true)?;
         Ok(Self { channel })

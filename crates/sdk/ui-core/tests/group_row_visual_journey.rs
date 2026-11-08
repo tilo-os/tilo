@@ -94,7 +94,6 @@ fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
 
 #[test]
 fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
-    // Case `group_row_visual_journey_distinguishes_all_states`.
     // Every state must produce a distinct pixel hash; if any two match, a
     // layout or paint invariant has regressed.
     {
@@ -159,7 +158,6 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
         group_row_visual_journey_distinguishes_all_states();
     }
 
-    // Case `group_row_fresh_render_is_deterministic`.
     // Without this, the journey test's pixel-hash comparisons are
     // meaningless. "The same image" isn't "the same bytes": the GPU
     // rasteriser may move an antialiased edge pixel one 8-bit step between
@@ -200,7 +198,6 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
 )]
 #[test]
 fn group_row_maximize_and_reorder_paint_visibly() {
-    // Case `group_row_maximized_paints_distinct_pixels_and_fades_siblings`.
     // Verified by checking the maximized group's stored rect absorbs the
     // row's full inner width while fading siblings keep their tiled width.
     {
@@ -262,7 +259,6 @@ fn group_row_maximize_and_reorder_paint_visibly() {
         group_row_maximized_paints_distinct_pixels_and_fades_siblings();
     }
 
-    // Case `group_row_reorder_drop_indicator_is_visible_mid_drag`.
     // Grab a group's tab-bar background, drag past a sibling, and render the
     // in-flight state — the drop-rule accent at the target gap must make the
     // frame visibly differ from the idle strip.

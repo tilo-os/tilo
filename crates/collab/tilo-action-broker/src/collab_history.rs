@@ -59,11 +59,6 @@ impl Unsynced {
     }
 
     /// Sync every file written, so what was recorded survives a crash.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first sync's I/O error; the files after it are still
-    /// synced.
     pub fn sync(self) -> std::io::Result<()> {
         let mut first = Ok(());
         for file in self.0 {
@@ -256,10 +251,6 @@ impl HeldRecord {
 
 impl CollabHistoryStore {
     /// Open (creating, mode 0700) the store at `root`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error when the directory cannot be created.
     pub fn open(root: PathBuf) -> std::io::Result<Self> {
         fs::create_dir_all(&root)?;
         #[cfg(unix)]
@@ -306,10 +297,6 @@ impl CollabHistoryStore {
 
     /// Append a validated op, if it belongs in durable history, leaving its
     /// sync to the caller.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error; the op is still fanned out live by the caller.
     pub fn record(&mut self, op: &SignedOp) -> std::io::Result<Unsynced> {
         if !Self::retains(op) {
             return Ok(Unsynced::default());
@@ -321,10 +308,6 @@ impl CollabHistoryStore {
     /// data sync for the whole batch, left to the caller; returns how many
     /// were new. Callers have already filtered the ops to retained
     /// ciphertext of `artifact`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error of the append; then none of the batch is new.
     pub fn record_all_if_new(
         &mut self,
         artifact: ArtifactId,
@@ -339,10 +322,6 @@ impl CollabHistoryStore {
     /// Remember that `artifact`'s history belongs to the workspace `cluster_id`,
     /// beside its log, so a later session still knows which workspace's members
     /// may page through it. The binding's sync is left to the caller.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error of writing the binding.
     pub fn bind_workspace(
         &mut self,
         artifact: ArtifactId,
@@ -438,10 +417,6 @@ impl CollabHistoryStore {
     /// app `app_id` in the workspace `cluster_id` ([`Self::bind_workspace`] included),
     /// so a later session still knows the records it holds there
     /// ([`Self::records_in`]). The binding's sync is left to the caller.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error of writing the binding.
     pub fn bind_record(
         &mut self,
         artifact: ArtifactId,

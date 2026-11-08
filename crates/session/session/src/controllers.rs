@@ -34,28 +34,26 @@ const READ_BUDGET: usize = 64;
 /// One controller, as the system names it.
 pub type ControllerId = PhysicalGamepadId;
 
-/// A descriptor the session's loop should (stop) polling, so controller
-/// input wakes the desktop instead of waiting for its next turn.
+/// A descriptor the session's loop should (stop) polling, so controller input wakes the desktop
+/// instead of waiting for its next turn.
 #[derive(Debug)]
 pub enum ControllerWake {
     Watch { key: u64, fd: OwnedFd },
     Unwatch { key: u64 },
 }
 
-/// Where the controllers come from: the machine's evdev devices, or a
-/// stand-in for a test.
+/// Where the controllers come from: the machine's evdev devices, or a stand-in for a test.
 pub trait GamepadSources {
-    /// Whether the controllers attached may have changed since the last
-    /// look, without anything else happening.
+    /// Whether the controllers attached may have changed since the last look, without anything else
+    /// happening.
     fn changed(&mut self) -> bool;
 
-    /// The controllers attached now, by id and printed legend: the ones the
-    /// person can drive the desktop with. A leased one is absent until its
-    /// lease ends.
+    /// The controllers attached now, by id and printed legend: the ones the person can drive the
+    /// desktop with. A leased one is absent until its lease ends.
     fn attached(&mut self) -> Vec<(ControllerId, ControllerFamily)>;
 
-    /// What `id` sent since the last read, and whether more waits for the
-    /// next pass; `None` when it left.
+    /// What `id` sent since the last read, and whether more waits for the next pass; `None` when it
+    /// left.
     fn read(
         &mut self,
         id: &ControllerId,
@@ -70,20 +68,20 @@ pub trait GamepadSources {
 
 /// Where a session's controllers come from.
 pub enum Source {
-    /// The controllers attached to this machine, read from evdev: what the
-    /// person drives the desktop with.
+    /// The controllers attached to this machine, read from evdev: what the person drives the
+    /// desktop with.
     Machine,
     /// Controllers lent as they are: a stand-in a test puts in the room.
     Lent(Box<dyn GamepadSources>),
 }
 
-/// The controllers driving the desktop: one mapper per controller, which
-/// turns what each sends into what the desktop does.
+/// The controllers driving the desktop: one mapper per controller, which turns what each sends into
+/// what the desktop does.
 pub struct Controllers {
     sources: Box<dyn GamepadSources>,
     mappers: BTreeMap<ControllerId, ControllerNavMapper>,
-    /// One left while the mapper still held a direction: read the set of
-    /// controllers again, and open what is attached.
+    /// One left while the mapper still held a direction: read the set of controllers again, and
+    /// open what is attached.
     rescan: bool,
     /// A controller sent more than one pass could read: read again at once.
     backlog: bool,
@@ -129,9 +127,8 @@ impl Controllers {
             .min()
     }
 
-    /// Read every controller and return what it asked for, with the legend
-    /// family of the controller that asked each. `passthrough` is true while
-    /// a fullscreen window owns the controller.
+    /// Read every controller and return what it asked for, with the legend family of the controller
+    /// that asked each. `passthrough` is true while a fullscreen window owns the controller.
     pub fn poll(&mut self, now: Instant, passthrough: bool) -> Vec<(NavIntent, ControllerFamily)> {
         let Self {
             sources,
@@ -175,8 +172,7 @@ impl Controllers {
     }
 }
 
-/// Open a mapper for each controller attached that has none, and drop the
-/// ones that left.
+/// Open a mapper for each controller attached that has none, and drop the ones that left.
 fn reconcile(
     sources: &mut dyn GamepadSources,
     mappers: &mut BTreeMap<ControllerId, ControllerNavMapper>,
@@ -198,9 +194,9 @@ fn reconcile(
     }
 }
 
-/// The controllers of `known` that the desktop may read: a controller leased
-/// to another device or app is left to its lease, and one that could not be
-/// opened is not asked again until something is plugged in.
+/// The controllers of `known` that the desktop may read: a controller leased to another device or
+/// app is left to its lease, and one that could not be opened is not asked again until something is
+/// plugged in.
 fn wanted(
     known: &BTreeMap<ControllerId, ControllerFamily>,
     leased: &BTreeSet<ControllerId>,
@@ -238,29 +234,28 @@ impl Session {
                 }
             }
         }
-        // A fullscreen window is playing: the controller is its input, and
-        // only the guide's chords reach the desktop.
+        // A fullscreen window is playing: the controller is its input, and only the guide's chords
+        // reach the desktop.
         let fullscreen = self.compositor.fullscreen_window();
         let intents = controllers.poll(Instant::now(), fullscreen);
         if intents.is_empty() || self.compositor.locked() {
             return Ok(());
         }
         for (intent, family) in intents {
-            // The controller is the input the guide leads with, until a key
-            // of the person's own is pressed: set before its command runs, so
-            // a guide it opens explains its buttons.
+            // The controller is the input the guide leads with, until a key of the person's own is
+            // pressed: set before its command runs, so a guide it opens explains its buttons.
             self.shared.controller.replace(Some(family));
             if let Some(action) = controller_shortcut(intent) {
                 self.shared
                     .invocations
                     .borrow_mut()
                     .push(Invocation::shortcut(action));
-                // The desk moves before the next press is routed, so a
-                // direction after it acts on whatever has focus by then.
+                // The desk moves before the next press is routed, so a direction after it acts on
+                // whatever has focus by then.
                 self.settle()?;
             } else {
-                // A direction, activate or back: the key it stands for, which
-                // the compositor routes exactly as a press of that key.
+                // A direction, activate or back: the key it stands for, which the compositor routes
+                // exactly as a press of that key.
                 let keys = controller_keys(intent, self.compositor.host_takes_keys());
                 self.shared.controller_keys.set(true);
                 for (keycode, pressed) in keys {
@@ -273,9 +268,9 @@ impl Session {
     }
 }
 
-/// The desktop command a controller intent stands for, when it is one the
-/// person can bind a key to: what a bumper, a trigger, a face button or the
-/// Guide chord asks for is a shortcut the desktop already answers.
+/// The desktop command a controller intent stands for, when it is one the person can bind a key to:
+/// what a bumper, a trigger, a face button or the Guide chord asks for is a shortcut the desktop
+/// already answers.
 fn controller_shortcut(intent: NavIntent) -> Option<ShortcutAction> {
     Some(match intent {
         NavIntent::Actions => ShortcutAction::TabMenu,
@@ -338,8 +333,8 @@ fn controller_keys(intent: NavIntent, host_takes_keys: bool) -> Vec<(u32, bool)>
     keys
 }
 
-/// One controller open for the desktop, and the descriptor registration its
-/// input wakes the loop by.
+/// One controller open for the desktop, and the descriptor registration its input wakes the loop
+/// by.
 struct Open {
     source: LinuxPhysicalGamepadSource,
     key: u64,
@@ -351,16 +346,14 @@ struct Machine {
     hotplug: Option<PhysicalGamepadHotplug>,
     /// The controllers the machine has now, by id and legend family.
     known: BTreeMap<ControllerId, ControllerFamily>,
-    /// The controllers open for the desktop to read, and the descriptor
-    /// registration each holds.
+    /// The controllers open for the desktop to read, and the descriptor registration each holds.
     open: BTreeMap<ControllerId, Open>,
-    /// The controllers leased to another device or app, which this one
-    /// leaves unread until the lease ends.
+    /// The controllers leased to another device or app, which this one leaves unread until the
+    /// lease ends.
     leased: BTreeSet<ControllerId>,
     /// The controllers that could not be opened; retried on the next plug-in.
     refused: BTreeSet<ControllerId>,
-    /// The catalog has to be read again: at the start, after a plug-in, and
-    /// after one was lost.
+    /// The catalog has to be read again: at the start, after a plug-in, and after one was lost.
     rescan: bool,
     next_key: u64,
     wakes: Vec<ControllerWake>,
@@ -403,8 +396,8 @@ impl Machine {
         }
     }
 
-    /// The controllers to open now: the ones the machine has, that are
-    /// neither leased away nor refused.
+    /// The controllers to open now: the ones the machine has, that are neither leased away nor
+    /// refused.
     fn wanted(&self) -> Vec<(ControllerId, ControllerFamily)> {
         wanted(&self.known, &self.leased, &self.refused)
     }
@@ -435,8 +428,8 @@ impl Machine {
                 return;
             }
         };
-        // Presses from before this controller joined (or before its lease
-        // ended) must not replay as desktop actions.
+        // Presses from before this controller joined (or before its lease ended) must not replay as
+        // desktop actions.
         if source.drain(READ_BUDGET.saturating_mul(4)).is_err() {
             self.refused.insert(id);
             return;
@@ -523,8 +516,8 @@ mod tests {
         ControllerId::at(name)
     }
 
-    /// A machine that never touches evdev: what `discover` found, and which
-    /// of them are leased away.
+    /// A machine that never touches evdev: what `discover` found, and which of them are leased
+    /// away.
     fn machine(known: &[(&str, ControllerFamily)], leased: &[&str]) -> Machine {
         Machine {
             catalog: LinuxPhysicalGamepadCatalog::default(),

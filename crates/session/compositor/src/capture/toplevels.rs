@@ -1,7 +1,6 @@
-//! `ext_foreign_toplevel_list_v1`: the windows, by title and app id, for
-//! tools that pick a window to capture (the desktop portal's window
-//! sharing). Window titles are private, so only clients the session
-//! trusts see the list (as with capture itself).
+//! `ext_foreign_toplevel_list_v1` : the windows, by title and app id, for tools that pick a window
+//! to capture (the desktop portal's window sharing). Window titles are private, so only clients the
+//! session trusts see the list (as with capture itself).
 
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::DisplayHandle;
@@ -55,8 +54,8 @@ impl Toplevels {
 }
 
 impl State {
-    /// List the mapped windows: announce new ones, update changed titles
-    /// and app ids, close those that went away.
+    /// List the mapped windows: announce new ones, update changed titles and app ids, close those
+    /// that went away.
     pub(crate) fn sync_toplevels(&mut self) {
         let windows: Vec<(Window, WindowInfo)> = self
             .space

@@ -1,8 +1,7 @@
-//! The person's account custody, as the session serves it to the apps that
-//! ask: Browser lists, resolves and forgets the website sessions the person
-//! selected, Settings seals an account's secret, and Mail is released the one
-//! it keeps. Every call goes through the action door the shipped app already
-//! speaks, on a connection admitted as that app in its workspace, and nothing
+//! The person's account custody, as the session serves it to the apps that ask: Browser lists,
+//! resolves and forgets the website sessions the person selected, Settings seals an account's
+//! secret, and Mail is released the one it keeps. Every call goes through the action door the
+//! shipped app already speaks, on a connection admitted as that app in its workspace, and nothing
 //! of it enters a workspace's records: the vault stays on the device.
 
 #![cfg(target_os = "linux")]
@@ -27,7 +26,6 @@ use ed25519_dalek::Signer as _;
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, CollabClient,
 };
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
@@ -36,12 +34,10 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Lists, Options, SearchOptions, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-// A host admits its members' records through an Automerge worker: this
-// binary is that worker, as it is the session's own.
+// A host admits its members' records through an Automerge worker: this binary is that worker, as it
+// is the session's own.
 tilo_automerge_isolate::test_worker!();
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 /// The app whose website sessions these are.
 const BROWSER: &str = "so.tilo.browser";
 /// The keeper of the person's accounts.
@@ -66,17 +62,15 @@ enum Keyring {
     Missing,
 }
 
-/// The person's keys: this device, which hosts the workspace, and another of
-/// their devices, which only joined it.
+/// The person's keys: this device, which hosts the workspace, and another of their devices, which
+/// only joined it.
 #[derive(Clone)]
 struct Keys {
-    /// The public root of the person's identity, as the workspace names its
-    /// owner.
+    /// The public root of the person's identity, as the workspace names its owner.
     root: [u8; 32],
     device: ed25519_dalek::SigningKey,
     cert: DeviceCert,
-    /// Another of the person's devices, holding this person's key as their
-    /// phone does.
+    /// Another of the person's devices, holding this person's key as their phone does.
     phone: ed25519_dalek::SigningKey,
     phone_cert: DeviceCert,
 }
@@ -87,15 +81,15 @@ struct Fixture {
     keys: Keys,
     /// The state directory the session keeps its workspaces under.
     state: PathBuf,
-    // The identity's environment and files, restored and removed last: the
-    // session and the apps read them while they run.
+    // The identity's environment and files, restored and removed last: the session and the apps
+    // read them while they run.
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
     _home: tempfile::TempDir,
 }
 
-/// The person's account vault under this host's one custody: the keyring
-/// where it answers, otherwise an owner-only key file beside the ciphertext.
+/// The person's account vault under this host's one custody: the keyring where it answers,
+/// otherwise an owner-only key file beside the ciphertext.
 fn person_vault(root: &Path) -> accounts::AccountCredentials {
     accounts::AccountCredentials::open_in(root)
         .expect("this host can keep the person's account vault")
@@ -180,9 +174,8 @@ fn fixture(keyring: Keyring) -> Fixture {
     }
 }
 
-/// The workspace's host admits `certificate`'s device as an editor, redeeming
-/// the invitation it issues for it: what pairing another of the person's
-/// devices does.
+/// The workspace's host admits `certificate` 's device as an editor, redeeming the invitation it
+/// issues for it: what pairing another of the person's devices does.
 fn admit(
     governor: &mut testing::governor::TestGovernor,
     key: &ed25519_dalek::SigningKey,
@@ -227,8 +220,8 @@ fn admit(
     Ok(())
 }
 
-/// The workspace's owner, as this device holds it in `state`, with the
-/// person's other device admitted: what the session opens when it starts.
+/// The workspace's owner, as this device holds it in `state` , with the person's other device
+/// admitted: what the session opens when it starts.
 fn hold_workspace(state: &Path, keys: &Keys) {
     let record = state.join("tilo").join("rooms.json");
     std::fs::create_dir_all(record.parent().expect("the state's workspace directory"))
@@ -240,8 +233,8 @@ fn hold_workspace(state: &Path, keys: &Keys) {
         testing::enroll_interactive_governor_in(&owner, &keys.device, &keys.cert, WORKSPACE)
             .expect("this device governs the workspace it hosts");
     admit(&mut governor, &keys.phone, &keys.phone_cert).expect("the person's other device joins");
-    // The governor's checkpoint now names both of them: the host admits it as
-    // the publication a host's own workspace makes.
+    // The governor's checkpoint now names both of them: the host admits it as the publication a
+    // host's own workspace makes.
     let host = governor.workspace_host().device_public_key;
     let frames: Vec<Vec<u8>> = governor
         .outgoing()
@@ -283,8 +276,8 @@ fn desk(keys: &Keys) -> DesktopTree {
     }
 }
 
-/// What an app presents to join the workspace's channel: the certificate, and
-/// the device's proof that it is the certificate's.
+/// What an app presents to join the workspace's channel: the certificate, and the device's proof
+/// that it is the certificate's.
 fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
     runtime_collab::CertifiedJoinIdentity {
         workspace_id: WORKSPACE.to_owned(),
@@ -300,8 +293,8 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
     .expect("a presentation encodes")
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
+/// A directory for the plane's socket that only this user reaches: the broker refuses to serve one
+/// anybody else could open.
 fn private_socket() -> (tempfile::TempDir, PathBuf) {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().expect("a directory to serve the plane in");
@@ -311,31 +304,26 @@ fn private_socket() -> (tempfile::TempDir, PathBuf) {
     (root, socket)
 }
 
-/// The session serving `app` on `socket`, holding the fixture's workspace from
-/// its state and showing its desk.
+/// The session serving `app` on `socket` , holding the fixture's workspace from its state and
+/// showing its desk.
 fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
-    // The app speaks from this test's own process, so the launch the session
-    // would have recorded for it names that process.
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process.
     let launches = Arc::new(Launches::default());
     launches.started(std::process::id(), app, WORKSPACE, true);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            wake: LoopWake::default(),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: "Ada".to_owned(),
-            launches,
-            state: Some(fixture.state.clone()),
-            search: SearchOptions {
-                lists: Lists::default(),
-                ..SearchOptions::default()
-            },
-            ..Options::default()
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: "Ada".to_owned(),
+        launches,
+        state: Some(fixture.state.clone()),
+        search: SearchOptions {
+            lists: Lists::default(),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(&fixture.keys));
     for _ in 0..4 {
         session
@@ -345,13 +333,12 @@ fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
     session
 }
 
-/// The channel key of `app`'s record in the workspace.
+/// The channel key of `app` 's record in the workspace.
 fn channel(app: &str) -> String {
     tilo_action_broker::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
 }
 
-/// A connection to the session's plane as `app` in the workspace, as the
-/// launcher hands an app one.
+/// A connection to the session's plane as `app` in the workspace, as the launcher hands an app one.
 fn connect(socket: &Path, app: &str) -> CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
     launcher::services::write_collab_handoff(&mut stream, app, WORKSPACE)
@@ -382,8 +369,8 @@ fn config_root() -> PathBuf {
     accounts::config_root().expect("this session's config root")
 }
 
-/// A person's selected website session, sealed in `root` as selection leaves
-/// it: its account entry, and its cookies in custody under the person's key.
+/// A person's selected website session, sealed in `root` as selection leaves it: its account entry,
+/// and its cookies in custody under the person's key.
 fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(root).expect("the person's accounts directory");
@@ -429,8 +416,8 @@ fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     session
 }
 
-/// Browser's own calls on a connection admitted as Browser: the person's
-/// selection listed, resolved, and then forgotten.
+/// Browser's own calls on a connection admitted as Browser: the person's selection listed,
+/// resolved, and then forgotten.
 fn browser_app(
     socket: &Path,
     device: &ed25519_dalek::SigningKey,
@@ -476,8 +463,8 @@ fn browser_lists_resolves_and_forgets_the_selection_where_the_keyring_holds_the_
     browser_lists_resolves_and_forgets(Keyring::Answers);
 }
 
-/// The same on a host with no keyring: the person's vault is just as much
-/// theirs, sealed under the owner-only key beside it.
+/// The same on a host with no keyring: the person's vault is just as much theirs, sealed under the
+/// owner-only key beside it.
 #[test]
 fn browser_lists_resolves_and_forgets_the_selection_where_a_key_file_holds_the_vault() {
     browser_lists_resolves_and_forgets(Keyring::Missing);
@@ -552,9 +539,8 @@ fn browser_lists_resolves_and_forgets(keyring: Keyring) {
     );
 }
 
-/// The same calls from another of the person's devices: the selection is the
-/// person's, so their phone reads it and forgets it, and this device's next
-/// list no longer holds it.
+/// The same calls from another of the person's devices: the selection is the person's, so their
+/// phone reads it and forgets it, and this device's next list no longer holds it.
 #[test]
 fn the_persons_other_device_reads_and_forgets_the_selection() {
     let fixture = fixture(Keyring::Answers);
@@ -616,8 +602,7 @@ fn the_persons_other_device_reads_and_forgets_the_selection() {
     );
 }
 
-/// Settings' own call on a connection admitted as Settings: seal the person's
-/// account secret.
+/// Settings' own call on a connection admitted as Settings: seal the person's account secret.
 fn settings_app(
     socket: &Path,
     device: &ed25519_dalek::SigningKey,
@@ -660,8 +645,8 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
             accounts::email::TYPE_ID,
         ));
         store.save_in(&root).expect("the person's accounts");
-        // The person's vault is theirs before the session seals anything in
-        // it: what a device that signed in once holds.
+        // The person's vault is theirs before the session seals anything in it: what a device that
+        // signed in once holds.
         let _ = person_vault(&root);
     }
     assert_eq!(
@@ -682,8 +667,8 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
         "Settings seals the account's secret: {sealed:?}"
     );
 
-    // The secret is the person's: the app that keeps email accounts is
-    // released it, and no other app is.
+    // The secret is the person's: the app that keeps email accounts is released it, and no other
+    // app is.
     let store = AccountStore::load_in(&root);
     let credentials = person_vault(&root);
     assert_eq!(
@@ -705,8 +690,7 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
     );
 }
 
-/// Mail's own call on a connection admitted as Mail: the account secret it
-/// keeps.
+/// Mail's own call on a connection admitted as Mail: the account secret it keeps.
 fn mail_app(
     socket: &Path,
     device: &ed25519_dalek::SigningKey,

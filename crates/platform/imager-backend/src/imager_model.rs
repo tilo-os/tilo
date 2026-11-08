@@ -772,11 +772,6 @@ impl InstallProfile {
     /// with the rules it applies, so a bad profile is refused before
     /// flashing. The live installer repeats every check across the trust
     /// boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns a field-specific message when any transported value would be
-    /// rejected by the live installer.
     pub fn validate_media_profile(&self) -> Result<(), String> {
         use install_profile_model as rules;
         if !rules::valid_purpose(&self.purpose) {

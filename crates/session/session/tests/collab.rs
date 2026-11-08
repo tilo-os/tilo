@@ -1,7 +1,6 @@
-//! Who is here: the bar's faces open the roster, which lists everyone in the
-//! workspace and where each of them is, and the roster reads its one feed
-//! from the collaboration plane. A face opens the person's card, from which
-//! Message opens Chat on the conversation they have.
+//! Who is here: the bar's faces open the roster, which lists everyone in the workspace and where
+//! each of them is, and the roster reads its one feed from the collaboration plane. A face opens
+//! the person's card, from which Message opens Chat on the conversation they have.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -13,6 +12,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session \
               outlives every call made into it"
 )]
+
+mod common;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -52,8 +53,8 @@ fn workspace_id() -> WorkspaceId {
     WorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
 
-/// A desk showing one workspace it takes part in, with one window called
-/// Notes: where the other person is working.
+/// A desk showing one workspace it takes part in, with one window called Notes: where the other
+/// person is working.
 fn desk() -> DesktopTree {
     let workspace = workspace_id();
     let slot = WorkspaceSlot::of_workspace(workspace);
@@ -112,7 +113,7 @@ fn hello(from: u8, label: &str) -> NetEvent {
     hello_of(from, from, label)
 }
 
-/// The device `device` of the person `person`: their certificate here.
+/// The device `device` of the person `person` : their certificate here.
 fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
     let device_key = device(at);
     let root = ed25519_dalek::SigningKey::from_bytes(&[person; 32]);
@@ -143,8 +144,8 @@ fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
     )
 }
 
-/// One presence the other device said on the workspace's live plane: they
-/// arrived, how available they are, and so on.
+/// One presence the other device said on the workspace's live plane: they arrived, how available
+/// they are, and so on.
 fn presence(sync: &Client, from: u8, payload: collab_types::PeerPresencePayload) {
     let payload = match payload {
         collab_types::PeerPresencePayload::Arrived => Payload::Arrived,
@@ -175,8 +176,8 @@ fn presence(sync: &Client, from: u8, payload: collab_types::PeerPresencePayload)
     );
 }
 
-/// The device `from` arrives, and says whose device it is: the person's own
-/// name for themselves, which is what everyone here calls them.
+/// The device `from` arrives, and says whose device it is: the person's own name for themselves,
+/// which is what everyone here calls them.
 fn arrived_as(sync: &Client, from: u8, name: &str) {
     presence(
         sync,
@@ -194,23 +195,21 @@ fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
     sync.heard_presence(WORKSPACE, device(from), &frame);
 }
 
-/// A session taking part in the workspace through `sync`, showing `desk`.
+/// A session taking part in the workspace through `sync` , showing `desk` .
 fn session(sync: &Rc<Client>) -> Session {
     session_over(sync, None)
 }
 
 /// [`session`], with `apps` answering what an app asks or is asked to do.
 fn session_over(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             sync: Some(Rc::clone(sync)),
             apps,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.handle().replace_tree(desk());
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
@@ -260,8 +259,7 @@ fn press_faces(session: &mut Session) {
     }
 }
 
-/// The person this test's session is a device of, at another of their
-/// devices too.
+/// The person this test's session is a device of, at another of their devices too.
 const QUINTEN: u8 = 0xf5;
 /// The channel a call in the workspace is in.
 const CHANNEL: &str = "c_standup";
@@ -280,7 +278,7 @@ fn call_row_label() -> String {
     tilo_desktop_search::i18n::t_args("search-launcher-call-in", &[("channel", "Standup".into())])
 }
 
-/// The resource `id`, however deep the desk nests it.
+/// The resource `id` , however deep the desk nests it.
 fn find(resources: &[tilo_actions::ResourceSpec], id: &str) -> Option<tilo_actions::ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
@@ -291,11 +289,11 @@ fn find(resources: &[tilo_actions::ResourceSpec], id: &str) -> Option<tilo_actio
     })
 }
 
-/// What the empty palette offers now, row by row: the calls in progress are
-/// among them, and what choosing one joins.
+/// What the empty palette offers now, row by row: the calls in progress are among them, and what
+/// choosing one joins.
 fn palette_rows(session: &mut Session) -> Vec<String> {
-    // The palette lists what this device saw of who is here as of the last
-    // pass, so a pass runs before it opens.
+    // The palette lists what this device saw of who is here as of the last pass, so a pass runs
+    // before it opens.
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -318,9 +316,8 @@ fn palette_rows(session: &mut Session) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The channel's call is offered to join in the empty palette, and not once
-/// this person is in it: another device of theirs says so, as the presence a
-/// device publishes when it joins a call does.
+/// The channel's call is offered to join in the empty palette, and not once this person is in it:
+/// another device of theirs says so, as the presence a device publishes when it joins a call does.
 #[test]
 fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
     let _settled = ui::motion::testing::settled();
@@ -351,8 +348,8 @@ fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
         "the call in progress is offered to join: {rows:?}"
     );
 
-    // This person's laptop joins the same call: its presence says so, and
-    // this device offers no second join.
+    // This person's laptop joins the same call: its presence says so, and this device offers no
+    // second join.
     sync.hear(hello_of(QUINTEN, 0xf0, "ThinkPad"));
     arrived_as(&sync, 0xf0, "Quinten");
     presence(
@@ -382,8 +379,8 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     let sync = Rc::new(Client::untethered(device(0xf0), own));
     let mut session = session(&sync);
 
-    // Another person, at their own device, in the same workspace: here, heads
-    // down, with their pointer over Notes.
+    // Another person, at their own device, in the same workspace: here, heads down, with their
+    // pointer over Notes.
     sync.hear(hello(0xaa, "Framework 16"));
     arrived_as(&sync, 0xaa, "Ada");
     presence(
@@ -483,9 +480,8 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
         !labels.iter().any(|label| label == "Framework 16"),
         "a person is named, never their machine: {labels:?}"
     );
-    // How available a person is is said of them, and only of them: the one
-    // who is at their machine is not told apart from the one who is away by
-    // their name alone.
+    // How available a person is is said of them, and only of them: the one who is at their machine
+    // is not told apart from the one who is away by their name alone.
     assert_eq!(
         labels.iter().filter(|label| *label == "Away").count(),
         1,
@@ -512,8 +508,8 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
         "nobody is away now: {labels:?}"
     );
 
-    // They join a voice channel: the roster says which one, and that is what
-    // people read of them rather than how available they are.
+    // They join a voice channel: the roster says which one, and that is what people read of them
+    // rather than how available they are.
     presence(
         &sync,
         0xbb,
@@ -544,8 +540,8 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
 /// The app that holds conversations.
 const CHAT: &str = "so.tilo.chat";
 
-/// Install `app` in `store`, as the package landing there leaves it: the
-/// manifest an open reads and the registry row the catalogue lists it by.
+/// Install `app` in `store` , as the package landing there leaves it: the manifest an open reads
+/// and the registry row the catalogue lists it by.
 fn install(store: &Path, app: &str, name: &str) {
     let payload = store.join("payload").join(app);
     std::fs::create_dir_all(payload.join("bin")).expect("the package's own directory");
@@ -590,11 +586,10 @@ fn install(store: &Path, app: &str, name: &str) {
     .expect("the store's registry");
 }
 
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// `session`, stepped until `ready` says so, and no further.
+/// `session` , stepped until `ready` says so, and no further.
 #[track_caller]
 fn until(session: &mut Session, what: &str, mut ready: impl FnMut(&Session) -> bool) {
     for _ in 0..200 {
@@ -606,8 +601,8 @@ fn until(session: &mut Session, what: &str, mut ready: impl FnMut(&Session) -> b
     panic!("{what}");
 }
 
-/// The control `names` names, where the session shows it: the bar's face of a
-/// person, a button of the roster or of a card.
+/// The control `names` names, where the session shows it: the bar's face of a person, a button of
+/// the roster or of a card.
 fn control(session: &Session, names: &[&str]) -> Option<(f64, f64, f64, f64)> {
     session
         .controls()
@@ -616,7 +611,7 @@ fn control(session: &Session, names: &[&str]) -> Option<(f64, f64, f64, f64)> {
         .map(|(_, rect)| rect)
 }
 
-/// A press at the centre of `rect`, through the compositor's own input.
+/// A press at the centre of `rect` , through the compositor's own input.
 fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
     session
         .compositor()
@@ -637,8 +632,8 @@ fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
     }
 }
 
-/// Write what the session shows where a person can look at it, when the run
-/// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
+/// Write what the session shows where a person can look at it, when the run asked for shots:
+/// `TILO_SURFACE_SHOTS` names where they go.
 fn capture(session: &mut Session, name: &str) {
     let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(PathBuf::from) else {
         return;
@@ -657,8 +652,8 @@ fn capture(session: &mut Session, name: &str) {
     std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
 }
 
-/// Ada is here on two devices, working in Notes on the first and focusing on
-/// the second, each saying whose device it is.
+/// Ada is here on two devices, working in Notes on the first and focusing on the second, each
+/// saying whose device it is.
 fn ada_here_on_two_devices(sync: &Client) {
     sync.hear(hello_of(0xaa, 0xaa, "Framework 16"));
     arrived_as(sync, 0xaa, "Ada");
@@ -687,9 +682,8 @@ fn ada_here_on_two_devices(sync: &Client) {
     );
 }
 
-/// What the card says of Ada: her own name for its title, the person's root
-/// key for its ID, and each of her devices with how it said it was, in the
-/// roster's place rather than beside it.
+/// What the card says of Ada: her own name for its title, the person's root key for its ID, and
+/// each of her devices with how it said it was, in the roster's place rather than beside it.
 fn assert_ada_card(labels: &[String]) {
     assert!(
         labels.iter().any(|label| label == "Ada’s profile"),
@@ -742,11 +736,11 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
     let sync = Rc::new(Client::untethered(device(0xf0), mine));
     let mut session = session_over(&sync, Some(host.clone() as Rc<dyn AppActions>));
 
-    // Another person, at two of their devices, in the same workspace: their
-    // face stands in the bar, under their name and never their machine's.
+    // Another person, at two of their devices, in the same workspace: their face stands in the bar,
+    // under their name and never their machine's.
     ada_here_on_two_devices(&sync);
-    // The pointer comes up to the bar, as the person's does to press them:
-    // the bar draws who is here, and their face stands under it.
+    // The pointer comes up to the bar, as the person's does to press them: the bar draws who is
+    // here, and their face stands under it.
     session
         .compositor()
         .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
@@ -783,8 +777,8 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
     capture(&mut session, "people-card-message");
     let message = message.expect("the card's Message");
 
-    // Message hands Chat the conversation with them: the app's own
-    // `open-direct-conversation` on the row their two root keys name.
+    // Message hands Chat the conversation with them: the app's own `open-direct-conversation` on
+    // the row their two root keys name.
     press(&mut session, message);
     until(&mut session, "Chat is handed the conversation", |_| {
         !host.invoked.borrow().is_empty()
@@ -816,9 +810,9 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
     );
 }
 
-/// Your own avatar opens your card, from the surface another person's does:
-/// your name and picture as everyone here sees them, and your identity, its
-/// backup and pairing another device, each in one place.
+/// Your own avatar opens your card, from the surface another person's does: your name and picture
+/// as everyone here sees them, and your identity, its backup and pairing another device, each in
+/// one place.
 #[test]
 fn your_own_avatar_opens_your_card() {
     let _settled = ui::motion::testing::settled();
@@ -845,9 +839,8 @@ fn your_own_avatar_opens_your_card() {
         avatar = found.map(|(_, rect)| rect);
         avatar.is_some()
     });
-    // The bar's face and the card's are one: the name they gave, not the
-    // account they happen to log in with, and one initial drawn in one
-    // colour.
+    // The bar's face and the card's are one: the name they gave, not the account they happen to log
+    // in with, and one initial drawn in one colour.
     assert_eq!(
         named.as_deref(),
         Some("Quinten (you): your profile"),
@@ -863,8 +856,8 @@ fn your_own_avatar_opens_your_card() {
         "Your identities",
         "Back up your identity",
         "Pair another device",
-        // The device the card is drawn on is named by which one it is, and
-        // its key is kept for the copy affordance beside it.
+        // The device the card is drawn on is named by which one it is, and its key is kept for the
+        // copy affordance beside it.
         "This computer",
         "this device",
         "Copy this device’s key",
@@ -878,8 +871,8 @@ fn your_own_avatar_opens_your_card() {
         !labels.iter().any(|label| label == "Message"),
         "your own card has nothing to message: {labels:?}"
     );
-    // Their id says who they are, so it sits quiet under their identity; the
-    // card opens on what they came to change.
+    // Their id says who they are, so it sits quiet under their identity; the card opens on what
+    // they came to change.
     let at = |said: &str| labels.iter().position(|label| label == said);
     let (identity, key, devices) = (
         at("Your identities").expect("the identity actions"),

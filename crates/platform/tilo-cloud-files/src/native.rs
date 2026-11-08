@@ -46,9 +46,6 @@ fn object_identity(dir: &Dir, name: &Path) -> Result<DestinationIdentity, String
 /// Take back only the admitted output, through directory descriptors. A
 /// same-filesystem rename captures the object before its identity is checked
 /// again; a concurrent replacement is restored, never sent to Trash.
-///
-/// # Errors
-/// Refuses changed destinations or outputs, or failed Trash publication.
 #[cfg(target_os = "linux")]
 pub fn compensate(
     to: &str,
@@ -156,9 +153,6 @@ pub fn compensate(
 }
 
 /// Restore only the admitted Trash object to its unchanged destination.
-///
-/// # Errors
-/// Refuses identity changes, collisions, unsupported platforms and I/O failures.
 pub fn restore(
     to: &str,
     entry: &str,

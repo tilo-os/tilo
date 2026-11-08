@@ -1,14 +1,11 @@
-//! "Kim opened Notes": a hint at the edge of the strip when someone else
-//! opens a window out of sight.
-//!
-//! On a shared desktop the view stays where the person left it when someone
-//! else opens a window: being pulled along would take them away from what
-//! they were doing. A window opened off to one side then changed nothing
-//! they could see. Now, for a few seconds, a small pill at that edge says
-//! who opened what, in their presence colour, with an arrow toward it; a
-//! click on it brings the window into view. It never covers more than its
-//! own pill, takes no focus, and goes once the window is seen or its time
-//! is up.
+//! "Kim opened Notes": a hint at the edge of the strip when someone else opens a window out of
+//! sight.
+//! On a shared desktop the view stays where the person left it when someone else opens a window:
+//! being pulled along would take them away from what they were doing. A window opened off to one
+//! side then changed nothing they could see. Now, for a few seconds, a small pill at that edge says
+//! who opened what, in their presence colour, with an arrow toward it; a click on it brings the
+//! window into view. It never covers more than its own pill, takes no focus, and goes once the
+//! window is seen or its time is up.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -29,8 +26,8 @@ use vello::peniko::Fill;
 
 use super::{DesktopHandle, DesktopSurface};
 
-/// How long a hint stays: long enough to notice from the corner of an eye
-/// and decide whether to look, short enough not to linger as clutter.
+/// How long a hint stays: long enough to notice from the corner of an eye and decide whether to
+/// look, short enough not to linger as clutter.
 pub(crate) const ARRIVAL_HOLD: Duration = Duration::from_secs(8);
 
 /// A window someone else opened, and when it arrived here.
@@ -58,8 +55,8 @@ struct Hint {
     rect: Rect,
 }
 
-/// The windows `tree` has in strips `before` already had, which neither
-/// `before` nor this page (`local`) holds: what someone else just opened.
+/// The windows `tree` has in strips `before` already had, which neither `before` nor this page
+/// (`local`) holds: what someone else just opened.
 pub(super) fn opened_elsewhere(
     before: &DesktopTree,
     tree: &DesktopTree,
@@ -350,8 +347,7 @@ impl Widget for ArrivalHints {
         }
     }
 
-    /// A polite live region saying who opened what, empty while nothing
-    /// shows.
+    /// A polite live region saying who opened what, empty while nothing shows.
     fn accessibility(&self) -> Option<AccessNode> {
         let now = ui::time::now();
         let words: Vec<&str> = self.showing(now).map(|hint| hint.text.as_str()).collect();
@@ -364,8 +360,8 @@ impl Widget for ArrivalHints {
 }
 
 impl DesktopSurface {
-    /// Lay out a hint for each window someone else opened in the shown
-    /// strip that lies wholly beyond its left or right edge.
+    /// Lay out a hint for each window someone else opened in the shown strip that lies wholly
+    /// beyond its left or right edge.
     pub(super) fn place_arrival_hints(&mut self, content_top: f64) {
         let now = ui::time::now();
         let area = self.rect;
@@ -443,7 +439,7 @@ impl DesktopSurface {
     }
 }
 
-/// The title of the window showing `tab`.
+/// The title of the window showing `tab` .
 fn title_of(tree: &DesktopTree, tab: TabId) -> Option<String> {
     tree.workspaces
         .iter()

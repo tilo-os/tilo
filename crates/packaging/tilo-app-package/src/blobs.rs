@@ -109,10 +109,6 @@ pub struct OpenBlob<'a> {
 pub trait BlobSource {
     /// Open the bytes of `hash`, or `Ok(None)` when this source lacks them.
     /// Callers verify the hash while reading; a source is not trusted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the bytes exist but cannot be opened.
     fn open_blob(&self, hash: &BlobHash) -> io::Result<Option<OpenBlob<'_>>>;
 }
 
@@ -137,10 +133,6 @@ pub trait BlobSink {
 /// each against its hash; a fetcher need not be trusted.
 pub trait BlobFetcher: Sync {
     /// Deliver each of `hashes` to `sink`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a blob cannot be fetched or `sink` refuses it.
     fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> io::Result<()>;
 }
 
@@ -150,10 +142,6 @@ pub trait BlobFetcher: Sync {
 /// checks the package hashes to the id it asked for.
 pub trait PackageFetcher: BlobFetcher {
     /// The `.tapp` bytes of `id`, or `Ok(None)` when this source lacks it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the source cannot be asked.
     fn fetch_package(&self, id: &crate::id::PackageId) -> io::Result<Option<Vec<u8>>>;
 }
 

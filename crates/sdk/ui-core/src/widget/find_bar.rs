@@ -1,7 +1,7 @@
 //! Find in a document: the [`FindBar`] and the [`Findable`] capability.
 //!
-//! A document-like view (text, code, a PDF, a hex dump, a terminal) provides
-//! [`Findable`]: it runs the query over its own content, reports the matches,
+//! A document-like view (text, code, a PDF, a hex dump, a terminal)
+//! provides [`Findable`]: it runs the query over its own content, reports the matches,
 //! scrolls one into view and paints every match with [`paint_find_match`].
 //! The framework owns the bar: [`FindScope`] places it as a band at the top
 //! of the content it wraps and binds Ctrl+F (⌘F), Enter / Shift+Enter,

@@ -489,8 +489,8 @@ fn a_read_deny_below_the_workspace_refuses_only_what_it_names() {
     }
 }
 /// A participant withholds a record's channel from exactly the member devices
-/// that may not read the record, by the same decision as
-/// [`StatePeer::check_document_read`]: a Read Deny naming one record
+/// that may not read the record, by the same decision
+/// as [`StatePeer::check_document_read`]: a Read Deny naming one record
 /// withholds that record's channel alone, a Deny over an app withholds every
 /// record of it a device proved the route of, a record reopened by a more
 /// specific Allow is withheld from nobody, and a channel whose record nobody

@@ -1,4 +1,4 @@
-//! [`ReactionStripWidget`]: the reaction strip as a retained widget.
+//! [`ReactionStripWidget`] — the reaction strip as a retained widget.
 
 use std::collections::HashMap;
 use std::rc::Rc;

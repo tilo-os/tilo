@@ -1,15 +1,12 @@
 //! The cards apps draw themselves, over the desk.
-//!
-//! A call or a route is not a picture the session can draw: it is live
-//! content its app keeps drawing while the person works elsewhere. The app
-//! presents such an activity as a card of its own ([`Present`]), and the
-//! floating layer decides where it stands: while the app's own window is on
-//! screen the card stands down and the app draws the activity there, and it
-//! comes back the moment that window goes out of view.
-//!
-//! This is the session's side of that: what each app presented, the place the
-//! layer gave it this pass, and the geometry the desk places its window at.
-//! The app's own geometry is a request; the layer's place is the answer.
+//! A call or a route is not a picture the session can draw: it is live content its app keeps
+//! drawing while the person works elsewhere. The app presents such an activity as a card of its own
+//! ([`Present`]), and the floating layer decides where it stands: while the app's own window is on
+//! screen the card stands down and the app draws the activity there, and it comes back the moment
+//! that window goes out of view.
+//! This is the session's side of that: what each app presented, the place the layer gave it this
+//! pass, and the geometry the desk places its window at. The app's own geometry is a request; the
+//! layer's place is the answer.
 //!
 //! [`Present`]: ui::floating_surface::FloatingSurfaceClientMessage::Present
 
@@ -37,26 +34,26 @@ pub(crate) struct Presented {
     pub(crate) connection: u64,
     /// The card body's size, as the app asked for it.
     pub(crate) content: Size,
-    /// The soft frame the app draws around the body: left, top, right and
-    /// bottom, as its own presentation asked for them.
+    /// The soft frame the app draws around the body: left, top, right and bottom, as its own
+    /// presentation asked for them.
     pub(crate) frame: [f64; 4],
-    /// Where the body stood in the app's own window: its pointer
-    /// coordinates reach the desk through this.
+    /// Where the body stood in the app's own window: its pointer coordinates reach the desk through
+    /// this.
     pub(crate) local: Point,
     /// The body's place on the desk the app was last told to draw at;
     /// `None` while it draws the activity inline.
     pub(crate) told: Option<Rect>,
-    /// The app itself stood the card down: it draws the activity in its own
-    /// window until it presents the card again.
+    /// The app itself stood the card down: it draws the activity in its own window until it
+    /// presents the card again.
     pub(crate) stood_down: bool,
-    /// Whether the app was told its card's window is up: it stops painting
-    /// the copy it keeps for the handoff, and the card alone draws it.
+    /// Whether the app was told its card's window is up: it stops painting the copy it keeps for
+    /// the handoff, and the card alone draws it.
     pub(crate) adopted: bool,
 }
 
 impl Presented {
-    /// The body inside the whole window the floating layer places: the soft
-    /// frame the app draws around it, taken off.
+    /// The body inside the whole window the floating layer places: the soft frame the app draws
+    /// around it, taken off.
     #[must_use]
     pub(crate) fn body(&self, window: Rect) -> Rect {
         let [left, top, right, bottom] = self.frame;
@@ -83,16 +80,15 @@ impl Presented {
 struct Shared {
     /// What each app presented, by the activity it belongs to.
     cards: BTreeMap<Key, Presented>,
-    /// The place the floating layer gave each card this pass, in desk
-    /// pixels.
+    /// The place the floating layer gave each card this pass, in desk pixels.
     slots: BTreeMap<Key, Rect>,
-    /// The cards whose app has its own window on the desk: the app draws
-    /// them there, and they stand down.
+    /// The cards whose app has its own window on the desk: the app draws them there, and they stand
+    /// down.
     in_view: BTreeSet<Key>,
 }
 
-/// The cards the apps draw themselves, shared by the session that authorises
-/// them and the layer that places them.
+/// The cards the apps draw themselves, shared by the session that authorises them and the layer
+/// that places them.
 #[derive(Clone, Default)]
 pub(crate) struct Cards {
     shared: Rc<RefCell<Shared>>,
@@ -110,9 +106,8 @@ impl Cards {
         self.placements.clone()
     }
 
-    /// The whole window size the app asked for the activity's card, when it
-    /// presented one: what the layer reserves for it, and what the session
-    /// lays its window out by.
+    /// The whole window size the app asked for the activity's card, when it presented one: what the
+    /// layer reserves for it, and what the session lays its window out by.
     pub(crate) fn size(&self, app: &str, activity: &str) -> Option<Size> {
         self.shared
             .borrow()
@@ -121,8 +116,8 @@ impl Cards {
             .map(Presented::window_size)
     }
 
-    /// Whether the app's own window is on the desk now: the activity is
-    /// drawn there, and no card shows.
+    /// Whether the app's own window is on the desk now: the activity is drawn there, and no card
+    /// shows.
     pub(crate) fn in_view(&self, app: &str, activity: &str) -> bool {
         self.shared
             .borrow()
@@ -130,8 +125,7 @@ impl Cards {
             .contains(&(app.to_owned(), activity.to_owned()))
     }
 
-    /// Whether the app's card is drawn now: it was told where to stand, and
-    /// its window is up there.
+    /// Whether the app's card is drawn now: it was told where to stand, and its window is up there.
     pub(crate) fn live(&self, app: &str, activity: &str) -> bool {
         let shared = self.shared.borrow();
         shared
@@ -164,8 +158,8 @@ impl Cards {
         self.shared.borrow().cards.values().cloned().collect()
     }
 
-    /// A new pass of the layer's layout: the places it gave last are gone
-    /// until it gives them again.
+    /// A new pass of the layer's layout: the places it gave last are gone until it gives them
+    /// again.
     pub(crate) fn begin_slots(&self) {
         self.shared.borrow_mut().slots.clear();
     }
@@ -189,8 +183,8 @@ impl Cards {
         }
     }
 
-    /// Record the place the app was told to draw its card at (`None`: it
-    /// draws the activity inline). Returns whether that is news.
+    /// Record the place the app was told to draw its card at (`None`: it draws the activity
+    /// inline). Returns whether that is news.
     pub(crate) fn told(&self, app: &str, activity: &str, at: Option<Rect>) -> bool {
         let mut shared = self.shared.borrow_mut();
         let Some(card) = shared.cards.get_mut(&(app.to_owned(), activity.to_owned())) else {
@@ -200,14 +194,14 @@ impl Cards {
             return false;
         }
         card.told = at;
-        // A card that moves, or comes back from standing down, is a window
-        // whose first frame the app has not seen yet.
+        // A card that moves, or comes back from standing down, is a window whose first frame the
+        // app has not seen yet.
         card.adopted = false;
         true
     }
 
-    /// The app's card's window is up: it is told once per place, so the copy
-    /// it painted for the handoff goes.
+    /// The app's card's window is up: it is told once per place, so the copy it painted for the
+    /// handoff goes.
     pub(crate) fn adopt(&self, app: &str, activity: &str) -> bool {
         let mut shared = self.shared.borrow_mut();
         let Some(card) = shared.cards.get_mut(&(app.to_owned(), activity.to_owned())) else {
@@ -220,8 +214,8 @@ impl Cards {
         true
     }
 
-    /// The cards whose windows went away while their apps still presented
-    /// them, each once: the apps to return them home.
+    /// The cards whose windows went away while their apps still presented them, each once: the apps
+    /// to return them home.
     pub(crate) fn lost(&self) -> Vec<String> {
         self.placements.take_lost()
     }
@@ -296,9 +290,9 @@ impl Cards {
         Ok(())
     }
 
-    /// The app stands its card down: it draws the activity in its own window
-    /// until it presents the card again. An app echoing the stand-down the
-    /// session asked for is no stand-down at all — it already draws it there.
+    /// The app stands its card down: it draws the activity in its own window until it presents the
+    /// card again. An app echoing the stand-down the session asked for is no stand-down at all — it
+    /// already draws it there.
     pub(crate) fn stood_down(
         &self,
         app: &str,
@@ -317,9 +311,8 @@ impl Cards {
         Some(card.clone())
     }
 
-    /// The app presents the activity in the card again after standing it
-    /// down: while the layer shows the card it draws the activity there once
-    /// more. Returns whether that is news.
+    /// The app presents the activity in the card again after standing it down: while the layer
+    /// shows the card it draws the activity there once more. Returns whether that is news.
     pub(crate) fn presented_again(&self, app: &str, connection: u64, activity: &str) -> bool {
         let mut shared = self.shared.borrow_mut();
         let Some(card) = shared.cards.get_mut(&(app.to_owned(), activity.to_owned())) else {
@@ -444,9 +437,8 @@ mod tests {
         assert!(cards.size("so.tilo.chat", "chat-call:voice").is_none());
     }
 
-    /// The card its app stood down is the connection that presented it to
-    /// bring back: another one of the app's windows cannot take it over by
-    /// presenting a frame for it.
+    /// The card its app stood down is the connection that presented it to bring back: another one
+    /// of the app's windows cannot take it over by presenting a frame for it.
     #[test]
     fn another_connection_cannot_resume_a_card_that_stood_down() {
         let cards = Cards::new();

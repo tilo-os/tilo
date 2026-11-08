@@ -154,8 +154,6 @@ impl DirectoryConnection {
         }
     }
     /// # Errors
-    /// Refuses revoked source handle scope or transport loss.
-    /// # Errors
     /// Refuses revoked source metadata custody or transport failure.
     pub fn check_pin(&self, id: u64) -> io::Result<()> {
         match self.call(Request::CheckPin(id))? {
@@ -178,8 +176,6 @@ impl DirectoryConnection {
         }
     }
     /// Retain actual readable source custody; names never construct a grant.
-    /// # Errors
-    /// Refuses unsupported providers, missing Read, substitutions or source loss.
     pub fn history_query(
         &self,
         directory: u64,
@@ -277,8 +273,6 @@ impl DirectoryConnection {
         }
     }
     /// Actual held source filesystem metadata, without child byte authority.
-    /// # Errors
-    /// Refuses missing held capability, source revocation or actual fsync failure.
     pub fn sync_directory(&self, directory: u64) -> io::Result<()> {
         match self.call(Request::SyncDirectory(directory))? {
             Response::Empty => Ok(()),

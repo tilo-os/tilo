@@ -228,9 +228,6 @@ impl SettingsApp {
 
     /// Ask the window to show `setting`: its pane, scrolled to it, its
     /// control taking the keyboard.
-    ///
-    /// # Errors
-    /// Settings has no such setting.
     pub fn request_setting(&self, setting: &str) -> Result<(), String> {
         let (category, setting) = setting_and_pane(setting)
             .ok_or_else(|| format!("Settings has no setting `{setting}`"))?;
@@ -413,9 +410,6 @@ impl SettingsApp {
 
     /// What the keyboard drawn on the Keyboard pane shows: the source,
     /// the key inspected, the keys held. Unavailable while none is drawn.
-    ///
-    /// # Errors
-    /// The drawn keyboard could not be read.
     pub fn keyboard_inspection(&self) -> Result<serde_json::Value, String> {
         Ok(self.keyboard_shown.borrow().clone().unwrap_or_else(|| {
             serde_json::json!({

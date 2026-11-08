@@ -192,10 +192,6 @@ impl<'de> serde::Deserialize<'de> for ByteArgument {
 /// references; bytes travel by session transport into the content store,
 /// and are read from there where the action is built. A recorded action
 /// keeps the bytes it was built with, so its replay reads no reference.
-///
-/// # Errors
-///
-/// Neither shape, or a reference that does not resolve here.
 pub fn bytes<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
     <ByteArgument as serde::Deserialize>::deserialize(deserializer).map(|bytes| bytes.0)
 }

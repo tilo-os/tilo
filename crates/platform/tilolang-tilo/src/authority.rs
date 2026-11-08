@@ -1,4 +1,4 @@
-//! [`TiloAuthority`]: who may invoke what on the platform (authority.md).
+//! [`TiloAuthority`] — who may invoke what on the platform (authority.md).
 //!
 //! The runtime asks before every invocation it makes on its own (a step of a run, an agent's block,
 //! a press in a view), and the answer is the one `tilo_action_policy` gives every door: the

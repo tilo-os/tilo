@@ -19,6 +19,7 @@ fn a_menu_button_makes_room_for_its_chevron() {
             tone: None,
             badge: None,
             label,
+            detail: None,
             hint: None,
             flush: false,
             filled_icon: false,

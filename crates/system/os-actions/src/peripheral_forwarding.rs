@@ -174,10 +174,6 @@ impl Default for VirtualGamepadPlan {
 
 pub trait VirtualGamepad: Send {
     /// Apply one validated logical gamepad event.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the constrained virtual device cannot accept it.
     fn apply(&mut self, event: ForwardedGamepadEvent) -> Result<(), String>;
 
     /// Neutralize every axis/hat and release every button.
@@ -186,10 +182,6 @@ pub trait VirtualGamepad: Send {
 
 pub trait VirtualGamepadFactory: Send + Sync {
     /// Create exactly the fixed sanitized gamepad plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a constrained virtual device cannot be created.
     fn create(&self, plan: VirtualGamepadPlan) -> Result<Box<dyn VirtualGamepad>, String>;
 }
 

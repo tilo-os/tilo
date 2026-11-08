@@ -66,9 +66,6 @@ impl PackageSource {
     }
 
     /// Every `.tl` file directly in `dir`, named by `dir` joined with the file name.
-    ///
-    /// # Errors
-    /// The directory or a file cannot be read, or it holds no `.tl` file.
     pub fn read_dir(dir: &Path) -> Result<Self, String> {
         let files = source_paths(dir)?;
         if files.is_empty() {
@@ -122,9 +119,6 @@ impl PackageSource {
 
 /// The catalogues in `dir`'s `locales/`, `(locale, Fluent text)` by file stem, sorted; none
 /// when it has no such directory.
-///
-/// # Errors
-/// A catalogue cannot be read.
 pub fn read_locales(dir: &Path) -> Result<Vec<(String, String)>, String> {
     let locales = dir.join(crate::messages::LOCALES_DIR);
     let Ok(entries) = std::fs::read_dir(&locales) else {
@@ -149,9 +143,6 @@ pub fn read_locales(dir: &Path) -> Result<Vec<(String, String)>, String> {
 }
 
 /// The `.tl` files directly in `dir`, sorted.
-///
-/// # Errors
-/// The directory cannot be read.
 pub fn source_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut out: Vec<PathBuf> = entries
@@ -164,9 +155,6 @@ pub fn source_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// The ids lock of the package in `dir`; an empty lock when there is none yet.
-///
-/// # Errors
-/// The lock exists but does not parse.
 pub fn read_ids(dir: &Path) -> Result<IdsLock, String> {
     let path = dir.join(IDS_FILE);
     match std::fs::read_to_string(&path) {
@@ -203,9 +191,6 @@ impl Stamp {
 /// Imports (`use <app id>`) are looked up among the package directories in `search`: each entry
 /// is a package directory itself or a directory of package directories. With an empty `search`,
 /// `root`'s siblings are searched.
-///
-/// # Errors
-/// A package cannot be read, an import names no package found, or imports form a cycle.
 pub fn dependency_order(root: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     dependency_order_with(root, search, &[])
 }
@@ -383,9 +368,6 @@ impl std::fmt::Display for BuildError {
 /// Compiles the package in `root` and the packages it uses, found in `search`
 /// ([`search_of`]), in dependency order: an import of one of the apps `published` holds is that
 /// metadata (a native app's published types, an already built module), visible to every package.
-///
-/// # Errors
-/// A package cannot be found or read, or has errors.
 pub fn compile_package(
     root: &Path,
     search: &[PathBuf],
@@ -461,10 +443,6 @@ pub fn catalogue_current(built: &BuiltPackage) -> bool {
 }
 
 /// Writes the package's source catalogue; `true` when it changed.
-///
-/// # Errors
-///
-/// The catalogue cannot be written.
 pub fn write_catalogue(built: &BuiltPackage) -> Result<bool, String> {
     if catalogue_current(built) {
         return Ok(false);
@@ -486,10 +464,6 @@ pub fn ids_current(built: &BuiltPackage) -> bool {
 }
 
 /// Writes the package's ids lock; `true` when it changed.
-///
-/// # Errors
-///
-/// The lock cannot be written.
 pub fn write_ids(built: &BuiltPackage) -> Result<bool, String> {
     if ids_current(built) {
         return Ok(false);

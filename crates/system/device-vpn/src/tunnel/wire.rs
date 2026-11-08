@@ -81,10 +81,6 @@ pub fn frame<T: Serialize>(message: &T) -> Result<Vec<u8>, String> {
 }
 
 /// Read one framed message from `stream`.
-///
-/// # Errors
-///
-/// The stream ends, the length is out of bounds, or the body does not decode.
 pub async fn read<T: for<'de> Deserialize<'de>>(
     stream: &mut iroh::endpoint::RecvStream,
 ) -> Result<T, String> {

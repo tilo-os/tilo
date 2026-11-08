@@ -232,9 +232,6 @@ impl Records {
     }
 
     /// Every environment record there is, by key.
-    ///
-    /// # Errors
-    /// Returns an error when the record directory cannot be read.
     pub fn keys(&self) -> Result<Vec<String>, RecordError> {
         let dir = self.record_dir(DEFAULT_RECORD)?;
         let Some(room) = dir.parent() else {
@@ -310,9 +307,6 @@ impl Records {
 
     /// Apply one action to the record `key` and return the environment as it
     /// stands after it.
-    ///
-    /// # Errors
-    /// Returns the action's refusal, or an error reading or writing the record.
     pub fn apply(
         &self,
         key: &str,
@@ -415,10 +409,6 @@ impl Records {
 
     /// The record `key`'s History: every change, oldest first, with the
     /// action, its actor and the compensation its undo applies.
-    ///
-    /// # Errors
-    /// Returns an error for a bad key, a missing record, or one that cannot
-    /// be read.
     pub fn history(&self, key: &str) -> Result<Vec<tilo_resource::history::Version>, RecordError> {
         let mut store = self.open(key)?;
         let mut doc =

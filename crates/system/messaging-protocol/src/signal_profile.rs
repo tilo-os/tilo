@@ -73,8 +73,6 @@ impl ProfileImage {
     /// Visit this private image without cloning or exposing its map. The native
     /// runtime owner uses this to materialize a working profile; every file and
     /// the completed visit recheck the original authority.
-    /// # Errors
-    /// Refuses retired authority or propagates a visitor's storage failure.
     pub fn visit_files(
         &self,
         mut visit: impl FnMut(&str, &[u8]) -> Result<(), ProfileError>,
@@ -141,8 +139,6 @@ pub struct EncryptedSignalProfile {
 impl EncryptedSignalProfile {
     /// Explicit first-profile creation under a key already authorized by the
     /// host. Existing, unreadable or interrupted profiles are never replaced.
-    /// # Errors
-    /// Refuses wrong ownership, absent admission, competing writers or storage failure.
     pub fn create_with_key(
         root: &Path,
         owner: Owner,
@@ -170,8 +166,6 @@ impl EncryptedSignalProfile {
     }
     /// Open existing ciphertext only. Missing keys/data, interrupted use and
     /// another person/device/account/generation refuse without a reset.
-    /// # Errors
-    /// Refuses invalid custody, original authority, framing, ownership or storage.
     pub fn open_with_key(
         root: &Path,
         owner: Owner,
@@ -236,8 +230,6 @@ impl EncryptedSignalProfile {
     }
     /// Begin one use, durably refusing a competing/interrupted use before
     /// exposing plaintext. Dropping the returned image preserves the marker.
-    /// # Errors
-    /// Refuses retired authority, an outstanding lease or persistence failure.
     pub fn begin_use(&mut self) -> Result<ProfileImage, ProfileError> {
         check(&self.authority)?;
         if !self.usable || self.contents.is_none() {
@@ -267,8 +259,6 @@ impl EncryptedSignalProfile {
     /// runtime owner must establish writer quiescence before assembling it.
     /// This seal-only cleanup also works after admission retirement: it reads
     /// no new credential and returns no plaintext or revived authority.
-    /// # Errors
-    /// Refuses another lease, invalid contents or failed durable publication.
     pub fn checkpoint(&mut self, image: ProfileImage) -> Result<(), ProfileError> {
         if !self.usable || self.contents.is_some() || !Arc::ptr_eq(&image.issued, &self.issued) {
             return Err(ProfileError::Interrupted);
@@ -302,8 +292,6 @@ impl EncryptedSignalProfile {
     /// proves every working-profile writer stopped. This returns no plaintext
     /// and reads no credential, including when original authority has retired.
     /// The storage layer does not construct a runtime quiescence witness.
-    /// # Errors
-    /// Refuses foreign leases, duplicate/invalid paths or an oversized image.
     pub fn checkpoint_files(
         &mut self,
         mut image: ProfileImage,

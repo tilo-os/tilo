@@ -228,11 +228,10 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
     assert!(closed_empty);
 }
 
-/// Resizing a window whose tab holds a checked component is ordinary input:
-/// the press on its edge and the drag after it reach every app in the window
-/// (to say which edge holds still) without handing its content out to be
-/// replaced, which a checked component refuses with a panic. The browser
-/// turns that panic into a desktop that stopped working.
+/// Resizing a window whose tab holds a checked component is ordinary input: the press on its edge
+/// and the drag after it reach every app in the window (to say which edge holds still) without
+/// handing its content out to be replaced, which a checked component refuses with a panic. The
+/// browser turns that panic into a desktop that stopped working.
 #[test]
 fn dragging_the_edge_of_a_window_with_a_checked_component_resizes_it() {
     let root = std::env::temp_dir().join(format!("tilo-edge-drag-{}", uuid::Uuid::new_v4()));

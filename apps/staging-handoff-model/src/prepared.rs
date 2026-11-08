@@ -230,10 +230,6 @@ impl SealedPreparation {
     }
 
     /// Recompute the public binding digest after the fields are filled in.
-    ///
-    /// # Errors
-    ///
-    /// A field cannot be serialized for the binding digest.
     pub fn seal_binding(&mut self) -> std::io::Result<()> {
         self.binding_sha256 = b64(&self.binding_digest()?);
         Ok(())

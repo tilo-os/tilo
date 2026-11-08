@@ -1,73 +1,51 @@
 use std::path::Path;
-use std::process::{Command, Output};
-use tilo_test_env::SpawnUnderEnvLock as _;
+
+use crate::support::server as run;
 
 use anyhow::{Context as _, Result, ensure};
 use ed25519_dalek::SigningKey;
-use registry_server::{
-    ModerationService, PendingSubmission, PublisherAllowlist, PublisherRow, Storage,
-};
-use registry_types::{
-    EntryAction, RegistryEntry, RegistryTarget, RegistryVersion, sign_change_request, sign_entry,
-};
+use registry_server::{ModerationService, PendingSubmission, PublisherRow, Storage};
+use registry_types::{EntryAction, sign_change_request, sign_entry};
 
 fn fixture() -> Result<(tempfile::TempDir, Storage, PendingSubmission)> {
     let directory = tempfile::tempdir()?;
     let storage = Storage::open(directory.path())?;
     let key = SigningKey::from_bytes(&[31; 32]);
-    let mut entry = RegistryEntry {
-        package_id: "com.example.notes".into(),
-        kind: registry_types::EntryKind::App,
+    let mut entry = registry_types::RegistryEntry {
         name: "Notes".into(),
         description: "Native notes".into(),
         tagline: "Write together".into(),
         images: registry_types::LocalizedImages::default(),
-        supported_languages: vec!["en".into()],
         categories: vec![],
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
-        versions: vec![RegistryVersion {
-            version: "1.0".into(),
-            released_at_unix: 10,
-            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                tapp_url: "https://registry.example/artifacts/notes.tapp".into(),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: vec![],
-                },
-            }),
-        }],
+        versions: vec![crate::support::version(
+            "1.0",
+            10,
+            crate::support::tapp(
+                "https://registry.example/artifacts/notes.tapp",
+                "ab".repeat(32),
+                1,
+                "cd".repeat(32),
+                None,
+            ),
+        )],
         updated_at_unix: 10,
-        signature_hex: String::new(),
+        ..crate::support::entry(
+            "com.example.notes",
+            hex::encode(key.verifying_key().to_bytes()),
+            Vec::new(),
+        )
     };
     sign_entry(&mut entry, &key);
     storage.save_entry(&entry)?;
-    storage.save_allowlist(&PublisherAllowlist {
-        publishers: vec![PublisherRow {
-            pubkey_hex: entry.publisher_pubkey_hex.clone(),
-            can_add_new: true,
-            note: String::new(),
-            namespaces: vec!["com.example".into()],
-        }],
-    })?;
+    storage.save_allowlist(&crate::support::allowlist(vec![PublisherRow {
+        pubkey_hex: entry.publisher_pubkey_hex.clone(),
+        can_add_new: true,
+        note: String::new(),
+        namespaces: vec!["com.example".into()],
+    }]))?;
     let pending = ModerationService::new(storage.clone())
         .submit(sign_change_request(EntryAction::Delete, entry, &key), 100)?;
     Ok((directory, storage, pending))
-}
-
-fn run(directory: &Path, arguments: &[&str]) -> std::io::Result<Output> {
-    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(directory)
-        .args(arguments)
-        .output_locked()
 }
 
 fn show(directory: &Path, package: &str) -> Result<serde_json::Value> {

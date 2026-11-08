@@ -197,9 +197,6 @@ impl Host {
     /// Answer `effect` for `caller`, the principal the door admitted (the person at the window
     /// when `None`). An agent's code is written by its own principal, so what it applies to
     /// another app or outside asks a person first.
-    ///
-    /// # Errors
-    /// Why the block or its arguments were refused, or what the runtime failed with.
     pub fn answer(
         &self,
         effect: HostEffect,

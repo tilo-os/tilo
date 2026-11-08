@@ -25,6 +25,28 @@ fn install_bin() -> PathBuf {
     tilo_test_env::package_binary!("tilo-install")
 }
 
+/// The CLI's output for `args`, against a bundle store of its own under
+/// `xdg`.
+fn cli(xdg: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(install_bin())
+        .args(args)
+        .env("XDG_DATA_HOME", xdg)
+        .env("HOME", xdg)
+        .output_locked()
+        .unwrap()
+}
+
+/// The CLI's output for `args`, producing the bundle from `host`.
+fn cli_from(xdg: &Path, host: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(install_bin())
+        .args(args)
+        .arg(host)
+        .env("XDG_DATA_HOME", xdg)
+        .env("HOME", xdg)
+        .output_locked()
+        .unwrap()
+}
+
 fn fake_host(root: &Path) {
     for rel in [
         "lib64/ld-linux-x86-64.so.2",
@@ -53,35 +75,29 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         fake_host(host.path());
 
         // First install: succeeds.
-        let out = Command::new(install_bin())
-            .args(["runtime", "install", "--version", "v", "--from"])
-            .arg(host.path())
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli_from(
+            xdg.path(),
+            host.path(),
+            &["runtime", "install", "--version", "v", "--from"],
+        );
         assert!(out.status.success());
 
         // Second install without --force: fails.
-        let out = Command::new(install_bin())
-            .args(["runtime", "install", "--version", "v", "--from"])
-            .arg(host.path())
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli_from(
+            xdg.path(),
+            host.path(),
+            &["runtime", "install", "--version", "v", "--from"],
+        );
         assert!(!out.status.success());
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("already installed"), "stderr: {stderr}");
 
         // With --force: succeeds.
-        let out = Command::new(install_bin())
-            .args(["runtime", "install", "--version", "v", "--force", "--from"])
-            .arg(host.path())
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli_from(
+            xdg.path(),
+            host.path(),
+            &["runtime", "install", "--version", "v", "--force", "--from"],
+        );
         assert!(out.status.success());
     }
     // Phase `runtime_install_list_verify_remove_roundtrip`.
@@ -91,13 +107,11 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         fake_host(host.path());
 
         // install
-        let out = Command::new(install_bin())
-            .args(["runtime", "install", "--version", "test-1.0.0", "--from"])
-            .arg(host.path())
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .expect("run tilo-install");
+        let out = cli_from(
+            xdg.path(),
+            host.path(),
+            &["runtime", "install", "--version", "test-1.0.0", "--from"],
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -113,23 +127,13 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         );
 
         // list
-        let out = Command::new(install_bin())
-            .args(["runtime", "list"])
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli(xdg.path(), &["runtime", "list"]);
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("test-1.0.0"), "list output: {stdout}");
 
         // verify
-        let out = Command::new(install_bin())
-            .args(["runtime", "verify", "test-1.0.0"])
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli(xdg.path(), &["runtime", "verify", "test-1.0.0"]);
         assert!(
             out.status.success(),
             "verify failed: {}",
@@ -137,22 +141,12 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         );
 
         // path
-        let out = Command::new(install_bin())
-            .args(["runtime", "path", "--version", "test-1.0.0"])
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli(xdg.path(), &["runtime", "path", "--version", "test-1.0.0"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.trim().ends_with("tilo-runtime/test-1.0.0"));
 
         // remove
-        let out = Command::new(install_bin())
-            .args(["runtime", "remove", "test-1.0.0"])
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli(xdg.path(), &["runtime", "remove", "test-1.0.0"]);
         assert!(out.status.success());
         assert!(
             !xdg.path()
@@ -166,13 +160,11 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         let host = tempfile::tempdir().unwrap();
         fake_host(host.path());
 
-        let out = Command::new(install_bin())
-            .args(["runtime", "install", "--version", "vv", "--from"])
-            .arg(host.path())
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli_from(
+            xdg.path(),
+            host.path(),
+            &["runtime", "install", "--version", "vv", "--from"],
+        );
         assert!(out.status.success());
 
         let libc = xdg.path().join("tilo-runtime/vv/lib/lib64/libc.so.6");
@@ -180,12 +172,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         bytes[0] ^= 0x5a;
         fs::write(&libc, bytes).unwrap();
 
-        let out = Command::new(install_bin())
-            .args(["runtime", "verify", "vv"])
-            .env("XDG_DATA_HOME", xdg.path())
-            .env("HOME", xdg.path())
-            .output_locked()
-            .unwrap();
+        let out = cli(xdg.path(), &["runtime", "verify", "vv"]);
         assert!(!out.status.success());
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(

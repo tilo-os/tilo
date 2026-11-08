@@ -1,11 +1,9 @@
 //! What assistive technology reads of the session's own surfaces.
-//!
-//! The desk, the bar and every sheet and panel the session hosts are painted
-//! by the session's own loop, so no application window carries them: the
-//! session exports each one itself, over the semantic tree the toolkit
-//! already builds. These tests read that export the way a screen reader gets
-//! it — a named window per surface, a node per control, an action that acts —
-//! and drive a control through it.
+//! The desk, the bar and every sheet and panel the session hosts are painted by the session's own
+//! loop, so no application window carries them: the session exports each one itself, over the
+//! semantic tree the toolkit already builds. These tests read that export the way a screen reader
+//! gets it — a named window per surface, a node per control, an action that acts — and drive a
+//! control through it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -22,36 +20,27 @@ mod common;
 
 use std::time::Duration;
 
-use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use ui::a11y::Action;
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const REFRESH: Duration = Duration::from_millis(16);
 
 /// A headless session on its own home, with the sheets it hosts mounted.
 fn session() -> (tilo_test_env::TestHome, Session) {
     let home = tilo_test_env::TestHome::new().unwrap();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(home.state().to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        state: Some(home.state().to_path_buf()),
+        ..Options::default()
+    });
     session.step(REFRESH).expect("a turn of the session");
     (home, session)
 }
 
-/// The window `name` and the place it publishes at, as the exporter hands
-/// them over.
+/// The window `name` and the place it publishes at, as the exporter hands them over.
 fn window(windows: &[(usize, String, TreeUpdate)], name: &str) -> (usize, TreeUpdate) {
     windows
         .iter()
@@ -68,7 +57,7 @@ fn window(windows: &[(usize, String, TreeUpdate)], name: &str) -> (usize, TreeUp
         )
 }
 
-/// The node `label`, as a screen reader finds it: by the name it says.
+/// The node `label` , as a screen reader finds it: by the name it says.
 fn labelled(tree: &TreeUpdate, label: &str) -> (NodeId, Node) {
     tree.nodes
         .iter()
@@ -114,8 +103,8 @@ fn the_bar_and_the_desk_are_windows_a_screen_reader_reads() {
         desk.nodes.iter().any(|(_, node)| node.label().is_some()),
         "the desk's controls are named"
     );
-    // The empty desk offers the way into the app palette, named as the
-    // external AT-SPI client of the installed image looks for it.
+    // The empty desk offers the way into the app palette, named as the external AT-SPI client of
+    // the installed image looks for it.
     let (_, node) = labelled(&desk, "Open an app");
     assert_eq!(node.role(), Role::Button);
     assert!(
@@ -160,8 +149,8 @@ fn activating_a_button_through_the_export_performs_its_action() {
 fn an_app_the_session_hosts_is_exported_with_working_controls() {
     let _settled = ui::motion::testing::settled();
     let (_home, mut session) = session();
-    // A question on the portal sheet: an app of its own, drawn by the
-    // session's loop, so only the export a screen reader gets carries it.
+    // A question on the portal sheet: an app of its own, drawn by the session's loop, so only the
+    // export a screen reader gets carries it.
     let seat = session
         .portal()
         .expect("the session mounts the portal sheet")

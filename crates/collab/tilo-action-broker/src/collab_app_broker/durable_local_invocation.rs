@@ -542,9 +542,6 @@ impl AppBrokerState {
     /// answer the connection, its application and this process holding it
     /// cannot take away. `None` when the caller had nothing admitted under
     /// that id.
-    /// # Errors
-    /// The journal is unavailable, or the caller's current permission no
-    /// longer covers the invocation.
     pub(super) fn retained_observation(
         &self,
         caller: &Caller,

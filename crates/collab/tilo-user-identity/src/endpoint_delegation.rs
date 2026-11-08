@@ -1,4 +1,4 @@
-//! [`EndpointDelegation`]: a device key vouching for the key its transport
+//! [`EndpointDelegation`] — a device key vouching for the key its transport
 //! speaks as.
 //!
 //! A device's transport is normally its device key: an iroh endpoint dials

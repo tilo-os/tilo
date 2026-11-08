@@ -160,6 +160,11 @@ impl<M: ListModel> VirtualList<M> {
                 item.state.expanded = Some(!marks.is_folded(&row.key));
             }
         }
+        // The row standing open into its item says so, as the row over a document does: what
+        // the item holds shows under the row, where the row stands in the list.
+        if self.open.as_ref() == Some(&row.key) {
+            item.state.expanded = Some(true);
+        }
         match &row.state {
             MountedRowState::Ready => {}
             MountedRowState::Pending => item.state.busy = true,
@@ -381,7 +386,7 @@ impl<M: ListModel> VirtualList<M> {
         enabled: bool,
         count: usize,
     ) -> RowAccessInputs {
-        let (level, expanded) = match &self.tree {
+        let (level, folded) = match &self.tree {
             Some(marks) => (
                 Some(marks.depth(&row.key).saturating_add(1) as usize),
                 marks
@@ -389,6 +394,11 @@ impl<M: ListModel> VirtualList<M> {
                     .then(|| !marks.is_folded(&row.key)),
             ),
             None => (None, None),
+        };
+        let expanded = if self.open.as_ref() == Some(&row.key) {
+            Some(true)
+        } else {
+            folded
         };
         RowAccessInputs {
             stamp: row.stamp,

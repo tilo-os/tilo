@@ -1,5 +1,5 @@
-//! `ResizeHandle` — the seam between two adjacent `WindowGroup`s inside a
-//! [`GroupRow`]: the slot that spaces them, and the thin rule painted in it.
+//! `ResizeHandle` — the seam between two adjacent `WindowGroup`s inside
+//! a [`GroupRow`]: the slot that spaces them, and the thin rule painted in it.
 //!
 //! It resizes nothing itself. Which window a press on a seam resizes, and
 //! how, is one rule in [`super::edge_resize`], applied by the row: the seam

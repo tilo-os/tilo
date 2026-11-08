@@ -40,8 +40,6 @@ pub struct Assembly {
 }
 impl NativeBroker {
     /// Receives already approved key custody; never creates keys or grants.
-    /// # Errors
-    /// Refuses foreign ownership, missing namespace or stale original authority.
     pub fn new(assembly: Assembly) -> Result<Self, SendError> {
         let owner = assembly.journal.owner().clone();
         let canonical = uuid::Uuid::parse_str(&owner.account)
@@ -96,8 +94,6 @@ impl NativeBroker {
     }
     /// The host derives `recipient` from the authenticated certificate/device.
     /// It cannot be supplied by a Messages app action or message payload.
-    /// # Errors
-    /// Refuses unknown/currently revoked routes and conflicting redelivery.
     pub async fn receive(
         &self,
         recipient: String,

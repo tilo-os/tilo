@@ -58,7 +58,7 @@ use tilo_actions::remote::{
 };
 use tilo_agent_participant::{
     AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, ParticipantConfig, Replica,
-    Seed, SupervisorHost,
+    ReplicaActor, Seed, SupervisorHost,
 };
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, certify};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -397,15 +397,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     browser.join_placed(WORKSPACE, "Workspace").unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
-    let mut page = Replica::open(
-        &catalogue,
-        SCRATCHPAD,
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open(SCRATCHPAD, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     // Scratchpad keeps the workspace's one record: its package primary,
     // which travels as the route without a record id.
     let route = DocumentRoute {

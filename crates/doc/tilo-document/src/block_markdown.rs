@@ -247,9 +247,6 @@ pub fn short_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> BTreeMap<&'a str
 
 /// The id `token` names among `ids`: an id itself, or the one id it is a
 /// prefix of.
-///
-/// # Errors
-/// Names why `token` matches no block, or several.
 pub fn resolve<'a>(ids: impl IntoIterator<Item = &'a str>, token: &str) -> Result<String, String> {
     let mut found: Option<&str> = None;
     let mut ambiguous = false;
@@ -726,10 +723,6 @@ fn code_lines(body: &[&str], lang: &str, fence: usize, ids: &Ids<'_>) -> Vec<Par
 }
 
 /// Parse `markdown` as the blocks it says.
-///
-/// # Errors
-/// Names a line the dialect cannot carry (a table) or an id that names no
-/// block of the page.
 pub(crate) fn parse(markdown: &str, ids: &Ids<'_>) -> Result<Vec<Parsed>, String> {
     let lines: Vec<&str> = markdown.lines().collect();
     let mut out = Vec::new();

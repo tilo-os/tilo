@@ -72,10 +72,6 @@ pub fn is_appimage(path: &Path) -> bool {
 
 /// The image's embedded `.desktop` entry and icon; `None` when `path` is
 /// not an `AppImage` or carries no entry.
-///
-/// # Errors
-///
-/// The file could not be read or its image is damaged.
 #[cfg(feature = "appimage")]
 pub(crate) fn read_identity(path: &Path, locales: &[String]) -> io::Result<Option<Found>> {
     let mut file = File::open(path)?;

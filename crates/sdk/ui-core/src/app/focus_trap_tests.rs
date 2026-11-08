@@ -185,7 +185,6 @@ fn framework_history_preserves_the_native_apps_own_modal_focus_trap() {
 
 #[test]
 fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
-    // Case `container_overlay_traps_tab_in_its_controls`.
     {
         use crate::widget::{Column, Container};
         let root = Column::new()
@@ -211,7 +210,6 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
         assert_eq!(app.focused_node, Some(second));
     }
 
-    // Case `closed_modal_does_not_trap_focus`.
     {
         let (mut app, _open) = host_app();
         app.init_layout();
@@ -226,7 +224,6 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
         );
     }
 
-    // Case `open_modal_confines_focus_order_to_its_subtree`.
     {
         let (mut app, open) = host_app();
         app.init_layout();
@@ -251,7 +248,6 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
         );
     }
 
-    // Case `tab_cycles_within_the_trapped_modal_via_the_real_handler`.
     {
         let (mut app, open) = host_app();
         app.init_layout();
@@ -296,7 +292,6 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
         );
     }
 
-    // Case `pointer_capture_without_a_trap_suppresses_app_tab`.
     {
         // A pointer-capturing, non-trapping surface (a context menu) must
         // switch off the App's own Tab/arrow navigation.
@@ -313,7 +308,6 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
         );
     }
 
-    // Case `closing_modal_restores_prior_focus`.
     {
         let (mut app, open) = host_app();
         app.init_layout();
@@ -338,7 +332,6 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
         );
     }
 
-    // Case `modal_exposes_dialog_role_with_title_as_name`.
     {
         use crate::a11y::Role;
         let m = ModalDialog::new("Delete file?", TwoKids::new()).open(true);

@@ -1,5 +1,6 @@
 //! Real certified HTTPS submit/retry and a canonical retained receipt.
 use super::*;
+use tilo_agent_participant::ReplicaActor;
 use ui::feedback::{Destination, Draft, Submission};
 
 async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
@@ -591,12 +592,11 @@ fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Re
         .iter()
         .map(|(_, bytes)| bytes.clone())
         .collect();
-    Replica::open(
-        &common::catalogue(),
-        &route.app_id,
+    common::open_in(
         &route.cluster_id,
+        &route.app_id,
         person,
-        tilo_agent_participant::ReplicaActor::Owner,
+        ReplicaActor::Owner,
         Seed::Existing {
             record: ui::record::RecordId::package_primary(),
             changes,

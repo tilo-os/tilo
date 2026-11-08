@@ -1,21 +1,18 @@
-//! The machine's first boot, which `tilo-firstboot.service` runs as
-//! `tilo-session --firstboot-only`: the person's config directories are
-//! made, the host desktop's input settings are imported where the device is
-//! a host package, and the process exits without opening a display. It is
-//! cheap and idempotent; the unit guards re-runs with a marker file.
-//!
-//! It never creates a personal identity: that is an acknowledged ceremony in
-//! setup, in front of the person. [`setup_due`] is the other half of that
-//! ceremony: whether a starting session opens it.
+//! The machine's first boot, which `tilo-firstboot.service` runs as `tilo-session --firstboot-only`
+//! : the person's config directories are made, the host desktop's input settings are imported where
+//! the device is a host package, and the process exits without opening a display. It is cheap and
+//! idempotent; the unit guards re-runs with a marker file.
+//! It never creates a personal identity: that is an acknowledged ceremony in setup, in front of the
+//! person. [`setup_due`] is the other half of that ceremony: whether a starting session opens it.
 
 use std::error::Error;
 
 /// What a `tilo-session` command line asks for besides a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OneShot {
-    /// `--firstboot-only`: set the machine up, then exit.
+    /// `--firstboot-only` : set the machine up, then exit.
     SetupOnly,
-    /// `--firstboot`: set the machine up, then go on to the session.
+    /// `--firstboot` : set the machine up, then go on to the session.
     SetupThenSession,
 }
 
@@ -46,9 +43,9 @@ pub fn one_shot(args: &[String]) -> Result<Option<OneShot>, String> {
 pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
     tilo_onboarding_host::firstboot::run()?;
     if host_desktop {
-        // What the host desktop was set to is imported once, and the person
-        // keeps it; a machine whose settings service is not up yet is tried
-        // again on the next boot rather than failing this one.
+        // What the host desktop was set to is imported once, and the person keeps it; a machine
+        // whose settings service is not up yet is tried again on the next boot rather than failing
+        // this one.
         if let Err(error) = tilo_onboarding_host::firstboot::import_host_input_settings() {
             tracing::warn!(%error, "the host desktop's input settings were not imported");
         }
@@ -56,11 +53,10 @@ pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Whether this device has setup to do before its desktop is used: it has no
-/// identity yet, the last startup found its identity unusable, or the person
-/// began setting it up and has not finished — the ceremony's journal, or a
-/// prepared setup neither consumed nor declined. A finished setup leaves none
-/// of these behind, so a restart goes straight to the person's desk.
+/// Whether this device has setup to do before its desktop is used: it has no identity yet, the last
+/// startup found its identity unusable, or the person began setting it up and has not finished —
+/// the ceremony's journal, or a prepared setup neither consumed nor declined. A finished setup
+/// leaves none of these behind, so a restart goes straight to the person's desk.
 pub fn setup_due(identity_missing: bool, recovery: bool, identity_dir: &std::path::Path) -> bool {
     recovery
         || identity_missing
@@ -93,8 +89,8 @@ mod tests {
         );
     }
 
-    /// This machine's home for one test, so the prepared setup the device
-    /// may hold there is this test's own.
+    /// This machine's home for one test, so the prepared setup the device may hold there is this
+    /// test's own.
     #[cfg(target_os = "linux")]
     fn home() -> (tilo_test_env::ScopedEnv, tempfile::TempDir) {
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -139,8 +135,8 @@ mod tests {
     fn a_restart_mid_setup_opens_it_again() {
         let (_env, home) = home();
         let dir = identity_dir(home.path());
-        // The ceremony's journal, written ahead of the step it guards: any
-        // entry at its path is setup the person had not finished.
+        // The ceremony's journal, written ahead of the step it guards: any entry at its path is
+        // setup the person had not finished.
         std::fs::write(
             dir.join(".onboarding-progress.json"),
             br#"{"version":1,"stage":"identity-ready"}"#,

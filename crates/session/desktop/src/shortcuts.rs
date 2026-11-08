@@ -1,7 +1,6 @@
-//! Desktop keyboard shortcuts on a live key press: which configured
-//! [`ShortcutAction`] it is, on every host. The native shell and the browser
-//! desktop resolve presses through this one table and key translation, so a
-//! chord means the same everywhere and a rebind reaches both.
+//! Desktop keyboard shortcuts on a live key press: which configured [`ShortcutAction`] it is, on
+//! every host. The native shell and the browser desktop resolve presses through this one table and
+//! key translation, so a chord means the same everywhere and a rebind reaches both.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -11,17 +10,14 @@ use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
 use winit::event::Modifiers;
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
-/// The desktop's one shortcut table, shared: what the desk matches a press
-/// against, what it shows beside its rows, and what a person's rebinding
-/// changes for both at once.
+/// The desktop's one shortcut table, shared: what the desk matches a press against, what it shows
+/// beside its rows, and what a person's rebinding changes for both at once.
 pub type Shared = Rc<RefCell<ShortcutConfig>>;
 
 /// Match a persisted shortcut against a live winit key event.
-///
-/// The native compositor uses this for session-owned bindings too. Keeping
-/// that path on the same key-name translation as the shortcut editor avoids
-/// claiming a configured named key before a client sees it and then failing
-/// to perform its action.
+/// The native compositor uses this for session-owned bindings too. Keeping that path on the same
+/// key-name translation as the shortcut editor avoids claiming a configured named key before a
+/// client sees it and then failing to perform its action.
 pub fn shortcut_chord_matches(logical_key: &Key, modifiers: Modifiers, chord: &KeyChord) -> bool {
     let state = modifiers.state();
     let key_matches = shortcut_key_name(logical_key).is_some_and(|key| {
@@ -37,8 +33,8 @@ pub fn shortcut_chord_matches(logical_key: &Key, modifiers: Modifiers, chord: &K
         && chord.modifiers.contains("Shift") == state.shift_key()
 }
 
-/// Winit reports the logical character produced by Shift, while shortcut
-/// configuration stores the physical punctuation printed on the key.
+/// Winit reports the logical character produced by Shift, while shortcut configuration stores the
+/// physical punctuation printed on the key.
 fn unshifted_shortcut_key(key: &str) -> Option<&'static str> {
     Some(match key {
         "?" => "/",
@@ -66,8 +62,8 @@ fn unshifted_shortcut_key(key: &str) -> Option<&'static str> {
     })
 }
 
-/// The sole configurable shortcut resolver. The input pre-router owns a press
-/// exactly when this returns an action; the dispatcher performs that result.
+/// The sole configurable shortcut resolver. The input pre-router owns a press exactly when this
+/// returns an action; the dispatcher performs that result.
 pub fn configured_shortcut_action(
     shortcuts: &ShortcutConfig,
     logical_key: &Key,
@@ -82,19 +78,17 @@ pub fn configured_shortcut_action(
         .or_else(|| is_bare_f11(logical_key, modifiers).then_some(ShortcutAction::ToggleFullscreen))
 }
 
-/// The fixed action a live key press asks for, from the fixed table: a
-/// chord Settings cannot rebind, answered before any application and before
-/// the person's own bindings. `None` for a chord the keys answer where they
-/// are resolved (the window walk, the workspace steps, the display sheet) or
-/// that nothing dispatches.
+/// The fixed action a live key press asks for, from the fixed table: a chord Settings cannot
+/// rebind, answered before any application and before the person's own bindings. `None` for a chord
+/// the keys answer where they are resolved (the window walk, the workspace steps, the display
+/// sheet) or that nothing dispatches.
 pub fn fixed_shortcut_action(logical_key: &Key, modifiers: Modifiers) -> Option<FixedAction> {
     let chord = shortcut_chord_from_event(logical_key, modifiers)?;
     ui::shortcut_table::fixed_action(&chord)
 }
 
-/// F11 is every desktop's full-screen key; it toggles the same real
-/// fullscreen as the configurable chord, unless the person bound it to
-/// something else.
+/// F11 is every desktop's full-screen key; it toggles the same real fullscreen as the configurable
+/// chord, unless the person bound it to something else.
 fn is_bare_f11(logical_key: &Key, modifiers: Modifiers) -> bool {
     *logical_key == Key::Named(NamedKey::F11) && modifiers.state().is_empty()
 }
@@ -109,8 +103,8 @@ fn shortcut_key_name(logical_key: &Key) -> Option<String> {
             NamedKey::ArrowUp => "up",
             NamedKey::ArrowDown => "down",
             NamedKey::Tab => "tab",
-            // Bare Escape dismisses what the desktop has open; the fixed
-            // table's way out of a remote session names it with Super.
+            // Bare Escape dismisses what the desktop has open; the fixed table's way out of a
+            // remote session names it with Super.
             NamedKey::Escape => "escape",
             NamedKey::Enter => "enter",
             NamedKey::Space => "space",
@@ -164,17 +158,13 @@ pub fn shortcut_chord_from_event(logical_key: &Key, modifiers: Modifiers) -> Opt
     })
 }
 
-/// The shortcut a key press in a browser page asks for, from the same table
-/// the native shell reads.
-///
-/// A browser passes Super through only sometimes, so the page also takes a
-/// stand-in for it that no browser or system binds: Alt+Shift, or
-/// Ctrl+Option on a Mac (Option+Shift selects by words there). The stand-in
-/// reads as Super; any other modifier held with it stays, so Ctrl with the
-/// stand-in is Ctrl+Super. Because the stand-in's own keys change what a
-/// letter or digit types (Shift+1 types `!`, Option+O `ø`), those keys are
-/// read by their place on the keyboard. Super+Tab, the overview, is the
-/// system's in most browsers, so O stands in for its Tab.
+/// The shortcut a key press in a browser page asks for, from the same table the native shell reads.
+/// A browser passes Super through only sometimes, so the page also takes a stand-in for it that no
+/// browser or system binds: Alt+Shift, or Ctrl+Option on a Mac (Option+Shift selects by words
+/// there). The stand-in reads as Super; any other modifier held with it stays, so Ctrl with the
+/// stand-in is Ctrl+Super. Because the stand-in's own keys change what a letter or digit types
+/// (Shift+1 types `!` , Option+O `ø` ), those keys are read by their place on the keyboard.
+/// Super+Tab, the overview, is the system's in most browsers, so O stands in for its Tab.
 pub fn page_shortcut_action(
     shortcuts: &ShortcutConfig,
     logical_key: &Key,
@@ -190,12 +180,11 @@ pub fn page_shortcut_action(
     })
 }
 
-/// The fixed action a key press in a browser page asks for: the chords
-/// Settings cannot rebind, read from the same table the native shell reads.
-/// A chord with Super in it reads Super, or the page's stand-in for it; one
-/// with no Super at all — F1, Alt+F4 — is read as the browser reports it.
-/// `None` for a chord the keys answer where they are resolved (the window
-/// walk, the workspace steps) and for the ones no [`FixedAction`] carries.
+/// The fixed action a key press in a browser page asks for: the chords Settings cannot rebind, read
+/// from the same table the native shell reads. A chord with Super in it reads Super, or the page's
+/// stand-in for it; one with no Super at all — F1, Alt+F4 — is read as the browser reports it.
+/// `None` for a chord the keys answer where they are resolved (the window walk, the workspace
+/// steps) and for the ones no [`FixedAction`] carries.
 pub fn page_fixed_action(
     logical_key: &Key,
     physical_key: PhysicalKey,
@@ -208,8 +197,8 @@ pub fn page_fixed_action(
     }
 }
 
-/// The key and modifiers [`page_shortcut_action`] looks up, or `None` when
-/// neither Super nor the stand-in is held.
+/// The key and modifiers [`page_shortcut_action`] looks up, or `None` when neither Super nor the
+/// stand-in is held.
 pub fn page_chord(
     logical_key: &Key,
     physical_key: PhysicalKey,
@@ -272,9 +261,9 @@ mod tests {
         configured_shortcut_action(&ShortcutConfig::default(), logical, state.into())
     }
 
-    /// The page and the native shell read one table: Super+Up maximizes and
-    /// Ctrl+Super+Up goes to the strip above in both, Super+3 shows the
-    /// third strip, whether Super itself or the page's stand-in is held.
+    /// The page and the native shell read one table: Super+Up maximizes and Ctrl+Super+Up goes to
+    /// the strip above in both, Super+3 shows the third strip, whether Super itself or the page's
+    /// stand-in is held.
     #[test]
     fn the_page_resolves_chords_as_the_native_shell_does() {
         let sup = ModifiersState::SUPER;
@@ -349,8 +338,8 @@ mod tests {
         );
     }
 
-    /// O stands in for Tab, so the overview opens where the browser keeps
-    /// Super+Tab; without Super or the stand-in nothing is a chord.
+    /// O stands in for Tab, so the overview opens where the browser keeps Super+Tab; without Super
+    /// or the stand-in nothing is a chord.
     #[test]
     fn o_opens_the_overview_and_plain_keys_are_no_chord() {
         assert_eq!(
@@ -381,10 +370,9 @@ mod tests {
         }
     }
 
-    /// The fixed chords Settings cannot rebind resolve on the page from the
-    /// same table: Super itself or the page's stand-in for it, and a chord
-    /// with no Super at all — F1 — as the browser reports it. A plain key is
-    /// none of them.
+    /// The fixed chords Settings cannot rebind resolve on the page from the same table: Super
+    /// itself or the page's stand-in for it, and a chord with no Super at all — F1 — as the browser
+    /// reports it. A plain key is none of them.
     #[test]
     fn the_page_runs_the_fixed_chords_as_the_native_shell_does() {
         let fixed = |logical: &Key, code: KeyCode, state: ModifiersState| {
@@ -420,8 +408,8 @@ mod tests {
                 "a bare {letter}"
             );
         }
-        // S alone with the stand-in is the strip switcher; with Super passed
-        // through, the chord that also holds Shift is the capture.
+        // S alone with the stand-in is the strip switcher; with Super passed through, the chord
+        // that also holds Shift is the capture.
         assert_eq!(
             fixed(&Key::Character("S".into()), KeyCode::KeyS, stand_in),
             Some(FixedAction::StripSwitcher)

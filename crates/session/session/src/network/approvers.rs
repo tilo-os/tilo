@@ -1,12 +1,9 @@
 //! Questions this person's agents on their workspace hosts put to them.
-//!
-//! An agent a host runs for the person never confirms an action its grants
-//! leave to them by its own word: the host asks the person's approving
-//! devices about that one invocation. This device, when it may admit
-//! devices (it holds the person's root custody), keeps an approver session
-//! with each host it connects to, puts every question on the session's
-//! question sheet, and sends the answer back. A question that is withdrawn
-//! or expires takes its sheet away.
+//! An agent a host runs for the person never confirms an action its grants leave to them by its own
+//! word: the host asks the person's approving devices about that one invocation. This device, when
+//! it may admit devices (it holds the person's root custody), keeps an approver session with each
+//! host it connects to, puts every question on the session's question sheet, and sends the answer
+//! back. A question that is withdrawn or expires takes its sheet away.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -61,8 +58,8 @@ impl Answering {
 }
 
 impl Approvers for Answering {
-    /// Answer `host`'s questions from now on, when this device may: a device
-    /// that cannot admit devices is no approver, and its host refuses it.
+    /// Answer `host` 's questions from now on, when this device may: a device that cannot admit
+    /// devices is no approver, and its host refuses it.
     fn start(&mut self, endpoint: &Endpoint, host: EndpointAddr, identity: &HostIdentity) {
         if !identity.device_cert.capabilities.can_admit_devices
             || self
@@ -125,15 +122,13 @@ async fn answer_host(
     }
 }
 
-/// Show every question the host lists on the sheet, once, and hand each
-/// answer back, until the session fails. Questions that are gone are
-/// withdrawn from the sheet.
+/// Show every question the host lists on the sheet, once, and hand each answer back, until the
+/// session fails. Questions that are gone are withdrawn from the sheet.
 async fn serve(mut approver: Approver, questions: &Questions) -> CertifyError {
     let (answered, mut answers) = mpsc::unbounded_channel::<([u8; 32], ConfirmationAnswer)>();
     let mut shown: HashMap<[u8; 32], tokio::task::JoinHandle<()>> = HashMap::new();
-    // The questions the person has answered, kept until the host stops
-    // listing them: a list read while the answer is on its way does not put
-    // the question back on their sheet.
+    // The questions the person has answered, kept until the host stops listing them: a list read
+    // while the answer is on its way does not put the question back on their sheet.
     let mut done: HashSet<[u8; 32]> = HashSet::new();
     loop {
         let listed = match approver.list_confirmations().await {

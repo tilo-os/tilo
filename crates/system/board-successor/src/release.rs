@@ -127,9 +127,6 @@ pub fn statements(output: &str, predicate_type: &str, digest: &str) -> Result<Va
 }
 
 /// Every signature row names `digest` and the release repository.
-///
-/// # Errors
-/// One that does not.
 pub fn signature(output: &str, digest: &str) -> Result<()> {
     let empty = json!({});
     for row in wrappers(output)? {
@@ -148,11 +145,6 @@ pub fn signature(output: &str, digest: &str) -> Result<()> {
 
 /// The source revision and generation the SLSA provenance binds to this
 /// board's release of `digest`.
-///
-/// # Errors
-/// Provenance that does not bind the board, architecture, digest,
-/// generation, one source and one immutable firmware, or lacks the
-/// independent-rebuild witness.
 pub fn provenance(output: &str, digest: &str) -> Result<(String, u64)> {
     let predicate = statements(output, SLSA, digest)?;
     let empty = json!({});
@@ -292,9 +284,6 @@ pub struct Successor {
 /// the pinned key signed it, its provenance and freshness bind it, its
 /// generation is at least the running one and at most 64 ahead, and the
 /// generation and source tags point at the same digest.
-///
-/// # Errors
-/// Any of those checks, or a failed command.
 pub fn select(current_generation: u64, now: i128, runner: &dyn Runner) -> Result<Successor> {
     let hint = format!("docker://{REPOSITORY}:{PROFILE}-latest");
     let output = runner.run(&[SKOPEO, "inspect", "--format", "{{.Digest}}", &hint])?;

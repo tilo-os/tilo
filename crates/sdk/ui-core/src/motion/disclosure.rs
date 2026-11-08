@@ -1,4 +1,4 @@
-//! [`Disclosure`]: one band's [`Disclose`] in and out, as a find bar or an
+//! [`Disclosure`] — one band's [`Disclose`] in and out, as a find bar or an
 //! in-window banner keeps it.
 
 use super::named::{CROSS_FADE, Disclose, Reveal, unit_opacity};

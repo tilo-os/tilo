@@ -1,5 +1,5 @@
-//! Which app opens a kind of file or link: the workspace's choice and each
-//! person's own, in the words the Apps & Files tab uses.
+//! Which app opens a kind of file or link: the workspace's choice and each person's own, in the
+//! words the Apps & Files tab uses.
 
 use tilo_desktop_model::{UserId, Workspace};
 use tilo_sort::CompactSort as _;
@@ -70,22 +70,20 @@ pub fn next_user_default(
     }
 }
 
-/// One kind of file or link, and both choices for it as the person reads
-/// them.
+/// One kind of file or link, and both choices for it as the person reads them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefaultAppChoice {
     pub resource: desktop_policy::ResourceKind,
     /// The kind named in the person's words.
     pub label: String,
-    /// The workspace's choice: the app it names, or that it follows each
-    /// person's own.
+    /// The workspace's choice: the app it names, or that it follows each person's own.
     pub workspace: String,
     /// The person's own choice.
     pub yours: String,
 }
 
-/// Every kind of file and link some app opens here, with the workspace's
-/// choice and `local_user`'s own, in the tab's order.
+/// Every kind of file and link some app opens here, with the workspace's choice and `local_user` 's
+/// own, in the tab's order.
 #[must_use]
 pub fn default_app_choices(
     ws: &Workspace,

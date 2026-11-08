@@ -89,9 +89,6 @@ pub struct ModelService {
 
 impl ModelService {
     /// A host that runs the apps' modules, over no record yet, for `person`'s changes.
-    ///
-    /// # Errors
-    /// The process's wasm engine could not be made.
     pub fn new(person: impl Into<String>) -> Result<Self, String> {
         Ok(Self {
             modules: Modules::new()?,
@@ -105,9 +102,6 @@ impl ModelService {
     /// Keep the record of `kind` that `app` keeps at `address`, over `doc`, whose model runs in
     /// `wasm` — the app's own module. What the record held keeps its ids and history; a
     /// document that holds nothing gets the model's genesis.
-    ///
-    /// # Errors
-    /// The module does not load or does not serve the kind, or it refused the record.
     pub fn open(
         &mut self,
         app: &str,

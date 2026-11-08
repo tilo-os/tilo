@@ -1,6 +1,6 @@
-//! What a shortcut chord does: the desk's part of the shortcut table, each
-//! action carried out through the verb its menu row, its palette row and an
-//! agent's invocation name, and the rest handed to the session.
+//! What a shortcut chord does: the desk's part of the shortcut table, each action carried out
+//! through the verb its menu row, its palette row and an agent's invocation name, and the rest
+//! handed to the session.
 
 use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_surface::navigation::{
@@ -12,14 +12,11 @@ use super::{DesktopAsk, DesktopChrome};
 use crate::chrome::ChromeIntent;
 
 impl DesktopChrome {
-    /// Perform a desktop shortcut: false for one the desk has no part in
-    /// (locking the device, the magnifier, dictation, …), which the session
-    /// then answers ([`crate::asks`]).
-    ///
-    /// Every shortcut of the table is named here or handed on: a shortcut
-    /// the table gains without a handler does not build. Each names the
-    /// verb its menu row, its palette row and an agent's invocation name, so
-    /// a chord cannot drift into a behaviour of its own.
+    /// Perform a desktop shortcut: false for one the desk has no part in (locking the device, the
+    /// magnifier, dictation, …), which the session then answers ([`crate::asks`]).
+    /// Every shortcut of the table is named here or handed on: a shortcut the table gains without a
+    /// handler does not build. Each names the verb its menu row, its palette row and an agent's
+    /// invocation name, so a chord cannot drift into a behaviour of its own.
     pub fn shortcut(&mut self, action: ShortcutAction) -> bool {
         match action {
             ShortcutAction::WorkspaceOverview => self.toggle_overview(),
@@ -36,14 +33,13 @@ impl DesktopChrome {
             ShortcutAction::NextWorkspace => self.apply_intent(ChromeIntent::SwitchWorkspace(1)),
             ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
             ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
-            // The window the person closed last comes back where it was; the
-            // desk answers the chord either way, as the shell it replaces did.
+            // The window the person closed last comes back where it was; the desk answers the chord
+            // either way, as the shell it replaces did.
             ShortcutAction::ReopenClosedTab => self.dispatch(ChromeEffect::ReopenClosed),
             ShortcutAction::ToggleMaximize => self.maximize_focused(None),
             ShortcutAction::ToggleFullscreen => self.toggle_fullscreen(),
             ShortcutAction::ToggleFloat => self.toggle_float(),
-            // The tab leaves its window for one of its own, as the window
-            // menu's Split right does.
+            // The tab leaves its window for one of its own, as the window menu's Split right does.
             ShortcutAction::DetachTab => self.split_focused_tab(),
             ShortcutAction::AttachTabLeft => self.attach_focused_tab(-1),
             ShortcutAction::AttachTabRight => self.attach_focused_tab(1),
@@ -76,8 +72,8 @@ impl DesktopChrome {
             ShortcutAction::FocusStrip7 => self.focus_strip(6),
             ShortcutAction::FocusStrip8 => self.focus_strip(7),
             ShortcutAction::FocusStrip9 => self.focus_strip(8),
-            // The rest belong to the session under the desk: the device, the
-            // surfaces over it and the people and agents here.
+            // The rest belong to the session under the desk: the device, the surfaces over it and
+            // the people and agents here.
             ShortcutAction::Search
             | ShortcutAction::Lock
             | ShortcutAction::QuickSettings
@@ -113,8 +109,8 @@ impl DesktopChrome {
                     self.dispatch(DeskEffect::CloseTab { tab: route.tab });
                 }
             }
-            // Another window of the app in front, right after it, as the
-            // menu's New tab row opens one; with no window, the app picker.
+            // Another window of the app in front, right after it, as the menu's New tab row opens
+            // one; with no window, the app picker.
             FixedAction::DuplicateTab => {
                 match self.focused_route().and_then(|route| {
                     let app = self.app_of(&route)?;
@@ -130,15 +126,15 @@ impl DesktopChrome {
                     None => self.open_the_app_picker(),
                 }
             }
-            // A new window is the app picker: the rule for where it stands
-            // is the desk's, and the person chooses the app.
+            // A new window is the app picker: the rule for where it stands is the desk's, and the
+            // person chooses the app.
             FixedAction::NewWindow => self.open_the_app_picker(),
             FixedAction::OpenTerminal => self.open_app("so.tilo.terminal"),
             FixedAction::StripSwitcher => {
                 self.apply_intent(crate::chrome::ChromeIntent::ToggleStrips);
             }
-            // The workspace's history, where the person is: what Super+H
-            // showed of what happened here.
+            // The workspace's history, where the person is: what Super+H showed of what happened
+            // here.
             FixedAction::WorkspaceHistory | FixedAction::ExploreWorkspaceHistory => {
                 let view = if action == FixedAction::WorkspaceHistory {
                     ActivityView::CatchUp
@@ -167,16 +163,15 @@ impl DesktopChrome {
         true
     }
 
-    /// Open the app picker, as an empty desk does: a new window of the app
-    /// the person chooses, placed by the desk's rule.
+    /// Open the app picker, as an empty desk does: a new window of the app the person chooses,
+    /// placed by the desk's rule.
     fn open_the_app_picker(&self) {
         self.dispatch(DeskEffect::Launchpad {
             card: "apps".to_owned(),
         });
     }
 
-    /// Where the window in front stands, and the app it runs, when it runs
-    /// one.
+    /// Where the window in front stands, and the app it runs, when it runs one.
     fn app_of(&self, route: &Route) -> Option<String> {
         self.handle.read(|tree| {
             let workspace = tree
@@ -212,9 +207,8 @@ impl DesktopChrome {
         })
     }
 
-    /// Put the keyboard on the window group `index` of the shown strip, as a
-    /// click on its window does. A strip with fewer windows leaves the focus
-    /// where it was.
+    /// Put the keyboard on the window group `index` of the shown strip, as a click on its window
+    /// does. A strip with fewer windows leaves the focus where it was.
     fn focus_group(&self, index: usize) {
         if let Some(tab) = self.window_tab(None, Some(index)) {
             self.handle.focus_tab(tab);
@@ -227,16 +221,16 @@ impl DesktopChrome {
         self.go_to_strip(|_| Some(index));
     }
 
-    /// Step the windows of the shown strip by `steps`: the focus follows
-    /// along it, as the window menu's row and a click on a window do.
+    /// Step the windows of the shown strip by `steps` : the focus follows along it, as the window
+    /// menu's row and a click on a window do.
     fn step_focus(&self, steps: isize) {
         if let Some(tab) = self.window_tab(Some(steps), None) {
             self.handle.focus_tab(tab);
         }
     }
 
-    /// Cycle the tabs of the window in front by `steps`, wrapping as the tab
-    /// bar does: its ring is small, so the last tab leads back to the first.
+    /// Cycle the tabs of the window in front by `steps` , wrapping as the tab bar does: its ring is
+    /// small, so the last tab leads back to the first.
     fn step_tab(&self, steps: isize) {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
@@ -272,9 +266,8 @@ impl DesktopChrome {
         });
     }
 
-    /// Detach the tab in front into a window of its own, right after the one
-    /// it is in. A window of one tab has nothing to split: the desk says why
-    /// rather than the chord doing nothing.
+    /// Detach the tab in front into a window of its own, right after the one it is in. A window of
+    /// one tab has nothing to split: the desk says why rather than the chord doing nothing.
     fn split_focused_tab(&self) {
         let Some(route) = self.focused_route() else {
             return;
@@ -285,8 +278,8 @@ impl DesktopChrome {
         );
     }
 
-    /// Put the tab in front into the window `direction` places away in its
-    /// strip, its tab standing last there.
+    /// Put the tab in front into the window `direction` places away in its strip, its tab standing
+    /// last there.
     fn attach_focused_tab(&self, direction: isize) {
         let Some(route) = self.focused_route() else {
             return;
@@ -317,16 +310,15 @@ impl DesktopChrome {
         });
     }
 
-    /// Move the window in front one place along its strip: the keyboard twin
-    /// of dragging its tab bar's ground.
+    /// Move the window in front one place along its strip: the keyboard twin of dragging its tab
+    /// bar's ground.
     fn reorder_focused_group(&self, direction: isize) {
         let Some(route) = self.focused_route() else {
             return;
         };
-        // The window stands before the one it lands in front of: the window
-        // that was before it when it goes left, the one after the window it
-        // passes when it goes right, and the strip's end when that was the
-        // last window.
+        // The window stands before the one it lands in front of: the window that was before it when
+        // it goes left, the one after the window it passes when it goes right, and the strip's end
+        // when that was the last window.
         let before = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
             let strip = workspace
@@ -448,8 +440,7 @@ impl DesktopChrome {
         self.handle.snapshot(&self.generation, Vec::new()).active
     }
 
-    /// Lift the focused window above the desk, or put it back into its
-    /// strip.
+    /// Lift the focused window above the desk, or put it back into its strip.
     fn toggle_float(&self) {
         let floating = self.handle.read(|tree| -> Option<bool> {
             let workspace = tree.active_workspace()?;

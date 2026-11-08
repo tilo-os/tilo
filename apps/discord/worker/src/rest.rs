@@ -115,9 +115,6 @@ pub struct Rest {
 
 impl Rest {
     /// Must be called inside a Tokio runtime, which runs the rate limiter.
-    ///
-    /// # Errors
-    /// The HTTP client could not be built.
     pub fn new(
         base: Url,
         egress: Egress,

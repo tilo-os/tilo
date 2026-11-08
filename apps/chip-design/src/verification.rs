@@ -642,9 +642,6 @@ impl VerificationReceipt {
 
 impl VerificationRecord {
     /// Validate reported claims and discard device paths before collaborative storage.
-    ///
-    /// # Errors
-    /// Rejects oversized, malformed, incomplete or unsupported receipt claims.
     pub fn import(json: &str) -> Result<(String, String), String> {
         if json.len() > MAX_REPORT_BYTES {
             return Err("receipt exceeds the 1 MiB import limit".into());
@@ -688,9 +685,6 @@ impl VerificationRecord {
     }
 
     /// Read a sanitized immutable envelope from the collaborative document.
-    ///
-    /// # Errors
-    /// Rejects invalid identity, unsanitized paths or unsupported receipt claims.
     pub fn read(json: &str) -> Result<Self, String> {
         if json.len() > MAX_REPORT_BYTES {
             return Err("stored receipt exceeds the import limit".into());

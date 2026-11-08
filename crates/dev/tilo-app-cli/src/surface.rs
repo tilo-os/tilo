@@ -79,9 +79,6 @@ pub fn is_framework_app(app_dir: &Path) -> bool {
 }
 
 /// Parse what an app's binary printed for [`FLAG`].
-///
-/// # Errors
-/// Returns why the output is not a surface report.
 pub fn parse_report(output: &str) -> Result<SurfaceReport> {
     let start = output
         .find('{')
@@ -124,9 +121,6 @@ pub fn parse_report(output: &str) -> Result<SurfaceReport> {
 
 /// Run the app's binary for its surface report: `executable` when it is
 /// already built, else `cargo run`.
-///
-/// # Errors
-/// Returns why the app does not build or report.
 pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceReport> {
     let mut command = if let Some(executable) = executable {
         ProcessCommand::new(executable)
@@ -154,9 +148,6 @@ pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceRep
 /// Keep the surface report `app`'s `executable` prints in `dir` as `<app>.json`, so a
 /// surface that is behind its code can be written without building the app again:
 /// `tilo-app surface apps/<app> --report <dir>/<app>.json` (certify's outputs on t).
-///
-/// # Errors
-/// Returns why the binary printed no report, or the file could not be written.
 pub fn keep_report(app: &Path, executable: &Path, dir: &Path) -> Result<PathBuf> {
     let name = app.file_name().unwrap_or_default().to_string_lossy();
     let output = ProcessCommand::new(executable)
@@ -432,9 +423,6 @@ fn leading<'a>(
 
 /// The surface file's text for `resources`: each resource's scalars, its
 /// fields one per line, then its verbs, their parameters one per line.
-///
-/// # Errors
-/// Returns why the surface cannot be written as TOML.
 pub fn render(resources: &[Value]) -> Result<String> {
     let mut text = String::from(HEADER);
     for resource in resources.iter().map(filed) {
@@ -523,9 +511,6 @@ pub fn render(resources: &[Value]) -> Result<String> {
 }
 
 /// Write `resources` to the app's [`FILE`]. Returns its path.
-///
-/// # Errors
-/// Returns why it could not be written.
 pub fn write(app_dir: &Path, resources: &[Value]) -> Result<PathBuf> {
     let path = app_dir.join(FILE);
     std::fs::write(&path, render(resources)?)
@@ -534,9 +519,6 @@ pub fn write(app_dir: &Path, resources: &[Value]) -> Result<PathBuf> {
 }
 
 /// The committed surface, if the app has one.
-///
-/// # Errors
-/// Returns why the committed file does not read.
 pub fn committed(app_dir: &Path) -> Result<Option<Vec<Value>>> {
     let path = app_dir.join(FILE);
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -927,9 +909,6 @@ fn own_action_ids(report: &SurfaceReport) -> Vec<(&'static str, String)> {
 /// the report its binary printed for [`FLAG`], saved at `saved`, else from
 /// running it. Returns the file and the report, whose unbound controls the
 /// caller shows.
-///
-/// # Errors
-/// Returns why the app does not report or the file cannot be written.
 pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, SurfaceReport)> {
     let app_dir = crate::resolve_app_dir(start)?;
     let report = if let Some(saved) = saved {
@@ -952,10 +931,6 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
 /// create.
 /// Kinds the manifest names already stay, whether the sources declare them
 /// or not.
-///
-/// # Errors
-/// Returns why the sources or the manifest do not read, or the manifest
-/// cannot be written.
 pub fn sync_resource_kinds(app_dir: &Path) -> Result<()> {
     let owned = crate::resource_kinds::owned_by_app(app_dir)?;
     let manifest = app_dir.join("tilo-app.toml");
@@ -1058,9 +1033,6 @@ fn ensure_framework_app(app_dir: &Path) -> Result<()> {
 }
 
 /// The app id `tilo-app.toml` declares.
-///
-/// # Errors
-/// Returns why the manifest does not read.
 pub fn app_id(app_dir: &Path) -> Result<String> {
     let path = app_dir.join("tilo-app.toml");
     let source =
@@ -1074,9 +1046,6 @@ pub fn app_id(app_dir: &Path) -> Result<String> {
 /// (run from `executable` when it is built), with findings at `level`;
 /// `None` for an app whose binary reports none. History messages are
 /// asked of the app's source catalog when `level` is an error.
-///
-/// # Errors
-/// Returns why the app does not report or the files do not read.
 pub fn check_app(
     start: &Path,
     executable: Option<&Path>,

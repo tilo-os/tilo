@@ -73,9 +73,6 @@ impl std::fmt::Display for MembershipRefusal {
 
 /// The workspace document after each of `changes`, in the order the batch applies
 /// them: a batch is judged change by change, where its writer made each.
-///
-/// # Errors
-/// A change does not decode, or does not apply on the one before it.
 fn stages(at: &AutoCommit, changes: &[Vec<u8>]) -> Result<Vec<AutoCommit>, MembershipRefusal> {
     use automerge::ReadDoc as _;
     let mut stages = Vec::with_capacity(changes.len());
@@ -131,9 +128,6 @@ pub fn position(
 /// Whether `person`, from their device `device` (hex; `foreign` when it is
 /// not one of theirs), may make the governance change from `at` to `after`
 /// in `workspace`.
-///
-/// # Errors
-/// The first refusal that applies.
 pub fn authorize(
     workspace: &str,
     (person, device, foreign): (&[u8; 32], &str, bool),
@@ -230,9 +224,6 @@ pub fn authorize(
 /// them to `workspace` as `policy` stands: it verifies and has not expired then,
 /// names this workspace and, when narrowed, the joiner, and its issuer is a member
 /// who may invite with its role.
-///
-/// # Errors
-/// The first of those that does not hold.
 pub fn invitation_admits(
     policy: &tilo_action_policy::WorkspacePolicy,
     workspace: &str,

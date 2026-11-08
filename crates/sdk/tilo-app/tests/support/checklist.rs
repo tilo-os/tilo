@@ -70,9 +70,6 @@ impl Checklist {
     }
 
     /// Mark a task completed or open.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
     #[action]
     pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
         self.tasks.get_mut(task).ok_or("gone")?.done = done;

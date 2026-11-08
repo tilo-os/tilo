@@ -16,9 +16,6 @@ use tilolang_tilo::catalogue;
 /// The catalogue's package of the app in `dir`: a native app's committed surface, or the
 /// generated surface of the tilolang package there, compiled with the packages it uses (found in
 /// `search`, else among its siblings).
-///
-/// # Errors
-/// The directory is neither, or the package does not compile.
 pub fn published(dir: &Path, search: &[PathBuf]) -> Result<PackageMeta, String> {
     if let Some(meta) = catalogue::native_app(dir)? {
         return Ok(meta);

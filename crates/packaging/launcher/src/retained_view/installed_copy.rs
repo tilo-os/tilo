@@ -258,9 +258,6 @@ impl RootConsumerChannel {
     }
     /// Seals the already protected operation secret for the private receiver.
     /// No source, recipient or delivery authority is minted by this helper.
-    /// # Errors
-    /// Refuses non-helper callers or invalid secret lengths; reports failures
-    /// creating, protecting, writing, sealing or reopening the anonymous file.
     pub fn seal_installed_copy_secret(secret: &[u8]) -> io::Result<File> {
         own_helper()?;
         if !(32..=128).contains(&secret.len()) {
@@ -480,8 +477,6 @@ impl InstalledCopyIssue {
             .ok_or_else(|| refused("installed Copy issue retired"))
     }
     /// Returns the actual retained gate declaration after reattesting its custody.
-    /// # Errors
-    /// Refuses retired issue custody, revoked authority or changed held evidence.
     pub fn declaration(&self) -> io::Result<&CopyDeclaration> {
         let custody = self.custody()?;
         custody.check()?;

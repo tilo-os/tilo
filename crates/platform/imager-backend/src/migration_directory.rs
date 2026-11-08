@@ -30,8 +30,6 @@ pub struct PinnedDirectory {
 impl PinnedDirectory {
     /// Admit a detached directory only after its caller has validated custody.
     /// Destination namespace protections are independently checked here.
-    /// # Errors
-    /// Refuses unreadable metadata or an unprotected destination namespace.
     pub fn from_admitted_directory(file: File) -> io::Result<Arc<Self>> {
         let pin = Arc::new(Self {
             identity: Metadata::from_file(&file)?,
@@ -43,9 +41,6 @@ impl PinnedDirectory {
         Ok(pin)
     }
     /// Open an exact absolute grant without following links or recalling cloud data.
-    ///
-    /// # Errors
-    /// Rejects non-normal paths, unsupported entries and native open failures.
     pub fn open_absolute(path: &Path) -> io::Result<Arc<Self>> {
         if !path.is_absolute() {
             return Err(changed("folder grant must be a native absolute path"));
@@ -194,9 +189,6 @@ pub fn same_snapshot(before: &Metadata, after: &Metadata) -> bool {
 }
 
 /// Preserve timestamps only after reopening the operation-owned destination.
-///
-/// # Errors
-/// Refuses changed identity, unsupported timestamp fidelity or native I/O failures.
 pub fn preserve_directory_times_values(
     directory: &PinnedDirectory,
     accessed: std::time::SystemTime,

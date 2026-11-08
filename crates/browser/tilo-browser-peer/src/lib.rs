@@ -32,7 +32,6 @@ pub mod document;
 pub mod health;
 mod held_live;
 pub mod invite;
-pub mod live;
 mod previews;
 mod replica;
 pub mod session;

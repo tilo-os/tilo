@@ -88,9 +88,6 @@ impl MigrationIntent {
     /// The same reviewed capture with the person's nested source exclusions.
     /// Exclusions are consent metadata: the plan carries them and the receiving
     /// producer revalidates each path under its own pinned source.
-    ///
-    /// # Errors
-    /// Refuses unsafe grants, unavailable private state and malformed exclusions.
     pub fn capture_reviewed_selection(
         home: &Path,
         directory: &Path,
@@ -208,9 +205,6 @@ impl MigrationIntent {
         Self::capture_source_selection(source, directory, categories, selected, home_policy, &[])
     }
     /// Capture one source scope with explicit nested exclusions.
-    ///
-    /// # Errors
-    /// Refuses unsafe grants, unavailable private state and malformed exclusions.
     pub fn capture_source_selection(
         source: &Path,
         directory: &Path,

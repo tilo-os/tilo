@@ -13,8 +13,6 @@ pub enum HandoffRole {
 }
 
 /// Descriptive identity of the exact held file, not a grant of source access.
-/// # Errors
-/// Returns an error if file metadata cannot be read or the host is unsupported.
 pub fn file_identity(file: &File) -> io::Result<[u64; 2]> {
     #[cfg(target_os = "linux")]
     {

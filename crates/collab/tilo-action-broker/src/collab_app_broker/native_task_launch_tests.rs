@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "every test here keeps its fixture and guards alive through its assertions"
+)]
 use super::*;
 use crate::services::{LaunchPlace, LaunchableApplication, LauncherServices};
 use app_framework::framework::testing::HeadlessApp;
@@ -89,10 +93,6 @@ impl std::ops::Deref for SignedLaunchFixture {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 fn fixture() -> (
     SignedLaunchFixture,
     tokio::sync::mpsc::UnboundedReceiver<String>,

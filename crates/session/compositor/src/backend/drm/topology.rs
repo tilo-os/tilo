@@ -1,13 +1,11 @@
 //! The journal lines that say which GPU drives which display.
-//!
-//! The DRM backend drives every KMS card the session can open, so a hybrid
-//! laptop's internal panel (on the integrated GPU) and its HDMI or DP
-//! outputs (often wired to the discrete GPU) are lit by different cards. When
-//! one of them stays dark, the session log has to answer which cards were
-//! tried, which connectors each one attempted and how that went, and what the
-//! backend ended up driving. Each bring-up attempt is one line, and the driven
-//! topology is one line written whenever it changes. Both are plain
-//! `key=value` text on stderr, which the session log and the journal keep.
+//! The DRM backend drives every KMS card the session can open, so a hybrid laptop's internal panel
+//! (on the integrated GPU) and its HDMI or DP outputs (often wired to the discrete GPU) are lit by
+//! different cards. When one of them stays dark, the session log has to answer which cards were
+//! tried, which connectors each one attempted and how that went, and what the backend ended up
+//! driving. Each bring-up attempt is one line, and the driven topology is one line written whenever
+//! it changes. Both are plain `key=value` text on stderr, which the session log and the journal
+//! keep.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -37,7 +35,7 @@ pub enum ConnectorAttempt<'a> {
     Failed(&'a str),
 }
 
-/// The journal line for one connector bring-up attempt on `card`.
+/// The journal line for one connector bring-up attempt on `card` .
 pub fn connector_attempt_line(
     card: &Path,
     connector: &str,
@@ -57,13 +55,10 @@ pub fn connector_attempt_line(
     line
 }
 
-/// The journal line for the topology being driven: every held card with
-/// how many outputs it lights, then every output in layout order (the
-/// primary first) with the card driving it.
-///
-/// A card without outputs is listed too: a hybrid laptop's discrete GPU
-/// with nothing plugged in is held for a later hotplug, and seeing it here
-/// tells "not opened" apart from "nothing connected".
+/// The journal line for the topology being driven: every held card with how many outputs it lights,
+/// then every output in layout order (the primary first) with the card driving it.
+/// A card without outputs is listed too: a hybrid laptop's discrete GPU with nothing plugged in is
+/// held for a later hotplug, and seeing it here tells "not opened" apart from "nothing connected".
 pub fn topology_line(cards: &BTreeMap<u64, PathBuf>, live: &[Driven]) -> String {
     let card_name = |device: u64| {
         cards.get(&device).map_or_else(

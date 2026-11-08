@@ -26,12 +26,11 @@ mod common;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_model_host::ModelService;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
-use common::{HEIGHT, PERSON, WIDTH, private_home};
+use common::{PERSON, private_home};
 
 const TRACKER: &str = "tasks.tracker";
 const ADDRESS: &str = "tasks.tracker";
@@ -69,21 +68,16 @@ fn titles(reading: &Value) -> Vec<String> {
 /// A headless session with the shell as the whole screen, the Rust app's records published, and
 /// its agent door and action plane at `root`.
 fn session(root: &std::path::Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(tracker())],
-            questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(root.join("agent.sock")),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(tracker())],
+        questions: Some(Questions::new()),
+        action_plane: ActionPlane::At(root.join("plane.sock")),
+        agent_door: Some(root.join("agent.sock")),
+        ..Options::default()
+    })
 }
 
 #[test]

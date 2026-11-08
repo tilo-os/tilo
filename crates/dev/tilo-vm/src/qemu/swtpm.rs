@@ -41,9 +41,6 @@ impl Swtpm {
 
     /// Start a started TPM on the socket, or keep the one already serving
     /// it, so the boots of one install cycle share its state.
-    ///
-    /// # Errors
-    /// swtpm is missing, its state cannot persist, or it does not answer.
     pub fn start(&self) -> Result<(), QemuError> {
         if !super::on_path("swtpm") {
             return Err(QemuError::new(

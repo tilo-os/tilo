@@ -60,8 +60,6 @@ impl NativeCreatedTemporary {
     }
     /// Revalidate the actual creation's durable completion, live original parent
     /// and exact held created inode. No caller name can change this custody.
-    /// # Errors
-    /// Refuses another owner, unfinished creation, namespace substitution or revoke.
     pub fn check_scope(&self) -> Result<(), FsError> {
         if !Arc::ptr_eq(&self.session.operation_store()?, &self.owner) {
             return Err(FsError::Denied);
@@ -81,8 +79,6 @@ impl NativeCreatedTemporary {
         Ok(())
     }
     /// Revalidate the exact named created inode before submitting retirement.
-    /// # Errors
-    /// Refuses namespace substitution, aliases and expired creation authority.
     pub fn check(&self) -> Result<(), FsError> {
         self.check_scope()?;
         let source = self.session.mutation_source(&self.entry, FsRight::Rename)?;
@@ -123,8 +119,6 @@ impl NativeCreatedTemporary {
     }
     /// Reserve a document-preserving Save only through the actual sealed
     /// selected Author scope and this exact completed creator capability.
-    /// # Errors
-    /// Refuses missing selected Save admission, stale creation or revoked scope.
     pub fn prepare_atomic_save(&self) -> Result<PreparedNativeReplacement, FsError> {
         self.session
             .selected_replacement_authority()?

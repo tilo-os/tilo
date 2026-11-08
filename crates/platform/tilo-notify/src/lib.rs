@@ -382,15 +382,9 @@ pub struct AlarmState {
 /// Host-owned user notifications.
 pub trait Notifier: Send + Sync {
     /// Show `notification`, replacing any earlier one with the same tag.
-    ///
-    /// # Errors
-    /// The host has no notification service, or refused this one.
     fn show(&self, notification: &Notification) -> Result<(), NotifyError>;
 
     /// Withdraw the notification shown under `tag`, if any.
-    ///
-    /// # Errors
-    /// The host has no notification service, or refused the request.
     fn withdraw(&self, tag: &str) -> Result<(), NotifyError>;
 
     /// Have the platform show `notification` at `at`, even if this app is no
@@ -406,9 +400,6 @@ pub trait Notifier: Send + Sync {
     /// Schedule a local-time alarm. Hosts that understand calendar alarms
     /// retain recurrence and timezone semantics after the app closes; other
     /// hosts retain the supplied next occurrence through `schedule`.
-    ///
-    /// # Errors
-    /// Invalid calendar fields, an unavailable scheduler, or a host refusal.
     fn schedule_alarm(
         &self,
         notification: &Notification,
@@ -597,9 +588,6 @@ pub struct PriorityContact {
 /// `contacts`. Only the Tilo shell takes such a list, and only from an app it
 /// launched as `app_id` ([`Feature::PriorityContacts`]). Blocks on the
 /// session bus: call it off the UI thread.
-///
-/// # Errors
-/// Unsupported on this target or outside a Tilo launch, or the shell refused.
 pub fn publish_priority_contacts(
     app_id: &str,
     contacts: &[PriorityContact],

@@ -121,7 +121,12 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::RecordContentWant { workspace_id, .. }
         | Envelope::WorkspaceBootstrap { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
-        Envelope::PeerRelayHello { .. } | Envelope::HostAction { .. } => false,
+        // Host business, which a workspace-scoped session does not ask: the
+        // scope is one workspace's opaque trust, not a session on the host.
+        Envelope::PeerRelayHello { .. }
+        | Envelope::HostAction { .. }
+        | Envelope::WorkspacesRequest { .. }
+        | Envelope::WorkspacesReply { .. } => false,
     }
 }
 

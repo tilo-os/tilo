@@ -57,9 +57,6 @@ impl std::fmt::Debug for Route {
 impl Route {
     /// Keep the protocol's canonical account and recipient unchanged. This
     /// validates bounds only; callers must resolve membership and identity.
-    ///
-    /// # Errors
-    /// Refuses empty, oversized or whitespace/control-containing identities.
     pub fn new(service: Service, account: String, recipient: String) -> Result<Self, Error> {
         if !identifier(&account) || !identifier(&recipient) {
             return Err(Error::InvalidIdentity);

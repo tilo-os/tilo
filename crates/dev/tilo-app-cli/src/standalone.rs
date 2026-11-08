@@ -215,10 +215,6 @@ impl Standalone {
     /// The `[patch.crates-io]` and `[profile.*]` tables that follow the
     /// dependencies. `[patch]` in the SDK workspace does not reach an app that
     /// depends on it, so each patch the SDK's graph uses is repeated here.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the tables cannot be serialised.
     pub fn manifest_tail(&self) -> Result<String> {
         let packages = self.baseline.locked_packages();
         let closure = Baseline::sdk_closure(&packages);
@@ -289,10 +285,6 @@ impl Standalone {
     }
 
     /// The files a standalone app carries besides its sources.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a generated file cannot be serialised.
     pub fn files(&self) -> Result<Vec<(PathBuf, String)>> {
         let mut files = vec![
             (PathBuf::from("rust-toolchain.toml"), self.toolchain()?),

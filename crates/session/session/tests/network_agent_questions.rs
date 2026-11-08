@@ -1,12 +1,10 @@
-//! An agent working on the person's workspace host asks them to allow one
-//! action, and the session answers with what they chose.
-//!
-//! The host is this test's own endpoint, speaking the certification
-//! protocol's approver side: it lists one pending confirmation and records
-//! the answer the session sends. The session is a headless one, started the
-//! way the desktop starts it, so the question goes through everything that
-//! runs in between: the actor's approver session, the session's question
-//! sheet, and the person's answer back to the host.
+//! An agent working on the person's workspace host asks them to allow one action, and the session
+//! answers with what they chose.
+//! The host is this test's own endpoint, speaking the certification protocol's approver side: it
+//! lists one pending confirmation and records the answer the session sends. The session is a
+//! headless one, started the way the desktop starts it, so the question goes through everything
+//! that runs in between: the actor's approver session, the session's question sheet, and the
+//! person's answer back to the host.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -18,6 +16,8 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures: a failed step is the assertion"
 )]
+
+mod common;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -37,11 +37,11 @@ use tilo_relay_protocol::certify::{
     PendingConfirmation,
 };
 use tilo_service::Questions;
-use tilo_session::{Options, Session};
+use tilo_session::Options;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList};
 
-/// The person's identity and this device's certificate, in a directory of
-/// its own, as the desktop's own start reads it.
+/// The person's identity and this device's certificate, in a directory of its own, as the desktop's
+/// own start reads it.
 struct Person {
     cert: DeviceCert,
     // The person's home server: the host the questions come from.
@@ -82,8 +82,7 @@ fn person() -> Person {
     let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();
     let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
-    // The person's own root signs the device, through the store whose copy
-    // the fleet names.
+    // The person's own root signs the device, through the store whose copy the fleet names.
     let token = store
         .mint_enrollment(
             &profile.id,
@@ -132,8 +131,8 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     let asked = Arc::new(Mutex::new(Vec::<ConfirmationAnswer>::new()));
     let questions = Questions::new();
 
-    // The host answers the person's approver as a relay serves it: the
-    // certification handshake, then one listed question until it is answered.
+    // The host answers the person's approver as a relay serves it: the certification handshake,
+    // then one listed question until it is answered.
     let (router, host_addr) = runtime.block_on(async {
         let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(RelayMode::Disabled)
@@ -164,22 +163,20 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     });
     let _router = router;
 
-    // The session dials the host it was configured with, as the launcher's
-    // configuration names it, and asks its person on the sheet it was given.
+    // The session dials the host it was configured with, as the launcher's configuration names it,
+    // and asks its person on the sheet it was given.
     person.env.set(
         "TILO_COLLAB_HOSTS",
         serde_json::to_string(&vec![host_addr]).expect("the host's address encodes"),
     );
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: true,
             questions: Some(questions.clone()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
 
     let deadline = tilo_test_env::hang_deadline();
     let shown = loop {
@@ -233,8 +230,8 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     );
 }
 
-/// The person's workspace host, as far as the certification protocol sees it:
-/// it answers approver sessions with one question.
+/// The person's workspace host, as far as the certification protocol sees it: it answers approver
+/// sessions with one question.
 #[derive(Debug)]
 struct Asking {
     user: [u8; 32],

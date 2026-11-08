@@ -16,9 +16,6 @@ impl FsSession {
     /// Resolve a regular child with precisely the requested descriptor access.
     /// Rights and lineage come from `parent`, never from names or wire labels.
     /// Existing `lookup` retains its read-only and bounded symlink semantics.
-    /// # Errors
-    /// Refuses absent parent Enumerate/Read/Write rights, nonregular or symlink
-    /// entries, substituted inodes, stale scope, and typed host IO failures.
     pub fn lookup_file_for(
         &self,
         parent: &DirectoryGrant,

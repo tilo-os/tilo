@@ -20,11 +20,6 @@ use std::path::{Path, PathBuf};
 mod freedesktop;
 
 /// Move files to the host Trash ([`trash()`] each).
-///
-/// # Errors
-///
-/// Returns an error if home Trash is unsafe or unavailable on a Unix host, or
-/// if the host backend cannot move the files to Trash.
 pub fn delete(paths: &[PathBuf]) -> Result<(), String> {
     paths.iter().try_for_each(|path| trash(path).map(drop))
 }
@@ -37,11 +32,6 @@ pub fn delete(paths: &[PathBuf]) -> Result<(), String> {
 /// filesystem, to the person's own Trash the launcher granted
 /// ([`user_trash_dir`]) if that one is on its filesystem; only failing both
 /// does the `trash` crate look for its mount's Trash (which reports `None`).
-///
-/// # Errors
-///
-/// Returns an error if home Trash is unsafe or unavailable on a Unix host, or
-/// if the host backend cannot move the item to Trash.
 pub fn trash(path: &Path) -> Result<Option<PathBuf>, String> {
     #[cfg(unix)]
     {
@@ -96,11 +86,6 @@ fn mount_trash(path: &Path) -> Result<(), ::trash::Error> {
 /// Prepare the home Trash without making its contents readable by other users.
 /// Existing nonprivate directories and symlinks are refused, never repaired by
 /// changing their permissions or following them into another directory.
-///
-/// # Errors
-///
-/// Returns an error when Trash is unavailable, a directory cannot be created,
-/// or an existing Trash directory is not private and owned by the current user.
 pub fn ensure_trash_dir() -> std::io::Result<PathBuf> {
     let files = trash_dir().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "home Trash is unavailable")

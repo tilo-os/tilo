@@ -60,9 +60,6 @@ pub trait Submit<R: Resource>: Sized {
     fn action_id(&self) -> &'static str;
 
     /// The invocation of the host door this submits.
-    ///
-    /// # Errors
-    /// Returns why it cannot be submitted.
     fn into_invoke(self) -> Result<Invoke<R>, String>;
 
     /// The binding of a button that submits this when pressed, or `None`
@@ -1410,9 +1407,6 @@ impl<R: Resource> Dispatcher<R> {
     /// Open what `href`, a `tilo://open#…` address a link in this view's
     /// text carries, names: the app that keeps that resource shows it,
     /// started first when no window does.
-    ///
-    /// # Errors
-    /// Why it cannot be asked: the address names no app of this desktop.
     pub fn open_link(&self, href: &str) -> Result<(), String> {
         super::reference::open_link(&self.core.opener, href)
     }
@@ -1453,10 +1447,6 @@ impl<R: Resource> Dispatcher<R> {
     /// Send `call`, another resource's published action, to the session's
     /// host, continuing `parent`, the invocation the host delivered here for
     /// someone: the host decides it as theirs. A past version calls nothing.
-    ///
-    /// # Errors
-    /// A past version, custody that no longer holds, or a call that cannot
-    /// be addressed.
     pub(crate) fn call_published(
         &self,
         parent: Option<tilo_actions::InvocationId>,

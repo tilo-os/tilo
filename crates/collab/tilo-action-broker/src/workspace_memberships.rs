@@ -148,10 +148,6 @@ impl AppBrokerState {
     ///
     /// A workspace this device's own host serves decides through this device's
     /// owner: what an app opening there needs is for the owner to record.
-    ///
-    /// # Errors
-    /// The invocation could not be admitted or started. A refusal after it
-    /// started is logged when it comes.
     pub(crate) async fn admit_opening_app(
         &self,
         route: &CrdtRoute,

@@ -17,11 +17,6 @@ use package_store::{Catalog, PackageStore};
 /// Bind the Unix socket. Ensures the parent directory exists, drops a
 /// stale socket file from a previous run, and locks the socket to
 /// user-only permissions.
-///
-/// # Errors
-///
-/// Returns an error if the parent directory cannot be created or the
-/// socket cannot be bound.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;

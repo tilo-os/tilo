@@ -42,27 +42,26 @@ const MAX_ENTRIES: usize = runtime_collab::file_clipboard::MAX_ENTRIES;
 const OFFER_LIFETIME: Duration = Duration::from_secs(10 * 60);
 /// How long a captured object is kept for the command that consumes it.
 const TICKET_LIFETIME: Duration = Duration::from_secs(2 * 60);
-/// The most transfers whose receipt this keeps: one per flash of work, not a
-/// history.
+/// The most transfers whose receipt this keeps: one per flash of work, not a history.
 const MAX_OPERATIONS: usize = 256;
 /// The most clashing names a [`Reply::Conflicts`] lists (it also counts).
 const MAX_CONFLICT_NAMES: usize = 8;
-/// How long the filesystem names an agent as the cause of the writes to the
-/// paths it was told: long enough for a transfer's writes to land, short
-/// enough that a later write of the person's own stays theirs.
+/// How long the filesystem names an agent as the cause of the writes to the paths it was told: long
+/// enough for a transfer's writes to land, short enough that a later write of the person's own
+/// stays theirs.
 const WRITE_ATTRIBUTION_TTL: Duration = Duration::from_secs(60);
 
 /// Files' clipboard, as the broker's seam.
 pub(crate) struct NativeFileClipboard {
     state: Mutex<State>,
-    /// Copies Files made, waiting for the loop that has the compositor to put
-    /// them on the desktop's clipboard.
+    /// Copies Files made, waiting for the loop that has the compositor to put them on the desktop's
+    /// clipboard.
     published: Mutex<Vec<CopiedFiles>>,
     wake: tilo_service::Wake,
 }
 
-/// The offers waiting to be pasted, the objects commands hold, and the
-/// transfers whose receipt the windows ask after.
+/// The offers waiting to be pasted, the objects commands hold, and the transfers whose receipt the
+/// windows ask after.
 #[derive(Default)]
 struct State {
     offers: HashMap<String, Offer>,
@@ -88,9 +87,8 @@ impl Offer {
     }
 }
 
-/// An object a copy names, as it was when the copy was made: a file replaced
-/// under the same name since is not the one the person copied, and a cut must
-/// not take it away.
+/// An object a copy names, as it was when the copy was made: a file replaced under the same name
+/// since is not the one the person copied, and a cut must not take it away.
 #[derive(Clone)]
 struct Held {
     path: PathBuf,
@@ -104,8 +102,8 @@ impl Held {
     }
 }
 
-/// The object a command captured, kept for the Publish or Paste that consumes
-/// it, for the window that captured it.
+/// The object a command captured, kept for the Publish or Paste that consumes it, for the window
+/// that captured it.
 struct Ticket {
     peer: u64,
     window: String,
@@ -132,8 +130,8 @@ struct Running {
     offer: String,
     destination: String,
     paste: clipboard_files::Paste,
-    /// The answer once the worker finished, so a reply lost on the way is
-    /// answered again from here instead of starting a second paste.
+    /// The answer once the worker finished, so a reply lost on the way is answered again from here
+    /// instead of starting a second paste.
     settled: Option<(usize, Option<String>)>,
 }
 
@@ -172,8 +170,8 @@ impl NativeFileClipboard {
         }
     }
 
-    /// The copies Files made since the last pass, for the loop to offer on the
-    /// desktop's clipboard so the person can paste them into another app.
+    /// The copies Files made since the last pass, for the loop to offer on the desktop's clipboard
+    /// so the person can paste them into another app.
     pub(crate) fn take_published(&self) -> Vec<CopiedFiles> {
         std::mem::take(&mut *self.published.lock_recover())
     }
@@ -201,9 +199,8 @@ impl NativeFileClipboard {
         })
     }
 
-    /// Keep `paths` under a ticket of `context`'s window until the command
-    /// that consumes it: what Publish takes a copy from, or the folder a Paste
-    /// takes the files into.
+    /// Keep `paths` under a ticket of `context` 's window until the command that consumes it: what
+    /// Publish takes a copy from, or the folder a Paste takes the files into.
     fn hold(
         &self,
         context: &FileClipboardContext,
@@ -228,8 +225,7 @@ impl NativeFileClipboard {
         id
     }
 
-    /// What `id` holds, for a command of the same window in the same
-    /// workspace.
+    /// What `id` holds, for a command of the same window in the same workspace.
     fn held(
         &self,
         context: &FileClipboardContext,
@@ -249,8 +245,8 @@ impl NativeFileClipboard {
         Ok((paths, id.to_owned()))
     }
 
-    /// Capture the selected descriptors as tickets: what Publish takes a copy
-    /// from, and Paste takes the folder it pastes into.
+    /// Capture the selected descriptors as tickets: what Publish takes a copy from, and Paste takes
+    /// the folder it pastes into.
     fn capture(
         &self,
         context: &FileClipboardContext,
@@ -279,8 +275,8 @@ impl NativeFileClipboard {
         })
     }
 
-    /// Capture the entries of a shown folder by name: one descriptor holds the
-    /// folder, and each entry names the object the window showed under it.
+    /// Capture the entries of a shown folder by name: one descriptor holds the folder, and each
+    /// entry names the object the window showed under it.
     fn capture_named(
         &self,
         context: &FileClipboardContext,
@@ -307,8 +303,7 @@ impl NativeFileClipboard {
         Ok(Reply::CapturedNamed { ticket, count })
     }
 
-    /// Release what `tickets` hold. A ticket another window captured is never
-    /// released here.
+    /// Release what `tickets` hold. A ticket another window captured is never released here.
     fn release(&self, context: &FileClipboardContext, tickets: &[String]) -> Reply {
         let mut state = self.state.lock_recover();
         for id in tickets {
@@ -380,8 +375,8 @@ impl NativeFileClipboard {
             },
         );
         drop(state);
-        // What a file manager puts on the desktop's clipboard is the copy
-        // itself: pasting it into any app is that app's business.
+        // What a file manager puts on the desktop's clipboard is the copy itself: pasting it into
+        // any app is that app's business.
         self.published.lock_recover().push(CopiedFiles {
             paths: entries.into_iter().map(|held| held.path).collect(),
             cut,
@@ -398,9 +393,8 @@ impl NativeFileClipboard {
         let offer = state
             .offers
             .get(context.workspace())
-            // A copy whose files were moved away or replaced since cannot be
-            // pasted, and a window asking for the clipboard must not be told
-            // it can.
+            // A copy whose files were moved away or replaced since cannot be pasted, and a window
+            // asking for the clipboard must not be told it can.
             .filter(|offer| offer.entries.iter().all(Held::still_there))
             .map(Offer::public);
         drop(state);
@@ -423,8 +417,8 @@ impl NativeFileClipboard {
                 if !prior.same_paste(context, offer, destination) {
                     return Err("the operation already names another transfer".into());
                 }
-                // The same paste, asked again after a reply went missing:
-                // answer what it is doing, never start a second copy of it.
+                // The same paste, asked again after a reply went missing: answer what it is doing,
+                // never start a second copy of it.
                 return Ok(prior.answer(operation));
             }
         }
@@ -457,9 +451,9 @@ impl NativeFileClipboard {
             Asked::Replace => Conflict::Replace,
             Asked::Ask | Asked::KeepBoth => Conflict::KeepBoth,
         };
-        // An agent acting for this person asked for the transfer: what it
-        // writes is recorded as that agent's, for its person. A refusal leaves
-        // the writes the person's own and never stops the transfer.
+        // An agent acting for this person asked for the transfer: what it writes is recorded as
+        // that agent's, for its person. A refusal leaves the writes the person's own and never
+        // stops the transfer.
         if let Some(agent) = context.attributed_agent() {
             let mut paths = vec![folder.to_string_lossy().into_owned()];
             if cut {
@@ -562,9 +556,8 @@ impl FileClipboardServices for NativeFileClipboard {
                 conflict,
             } => self.paste(context, &offer, &destination, &operation, conflict),
             Command::Observe { operation } => self.observe(context, &operation),
-            // A paste is not undone from here: the files it wrote stand until
-            // the person removes them, and a paste a session stopped in the
-            // middle of is undone as the session starts.
+            // A paste is not undone from here: the files it wrote stand until the person removes
+            // them, and a paste a session stopped in the middle of is undone as the session starts.
             Command::Undo { .. } | Command::Redo { .. } => Ok(Reply::Rejected {
                 reason: "this session keeps no history of Files' transfers to undo".into(),
             }),
@@ -576,9 +569,9 @@ impl FileClipboardServices for NativeFileClipboard {
                 completed: 0,
                 error: None,
             }),
-            // A paste is staged and renamed into place file by file, so
-            // stopping it would leave the person guessing which of them
-            // landed. It is answered as what it is: not stoppable here.
+            // A paste is staged and renamed into place file by file, so stopping it would leave the
+            // person guessing which of them landed. It is answered as what it is: not stoppable
+            // here.
             Command::Cancel { .. } => {
                 context.authorize(ActionKind::Undoable)?;
                 Ok(Reply::Rejected {
@@ -627,8 +620,8 @@ fn pasting_error(outcome: &clipboard_files::Outcome) -> Option<String> {
     })
 }
 
-/// What a paste asks the person to decide, when the app wanted to be told and
-/// a name it takes is already used: the clashing names, or how many there.
+/// What a paste asks the person to decide, when the app wanted to be told and a name it takes is
+/// already used: the clashing names, or how many there.
 fn asked_conflicts(entries: &[Held], folder: &Path, asked: Asked) -> Option<Reply> {
     if asked != Asked::Ask {
         return None;
@@ -649,8 +642,7 @@ fn asked_conflicts(entries: &[Held], folder: &Path, asked: Asked) -> Option<Repl
     })
 }
 
-/// Whether the folder `into` has a different object than `held` under the name
-/// the entry takes.
+/// Whether the folder `into` has a different object than `held` under the name the entry takes.
 fn clashes(held: &Held, into: &Path) -> bool {
     let Some(name) = held.path.file_name() else {
         return false;
@@ -670,13 +662,11 @@ fn clashes(held: &Held, into: &Path) -> bool {
     }
 }
 
-/// The path this session sees for the absolute path `named` of a window of
-/// `context`'s app.
-///
+/// The path this session sees for the absolute path `named` of a window of `context` 's app.
 /// An app reads its own private home where the launcher mounted it, at
-/// [`launcher::appdir::SANDBOX_APP_DIR`]; this session holds that same
-/// directory as the workspace's directory for the app. Every other mount an
-/// app browses keeps its place, so those paths are the same in both.
+/// [`launcher::appdir::SANDBOX_APP_DIR`]; this session holds that same directory as the workspace's
+/// directory for the app. Every other mount an app browses keeps its place, so those paths are the
+/// same in both.
 fn session_path(context: &FileClipboardContext, named: &[u8]) -> PathBuf {
     let named = PathBuf::from(OsString::from_vec(named.to_vec()));
     let Ok(rest) = named.strip_prefix(launcher::appdir::SANDBOX_APP_DIR) else {
@@ -688,9 +678,9 @@ fn session_path(context: &FileClipboardContext, named: &[u8]) -> PathBuf {
     launcher::appdir::host_app_dir(&data_home, context.workspace(), context.app_id()).join(rest)
 }
 
-/// The object a selected descriptor names, once the object the window showed
-/// under it is what is actually there: the descriptor the app handed over and
-/// the object the path names are the same, or nothing is taken.
+/// The object a selected descriptor names, once the object the window showed under it is what is
+/// actually there: the descriptor the app handed over and the object the path names are the same,
+/// or nothing is taken.
 fn select(context: &FileClipboardContext, selected: &SelectedDescriptor) -> Result<Held, String> {
     if selected.path.first() != Some(&b'/') {
         return Err("a selected object is named by its absolute path".into());
@@ -718,8 +708,7 @@ fn select(context: &FileClipboardContext, selected: &SelectedDescriptor) -> Resu
     })
 }
 
-/// The object a metadata describes, told apart from whatever else takes its
-/// name.
+/// The object a metadata describes, told apart from whatever else takes its name.
 fn identity(metadata: &std::fs::Metadata) -> ObjectIdentity {
     ObjectIdentity {
         device: metadata.dev(),
@@ -727,8 +716,8 @@ fn identity(metadata: &std::fs::Metadata) -> ObjectIdentity {
     }
 }
 
-/// The filesystem daemon's content store, as this session reaches it: a
-/// connection of its own, made on first use and again after it went away.
+/// The filesystem daemon's content store, as this session reaches it: a connection of its own, made
+/// on first use and again after it went away.
 mod blobs {
     use runtime_fs::blobs::{BlobClient, BlobError};
     use tilo_lock::MutexRecover as _;

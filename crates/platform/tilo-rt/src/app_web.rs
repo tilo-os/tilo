@@ -58,10 +58,6 @@ pub fn app() -> &'static AppRuntime {
 }
 
 /// The app runtime. Never fails in a browser: there is no thread to start.
-///
-/// # Errors
-///
-/// None; the signature matches native builds.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "the same signature as native builds, where starting the runtime thread can fail"

@@ -71,9 +71,6 @@ pub fn proposals_revision() -> Option<u64> {
 }
 
 /// Answer one of those requests.
-///
-/// # Errors
-/// There is no service, or the request is gone.
 pub fn decide(proposal: &str, decision: accounts::AccessDecision) -> Result<(), crate::SendError> {
     let decision = match decision {
         accounts::AccessDecision::Deny => wire::Decision::Deny,

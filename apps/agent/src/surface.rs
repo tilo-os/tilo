@@ -811,9 +811,6 @@ fn place_in<'a>(
 ///
 /// `Ok(None)` when the instruction names none: the operation acts at the
 /// agent's caret.
-///
-/// # Errors
-/// The labels of the paragraphs a quoted phrase begins more than one of.
 fn named_place(
     offer: &Offer,
     rest: &str,

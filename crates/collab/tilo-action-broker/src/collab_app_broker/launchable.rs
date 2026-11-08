@@ -34,10 +34,6 @@ const LAUNCH_CALLS: usize = 4;
 /// them, since a wait is an event, never a thread, plus a bounded pool for
 /// the blocking launcher calls. It runs beside the broker, never on its
 /// local set, and starts on first use.
-///
-/// # Errors
-///
-/// Why the runtime could not start; remembered, so every launch reports it.
 pub(super) fn delivery_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
     static RUNTIME: std::sync::OnceLock<Result<tokio::runtime::Runtime, String>> =
         std::sync::OnceLock::new();

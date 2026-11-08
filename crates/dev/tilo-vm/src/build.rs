@@ -19,9 +19,6 @@ use crate::hypervisor::{CommandLine, Runner};
 /// Resolve the source feature graph and output directory before admitting a build.
 /// Metadata is read-only; a failed command or incomplete response must not
 /// silently choose different features or Cargo's fallback output directory.
-///
-/// # Errors
-/// Cargo cannot start, fails, or returns invalid or incomplete metadata.
 pub fn cargo_metadata(runner: &mut impl Runner) -> Result<Value, CliError> {
     let command = CommandLine::new(
         &cargo_program(),
@@ -150,9 +147,6 @@ pub fn apps_in(root: &Path) -> Vec<String> {
 }
 
 /// Pack `dir` (holding `usr/`) as an uncompressed tar, symlinks kept.
-///
-/// # Errors
-/// I/O failures.
 pub fn pack(dir: &Path, out: &Path) -> Result<(), CliError> {
     let file =
         std::fs::File::create(out).map_err(CliError::io(format!("create {}", out.display())))?;
@@ -160,9 +154,6 @@ pub fn pack(dir: &Path, out: &Path) -> Result<(), CliError> {
 }
 
 /// [`pack`] into any writer.
-///
-/// # Errors
-/// I/O failures.
 pub fn pack_into(dir: &Path, out: impl std::io::Write) -> Result<(), CliError> {
     let mut builder = tar::Builder::new(out);
     builder.follow_symlinks(false);

@@ -20,7 +20,6 @@
 
 use std::net::TcpListener;
 
-use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
 use registry_types::{
     PublisherAuthorization, RegistryEntry, SignedRegistrySnapshot, sign_snapshot,
@@ -28,8 +27,7 @@ use registry_types::{
 use tilo_app_package::pack::SigningIdentity;
 
 use crate::registry_to_installed::{
-    Registry, author_tapp_version, scoped_env, signed_entry_version, test_publisher,
-    tilo_install_bin,
+    Device, Registry, author_tapp_version, registry_config, signed_entry_version, test_publisher,
 };
 
 const PACKAGE_ID: &str = "so.tilo.catalogue-recovery";
@@ -69,34 +67,6 @@ fn catalogue(
     snapshot
 }
 
-/// A scratch `registries.toml` pinned to `owner` that names `base_url`.
-fn point_registry_at(dir: &std::path::Path, owner: &SigningKey, base_url: &str) {
-    std::fs::write(
-        dir.join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "local".into(),
-                base_url: base_url.into(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
-}
-
-fn config_for(owner: &SigningKey, base_url: &str) -> RegistryConfig {
-    RegistryConfig {
-        name: "local".into(),
-        base_url: base_url.into(),
-        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-        enabled: true,
-        channel: tilo_app_package::version::ReleaseChannel::Stable,
-    }
-}
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -119,17 +89,10 @@ fn a_registry_rebuilt_from_a_backup_cannot_walk_the_catalogue_backwards() {
     let second = catalogue(newer, &owner, Some(&first));
     let live = Registry::start(serde_json::to_string(&second).unwrap(), tapp_1_5);
 
-    let installer = tilo_install_bin();
-    let config_dir = tempfile::tempdir().unwrap();
-    let cache_dir = tempfile::tempdir().unwrap();
-    let apps_dir = tempfile::tempdir().unwrap();
-    point_registry_at(config_dir.path(), &owner, &live.base_url());
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-        ("TILO_APPS_DATA_DIR", apps_dir.path()),
-        ("TILO_INSTALL_BIN", &installer),
-    ]);
+    let device = Device::new(
+        Some(registry_config("local", &live.base_url(), &owner)),
+        &[],
+    );
 
     // The device reads the newest catalogue, checkpointing sequence 2.
     let listing = app_cli::available();
@@ -145,12 +108,13 @@ fn a_registry_rebuilt_from_a_backup_cannot_walk_the_catalogue_backwards() {
     // The host and its volume are lost. What comes back is the snapshot the
     // backup captured — sequence 1, with the 1.4.0 package beside it.
     let restored = Registry::start(serde_json::to_string(&first).unwrap(), tapp_1_4);
-    point_registry_at(config_dir.path(), &owner, &restored.base_url());
+    device.point_at(registry_config("local", &restored.base_url(), &owner));
 
     // Asking the restored registry directly names the regression, rather
     // than reading a catalogue that goes backwards.
-    let refused = app_cli::client::fetch_entries(&config_for(&owner, &restored.base_url()))
-        .expect_err("a catalogue behind the accepted one must be refused");
+    let refused =
+        app_cli::client::fetch_entries(&registry_config("local", &restored.base_url(), &owner))
+            .expect_err("a catalogue behind the accepted one must be refused");
     let behind = refused
         .behind_accepted()
         .expect("the refusal names the regression, not a generic failure");
@@ -178,8 +142,12 @@ fn a_registry_rebuilt_from_a_backup_cannot_walk_the_catalogue_backwards() {
     // What the device already accepted still describes an install: the
     // recovery of the registry is refused, never the catalogue this device
     // verified, which resolves 1.5.0 — not the 1.4.0 the restored host offers.
-    let kept = app_cli::client::last_verified_entries(&config_for(&owner, &restored.base_url()))
-        .expect("the catalogue this device accepted must still verify");
+    let kept = app_cli::client::last_verified_entries(&registry_config(
+        "local",
+        &restored.base_url(),
+        &owner,
+    ))
+    .expect("the catalogue this device accepted must still verify");
     assert_eq!(
         kept.iter()
             .filter(|entry| entry.entry.package_id == PACKAGE_ID)
@@ -194,9 +162,9 @@ fn a_registry_rebuilt_from_a_backup_cannot_walk_the_catalogue_backwards() {
     let (onward, tapp_1_6) = release("1.6.0", &publisher, &tapp_url);
     let third = catalogue(onward, &owner, Some(&second));
     let moved_on = Registry::start(serde_json::to_string(&third).unwrap(), tapp_1_6);
-    app_cli::client::fetch_entries(&config_for(&owner, &moved_on.base_url()))
+    app_cli::client::fetch_entries(&registry_config("local", &moved_on.base_url(), &owner))
         .expect("a restored registry that publishes past the checkpoint is taken again");
-    point_registry_at(config_dir.path(), &owner, &moved_on.base_url());
+    device.point_at(registry_config("local", &moved_on.base_url(), &owner));
     let listing = app_cli::available();
     assert!(listing.unreachable.is_empty(), "{listing:?}");
     assert!(

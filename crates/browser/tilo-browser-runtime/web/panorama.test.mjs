@@ -11,13 +11,19 @@ function canvas(width=100,height=50) {
 }
 function fixture({room='room',app='notes',record='one',width=100,height=50}={}) {
  let valid=true, clock=0;
- const listeners=new Set(), members=new Set(['agent']);
- const layer={members:()=>[...members], onMember:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},remoteState:()=>[{publisher:'agent',seq:1,receivedAtMs:clock,focus:{app,record},pointer:{tile:{tab:'11'},at:[20,10]},participant:{kind:'agent',label:'A01',color:'#123456'}}]};
+ // The board's members, as the layer reads them: a pointer with how long ago
+ // its publisher said it, and the stay here it belongs to.
+ let members=[{publisher:'agent',epoch:1,agent:true,label:'A01',colour:'#123456',activity:null,focus:{app,record},pointer:{tab:'11',at:[20,10]},heard:0}];
+ const layer={members:()=>members.map(m=>m.publisher),
+   presenceMembers:()=>members.map(m=>({...m,pointer:m.pointer?{tab:m.pointer.tab,at:m.pointer.at,ageMs:clock-m.heard}:null}))};
  const copies=[];
  const source=createPresentedSource({audience:room,app,canvas:canvas(width,height),layer:()=>layer,valid:()=>valid,now:()=>clock,makeCanvas:(w,h)=>{const copy=canvas(w,h);copies.push(copy);return copy;}});
  const output=canvas();
  const view=createPanorama({canvas:output,sources:[{source:source.handle,rect:[200,100,100,50]}],width:400,height:200,now:()=>clock});
- return {source,view,output,layer,copies,present:(frames=1)=>source.present({phase:'presented',captureProtected:false,frames,gpuGeneration:1,tab:'b',record,logicalSize:[width,height],surfaceSize:[width,height]}),set time(t){clock=t;},invalidate(){valid=false;},member(active){if(active)members.add('agent');else members.delete('agent');for(const fn of listeners)fn({publisher:'agent',active});}};
+ return {source,view,output,layer,copies,get members(){return members;},set members(next){members=next;},
+  present:(frames=1)=>source.present({phase:'presented',captureProtected:false,frames,gpuGeneration:1,tab:'b',record,logicalSize:[width,height],surfaceSize:[width,height]}),
+  set time(t){clock=t;},invalidate(){valid=false;},
+  member(active){members=active?members.map(m=>({...m,epoch:m.epoch+1})):members.filter(m=>m.publisher!=='agent');}};
 }
 
 test('panorama refuses a source until an actual presented frame arrives',()=>{
@@ -35,28 +41,26 @@ test('one transform maps real pixels and pointers with content clipping',()=>{
  assert.ok(clip>=0&&clip<image);f.view.close();
 });
 test('pointers over other tabs and of non-agents never become cursors',()=>{
- const f=fixture();f.layer.remoteState=()=>[
- {publisher:'agent',focus:{app:'other',record:'one'},pointer:{tile:{tab:'12'},at:[1,2]}},
- {publisher:'agent',focus:{app:'notes',record:'other'},pointer:{tile:{tab:'12'},at:[1,2]}},
- {publisher:'agent',focus:{app:'notes',record:'one'},pointer:{tile:{tab:'11'},at:[100,2]}},
- {publisher:'agent',focus:{app:'notes',record:'one'},pointer:null},
- {publisher:'agent',focus:{app:'notes',record:'one'},pointer:null},
- {publisher:'unadmitted',focus:{app:'notes',record:'one'},pointer:{tile:{tab:'11'},at:[1,2]}}];
+ const f=fixture();const base={publisher:'agent',epoch:1,agent:true,label:'A01',colour:'#123456',activity:null,focus:{app:'notes',record:'one'},heard:0};
+ f.members=[{...base,pointer:{tab:'12',at:[1,2]}},
+ {publisher:'other',epoch:1,agent:true,label:'A02',colour:'#123456',activity:null,focus:{app:'notes',record:'one'},pointer:{tab:'11',at:[100,2]},heard:0},
+ {...base,pointer:null},
+ {publisher:'person',epoch:1,agent:false,label:'Ada',colour:'#654321',activity:null,focus:{app:'notes',record:'one'},pointer:{tab:'11',at:[1,2]},heard:0}];
  f.present();assert.deepEqual(f.view.render({cx:200,cy:100,scale:1}).panes[0].pointers,[]);f.view.close();
 });
 test("a person's pointer is never drawn into a record's pane",()=>{
- const f=fixture();f.layer.members=()=>['agent','person'];f.layer.remoteState=()=>[
- {publisher:'person',seq:1,receivedAtMs:0,focus:{app:'notes',record:'one'},pointer:{tile:{tab:'11'},at:[20,10]},participant:{kind:'person',label:'Ada',color:'#654321'}}];
+ const f=fixture();f.members=[{publisher:'person',epoch:1,agent:false,label:'Ada',colour:'#654321',activity:null,focus:{app:'notes',record:'one'},pointer:{tab:'11',at:[20,10]},heard:0}];
  f.present();assert.deepEqual(f.view.render({cx:200,cy:100,scale:1}).panes[0].pointers,[]);f.view.close();
 });
 test('departed/rejoined publishers cannot reuse cached coordinates; stale pointers expire',()=>{
- const f=fixture();f.present();f.member(false);f.member(true);
- assert.deepEqual(f.view.render({cx:200,cy:100,scale:1}).panes[0].pointers,[]);
- f.present(2);assert.equal(f.view.render({cx:200,cy:100,scale:1}).panes[0].pointers.length,1);
- f.time=10001;assert.deepEqual(f.view.render({cx:200,cy:100,scale:1},{maxAgeMs:20000}).panes[0].pointers,[]);f.view.close();
+ const f=fixture();f.present();f.member(false);f.member(true);f.members=[];
+ f.present(2);assert.deepEqual(f.view.render({cx:200,cy:100,scale:1}).panes[0].pointers,[],'back, but it has said no pointer since');
+ f.members=[{publisher:'agent',epoch:2,agent:true,label:'A01',colour:'#123456',activity:null,focus:{app:'notes',record:'one'},pointer:{tab:'11',at:[20,10]},heard:0}];
+ f.present(3);assert.equal(f.view.render({cx:200,cy:100,scale:1}).panes[0].pointers.length,1);
+ f.time=10001;f.present(4);assert.deepEqual(f.view.render({cx:200,cy:100,scale:1},{maxAgeMs:20000}).panes[0].pointers,[],'the board stopped saying where it is');f.view.close();
 });
 test('hidden observers release copies and neither capture nor sample; disposal fails closed',()=>{
- const f=fixture();f.view.setVisible(false);f.layer.remoteState=()=>{throw Error('hidden source sampled');};f.present();
+ const f=fixture();f.view.setVisible(false);f.layer.presenceMembers=()=>{throw Error('hidden source sampled');};f.present();
  assert.equal(f.view.render({cx:0,cy:0,scale:1}),null);
  f.view.setVisible(true);assert.throws(()=>f.view.render({cx:200,cy:100,scale:1}),/presented/);
  f.invalidate();assert.throws(()=>f.view.render({cx:200,cy:100,scale:1}),/unavailable/);f.view.close();
@@ -81,8 +85,7 @@ test('PNG encoding admits one in flight and returns the same frame receipt',asyn
 test('synthetic-only 80 presences in 20 panes preserve identities through zoom',()=>{
  const fixtures=Array.from({length:20},(_,i)=>fixture({record:`test-only-${i}`}));
  for(const [i,f]of fixtures.entries()){
-  f.layer.members=()=>Array.from({length:4},(_,j)=>`test-only-agent-${4*i+j}`);
-  f.layer.remoteState=()=>f.layer.members().map((publisher,j)=>({publisher,seq:1,receivedAtMs:0,focus:{app:'notes',record:`test-only-${i}`},pointer:{tile:{tab:'11'},at:[10+j*20,20]},participant:{kind:'agent',label:publisher,color:'#123456'}}));
+  f.members=Array.from({length:4},(_,j)=>({publisher:`test-only-agent-${4*i+j}`,epoch:1,agent:true,label:`test-only-agent-${4*i+j}`,colour:'#123456',activity:null,focus:{app:'notes',record:`test-only-${i}`},pointer:{tab:'11',at:[10+j*20,20]},heard:0}));
  }
  const view=createPanorama({canvas:canvas(),sources:fixtures.map((f,i)=>({source:f.source.handle,rect:[(i%5)*110,Math.floor(i/5)*60,100,50]})),width:600,height:300,now:()=>0});
  fixtures.forEach(f=>f.present());
@@ -103,7 +106,7 @@ test('a relayout, old frame or conflicting generation cannot mix new geometry wi
 });
 
 test('a failed visible frame still releases offscreen sources across hide/show',()=>{
- const a=fixture(),b=fixture({record:'second'});let samples=0;b.layer.remoteState=()=>{samples++;return [];};
+ const a=fixture(),b=fixture({record:'second'});let samples=0;b.layer.presenceMembers=()=>{samples++;return [];};
  // Remove the fixtures' own observers, leaving this one as their sole owner.
  a.view.close();b.view.close();
  const view=createPanorama({canvas:canvas(),sources:[{source:a.source.handle,rect:[0,0,100,50]},{source:b.source.handle,rect:[10000,0,100,50]}],width:100,height:50,now:()=>0});
@@ -120,7 +123,7 @@ test('mutating a receipt cannot mutate subsequent source geometry',()=>{
 });
 
 test('a disposed source being revealed cannot prevent culling other panes',()=>{
- const a=fixture(),b=fixture({record:'second'});let samples=0;b.layer.remoteState=()=>{samples++;return [];};
+ const a=fixture(),b=fixture({record:'second'});let samples=0;b.layer.presenceMembers=()=>{samples++;return [];};
  a.view.close();b.view.close();
  const view=createPanorama({canvas:canvas(),sources:[{source:a.source.handle,rect:[10000,0,100,50]},{source:b.source.handle,rect:[0,0,100,50]}],width:100,height:50,now:()=>0});
  b.present();view.render({cx:50,cy:25,scale:1});a.source.close();const before=samples;

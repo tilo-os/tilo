@@ -74,8 +74,6 @@ impl ReplacementReply {
     }
     /// Decode a cleanup ACK bound to the actual previously committed operation.
     /// Its wire contents never constitute Save or Read authority.
-    /// # Errors
-    /// Refuses malformed replies or cleanup acknowledgments for another operation.
     pub fn decode_retired(
         bytes: &[u8],
         expected_request: &str,

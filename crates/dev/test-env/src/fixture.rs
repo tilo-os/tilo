@@ -40,10 +40,6 @@ pub struct Fixture {
 
 impl Fixture {
     /// An empty fixture.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if the temporary directory cannot be created.
     pub fn new() -> io::Result<Self> {
         Ok(Self::at(
             tempfile::Builder::new().prefix("tilo-fixture-").tempdir()?,
@@ -121,10 +117,6 @@ impl Fixture {
     /// The entries are the workspace stored as JSON, so a test seeds the
     /// document the desktop reads rather than reaching into the desktop after
     /// it started. A caller that builds them writes its own JSON object.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if the document cannot be written.
     pub fn workspace(&self, entries: &str) -> io::Result<PathBuf> {
         let entries = entries.trim();
         let document =

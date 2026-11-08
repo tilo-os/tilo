@@ -150,10 +150,6 @@ impl Briefing {
 pub trait PlanReads {
     /// Run the read operation id `id` names with `arguments`, answering
     /// with what it found, summarised, and the picture it rendered.
-    ///
-    /// # Errors
-    ///
-    /// Why it was not run.
     fn read(
         &mut self,
         id: &str,
@@ -163,10 +159,6 @@ pub trait PlanReads {
     /// Run the read `id` names twice, with `arguments` and with `against`,
     /// answering with what the first found and what differs from the second
     /// answer to it ([`crate::facts::changes`]).
-    ///
-    /// # Errors
-    ///
-    /// Why either was not run.
     fn compare(
         &mut self,
         id: &str,
@@ -178,10 +170,6 @@ pub trait PlanReads {
     }
 
     /// The picture kept as content at `address`, as the model is shown it.
-    ///
-    /// # Errors
-    ///
-    /// Why it is not shown.
     fn look(&mut self, address: &str) -> Result<Seen, String> {
         let _ = address;
         Err("no picture can be shown here".into())
@@ -212,11 +200,6 @@ pub const READ_VIEW: &str = "read_view";
 pub trait PlanModel: Send {
     /// The operations (by offer id) and their arguments that carry out
     /// `task`, using only `catalogue`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why no plan was made: no model, a failed call, or an answer
-    /// the discovery tools refused.
     fn choose(
         &mut self,
         task: &str,

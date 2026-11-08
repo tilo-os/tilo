@@ -88,10 +88,12 @@ function fakeRuntime({phase = 'ready'} = {}) {
           takeDurableEvents: () => JSON.stringify(durable.splice(0)),
           /** This page's device key: the publisher the workspace knows it by. */
           deviceKey: () => SELF,
-          announced: [], published: [], leftPointers: [], previews: [], endedPreviews: [],
-          announcePresence(workspace, arrived) { peer.announced.push({workspace, arrived}); },
-          publishPresence(workspace, value) { peer.published.push(JSON.parse(value)); },
-          pointerLeft(workspace) { peer.leftPointers.push(workspace); },
+          said: [], published: [], left: [], previews: [], endedPreviews: [],
+          /** The page's word of itself: the board keeps it and says what changed. */
+          sayPresence(workspace, value) { const said = JSON.parse(value); peer.said.push({workspace, value: said}); peer.published.push(said); return 0; },
+          presenceDue: () => 0,
+          presenceMembers: () => JSON.stringify(peer.memberList ?? []),
+          leavePresence(workspace) { peer.left.push(workspace); },
           async publishPreview(workspace, record, seq, ops) {
             if (peer.sealing === false) return false;
             peer.previews.push({record: JSON.parse(record), seq: Number(seq), ops: JSON.parse(ops)});
@@ -227,19 +229,16 @@ test('a member page joins its workspace as one device of it, and leaves it', asy
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));
   await until(() => peer.live.state === 'live', 'the live layer');
-  assert.deepEqual(runtime.peer.announced, [{workspace: WORKSPACE, arrived: true}]);
+  assert.deepEqual(runtime.peer.said.map(word => word.workspace), [WORKSPACE], 'its word of itself once live');
+  assert.equal(runtime.peer.said[0].value.participant.kind, 'person', 'with who it is');
   assert.equal(peer.live.publisherId, SELF, 'the publisher the workspace knows this device by');
 
   peer.live.publishPresence({pointer: {tile: {tab: '7'}, at: [5, 6]}});
-  await until(() => runtime.peer.published.some(value => value.pointer), 'the pointer frame');
-  assert.deepEqual(runtime.peer.published.at(-1).pointer, {tile: {tab: '7'}, at: [5, 6]});
-  assert.deepEqual(runtime.peer.published.at(-1).participant, peer.live.stats().state === 'live'
-    ? runtime.peer.published.at(-1).participant : undefined);
-  assert.equal(runtime.peer.published.at(-1).participant.kind, 'person', 'with who it is');
+  await until(() => runtime.peer.said.at(-1).value.pointer, 'the pointer word');
+  assert.deepEqual(runtime.peer.said.at(-1).value.pointer, {tile: {tab: '7'}, at: [5, 6]});
 
   peer.live.publishPresence({pointer: null});
-  await until(() => runtime.peer.leftPointers.length, 'the pointer left');
-  assert.deepEqual(runtime.peer.leftPointers, [WORKSPACE]);
+  assert.ok(!('pointer' in runtime.peer.said.at(-1).value), 'the pointer taken off');
 
   const record = {app: 'so.tilo.notes', record: 'note-1'};
   assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'y'}]), true);
@@ -257,72 +256,21 @@ test('a member page joins its workspace as one device of it, and leaves it', asy
   assert.equal(runtime.peer.previews.length, before, 'a preview that could not be sealed never left');
 
   await peer.dispose();
-  assert.deepEqual(runtime.peer.announced.at(-1), {workspace: WORKSPACE, arrived: false}, 'leaving withdraws it');
+  assert.deepEqual(runtime.peer.left, [WORKSPACE], 'leaving withdraws it');
   assert.equal(peer.live.state, 'closed');
 });
 
-test("the live layer reads the members' presence from the session, on their own time", async () => {
-  const runtime = fakeRuntime();
-  const peer = await connect(options(runtime, memoryStore()));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const presence = [];
-  peer.live.onPresence(value => presence.push(value.publisher));
-
-  const nowMs = Date.now();
-  say(runtime, [{kind: 'arrived', publisher: OTHER}, {kind: 'shell', publisher: OTHER, frame: {
-    seq: 1, sentAtMs: nowMs, participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
-    focus: {app: 'so.tilo.notes', record: 'note-1'},
-    selection: {anchor: 'aa', head: 'ab'},
-    layout: {size: [1440, 852], windows: [{app: 'so.tilo.notes', record: '0000000000000001', rect: [0, 0, 5000, 5000], focused: true}]},
-  }}]);
-  await until(() => presence.length, 'the member\'s shell');
-  assert.deepEqual(peer.live.members(), [OTHER]);
-  assert.deepEqual(peer.live.people(), [{device: OTHER, name: 'Visitor', color: '#e5484d'}]);
-  const [remote] = peer.live.remoteState(performance.now() + 50);
-  assert.equal(remote.participant.label, 'Visitor');
-  assert.deepEqual(remote.focus, {app: 'so.tilo.notes', record: 'note-1'});
-  assert.deepEqual(remote.selection, {anchor: 'aa', head: 'ab'});
-
-  say(runtime, [{kind: 'pointer', publisher: OTHER, tab: '7', at: [1, 2], sentAtMs: Date.now()}]);
-  await until(() => peer.live.remoteState(performance.now() + 50)[0].pointer, 'the pointer');
-  assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: '7'}, at: [1, 2]});
-
-  // A shell is the whole of what its member says of itself: the caret and
-  // window their next one leaves out are gone (they left the channel with
-  // the call), while what their other messages say — their pointer — stays.
-  say(runtime, [{kind: 'shell', publisher: OTHER, frame: {
-    seq: 9, sentAtMs: Date.now(), participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
-    layout: {size: [1440, 852], windows: []},
-  }}]);
-  await until(() => peer.live.remoteState(performance.now() + 50)[0].selection === null, 'the caret withdrawn');
-  assert.equal(peer.live.remoteState(performance.now() + 50)[0].focus, null, 'the window they left too');
-  assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: '7'}, at: [1, 2]}, 'their pointer stays');
-
-  const record = {app: 'so.tilo.notes', record: 'note-1'};
-  say(runtime, [{kind: 'preview', publisher: OTHER, record, seq: 1, ops: [{kind: 'insert', at: '01', text: 'x'}]}]);
-  await until(() => Object.keys(peer.live.remoteState()[0].previews).length, 'the preview');
-  assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 1);
-  say(runtime, [], [{kind: 'durable', record}]);
-  assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 0, 'the durable change supersedes previews');
-
-  // A member that left takes everything of it with it.
-  say(runtime, [{kind: 'left', publisher: OTHER}]);
-  await until(() => peer.live.members().length === 0, 'the member left');
-  assert.deepEqual(peer.live.remoteState(), []);
-  await peer.dispose();
-});
-
-test('a layer announces this page only once its session admitted it', async () => {
+test('a layer says its word only once its session admitted it', async () => {
   const runtime = fakeRuntime({phase: 'admitting'});
   const peer = await connect(options(runtime, memoryStore()));
   await tick();
-  assert.deepEqual(runtime.peer.announced, [], 'not before the workspace knows the device');
+  assert.deepEqual(runtime.peer.said, [], 'not before the workspace knows the device');
   assert.equal(peer.live.available, false);
   const ready = peer.whenReady();
   runtime.peer.emit('ready');
   assert.equal((await ready).phase, 'ready');
   await until(() => peer.live.state === 'live', 'the live layer');
-  assert.deepEqual(runtime.peer.announced, [{workspace: WORKSPACE, arrived: true}]);
+  assert.deepEqual(runtime.peer.said.map(word => word.workspace), [WORKSPACE]);
   assert.equal(peer.live.published ?? undefined, undefined);
   await peer.dispose();
 });
@@ -765,16 +713,16 @@ test('leaving the page withdraws its presence from the workspace at once; back o
     const runtime = fakeRuntime();
     const peer = await connect(options(runtime, memoryStore()));
     await until(() => peer.live.state === 'live', 'the live layer');
-    assert.deepEqual(runtime.peer.announced.at(-1), {workspace: WORKSPACE, arrived: true});
+    assert.deepEqual(runtime.peer.said.at(-1).workspace, WORKSPACE);
     page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: true}));
     await tick();
     assert.equal(peer.live.state, 'live', 'a page kept to come back to stays');
-    assert.deepEqual(runtime.peer.announced.at(-1), {workspace: WORKSPACE, arrived: true}, 'and keeps its place');
+    assert.deepEqual(runtime.peer.left, [], 'and keeps its place');
     assert.deepEqual(beacons, [], 'and its host session');
     page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: false}));
     await tick();
     assert.equal(peer.live.state, 'closed');
-    assert.deepEqual(runtime.peer.announced.at(-1), {workspace: WORKSPACE, arrived: false},
+    assert.deepEqual(runtime.peer.left, [WORKSPACE],
       'the members take it down at once, not when its keepalive stops');
     assert.deepEqual(beacons, [['https://host.example:8443/peer/v1/session/end', 'ce'.repeat(32)]],
       'the host hears the page went, its session token the body');
@@ -798,62 +746,6 @@ test('whenReady rejects when the host refuses the device', async () => {
   const ready = peer.whenReady();
   runtime.peer.emit('failed');
   await assert.rejects(ready, /refused/);
-  await peer.dispose();
-});
-
-test('agents the workspace shows are told apart from people', async () => {
-  const runtime = fakeRuntime();
-  const peer = await connect(options(runtime, memoryStore()));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const activity = [];
-  const members = [];
-  peer.live.onAgentActivity(value => activity.push(value));
-  peer.live.onMember(value => members.push(value));
-  say(runtime, [{kind: 'arrived', publisher: AGENT}, {kind: 'arrived', publisher: OTHER}]);
-  say(runtime, [
-    {kind: 'shell', publisher: AGENT, frame: {
-      seq: 1, sentAtMs: Date.now(), pointer: null, focus: null,
-      participant: {kind: 'agent', label: 'Reading agent', color: '#8e4ec6', activity: 'Reading the draft'},
-    }},
-    {kind: 'shell', publisher: OTHER, frame: {
-      seq: 1, sentAtMs: Date.now(), pointer: null, focus: null,
-      participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
-    }},
-  ]);
-  await until(() => peer.live.people().length, 'both members\' presence');
-  assert.deepEqual(peer.live.agents(), [{publisher: AGENT, agentId: 'Reading agent', name: 'Reading agent'}]);
-  assert.deepEqual(peer.live.people(), [{device: OTHER, name: 'Visitor', color: '#e5484d'}]);
-  assert.deepEqual(activity.map(value => value.name), ['Reading agent']);
-  assert.deepEqual(members.at(-1), {publisher: OTHER, active: true}, 'a name that arrives is announced');
-  await peer.dispose();
-});
-
-test('a record\'s preview ops grow in place and stay bounded while nobody applies them', async () => {
-  const runtime = fakeRuntime();
-  const peer = await connect(options(runtime, memoryStore()));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const record = {app: 'so.tilo.word-processor', record: 'main'};
-  peer.live.watchRecord(record);
-  // A remote state exists once its member\'s presence arrived.
-  say(runtime, [{kind: 'arrived', publisher: OTHER}, {kind: 'shell', publisher: OTHER, frame: {
-    seq: 1, sentAtMs: Date.now(), pointer: null, focus: record,
-    participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
-  }}]);
-  await until(() => peer.live.remoteState().length, 'the member');
-  // A single op arrives as one frame, thousands of times: no page reads
-  // remoteState in between, so nothing drops what landed.
-  const ops = [];
-  for (let sequence = 1; sequence <= 2000; sequence++) {
-    ops.push({kind: 'preview', publisher: OTHER, record, seq: sequence, ops: [{kind: 'insert', at: String(sequence), text: 'x'}]});
-  }
-  say(runtime, ops);
-  await until(() => Object.keys(peer.live.remoteState()[0].previews).length, 'the previews');
-  const [previews] = Object.values(peer.live.remoteState()[0].previews);
-  assert.ok(previews.length <= 256, `bounded to ${previews.length}`);
-  // The newest op is still there: a drop trims from the front.
-  assert.deepEqual(previews.at(-1), {kind: 'insert', at: '2000', text: 'x'});
-  say(runtime, [], [{kind: 'durable', record}]);
-  assert.deepEqual(peer.live.remoteState()[0].previews, {}, 'the durable change supersedes previews');
   await peer.dispose();
 });
 

@@ -1,16 +1,13 @@
-//! Adding a device to the person from a device that holds none of their
-//! identity's key, or only a share of it.
-//!
-//! Pairing finds the new device and the person checks its code there, as
-//! always. The certificate it needs is then signed by the person's devices
-//! that hold the key ([`tilo_identity_host::certification_ceremony`]): this
-//! device proposes it to each of the person's other devices over their
-//! private fabric ([`certify`]); a device holding key material shows the
-//! person a notification naming the new device, the device that found it and
-//! its code, as for any device asking to be them, and signs only when they
-//! approve it there ([`answer`], from the notification's own buttons); devices
-//! without key material say so at once. A revoked device is refused by every
-//! key holder before anyone is asked.
+//! Adding a device to the person from a device that holds none of their identity's key, or only a
+//! share of it.
+//! Pairing finds the new device and the person checks its code there, as always. The certificate it
+//! needs is then signed by the person's devices that hold the key
+//! ([`tilo_identity_host::certification_ceremony`]): this device proposes it to each of the
+//! person's other devices over their private fabric ([`certify`]); a device holding key material
+//! shows the person a notification naming the new device, the device that found it and its code, as
+//! for any device asking to be them, and signs only when they approve it there ([`answer`], from
+//! the notification's own buttons); devices without key material say so at once. A revoked device
+//! is refused by every key holder before anyone is asked.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
@@ -24,14 +21,13 @@ use tilo_identity_host::certification_ceremony::{
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
-/// How long the person has to approve on a device that holds the key. The
-/// new device waits 270 seconds for its pairing; the exchange after the
-/// approval needs part of that.
+/// How long the person has to approve on a device that holds the key. The new device waits 270
+/// seconds for its pairing; the exchange after the approval needs part of that.
 pub(crate) const APPROVAL_WINDOW: Duration = Duration::from_secs(200);
 
-/// The host action id prefix a device asking to be the person is answered
-/// under: `<prefix><digest>:approve` or `<prefix><digest>:decline`, which the
-/// session's loop hands back from the notification's buttons.
+/// The host action id prefix a device asking to be the person is answered under:
+/// `<prefix><digest>:approve` or `<prefix><digest>:decline` , which the session's loop hands back
+/// from the notification's buttons.
 const ANSWER_PREFIX: &str = "device-answer:";
 
 /// This device's material of the person's identity key.
@@ -42,11 +38,10 @@ pub(crate) trait Keys: Send + Sync {
     ///
     /// When the person's identity cannot be opened here.
     fn key(&self, person: [u8; 32]) -> Result<Box<dyn IdentityKey>, String>;
-    /// Whether `device` was removed from `person`.
+    /// Whether `device` was removed from `person` .
     fn revoked(&self, person: [u8; 32], device: &[u8; 32]) -> bool;
-    /// The certificate this device's fleet holds for `device` under
-    /// `person`, when it holds one: what a renewal replaces is checked
-    /// against it, never against the asker's word alone.
+    /// The certificate this device's fleet holds for `device` under `person` , when it holds one:
+    /// what a renewal replaces is checked against it, never against the asker's word alone.
     fn held(&self, person: [u8; 32], device: &[u8; 32]) -> Option<tilo_user_identity::DeviceCert>;
 }
 
@@ -81,8 +76,7 @@ impl Keys for StoreKeys {
     }
 }
 
-/// A device another of the person's devices found, waiting for the person
-/// here.
+/// A device another of the person's devices found, waiting for the person here.
 #[derive(Clone, Debug)]
 pub(crate) struct Asking {
     /// Names it in the notification's answer.
@@ -115,13 +109,11 @@ struct State {
     /// Answers waiting for the loop to send them.
     outbox: Vec<(DeviceId, Answer)>,
     keys: Option<Arc<dyn Keys>>,
-    /// The asks the person was shown, by digest: a new one is told, one that
-    /// went is withdrawn.
+    /// The asks the person was shown, by digest: a new one is told, one that went is withdrawn.
     shown: Vec<[u8; 32]>,
 }
 
-/// Each device's [`State`], by the device: one session runs one, a test
-/// several.
+/// Each device's [`State`], by the device: one session runs one, a test several.
 static STATES: LazyLock<Mutex<HashMap<DeviceId, State>>> = LazyLock::new(Mutex::default);
 
 fn with_state<T>(local: &DeviceId, change: impl FnOnce(&mut State) -> T) -> T {
@@ -132,7 +124,7 @@ fn keys(local: &DeviceId) -> Arc<dyn Keys> {
     with_state(local, |state| state.keys.clone()).unwrap_or_else(|| Arc::new(StoreKeys))
 }
 
-/// Stand `keys` in for the identity store of the device `local`.
+/// Stand `keys` in for the identity store of the device `local` .
 #[cfg(test)]
 pub(crate) fn set_keys(local: &DeviceId, keys: Arc<dyn Keys>) {
     with_state(local, |state| state.keys = Some(keys));
@@ -141,7 +133,7 @@ pub(crate) fn set_keys(local: &DeviceId, keys: Arc<dyn Keys>) {
 /// What wakes the session's loop when another device's ask landed here.
 static WAKE: std::sync::RwLock<Option<tilo_service::Wake>> = std::sync::RwLock::new(None);
 
-/// Let what lands here wake `wake`, the session's loop.
+/// Let what lands here wake `wake` , the session's loop.
 pub(crate) fn attach(wake: tilo_service::Wake) {
     use tilo_lock::RwLockRecover as _;
     *WAKE.write_recover() = Some(wake);
@@ -207,8 +199,7 @@ pub(crate) fn pump(fabric: &dyn FabricLink) {
     }
 }
 
-/// Take a certification message of the person's fabric; `false` for any
-/// other action.
+/// Take a certification message of the person's fabric; `false` for any other action.
 pub(crate) fn handle_action(fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
     match &envelope.action {
         PersonalFabricAction::CertifyAsk { ask } => {
@@ -250,8 +241,8 @@ pub(crate) fn handle_action(fabric: &SharedLink, envelope: &PersonalFabricAction
     }
 }
 
-/// Take `ask` from the person's device `from` at the device `local`: queue
-/// it for the person, or answer it.
+/// Take `ask` from the person's device `from` at the device `local` : queue it for the person, or
+/// answer it.
 fn receive(local: &DeviceId, person: [u8; 32], from: DeviceId, via: String, ask: Ask) {
     let keys = keys(local);
     let session = ask.session;
@@ -282,12 +273,10 @@ fn receive(local: &DeviceId, person: [u8; 32], from: DeviceId, via: String, ask:
             }),
             Err(error) => Reply::Refused(error),
         },
-        // A renewal adds no device and grants nothing new, so the person is
-        // not asked: the device is already theirs. A key holder checks it is
-        // exactly that — the same device key, under the same root, issued
-        // later, wider in nothing, and not revoked — and that the certificate
-        // it replaces is the one the fleet holds for the device, then signs
-        // it.
+        // A renewal adds no device and grants nothing new, so the person is not asked: the device
+        // is already theirs. A key holder checks it is exactly that — the same device key, under
+        // the same root, issued later, wider in nothing, and not revoked — and that the certificate
+        // it replaces is the one the fleet holds for the device, then signs it.
         Step::Renew { held } => match keys.key(person) {
             Ok(key) if key.holds_key() => {
                 let current = keys.held(person, &ask.cert.device_public_key);
@@ -357,8 +346,8 @@ pub(crate) fn asking(fabric: &dyn FabricLink) -> Vec<Asking> {
     })
 }
 
-/// The asks the person was not shown yet, as the loop offers them: each is
-/// told once, and one that went is withdrawn.
+/// The asks the person was not shown yet, as the loop offers them: each is told once, and one that
+/// went is withdrawn.
 pub(crate) fn newly_asking(fabric: &dyn FabricLink) -> (Vec<Asking>, Vec<[u8; 32]>) {
     let Ok(local) = local(fabric) else {
         return (Vec::new(), Vec::new());
@@ -429,9 +418,8 @@ fn answer(
     refused.map_or(Ok(Some(asking.label)), Err)
 }
 
-/// The banner button that answers the device asking under `digest` here:
-/// approving lets it act as the person, declining refuses it
-/// ([`host_action`]).
+/// The banner button that answers the device asking under `digest` here: approving lets it act as
+/// the person, declining refuses it ([`host_action`]).
 pub(crate) fn answer_key(digest: [u8; 32], approve: bool) -> String {
     format!(
         "{ANSWER_PREFIX}{}:{}",
@@ -440,8 +428,8 @@ pub(crate) fn answer_key(digest: [u8; 32], approve: bool) -> String {
     )
 }
 
-/// The person chose `choice`, one of the notification's buttons, if it is one
-/// of this device's: answers the device it names there, off the loop.
+/// The person chose `choice` , one of the notification's buttons, if it is one of this device's:
+/// answers the device it names there, off the loop.
 pub(crate) fn host_action(fabric: &SharedLink, choice: &str) -> bool {
     let Some(rest) = choice.strip_prefix(ANSWER_PREFIX) else {
         return false;
@@ -547,8 +535,8 @@ pub(crate) fn renew(
     )
 }
 
-/// How a gather ends in a person's words: what a certification asks them to
-/// approve, or a renewal that needs no approval and only needs signing.
+/// How a gather ends in a person's words: what a certification asks them to approve, or a renewal
+/// that needs no approval and only needs signing.
 #[derive(Clone, Copy)]
 enum AskVerb {
     Approve,
@@ -565,9 +553,9 @@ impl AskVerb {
     }
 }
 
-/// Drive `gathering` to a signed certificate over the person's fabric.
-/// `here` answers its own share, given this device's id: a certification the
-/// person just approved here, or a renewal checked here.
+/// Drive `gathering` to a signed certificate over the person's fabric. `here` answers its own
+/// share, given this device's id: a certification the person just approved here, or a renewal
+/// checked here.
 fn gather(
     fabric: &SharedLink,
     mut gathering: Gathering,
@@ -658,15 +646,14 @@ fn gather(
     }
 }
 
-/// What a session with no fabric says when a device holding a share of the
-/// person's key would have the others approve: they are not reachable.
+/// What a session with no fabric says when a device holding a share of the person's key would have
+/// the others approve: they are not reachable.
 pub(crate) fn cannot_certify_here() -> String {
     "this session runs no device fabric, so your other devices cannot approve it".into()
 }
 
-/// Answer a device asking to be the person from the `answer` step, which is
-/// the notification's own path: the digest it lists, and the person's
-/// verdict. Blocks on the identity store.
+/// Answer a device asking to be the person from the `answer` step, which is the notification's own
+/// path: the digest it lists, and the person's verdict. Blocks on the identity store.
 pub(crate) fn answer_step(
     fabric: Option<&SharedLink>,
     ask: &str,
@@ -682,8 +669,8 @@ pub(crate) fn answer_step(
     Ok(serde_json::json!({ "ask": hex::encode(digest), "label": label, "approved": approve }))
 }
 
-/// The devices another of the person's devices found, asking at this device
-/// to be the person, as the `asking` step lists them.
+/// The devices another of the person's devices found, asking at this device to be the person, as
+/// the `asking` step lists them.
 pub(crate) fn asking_step(fabric: Option<&SharedLink>) -> serde_json::Value {
     let asking: Vec<serde_json::Value> = fabric.map_or_else(Vec::new, |fabric| {
         asking(fabric.as_ref())
@@ -735,8 +722,7 @@ mod tests {
         (root, key)
     }
 
-    /// A device holding the person's key, or, with `revoked`, one the person
-    /// removed.
+    /// A device holding the person's key, or, with `revoked` , one the person removed.
     #[derive(Clone)]
     struct Held {
         key: Arc<runtime_identity::SigningIdentity>,
@@ -809,8 +795,8 @@ mod tests {
         }
     }
 
-    /// Two of the person's devices on one fabric, with the wire between them
-    /// handed straight to the other's [`handle_action`].
+    /// Two of the person's devices on one fabric, with the wire between them handed straight to the
+    /// other's [`handle_action`].
     struct Wire {
         links: Mutex<HashMap<String, SharedLink>>,
         fabric: DeviceFabric,
@@ -875,12 +861,12 @@ mod tests {
         }
     }
 
-    /// The two devices `a` and `b`, connected to each other.
+    /// The two devices `a` and `b` , connected to each other.
     fn pair(a: [u8; 32], b: [u8; 32]) -> (SharedLink, SharedLink, DeviceId, DeviceId) {
         let first = DeviceId::new(hex::encode(a)).expect("this laptop");
         let second = DeviceId::new(hex::encode(b)).expect("the other device");
-        // The devices know each other from the live plane, so the ask names
-        // the laptop the way the person knows it.
+        // The devices know each other from the live plane, so the ask names the laptop the way the
+        // person knows it.
         let here = FabricRuntime::restored(Some((first.clone(), "This laptop".into())), None)
             .expect("a fabric here");
         let known =
@@ -926,8 +912,8 @@ mod tests {
         .expect("a proposal")
     }
 
-    /// The certificate `laptop` gets from its peers for an unsigned renewal
-    /// of `held`, each peer's answers sent as the session's passes would.
+    /// The certificate `laptop` gets from its peers for an unsigned renewal of `held` , each peer's
+    /// answers sent as the session's passes would.
     fn renewed(
         laptop: &SharedLink,
         peer: &SharedLink,
@@ -947,8 +933,8 @@ mod tests {
         })
     }
 
-    /// The certificate `laptop` gets for the proposed device, its peer's
-    /// answers sent as the session's passes would send them.
+    /// The certificate `laptop` gets for the proposed device, its peer's answers sent as the
+    /// session's passes would send them.
     fn certified(
         laptop: &SharedLink,
         peer: &SharedLink,
@@ -1088,8 +1074,8 @@ mod tests {
         assert!(here.device_fabric().snapshots().contains_key(&device));
         assert!(here.online_device_ids().contains(&device));
 
-        // The person removed it: the next hello carrying the revocation ends
-        // it, and everything it said is dropped rather than kept as theirs.
+        // The person removed it: the next hello carrying the revocation ends it, and everything it
+        // said is dropped rather than kept as theirs.
         here.sibling(peer, std::slice::from_ref(&cert), &[revoked]);
         assert!(
             !here.device_fabric().snapshots().contains_key(&device),
@@ -1101,8 +1087,8 @@ mod tests {
         );
     }
 
-    /// A joined device of `person`, certified by their root and holding none
-    /// of it: the laptop's shape, whose certificate ran out.
+    /// A joined device of `person` , certified by their root and holding none of it: the laptop's
+    /// shape, whose certificate ran out.
     struct Joined {
         device_key: ed25519_dalek::SigningKey,
         paths: tilo_user_identity::IdentityPaths,
@@ -1110,8 +1096,8 @@ mod tests {
     }
 
     impl Joined {
-        /// A certificate for this same device, issued `issued_at_ns`, as a
-        /// later one this device was given and the fleet already holds.
+        /// A certificate for this same device, issued `issued_at_ns` , as a later one this device
+        /// was given and the fleet already holds.
         fn at(&self, issued_at_ns: u64) -> DeviceCert {
             let mut cert = self.held.clone();
             cert.issued_at_ns = issued_at_ns;
@@ -1136,9 +1122,8 @@ mod tests {
         }
     }
 
-    /// A joined device of `root`'s person, labelled `label`, whose
-    /// certificate ran out: the shape this laptop has, certified by the
-    /// person's root and holding no root of its own.
+    /// A joined device of `root` 's person, labelled `label` , whose certificate ran out: the shape
+    /// this laptop has, certified by the person's root and holding no root of its own.
     fn joined_device(root: &runtime_identity::SigningIdentity, label: &str) -> Joined {
         let dir = tempfile::tempdir().expect("a directory for a joined device");
         let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("system"));
@@ -1176,8 +1161,8 @@ mod tests {
         }
     }
 
-    /// A [`Keys`] holding `root`, and knowing `current` as the certificate the
-    /// fleet holds for a device.
+    /// A [`Keys`] holding `root` , and knowing `current` as the certificate the fleet holds for a
+    /// device.
     fn held_by(
         root: Arc<runtime_identity::SigningIdentity>,
         current: Option<DeviceCert>,
@@ -1209,8 +1194,8 @@ mod tests {
         }
     }
 
-    /// Two devices on one fabric: the device under test at `own_key`, and
-    /// the person's other device at `peer_seed`.
+    /// Two devices on one fabric: the device under test at `own_key` , and the person's other
+    /// device at `peer_seed` .
     fn pair_of(
         own_key: &ed25519_dalek::SigningKey,
         peer_seed: u8,
@@ -1220,8 +1205,8 @@ mod tests {
 
     #[test]
     fn a_joined_devices_lapsed_certificate_is_renewed_through_the_persons_devices() {
-        // The person's root on one of their devices, and a joined laptop that
-        // holds nothing of it and whose certificate ran out.
+        // The person's root on one of their devices, and a joined laptop that holds nothing of it
+        // and whose certificate ran out.
         let (_root_dir, root) = identity();
         let person = root.person();
         let joined = joined_device(&root, "tilo-yoga");
@@ -1231,8 +1216,8 @@ mod tests {
         );
 
         let (laptop, other, laptop_id, other_id) = pair_of(&joined.device_key, 0x4a);
-        // The laptop holds no part of the person's key; the other device
-        // holds the whole of it and knows the laptop's certificate.
+        // The laptop holds no part of the person's key; the other device holds the whole of it and
+        // knows the laptop's certificate.
         set_keys(&laptop_id, Arc::new(NoKey));
         set_keys(
             &other_id,

@@ -30,8 +30,8 @@ use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy};
 use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
-    AppModel, Button, DescribedList, Element, ModelPath, NavList, SearchField, StructureChange,
-    TaffyTreeExt, Widget, WidgetLayoutError,
+    AppModel, Button, ButtonRole, DescribedList, Element, ModelPath, NavList, SearchField,
+    StructureChange, TaffyTreeExt, Widget, WidgetLayoutError,
 };
 
 mod back;
@@ -413,9 +413,14 @@ struct ColumnFit {
     /// The index of the first action that belongs in the menu: the row shows its everyday actions
     /// and the menu holds the rest. `None` while they all fit.
     menu_from: Option<usize>,
+    /// The index of the action the row never gives up: the one the app marks primary, or the
+    /// first that stands in the row rather than in its menu.
+    primary: Option<usize>,
     /// How many actions stand in the row; the rest are in the More menu.
     /// `None` until the first layout decides.
     shown: Option<usize>,
+    /// What the last layout settled on for the row, for an audit to read.
+    header: Option<crate::widget::HeaderRow>,
 }
 
 /// Everything the geometry depends on. Shared with the layout policy the
@@ -2318,32 +2323,23 @@ impl NavShell {
         let inputs = self.inputs.borrow();
         let mut fit = inputs.fit.borrow_mut();
         for (slot, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
-            let capable: Vec<bool> = header
-                .actions
-                .iter_mut()
-                .map(|action| button_of(&**action).is_some_and(Button::compacts_to_icon))
-                .collect();
-            let compact_now: Vec<bool> = header
-                .actions
-                .iter()
-                .map(|action| button_of(&**action).is_some_and(Button::is_compact_presentation))
-                .collect();
-            let menu_from = header
-                .actions
-                .iter()
-                .position(|action| button_of(&**action).is_some_and(Button::is_menu_only));
-            if slot.capable != capable || slot.compact_now.len() != compact_now.len() {
+            let (capable, compact_now, menu_from, primary) = fit_of(header);
+            if slot.full.len() == capable.len() {
+                slot.capable = capable;
+                slot.compact_now = compact_now;
+                slot.menu_from = menu_from;
+                slot.primary = primary;
+            } else {
                 *slot = ColumnFit {
                     full: vec![None; capable.len()],
                     capable,
                     compact_now,
                     compact: false,
                     menu_from,
+                    primary,
                     shown: None,
+                    header: None,
                 };
-            } else {
-                slot.compact_now = compact_now;
-                slot.menu_from = menu_from;
             }
         }
     }
@@ -3350,7 +3346,25 @@ impl NavShell {
             (Rc::clone(&inputs.fit), inputs.actions_listed)
         };
         let mut fit = fit.borrow_mut();
+        let mut gave = false;
         for (slot, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
+            // The buttons as the host has them now: an action gains its icon after the tree is
+            // built, so the row reads them again before it decides what gives way.
+            let (capable, compact_now, menu_from, primary) = fit_of(header);
+            // What the row gave way to was decided from the actions as they stood then: when
+            // they stand differently now, that decision is the row's to take again.
+            gave |= slot.capable != capable
+                || slot.compact_now != compact_now
+                || slot.primary != primary;
+            if slot.full.len() != capable.len() {
+                slot.full = vec![None; capable.len()];
+                slot.compact = false;
+                slot.shown = None;
+            }
+            slot.capable = capable;
+            slot.compact_now = compact_now;
+            slot.menu_from = menu_from;
+            slot.primary = primary;
             let shown = slot.shown.unwrap_or(header.actions.len());
             header
                 .more
@@ -3365,12 +3379,17 @@ impl NavShell {
                 }
                 if let Some(button) = button_of_mut(&mut **action) {
                     button.set_compact_toolbar_presentation(want);
+                    gave = true;
                     if let Some(now) = slot.compact_now.get_mut(i) {
                         *now = want;
                     }
                 }
             }
         }
+        // A control that took or gave its label back, or an action that only now says what it
+        // can give, is another width in the row: the row lays itself out again, so the title
+        // and whatever stands beside it are placed for it.
+        self.layout_dirty |= gave;
     }
 
     // --- painting ----------------------------------------------------------
@@ -4163,6 +4182,22 @@ impl Widget for NavShell {
         Some(self.minimum_width())
     }
 
+    /// Each column's header row as the last layout left it: what its title says against what the
+    /// row gave it, and what its actions kept of their labels and their place in the row.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        let inputs = self.inputs.borrow();
+        let fit = inputs.fit.borrow();
+        let mut rows: [Option<crate::widget::HeaderRow>; 4] = [None; 4];
+        for (row, slot) in rows.iter_mut().zip(fit.iter()) {
+            *row = slot.header;
+        }
+        rows.iter()
+            .any(Option::is_some)
+            .then_some(crate::widget::LayoutInfo::Headers(
+                crate::widget::HeaderRows { rows },
+            ))
+    }
+
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.resize.is_some() || self.geometry.resize_handle.contains(point))
             .then_some(winit::window::CursorIcon::ColResize)
@@ -4380,6 +4415,44 @@ impl Widget for NavShell {
         }
         capture
     }
+}
+
+/// What a header's actions can do as they stand now: which give up their label when the row is
+/// short, which have already done so, where the row's menu begins, and the one action the row
+/// never gives up. The host can hand an action its icon after the tree that holds it is built,
+/// so the row asks again each time it lays out rather than once per change.
+fn fit_of(header: &Header) -> (Vec<bool>, Vec<bool>, Option<usize>, Option<usize>) {
+    let capable: Vec<bool> = header
+        .actions
+        .iter()
+        .map(|action| button_of(&**action).is_some_and(Button::shrinks_to_icon))
+        .collect();
+    let compact_now: Vec<bool> = header
+        .actions
+        .iter()
+        .map(|action| button_of(&**action).is_some_and(Button::is_shown_compact))
+        .collect();
+    let menu_from = header
+        .actions
+        .iter()
+        .position(|action| button_of(&**action).is_some_and(Button::is_menu_only));
+    // The action the row never gives up: the one the app marks primary, else the first that
+    // stands in the row rather than in the menu.
+    let primary = header
+        .actions
+        .iter()
+        .position(|action| {
+            button_of(&**action).is_some_and(|button| {
+                button.role_of() == ButtonRole::Primary && !button.is_menu_only()
+            })
+        })
+        .or_else(|| {
+            header
+                .actions
+                .iter()
+                .position(|action| button_of(&**action).is_none_or(|button| !button.is_menu_only()))
+        });
+    (capable, compact_now, menu_from, primary)
 }
 
 /// The button a header action is: the action itself or the one it shows as its face; the row fits

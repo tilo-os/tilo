@@ -203,9 +203,6 @@ pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
 
 /// [`encode_handoff`] for an app launched in `workspace`, as `tilo-launcher`
 /// writes it.
-///
-/// # Errors
-/// The handoff would be out of its bounds.
 pub fn encode_launch_handoff(app_id: &str, workspace: Option<&str>) -> std::io::Result<Vec<u8>> {
     let mut handoff = serde_json::json!({ "protocol": 1, "app_id": app_id });
     if let (Some(workspace), Some(fields)) = (workspace, handoff.as_object_mut()) {

@@ -1,11 +1,9 @@
-//! Workspace settings: what the sheet shows of the workspace in front, and
-//! what the person's choices there change.
-//!
-//! The sheet shows and asks; this carries out. Every change to the workspace
-//! goes through the workspace's own policy functions — the ones the desk's
-//! member commands use — so a change the person may not make is refused
-//! there, whatever the sheet showed, and the tree is only written when
-//! something changed.
+//! Workspace settings: what the sheet shows of the workspace in front, and what the person's
+//! choices there change.
+//! The sheet shows and asks; this carries out. Every change to the workspace goes through the
+//! workspace's own policy functions — the ones the desk's member commands use — so a change the
+//! person may not make is refused there, whatever the sheet showed, and the tree is only written
+//! when something changed.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -43,8 +41,8 @@ pub(crate) struct WorkspaceTabs {
 }
 
 impl WorkspaceTabs {
-    /// The two records over the store at `root`, waking the session's loop
-    /// through `wake` when a change lands.
+    /// The two records over the store at `root` , waking the session's loop through `wake` when a
+    /// change lands.
     pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
         Self {
             agents: AgentsTab::new(root.clone(), wake.clone()),
@@ -58,20 +56,18 @@ impl WorkspaceTabs {
 pub(crate) struct Feeding<'a> {
     handle: &'a DesktopHandle,
     person: &'a UserId,
-    /// This session's search: the machine's app lists, and the apps a page or
-    /// a link the sheet asks for opens in.
+    /// This session's search: the machine's app lists, and the apps a page or a link the sheet asks
+    /// for opens in.
     search: &'a SessionSearch,
     /// The desk revision the panes were last fed at.
     fed: &'a Cell<Option<u64>>,
-    /// The workspace's agents and emoji, read and changed through Chat's
-    /// records.
+    /// The workspace's agents and emoji, read and changed through Chat's records.
     tabs: &'a WorkspaceTabs,
     /// The session's file chooser, where a picture to add is chosen.
     picker: Option<&'a FilePickerSeat>,
     personal: Option<&'a RefCell<Personal>>,
-    /// This device's engine, where the workspace's own governance is written:
-    /// what the person changes of the workspace's people goes there, so every
-    /// member admits it.
+    /// This device's engine, where the workspace's own governance is written: what the person
+    /// changes of the workspace's people goes there, so every member admits it.
     engine: Option<&'a Engine>,
 }
 
@@ -99,8 +95,8 @@ impl<'a> Feeding<'a> {
     }
 }
 
-/// Open the sheet on the workspace in front: its panes as the workspace
-/// stands, and its name field ready for a new name.
+/// Open the sheet on the workspace in front: its panes as the workspace stands, and its name field
+/// ready for a new name.
 pub(crate) fn open(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding<'_>) {
     let Some(seat) = seat else {
         return;
@@ -147,9 +143,9 @@ fn tab_of(route: runtime_portal::tools::WorkspaceSettingsRoute) -> sheet::Tab {
     }
 }
 
-/// Keep the sheet's panes current while it is up: the workspace changes
-/// while the sheet is open (a role set, a grant given), and so does what
-/// other people do in it — the workspace's emoji among them.
+/// Keep the sheet's panes current while it is up: the workspace changes while the sheet is open (a
+/// role set, a grant given), and so does what other people do in it — the workspace's emoji among
+/// them.
 pub(crate) fn refresh(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding<'_>) {
     let Some(seat) = seat else {
         return;
@@ -177,7 +173,7 @@ pub(crate) fn refresh(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding
     show(seat, fed, shown.tab, review.as_deref());
 }
 
-/// Show the sheet's panes as the desk stands for the person, on `tab`.
+/// Show the sheet's panes as the desk stands for the person, on `tab` .
 fn show(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
@@ -199,9 +195,8 @@ fn show(
     fed.fed.set(Some(fed.handle.revision()));
 }
 
-/// Show the workspace in front on one of the person's devices, or keep it
-/// off there: the row says the choice at once, since a workspace kept off this
-/// device leaves the desk under the sheet.
+/// Show the workspace in front on one of the person's devices, or keep it off there: the row says
+/// the choice at once, since a workspace kept off this device leaves the desk under the sheet.
 fn toggle_workspace_device(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, device: &str) {
     if !toggle_device(fed.handle, fed.personal, device) {
         return;
@@ -211,8 +206,7 @@ fn toggle_workspace_device(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_
     show(seat, fed, shown.tab, review.as_deref());
 }
 
-/// Show one agent's review, or the roster again for `None`, on the tab the
-/// sheet was on.
+/// Show one agent's review, or the roster again for `None` , on the tab the sheet was on.
 fn show_review(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, agent: Option<&str>) {
     show(seat, fed, seat.settings().tab, agent);
 }
@@ -227,8 +221,8 @@ fn show_picked_tab(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, tab: 
     show(seat, fed, tab, review.as_deref());
 }
 
-/// Where a member finds a bot for the workspace: the Store's bots, whose
-/// pages ask the workspace's host to run one.
+/// Where a member finds a bot for the workspace: the Store's bots, whose pages ask the workspace's
+/// host to run one.
 const BOTS_LINK: &str = "tilo-store:bots";
 
 /// Carry out what the person asked for in the sheet.
@@ -242,9 +236,8 @@ pub(crate) fn follow(
     };
     let handle = fed.handle;
     let person = fed.person;
-    // What came of the chooser and of the pictures waiting for the image
-    // tools, and what the agents' record owes this device, before what the
-    // person asks now.
+    // What came of the chooser and of the pictures waiting for the image tools, and what the
+    // agents' record owes this device, before what the person asks now.
     handle.read(|tree| fed.tabs.emoji.settle(tree, person, fed.picker));
     handle.read(|tree| fed.tabs.agents.settle(tree, person));
     for effect in seat.take_asked() {
@@ -252,9 +245,8 @@ pub(crate) fn follow(
     }
 }
 
-/// Carry out the one ask `effect` names. Every ask the sheet can make is
-/// answered here, so an effect added to the sheet is a compile error until
-/// the session says what it does with it.
+/// Carry out the one ask `effect` names. Every ask the sheet can make is answered here, so an
+/// effect added to the sheet is a compile error until the session says what it does with it.
 fn ask(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
@@ -322,11 +314,11 @@ fn ask(
         sheet::WorkspaceSettingsEffect::NextPersonalDefault { resource } => {
             next_personal_default(seat, fed, &resource);
         }
-        // The workspace leaves this device's desktop; it stays for
-        // everyone in it, on their devices.
+        // The workspace leaves this device's desktop; it stays for everyone in it, on their
+        // devices.
         sheet::WorkspaceSettingsEffect::Delete => intent(intents, ChromeIntent::LeaveWorkspace),
-        // The person answered the sheet's own question: the desk deletes the
-        // workspace with everything in it, and tells the session it went.
+        // The person answered the sheet's own question: the desk deletes the workspace with
+        // everything in it, and tells the session it went.
         sheet::WorkspaceSettingsEffect::DeleteWorkspace => {
             intent(intents, ChromeIntent::DeleteWorkspaceConfirmed);
         }
@@ -365,8 +357,7 @@ fn ask(
     }
 }
 
-/// Put the sheet's notice away and draw the tab it stands over again, review
-/// and all.
+/// Put the sheet's notice away and draw the tab it stands over again, review and all.
 fn dismiss_notice(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>) {
     seat.dismiss_notice();
     let shown = seat.settings();
@@ -379,8 +370,8 @@ fn intent(intents: &RefCell<Vec<ChromeIntent>>, what: ChromeIntent) {
     intents.borrow_mut().push(what);
 }
 
-/// Open the Store's bots, where a member finds one and asks the workspace's
-/// host to run it, in the workspace in front.
+/// Open the Store's bots, where a member finds one and asks the workspace's host to run it, in the
+/// workspace in front.
 fn add_bot(fed: &Feeding<'_>) {
     let Some(apps) = fed.search.apps() else {
         tracing::debug!("this session opens no apps: no bot is found");
@@ -397,10 +388,9 @@ fn add_bot(fed: &Feeding<'_>) {
     }
 }
 
-/// Take back the workspace's request for the bot at `entry`, as this device:
-/// the workspace's host stops running it from then on. A bot the workspace's
-/// host runs from its own choice is not a member's to remove, and the sheet
-/// offers no control for it.
+/// Take back the workspace's request for the bot at `entry` , as this device: the workspace's host
+/// stops running it from then on. A bot the workspace's host runs from its own choice is not a
+/// member's to remove, and the sheet offers no control for it.
 fn withdraw_bot(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, entry: &str) {
     let Some(workspace_id) = fed
         .handle
@@ -421,9 +411,9 @@ fn withdraw_bot(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, entry: &
     }
 }
 
-/// Apply `edit` to the workspace in front as `person`, and keep the tree
-/// when it changed something: the policy functions refuse a change the
-/// person may not make, and a refusal changes nothing.
+/// Apply `edit` to the workspace in front as `person` , and keep the tree when it changed
+/// something: the policy functions refuse a change the person may not make, and a refusal changes
+/// nothing.
 fn edit(
     handle: &DesktopHandle,
     person: &UserId,
@@ -435,15 +425,12 @@ fn edit(
 }
 
 /// A change to the workspace's people, made where the workspace keeps them.
-///
-/// The workspace's governance is the only source of who shares it, so the
-/// change goes there first, signed with this device's key: every member
-/// admits what it answers as it admits every change its people make. The desk
-/// keeps the change only once the workspace took it; one it refuses leaves the
-/// desk as it was, and the sheet says why in the workspace's own words.
-///
-/// A workspace whose governance this device does not hold has only the desk:
-/// the change is the desk's, as it was before workspaces had governance here.
+/// The workspace's governance is the only source of who shares it, so the change goes there first,
+/// signed with this device's key: every member admits what it answers as it admits every change its
+/// people make. The desk keeps the change only once the workspace took it; one it refuses leaves
+/// the desk as it was, and the sheet says why in the workspace's own words.
+/// A workspace whose governance this device does not hold has only the desk: the change is the
+/// desk's, as it was before workspaces had governance here.
 fn govern(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
@@ -473,8 +460,8 @@ fn govern(
             return refuse(seat, fed, &reason);
         }
     }
-    // The change the person made is the one that stands, so a refusal they
-    // have since corrected has nothing left to say.
+    // The change the person made is the one that stands, so a refusal they have since corrected has
+    // nothing left to say.
     seat.dismiss_notice();
     handle.replace_tree(tree);
 }
@@ -491,8 +478,8 @@ fn refuse(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, reason: &str) 
     show(seat, fed, shown.tab, review.as_deref());
 }
 
-/// Apply `change` to the workspace in front as `person`, and keep the tree
-/// when it answers that something changed.
+/// Apply `change` to the workspace in front as `person` , and keep the tree when it answers that
+/// something changed.
 fn edit_changed(
     handle: &DesktopHandle,
     person: &UserId,
@@ -508,8 +495,7 @@ fn edit_changed(
     handle.replace_tree(tree);
 }
 
-/// Move what opens a kind of file or link in the workspace on to the next
-/// app that can.
+/// Move what opens a kind of file or link in the workspace on to the next app that can.
 fn next_workspace_default(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, resource: &str) {
     let Some(resource) = desktop_policy::ResourceKind::parse(resource) else {
         tracing::debug!(%resource, "no such kind of file or link: nothing changed");
@@ -535,14 +521,12 @@ fn next_workspace_default(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>
     let changed = workspace.set_default_app_policy_as(person, resource, next, &resolver);
     match changed {
         Ok(()) => handle.replace_tree(tree),
-        // The workspace turned the change down: the sheet says why where the
-        // person chose the app.
+        // The workspace turned the change down: the sheet says why where the person chose the app.
         Err(error) => refuse(seat, fed, &error.to_string()),
     }
 }
 
-/// Move what opens a kind of file or link for `person` themselves on to the
-/// next app that can.
+/// Move what opens a kind of file or link for `person` themselves on to the next app that can.
 fn next_personal_default(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, resource: &str) {
     let Some(resource) = desktop_policy::ResourceKind::parse(resource) else {
         tracing::debug!(%resource, "no such kind of file or link: nothing changed");
@@ -569,15 +553,14 @@ fn next_personal_default(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>,
     let changed = workspace.set_default_app_choice_as(person, person, resource, next, &resolver);
     match changed {
         Ok(()) => handle.replace_tree(tree),
-        // The person's own choice is theirs to make; a change the workspace
-        // does not let them keep says why on the sheet.
+        // The person's own choice is theirs to make; a change the workspace does not let them keep
+        // says why on the sheet.
         Err(error) => refuse(seat, fed, &error.to_string()),
     }
 }
 
-/// Set what an agent may do for one kind of action at one app, and nothing
-/// else: the effect carries the answer the person chose, and an empty one
-/// takes the agent back to what its admission says.
+/// Set what an agent may do for one kind of action at one app, and nothing else: the effect carries
+/// the answer the person chose, and an empty one takes the agent back to what its admission says.
 fn answer_agent(
     handle: &DesktopHandle,
     person: &UserId,
@@ -605,8 +588,8 @@ fn answer_agent(
     });
 }
 
-/// Take every answer the person set for an agent at one app back to what the
-/// agent's admission says.
+/// Take every answer the person set for an agent at one app back to what the agent's admission
+/// says.
 fn reset_agent_app(handle: &DesktopHandle, person: &UserId, agent: &str, scope: &str) {
     let Some(scope) = AnswerScope::parse(scope) else {
         tracing::debug!(%scope, "no such app: nothing changed");
@@ -660,9 +643,8 @@ impl Feeding<'_> {
     }
 }
 
-/// Make an agent called `name` where the workspace keeps its agents: the
-/// record is the agent's admission, and Chat's grants decide who may make
-/// one.
+/// Make an agent called `name` where the workspace keeps its agents: the record is the agent's
+/// admission, and Chat's grants decide who may make one.
 fn add_agent(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
@@ -672,15 +654,15 @@ fn add_agent(
 ) {
     let colour =
         ui::tokens::PresenceHue::from_id(colour).and_then(|hue| u8::try_from(hue.slot()).ok());
-    // The record is the admission: the agent works here because Chat's
-    // record names it and this person keeps it.
+    // The record is the admission: the agent works here because Chat's record names it and this
+    // person keeps it.
     if let Err(reason) = fed.make_agent(None, name, model, colour) {
         refuse(seat, fed, &reason);
     }
 }
 
-/// Retire the agent `agent`, and take back what the workspace admitted it
-/// with: it takes no new work here, on any device.
+/// Retire the agent `agent` , and take back what the workspace admitted it with: it takes no new
+/// work here, on any device.
 fn retire_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, agent: &str) {
     let workspace = workspace_in_front(fed);
     if let Err(reason) = fed
@@ -698,9 +680,9 @@ fn retire_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, agent: &
     show(seat, fed, shown.tab, None);
 }
 
-/// Choose the model an agent plans with, as its keeper: the record holds the
-/// choice, and the session applies it to this device's Settings on its next
-/// pass over the tab, which is where the agent runner reads it.
+/// Choose the model an agent plans with, as its keeper: the record holds the choice, and the
+/// session applies it to this device's Settings on its next pass over the tab, which is where the
+/// agent runner reads it.
 fn set_agent_model(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
@@ -721,8 +703,8 @@ fn set_agent_model(
     }
 }
 
-/// Set what an agent may spend a day, as its keeper: what its field held, in
-/// dollars, or no limit at all where it held nothing.
+/// Set what an agent may spend a day, as its keeper: what its field held, in dollars, or no limit
+/// at all where it held nothing.
 fn set_agent_limit(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
@@ -779,8 +761,7 @@ fn set_agent_colour(
     }
 }
 
-/// Put the workspace in front one place earlier or later among this
-/// device's workspaces.
+/// Put the workspace in front one place earlier or later among this device's workspaces.
 fn move_workspace(handle: &DesktopHandle, step: i32) {
     let mut tree = handle.read(Clone::clone);
     let Some(at) = tree
@@ -803,7 +784,7 @@ fn move_workspace(handle: &DesktopHandle, step: i32) {
     }
 }
 
-/// Everything the sheet shows of `tree` for `person`.
+/// Everything the sheet shows of `tree` for `person` .
 fn settings(
     tree: &DesktopTree,
     person: &UserId,
@@ -835,16 +816,15 @@ fn settings(
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
             permissions(ws, person, &apps)
         }),
-        // The workspace's agents are Chat's record, opened when the tab is
-        // first shown.
+        // The workspace's agents are Chat's record, opened when the tab is first shown.
         agents: if tab == sheet::Tab::Agents {
             agents.pane(tree, person, &names, &apps, review)
         } else {
             sheet::Agents::default()
         },
         apps: workspace.map_or_else(sheet::Apps::default, |ws| apps_pane(ws, person, lists)),
-        // The workspace's emoji are Chat's record, opened when the tab is
-        // first shown and nowhere else: no other tab reads it.
+        // The workspace's emoji are Chat's record, opened when the tab is first shown and nowhere
+        // else: no other tab reads it.
         emoji: if tab == sheet::Tab::Emoji {
             emoji.pane(tree, person, &names)
         } else {
@@ -854,12 +834,11 @@ fn settings(
     }
 }
 
-/// The General tab: the workspace's name and what the person may change of
-/// it, inviting people, the workspace at a glance, which of the person's
-/// devices show it and its place among theirs, and leaving it.
-///
-/// A workspace that is not the person's own has no devices to show it on: it
-/// is theirs only while they are in it.
+/// The General tab: the workspace's name and what the person may change of it, inviting people, the
+/// workspace at a glance, which of the person's devices show it and its place among theirs, and
+/// leaving it.
+/// A workspace that is not the person's own has no devices to show it on: it is theirs only while
+/// they are in it.
 fn general(
     tree: &DesktopTree,
     person: &UserId,
@@ -868,15 +847,14 @@ fn general(
 ) -> sheet::General {
     let workspace = tree.active_workspace();
     let manage = workspace.is_some_and(|workspace| workspace.may_administer(person));
-    // Inviting is the workspace's own grant, not an administrator's part: a
-    // moderator or an editor it lets invite makes a link like anyone else it
-    // allows. The invite sheet asks again when the link is made.
+    // Inviting is the workspace's own grant, not an administrator's part: a moderator or an editor
+    // it lets invite makes a link like anyone else it allows. The invite sheet asks again when the
+    // link is made.
     let invitable = workspace.is_some_and(|workspace| {
         crate::invite::may_invite(engine, &workspace.id().to_string(), person)
     });
-    // What the workspace holds, in the three measures a person acts on: who
-    // is in it, what it gives particular people or apps, and which apps it
-    // opens things with.
+    // What the workspace holds, in the three measures a person acts on: who is in it, what it gives
+    // particular people or apps, and which apps it opens things with.
     let (members, grants, app_rules) = workspace.map_or((0, 0, 0), |workspace| {
         let sandbox = workspace
             .sandbox
@@ -957,11 +935,10 @@ fn general(
     }
 }
 
-/// What leaving and deleting offer here, and why not when they do not:
-/// deleting is for the person's own workspace alone, one nobody else is in
-/// and no other device of theirs holds, so taking it off here takes it
-/// everywhere. Nobody else in it also makes leaving say nothing — there is
-/// nobody it could stay for — so the two trade places.
+/// What leaving and deleting offer here, and why not when they do not: deleting is for the person's
+/// own workspace alone, one nobody else is in and no other device of theirs holds, so taking it off
+/// here takes it everywhere. Nobody else in it also makes leaving say nothing — there is nobody it
+/// could stay for — so the two trade places.
 struct Going {
     sole_member: bool,
     leavable: bool,
@@ -998,8 +975,7 @@ fn going(tree: &DesktopTree, engine: Option<&Engine>) -> Going {
             if sole_member {
                 t("workspace-settings-leave-sole-member")
             } else {
-                // The desk keeps the person one workspace, so the last one is
-                // not theirs to leave.
+                // The desk keeps the person one workspace, so the last one is not theirs to leave.
                 t("workspace-settings-leave-last")
             }
         }),
@@ -1019,8 +995,8 @@ fn not_deletable(reason: crate::engine::NotDeletable) -> String {
     }
 }
 
-/// One of the person's devices as the General tab lists it: named as its
-/// own label names it, the one this session runs on saying so.
+/// One of the person's devices as the General tab lists it: named as its own label names it, the
+/// one this session runs on saying so.
 fn device_row(choice: &DeviceChoice) -> sheet::Device {
     let named = choice.label.trim();
     let label = match (named.is_empty(), choice.here) {
@@ -1044,9 +1020,9 @@ fn device_row(choice: &DeviceChoice) -> sheet::Device {
     }
 }
 
-/// Show the workspace in front on one of the person's devices, or keep it
-/// off there: the choice is written to the person's own list, which their
-/// devices keep in step, and this device honours it at once.
+/// Show the workspace in front on one of the person's devices, or keep it off there: the choice is
+/// written to the person's own list, which their devices keep in step, and this device honours it
+/// at once.
 fn toggle_device(
     handle: &DesktopHandle,
     personal: Option<&RefCell<Personal>>,
@@ -1069,9 +1045,8 @@ fn toggle_device(
     if !shown {
         return personal.set_shown(workspace_id, device, true);
     }
-    // The desk keeps the person one workspace: keeping this device's last
-    // one off it would leave them with none, and the workspace would stay
-    // whatever the choice said.
+    // The desk keeps the person one workspace: keeping this device's last one off it would leave
+    // them with none, and the workspace would stay whatever the choice said.
     if personal.is_this_device(&device) && handle.read(|tree| tree.workspaces.len()) <= 1 {
         return false;
     }
@@ -1084,8 +1059,7 @@ fn device_key(key: &str) -> Option<[u8; 32]> {
     <[u8; 32]>::try_from(bytes).ok()
 }
 
-/// The sheet's tabs, each by the name the strip shows and the shorter one a
-/// narrow sheet uses.
+/// The sheet's tabs, each by the name the strip shows and the shorter one a narrow sheet uses.
 fn tabs() -> Vec<sheet::TabLabel> {
     let short = [
         "workspace-settings-tab-general",
@@ -1170,8 +1144,8 @@ fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People
     }
 }
 
-/// The Privacy & Security tab: the permissions the workspace gives, who
-/// holds each, and the composer giving one more.
+/// The Privacy & Security tab: the permissions the workspace gives, who holds each, and the
+/// composer giving one more.
 fn permissions(
     ws: &Workspace,
     person: &UserId,

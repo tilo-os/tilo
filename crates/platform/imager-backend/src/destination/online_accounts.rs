@@ -498,9 +498,6 @@ impl AccountsController {
     /// Only explicit selected IDs from this session may be transported. Binding
     /// must come from the authenticated install operation/target/user, never an
     /// imported artifact. Adoption belongs to the installed user's login.
-    ///
-    /// # Errors
-    /// Rejects empty or foreign selections and failures reading or sealing custody.
     pub fn stage_selected(
         &mut self,
         selected: &[AccountId],
@@ -529,9 +526,6 @@ impl AccountsController {
     /// Seal selected session accounts under a caller-owned transport key.
     /// The caller must protect the key in authenticated setup custody and use
     /// the same operation/target/user binding when adopting the artifact.
-    ///
-    /// # Errors
-    /// Rejects empty or foreign selections and failures reading or sealing custody.
     pub fn stage_selected_with_key(
         &mut self,
         selected: &[AccountId],

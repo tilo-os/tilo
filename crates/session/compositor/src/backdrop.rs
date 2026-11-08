@@ -42,8 +42,8 @@ use crate::state::State;
 /// The shader each of the blur's two passes runs.
 const SHADER: &str = include_str!("blur.glsl");
 
-/// Pairs of texels one pass reads either side of its centre: the blur
-/// reaches sixteen texels, past the three deviations it stops at.
+/// Pairs of texels one pass reads either side of its centre: the blur reaches sixteen texels, past
+/// the three deviations it stops at.
 const PAIRS: usize = 8;
 
 /// The blur stops halving once its deviation is at most this many texels.
@@ -55,7 +55,7 @@ const MAX_HALVINGS: u32 = 6;
 /// A region a hosted surface draws its material in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BackdropRequest {
-    /// The region, logical `(x, y, width, height)`.
+    /// The region, logical `(x, y, width, height)` .
     pub rect: (f64, f64, f64, f64),
     /// The size of the image it takes, in texels.
     pub texels: (u32, u32),
@@ -63,8 +63,8 @@ pub struct BackdropRequest {
     pub blur: f64,
 }
 
-/// What lies below a [`BackdropRequest`]'s region, blurred: rows of
-/// premultiplied R, G, B, A at its texel size.
+/// What lies below a [`BackdropRequest`]'s region, blurred: rows of premultiplied R, G, B, A at its
+/// texel size.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackdropImage {
     pub rgba: Vec<u8>,
@@ -90,14 +90,12 @@ struct Watch {
     images: Option<Images>,
 }
 
-/// One region's image: what lies below it at the request's texel size, the
-/// halved copies the blur runs on, and the pass the other direction writes.
+/// One region's image: what lies below it at the request's texel size, the halved copies the blur
+/// runs on, and the pass the other direction writes.
 struct Images {
-    /// The texel size of each level: the request's, then each half the one
-    /// before.
+    /// The texel size of each level: the request's, then each half the one before.
     sizes: Vec<(u32, u32)>,
-    /// What lies below, drawn at `sizes[0]` and blurred from `sizes.last()`
-    /// back up to it.
+    /// What lies below, drawn at `sizes[0]` and blurred from `sizes.last()` back up to it.
     levels: Vec<GlesTexture>,
     /// The pass the other direction writes while a level is blurred.
     across: GlesTexture,
@@ -140,8 +138,8 @@ pub(crate) fn draw(
     );
     let Backdrops { program, watches } = &mut state.backdrops;
     let context = context_of(renderer);
-    // A texture is only usable in the context that made it, so a region drawn
-    // on another one starts over.
+    // A texture is only usable in the context that made it, so a region drawn on another one starts
+    // over.
     let fresh = !watches.iter().any(|watch| {
         watch.key == (host, slot) && watch.request == *request && watch.context == context
     });
@@ -186,8 +184,8 @@ pub(crate) fn draw(
     Ok(Some(BackdropImage { rgba, texels }))
 }
 
-/// Halve the image down to the level its deviation is a few texels at, blur
-/// it there, and scale the blur back up to the image's own size.
+/// Halve the image down to the level its deviation is a few texels at, blur it there, and scale the
+/// blur back up to the image's own size.
 fn blur_image(
     renderer: &mut GlesRenderer,
     images: &mut Images,
@@ -252,8 +250,7 @@ fn read_back(
 }
 
 impl dyn crate::Backend {
-    /// Hand every hosted surface that draws translucent material the
-    /// backdrops that changed.
+    /// Hand every hosted surface that draws translucent material the backdrops that changed.
     pub(crate) fn serve_backdrops(&mut self, state: &mut State) {
         let requests: Vec<(usize, Vec<BackdropRequest>)> = state
             .hosts
@@ -296,8 +293,8 @@ impl dyn crate::Backend {
 }
 
 impl Images {
-    /// The textures a request of `texels` takes: its own size, then each
-    /// level half the one before, as many as `halvings` says.
+    /// The textures a request of `texels` takes: its own size, then each level half the one before,
+    /// as many as `halvings` says.
     fn new(
         renderer: &mut GlesRenderer,
         texels: (u32, u32),
@@ -336,8 +333,8 @@ fn texture(
         .map_err(|error| BackendError(format!("backdrop image: {error:?}")))
 }
 
-/// How many times a backdrop of `sigma` texels is halved before it is
-/// blurred, and its size along the way.
+/// How many times a backdrop of `sigma` texels is halved before it is blurred, and its size along
+/// the way.
 fn halvings(sigma: f64, (columns, rows): (u32, u32)) -> u32 {
     let mut halvings = 0;
     while sigma > 0.0
@@ -351,8 +348,8 @@ fn halvings(sigma: f64, (columns, rows): (u32, u32)) -> u32 {
     halvings
 }
 
-/// The taps of a Gaussian of `sigma` texels: the centre texel's weight, then
-/// each pair's, the pair weighing the two texels one fetch reads.
+/// The taps of a Gaussian of `sigma` texels: the centre texel's weight, then each pair's, the pair
+/// weighing the two texels one fetch reads.
 fn taps(sigma: f64) -> [f32; PAIRS + 1] {
     let gauss = |d: f64| (-(d * d) / (2.0 * sigma * sigma)).exp();
     let mut taps = [0.0_f32; PAIRS + 1];
@@ -368,8 +365,8 @@ fn taps(sigma: f64) -> [f32; PAIRS + 1] {
         *tap = weight as f32;
         total += weight * sides;
     }
-    // Whatever the truncation left out, the taps divide the light between
-    // them: both sides of the centre read the same taps.
+    // Whatever the truncation left out, the taps divide the light between them: both sides of the
+    // centre read the same taps.
     if total > 0.0 {
         for tap in &mut taps {
             *tap = (f64::from(*tap) / total) as f32;
@@ -389,7 +386,7 @@ fn uniform_names() -> Vec<UniformName<'static>> {
     names
 }
 
-/// Draw what lies below `elements` into `target`, over the wallpaper.
+/// Draw what lies below `elements` into `target` , over the wallpaper.
 fn draw_below<E>(
     renderer: &mut GlesRenderer,
     elements: &[E],
@@ -428,9 +425,9 @@ fn blur_pass(
     resample(renderer, source, target, Some(program), &uniforms)
 }
 
-/// Draw the level `low` onto the level `high`, scaling it as it goes: the
-/// texture's linear filter averages the texels it covers, so halving is the
-/// box average it should be and doubling interpolates back.
+/// Draw the level `low` onto the level `high` , scaling it as it goes: the texture's linear filter
+/// averages the texels it covers, so halving is the box average it should be and doubling
+/// interpolates back.
 fn scale_between(
     renderer: &mut GlesRenderer,
     images: &mut Images,
@@ -455,8 +452,8 @@ fn scale_between(
     }
 }
 
-/// Draw all of `source` over all of `target` with `program`, or the plain
-/// texture shader when there is none, reading it edge-clamped.
+/// Draw all of `source` over all of `target` with `program` , or the plain texture shader when
+/// there is none, reading it edge-clamped.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "a frame ends by finishing, which hands the graphics context back"
@@ -510,8 +507,8 @@ fn resample(
             uniforms,
         )
         .map_err(|error| BackendError(format!("draw a backdrop level: {error:?}")))?;
-    // The passes that follow draw into the same context, so they see this
-    // one's work without waiting for the GPU: the fence goes unused.
+    // The passes that follow draw into the same context, so they see this one's work without
+    // waiting for the GPU: the fence goes unused.
     let _fence = frame
         .finish()
         .map_err(|error| BackendError(format!("finish a backdrop level: {error:?}")))?;

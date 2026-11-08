@@ -62,7 +62,7 @@ impl CacheKey {
     }
 }
 
-/// [`CacheKey::digest`]: names a tool in the local index and the catalog.
+/// [`CacheKey::digest`] — names a tool in the local index and the catalog.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct KeyDigest(pub [u8; 32]);
 

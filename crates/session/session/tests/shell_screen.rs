@@ -1,11 +1,10 @@
-//! The tilolang shell as the whole screen of the native session (headless backend): the
-//! shell's arrangement root stands over every display, its bar, its dock and the person's
-//! arrangement as their preset shows it, every window drawn in its place's well.
-//!
-//! A note goes onto the canvas through the arrangement's published `place`, as an agent puts
-//! it there. The preset changes through the shell's own `show_preset`, which the preset switch
-//! over the arrangement runs. What stands on screen is read from what the shell lays out for
-//! assistive technology, never from pixels.
+//! The tilolang shell as the whole screen of the native session (headless backend): the shell's
+//! arrangement root stands over every display, its bar, its dock and the person's arrangement as
+//! their preset shows it, every window drawn in its place's well.
+//! A note goes onto the canvas through the arrangement's published `place` , as an agent puts it
+//! there. The preset changes through the shell's own `show_preset` , which the preset switch over
+//! the arrangement runs. What stands on screen is read from what the shell lays out for assistive
+//! technology, never from pixels.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -29,8 +28,8 @@ use common::{
     show_preset, until,
 };
 
-/// What the strips show of a desk holding no window: their own empty state, which no other
-/// surface of the desk shows.
+/// What the strips show of a desk holding no window: their own empty state, which no other surface
+/// of the desk shows.
 const NO_WINDOW: &str = "No window here yet";
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
@@ -44,27 +43,25 @@ fn session() -> (Session, String) {
     (session, notes.into_iter().next().unwrap())
 }
 
-/// The session with the shell, on one display `width` by `height`, and the notes [`notebook`]
+/// The session with the shell, on one display `width` by `height` , and the notes [`notebook`]
 /// keeps.
 fn session_at(width: i32, height: i32) -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, height)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
             services: vec![Box::new(notebook)],
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", width, height)],
-    )
-    .expect("session");
+    );
     (session, notes)
 }
 
-/// Place `resource` on the canvas of the workspace in front, through the arrangement's
-/// published `place`.
+/// Place `resource` on the canvas of the workspace in front, through the arrangement's published
+/// `place` .
 fn place(session: &mut Session, resource: &str) -> u64 {
     let (workspace, row, strip, place) = {
         let tree = session.handle().read(Clone::clone);
@@ -96,8 +93,8 @@ fn place(session: &mut Session, resource: &str) -> u64 {
     place
 }
 
-/// The whole screen: the bar's controls stand on it, the preset changes what stands there, and
-/// a note placed on the canvas stands on it as the notes app draws it.
+/// The whole screen: the bar's controls stand on it, the preset changes what stands there, and a
+/// note placed on the canvas stands on it as the notes app draws it.
 #[test]
 fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     let _settled = ui::motion::testing::settled();
@@ -119,9 +116,9 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
         (i64::from(WIDTH), i64::from(HEIGHT)),
         "the shell covers the display"
     );
-    // Showing the desk as the framed canvas is the shell's own action, which the preset
-    // switch over the arrangement runs. The canvas's entry (typed text finds something and
-    // places it on the canvas) stands on it; the strips have none.
+    // Showing the desk as the framed canvas is the shell's own action, which the preset switch over
+    // the arrangement runs. The canvas's entry (typed text finds something and places it on the
+    // canvas) stands on it; the strips have none.
     assert!(
         on_screen(&session, CANVAS_ENTRY).is_none(),
         "the strips stand first, not the canvas"
@@ -132,8 +129,8 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     });
     let entry = on_screen(&session, CANVAS_ENTRY).unwrap();
 
-    // A note placed through the arrangement stands on the canvas, drawn by its app: its title
-    // on screen, under the canvas's entry.
+    // A note placed through the arrangement stands on the canvas, drawn by its app: its title on
+    // screen, under the canvas's entry.
     place(&mut session, &note);
     let shown = shown_as(&session, NOTE_TITLE);
     until(&mut session, "the note's title on the canvas", |session| {
@@ -146,9 +143,9 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     );
 }
 
-/// The overview, run as the touchpad's pinch, the overview's key and an agent run it (the
-/// chrome's published `overview`, through the door), is the shell's own on the shell's screen:
-/// its view stands in what the shell lays out, and the same action closes it again.
+/// The overview, run as the touchpad's pinch, the overview's key and an agent run it (the chrome's
+/// published `overview` , through the door), is the shell's own on the shell's screen: its view
+/// stands in what the shell lays out, and the same action closes it again.
 #[test]
 fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
     let _settled = ui::motion::testing::settled();
@@ -184,9 +181,9 @@ fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
     });
 }
 
-/// What the chrome and the desk ask for shows on the shell: the bell, the status and the
-/// workspace menu are the shell's notice centre, quick settings and workspaces, and the desk's
-/// search is the shell's launcher — with what the person asked for, when a query comes with it.
+/// What the chrome and the desk ask for shows on the shell: the bell, the status and the workspace
+/// menu are the shell's notice centre, quick settings and workspaces, and the desk's search is the
+/// shell's launcher — with what the person asked for, when a query comes with it.
 #[test]
 fn the_chromes_actions_show_the_shells_surfaces() {
     let _settled = ui::motion::testing::settled();
@@ -204,8 +201,8 @@ fn the_chromes_actions_show_the_shells_surfaces() {
             .invoke(CHROME, action, &Map::new())
             .unwrap_or_else(|error| panic!("{action} shows {surface}: {error:?}"));
         until(&mut session, surface, |session| here(session) == surface);
-        // The surface is up in the shell's own state; what it draws is read once it has
-        // laid itself out, which is the same wait as every other one here.
+        // The surface is up in the shell's own state; what it draws is read once it has laid itself
+        // out, which is the same wait as every other one here.
         until(
             &mut session,
             &format!("{action} drawing {shown}"),
@@ -310,9 +307,9 @@ fn active_workspace(session: &Session) -> String {
         .expect("a workspace is in front")
 }
 
-/// On a laptop's display and a phone's, the bar's switch between the presets and the strips
-/// under it stand apart, and every note placed on the desk, one strip each, stands on the
-/// display once placed: the desk shows what just arrived on it.
+/// On a laptop's display and a phone's, the bar's switch between the presets and the strips under
+/// it stand apart, and every note placed on the desk, one strip each, stands on the display once
+/// placed: the desk shows what just arrived on it.
 #[test]
 fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_screen() {
     for (width, height) in [(WIDTH, HEIGHT), (390, 844)] {
@@ -355,10 +352,10 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
 }
 
 /// A note placed in the strips preset stands as a window of the desk's height, and the body the
-/// notes app draws in it has room of its own: its title field and its running text are laid out
-/// a whole line tall, under the window's bar, rather than flat. A view that says `fill` fills
-/// the slot it is put in, for a described component's body as for a `stack`'s, so no shell
-/// writes a height to make a place's app the window's.
+/// notes app draws in it has room of its own: its title field and its running text are laid out a
+/// whole line tall, under the window's bar, rather than flat. A view that says `fill` fills the
+/// slot it is put in, for a described component's body as for a `stack` 's, so no shell writes a
+/// height to make a place's app the window's.
 #[test]
 fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
     let _settled = ui::motion::testing::settled();
@@ -379,8 +376,8 @@ fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
         "the placed window is the desk's height, not a line: {window:?}"
     );
 
-    // The notes app's own body: its title field and the running text under it, each a whole
-    // line tall and standing inside its window.
+    // The notes app's own body: its title field and the running text under it, each a whole line
+    // tall and standing inside its window.
     let title = until_bounds(&mut session, "Untitled");
     let body = until_bounds(&mut session, "Block text");
     for (what, rect) in [("title", title), ("body", body)] {
@@ -396,8 +393,8 @@ fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
             "the note's {what} stands inside its window: {rect:?} in {window:?}"
         );
     }
-    // Under the window's bar: the bar is its tabs and the controls, and the app's body stands
-    // below it rather than on its line.
+    // Under the window's bar: the bar is its tabs and the controls, and the app's body stands below
+    // it rather than on its line.
     let controls = on_screen(&session, "This window").expect("the window's controls stand");
     assert!(
         title.1 >= controls.1 + controls.3,
@@ -413,8 +410,8 @@ fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
     );
 }
 
-/// Where the control or text `name` of the shell stands, once the app showing it has laid it
-/// out: where it stands on the display, and how tall it is.
+/// Where the control or text `name` of the shell stands, once the app showing it has laid it out:
+/// where it stands on the display, and how tall it is.
 fn until_bounds(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
     let mut found = None;
     until(session, name, |session| {
@@ -426,8 +423,8 @@ fn until_bounds(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
     found.expect("the app's control stands in the shell's tree")
 }
 
-/// Where the switch between the presets stands: the bar's own menu, which names the preset the
-/// desk shows (`showing`).
+/// Where the switch between the presets stands: the bar's own menu, which names the preset the desk
+/// shows (`showing`).
 fn preset_switch(session: &Session, showing: &str) -> (f64, f64, f64, f64) {
     session
         .shell_control(&format!("Showing {showing}"))
@@ -461,9 +458,9 @@ fn here(session: &Session) -> String {
 /// The overview's heading: the overview's own, which no other view of the desk shows.
 const OVERVIEW: &str = "Overview";
 
-/// The name the shell shows a window placed under `title` by: the session resolves it once —
-/// the window's own title and its app's name — and every surface that names a window takes it
-/// from there, so the tests read the name off the same answer they assert on.
+/// The name the shell shows a window placed under `title` by: the session resolves it once — the
+/// window's own title and its app's name — and every surface that names a window takes it from
+/// there, so the tests read the name off the same answer they assert on.
 fn shown_as(session: &Session, title: &str) -> String {
     let reading = session.arrangement().borrow().reading();
     reading
@@ -476,8 +473,8 @@ fn shown_as(session: &Session, title: &str) -> String {
         )
 }
 
-/// Where the shell's control named `name` stands, when the whole of it is on a display `width`
-/// by `height` (not only part of it, as [`on_screen`] asks).
+/// Where the shell's control named `name` stands, when the whole of it is on a display `width` by
+/// `height` (not only part of it, as [`on_screen`] asks).
 fn within(session: &Session, name: &str, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
     session.shell_control(name).filter(|&(x, y, w, h)| {
         w > 0.0
@@ -494,28 +491,23 @@ fn intersects(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
     a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
 }
 
-/// The session with the shell on a device whose every id sits above `i64::MAX`: the salt is the
+/// The session with the shell on a device whose every id sits above `i64::MAX` : the salt is the
 /// top of an id's high bits, so no place, strip or row fits an integer.
 fn salted_session() -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            salt: 0x8000,
-            services: vec![Box::new(notebook)],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        salt: 0x8000,
+        services: vec![Box::new(notebook)],
+        ..Options::default()
+    });
     (session, notes)
 }
 
-/// Place `resource` on the surface in front, as activating a reference in a view does: the
-/// desk's own workspace, row, strip and place ids, minted on this device. The place's id.
+/// Place `resource` on the surface in front, as activating a reference in a view does: the desk's
+/// own workspace, row, strip and place ids, minted on this device. The place's id.
 fn place_here(session: &mut Session, resource: &str) -> u64 {
     let before: Vec<String> = common::places(session)
         .iter()
@@ -546,8 +538,8 @@ fn place_here(session: &mut Session, resource: &str) -> u64 {
     )
 }
 
-/// An empty strip called `name` in the row in front: what the person makes by dragging one out.
-/// Its id, which is its row's.
+/// An empty strip called `name` in the row in front: what the person makes by dragging one out. Its
+/// id, which is its row's.
 fn add_strip(session: &Session, name: &str) -> u64 {
     let handle = session.handle();
     let mut tree = handle.read(Clone::clone);
@@ -572,7 +564,7 @@ fn place_row(session: &Session, place: u64) -> Option<u64> {
     common::strip_of(session, place).map(|strip| common::number(&strip.row))
 }
 
-/// The width of the strip `strip`, in per-mille of its row.
+/// The width of the strip `strip` , in per-mille of its row.
 fn strip_width(session: &Session, strip: u64) -> Option<u32> {
     common::strip(session, strip)
         .map(|strip| u32::try_from(strip.width).expect("a width of per-mille fits its count"))
@@ -600,7 +592,7 @@ fn keep(session: &mut Session, name: &str) {
 }
 
 /// The strip and place controls press the place they name, on a device whose every id is above
-/// `i64::MAX`: a key read as a number reaches nothing of this desk.
+/// `i64::MAX` : a key read as a number reaches nothing of this desk.
 #[test]
 fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     let _settled = ui::motion::testing::settled();
@@ -674,9 +666,9 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
 
 /// Two places in one strip: the strips preset shows a strip of several places as its tab strip
 /// (shell.md §2), and every way to make one — a place moved into another strip from the window's
-/// menu, a found resource opened into it — is an arranging action the person, the REPL and an
-/// agent call alike, attributed and undone as one step. Choosing a tab shows its place, and
-/// closing a tab takes that place off the strip and nothing else.
+/// menu, a found resource opened into it — is an arranging action the person, the REPL and an agent
+/// call alike, attributed and undone as one step. Choosing a tab shows its place, and closing a tab
+/// takes that place off the strip and nothing else.
 #[test]
 fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
     let _settled = ui::motion::testing::settled();
@@ -697,9 +689,9 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
         "each place was made in a strip of its own"
     );
 
-    // The person moves the first place into the second one's strip from the first window's
-    // menu: the arranging action's `strip`, which is what a drag onto another strip means. The
-    // window in front is the one the person is working in, so its menu is the one that stands.
+    // The person moves the first place into the second one's strip from the first window's menu:
+    // the arranging action's `strip` , which is what a drag onto another strip means. The window in
+    // front is the one the person is working in, so its menu is the one that stands.
     let one_name = shown_as(&session, TITLES[0]);
     let two_name = shown_as(&session, TITLES[1]);
     until(&mut session, "the window's controls", |session| {
@@ -724,8 +716,8 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
         .collect();
     assert_eq!(placed.len(), 2, "the strip holds both places: {placed:?}");
 
-    // The strip shows its tabs: both titles stand in its one bar, and the place moved in is the
-    // one in front.
+    // The strip shows its tabs: both titles stand in its one bar, and the place moved in is the one
+    // in front.
     until(&mut session, "both tab titles", |session| {
         on_screen(session, &one_name).is_some() && on_screen(session, &two_name).is_some()
     });
@@ -763,9 +755,9 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
     });
 }
 
-/// A resource a text finds opens into the strip in front as its tab, through the arranging
-/// action the launcher's "Open as a tab" runs (`place-found` with the strip named): one step of
-/// the person's, the same an agent or the REPL makes.
+/// A resource a text finds opens into the strip in front as its tab, through the arranging action
+/// the launcher's "Open as a tab" runs (`place-found` with the strip named): one step of the
+/// person's, the same an agent or the REPL makes.
 #[test]
 fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
     let _settled = ui::motion::testing::settled();
@@ -820,10 +812,10 @@ fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
 
 /// A place arriving on the desk is drawn over the frames between rather than switching in one
 /// frame: the shell's windows are components that come in themselves (`motion::Placed` over
-/// `WindowMotion::OPEN`), so what the person sees is the window arriving. The frame-by-frame
-/// proof that it reaches its place and then asks for no frames is the component's own
-/// (`widget::window_frame`), where "no frames requested" is exact; here the shell screen shows
-/// the window changing from one frame to the next as it comes in.
+/// `WindowMotion::OPEN` ), so what the person sees is the window arriving. The frame-by-frame proof
+/// that it reaches its place and then asks for no frames is the component's own
+/// (`widget::window_frame`), where "no frames requested" is exact; here the shell screen shows the
+/// window changing from one frame to the next as it comes in.
 #[test]
 fn a_place_arrives_over_the_frames_between() {
     let (mut session, notes) = session_at(WIDTH, HEIGHT);
@@ -857,10 +849,10 @@ fn a_place_arrives_over_the_frames_between() {
     keep(&mut session, "motion-place-arrived");
 }
 
-/// An app the desk opens stands on the framed canvas: the canvas draws a window group by the
-/// place the arrangement holds for it, so a group the desk launched with no place of its own is
-/// a window the person opened and never sees. The desk gives every group it holds a place, and
-/// the opened app's window is on screen.
+/// An app the desk opens stands on the framed canvas: the canvas draws a window group by the place
+/// the arrangement holds for it, so a group the desk launched with no place of its own is a window
+/// the person opened and never sees. The desk gives every group it holds a place, and the opened
+/// app's window is on screen.
 #[test]
 fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
     let _settled = ui::motion::testing::settled();
@@ -909,8 +901,8 @@ fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
         "every window the desk holds stands on the canvas: {:?}",
         common::places(&session)
     );
-    // And the shell lays the window's frame on the display, not off it: the place's name is
-    // what a window's frame is called, and the canvas draws it where its point is.
+    // And the shell lays the window's frame on the display, not off it: the place's name is what a
+    // window's frame is called, and the canvas draws it where its point is.
     let name = common::places(&session)
         .first()
         .map(|place| place.name.clone())

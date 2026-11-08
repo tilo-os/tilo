@@ -14,10 +14,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 
-use registry_server::{
-    AppState, BundleReviewError, InspectionPolicy, ServerIdentity, Storage, bind_and_run,
-};
-use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion};
+use registry_server::{AppState, BundleReviewError, InspectionPolicy, Storage, bind_and_run};
+
+use registry_types::RegistryEntry;
 use tilo_app_package::chunks::{self, ChunkList};
 use tilo_app_package::{BlobFetcher, BlobHash, Manifest, SigningIdentity, pack};
 
@@ -108,40 +107,27 @@ fn publish(
     let split = chunks::split_with_chunk_bytes(full.as_slice(), &objects, CHUNK).unwrap();
     let thin = tilo_app_package::tapp::to_bytes(&split.meta, None).unwrap();
     std::fs::write(objects.join("package.tapp"), &thin).unwrap();
-    let entry = RegistryEntry {
-        package_id: manifest.package.id.clone(),
-        kind: registry_types::EntryKind::App,
+    let entry = registry_types::RegistryEntry {
         name: "Runtime".into(),
         description: "Shared runtime".into(),
         tagline: "Shared".into(),
-        images: registry_types::LocalizedImages::english_icon(
-            "https://apps.tilo.so/images/test-icon.svg",
-            "Test icon",
-        ),
-        supported_languages: vec!["en".into()],
         categories: vec!["Developer Tools".into()],
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: hex::encode(identity.public_key_bytes()),
-        versions: vec![RegistryVersion {
-            version: manifest.package.version.clone(),
-            released_at_unix: 1,
-            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                tapp_url: format!("{base_url}/package.tapp"),
-                tapp_root_hash_hex: split.meta.id.to_hex(),
-                tapp_size_bytes: thin.len() as u64,
-                tapp_blake3_hex: blake3::hash(&thin).to_hex().to_string(),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: manifest.package.native_runtime_binding().map(str::to_owned),
-                    interfaces: Vec::new(),
-                },
-            }),
-        }],
-        updated_at_unix: 1,
-        signature_hex: String::new(),
+        versions: vec![crate::support::version(
+            &manifest.package.version,
+            1,
+            crate::support::tapp(
+                format!("{base_url}/package.tapp"),
+                split.meta.id.to_hex(),
+                thin.len() as u64,
+                blake3::hash(&thin).to_hex().to_string(),
+                manifest.package.native_runtime_binding().map(str::to_owned),
+            ),
+        )],
+        ..crate::support::entry(
+            &manifest.package.id,
+            hex::encode(identity.public_key_bytes()),
+            Vec::new(),
+        )
     };
     Published {
         entry,
@@ -308,12 +294,7 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
         storage
             .save_payload_blobs(&std::fs::read(published.objects.join("package.tapp")).unwrap())
             .unwrap();
-        let identity_record = ServerIdentity {
-            owner_pubkey_hex: "00".repeat(32),
-            name: "test".into(),
-            description: "test".into(),
-            base_url: "http://127.0.0.1".into(),
-        };
+        let identity_record = crate::support::identity("00".repeat(32), "http://127.0.0.1");
         let addr = bind_and_run(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             AppState::new(storage.clone(), identity_record),

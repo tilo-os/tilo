@@ -29,9 +29,6 @@ pub type AuthorityWatch = Box<dyn std::any::Any + Send>;
 /// Letting go needs no help from the host: when its hold (the writable
 /// descriptor the file was published through) closes, on exit or a crash
 /// as much as on a withdrawal, the kernel reports that close.
-///
-/// # Errors
-/// When the directory holding `path` cannot be watched.
 pub fn watch(path: &Path, changed: impl Fn() + Send + 'static) -> Result<AuthorityWatch, String> {
     #[cfg(feature = "native")]
     {

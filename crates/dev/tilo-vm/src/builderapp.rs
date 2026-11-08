@@ -124,9 +124,6 @@ fn inspect(path: &Path, dir: &str, source_digest: String) -> Result<PackedApp, C
 }
 
 /// Package on the builder, using the same build and signer as the host path.
-///
-/// # Errors
-/// Unknown applications, failed builds, invalid package identity, or I/O.
 pub fn pack(dir: &str, inventory: &Path) -> Result<(), CliError> {
     let root = std::env::current_dir().map_err(CliError::io("find app worktree"))?;
     let source_digest = crate::source_inputs::verify(&root, inventory)?;

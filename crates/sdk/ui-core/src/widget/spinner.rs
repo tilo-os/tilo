@@ -176,7 +176,9 @@ impl Widget for Spinner {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        self.reduce_motion = !theme.motion().loops();
+        // A capture pins the wall clock to draw the same frame every run: the
+        // orbit then rests where it starts, as it does under reduced motion.
+        self.reduce_motion = !theme.motion().loops() || crate::time::wall_frozen();
         let now = crate::time::now();
         let step = Some(self.step_at(now));
         self.stepped |= self.drawn_step != step;
@@ -233,10 +235,19 @@ impl Widget for Spinner {
     }
 
     /// In the normal presentation the default would freeze the orbit at the
-    /// first frame. In a reduced-motion presentation the orbit is deliberately
-    /// static, so requesting frames would only waste power.
+    /// first frame. In a reduced-motion presentation, and on a capture's frozen
+    /// clock, the orbit is deliberately static, so requesting frames would only
+    /// waste power — and a window laid out without a paint, as a capture lays
+    /// it out, would wait on it forever.
     fn needs_animation_frame(&self) -> bool {
-        !self.reduce_motion
+        !self.reduce_motion && !crate::time::wall_frozen()
+    }
+
+    /// The framework delivers the motion policy before it asks for a frame, so
+    /// a spinner built after the theme was applied holds still without waiting
+    /// to learn it from a paint.
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.reduce_motion = reduced;
     }
 
     /// Only a new step changes what the spinner paints: frames between
@@ -448,6 +459,36 @@ mod tests {
                 "switching back to normal motion must restore spinner animation"
             );
         }
+    }
+
+    #[test]
+    fn a_still_spinner_asks_for_no_frames() {
+        // A window laid out without a paint — a layout check staging a screen —
+        // asks whether a widget moves before it draws any: the framework's
+        // policy answers for a spinner that was never painted.
+        let mut reduced = Spinner::new();
+        reduced.set_motion_reduced(true);
+        assert!(
+            !Widget::needs_animation_frame(&reduced),
+            "reduced motion holds the orbit still"
+        );
+
+        // A capture pins the wall clock so every shot shows the same frame; the
+        // orbit then rests where it starts and the spinner stops asking for
+        // frames.
+        let at = crate::clock::capture_wall().expect("the capture time exists in this zone");
+        crate::time::testing::with_wall(at, || {
+            assert!(crate::time::wall_frozen());
+            assert!(
+                !Widget::needs_animation_frame(&Spinner::new()),
+                "a capture's clock holds the orbit still"
+            );
+        });
+
+        assert!(
+            Widget::needs_animation_frame(&Spinner::new()),
+            "a live spinner's orbit moves"
+        );
     }
 
     fn draw_path_data(s: &mut Spinner, reduce_motion: bool) -> Vec<u32> {

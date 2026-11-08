@@ -41,9 +41,6 @@ impl ExternalBroker {
     /// recipients and keep observing Added and native SMS property changes.
     /// The supplied adapter owns the pinned bus/modem/SIM; there is no ambient
     /// discovery. Unknown recipients receive no fabricated association.
-    /// # Errors
-    /// Refuses another service/owner, stale native custody, missing worker,
-    /// excessive native inbox or non-durable initial persistence.
     pub async fn start_sms_receiver(&self) -> Result<SmsReceiveGuard, SendError> {
         if self.owner.service != crate::Service::Sms {
             return Err(SendError::Unavailable);

@@ -66,8 +66,8 @@ pub(super) struct Running {
     pub(super) produced: Vec<String>,
     /// The app whose step made each of [`Self::produced`], in step.
     pub(super) produced_by: Vec<String>,
-    /// What the task's steps answered, oldest first, at most
-    /// [`MOST_OBSERVED`]: what the task is planned again with.
+    /// What the task's steps answered, oldest first, at
+    /// most [`MOST_OBSERVED`]: what the task is planned again with.
     pub(super) observed: VecDeque<Observed>,
     /// The failed steps it was planned around: a model's slip (an argument
     /// out of range, a stale target) is fixed rather than ending the task,

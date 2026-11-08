@@ -720,10 +720,6 @@ pub trait LocalModelBackend {
     fn partial_size(&self, artifact: &PinnedArtifact) -> Result<u64, ProvisionError>;
 
     /// Resume downloading an artifact from a previously persisted byte offset.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transfer cannot be resumed.
     fn resume_download(
         &mut self,
         artifact: &PinnedArtifact,
@@ -737,31 +733,15 @@ pub trait LocalModelBackend {
     fn sha256_of_partial(&self, artifact: &PinnedArtifact) -> Result<String, ProvisionError>;
 
     /// Atomically promote a verified artifact to its installed location.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the verified artifact cannot be promoted.
     fn promote_verified(&mut self, artifact: &PinnedArtifact) -> Result<(), ProvisionError>;
 
     /// Install a pinned runtime release.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the runtime cannot be installed.
     fn install_runtime(&mut self, runtime: &RuntimeRelease) -> Result<(), ProvisionError>;
 
     /// Install a verified model release.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the model cannot be installed.
     fn install_model(&mut self, model: &LocalModelRelease) -> Result<(), ProvisionError>;
 
     /// Start the model service with the typed, loopback-only launch request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the model service cannot be started.
     fn start_vllm(&mut self, launch: VllmLaunch) -> Result<LocalEndpoint, ProvisionError>;
 }
 

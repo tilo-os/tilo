@@ -28,9 +28,6 @@ pub fn notebook(doc: &AutoCommit) -> Notebook {
 }
 
 /// Whether `doc` reads as a notebook.
-///
-/// # Errors
-/// Says why it does not.
 pub fn validate(doc: &AutoCommit) -> Result<(), String> {
     Notebook::read(doc)
         .map(drop)
@@ -38,9 +35,6 @@ pub fn validate(doc: &AutoCommit) -> Result<(), String> {
 }
 
 /// The notebook `doc` holds as the window shows it, or why it does not read.
-///
-/// # Errors
-/// Says why `doc` does not read as a notebook.
 pub fn project(doc: &AutoCommit) -> Result<Workspace, String> {
     let notebook = Notebook::read(doc).map_err(|error| error.to_string())?;
     Ok(Workspace::of(&notebook, &Workspace::default()))

@@ -11,9 +11,6 @@ use ui::tilo_resource::Effect;
 
 /// Parse hexadecimal bytes as a person writes them: `ff`, `0xFF`,
 /// `de ad be ef`, `DE-AD`. An empty text is no bytes.
-///
-/// # Errors
-/// Names what is not hexadecimal bytes.
 pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
     let text = text.trim();
     let text = text

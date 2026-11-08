@@ -40,9 +40,6 @@ pub(crate) struct Revision {
 
 impl Revision {
     /// The revision on disk now.
-    ///
-    /// # Errors
-    /// Returns an error when a file exists but cannot be inspected.
     pub(crate) fn of(storage: &Storage) -> Result<Self, StorageError> {
         Ok(Self {
             snapshot: FileStamp::at(&storage.snapshot_path())?,
@@ -228,10 +225,6 @@ pub(crate) struct Catalogue {
 
 impl Catalogue {
     /// The catalogue of the revision on disk.
-    ///
-    /// # Errors
-    /// Returns an error when the published files cannot be read or the
-    /// blocking pool is gone.
     pub(crate) async fn current(
         &self,
         storage: &Storage,

@@ -91,10 +91,6 @@ pub fn render_still(project: &Project, frame: &AgentFrameSettings) -> Result<Vec
 /// title raster build, and the fonts, are made: a helper does this before
 /// it confines itself, after which it loads no code, compiles no shader and
 /// opens no font.
-///
-/// # Errors
-///
-/// There is no GPU.
 pub fn warm_up(width: u32, height: u32) -> Result<(), String> {
     let mut compositor = crate::gpu::HeadlessCompositor::new()
         .map_err(|error| format!("the render helper has no GPU: {error}"))?;

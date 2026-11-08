@@ -1,15 +1,12 @@
-//! A refused write reaches its author, in a workspace of two people's at a
-//! site: the owner takes a member's write permission away, the member edits
-//! their desk, and the workspace's device refuses the change. The member's own
-//! activity feed names the change, the device it is not on, and why; the
-//! owner's replica never holds it; and when the member may write again, the
-//! change lands and the verdict goes.
-//!
-//! The desk record the member writes is the one their own device founds: a
-//! device writes the shared desk it holds, and a record a workspace holds but
-//! has not sent to this device is not one it writes over. What the site's
-//! device then refuses, clears and files is the same for a record any device
-//! founded.
+//! A refused write reaches its author, in a workspace of two people's at a site: the owner takes a
+//! member's write permission away, the member edits their desk, and the workspace's device refuses
+//! the change. The member's own activity feed names the change, the device it is not on, and why;
+//! the owner's replica never holds it; and when the member may write again, the change lands and
+//! the verdict goes.
+//! The desk record the member writes is the one their own device founds: a device writes the shared
+//! desk it holds, and a record a workspace holds but has not sent to this device is not one it
+//! writes over. What the site's device then refuses, clears and files is the same for a record any
+//! device founded.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -25,20 +22,19 @@
 
 mod common;
 
-// A site admits its members' records through an Automerge worker: this binary
-// is that worker, as the session's own is.
+// A site admits its members' records through an Automerge worker: this binary is that worker, as
+// the session's own is.
 tilo_automerge_isolate::test_worker!();
 
 use common::people::{Device, Person, Site};
 use serde_json::{Value, json};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
-/// The app whose window the people here open on their desks: a note, as a
-/// package's window is one.
+/// The app whose window the people here open on their desks: a note, as a package's window is one.
 const NOTES: &str = "so.tilo.notes";
 
-/// The desk's own action that brings a workspace to the front, by its key:
-/// the session's `session:desk`, whose reading is the surface the desk shows.
+/// The desk's own action that brings a workspace to the front, by its key: the session's
+/// `session:desk` , whose reading is the surface the desk shows.
 const SWITCH_WORKSPACE: &str = "session:desk\u{1f}switch-workspace";
 
 /// How many windows the workspace's shared desk holds, as the site keeps it.
@@ -52,8 +48,8 @@ fn windows(site: &Site) -> usize {
     })
 }
 
-/// Bring the workspace `site` serves to the front on `device`'s desk, so the
-/// app it opens is a window of that workspace's shared desk.
+/// Bring the workspace `site` serves to the front on `device` 's desk, so the app it opens is a
+/// window of that workspace's shared desk.
 fn show(device: &Device, site: &Site) {
     let state = device.state();
     let key = state["state"]["held_workspaces"]
@@ -84,16 +80,15 @@ fn show(device: &Device, site: &Site) {
     );
 }
 
-/// Open a note on `device`'s desk, as the person at it does: a window of the
-/// workspace it shows, and so a change of the workspace's shared desk, which
-/// the workspace's device admits or refuses. The window stays up while the
-/// value lives.
+/// Open a note on `device` 's desk, as the person at it does: a window of the workspace it shows,
+/// and so a change of the workspace's shared desk, which the workspace's device admits or refuses.
+/// The window stays up while the value lives.
 fn open(device: &Device, title: &str) -> common::window::Client {
     device.window(NOTES, title)
 }
 
-/// The workspace's activity as `device` reads it now: its changes, each with
-/// the devices that refused it.
+/// The workspace's activity as `device` reads it now: its changes, each with the devices that
+/// refused it.
 fn feed(device: &Device) -> Value {
     let started = device.act("tilo.activity", "workspace.activity\u{1f}feed", &json!({}));
     let number = started["answer"]["receipt"]["broker_invocation_id"]
@@ -128,9 +123,8 @@ fn refusals(device: &Device) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// Wait until `condition` holds, and if it never does, fail with what the
-/// devices logged and what the site's desk holds: a refusal that reaches
-/// nobody says why in the session's log.
+/// Wait until `condition` holds, and if it never does, fail with what the devices logged and what
+/// the site's desk holds: a refusal that reaches nobody says why in the session's log.
 fn waited(what: &str, site: &Site, devices: &[&Device], mut condition: impl FnMut() -> bool) {
     let deadline = tilo_test_env::hang_deadline();
     while !condition() {
@@ -159,8 +153,8 @@ fn waited(what: &str, site: &Site, devices: &[&Device], mut condition: impl FnMu
     }
 }
 
-/// The windows `device` shows on `site`'s workspace, by title: the desk it
-/// reads out of the workspace's shared desktop record.
+/// The windows `device` shows on `site` 's workspace, by title: the desk it reads out of the
+/// workspace's shared desktop record.
 fn titles_on(device: &Device, site: &Site) -> Vec<String> {
     let state = device.state();
     let tree: tilo_desktop_model::DesktopTree =
@@ -180,16 +174,15 @@ fn titles_on(device: &Device, site: &Site) -> Vec<String> {
     titles
 }
 
-/// Two people, one of whom hosts the workspace they share: Ada's site governs
-/// it, and both devices join it.
+/// Two people, one of whom hosts the workspace they share: Ada's site governs it, and both devices
+/// join it.
 fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
     let site = Site::start(&ada, "Studio");
-    // The workspace's host lets its desk author its records, as the host of a
-    // workspace does before its people open windows there: a member's device
-    // cannot grant that for itself, and without it the desk a member opens
-    // founds nothing the site keeps.
+    // The workspace's host lets its desk author its records, as the host of a workspace does before
+    // its people open windows there: a member's device cannot grant that for itself, and without it
+    // the desk a member opens founds nothing the site keeps.
     site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
     let mut ada_laptop = ada.device("Ada's laptop");
     let mut bob_laptop = bob.device("Bob's laptop");
@@ -203,11 +196,10 @@ fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
     (site, ada, bob, ada_laptop, bob_laptop)
 }
 
-/// What a device opens is a change of the workspace's shared desk, and the
-/// workspace's device takes it: the first window founds the record, and the
-/// next change continues the one the device made instead of numbering it
-/// again. The record is the workspace's, sealed in a workspace a site hosts:
-/// the site keeps it and the other member's device reads it.
+/// What a device opens is a change of the workspace's shared desk, and the workspace's device takes
+/// it: the first window founds the record, and the next change continues the one the device made
+/// instead of numbering it again. The record is the workspace's, sealed in a workspace a site
+/// hosts: the site keeps it and the other member's device reads it.
 #[test]
 fn the_workspace_keeps_the_desk_its_device_writes() {
     let (site, _ada, _bob, ada_laptop, bob_laptop) = two_people_at_a_site();
@@ -242,9 +234,8 @@ fn the_workspace_keeps_the_desk_its_device_writes() {
         ["Another", "Notes"],
         "the windows the desk was written with are the ones the site holds"
     );
-    // And the desk the site keeps is the other member's too: what one member
-    // opened on this workspace's desk, the other member's device reads and
-    // shows.
+    // And the desk the site keeps is the other member's too: what one member opened on this
+    // workspace's desk, the other member's device reads and shows.
     show(&bob_laptop, &site);
     waited(
         "the other member's desk showing the workspace's windows",
@@ -260,17 +251,15 @@ fn the_workspace_keeps_the_desk_its_device_writes() {
             nothing of the refusal, so the member's feed shows no refusal of his \
             change and no reason for it"]
 fn a_member_reads_where_their_refused_change_is_not() {
-    // Ada's site governs her workspace, hosts it, and keeps what its people
-    // record while they are away. Both are editors, who write, and the
-    // workspace shares its people's layout, so what either opens is on the
-    // workspace's desk.
+    // Ada's site governs her workspace, hosts it, and keeps what its people record while they are
+    // away. Both are editors, who write, and the workspace shares its people's layout, so what
+    // either opens is on the workspace's desk.
     let (site, _ada, bob, _ada_laptop, mut bob_laptop) = two_people_at_a_site();
-    // Bob's desk shows the workspace, whose shared desk is the record his
-    // apps' windows are written into.
+    // Bob's desk shows the workspace, whose shared desk is the record his apps' windows are written
+    // into.
     show(&bob_laptop, &site);
 
-    // Bob opens an app on the shared desk, whose window is a change of the
-    // workspace's record.
+    // Bob opens an app on the shared desk, whose window is a change of the workspace's record.
     let _bob_note = open(&bob_laptop, "Notes");
     waited(
         "Bob's window on the workspace's desk",
@@ -289,8 +278,8 @@ fn a_member_reads_where_their_refused_change_is_not() {
         || windows(&site) >= 2,
     );
 
-    // Ada takes Bob's write permission away: the workspace still lets him read
-    // what it holds, and refuses what he writes.
+    // Ada takes Bob's write permission away: the workspace still lets him read what it holds, and
+    // refuses what he writes.
     site.set_role(bob.public, WorkspaceRole::Viewer);
     let before = windows(&site);
     let refused_note = open(&bob_laptop, "Bob's notes");
@@ -305,8 +294,8 @@ fn a_member_reads_where_their_refused_change_is_not() {
         .into_iter()
         .next()
         .expect("the feed names the refused change");
-    // The change is not on the site's device, and the site says why: no
-    // permission, and nothing Bob can wait for changes that.
+    // The change is not on the site's device, and the site says why: no permission, and nothing Bob
+    // can wait for changes that.
     assert_eq!(
         verdict["label"].as_str(),
         Some("The site"),
@@ -337,9 +326,8 @@ fn a_member_reads_where_their_refused_change_is_not() {
         before,
         "the site never holds what it refused, {refused_at:?} ago"
     );
-    // The verdict is the workspace's own state, not a live word: Bob's device
-    // goes away and comes back, and reads the refusal the site filed as it
-    // reads anything else the workspace holds.
+    // The verdict is the workspace's own state, not a live word: Bob's device goes away and comes
+    // back, and reads the refusal the site filed as it reads anything else the workspace holds.
     drop(refused_note);
     bob_laptop.stop();
     bob_laptop.start();

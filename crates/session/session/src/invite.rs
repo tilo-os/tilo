@@ -1,12 +1,10 @@
-//! Inviting people into the workspace in front: the sheet a link is made
-//! from, the links that still work, and taking one back.
-//!
-//! The sheet shows and asks; the desk's own published actions make, list and
-//! cancel the invitations, so a link the person hands over from here is the
-//! same invitation an app or an agent makes, admitted by the workspace's
-//! governance the same way. What is the session's here is saying whether the
-//! person may invite at all, keeping the sheet current while it is up, and
-//! putting the link on the clipboard long enough to hand it over.
+//! Inviting people into the workspace in front: the sheet a link is made from, the links that still
+//! work, and taking one back.
+//! The sheet shows and asks; the desk's own published actions make, list and cancel the
+//! invitations, so a link the person hands over from here is the same invitation an app or an agent
+//! makes, admitted by the workspace's governance the same way. What is the session's here is saying
+//! whether the person may invite at all, keeping the sheet current while it is up, and putting the
+//! link on the clipboard long enough to hand it over.
 
 use std::time::{Duration, SystemTime};
 
@@ -20,9 +18,8 @@ use tilo_surface_host::shell_part::DESK_RESOURCE;
 use crate::Shared;
 use crate::mount::clipboard::Ask;
 
-/// How long a link the sheet copied stays on the clipboard: long enough to
-/// paste it into a message to whoever it is for, and no longer, because the
-/// link is what admits them.
+/// How long a link the sheet copied stays on the clipboard: long enough to paste it into a message
+/// to whoever it is for, and no longer, because the link is what admits them.
 const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
 
 impl Shared {
@@ -36,10 +33,9 @@ impl Shared {
         seat.presentation().open(false);
     }
 
-    /// Whether the person may invite someone into the workspace in front: a
-    /// workspace this device holds, whose own governance lets them invite into
-    /// it, with a transport a link can name. The write path asks the
-    /// workspace's record again, so this only decides what is offered.
+    /// Whether the person may invite someone into the workspace in front: a workspace this device
+    /// holds, whose own governance lets them invite into it, with a transport a link can name. The
+    /// write path asks the workspace's record again, so this only decides what is offered.
     pub(crate) fn may_invite_here(&self) -> bool {
         self.sync.is_some()
             && self
@@ -59,9 +55,8 @@ impl Shared {
         self.invitable.set(self.may_invite_here());
     }
 
-    /// Keep the sheet current while it is up: who is in the workspace, the
-    /// parts this person may hand out and the links that still work all move
-    /// under it.
+    /// Keep the sheet current while it is up: who is in the workspace, the parts this person may
+    /// hand out and the links that still work all move under it.
     pub(crate) fn refresh_invite(&self) {
         self.directory_store
             .follow_shelf(&mut self.invite_made.borrow_mut());
@@ -74,8 +69,7 @@ impl Shared {
         self.show_invite();
     }
 
-    /// Carry out what the person asked for in the sheet, and show what came of
-    /// it.
+    /// Carry out what the person asked for in the sheet, and show what came of it.
     pub(crate) fn follow_invite(&self) {
         let Some(seat) = self.invite.as_ref() else {
             return;
@@ -94,9 +88,8 @@ impl Shared {
         seat.show(sheet::view(&DeskInvites(self)));
     }
 
-    /// Make a link into the workspace in front, through the desk's own action:
-    /// the part it brings someone in at, and, for a person the workspace
-    /// knows, a link only their device can redeem.
+    /// Make a link into the workspace in front, through the desk's own action: the part it brings
+    /// someone in at, and, for a person the workspace knows, a link only their device can redeem.
     fn make_invite(&self, role: &str, recipient: &str) {
         let mut arguments = serde_json::Map::new();
         arguments.insert("role".to_owned(), serde_json::Value::from(role));
@@ -150,10 +143,9 @@ impl Shared {
             let name = name.unwrap_or_else(|| recipient.chars().take(8).collect());
             sheet::brings(&role, Some(&name))
         };
-        // The person hands over a link, not an invitation's kilobytes: the
-        // signed bytes are sealed under a fresh key and wait on the site this
-        // computer is configured with, under a handle, and the link carries
-        // the key in its fragment. A computer with no site, or one that will
+        // The person hands over a link, not an invitation's kilobytes: the signed bytes are sealed
+        // under a fresh key and wait on the site this computer is configured with, under a handle,
+        // and the link carries the key in its fragment. A computer with no site, or one that will
         // not keep it, hands over the invitation's own text instead.
         if let Err(reason) = self.directory_store.hand_over(
             &mut self.invite_made.borrow_mut(),
@@ -179,8 +171,8 @@ impl Shared {
         self.engine.as_deref()?.name_of(&workspace, key)
     }
 
-    /// Take back a link into the workspace in front, through the desk's own
-    /// action: whoever holds it admits nobody from now on.
+    /// Take back a link into the workspace in front, through the desk's own action: whoever holds
+    /// it admits nobody from now on.
     fn revoke_invite(&self, invite: &str) {
         let mut arguments = serde_json::Map::new();
         arguments.insert("invite".to_owned(), serde_json::Value::from(invite));
@@ -190,9 +182,8 @@ impl Shared {
             .invoke(DESK_RESOURCE, "cancel-invitation", &arguments)
         {
             Some(Ok(_)) => {
-                // The site's copy goes too: a link handed out before is not
-                // one that waits there to be fetched, and the one this
-                // opening showed goes with it.
+                // The site's copy goes too: a link handed out before is not one that waits there to
+                // be fetched, and the one this opening showed goes with it.
                 self.directory_store
                     .take_back(&mut self.invite_made.borrow_mut(), invite);
                 self.say(word("invite-revoked"), false);
@@ -263,10 +254,9 @@ impl sheet::Invitations for DeskInvites<'_> {
             return Vec::new();
         };
         let own = hex::encode(engine.identity().device_cert.user_public_key);
-        // Everyone this device knows by name, from every workspace it is
-        // part of, the workspace in front first: a link can be made for
-        // someone the person works with elsewhere too, and the same people
-        // a send-to picker would offer.
+        // Everyone this device knows by name, from every workspace it is part of, the workspace in
+        // front first: a link can be made for someone the person works with elsewhere too, and the
+        // same people a send-to picker would offer.
         let mut seen = std::collections::HashSet::new();
         let mut people = Vec::new();
         let workspaces = std::iter::once(workspace)
@@ -349,10 +339,9 @@ impl sheet::Invitations for DeskInvites<'_> {
     }
 }
 
-/// Whether `person` may invite someone into `workspace` from this device, as
-/// the workspace's own governance answers it: a current member whose part
-/// there grants inviting, on the device that signs the link. What the
-/// surfaces offering inviting are told; the write path asks again.
+/// Whether `person` may invite someone into `workspace` from this device, as the workspace's own
+/// governance answers it: a current member whose part there grants inviting, on the device that
+/// signs the link. What the surfaces offering inviting are told; the write path asks again.
 pub(crate) fn may_invite(
     engine: Option<&crate::engine::Engine>,
     workspace: &str,

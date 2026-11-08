@@ -71,9 +71,6 @@ pub struct Prepared {
 }
 
 /// Draw what `select` needs to find its area.
-///
-/// # Errors
-/// Returns why the request is malformed or the artwork cannot be drawn.
 pub fn prepare(
     select: &FindArea,
     renderer: &mut Renderer,

@@ -415,9 +415,6 @@ pub trait SoundResource: Send + Sync {
     /// resource draws the new one.
     fn attach(&self, wake: ui::WakeHandle);
     /// Take one of its actions.
-    ///
-    /// # Errors
-    /// The session did not answer, or the action refused it.
     fn invoke(
         &self,
         action: &str,

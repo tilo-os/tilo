@@ -1446,6 +1446,9 @@ fn lang_type(ty: &Type) -> Ty {
 /// or a Time too, which the host shows the person's way.
 fn fits(ty: &Type, found: &Ty) -> bool {
     match (ty, found) {
+        // An option prop takes an optional value of its own too: the item a window holds open,
+        // or the selection it keeps.
+        (Type::Option(inner), Ty::Option(held)) => fits(inner, held),
         (Type::Option(inner), found) => fits(inner, found),
         // A list or a set takes either of the language's.
         (Type::List(inner) | Type::Set(inner), Ty::List(item) | Ty::Set(item)) => fits(inner, item),

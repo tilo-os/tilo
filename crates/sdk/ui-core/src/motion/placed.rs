@@ -1,4 +1,4 @@
-//! [`Placed`]: a surface that appears where it stands, leaves from there, and moves when its
+//! [`Placed`] — a surface that appears where it stands, leaves from there, and moves when its
 //! place changes — a window on a desk, a place on a canvas, a panel over the screen.
 //!
 //! A shell draws its windows, its canvas places and its floating surfaces from a view, and a

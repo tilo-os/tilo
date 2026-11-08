@@ -277,10 +277,6 @@ impl<P: Resource> RecordDoor for Held<P> {
 
 /// Answer one published action of a record: apply it to the record it
 /// names, for the person whose record it is.
-///
-/// # Errors
-/// The payload names no record of this window, someone else invoked it, or
-/// the action refused.
 pub(crate) fn answer(
     doors: &[Rc<dyn RecordDoor>],
     me: Option<&str>,

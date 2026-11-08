@@ -3015,9 +3015,6 @@ impl ImportApp {
     /// Admit `operation` as its button would, after checking it against
     /// what is shown now: answered at once, or a job [`Self::settle`]
     /// answers.
-    ///
-    /// # Errors
-    /// Returns why the effect cannot run now.
     pub(crate) fn admit(&mut self, operation: ImportEffect) -> Result<Admitted, String> {
         let operation_ids = if operation.background() {
             if self.pending_copy_invocation.is_some()

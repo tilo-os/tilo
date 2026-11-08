@@ -1,4 +1,4 @@
-//! [`Appearing`]: one surface's [`Appear`] and dismiss, as the toolkit's
+//! [`Appearing`] — one surface's [`Appear`] and dismiss, as the toolkit's
 //! popovers, menus, dropdowns, tooltips, sheets and dialogs keep it.
 
 use super::named::Appear;

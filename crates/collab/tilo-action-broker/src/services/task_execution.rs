@@ -32,9 +32,6 @@ impl NativeTaskBinding {
     /// the answers the workspace keeps for the agent and the issue, never to the
     /// preset it was admitted with, which bounds only what it does on its
     /// own. Effects stay attributed to the agent.
-    ///
-    /// # Errors
-    /// The binding does not name its starter.
     pub fn actor(&self) -> Result<crate::collab_app_broker::BrokerActor, String> {
         let starter = self.starter.clone().ok_or("native task starter absent")?;
         Ok(
@@ -435,9 +432,6 @@ pub struct TrackerRun {
 
 impl TrackerRun {
     /// The run's task delegation, encoded; `None` for a collaborator's run.
-    ///
-    /// # Errors
-    /// The run carries a delegation that does not decode, and why.
     pub fn delegation(&self) -> Result<Option<&[u8]>, String> {
         match &self.delegation {
             None => Ok(None),
@@ -497,17 +491,11 @@ pub trait TrackerRuns: Send + Sync {
         self.requires_workspace(workspace)
     }
     /// Every run the workspace's tracker holds, going or ended.
-    ///
-    /// # Errors
-    /// The workspace's tracker cannot be read now.
     fn runs(&self, workspace: &str) -> Result<Vec<TrackerRun>, String>;
     /// Whether `run`'s agent is still admitted to `workspace`, as the workspace's
     /// owner holds it now: a collaborator by its membership, a task agent by
     /// its run's task delegation. A removed agent, or a task agent whose
     /// device was revoked, reads its run no more.
-    ///
-    /// # Errors
-    /// The agent is no longer admitted, or the workspace cannot be read.
     fn check_agent(&self, workspace: &str, run: &TrackerRun) -> Result<(), String>;
     /// Apply the workspace's grants for the run's agent, acting for the run's
     /// starter, to `requirement`, as [`NativeTaskActionRequirement::check_tracker`]

@@ -59,9 +59,8 @@ impl Snapshot {
         self.size
     }
 
-    /// Keep the frame `window` just drew under `renderer`, replacing the
-    /// one kept before; false when the window draws nothing (yet, or
-    /// under this renderer).
+    /// Keep the frame `window` just drew under `renderer` , replacing the one kept before; false
+    /// when the window draws nothing (yet, or under this renderer).
     pub(crate) fn record<R>(&mut self, renderer: &R, window: &Window) -> bool
     where
         R: Renderer,
@@ -106,8 +105,8 @@ impl Snapshot {
         })
     }
 
-    /// Keep the rendition `buffer` of a surface that carries an HDR signal
-    /// as the window's last frame: its logical size is `size`.
+    /// Keep the rendition `buffer` of a surface that carries an HDR signal as the window's last
+    /// frame: its logical size is `size` .
     pub(crate) fn record_rendition(
         &mut self,
         buffer: MemoryRenderBuffer,
@@ -118,8 +117,8 @@ impl Snapshot {
         self.rendition = Some(buffer);
     }
 
-    /// The kept frame as an element at `location` (physical), for a
-    /// renderer that drew the window; `None` when this renderer never did.
+    /// The kept frame as an element at `location` (physical), for a renderer that drew the window;
+    /// `None` when this renderer never did.
     pub(crate) fn element<R>(
         &self,
         renderer: &R,
@@ -144,8 +143,8 @@ impl Snapshot {
         ))
     }
 
-    /// The kept rendition at `location` (physical), when the window's
-    /// surface carried an HDR signal.
+    /// The kept rendition at `location` (physical), when the window's surface carried an HDR
+    /// signal.
     pub(crate) fn rendition<R>(
         &self,
         renderer: &mut R,
@@ -174,7 +173,7 @@ impl Snapshot {
 pub(crate) struct Snapshots(RefCell<HashMap<u64, Snapshot>>);
 
 impl Snapshots {
-    /// Keep the frame the window `id` just drew under `renderer`.
+    /// Keep the frame the window `id` just drew under `renderer` .
     pub(crate) fn record<R>(&self, id: u64, renderer: &R, window: &Window)
     where
         R: Renderer,
@@ -187,9 +186,8 @@ impl Snapshots {
             .record(renderer, window);
     }
 
-    /// Keep what the window `id` of `window` drew this frame: the texture of
-    /// its surface, or, when its surface carries an HDR signal, the rendition
-    /// the desktop drew it as.
+    /// Keep what the window `id` of `window` drew this frame: the texture of its surface, or, when
+    /// its surface carries an HDR signal, the rendition the desktop drew it as.
     pub(crate) fn record_shown<R>(
         &self,
         id: u64,
@@ -206,8 +204,7 @@ impl Snapshots {
         }
     }
 
-    /// Keep the rendition `buffer` as the frame of the window `id`, of
-    /// logical size `size`.
+    /// Keep the rendition `buffer` as the frame of the window `id` , of logical size `size` .
     pub(crate) fn record_rendition(
         &self,
         id: u64,
@@ -221,12 +218,12 @@ impl Snapshots {
             .record_rendition(buffer, size);
     }
 
-    /// Take the frame kept for `id`, if there is one.
+    /// Take the frame kept for `id` , if there is one.
     pub(crate) fn take(&self, id: u64) -> Option<Snapshot> {
         self.0.borrow_mut().remove(&id)
     }
 
-    /// Forget `id`: no frame is kept for it.
+    /// Forget `id` : no frame is kept for it.
     pub(crate) fn forget(&self, id: u64) {
         self.0.borrow_mut().remove(&id);
     }

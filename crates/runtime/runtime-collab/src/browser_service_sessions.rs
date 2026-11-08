@@ -144,8 +144,6 @@ impl BrowserServiceSessionCommand {
             Self::List {} | Self::Resolve { .. } | Self::Forget { .. }
         )
     }
-    /// # Errors
-    /// Refuses invalid commands, serialization failures or oversized wire bytes.
     pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, &'static str> {
         if !self.valid() {
             return Err("invalid service-session command");
@@ -158,8 +156,6 @@ impl BrowserServiceSessionCommand {
         }
         Ok(bytes)
     }
-    /// # Errors
-    /// Refuses oversized, malformed or invalid commands, including unknown fields.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() > MAX_BROWSER_SERVICE_SESSION_COMMAND_BYTES {
             return Err("service-session command too large");
@@ -223,8 +219,6 @@ impl BrowserServiceSessionReply {
             _ => false,
         }
     }
-    /// # Errors
-    /// Refuses invalid replies, serialization failures or oversized wire bytes.
     pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, &'static str> {
         if !self.valid() {
             return Err("invalid service-session reply");
@@ -237,8 +231,6 @@ impl BrowserServiceSessionReply {
         }
         Ok(bytes)
     }
-    /// # Errors
-    /// Refuses oversized, malformed or invalid replies, including unknown fields.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() > MAX_BROWSER_SERVICE_SESSION_REPLY_BYTES {
             return Err("service-session reply too large");
@@ -254,9 +246,6 @@ impl BrowserServiceSessionReply {
 #[cfg(feature = "client")]
 impl crate::ChannelHandle {
     /// Resolve only this admitted Browser channel's own selected credentials.
-    ///
-    /// # Errors
-    /// Refuses invalid commands, transport failures and invalid or mismatched replies.
     pub async fn browser_service_session_command(
         &self,
         command: &BrowserServiceSessionCommand,

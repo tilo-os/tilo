@@ -17,16 +17,15 @@
 //!
 //! HTTP goes through the page's `post(path, session, body)` (its `fetch`).
 //! Presence — who is here, their pointer, what their shell shows — rides the
-//! workspace's session like every other device's: this module encodes it as
-//! the pages' `web/live-presence.mjs` values and reads the members' answers
-//! back ([`WasmPeer::take_live_events`]). Documents reach the desktop's
+//! workspace's session like every other device's: [`crate::peer_presence`]
+//! keeps it on the board and reads the members' answers back
+//! ([`WasmPeer::take_live_events`]). Documents reach the desktop's
 //! `CollaborationManager` through [`WasmPeer::collab_transport`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use collab_types::presence::Presence;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use tilo_browser_peer::{
@@ -39,7 +38,9 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-fn js_error(error: impl std::fmt::Display) -> JsError {
+use crate::peer_presence::{JsPresence, due, hear, members, release, say, set_label};
+
+pub(crate) fn js_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())
 }
 
@@ -825,110 +826,16 @@ pub async fn answer_pairing(
         .transpose()
 }
 
-// ---- Presence, as `web/live-presence.mjs` publishes and reads it ---------
+// ---- Previews: what a member's editor shows before the change lands -----
 
-#[derive(Serialize, Deserialize)]
-struct JsRecord {
-    app: String,
-    record: String,
+/// One record a live event names, as its wire carries it.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct JsRecord {
+    pub(crate) app: String,
+    pub(crate) record: String,
 }
 
-#[derive(Serialize, Deserialize)]
-struct JsSelection {
-    anchor: String,
-    head: String,
-}
-
-/// `{kind: 'person' | 'agent', label, color: '#rrggbb', activity}`.
-#[derive(Serialize, Deserialize)]
-struct JsParticipant {
-    kind: String,
-    label: String,
-    color: String,
-    #[serde(default)]
-    activity: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsWave {
-    seq: u32,
-    target: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsChat {
-    text: String,
-    sent: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsReaction {
-    seq: u32,
-    emoji: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsLayout {
-    size: [u16; 2],
-    windows: Vec<JsWindow>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct JsWindow {
-    app: String,
-    record: String,
-    rect: [u16; 4],
-    focused: bool,
-}
-
-/// One presence value of `web/live-presence.mjs`: what one layer of this
-/// page (the person, or one of its agents) shows, where its pointer is, and
-/// what it says. The publisher sends it whole with each change; the
-/// receiver reads the parts each message of the wire carries.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JsPresence {
-    /// This view's sequence, as the shell wire carries it: receivers order
-    /// views by it, and one at or below the last they took is a repeat.
-    seq: u32,
-    sent_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    focus: Option<JsRecord>,
-    /// Over a tab of the workspace: `{tile: {tab}, at: [x, y]}`, the way
-    /// every device's pointer travels, the tab's id a decimal string (it can
-    /// pass 2^53).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pointer: Option<crate::browser::pointers::JsPointer>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    selection: Option<JsSelection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    participant: Option<JsParticipant>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    place: Option<String>,
-    /// Cursor chat: `{text, sent}`, beside the pointer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    chat: Option<JsChat>,
-    /// The latest reaction: `{seq, emoji}`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reaction: Option<JsReaction>,
-    /// The latest wave: `{seq, target}`, `target` the waved-at member's
-    /// publisher.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    wave: Option<JsWave>,
-    /// Where the windows are: `{size, windows: [{app, record, rect,
-    /// focused}]}`, `record` its 16-byte digest, hex.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    layout: Option<JsLayout>,
-    /// Whose view this member follows: their publisher.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    following: Option<String>,
-}
-
-/// The app every shell's presence is published under: the desktop's own,
-/// the one its members name themselves and their screens by.
-const SHELL_APP: &str = collab_types::presence::DESKTOP_APP;
-
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum JsPreviewOp {
     Insert { at: String, text: String },
@@ -953,207 +860,6 @@ fn anchor(text: &str) -> Result<LiveAnchor, JsError> {
     Ok(LiveAnchor {
         cursor: hex::decode(text).map_err(js_error)?,
     })
-}
-
-/// One window of a sender's layout, as its wire names it: an app id and the
-/// short digest of its record.
-fn shell_window(window: JsWindow) -> Result<collab_types::presence::ShellWindow, JsError> {
-    let record = <[u8; 8]>::try_from(hex::decode(&window.record).map_err(js_error)?)
-        .map_err(|_| js_error("a layout window's record is a 16-hex digest"))?;
-    Ok(collab_types::presence::ShellWindow {
-        app: window.app,
-        record,
-        rect: window.rect,
-        focused: window.focused,
-    })
-}
-
-fn shell_to_js(shell: collab_types::presence::ShellPresence) -> JsPresence {
-    let participant = JsParticipant {
-        kind: if shell.agent { "agent" } else { "person" }.into(),
-        label: shell.label,
-        color: shell.colour,
-        activity: shell.activity,
-    };
-    let windows: Vec<JsWindow> = shell
-        .windows
-        .into_iter()
-        .map(|window| JsWindow {
-            app: window.app,
-            record: hex::encode(window.record),
-            rect: window.rect,
-            focused: window.focused,
-        })
-        .collect();
-    let focus = windows
-        .iter()
-        .find(|window| window.focused)
-        .map(|window| JsRecord {
-            app: window.app.clone(),
-            record: window.record.clone(),
-        });
-    JsPresence {
-        seq: shell.seq,
-        sent_at_ms: shell.sent_at_ms,
-        focus,
-        pointer: None,
-        selection: shell.selection.map(|selection| JsSelection {
-            anchor: selection.anchor,
-            head: selection.head,
-        }),
-        participant: Some(participant),
-        place: shell.place,
-        chat: shell.chat.map(|chat| JsChat {
-            text: chat.text,
-            sent: chat.sent,
-        }),
-        reaction: shell.reaction.map(|reaction| JsReaction {
-            seq: reaction.seq,
-            emoji: reaction.emoji,
-        }),
-        wave: None,
-        layout: Some(JsLayout {
-            size: [
-                u16::try_from(shell.size[0]).unwrap_or(u16::MAX),
-                u16::try_from(shell.size[1]).unwrap_or(u16::MAX),
-            ],
-            windows,
-        }),
-        following: None,
-    }
-}
-
-/// This layer's shell, as its presence value names it: who it is, its
-/// screen, the window the person works in and their caret there. `None`
-/// while the value names neither a screen nor who it is.
-fn shell_from_js(
-    value: &JsPresence,
-) -> Result<Option<collab_types::presence::ShellPresence>, JsError> {
-    let Some(participant) = &value.participant else {
-        return Ok(None);
-    };
-    if !value
-        .participant
-        .as_ref()
-        .is_some_and(|p| matches!(p.kind.as_str(), "person" | "agent"))
-    {
-        return Err(js_error("participant kind"));
-    }
-    let colour = participant.color.clone();
-    let hex = colour
-        .strip_prefix('#')
-        .ok_or_else(|| js_error("participant colour must be #rrggbb"))?;
-    if hex.len() != 6 || hex::decode(hex).is_err() {
-        return Err(js_error("participant colour must be #rrggbb"));
-    }
-    let (size, mut windows) = match &value.layout {
-        Some(layout) => (
-            [u32::from(layout.size[0]), u32::from(layout.size[1])],
-            layout
-                .windows
-                .iter()
-                .cloned()
-                .map(shell_window)
-                .collect::<Result<Vec<_>, JsError>>()?,
-        ),
-        None => ([0, 0], Vec::new()),
-    };
-    // The window the person works in is the one their caret is in, whatever
-    // the layout said: the value names it on its own.
-    if let Some(focus) = &value.focus {
-        let mut found = false;
-        for window in &mut windows {
-            window.focused = window.app == focus.app && hex::encode(window.record) == focus.record;
-            found |= window.focused;
-        }
-        if !found {
-            windows.push(collab_types::presence::ShellWindow {
-                app: focus.app.clone(),
-                record: <[u8; 8]>::try_from(hex::decode(&focus.record).map_err(js_error)?)
-                    .map_err(|_| js_error("a focused window's record is a 16-hex digest"))?,
-                rect: [0, 0, 0, 0],
-                focused: true,
-            });
-        }
-    }
-    Ok(Some(collab_types::presence::ShellPresence {
-        seq: value.seq,
-        sent_at_ms: value.sent_at_ms,
-        label: participant.label.clone(),
-        agent: participant.kind == "agent",
-        colour,
-        activity: participant.activity.clone(),
-        place: value.place.clone(),
-        size,
-        windows,
-        selection: value.selection.as_ref().map(|selection| {
-            collab_types::presence::ShellSelection {
-                anchor: selection.anchor.clone(),
-                head: selection.head.clone(),
-            }
-        }),
-        chat: value
-            .chat
-            .as_ref()
-            .map(|chat| collab_types::presence::ShellChat {
-                text: chat.text.clone(),
-                sent: chat.sent,
-            }),
-        reaction: value
-            .reaction
-            .as_ref()
-            .map(|reaction| collab_types::presence::ShellReaction {
-                seq: reaction.seq,
-                emoji: reaction.emoji.clone(),
-            }),
-    }))
-}
-
-/// Everything one presence value says, as the frames the workspace's other
-/// devices read it from: the shell's view, its pointer, and its wave and
-/// following (which a native shell reads as its own).
-fn presence_frames(value: &JsPresence, workspace: &str) -> Result<Vec<Presence>, JsError> {
-    use collab_types::PeerPresencePayload;
-    let mut frames = Vec::new();
-    if let Some(shell) = shell_from_js(value)? {
-        frames.push(Presence::desktop(
-            workspace,
-            PeerPresencePayload::Shell(Box::new(shell)),
-        ));
-    }
-    match &value.pointer {
-        Some(crate::browser::pointers::JsPointer::Tile { tile, at }) => {
-            let tab = tile
-                .tab
-                .parse()
-                .map_err(|_| js_error("a pointer's tab is a decimal u64"))?;
-            frames.push(Presence::pointing(workspace, tab, at[0], at[1]));
-        }
-        Some(_) => {
-            return Err(js_error(
-                "a pointer travels over a tab of the workspace: {tile: {tab}, at}",
-            ));
-        }
-        None => {}
-    }
-    if let Some(wave) = &value.wave {
-        frames.push(Presence::desktop(
-            workspace,
-            PeerPresencePayload::Wave {
-                seq: wave.seq,
-                target: wave.target.clone(),
-            },
-        ));
-    }
-    if let Some(following) = &value.following {
-        frames.push(Presence::desktop(
-            workspace,
-            PeerPresencePayload::Following {
-                target: Some(following.clone()),
-            },
-        ));
-    }
-    Ok(frames)
 }
 
 fn ops_to_js(ops: Vec<PreviewOp>) -> Vec<JsPreviewOp> {
@@ -1188,59 +894,8 @@ fn ops_from_js(ops: Vec<JsPreviewOp>) -> Result<Vec<PreviewOp>, JsError> {
         .collect()
 }
 
-fn workspace_number(text: &str) -> Result<u64, JsError> {
+pub(crate) fn workspace_number(text: &str) -> Result<u64, JsError> {
     tilo_relay_protocol::room_workspace_id(text).map_err(|_| js_error("not a workspace uuid"))
-}
-
-/// Where the person's pointer is no longer: the frame that takes it off the
-/// workspace's other devices.
-fn pointer_cleared(workspace: &str) -> Presence {
-    Presence::pointer_left(workspace, 0)
-}
-
-/// One presence message another member published, as the live layer reads
-/// it: what changed, and of whom. `publisher` is the publishing device's
-/// key, hex.
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum JsPresenceEvent {
-    /// One member's shell view.
-    Shell {
-        publisher: String,
-        frame: Box<JsPresence>,
-    },
-    /// A member is here (`Arrived`) or left (`Left`).
-    Arrived {
-        publisher: String,
-    },
-    Left {
-        publisher: String,
-    },
-    /// A member's wave at `target`.
-    Wave {
-        publisher: String,
-        wave: JsWave,
-    },
-    /// A member now follows `following`, or nobody (`null`).
-    Following {
-        publisher: String,
-        following: Option<String>,
-    },
-    /// A member's pointer over tab `tab` of the workspace, at `at` (its
-    /// tile's logical pixels), sent at their `sentAtMs`. The tab's id is a
-    /// decimal string: it can pass 2^53.
-    Pointer {
-        publisher: String,
-        tab: String,
-        at: [f64; 2],
-        #[serde(rename = "sentAtMs")]
-        sent_at_ms: u64,
-        colour: Option<String>,
-    },
-    /// A member's pointer left the workspace's tiles.
-    PointerLeft {
-        publisher: String,
-    },
 }
 
 /// One live (non-presence) message another member published.
@@ -1263,50 +918,6 @@ enum JsLiveEvent {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum JsDurable {
     Durable { record: JsRecord },
-}
-
-fn presence_event(from: [u8; 32], body: &[u8], now_ms: u64) -> Option<JsPresenceEvent> {
-    use collab_types::PeerPresencePayload;
-    let said = Presence::decode(body)?;
-    if said.app != SHELL_APP {
-        return None;
-    }
-    let publisher = hex::encode(from);
-    match (said.key, said.payload) {
-        (
-            collab_types::presence::PresenceKey::Workspace { .. },
-            PeerPresencePayload::Shell(shell),
-        ) => Some(JsPresenceEvent::Shell {
-            publisher,
-            frame: Box::new(shell_to_js(*shell)),
-        }),
-        (
-            collab_types::presence::PresenceKey::Pointer {
-                space: collab_types::presence::PointerSpace::Tile { tab, .. },
-            },
-            PeerPresencePayload::Pointer { x, y },
-        ) => Some(JsPresenceEvent::Pointer {
-            publisher,
-            tab: tab.to_string(),
-            at: [f64::from(x), f64::from(y)],
-            sent_at_ms: now_ms,
-            colour: None,
-        }),
-        (collab_types::presence::PresenceKey::Pointer { .. }, PeerPresencePayload::Left) => {
-            Some(JsPresenceEvent::PointerLeft { publisher })
-        }
-        (_, PeerPresencePayload::Arrived) => Some(JsPresenceEvent::Arrived { publisher }),
-        (_, PeerPresencePayload::Left) => Some(JsPresenceEvent::Left { publisher }),
-        (_, PeerPresencePayload::Wave { seq, target }) => Some(JsPresenceEvent::Wave {
-            publisher,
-            wave: JsWave { seq, target },
-        }),
-        (_, PeerPresencePayload::Following { target }) => Some(JsPresenceEvent::Following {
-            publisher,
-            following: target,
-        }),
-        _ => None,
-    }
 }
 
 /// Encode preview operations (JSON array) for a record (JSON).
@@ -1903,6 +1514,7 @@ impl WasmPeer {
             next.set(id.wrapping_add(1).max(1));
             id
         });
+        crate::peer_presence::register(id, device_key, &handle, &reporter_cert, &display_name);
         // A lobby started beside the workspace's peer does not rename the
         // page's person.
         if crate::page_person::claim(id) {
@@ -2160,62 +1772,55 @@ impl WasmPeer {
         .await
     }
 
-    /// Who this page's person is, and whether they are here, in
-    /// `workspace`: the message that says a member arrived (`arrived`) or
-    /// left. A page's presence is its face and its pointer, the way every
-    /// device's is.
-    ///
-    /// # Errors
-    ///
-    /// Throws for a malformed workspace.
-    #[wasm_bindgen(js_name = announcePresence)]
-    pub fn announce_presence(&self, workspace: &str, arrived: bool) -> Result<(), JsError> {
-        let workspace_id = workspace_number(workspace)?;
-        let payload = if arrived {
-            collab_types::PeerPresencePayload::Arrived
-        } else {
-            collab_types::PeerPresencePayload::Left
-        };
-        let frame = Presence::desktop(workspace, payload);
-        self.handle
-            .publish_presence(workspace_id, vec![frame])
-            .map_err(js_error)
-    }
-
-    /// Publish this page's presence `value` (the live layer's value, JSON:
-    /// `{seq, sentAtMs, participant, place, layout, focus, selection,
-    /// pointer, chat, reaction, wave, following}`) in `workspace`: its shell
-    /// view, its pointer over the tab it is over, its wave and who it
-    /// follows, as the members of the workspace read them.
+    /// Say this page's `value` of itself in `workspace` (the live layer's
+    /// value, JSON: `{participant, place, layout, focus, selection, pointer,
+    /// chat, reaction, wave, following}`): the board keeps what changed and
+    /// publishes it on its own schedule, as every device's presence goes.
+    /// Resolves to when it next has something to say, in `Date.now()` ms
+    /// (`0` for nothing).
     ///
     /// # Errors
     ///
     /// Throws for a malformed workspace, or a value outside the wire.
-    #[wasm_bindgen(js_name = publishPresence)]
-    pub fn publish_presence(&self, workspace: &str, value: &str) -> Result<(), JsError> {
+    #[wasm_bindgen(js_name = sayPresence)]
+    pub fn say_presence(&self, workspace: &str, value: &str) -> Result<f64, JsError> {
         let value: JsPresence = serde_json::from_str(value).map_err(js_error)?;
-        let workspace_id = workspace_number(workspace)?;
-        let frames = presence_frames(&value, workspace)?;
-        if frames.is_empty() {
-            return Ok(());
-        }
-        self.handle
-            .publish_presence(workspace_id, frames)
-            .map_err(js_error)
+        say(self.id, workspace, &value)
     }
 
-    /// The person's pointer is no longer over any window of `workspace`: the
-    /// members take it off their screens (nothing while it never was there).
+    /// Publish what this page's board for `workspace` owes now (keepalives,
+    /// repeats), and resolve when it next has something to say (`0` for
+    /// nothing).
     ///
     /// # Errors
     ///
     /// Throws for a malformed workspace.
-    #[wasm_bindgen(js_name = pointerLeft)]
-    pub fn pointer_left(&self, workspace: &str) -> Result<(), JsError> {
-        let workspace_id = workspace_number(workspace)?;
-        self.handle
-            .publish_presence(workspace_id, vec![pointer_cleared(workspace)])
-            .map_err(js_error)
+    #[wasm_bindgen(js_name = presenceDue)]
+    pub fn presence_due(&self, workspace: &str) -> Result<f64, JsError> {
+        due(self.id, workspace)
+    }
+
+    /// Everyone here in `workspace`, as this page's board merged their
+    /// words: a JSON array of `{publisher, epoch, agent, label, activity,
+    /// colour, user, device, focus, place, following, pointer, selection,
+    /// chat, reaction, layout, availability, call}`, or `null` while this
+    /// page takes no part there.
+    #[wasm_bindgen(js_name = presenceMembers)]
+    pub fn presence_members(&self, workspace: &str) -> String {
+        members(self.id, workspace).map_or_else(
+            || "null".into(),
+            |members| serde_json::to_string(&members).unwrap_or_else(|_| "null".into()),
+        )
+    }
+
+    /// Leave `workspace`: the members take this page down now.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace.
+    #[wasm_bindgen(js_name = leavePresence)]
+    pub fn leave_presence(&self, workspace: &str) -> Result<(), JsError> {
+        crate::peer_presence::leave(self.id, workspace)
     }
 
     /// Publish ephemeral `ops` (JSON array of `{kind: 'insert'|'delete', at,
@@ -2711,8 +2316,8 @@ impl WasmPeer {
     }
 
     /// Why this page shows no live presence, in the words it shows in the
-    /// members' place, or `null` while it has a plane: this browser has no
-    /// WebTransport, or no plane could be reached.
+    /// members' place, or `null` while it has a plane: no plane could be
+    /// reached.
     #[wasm_bindgen(js_name = liveNote)]
     pub fn live_note(&self) -> Option<String> {
         self.handle.live_note()
@@ -2730,30 +2335,27 @@ impl WasmPeer {
         count
     }
 
-    /// What the workspace's members published for this page since the last
-    /// call, as a JSON array: their presence (`{kind: 'shell', publisher,
-    /// frame}`, `{kind: 'pointer', publisher, tab, at, sentAtMs, colour}`,
-    /// `{kind: 'pointerLeft', publisher}`, `{kind: 'wave', publisher, wave}`
-    /// and `{kind: 'following', publisher, following}`, `publisher` the
-    /// publishing device's key in hex) and their ephemeral previews
-    /// (`{kind: 'preview'|'previewEnd', publisher, record, seq?, ops?}`).
-    /// This page's own messages are left out.
+    /// The members' ephemeral previews of their records since the last call,
+    /// as a JSON array (`{kind: 'preview'|'previewEnd', publisher, record,
+    /// seq?, ops?}`, `publisher` the publishing device's key in hex). Their
+    /// presence is merged into this page's boards as it arrives, never
+    /// handed on. This page's own messages are left out.
     #[wasm_bindgen(js_name = takeLiveEvents)]
     pub fn take_live_events(&self) -> String {
-        let now_ms = ui::time::unix_now_ns() / 1_000_000;
         let events: Vec<serde_json::Value> = self
             .live_events
             .drain()
             .into_iter()
             .filter_map(|event| match event {
                 PeerEvent::LivePlane {
+                    workspace_id,
                     from,
                     track: Track::Presence,
                     body,
                     ..
                 } if from != self.device_key => {
-                    let event = presence_event(from, &body, now_ms)?;
-                    serde_json::to_value(event).ok()
+                    hear(self.id, workspace_id, from, &body);
+                    None
                 }
                 PeerEvent::Live { from, frame, .. } if from != self.device_key => {
                     let publisher = hex::encode(from);
@@ -2967,6 +2569,7 @@ impl WasmPeer {
     /// (empty for none).
     #[wasm_bindgen(js_name = setDisplayName)]
     pub fn set_display_name(&self, name: String) {
+        set_label(self.id, &name);
         if let Some(workspace) = self.speaking_workspace.borrow().as_deref() {
             set_member_name(&self.handle, workspace, &name);
         }
@@ -2981,6 +2584,7 @@ impl WasmPeer {
     pub fn dispose(&self) {
         self.listeners.borrow_mut().clear();
         self.handle.close();
+        release(self.id);
         crate::replication::close(self.id);
         if crate::page_person::release(self.id) {
             ui::local_identity::install_source(None);

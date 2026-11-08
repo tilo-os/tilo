@@ -489,8 +489,8 @@ fn store() -> Result<PackageStore, Error> {
     Ok(PackageStore::at(data_root()?))
 }
 
-/// The user's data home (parent of the `tilo-rooms/` state root), distinct from
-/// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
+/// The user's data home (parent of the `tilo-rooms/` state root), distinct
+/// from [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
 /// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
     tilo_paths::env_dir("XDG_DATA_HOME")

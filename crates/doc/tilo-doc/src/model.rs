@@ -1557,9 +1557,6 @@ fn create_block_text(doc: &mut AutoCommit, block_obj: &ObjId) {
 ///
 /// One block, never the region: a change that typed into one paragraph of a long note reads
 /// that paragraph's block, and nothing of the others.
-///
-/// # Errors
-/// The document cannot be read at `heads`.
 pub fn block_at(
     doc: &automerge::Automerge,
     block: &ObjId,

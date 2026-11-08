@@ -289,12 +289,6 @@ pub fn seal(
 /// prediction fits the current machine state (wrong generation, or the firmware moved); an
 /// error means the floor rejected the generation or the mechanism failed, and the caller
 /// should not silently move on.
-///
-/// # Errors
-///
-/// Returns an error if the token fails to validate, if a PIN is required but not supplied,
-/// if unsealing fails for a reason other than a prediction mismatch, or if the rollback floor
-/// refuses every prediction that otherwise matched.
 pub fn unseal(
     runner: &dyn Runner,
     ws: &Workspace,

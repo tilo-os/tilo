@@ -148,8 +148,6 @@ impl ExportReview {
         self.export_inner(password, cancel, None, &mut |_| Ok(()))
     }
     /// Bind a separately purposed package to its authenticated prepared setup.
-    /// # Errors
-    /// Refuses empty bindings, changed input or incomplete encryption.
     pub fn export_bound(
         &self,
         password: Zeroizing<Vec<u8>>,
@@ -688,9 +686,6 @@ impl ImportReview {
     }
     /// Extract into `root`, a new private directory. Only the authenticated and
     /// verified tree itself is published under that name; no container wraps it.
-    ///
-    /// # Errors
-    /// Refuses an existing `root`, authentication or fidelity failures.
     pub fn extract_root(
         &mut self,
         password: Zeroizing<Vec<u8>>,
@@ -767,10 +762,6 @@ impl ImportReview {
     /// installation: every archived entry is unchanged, except the repository
     /// metadata the deployment rewrites, and new entries appear only inside
     /// `.local/share/flatpak`.
-    ///
-    /// # Errors
-    /// Refuses changed ciphertext, changed or missing entries and unreviewed
-    /// additions outside the user installation.
     pub fn verify_existing_tree_after_applications(
         &mut self,
         root: &Path,

@@ -51,9 +51,6 @@ pub enum SetPreference {
 
 impl SetPreference {
     /// Apply this change to `preferences`.
-    ///
-    /// # Errors
-    /// A layout the keyboard does not carry.
     pub fn apply(&self, preferences: &mut OskPreferences) -> Result<(), String> {
         match self {
             Self::Layout(layout) => {

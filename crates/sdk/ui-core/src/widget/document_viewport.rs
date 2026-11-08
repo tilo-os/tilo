@@ -12,8 +12,8 @@
 //! exactly by [`ViewportState::content_to_screen`] /
 //! [`ViewportState::screen_to_content`].
 //!
-//! A toolbar outside the viewport reaches its zoom through
-//! [`DocumentViewport::with_zoom`]: the buttons write what they want, the
+//! A toolbar outside the viewport reaches its zoom
+//! through [`DocumentViewport::with_zoom`]: the buttons write what they want, the
 //! viewport writes back the factor it shows, and the level a person reads is
 //! never a frame behind the canvas it names.
 

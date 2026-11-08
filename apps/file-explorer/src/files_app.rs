@@ -7406,11 +7406,6 @@ impl FilesState {
     }
 
     /// Ask the shell to open Terminal in the current directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns the shell's reason when Terminal could not be opened, or that
-    /// there is no Tilo session to ask.
     pub fn open_terminal(&self) -> Result<(), String> {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("open_terminal");
@@ -7420,10 +7415,6 @@ impl FilesState {
 
     /// Activate entry `idx` (by displayed index): navigate into a directory
     /// or launch the associated app.
-    ///
-    /// # Errors
-    ///
-    /// Returns the OS error if launching the entry's associated app fails.
     pub fn open_entry(&mut self, idx: usize) -> std::io::Result<bool> {
         let disp = self.displayed_entries();
         let Some(entry) = disp.get(idx) else {
@@ -8032,9 +8023,6 @@ impl FilesState {
     /// Show the row `anchor` names as its own open action does: a place
     /// opens, a collaborative record is revealed, a remote account shows its
     /// connection details.
-    ///
-    /// # Errors
-    /// The anchor names no row Files opens, or opening it failed.
     pub(crate) fn open_anchor(&mut self, anchor: &str) -> Result<(), String> {
         use crate::effects::FilesEffect;
         let effect = if anchor.starts_with("files.place:") {
@@ -9842,9 +9830,6 @@ pub(crate) mod published {
 
     /// Invoke the action `action` of the published resource `resource` with
     /// `args`, as the palette or an agent does through the door.
-    ///
-    /// # Errors
-    /// The door's refusal, or why the operation failed.
     pub(crate) fn invoke(
         files: &mut FileExplorerWidget,
         doc: &mut automerge::AutoCommit,
@@ -9882,9 +9867,6 @@ pub(crate) mod published {
     /// Start the encoded operation on the window as the framework does:
     /// the effect vocabulary to the view's handler, anything else to the
     /// toolkit's widgets inside it.
-    ///
-    /// # Errors
-    /// Why the operation failed or was refused.
     pub(crate) fn start(
         files: &mut FileExplorerWidget,
         kind: ui::tilo_actions::OperationKind,

@@ -82,9 +82,6 @@ impl Command {
     }
 
     /// Encode a bounded, closed output command.
-    ///
-    /// # Errors
-    /// Refuses invalid parameters or oversized serialization.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         if !self.valid() {
             return Err("invalid audio output command");
@@ -97,9 +94,6 @@ impl Command {
     }
 
     /// Decode one bounded command; unknown fields and capture operations fail.
-    ///
-    /// # Errors
-    /// Refuses invalid, oversized or unknown commands.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() > MAX_WIRE_BYTES {
             return Err("audio output command too large");

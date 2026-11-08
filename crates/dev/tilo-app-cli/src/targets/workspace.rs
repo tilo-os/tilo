@@ -114,10 +114,6 @@ impl SharedWorkspace {
     /// `pages_origin`, keeping it under the app's target directory so a
     /// restart reopens the same workspace with what was in it. `fresh` starts
     /// an empty one.
-    ///
-    /// # Errors
-    ///
-    /// When the host cannot be built or started.
     pub fn start(project: &Project, pages_origin: &str, fresh: bool) -> Result<Self> {
         let relay = relay_binary(project)?;
         // The state a shared session has already written: kept under the

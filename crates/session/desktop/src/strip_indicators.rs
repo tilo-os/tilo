@@ -1,12 +1,10 @@
 //! When the strip ribbon and the strip rail show.
-//!
-//! They answer "where am I among the strips, and along this one?", which
-//! only matters while you are moving. Shown all the time they are clutter
-//! along two screen edges, so they appear when the position they report
-//! changes (a scroll, a pan, a keyboard step, a switch to another strip or
-//! workspace), stay while it keeps changing or while the pointer is on
-//! them, and go a moment after it stops, as a confirmation goes
-//! ([`ui::motion::Transient::CONFIRMATION`]): there at once, then faded out.
+//! They answer "where am I among the strips, and along this one?", which only matters while you are
+//! moving. Shown all the time they are clutter along two screen edges, so they appear when the
+//! position they report changes (a scroll, a pan, a keyboard step, a switch to another strip or
+//! workspace), stay while it keeps changing or while the pointer is on them, and go a moment after
+//! it stops, as a confirmation goes ([`ui::motion::Transient::CONFIRMATION`]): there at once, then
+//! faded out.
 
 use std::cell::Cell;
 
@@ -29,8 +27,7 @@ fn fade(reduce_motion: bool) -> Duration {
     ui::motion::Transient::exit_time(MOTION, effective(reduce_motion))
 }
 
-/// The hold and the fade together: how long after the last change they are
-/// gone.
+/// The hold and the fade together: how long after the last change they are gone.
 fn shown_for(reduce_motion: bool) -> Duration {
     STRIP_INDICATOR_HOLD.saturating_add(fade(reduce_motion))
 }
@@ -53,17 +50,16 @@ pub struct StripIndicators {
     /// When the position last changed; `None` once the fade has finished.
     changed_at: Option<Instant>,
     hovered: bool,
-    /// A direct pan came to rest somewhere new. The frame it rests on is
-    /// composited from the layers the pan began with, so the indicators
-    /// show from the next frame on.
+    /// A direct pan came to rest somewhere new. The frame it rests on is composited from the layers
+    /// the pan began with, so the indicators show from the next frame on.
     show_on_next_frame: bool,
     /// Reduced motion, as of the last paint.
     reduce_motion: Cell<bool>,
 }
 
 impl StripIndicators {
-    /// Record the position about to be painted at `now`. The first
-    /// observation is the session's starting point, not navigation.
+    /// Record the position about to be painted at `now` . The first observation is the session's
+    /// starting point, not navigation.
     pub fn observe(&mut self, position: StripPosition, now: Instant) {
         self.hovered = position.hovered;
         if std::mem::take(&mut self.show_on_next_frame)
@@ -79,11 +75,10 @@ impl StripIndicators {
         }
     }
 
-    /// A direct pan came to rest at `position`, on a frame that must not
-    /// change the chrome: take it as the resting point now, and if the pan
-    /// moved anything, show them from the next frame on, as any other
-    /// navigation does. Without this a touchpad pan, the commonest way along
-    /// a strip, never showed the window rail at all.
+    /// A direct pan came to rest at `position` , on a frame that must not change the chrome: take
+    /// it as the resting point now, and if the pan moved anything, show them from the next frame
+    /// on, as any other navigation does. Without this a touchpad pan, the commonest way along a
+    /// strip, never showed the window rail at all.
     pub fn settle_after_pan(&mut self, position: StripPosition) {
         self.hovered = position.hovered;
         if self.last.as_ref().is_some_and(|last| *last != position) {
@@ -92,7 +87,7 @@ impl StripIndicators {
         self.last = Some(position);
     }
 
-    /// Opacity at `now`. Under reduced motion they are whole until they go.
+    /// Opacity at `now` . Under reduced motion they are whole until they go.
     pub fn alpha_at(&self, now: Instant, reduce_motion: bool) -> f32 {
         self.reduce_motion.set(reduce_motion);
         if self.hovered {
@@ -128,10 +123,9 @@ impl StripIndicators {
             })
     }
 
-    /// Wakes the loop when the fade begins; from there the fade's own
-    /// animation frames carry it to the end. Nothing is owed past the fade
-    /// start: an overdue deadline that only a paint could clear would spin
-    /// the loop whenever nothing else asks for a paint.
+    /// Wakes the loop when the fade begins; from there the fade's own animation frames carry it to
+    /// the end. Nothing is owed past the fade start: an overdue deadline that only a paint could
+    /// clear would spin the loop whenever nothing else asks for a paint.
     pub fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
         // Due now: the next frame's observation shows them and clears it.
         if self.show_on_next_frame {
@@ -142,10 +136,9 @@ impl StripIndicators {
     }
 }
 
-/// Where the long segment of the strip ribbon or rail stands while focus
-/// moves along it: it slides from the segment it left to the one that took
-/// focus (`ui::motion::ListChange::MOVE`), and a shortcut's move lands at
-/// once. A run that gained or lost a segment starts at rest.
+/// Where the long segment of the strip ribbon or rail stands while focus moves along it: it slides
+/// from the segment it left to the one that took focus (`ui::motion::ListChange::MOVE`), and a
+/// shortcut's move lands at once. A run that gained or lost a segment starts at rest.
 #[derive(Default)]
 pub struct SlidingFocus {
     value: Option<ui::motion::MotionValue<f64>>,
@@ -153,8 +146,8 @@ pub struct SlidingFocus {
 }
 
 impl SlidingFocus {
-    /// Follow a run of `count` segments whose focus is `focused`; returns
-    /// where its long segment is drawn at `now`.
+    /// Follow a run of `count` segments whose focus is `focused` ; returns where its long segment
+    /// is drawn at `now` .
     pub fn follow(
         &mut self,
         (count, focused): (usize, usize),
@@ -165,8 +158,8 @@ impl SlidingFocus {
         let target = ui::num::f64_of_usize(focused);
         match self.value.as_mut() {
             Some(value) if self.count == count => {
-                // Targets are whole segment indices: a different one is at
-                // least a whole segment away.
+                // Targets are whole segment indices: a different one is at least a whole segment
+                // away.
                 if (value.target() - target).abs() >= 0.5 {
                     let timing = ListChange::MOVE.timing(
                         Direction::Enter,
@@ -190,7 +183,7 @@ impl SlidingFocus {
             .is_some_and(|value| value.is_moving(now))
     }
 
-    /// Where the long segment is drawn at `now`, while it slides.
+    /// Where the long segment is drawn at `now` , while it slides.
     pub fn sliding_at(&self, now: Instant) -> Option<f64> {
         self.value
             .as_ref()

@@ -88,8 +88,7 @@ mod nested {
             }]
         }
 
-        // The layer covers the output but takes nothing: this run only draws
-        // it.
+        // The layer covers the output but takes nothing: this run only draws it.
         fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
             false
         }
@@ -99,11 +98,9 @@ mod nested {
         fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
     }
 
-    /// The compositor with no display, and the window in a process of its
-    /// own on it.
-    ///
-    /// The window cannot start in this process: its client makes round trips
-    /// this compositor has to answer while the window is created.
+    /// The compositor with no display, and the window in a process of its own on it.
+    /// The window cannot start in this process: its client makes round trips this compositor has to
+    /// answer while the window is created.
     pub(crate) fn main() {
         let mut outer = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
         outer
@@ -111,8 +108,8 @@ mod nested {
             .expect("output");
         outer.add_host(Box::new(Marker::new()));
         let socket = outer.listen().expect("socket");
-        // By its full path: the window's process gets a runtime directory of
-        // its own, so it cannot find the socket by name.
+        // By its full path: the window's process gets a runtime directory of its own, so it cannot
+        // find the socket by name.
         let socket = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
             || PathBuf::from(&socket),
             |directory| Path::new(&directory).join(&socket),
@@ -121,9 +118,8 @@ mod nested {
         let directory = tempfile::tempdir().expect("runtime directory");
         let mut window = Command::new(std::env::current_exe().expect("own path"))
             .arg("--window")
-            // Nothing of this desktop: no X display, and a runtime directory
-            // of its own. The window opens on the compositor here and
-            // nowhere else.
+            // Nothing of this desktop: no X display, and a runtime directory of its own. The window
+            // opens on the compositor here and nowhere else.
             .env("WAYLAND_DISPLAY", &socket)
             .env("XDG_RUNTIME_DIR", directory.path())
             .env_remove("DISPLAY")
@@ -132,10 +128,9 @@ mod nested {
             .spawn()
             .expect("window process");
 
-        // The window's frames arrive only while this compositor runs, and the
-        // window leaves the output once its client does: what the compositor
-        // shows is read while the window is on it. The window waits for its
-        // input to close before it goes.
+        // The window's frames arrive only while this compositor runs, and the window leaves the
+        // output once its client does: what the compositor shows is read while the window is on it.
+        // The window waits for its input to close before it goes.
         let deadline = Instant::now() + OPENING;
         while outer.windows().into_iter().next().is_none() {
             outer.dispatch(Duration::from_millis(16)).expect("wait");
@@ -145,8 +140,7 @@ mod nested {
                 "the window showed nothing here (no GPU to draw one)"
             );
         }
-        // The compositor has the window's first frames; the layer fills all
-        // of it either way.
+        // The compositor has the window's first frames; the layer fills all of it either way.
         for _ in 0..10 {
             outer.dispatch(Duration::from_millis(16)).expect("wait");
             outer.render().expect("render");
@@ -227,8 +221,8 @@ mod nested {
         let _ = std::io::stdin().read_line(&mut released);
     }
 
-    /// The first two pixels the window's report names: above the middle of
-    /// the layer, then below it.
+    /// The first two pixels the window's report names: above the middle of the layer, then below
+    /// it.
     fn reported(report: &str) -> ([u8; 4], [u8; 4]) {
         let mut found: Vec<[u8; 4]> = Vec::new();
         for line in report.lines() {

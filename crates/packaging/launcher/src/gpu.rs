@@ -464,11 +464,6 @@ pub struct VulkanDevice {
 pub trait IcdProbe {
     /// The physical devices the ICD at `library` (named by `manifest`)
     /// reports, or why it could not be asked.
-    ///
-    /// # Errors
-    ///
-    /// A reason for the selection's notes when the library cannot be
-    /// loaded or its instance cannot be created.
     fn devices(&self, manifest: &Path, library: &Path) -> Result<Vec<VulkanDevice>, String>;
 
     /// Whether the physical device the ICD at `manifest` names `device`
@@ -478,10 +473,6 @@ pub trait IcdProbe {
     /// none, and "not advertised" is the safe answer everywhere this is
     /// read — it leaves the environment alone rather than switching on
     /// something the driver cannot do.
-    ///
-    /// # Errors
-    ///
-    /// A reason the question could not be put to that device.
     fn advertises(
         &self,
         _manifest: &Path,
@@ -575,10 +566,6 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
 /// the child down. A caller that already has threads cannot fork safely;
 /// it probes in-process, which is fine because it has no environment left
 /// to pin.
-///
-/// # Errors
-///
-/// Why the child produced no answer: it crashed, or the pipe failed.
 #[cfg(target_os = "linux")]
 pub fn in_isolation<T: serde::Serialize + serde::de::DeserializeOwned>(
     probe: impl FnOnce() -> T,

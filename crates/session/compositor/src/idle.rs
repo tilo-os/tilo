@@ -29,24 +29,26 @@ pub const DIM_BEFORE_BLANK: Duration = Duration::from_secs(15);
 /// Default idle duration before the session locks (5 minutes).
 pub const DEFAULT_LOCK_SECS: u64 = 300;
 
-/// Env var seeding the idle-to-blank timeout, in seconds; `0` disables
-/// blanking. Unset → [`DEFAULT_BLANK_SECS`]. The Settings power policy
-/// replaces this seed in production via [`IdleConfig::with_blank`].
+/// Env var seeding the idle-to-blank timeout, in seconds; `0` disables blanking. Unset →
+/// [`DEFAULT_BLANK_SECS`]. The Settings power policy replaces this seed in production via
+/// [`IdleConfig::with_blank`].
 pub const BLANK_SECS_ENV: &str = "TILO_IDLE_BLANK_SECS";
 
 /// Env var overriding idle-to-lock, in seconds. Unset → [`DEFAULT_LOCK_SECS`];
 /// `0` explicitly disables automatic locking (Super+L still works).
 pub const LOCK_SECS_ENV: &str = "TILO_IDLE_LOCK_SECS";
 
-/// Env var enabling idle-to-suspend, in seconds. Unset (or `0`) → no automatic suspend from this
-/// source; production sources the timeout from Settings ([`IdleConfig::with_suspend`]) — this env var is the headless/testing override.
+/// Env var enabling idle-to-suspend, in seconds. Unset (or `0` ) → no automatic suspend from this
+/// source; production sources the timeout from Settings ([`IdleConfig::with_suspend`]) — this env
+/// var is the headless/testing override.
 pub const SUSPEND_SECS_ENV: &str = "TILO_IDLE_SUSPEND_SECS";
 
-/// An effect the compositor (display) or the session (lock, suspend) must apply after calling into the [`SessionManager`]; a pure value — the manager never touches hardware itself.
+/// An effect the compositor (display) or the session (lock, suspend) must apply after calling into
+/// the [`SessionManager`]; a pure value — the manager never touches hardware itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionTransition {
-    /// The display is about to blank — lower it (backlight, or a dimming overlay where there is
-    /// no backlight) so the user notices and can keep it on with any input.
+    /// The display is about to blank — lower it (backlight, or a dimming overlay where there is no
+    /// backlight) so the user notices and can keep it on with any input.
     Dimmed,
     /// Restore the display's brightness after [`Self::Dimmed`].
     Undimmed,
@@ -59,7 +61,8 @@ pub enum SessionTransition {
     /// The session unlocked — resume normal presentation + input.
     Unlocked,
     /// The session has been idle past the suspend threshold — the machine should suspend
-    /// (`logind.Suspend`). Unlike blank/lock this leaves the compositor untouched; the actuator and inhibitor gate live outside this pure state machine. See [`SessionManager::cancel_suspend`].
+    /// (`logind.Suspend`). Unlike blank/lock this leaves the compositor untouched; the actuator and
+    /// inhibitor gate live outside this pure state machine. See [`SessionManager::cancel_suspend`].
     Suspend,
 }
 
@@ -77,12 +80,11 @@ pub enum LockedBy {
 /// What holds the session awake at a tick.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Holds {
-    /// Someone watches without touching anything: an idle-inhibit surface
-    /// on screen, a video, a presentation. Nothing dims, blanks, locks or
-    /// suspends.
+    /// Someone watches without touching anything: an idle-inhibit surface on screen, a video, a
+    /// presentation. Nothing dims, blanks, locks or suspends.
     pub idle: bool,
-    /// The machine must stay awake (a download, a remote session, a
-    /// keep-awake lease); the screen still dims, blanks and locks.
+    /// The machine must stay awake (a download, a remote session, a keep-awake lease); the screen
+    /// still dims, blanks and locks.
     pub suspend: bool,
 }
 
@@ -93,8 +95,9 @@ pub struct IdleConfig {
     pub blank_timeout: Option<Duration>,
     /// Idle duration before the session auto-locks. `None` explicitly disables idle-to-lock.
     pub lock_timeout: Option<Duration>,
-    /// Idle duration before the session suspends. `None` disables idle-to-suspend. Sourced from
-    /// the Settings power policy in production ([`Self::with_suspend`]); [`SUSPEND_SECS_ENV`] is the headless override.
+    /// Idle duration before the session suspends. `None` disables idle-to-suspend. Sourced from the
+    /// Settings power policy in production ([`Self::with_suspend`]); [`SUSPEND_SECS_ENV`] is the
+    /// headless override.
     pub suspend_timeout: Option<Duration>,
 }
 
@@ -109,9 +112,8 @@ impl Default for IdleConfig {
 }
 
 impl IdleConfig {
-    /// No timers at all: nothing dims, blanks, locks or suspends because
-    /// nothing happened. What a session in a window of another desktop
-    /// runs, where idle is that desktop's.
+    /// No timers at all: nothing dims, blanks, locks or suspends because nothing happened. What a
+    /// session in a window of another desktop runs, where idle is that desktop's.
     #[must_use]
     pub const fn never() -> Self {
         Self {
@@ -121,7 +123,8 @@ impl IdleConfig {
         }
     }
 
-    /// Resolve the config from the process environment ([`BLANK_SECS_ENV`] / [`LOCK_SECS_ENV`] / [`SUSPEND_SECS_ENV`]).
+    /// Resolve the config from the process environment ([`BLANK_SECS_ENV`] / [`LOCK_SECS_ENV`] /
+    /// [`SUSPEND_SECS_ENV`]).
     pub fn from_env() -> Self {
         Self::from_env_values(
             std::env::var(BLANK_SECS_ENV).ok().as_deref(),
@@ -130,7 +133,8 @@ impl IdleConfig {
         )
     }
 
-    /// Override the suspend timeout (the Settings power policy drives this in production; env/`from_env` only seeds the headless default). Chainable.
+    /// Override the suspend timeout (the Settings power policy drives this in production;
+    /// env/`from_env` only seeds the headless default). Chainable.
     #[must_use]
     pub fn with_suspend(mut self, suspend: Option<Duration>) -> Self {
         self.suspend_timeout = suspend;
@@ -146,8 +150,8 @@ impl IdleConfig {
         self
     }
 
-    /// Override the automatic-lock timeout from Settings. `None` is the
-    /// persisted "Never" choice; explicit locking remains available.
+    /// Override the automatic-lock timeout from Settings. `None` is the persisted "Never" choice;
+    /// explicit locking remains available.
     #[must_use]
     pub fn with_lock(mut self, lock: Option<Duration>) -> Self {
         self.lock_timeout = lock;
@@ -200,36 +204,38 @@ enum Panel {
     On,
     /// Dimmed ahead of blanking.
     Dimmed,
-    /// Powered down. `dimmed` survives the blank so waking restores the brightness the user
-    /// had, not the dimmed level.
+    /// Powered down. `dimmed` survives the blank so waking restores the brightness the user had,
+    /// not the dimmed level.
     Off { dimmed: bool },
 }
 
-/// The compositor's idle + session-lock state machine. All time enters through `now: Instant` parameters so tests can drive it deterministically (no sleeping, no wall-clock reads).
+/// The compositor's idle + session-lock state machine. All time enters through `now: Instant`
+/// parameters so tests can drive it deterministically (no sleeping, no wall-clock reads).
 #[derive(Debug)]
 pub struct SessionManager {
     config: IdleConfig,
     last_activity: Instant,
-    /// The person's last input here. Unlike `last_activity`, nothing but
-    /// input moves it, so it says when they last used this device.
+    /// The person's last input here. Unlike `last_activity` , nothing but input moves it, so it
+    /// says when they last used this device.
     last_input: Instant,
     /// Explicit panel wake is not input: only the display timeout restarts.
     last_display_wake: Option<Instant>,
     panel: Panel,
     locked: bool,
-    /// Latched once the idle-suspend threshold fires, so `tick` emits [`SessionTransition::Suspend`]
-    /// at most once per idle episode. Cleared by [`Self::note_activity`] (input after resume) and [`Self::cancel_suspend`] (a vetoed suspend request).
+    /// Latched once the idle-suspend threshold fires, so `tick` emits
+    /// [`SessionTransition::Suspend`] at most once per idle episode. Cleared by
+    /// [`Self::note_activity`] (input after resume) and [`Self::cancel_suspend`] (a vetoed suspend
+    /// request).
     suspended: bool,
-    /// The last tick at which something held the machine awake
-    /// (`INHIBIT_SUSPEND`: a keep-awake lease, a remote session, a download).
-    /// The idle-suspend period counts from the later of this and the last
-    /// input, so letting go of a hold starts a full period instead of
-    /// suspending the instant it ends.
+    /// The last tick at which something held the machine awake (`INHIBIT_SUSPEND`: a keep-awake
+    /// lease, a remote session, a download). The idle-suspend period counts from the later of this
+    /// and the last input, so letting go of a hold starts a full period instead of suspending the
+    /// instant it ends.
     suspend_held_at: Option<Instant>,
 }
 
 impl SessionManager {
-    /// Construct a fresh, active (un-blanked, un-locked) manager whose idle timer starts at `now`.
+    /// Construct a fresh, active (un-blanked, un-locked) manager whose idle timer starts at `now` .
     pub fn new(config: IdleConfig, now: Instant) -> Self {
         Self {
             config,
@@ -266,8 +272,8 @@ impl SessionManager {
         Some(blank.saturating_sub(DIM_BEFORE_BLANK.min(half)))
     }
 
-    /// Record the display as still dimmed: lifting the dim did not take
-    /// effect, so the next input lifts it again ([`SessionTransition::Undimmed`]).
+    /// Record the display as still dimmed: lifting the dim did not take effect, so the next input
+    /// lifts it again ([`SessionTransition::Undimmed`]).
     pub fn keep_dimmed(&mut self) {
         self.panel = match self.panel {
             Panel::On | Panel::Dimmed => Panel::Dimmed,
@@ -299,19 +305,21 @@ impl SessionManager {
         self.locked
     }
 
-    /// How long the session has been idle as of `now`.
+    /// How long the session has been idle as of `now` .
     pub fn idle_for(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.last_activity)
     }
 
-    /// Record an input event at `now`: resets the idle timer, restores a dimmed display
+    /// Record an input event at `now` : resets the idle timer, restores a dimmed display
     /// ([`SessionTransition::Undimmed`]) and, if the display was blanked, wakes it
     /// ([`SessionTransition::Woke`]). Brightness comes back before the panel powers on, so waking
-    /// never flashes the dimmed level. Does **not** unlock a locked session — input while locked wakes the display but the session stays locked until [`Self::request_unlock`].
+    /// never flashes the dimmed level. Does **not** unlock a locked session — input while locked
+    /// wakes the display but the session stays locked until [`Self::request_unlock`].
     pub fn note_activity(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
         self.last_input = now;
-        // Input after a resume clears the suspend latch so a later idle episode can suspend again (no transition — resume is signalled out-of-band by logind's `PrepareForSleep`).
+        // Input after a resume clears the suspend latch so a later idle episode can suspend again
+        // (no transition — resume is signalled out-of-band by logind's `PrepareForSleep` ).
         self.suspended = false;
         let mut out = Vec::new();
         self.undim(&mut out);
@@ -319,9 +327,9 @@ impl SessionManager {
         out
     }
 
-    /// Wake the display without input, authentication, or a new idle-lock episode.
-    /// The existing lock and suspend latch remain intact. A fresh display-only
-    /// deadline prevents the next tick from immediately blanking it again.
+    /// Wake the display without input, authentication, or a new idle-lock episode. The existing
+    /// lock and suspend latch remain intact. A fresh display-only deadline prevents the next tick
+    /// from immediately blanking it again.
     pub fn request_display_wake(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_display_wake = Some(now);
         let mut out = Vec::new();
@@ -331,9 +339,9 @@ impl SessionManager {
     }
 
     /// Advance the timers to `now` and emit any timeout-driven transitions (dim, blank, auto-lock).
-    /// A tick that lands past the blank without having seen the dim window blanks directly: the
-    /// dim is a warning, and there is nothing left to warn about.
-    /// Idempotent once a threshold has fired: a blanked/locked state stays that way until the boolean is cleared.
+    /// A tick that lands past the blank without having seen the dim window blanks directly: the dim
+    /// is a warning, and there is nothing left to warn about. Idempotent once a threshold has
+    /// fired: a blanked/locked state stays that way until the boolean is cleared.
     pub fn tick(&mut self, now: Instant) -> Vec<SessionTransition> {
         let idle = self.idle_for(now);
         let display_idle = now.saturating_duration_since(
@@ -380,14 +388,12 @@ impl SessionManager {
         out
     }
 
-    /// [`Self::tick`], honouring what holds the session awake. An idle
-    /// inhibitor (a video playing, a presentation, an app's `Inhibit IDLE`)
-    /// means the user is there without touching anything, so the idle episode
-    /// restarts from `now` and nothing dims, blanks, locks or suspends. A
-    /// dim already showing when the inhibitor arrives is lifted (the video
-    /// started, so the warning is moot); a blank is not — only input wakes
-    /// the panel. A suspend-only hold leaves dim, blank and lock alone, but
-    /// the idle-suspend period restarts when it lets go: a machine kept awake
+    /// [`Self::tick`], honouring what holds the session awake. An idle inhibitor (a video playing,
+    /// a presentation, an app's `Inhibit IDLE` ) means the user is there without touching anything,
+    /// so the idle episode restarts from `now` and nothing dims, blanks, locks or suspends. A dim
+    /// already showing when the inhibitor arrives is lifted (the video started, so the warning is
+    /// moot); a blank is not — only input wakes the panel. A suspend-only hold leaves dim, blank
+    /// and lock alone, but the idle-suspend period restarts when it lets go: a machine kept awake
     /// for hours is not "idle for hours" the moment the hold ends.
     pub fn tick_inhibited(&mut self, now: Instant, holds: Holds) -> Vec<SessionTransition> {
         let mut out = Vec::new();
@@ -404,16 +410,15 @@ impl SessionManager {
         out
     }
 
-    /// Restart the idle episode at `now` without it being input: a blanked
-    /// display stays blanked and a latched suspend stays latched, but no
-    /// timeout can fire until a full period has passed from here.
+    /// Restart the idle episode at `now` without it being input: a blanked display stays blanked
+    /// and a latched suspend stays latched, but no timeout can fire until a full period has passed
+    /// from here.
     pub fn defer_idle(&mut self, now: Instant) {
         self.last_activity = now;
     }
 
-    /// The person used another of their devices nearby at `at`: idle time
-    /// here counts from then if that is later, as though it were input, but
-    /// a blanked display stays blanked.
+    /// The person used another of their devices nearby at `at` : idle time here counts from then if
+    /// that is later, as though it were input, but a blanked display stays blanked.
     pub fn note_use_elsewhere(&mut self, at: Instant) {
         self.last_activity = self.last_activity.max(at);
     }
@@ -423,8 +428,8 @@ impl SessionManager {
         now.saturating_duration_since(self.last_input)
     }
 
-    /// Whether the idle timer has not yet reached the lock timeout: the
-    /// person was using the device, here or on one nearby.
+    /// Whether the idle timer has not yet reached the lock timeout: the person was using the
+    /// device, here or on one nearby.
     pub fn in_use(&self, now: Instant) -> bool {
         self.config
             .lock_timeout
@@ -436,41 +441,41 @@ impl SessionManager {
         self.suspended
     }
 
-    /// Replace the live idle-suspend timeout without resetting user activity.
-    /// A profile change is policy, not input; preserving the idle timestamp
-    /// makes a stricter profile take effect immediately and predictably.
+    /// Replace the live idle-suspend timeout without resetting user activity. A profile change is
+    /// policy, not input; preserving the idle timestamp makes a stricter profile take effect
+    /// immediately and predictably.
     pub fn set_suspend_timeout(&mut self, timeout: Option<Duration>) {
         self.config.suspend_timeout = timeout;
         self.suspended = false;
     }
 
-    /// Replace the live display-blank timeout without resetting user
-    /// activity. A changed policy takes effect on the next tick against the
-    /// current idle duration; changing it to `None` ("Never") prevents any
-    /// future automatic blanking but never wakes a display behind the user's
+    /// Replace the live display-blank timeout without resetting user activity. A changed policy
+    /// takes effect on the next tick against the current idle duration; changing it to `None`
+    /// ("Never") prevents any future automatic blanking but never wakes a display behind the user's
     /// back.
     pub fn set_blank_timeout(&mut self, timeout: Option<Duration>) {
         self.config.blank_timeout = timeout;
     }
 
-    /// Replace the live automatic-lock timeout without treating the policy
-    /// change as user activity. A shorter timeout can therefore lock on the
-    /// next tick when the current idle duration already exceeds it; `None`
-    /// (Settings' "Never") prevents future automatic locks while preserving
+    /// Replace the live automatic-lock timeout without treating the policy change as user activity.
+    /// A shorter timeout can therefore lock on the next tick when the current idle duration already
+    /// exceeds it; `None` (Settings' "Never") prevents future automatic locks while preserving
     /// explicit and pre-sleep locking.
     pub fn set_lock_timeout(&mut self, timeout: Option<Duration>) {
         self.config.lock_timeout = timeout;
     }
 
-    /// Un-latch a pending suspend the caller decided **not** to act on (an inhibitor that
-    /// appeared after this tick's check). Leaves the idle timer untouched, so the next `tick`
-    /// re-emits [`SessionTransition::Suspend`] unless [`Self::tick_inhibited`] sees the hold and
-    /// restarts the period from it. No-op if none was latched.
+    /// Un-latch a pending suspend the caller decided **not** to act on (an inhibitor that appeared
+    /// after this tick's check). Leaves the idle timer untouched, so the next `tick` re-emits
+    /// [`SessionTransition::Suspend`] unless [`Self::tick_inhibited`] sees the hold and restarts
+    /// the period from it. No-op if none was latched.
     pub fn cancel_suspend(&mut self) {
         self.suspended = false;
     }
 
-    /// Manually lock the session (Super+L / command). Resets the idle timer to `now` so the blank countdown restarts from the lock moment, and lifts a dim so the lock screen shows at full brightness. Locking an already locked session changes nothing else.
+    /// Manually lock the session (Super+L / command). Resets the idle timer to `now` so the blank
+    /// countdown restarts from the lock moment, and lifts a dim so the lock screen shows at full
+    /// brightness. Locking an already locked session changes nothing else.
     pub fn request_lock(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
         let mut out = Vec::new();
@@ -484,9 +489,9 @@ impl SessionManager {
         out
     }
 
-    /// Turn the display off now, as the idle timeout would: the power key on
-    /// a session that is already locked. The lock and timers stay as they
-    /// are; input wakes the display again. Nothing changes when it is off.
+    /// Turn the display off now, as the idle timeout would: the power key on a session that is
+    /// already locked. The lock and timers stay as they are; input wakes the display again. Nothing
+    /// changes when it is off.
     pub fn blank_now(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
         if self.is_blanked() {
@@ -498,11 +503,10 @@ impl SessionManager {
         vec![SessionTransition::Blanked]
     }
 
-    /// Enter the pre-sleep state. This is separate from ordinary activity:
-    /// unless the person turned off the password after sleep
-    /// (the session's `lock_on_sleep` policy), sleep leaves the
-    /// session locked even when automatic idle locking is disabled. Either
-    /// way a session that is already locked stays locked.
+    /// Enter the pre-sleep state. This is separate from ordinary activity: unless the person turned
+    /// off the password after sleep (the session's `lock_on_sleep` policy), sleep leaves the
+    /// session locked even when automatic idle locking is disabled. Either way a session that is
+    /// already locked stays locked.
     pub fn prepare_for_sleep(
         &mut self,
         now: Instant,
@@ -518,8 +522,8 @@ impl SessionManager {
         }
     }
 
-    /// Apply logind's post-sleep edge. Displays wake and timers re-arm, while
-    /// the lock state is intentionally preserved until authentication.
+    /// Apply logind's post-sleep edge. Displays wake and timers re-arm, while the lock state is
+    /// intentionally preserved until authentication.
     pub fn resume_from_sleep(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
         self.suspended = false;
@@ -529,10 +533,10 @@ impl SessionManager {
         out
     }
 
-    /// Apply the unlock transition: clears the lock, wakes the display if blanked, resets the idle timer. No-op if not locked.
-    ///
-    /// The *post-authentication* transition: the `ext-session-lock-v1` client
-    /// unlocked after verifying the person. This machine stays credential-agnostic.
+    /// Apply the unlock transition: clears the lock, wakes the display if blanked, resets the idle
+    /// timer. No-op if not locked.
+    /// The *post-authentication* transition: the `ext-session-lock-v1` client unlocked after
+    /// verifying the person. This machine stays credential-agnostic.
     pub fn request_unlock(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
         if !self.locked {
@@ -555,8 +559,8 @@ mod tests {
     const INHIBIT_IDLE: bool = true;
     const INHIBIT_SUSPEND: bool = false;
 
-    /// Counted holds, released when their guard drops, as the session's
-    /// inhibitor registry hands them out.
+    /// Counted holds, released when their guard drops, as the session's inhibitor registry hands
+    /// them out.
     #[derive(Default)]
     struct Registry {
         idle: Cell<usize>,
@@ -718,9 +722,9 @@ mod tests {
 
     #[test]
     fn letting_go_of_a_keep_awake_hold_starts_a_full_idle_period_before_suspending() {
-        // A machine held awake overnight (a VM, a remote session, an agent's
-        // lease) suspended the second the hold ended, because local idle
-        // time kept counting under the hold. That reads as a random suspend.
+        // A machine held awake overnight (a VM, a remote session, an agent's lease) suspended the
+        // second the hold ended, because local idle time kept counting under the hold. That reads
+        // as a random suspend.
         let t0 = Instant::now();
         let registry = Registry::default();
         let mut session = SessionManager::new(cfg_s(None, None, Some(900)), t0);
@@ -960,16 +964,16 @@ mod tests {
             let mut session = SessionManager::new(cfg(None, None), t0);
             assert!(session.tick(t0 + Duration::from_secs(599)).is_empty());
 
-            // A settings reload must apply the new policy against the existing
-            // idle episode, rather than making the user wait another full period.
+            // A settings reload must apply the new policy against the existing idle episode, rather
+            // than making the user wait another full period.
             session.set_blank_timeout(Some(Duration::from_secs(600)));
             assert_eq!(
                 session.tick(t0 + Duration::from_secs(600)),
                 vec![SessionTransition::Blanked]
             );
 
-            // "Never" applies live too. Activity starts a new episode, then no
-            // amount of elapsed idle time can blank it.
+            // "Never" applies live too. Activity starts a new episode, then no amount of elapsed
+            // idle time can blank it.
             assert_eq!(
                 session.note_activity(t0 + Duration::from_secs(601)),
                 vec![SessionTransition::Woke]
@@ -981,9 +985,8 @@ mod tests {
         // Settings policy blank timeout drives the live session.
         {
             let t0 = Instant::now();
-            // Isolate the display policy: lock and suspend are independent
-            // transitions and must not make the "Never blank" assertion fail for
-            // an unrelated reason.
+            // Isolate the display policy: lock and suspend are independent transitions and must not
+            // make the "Never blank" assertion fail for an unrelated reason.
             let mut session = SessionManager::new(
                 cfg(None, None).with_blank(Some(Duration::from_secs(60))),
                 t0,
@@ -1241,8 +1244,8 @@ mod tests {
 
     // idle-to-suspend
 
-    /// Lock "Never" and suspend when idle off: however long and however
-    /// often the person walks away, idleness only darkens the screen.
+    /// Lock "Never" and suspend when idle off: however long and however often the person walks
+    /// away, idleness only darkens the screen.
     #[test]
     fn with_lock_never_and_idle_suspend_off_idleness_only_darkens_the_screen() {
         let t0 = Instant::now();
@@ -1324,8 +1327,9 @@ mod tests {
         }
         // Cancel suspend reemits next tick without resetting timer.
         {
-            // The inhibited case: a suspend was emitted, the caller vetoed it (inhibitor held), so it
-            // un-latches and re-emits on the very next tick — the machine suspends the moment the inhibitor releases, without waiting for fresh activity.
+            // The inhibited case: a suspend was emitted, the caller vetoed it (inhibitor held), so
+            // it un-latches and re-emits on the very next tick — the machine suspends the moment
+            // the inhibitor releases, without waiting for fresh activity.
             let t0 = Instant::now();
             let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
             assert_eq!(

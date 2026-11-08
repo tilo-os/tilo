@@ -25,7 +25,6 @@ fn scoped_env(vars: &[(&str, Option<&str>)]) -> tilo_test_env::ScopedEnv {
 
 #[test]
 fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
-    // Case `a_person_is_not_the_application_they_are_running`.
     {
         let _lock = tilo_test_env::lock();
         let _env = scoped_env(&[
@@ -42,7 +41,6 @@ fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
         );
     }
 
-    // Case `two_people_running_one_app_are_two_people`.
     // Two people on two machines both open the word processor. Their ids have to
     // differ, or `undo_for_author` is matching a value that cannot tell them
     // apart — and one person's Ctrl+Z reverts the other's work.
@@ -74,7 +72,6 @@ fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
         );
     }
 
-    // Case `the_same_person_is_the_same_id_every_time`.
     // Stable across calls: an id that changed between two actions would strand the
     // first one on the undo stack, unreachable by the person who performed it.
     {

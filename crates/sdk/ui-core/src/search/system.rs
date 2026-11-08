@@ -541,8 +541,8 @@ where
         .collect()
 }
 
-/// The actions of `actions` a search for `query` finds, best first, on
-/// [`action_search_fields`]: what an app's test asserts to pin the words
+/// The actions of `actions` a search for `query` finds, best first,
+/// on [`action_search_fields`]: what an app's test asserts to pin the words
 /// people use for its actions ("mkdir") to the action they mean.
 #[must_use]
 pub fn actions_found_by<'a>(

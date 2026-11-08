@@ -13,40 +13,37 @@ use tilo_desktop_model::{GroupId, TabId};
 
 use super::{DesktopSurface, STEP_TRAVEL_PX, Swipe};
 
-/// Who owns the sideways wheel gesture in progress, decided by the gesture's
-/// first event: the content under the pointer, when it scrolled by that
-/// event, or the strip, which takes what content leaves.
+/// Who owns the sideways wheel gesture in progress, decided by the gesture's first event: the
+/// content under the pointer, when it scrolled by that event, or the strip, which takes what
+/// content leaves.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Sideways {
     Content,
     Strip,
 }
 
-/// The hand a gesture follows. A wheel or a trackpad reports its own momentum
-/// after the fingers lift, so the strip is thrown nowhere at its end; the
-/// desk's own three fingers carry no momentum, so the strip coasts with the
-/// velocity they let go at.
+/// The hand a gesture follows. A wheel or a trackpad reports its own momentum after the fingers
+/// lift, so the strip is thrown nowhere at its end; the desk's own three fingers carry no momentum,
+/// so the strip coasts with the velocity they let go at.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Hand {
-    /// A wheel: a mouse's notches, or a trackpad, which coasts the gesture
-    /// itself.
+    /// A wheel: a mouse's notches, or a trackpad, which coasts the gesture itself.
     Wheel,
     /// Three fingers on the touchpad, which the desk claims and follows.
     Fingers,
 }
 
-/// A wheel event's sideways travel in logical pixels when horizontal motion
-/// dominates, positive forward (toward later windows, like Super+Right).
-/// Winit's deltas are negative for a wheel turned (or fingers scrolling)
-/// rightward, which scrolls content toward its later columns and so moves
-/// forward; it reports pixels physical. The shell's overlay host classifies
-/// wheel input the same way.
+/// A wheel event's sideways travel in logical pixels when horizontal motion dominates, positive
+/// forward (toward later windows, like Super+Right). Winit's deltas are negative for a wheel turned
+/// (or fingers scrolling) rightward, which scrolls content toward its later columns and so moves
+/// forward; it reports pixels physical. The shell's overlay host classifies wheel input the same
+/// way.
 pub(super) fn sideways(delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
     ui::widget::sideways_travel(&delta, scale_factor)
 }
 
-/// A wheel event's vertical travel in logical pixels, positive for a wheel
-/// turned (or fingers scrolling) downward, which winit reports negative.
+/// A wheel event's vertical travel in logical pixels, positive for a wheel turned (or fingers
+/// scrolling) downward, which winit reports negative.
 pub(super) fn vertical(delta: MouseScrollDelta, scale_factor: f64) -> f64 {
     match delta {
         MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * ui::widget::line_of_wheel(),
@@ -54,9 +51,9 @@ pub(super) fn vertical(delta: MouseScrollDelta, scale_factor: f64) -> f64 {
     }
 }
 
-/// The window a pan left the person looking at: the focused one while it is
-/// still wholly in view, else the one showing the most of itself, the one
-/// nearer the middle of the view between two showing as much.
+/// The window a pan left the person looking at: the focused one while it is still wholly in view,
+/// else the one showing the most of itself, the one nearer the middle of the view between two
+/// showing as much.
 pub(super) fn panned_to(row: &GroupRow, focused: Option<GroupId>) -> Option<GroupId> {
     let (left, right) = row.visible_canvas_span();
     let middle = f64::midpoint(left, right);
@@ -83,9 +80,9 @@ pub(super) fn panned_to(row: &GroupRow, focused: Option<GroupId>) -> Option<Grou
         .map(|&(id, _, _)| id)
 }
 
-/// Pan `row` to `offset` the way the shell's direct strip pan does, within
-/// the legal range, and keep it there when the strip's geometry changes. A
-/// strip showing a maximized window stays at home.
+/// Pan `row` to `offset` the way the shell's direct strip pan does, within the legal range, and
+/// keep it there when the strip's geometry changes. A strip showing a maximized window stays at
+/// home.
 pub(super) fn pan_row(row: &mut GroupRow, offset: f64) -> bool {
     if row.groups.iter().any(|g| g.maximized) {
         return false;
@@ -115,34 +112,32 @@ pub(super) fn can_pan(row: &GroupRow, travel: f64) -> bool {
 }
 
 impl super::DesktopHandle {
-    /// The app of `tab` left a sideways wheel to the desk: its content did not
-    /// scroll with it, so the strip its window is on moves by `travel` logical
-    /// pixels, positive toward later windows, as the wheel over the strip's own
-    /// canvas does. What the app scrolled with itself never arrives here, so a
-    /// gesture is never split between its content and the strip: the app
-    /// decided at its first event ([`ui::widget::sideways_travel`], and the
-    /// app's own relay of an event it left).
+    /// The app of `tab` left a sideways wheel to the desk: its content did not scroll with it, so
+    /// the strip its window is on moves by `travel` logical pixels, positive toward later windows,
+    /// as the wheel over the strip's own canvas does. What the app scrolled with itself never
+    /// arrives here, so a gesture is never split between its content and the strip: the app decided
+    /// at its first event ([`ui::widget::sideways_travel`], and the app's own relay of an event it
+    /// left).
     pub fn sideways_wheel(&self, tab: TabId, travel: f64) {
         let mut shared = self.shared.borrow_mut();
         shared.sideways.push((tab, travel));
-        // Where the windows are is nothing the workspace publishes: the desk
-        // draws the moved strip in the frame this asks for, and nothing else.
+        // Where the windows are is nothing the workspace publishes: the desk draws the moved strip
+        // in the frame this asks for, and nothing else.
         shared.wake.wake();
     }
 }
 
 impl DesktopSurface {
-    /// Move the shown strip by what the apps of its windows left of their
-    /// sideways wheels ([`DesktopHandle::sideways_wheel`]): the same routing a
-    /// wheel over the desk takes ([`DesktopSurface::take_sideways`]), with the
-    /// content's answer already in — the app did not scroll with the event, so
-    /// the strip takes the whole gesture from its first event on.
+    /// Move the shown strip by what the apps of its windows left of their sideways wheels
+    /// ([`DesktopHandle::sideways_wheel`]): the same routing a wheel over the desk takes
+    /// ([`DesktopSurface::take_sideways`]), with the content's answer already in — the app did not
+    /// scroll with the event, so the strip takes the whole gesture from its first event on.
     pub(super) fn take_app_sideways(&mut self, now: ui::time::Instant) -> bool {
         let left = std::mem::take(&mut self.shared.borrow_mut().sideways);
         let mut panned = false;
         for (tab, travel) in left {
-            // Only a window on the strip the person looks at moves it: an
-            // app's window on another workspace's strip is not in view.
+            // Only a window on the strip the person looks at moves it: an app's window on another
+            // workspace's strip is not in view.
             let shown = self.shown_row_ref().is_some_and(|row| {
                 row.groups
                     .iter()
@@ -156,8 +151,8 @@ impl DesktopSurface {
     }
 }
 
-/// How a wheel the desk routes moves the strip it stands on, and who owns
-/// the gesture it is part of.
+/// How a wheel the desk routes moves the strip it stands on, and who owns the gesture it is part
+/// of.
 impl DesktopSurface {
     /// A wheel event in a gesture the strip owns: the strip moves by its
     /// travel, and the content under the pointer never sees it
@@ -216,9 +211,9 @@ impl DesktopSurface {
         self.take_sideways_from(travel, taken, now, Hand::Wheel, None)
     }
 
-    /// [`Self::take_sideways`] for the hand `travel` came from: `reported` is
-    /// how far it has carried the strip since it landed, for a hand that
-    /// reports its total rather than one event's travel.
+    /// [`Self::take_sideways`] for the hand `travel` came from: `reported` is how far it has
+    /// carried the strip since it landed, for a hand that reports its total rather than one event's
+    /// travel.
     fn take_sideways_from(
         &mut self,
         travel: f64,
@@ -290,11 +285,11 @@ impl DesktopSurface {
         let carried = from + travel;
         swipe.pan = Some(carried);
         let moved = match swipe.hand {
-            // A wheel reports where it is: the strip shows each event at
-            // once, with nothing of its own to resample.
+            // A wheel reports where it is: the strip shows each event at once, with nothing of its
+            // own to resample.
             Hand::Wheel => row.hold_strip_pull(carried, now),
-            // The desk resamples three fingers' travel at each frame, so a
-            // steady swipe moves the strip evenly whatever their report rate.
+            // The desk resamples three fingers' travel at each frame, so a steady swipe moves the
+            // strip evenly whatever their report rate.
             Hand::Fingers => {
                 if began {
                     row.begin_strip_pan();
@@ -303,8 +298,8 @@ impl DesktopSurface {
             }
         };
         if moved {
-            // Moving the windows is no change of anything the workspace
-            // publishes, as a scroll region's pan is none of its app's.
+            // Moving the windows is no change of anything the workspace publishes, as a scroll
+            // region's pan is none of its app's.
             ui::widget::note_view_only_pan();
         }
         swipe.panned |= moved;
@@ -318,8 +313,7 @@ impl DesktopSurface {
     pub fn carry_strip(&mut self, travel: f64, began: bool) -> bool {
         let now = ui::time::now();
         if began {
-            // A wheel gesture the fingers interrupt is over, and the fingers
-            // start their own.
+            // A wheel gesture the fingers interrupt is over, and the fingers start their own.
             self.end_idle_swipe(now);
             self.swipe = None;
         }
@@ -334,10 +328,9 @@ impl DesktopSurface {
         self.take_sideways_from(step, false, now, Hand::Fingers, Some(travel))
     }
 
-    /// The fingers carrying the strip lifted at `cancelled`: the strip coasts
-    /// on the velocity they let go at, or, with the hand taken back, stays
-    /// where it was thrown nowhere. A pan's end leaves focus to follow the
-    /// strip once it rests ([`super::DesktopSurface`]).
+    /// The fingers carrying the strip lifted at `cancelled` : the strip coasts on the velocity they
+    /// let go at, or, with the hand taken back, stays where it was thrown nowhere. A pan's end
+    /// leaves focus to follow the strip once it rests ([`super::DesktopSurface`]).
     pub fn release_strip(&mut self, cancelled: bool) -> bool {
         let now = ui::time::now();
         let Some(swipe) = self.swipe.take() else {

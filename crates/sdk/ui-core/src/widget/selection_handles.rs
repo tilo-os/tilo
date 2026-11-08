@@ -1,8 +1,8 @@
 //! Selection handles for a canvas: the frame around what is selected, its
 //! resize handles at the corners and (once the frame is big enough on
 //! screen, or always with [`SelectionHandles::with_edges`]) at the middle of
-//! each edge, and its rotation handle above (unless
-//! [`SelectionHandles::without_rotation`]: a crop, a text box, a clip),
+//! each edge, and its rotation handle above
+//! (unless [`SelectionHandles::without_rotation`]: a crop, a text box, a clip),
 //! drawn in your colour and hit-tested at a constant size on screen whatever
 //! the zoom.
 //!

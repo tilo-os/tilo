@@ -380,7 +380,7 @@ pub enum ModelChoice {
         /// The config root whose vault adopts the key; `None` the user's.
         vault: Option<std::path::PathBuf>,
     },
-    /// [`OpenAiModel::anthropic`]: Claude through Anthropic's Messages API.
+    /// [`OpenAiModel::anthropic`] — Claude through Anthropic's Messages API.
     Anthropic {
         /// The API's origin (`https://api.anthropic.com`).
         base_url: String,

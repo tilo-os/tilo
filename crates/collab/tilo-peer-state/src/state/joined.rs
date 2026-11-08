@@ -36,11 +36,6 @@ impl StatePeer {
     /// `Ok(false)` holds it until what it is decided against is here (the
     /// workspace's governance, its author's certificate, its app's surface).
     /// A retained write is decided as of when it was signed.
-    ///
-    /// # Errors
-    /// The message is no document of this workspace by the device that relayed
-    /// it, its signature or route does not verify, or the workspace's governance
-    /// refuses it.
     pub fn decide_relayed_document(
         &self,
         origin: TransportOrigin,

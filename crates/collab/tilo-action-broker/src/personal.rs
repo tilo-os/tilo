@@ -141,8 +141,8 @@ impl Door {
     /// apps that have the record open through `channels` and `fanout`, and
     /// keep the store under `state` as it changes.
     ///
-    /// `sync` must be answered by the host's accept loop on `endpoint` under
-    /// [`tilo_peer_state::PERSONAL_ALPN`]: it is what a sibling dials.
+    /// `sync` must be answered by the host's accept loop on `endpoint`
+    /// under [`tilo_peer_state::PERSONAL_ALPN`]: it is what a sibling dials.
     pub fn serve(
         runtime: &tokio::runtime::Handle,
         endpoint: iroh::Endpoint,

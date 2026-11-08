@@ -103,8 +103,6 @@ pub fn connect(socket: &std::path::Path) -> Result<FsClient, NotAvailable> {
 
 /// Connect the existing filesystem protocol over an already-admitted stream.
 /// The trusted host supplies the live endpoint; this function does not mint a grant.
-/// # Errors
-/// Refuses a disconnected descriptor or protocol initialization failure.
 #[cfg(unix)]
 pub fn connect_stream(stream: std::os::unix::net::UnixStream) -> Result<FsClient, NotAvailable> {
     let connection =
@@ -374,8 +372,6 @@ impl FileHandle {
     }
 
     /// Append one bounded chunk atomically. Never retry an unknown outcome.
-    /// # Errors
-    /// Refuses non-append handles, oversized chunks, revocation, or transport loss.
     pub async fn append(&self, bytes: &[u8]) -> Result<u32, NotAvailable> {
         if bytes.len() > MAX_WRITE_CHUNK as usize {
             return Err(crate::native_reply::refused());

@@ -35,8 +35,7 @@ impl ColorFilter {
         matches!(self, Self::Off)
     }
 
-    /// The transform itself: `rgb' = rows · rgb + offset`, each row a
-    /// channel of the result.
+    /// The transform itself: `rgb' = rows · rgb + offset` , each row a channel of the result.
     pub const fn matrix(self) -> ColorMatrix {
         /// Rec. 709 luminance: the brightness of a colour as the eye sees it.
         const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
@@ -69,8 +68,7 @@ impl ColorFilter {
         }
     }
 
-    /// The transform applied to `rgb`, each channel `0.0 ..= 1.0`: what the
-    /// shader computes.
+    /// The transform applied to `rgb` , each channel `0.0 ..= 1.0` : what the shader computes.
     pub fn apply(self, rgb: [f32; 3]) -> [f32; 3] {
         let matrix = self.matrix();
         let mut out = matrix.offset;

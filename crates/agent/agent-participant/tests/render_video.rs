@@ -20,14 +20,12 @@ mod common;
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
 
-use common::catalogue;
 use tilo_actions::door::{ActionDescriptor, DoorError};
 use tilo_agent_participant::{ConfinedReplica, ReplicaActor, Seed, render};
 use tilo_content::ContentStore;
 use video_editor::Project;
 use video_editor::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
 
-const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const VIDEO: &str = "so.tilo.video-editor";
 
 /// Whether this host renders; a test that needs it says so otherwise.
@@ -83,16 +81,9 @@ fn timeline(source: Option<&str>) -> Project {
 /// `project` held for an agent, lent `workspace`: a new record the agent loads
 /// the project into through the door, as opening a project file does.
 fn agents_record(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
-    let agent = ConfinedReplica::open(
-        &catalogue(),
-        VIDEO,
-        WORKSPACE,
-        "editor",
-        &ReplicaActor::Agent,
-        Seed::New,
-    )
-    .unwrap()
-    .lending(workspace.clone());
+    let agent = common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
+        .unwrap()
+        .lending(workspace.clone());
     let load = offered(&agent, "field-edit").expect("field edits are offered");
     let edit = serde_json::json!({ "edit": video_editor::resource::load_project(project) });
     agent
@@ -297,16 +288,9 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
         .unwrap_or_else(|error| panic!("the host renders: {error}"));
     let footage = made.value.unwrap()["content"].as_str().unwrap().to_owned();
 
-    let editor = ConfinedReplica::open(
-        &catalogue(),
-        VIDEO,
-        WORKSPACE,
-        "editor",
-        &ReplicaActor::Agent,
-        Seed::New,
-    )
-    .unwrap()
-    .lending(workspace.clone());
+    let editor = common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
+        .unwrap()
+        .lending(workspace.clone());
     let import = offered(&editor, "import-content").unwrap().address;
     editor
         .invoke(
@@ -329,10 +313,8 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
         panic!("a new record is published whole");
     };
 
-    let reviewer = ConfinedReplica::open(
-        &catalogue(),
+    let reviewer = common::confined(
         VIDEO,
-        WORKSPACE,
         "reviewer",
         &ReplicaActor::Agent,
         Seed::Existing {

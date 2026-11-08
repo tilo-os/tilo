@@ -52,11 +52,6 @@ pub struct SourceIdentity {
 
 impl SourceIdentity {
     /// Authenticate the public export before an endpoint advertises it.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an empty or oversized record, a record for another person, a
-    /// certificate outside the person's fleet, or an invalid home-peer list.
     pub fn valid(&self) -> io::Result<()> {
         if self.identity_public_key == [0; 32]
             || self.identity_record.is_empty()
@@ -286,11 +281,6 @@ pub(crate) fn aad(
 }
 
 /// Sign the canonical member certificate and the public identity export.
-///
-/// # Errors
-///
-/// Refuses a request for another person, a changed validity window, an
-/// invalid source export, or a signature that does not verify.
 pub(crate) fn issue(
     source: &SourceIdentity,
     request: &CertificationRequest,
@@ -355,11 +345,6 @@ pub(crate) fn issue(
 
 /// Install the admitted member identity into the destination's own custody.
 /// This never writes over an identity that already exists.
-///
-/// # Errors
-///
-/// Refuses an active identity, any existing device/root identity file, a
-/// certificate or record for another person, or an invalid export.
 pub(crate) fn install(
     identity_root: &Path,
     identity_dir: &Path,

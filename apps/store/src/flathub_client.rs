@@ -397,10 +397,6 @@ pub fn search_localized(query: &str, locale: &str) -> Result<Vec<AppStreamRecord
 
 /// The full `AppStream` document of one app in `locale`, as JSON: the
 /// localized description, screenshots, releases, licence and developer.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn fetch_appstream_document(
     app_id: &str,
     locale: &str,

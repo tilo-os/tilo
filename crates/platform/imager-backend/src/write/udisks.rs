@@ -39,10 +39,6 @@ fn unmount_udisks_filesystems(
 /// Ask the host's root-owned `UDisks2` daemon for one descriptor to the exact
 /// reviewed device. Polkit owns user authentication; `O_EXCL` prevents a
 /// mounted or concurrently opened device from being written.
-///
-/// # Errors
-/// Returns an error if the reviewed device changed, the host service cannot be
-/// reached, filesystem inspection or unmounting fails, or device access is denied.
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 pub fn open_udisks_device(target: &crate::media_model::TargetDrive) -> io::Result<std::fs::File> {
     use std::collections::HashMap;

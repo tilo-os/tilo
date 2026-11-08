@@ -545,9 +545,6 @@ fn event_matches_mutation(event: &ModerationEvent) -> bool {
 }
 
 /// Hash the canonical event with its own digest field cleared.
-///
-/// # Errors
-/// Returns an encoding error if the event cannot be serialized.
 pub fn transparency_event_hash(event: &ModerationEvent) -> Result<String, ModerationWireError> {
     let mut unsigned = event.clone();
     unsigned.record_hash_hex.clear();

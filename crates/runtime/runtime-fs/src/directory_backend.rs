@@ -12,8 +12,6 @@ mod atomic_save_reservation;
 pub trait WorkspaceHistoryReadSubjectBackend: Send + Sync + 'static {
     /// Release only this private controller cache alias after its admitted owner
     /// observed retirement. No File/OFD or creator aliases are bulk-deleted.
-    /// # Errors
-    /// Refuses unsupported cache retirement or missing admitted ownership.
     fn retire_controller_cache(&self) -> Result<(), String> {
         Err("Owned controller cache retirement unavailable".into())
     }
@@ -41,8 +39,6 @@ pub trait WorkspaceHistoryReadSubjectBackend: Send + Sync + 'static {
 }
 pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
     /// Source providers cannot infer canonical history from path/inode labels.
-    /// # Errors
-    /// Refuses absent independently enrolled Read/history authority.
     fn history_query(
         &self,
         _name: &EntryName,
@@ -74,8 +70,6 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
 
     /// Only a filtered own-created scope implements this. Ordinary Home cannot
     /// derive deletion/capture authority from caller names or inode labels.
-    /// # Errors
-    /// Refuses absent own-created custody, changed inode identity or revoked scope.
     fn retire_created(
         &self,
         _name: &EntryName,
@@ -111,20 +105,14 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
     /// Refuses revoked or unavailable native/root consumption authority.
     fn check(&self) -> Result<(), String>;
     /// Open one independent native cursor retaining this genuine directory grant.
-    /// # Errors
-    /// Refuses native enumeration admission or revoked scope.
     fn open_cursor(&self) -> Result<Arc<dyn WorkspaceDirectoryCursorBackend>, String>;
     fn metadata(&self) -> Result<DirectoryStat, String>;
     /// # Errors
     /// Observes one child without following links or opening its bytes.
     fn stat(&self, name: &EntryName) -> Result<Option<DirectoryStat>, String>;
     /// Observe raw symlink bytes without granting target traversal or content access.
-    /// # Errors
-    /// Refuses substituted links, revoked scope, or native IO.
     fn readlink(&self, name: &EntryName, expected: [u64; 2]) -> Result<Vec<u8>, String>;
     /// Retain a regular inode for metadata only, without byte access.
-    /// # Errors
-    /// Refuses changed identity, wrong type, revoked scope or native IO.
     fn pin_metadata(
         &self,
         name: &EntryName,
@@ -197,8 +185,6 @@ pub trait WorkspaceMetadataBackend: Send + Sync + 'static {
 pub trait WorkspaceReplacementPinBackend: Send + Sync + 'static {
     /// Release only this private controller cache alias after its admitted owner
     /// observed retirement. No File/OFD or creator aliases are bulk-deleted.
-    /// # Errors
-    /// Refuses unsupported cache retirement or missing admitted ownership.
     fn retire_controller_cache(&self) -> Result<(), String> {
         Err("Owned controller cache retirement unavailable".into())
     }
@@ -219,8 +205,6 @@ pub trait WorkspaceReplacementPinBackend: Send + Sync + 'static {
 pub trait WorkspaceJobBackend: Send + Sync + 'static {
     /// Release only this private controller cache alias after its admitted owner
     /// observed retirement. No File/OFD or creator aliases are bulk-deleted.
-    /// # Errors
-    /// Refuses unsupported cache retirement or missing admitted ownership.
     fn retire_controller_cache(&self) -> Result<(), String> {
         Err("Owned controller cache retirement unavailable".into())
     }
@@ -261,31 +245,23 @@ pub trait WorkspaceDirectoryCursorBackend: Send + Sync + 'static {
 pub trait WorkspacePendingReplacementBackend: Send + Sync + 'static {
     /// Release only this private controller cache alias after its admitted owner
     /// observed retirement. No File/OFD or creator aliases are bulk-deleted.
-    /// # Errors
-    /// Refuses unsupported cache retirement or missing admitted ownership.
     fn retire_controller_cache(&self) -> Result<(), String> {
         Err("Owned controller cache retirement unavailable".into())
     }
 
     /// SAME submitted native job, replaying its actually observed terminal report
     /// once for a newly admitted root client after signed ownership verification.
-    /// # Errors
-    /// Refuses unavailable terminal receipts or failed signed ownership verification.
     fn acknowledged_committed_job(&self) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
         Err("Acknowledged source native terminal receipt unavailable".into())
     }
     /// Returns the actual submitted job's pin only after private signed history
     /// ownership verification. Descriptive receipts cannot construct this cap.
-    /// # Errors
-    /// Refuses unavailable submitted-job pins or failed signed ownership verification.
     fn acknowledged_committed_pin(
         &self,
     ) -> Result<Arc<dyn WorkspaceReplacementPinBackend>, String> {
         Err("Acknowledged source history ownership unavailable".into())
     }
     /// Retire only the separately owned daemon RPC transport, never the source namespace.
-    /// # Errors
-    /// Refuses unsupported retirement, an invalid ticket or missing handoff ownership.
     fn retire_daemon_handoff(&self, _ticket: [u8; 16]) -> Result<(), String> {
         Err("source handoff retirement unavailable".into())
     }

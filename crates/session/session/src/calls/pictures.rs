@@ -35,8 +35,8 @@ pub const CAMERA_FPS: u32 = 30;
 pub const CAMERA_SIZE: (u32, u32) = (1280, 720);
 /// Screen pictures a second.
 pub const SCREEN_FPS: u32 = 15;
-/// Bytes of received pictures held for the app: a few seconds of every
-/// shown layer. Past it the oldest stream starts over at a keyframe.
+/// Bytes of received pictures held for the app: a few seconds of every shown layer. Past it the
+/// oldest stream starts over at a keyframe.
 pub const INBOX_BYTES: usize = 8 * 1024 * 1024;
 
 /// One frame to encode.
@@ -45,8 +45,7 @@ pub struct Frame {
     pub pixels: Arc<[u8]>,
     pub width: u32,
     pub height: u32,
-    /// [`InputFormat::Nv12`] (the camera) or [`InputFormat::Rgba`] (the
-    /// screen), tightly packed.
+    /// [`InputFormat::Nv12`] (the camera) or [`InputFormat::Rgba`] (the screen), tightly packed.
     pub format: InputFormat,
     pub captured_at: Instant,
 }
@@ -84,17 +83,15 @@ impl Feed {
         self.ready.notify_one();
     }
 
-    /// Forget the last frame: nothing is sent until the next one. What a
-    /// locked screen shows is never shared, and its last picture is not
-    /// repeated.
+    /// Forget the last frame: nothing is sent until the next one. What a locked screen shows is
+    /// never shared, and its last picture is not repeated.
     pub fn clear(&self) {
         let mut state = self.state.lock_recover();
         state.frame = None;
         state.fresh = false;
     }
 
-    /// A layer gained a reader: the encoder answers with a keyframe even
-    /// while no new frame comes.
+    /// A layer gained a reader: the encoder answers with a keyframe even while no new frame comes.
     pub fn ask(&self) {
         self.state.lock_recover().asked = true;
         self.ready.notify_one();
@@ -161,8 +158,8 @@ pub fn even_rgba(width: u32, height: u32, rgba: Arc<[u8]>) -> Option<Frame> {
     })
 }
 
-/// The largest size within `layer` that keeps `source`'s shape, even, and
-/// never larger than the source itself.
+/// The largest size within `layer` that keeps `source` 's shape, even, and never larger than the
+/// source itself.
 #[must_use]
 pub fn fitted((width, height): (u32, u32), (box_width, box_height): (u16, u16)) -> (u32, u32) {
     let (box_width, box_height) = (u32::from(box_width), u32::from(box_height));
@@ -186,34 +183,31 @@ pub fn fitted((width, height): (u32, u32), (box_width, box_height): (u16, u16)) 
     ((w & !1).max(2), (h & !1).max(2))
 }
 
-/// What this device must encode now: the layers the plane's devices show of
-/// each source, the sources to start over at a keyframe, and this person's
-/// own camera tile.
+/// What this device must encode now: the layers the plane's devices show of each source, the
+/// sources to start over at a keyframe, and this person's own camera tile.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Asking {
     /// The layers someone in the call shows of each source.
     pub wanted: BTreeMap<Source, BTreeSet<Layer>>,
-    /// Sources to start over at a keyframe, as a device whose stream fell
-    /// behind asks.
+    /// Sources to start over at a keyframe, as a device whose stream fell behind asks.
     pub restart: BTreeSet<Source>,
     /// This device's own camera, shown here, for this person's own tile.
     pub own: Option<Layer>,
 }
 
-/// What encodes a device's pictures: read by the encoder thread of each
-/// source, written by the call.
+/// What encodes a device's pictures: read by the encoder thread of each source, written by the
+/// call.
 pub trait Sink: Send + Sync {
     /// What this device must encode of `source` now.
     fn asking(&self, source: Source) -> Asking;
     /// One encoded picture, to be published on the plane.
     fn sent(&self, source: Source, object: &VideoObject);
-    /// This person's own picture, for their own tile: encoded here, never
-    /// sent.
+    /// This person's own picture, for their own tile: encoded here, never sent.
     fn own(&self, object: &VideoObject);
 }
 
-/// Start an encoder for each shown layer that has none yet, and end the ones
-/// nobody shows any more or whose picture changed shape.
+/// Start an encoder for each shown layer that has none yet, and end the ones nobody shows any more
+/// or whose picture changed shape.
 fn start_encoders(
     source: Source,
     fps: u32,
@@ -280,9 +274,8 @@ impl LayerEncoder {
     }
 }
 
-/// One source this device publishes: its feed, and the thread encoding it
-/// for the layers someone shows.
-///
+/// One source this device publishes: its feed, and the thread encoding it for the layers someone
+/// shows.
 /// Dropping it ends the encoder thread at its next frame wait.
 pub struct Sending {
     feed: Arc<Feed>,
@@ -330,8 +323,8 @@ impl Drop for Sending {
     }
 }
 
-/// The encoder thread of one source: encode each frame for every layer
-/// someone shows, and hand each picture to the sink.
+/// The encoder thread of one source: encode each frame for every layer someone shows, and hand each
+/// picture to the sink.
 fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
     let started = Instant::now();
     let mut encoders: BTreeMap<Layer, LayerEncoder> = BTreeMap::new();
@@ -351,8 +344,8 @@ fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
             (Source::Camera, own) => own,
             (Source::Screen, _) => None,
         };
-        // Taken before the layers are read, so a layer that just gained a
-        // reader is encoded as a keyframe in this pass.
+        // Taken before the layers are read, so a layer that just gained a reader is encoded as a
+        // keyframe in this pass.
         let mut asked: BTreeSet<Layer> = shown.difference(&wanted).copied().collect();
         if asking.restart.contains(&source) {
             asked.extend(shown.iter().copied());
@@ -433,8 +426,7 @@ fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
     }
 }
 
-/// One received picture: an encoded tilo-video/1 object of one device's
-/// source.
+/// One received picture: an encoded tilo-video/1 object of one device's source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Picture {
     /// The device that sent it: the plane names it, and the keys prove it.
@@ -471,8 +463,8 @@ impl Inbox {
         Arc::clone(&self.signal)
     }
 
-    /// Queue `picture` for the app. A stream dropped to make room is left
-    /// behind: it starts over at its next keyframe.
+    /// Queue `picture` for the app. A stream dropped to make room is left behind: it starts over at
+    /// its next keyframe.
     pub fn admit(&mut self, picture: Picture) {
         let key = (picture.from, picture.source);
         if picture.keyframe {
@@ -485,8 +477,8 @@ impl Inbox {
             let Some(oldest) = self.queue.front() else {
                 break;
             };
-            // The oldest stream starts over: none of its queued pictures
-            // decode without the one dropped.
+            // The oldest stream starts over: none of its queued pictures decode without the one
+            // dropped.
             let stream = (oldest.picture.from, oldest.picture.source);
             self.drop_stream(stream);
             self.behind.insert(stream);
@@ -515,9 +507,9 @@ impl Inbox {
         self.bytes = bytes;
     }
 
-    /// Forget what the app has collected (up to `after`), and hand it the
-    /// next pictures, oldest first, up to `budget` bytes but at least one.
-    /// The cursor returned is where the next collection continues.
+    /// Forget what the app has collected (up to `after` ), and hand it the next pictures, oldest
+    /// first, up to `budget` bytes but at least one. The cursor returned is where the next
+    /// collection continues.
     pub fn take(&mut self, after: u64, budget: usize) -> (Vec<Picture>, u64) {
         while self
             .queue
@@ -543,8 +535,8 @@ impl Inbox {
         (taken, cursor)
     }
 
-    /// Some of `stream`'s pictures were dropped before they got here:
-    /// nothing of it until its next keyframe.
+    /// Some of `stream` 's pictures were dropped before they got here: nothing of it until its next
+    /// keyframe.
     pub fn behind(&mut self, from: [u8; 32], source: Source) {
         let key = (from, source);
         self.drop_stream(key);
@@ -559,8 +551,8 @@ impl Inbox {
     }
 }
 
-/// This call's pictures: the inbox the app collects, and this person's own
-/// camera picture for their own tile.
+/// This call's pictures: the inbox the app collects, and this person's own camera picture for their
+/// own tile.
 pub struct Video {
     inner: Arc<Inner>,
 }
@@ -573,8 +565,8 @@ struct Inner {
 }
 
 impl Video {
-    /// The pictures of this device's call: `own` is this device's key, which
-    /// its own tile's pictures name it by.
+    /// The pictures of this device's call: `own` is this device's key, which its own tile's
+    /// pictures name it by.
     #[must_use]
     pub fn new(own: [u8; 32]) -> Arc<Self> {
         Arc::new(Self {
@@ -586,7 +578,7 @@ impl Video {
         })
     }
 
-    /// This device's own camera tile shows `layer`, or nothing.
+    /// This device's own camera tile shows `layer` , or nothing.
     pub fn own_tile(&self, layer: Option<Layer>) {
         *self.inner.own_layer.lock_recover() = layer;
     }
@@ -613,14 +605,13 @@ impl Video {
         });
     }
 
-    /// A stream lost a picture before the app saw it: nothing of it is drawn
-    /// until its next keyframe.
+    /// A stream lost a picture before the app saw it: nothing of it is drawn until its next
+    /// keyframe.
     pub fn behind(&self, from: [u8; 32], source: Source) {
         self.inner.inbox.lock_recover().behind(from, source);
     }
 
-    /// One picture of `source` a device sent over the plane: queued for the
-    /// app.
+    /// One picture of `source` a device sent over the plane: queued for the app.
     pub fn heard(&self, from: [u8; 32], source: Source, body: Vec<u8>) {
         let Ok(header) = video::validate(&body) else {
             return;
@@ -633,8 +624,7 @@ impl Video {
         });
     }
 
-    /// The pictures the app has not collected, oldest first, up to `budget`
-    /// bytes.
+    /// The pictures the app has not collected, oldest first, up to `budget` bytes.
     pub fn take(&self, after: u64, budget: usize) -> (Vec<Picture>, u64) {
         self.inner.inbox.lock_recover().take(after, budget)
     }
@@ -651,15 +641,14 @@ impl Video {
     }
 }
 
-/// The camera a call's pictures come from: the device's own, or the moving
-/// test picture for a device without one (a virtual machine, a nested
-/// development session).
+/// The camera a call's pictures come from: the device's own, or the moving test picture for a
+/// device without one (a virtual machine, a nested development session).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Camera {
     /// The device's own camera.
     #[default]
     Device,
-    /// The moving test picture: `TILO_CALL_CAMERA=test-pattern`.
+    /// The moving test picture: `TILO_CALL_CAMERA=test-pattern` .
     TestPattern,
 }
 

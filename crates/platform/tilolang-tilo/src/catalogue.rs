@@ -101,9 +101,6 @@ pub fn addresses(text: &str) -> Result<BTreeMap<String, String>, String> {
 }
 
 /// The resources a `surface.toml` lists.
-///
-/// # Errors
-/// The text is not a surface file.
 pub fn parse_surfaces(text: &str) -> Result<Vec<Surface>, String> {
     // Through a JSON value, as receivers read it (`collab_types::surface::SurfaceFile`).
     let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
@@ -125,9 +122,6 @@ pub struct NativeSurface {
 impl NativeSurface {
     /// The package this app publishes: its actions named by the catalogue ([`action_id`]), and
     /// the root a program names its own record by ([`record_root`]).
-    ///
-    /// # Errors
-    /// The surface does not read.
     pub fn package(&self) -> Result<PackageMeta, String> {
         let (surfaces, instances) = read_surfaces(&self.surface)?;
         let mut meta = package_with(&self.app, &self.title, &surfaces, &instances, Ids::Record);
@@ -166,9 +160,6 @@ pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
 
 /// The surface a native app directory publishes: its manifest's id and name, and its
 /// `surface.toml`. `None` for a directory that is not a native app with a committed surface.
-///
-/// # Errors
-/// The manifest or the surface file does not read.
 pub fn native_surface(dir: &Path) -> Result<Option<NativeSurface>, String> {
     let (manifest, surface) = (dir.join(MANIFEST_FILE), dir.join(SURFACE_FILE));
     if !manifest.is_file() || !surface.is_file() {
@@ -189,9 +180,6 @@ pub fn native_surface(dir: &Path) -> Result<Option<NativeSurface>, String> {
 /// The package a native app directory publishes: its manifest's id and name, and the
 /// resources of its `surface.toml`. `None` for a directory that is not a native app with a
 /// committed surface.
-///
-/// # Errors
-/// The manifest or the surface file does not read.
 pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
     let Some(surface) = native_surface(dir)? else {
         return Ok(None);
@@ -209,9 +197,6 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
 /// program compiles against the same package either way: [`NativeSurface::package`] adds what
 /// only an app the session does not run has, its actions named by its app ([`action_id`]) and
 /// its record a root a program names ([`record_root`]).
-///
-/// # Errors
-/// The text is not a surface file.
 pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
     let (surfaces, instances) = read_surfaces(text)?;
     Ok(package_with(app, title, &surfaces, &instances, Ids::Record))
@@ -219,9 +204,6 @@ pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, Stri
 
 /// The resources `text` publishes, and the kinds `instances` marks: the ones whose verbs act on
 /// the one resource they are called on.
-///
-/// # Errors
-/// The text is not a surface file.
 fn read_surfaces(text: &str) -> Result<(Vec<Surface>, Vec<String>), String> {
     let surfaces = parse_surfaces(text)?;
     let instances = surfaces
@@ -261,9 +243,6 @@ fn record_root(
 /// platform's ([`crate::platform_apps::platform_packages`]: the device, Settings) and the native
 /// apps among `search` ([`native_apps`]). What `tilolang check`, `build`, `describe` and
 /// `layout-check` compile against; a native app the platform already provides is the platform's.
-///
-/// # Errors
-/// A platform surface or a native app's manifest or surface file does not read.
 pub fn published_packages(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
     let mut out = crate::platform_apps::platform_packages()?;
     for native in native_apps(search)? {
@@ -276,9 +255,6 @@ pub fn published_packages(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String
 
 /// The native apps among `search`: each entry an app directory itself or a directory of them.
 /// Directories that are not native apps are passed over.
-///
-/// # Errors
-/// An app's manifest or surface file does not read.
 pub fn native_apps(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
     let mut out = Vec::new();
     for entry in search {

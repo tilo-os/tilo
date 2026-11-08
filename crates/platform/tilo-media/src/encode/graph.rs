@@ -35,9 +35,6 @@ pub fn frame_time(index: u64, fps: f64) -> gst::ClockTime {
 impl Graph {
     /// Build `desc` and start it. `with_audio` says the graph has a
     /// `tilo_audio` input to feed.
-    ///
-    /// # Errors
-    /// Why the graph could not be built or started.
     pub fn start(desc: &str, with_audio: bool, fps: f64) -> Result<Self, String> {
         gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
         let pipeline = gst::parse::launch(desc)
@@ -69,9 +66,6 @@ impl Graph {
 
     /// Push frame `index` and the sound that plays during it (when the
     /// graph has sound), both timed to the frame.
-    ///
-    /// # Errors
-    /// Why the graph refused them.
     pub fn push(&self, index: u64, rgba: &[u8], sound: Option<&[u8]>) -> Result<(), String> {
         let pts = frame_time(index, self.fps);
         let duration = frame_time(index.saturating_add(1), self.fps).saturating_sub(pts);
@@ -99,9 +93,6 @@ impl Graph {
     /// `tick` is asked about every 200 ms whether to keep waiting, told
     /// whether the graph said anything since; an `Err` stops the wait with
     /// that error (a cancel, or a flush that has gone quiet too long).
-    ///
-    /// # Errors
-    /// The graph's own error, or `tick`'s.
     pub fn finish(self, mut tick: impl FnMut(bool) -> Result<(), String>) -> Result<(), String> {
         self.video
             .end_of_stream()

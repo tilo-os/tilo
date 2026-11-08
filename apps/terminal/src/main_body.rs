@@ -5713,10 +5713,6 @@ impl TerminalBackend {
     /// Open a PTY running an arbitrary command. `TERM` is forced to
     /// `xterm-256color` so programs emit the SGR / DEC sequences this emulator
     /// understands, regardless of a launcher that happens to be non-terminal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the PTY cannot be created or the command cannot be spawned.
     pub fn with_command(mut cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
         cmd.env("TERM", "xterm-256color");
         let shell_name = cmd
@@ -6595,11 +6591,6 @@ impl TerminalWidget {
     /// Construct a hosted terminal using its required process service. The
     /// session opens at the first sync, on the target its record names (or
     /// the default for a new tab).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the host has no `ush` service to give it (always,
-    /// where no hosted process-service transport exists).
     pub fn spawn_hosted(
         services: crate::HostedProcessServices,
     ) -> Result<Self, crate::HostedTerminalError> {
@@ -6651,10 +6642,6 @@ impl TerminalWidget {
     /// let cmd = CommandBuilder::new("htop");
     /// let _term = TerminalWidget::spawn_command(cmd).unwrap();
     /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if PTY creation or the command spawn fails.
     pub fn spawn_command(cmd: CommandBuilder) -> anyhow::Result<Self> {
         let backend = TerminalBackend::with_command(cmd.clone())
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;

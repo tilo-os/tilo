@@ -1,11 +1,9 @@
-//! Window icons an application sets for itself, through `xdg_toplevel_icon_v1`.
-//!
-//! A window may name a theme icon or hand over `wl_shm` pixels — how an
-//! `AppImage`, a game or a browser profile window that no desktop entry
-//! describes still gets its own artwork in its tab. The protocol is served by
-//! smithay, which keeps what a window's icon holds on its surface, applied on
-//! each commit; here that becomes the artwork a tab paints and rides along
-//! with the window's facts ([`crate::policy::WindowInfo::icon`]).
+//! Window icons an application sets for itself, through `xdg_toplevel_icon_v1` .
+//! A window may name a theme icon or hand over `wl_shm` pixels — how an `AppImage` , a game or a
+//! browser profile window that no desktop entry describes still gets its own artwork in its tab.
+//! The protocol is served by smithay, which keeps what a window's icon holds on its surface,
+//! applied on each commit; here that becomes the artwork a tab paints and rides along with the
+//! window's facts ([`crate::policy::WindowInfo::icon`]).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,7 +39,7 @@ pub struct IconImage {
 /// What a window's own icon is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IconArtwork {
-    /// A theme icon name, resolved like a desktop entry's `Icon=`.
+    /// A theme icon name, resolved like a desktop entry's `Icon=` .
     Named(String),
     /// The pixels the window handed over, one per size it offered.
     Pixels(Arc<[IconImage]>),
@@ -55,8 +53,8 @@ pub struct WindowIcon {
 }
 
 impl WindowIcon {
-    /// Distinguishes this icon from every other one set while the
-    /// compositor runs: a window's icon changed exactly when this changed.
+    /// Distinguishes this icon from every other one set while the compositor runs: a window's icon
+    /// changed exactly when this changed.
     pub const fn serial(&self) -> u64 {
         self.serial
     }
@@ -111,8 +109,8 @@ fn next_serial() -> u64 {
     SERIAL.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Whether two icons are the same picture, so a window that sets the icon
-/// it already had changes nothing.
+/// Whether two icons are the same picture, so a window that sets the icon it already had changes
+/// nothing.
 fn same(left: Option<&Arc<WindowIcon>>, right: Option<&Arc<WindowIcon>>) -> bool {
     match (left, right) {
         (None, None) => true,
@@ -121,7 +119,7 @@ fn same(left: Option<&Arc<WindowIcon>>, right: Option<&Arc<WindowIcon>>) -> bool
     }
 }
 
-/// An X11 window's `_NET_WM_ICON`, as what a window shows.
+/// An X11 window's `_NET_WM_ICON` , as what a window shows.
 pub(crate) fn x11_icon(icon: &crate::x11_windows::X11Icon) -> Arc<WindowIcon> {
     Arc::new(WindowIcon {
         serial: next_serial(),
@@ -133,8 +131,7 @@ pub(crate) fn x11_icon(icon: &crate::x11_windows::X11Icon) -> Arc<WindowIcon> {
     })
 }
 
-/// A window set an icon for itself; it takes effect when the window's
-/// surface commits.
+/// A window set an icon for itself; it takes effect when the window's surface commits.
 #[derive(Debug, Default)]
 struct PendingIcon(AtomicBool);
 
@@ -157,8 +154,8 @@ impl XdgToplevelIconHandler for State {
     }
 }
 
-/// Advertise the `xdg_toplevel_icon_manager_v1` global, telling clients the
-/// sizes the tab pill paints at.
+/// Advertise the `xdg_toplevel_icon_manager_v1` global, telling clients the sizes the tab pill
+/// paints at.
 pub(crate) fn advertise(display: &DisplayHandle) {
     let mut manager = XdgToplevelIconManager::new::<State>(display);
     for size in PREFERRED_SIZES {
@@ -166,8 +163,8 @@ pub(crate) fn advertise(display: &DisplayHandle) {
     }
 }
 
-/// Apply the icon `surface`'s commit made current: the window it belongs to
-/// and the icon it now shows, when this commit changed it.
+/// Apply the icon `surface` 's commit made current: the window it belongs to and the icon it now
+/// shows, when this commit changed it.
 pub(crate) fn committed(surface: &WlSurface) -> Option<(u64, Option<Arc<WindowIcon>>)> {
     let pending = with_states(surface, |states| {
         states
@@ -204,8 +201,7 @@ fn artwork(state: &ToplevelIconCachedState) -> Option<IconArtwork> {
     Some(IconArtwork::Pixels(Arc::from(images)))
 }
 
-/// One size of an icon as premultiplied RGBA, or nothing for pixels this
-/// compositor does not paint.
+/// One size of an icon as premultiplied RGBA, or nothing for pixels this compositor does not paint.
 fn image(buffer: &ToplevelIconBuffer) -> Option<IconImage> {
     let edge = |edge: i32| u32::try_from(edge).ok().filter(|edge| *edge > 0);
     let width = edge(buffer.width())?;

@@ -186,9 +186,6 @@ pub fn examples_json() -> serde_json::Value {
 }
 
 /// One example, optionally with one of its embedded files. No checkout is needed.
-///
-/// # Errors
-/// Unknown example names or paths outside the example's embedded file list.
 pub fn details(name: &str, file: Option<&str>) -> Result<serde_json::Value> {
     let example = find(name)?;
     let mut result = serde_json::Map::from_iter([

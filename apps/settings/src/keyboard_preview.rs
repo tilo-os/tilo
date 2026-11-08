@@ -79,9 +79,6 @@ impl Preview {
     /// [`Self::drawn`] for an effect that checks against the drawing: until
     /// it is compiled, this refuses and notes it as needed
     /// ([`take_needed`]), so the effect answers once it is.
-    ///
-    /// # Errors
-    /// Why the drawing cannot be made, or that it is not compiled yet.
     pub(crate) fn needed(&self, label: String) -> Result<KeyboardMap, String> {
         self.drawn(label).unwrap_or_else(|| {
             NEEDED.with(|needed| *needed.borrow_mut() = Some(self.clone()));

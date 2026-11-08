@@ -37,9 +37,6 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
 
 /// A connection between an instance and the connector: a stream, the instance's end and the
 /// connector's.
-///
-/// # Errors
-/// The socket error.
 #[cfg(unix)]
 pub fn connection() -> io::Result<(Descriptor, Descriptor)> {
     let (instance, connector) = std::os::unix::net::UnixStream::pair()?;

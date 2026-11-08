@@ -1,17 +1,14 @@
-//! A window on a session's desk, as an app's is: a Wayland client of this test
-//! process's own connects to the session's display and maps a toplevel, which
-//! the session's desk places as a window of the workspace in front.
-//!
-//! A headless session draws no display to see, but it serves a display to its
-//! apps all the same (`WAYLAND_DISPLAY`, in the device's runtime directory):
-//! what a package's window connects to when the launcher starts it. Opening
-//! one here is the same mapping a toolkit's window makes, without the app.
-//!
-//! One client carries every toplevel a test maps, and hears what the session
-//! says back: each window's configuration and size, its contents, the keys and
-//! pointer buttons delivered to it, and whose keyboard it is. A test that opens
-//! one window and a test that opens six read it the same way, by the toplevel's
-//! index.
+//! A window on a session's desk, as an app's is: a Wayland client of this test process's own
+//! connects to the session's display and maps a toplevel, which the session's desk places as a
+//! window of the workspace in front.
+//! A headless session draws no display to see, but it serves a display to its apps all the same
+//! (`WAYLAND_DISPLAY`, in the device's runtime directory): what a package's window connects to when
+//! the launcher starts it. Opening one here is the same mapping a toolkit's window makes, without
+//! the app.
+//! One client carries every toplevel a test maps, and hears what the session says back: each
+//! window's configuration and size, its contents, the keys and pointer buttons delivered to it, and
+//! whose keyboard it is. A test that opens one window and a test that opens six read it the same
+//! way, by the toplevel's index.
 
 #![allow(
     dead_code,
@@ -87,15 +84,14 @@ pub struct Seen {
     pub keyboard_focused: bool,
     /// Every key the client was delivered, as the window sees it.
     pub keys: Vec<(u32, bool)>,
-    /// Every pointer button the client was delivered as pressed, in evdev
-    /// codes.
+    /// Every pointer button the client was delivered as pressed, in evdev codes.
     pub buttons: Vec<u32>,
     /// How many times the pointer came onto a window of this client.
     pub pointer_on_window: usize,
 }
 
 impl Seen {
-    /// The toplevel at `index`, as the session last told it.
+    /// The toplevel at `index` , as the session last told it.
     #[track_caller]
     pub fn toplevel(&self, index: usize) -> &Toplevel {
         self.toplevels.get(index).expect("the client opened it")
@@ -106,8 +102,7 @@ impl Seen {
         self.toplevel(index).configured
     }
 
-    /// The size the toplevel at `index` draws at, once the session named one
-    /// a window can hold.
+    /// The size the toplevel at `index` draws at, once the session named one a window can hold.
     pub fn size_at(&self, index: usize) -> Option<(i32, i32)> {
         self.toplevel(index)
             .size
@@ -130,17 +125,16 @@ pub struct Client {
     /// What the client heard: the session's answer to what this client sends.
     pub seen: Seen,
     windows: Vec<(WlSurface, XdgToplevel)>,
-    /// The contents each window shows: a client that lets its buffer go shows
-    /// nothing, and the session takes the window back.
+    /// The contents each window shows: a client that lets its buffer go shows nothing, and the
+    /// session takes the window back.
     buffers: Vec<WlBuffer>,
 }
 
 impl Client {
-    /// Connect to the display `compositor` serves, as a package's window
-    /// connecting from the device's runtime directory does.
-    ///
-    /// The client has its session to step, so it reads what arrived without
-    /// waiting for more: [`Self::exchange`] and [`Self::pump`] carry it on.
+    /// Connect to the display `compositor` serves, as a package's window connecting from the
+    /// device's runtime directory does.
+    /// The client has its session to step, so it reads what arrived without waiting for more:
+    /// [`Self::exchange`] and [`Self::pump`] carry it on.
     pub fn connect(compositor: &mut Compositor) -> Self {
         Self::of(compositor.connect_client().expect("client socket"))
     }
@@ -279,8 +273,8 @@ impl Client {
         index
     }
 
-    /// The toplevel at `index`, for a test that asks it something (a popup's
-    /// parent, a rectangle to grab).
+    /// The toplevel at `index` , for a test that asks it something (a popup's parent, a rectangle
+    /// to grab).
     #[track_caller]
     pub fn toplevel(&self, index: usize) -> &XdgToplevel {
         &self.windows.get(index).expect("the client opened it").1
@@ -316,8 +310,8 @@ impl Client {
         self.buffers.push(buffer);
     }
 
-    /// Open the toplevel of `app` (set up by `before`), draw it at the size it
-    /// was configured to, else `fallback`, and wait until the desk shows it.
+    /// Open the toplevel of `app` (set up by `before` ), draw it at the size it was configured to,
+    /// else `fallback` , and wait until the desk shows it.
     #[track_caller]
     pub fn map(
         &mut self,
@@ -343,8 +337,8 @@ impl Client {
         self.map(session, app, fallback, |_| {})
     }
 
-    /// Press and release `keycode` on the session's keyboard and let the client
-    /// hear what became of it.
+    /// Press and release `keycode` on the session's keyboard and let the client hear what became of
+    /// it.
     pub fn tap(&mut self, session: &mut Session, keycode: u32) {
         for pressed in [true, false] {
             session
@@ -357,8 +351,8 @@ impl Client {
         }
     }
 
-    /// Wait for a configure to a size other than `was`, then draw at it: the
-    /// commit that makes the state the configure carried the window's own.
+    /// Wait for a configure to a size other than `was` , then draw at it: the commit that makes the
+    /// state the configure carried the window's own.
     #[track_caller]
     pub fn redraw_when_resized(
         &mut self,
@@ -375,9 +369,8 @@ impl Client {
     }
 }
 
-/// Step the session and `clients` together until `done` holds: what the
-/// session waits for is often a worker thread (a folder read, a bus call), so
-/// counting frames would not do.
+/// Step the session and `clients` together until `done` holds: what the session waits for is often
+/// a worker thread (a folder read, a bus call), so counting frames would not do.
 #[track_caller]
 pub fn pump(
     session: &mut Session,
@@ -396,8 +389,7 @@ pub fn pump(
     });
 }
 
-/// The window of `app` and its rectangle `(x, y, w, h)`, once the desk places
-/// it.
+/// The window of `app` and its rectangle `(x, y, w, h)` , once the desk places it.
 pub fn window_of(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i32))> {
     compositor
         .windows()
@@ -421,8 +413,7 @@ pub fn tap_key(session: &mut Session, keycode: u32) {
     press_key(session, keycode, false);
 }
 
-/// Press and release the left button at `(x, y)` of the session's display, as
-/// the person does.
+/// Press and release the left button at `(x, y)` of the session's display, as the person does.
 pub fn click(session: &mut Session, x: f64, y: f64) {
     session
         .compositor()
@@ -440,8 +431,8 @@ pub fn click(session: &mut Session, x: f64, y: f64) {
     }
 }
 
-/// The display the device at `device` serves its apps, from its runtime
-/// directory: the socket name is the session's own.
+/// The display the device at `device` serves its apps, from its runtime directory: the socket name
+/// is the session's own.
 fn display(device: &Path) -> PathBuf {
     let runtime = device.join("runtime");
     let mut found: Vec<PathBuf> = std::fs::read_dir(&runtime)

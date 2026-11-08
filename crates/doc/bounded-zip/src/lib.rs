@@ -323,9 +323,6 @@ impl<R: Read + Seek> BoundedArchive<R> {
     /// Reads every file entry into memory, preserving archive order. Directory
     /// entries are skipped; `.xml`/`.rels` parts are rejected if they carry a
     /// DTD/entity declaration.
-    ///
-    /// # Errors
-    /// Any limit breach, unreadable entry or DTD-bearing XML part.
     pub fn read_all(&mut self) -> Result<Vec<(String, Vec<u8>)>, ZipError> {
         let cap = self.limits.max_part_bytes;
         let max_total = self.limits.max_total_bytes;
@@ -362,10 +359,6 @@ impl<R: Read + Seek> BoundedArchive<R> {
     /// is an optional early refusal, not a precondition. Names are confined
     /// to `dir`; a `..` or absolute entry is an error, and symbolic links
     /// are written as the bytes they contain, never created.
-    ///
-    /// # Errors
-    /// Any limit breach, an entry naming a path outside `dir`, an unreadable
-    /// entry, or a failed write.
     pub fn extract_to(&mut self, dir: &Path) -> Result<usize, ZipError> {
         let cap = self.limits.max_part_bytes;
         let max_total = self.limits.max_total_bytes;

@@ -1,12 +1,11 @@
-//! An engine composing for the session: it holds the seat's keyboard, the
-//! field the person types into hears what it composes — a client's field or
-//! one the session draws itself — its candidate window stands where the
-//! caret does, and the desk's chords still work while it composes.
+//! An engine composing for the session: it holds the seat's keyboard, the field the person types
+//! into hears what it composes — a client's field or one the session draws itself — its candidate
+//! window stands where the caret does, and the desk's chords still work while it composes.
 
 use super::*;
 
-/// A window that has the keyboard, and the seat as an engine's: a trusted
-/// client that binds the input method and holds the keyboard grab.
+/// A window that has the keyboard, and the seat as an engine's: a trusted client that binds the
+/// input method and holds the keyboard grab.
 fn window_and_engine() -> (Compositor, TestClient, TestClient) {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "form", (200, 100), [0, 255, 0, 255]);
@@ -35,7 +34,7 @@ fn window_and_engine() -> (Compositor, TestClient, TestClient) {
     (compositor, client, engine)
 }
 
-/// A hosted surface drawing a text field at `caret`, with `size`.
+/// A hosted surface drawing a text field at `caret` , with `size` .
 fn hosted_field(compositor: &mut Compositor, caret: (f64, f64, f64, f64)) -> Rc<RefCell<HostLog>> {
     let log = Rc::new(RefCell::new(HostLog::default()));
     log.borrow_mut().wants_keyboard = true;
@@ -77,9 +76,8 @@ fn the_engine_composes_into_a_client_field_while_it_holds_the_keyboard() {
     );
     assert_eq!(client.seen.committed, vec!["안".to_owned()]);
 
-    // Every key the person types reaches the engine first: the field hears
-    // only what the engine commits, so the chord keys it would have had are
-    // the engine's.
+    // Every key the person types reaches the engine first: the field hears only what the engine
+    // commits, so the chord keys it would have had are the engine's.
     let before = client.seen.keys.len();
     compositor
         .input(InputEvent::Key {
@@ -148,8 +146,8 @@ fn the_engine_composes_into_a_hosted_field() {
         ]
     );
 
-    // The field takes no key of its own while the engine composes in it: the
-    // engine has the keyboard.
+    // The field takes no key of its own while the engine composes in it: the engine has the
+    // keyboard.
     compositor
         .input(InputEvent::Key {
             keycode: KEY_A,
@@ -210,8 +208,8 @@ fn the_candidate_window_stands_under_the_caret() {
         "the field's caret, as the compositor serves it"
     );
 
-    // What the engine draws in it stands under the text: the bottom of the
-    // caret, not the top of the display.
+    // What the engine draws in it stands under the text: the bottom of the caret, not the top of
+    // the display.
     engine.paint_popup(40, [255, 0, 255, 255]);
     pump(&mut compositor, &mut [&mut engine], |_, _| true);
     compositor.draw_frame().expect("a frame");
@@ -244,8 +242,8 @@ fn the_desks_chords_still_work_while_an_engine_composes() {
     engine.grab_keyboard();
     pump(&mut compositor, &mut [&mut engine], |_, _| true);
 
-    // The desk's own chords answer wherever the keyboard is, and the engine
-    // holds it: a chord is the session's before it is the engine's.
+    // The desk's own chords answer wherever the keyboard is, and the engine holds it: a chord is
+    // the session's before it is the engine's.
     press_keys(&mut compositor, &[KEY_LEFTMETA, KEY_X]);
     pump(&mut compositor, &mut [&mut engine], |_, _| {
         !chords.borrow().taken.is_empty()

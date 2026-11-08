@@ -3,6 +3,10 @@
     clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![expect(
+    clippy::significant_drop_tightening,
+    reason = "every test here keeps its relay and workspace alive to the end"
+)]
 
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
@@ -299,10 +303,6 @@ async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_report_filed_in_the_room_restricts_and_undoes_the_flood_as_the_bot() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -419,10 +419,6 @@ fn greeter(channel: &str) -> installed::InstalledBot {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn an_installed_bot_answers_a_post_in_the_room_once() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -589,10 +585,6 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -627,10 +619,6 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     use membership::{DELEGATION_LIFETIME_NS, HostRootCertifier, Kept, keep_member};
     let scratch = tempfile::tempdir().unwrap();
@@ -681,10 +669,6 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_bot_step_reads_through_a_records_registered_read() {
     use tilo_automation::{ActorFilter, Selector, Shortcut, Step, StepKind, TriggerSpec};
     let scratch = tempfile::tempdir().unwrap();
@@ -753,10 +737,6 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -816,10 +796,6 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_land() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -991,10 +967,6 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
 /// its post as the bot's own, it reaches the chat sealed, and a guest
 /// opens it.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     use crate::workspaces::sealed_fixtures::{SealingMember, governor_published, member_device};
     let scratch = tempfile::tempdir().unwrap();
@@ -1159,10 +1131,6 @@ fn opened(
 /// from the host's copy. Past Ada's quota her oldest file goes, and a file
 /// over the cap is not asked for at all.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "one story: posting, leaving, the host's copy, the quota and the cap"
@@ -1390,10 +1358,6 @@ async fn bridged_lounge(workspaces: &Workspaces, workspace: &str, cert: &DeviceC
 /// again from the workspace's records and finishes the layout, the channels
 /// under the server's category as in Discord.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_again() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -1507,10 +1471,6 @@ async fn a_bot_installed_from_a_program_file_is_named_for_itself_not_its_path() 
 /// an outbox entry) reaches the workspace's row, so the workspace stops refusing the
 /// bot's settles.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
     use membership::{HostRootCertifier, Kept, keep_member};
     let shipped = include_str!("../../../../../apps/discord/bridge/program.json");
@@ -1616,10 +1576,6 @@ async fn answered(
 /// without restarting, and the second is the same bot (its installation and
 /// what it read up to) running the new program under its new grants.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its workspace stay live for the whole test"
-)]
 async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
     use tilo_peer_state::workspace_membership::{BotRequest, WorkspaceMembershipCommand};
     const ENTRY: &str = "dev.ada.greeter";

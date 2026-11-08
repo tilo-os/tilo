@@ -21,17 +21,9 @@ pub const FORWARDED_GAMEPAD_PRODUCT: u16 = 0x5153;
 /// A local Linux device restricted to the broker's sanitized gamepad events.
 pub trait LinuxGamepadDevice: Send {
     /// Emit one typed gamepad event and synchronize it to local consumers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the local virtual device cannot accept the event.
     fn emit(&mut self, event: ForwardedGamepadEvent) -> io::Result<()>;
 
     /// Neutralize all fixed axes and hats and release every fixed button.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the release batch cannot be delivered.
     fn release_all(&mut self) -> io::Result<()>;
 
     /// Destroy the local virtual device. Implementations must be idempotent.

@@ -108,9 +108,6 @@ pub fn entries(doc: &AutoCommit) -> BTreeMap<String, ImportEntry> {
 }
 
 /// Write `entry` into the workspace's governed map; the authority's own change.
-///
-/// # Errors
-/// An automerge failure, or a workspace already keeping as many proposals as it may.
 pub fn put_entry(doc: &mut AutoCommit, entry: &ImportEntry) -> Result<(), String> {
     let object = match doc.get(ROOT, WORKSPACE_KEY).map_err(|e| e.to_string())? {
         Some((Value::Object(ObjType::Map), object)) => object,
@@ -132,9 +129,6 @@ pub fn put_entry(doc: &mut AutoCommit, entry: &ImportEntry) -> Result<(), String
 
 /// Remove settled proposals older than `before_unix`, so the map stays
 /// small; pending ones stay until they expire.
-///
-/// # Errors
-/// An automerge failure.
 pub fn prune(doc: &mut AutoCommit, before_unix: u64) -> Result<usize, String> {
     let Some((Value::Object(ObjType::Map), object)) =
         doc.get(ROOT, WORKSPACE_KEY).map_err(|e| e.to_string())?
@@ -172,9 +166,6 @@ impl ProposeArgument {
     }
 
     /// The document, when it is exactly the one the proposal names.
-    ///
-    /// # Errors
-    /// Malformed or oversized bytes, or bytes other than the proposal's.
     pub fn document(&self) -> Result<Vec<u8>, String> {
         let limit = usize::try_from(MAX_IMPORT_DOCUMENT_BYTES).unwrap_or(usize::MAX);
         if self.document.len() > limit.div_ceil(3).saturating_mul(4) {

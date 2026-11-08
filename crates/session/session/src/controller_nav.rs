@@ -28,19 +28,19 @@ use std::time::{Duration, Instant};
 use os_actions::{ForwardedGamepadEvent, GamepadAxis, GamepadButton};
 use ui::ControllerFamily;
 
-/// Stick deflection (of `i16::MAX`) that starts a move.
+/// Stick deflection (of `i16::MAX` ) that starts a move.
 pub const STICK_PRESS: i16 = 18_000;
-/// Deflection a held stick direction must fall under to end. The gap to
-/// [`STICK_PRESS`] keeps a stick resting near the threshold from chattering.
+/// Deflection a held stick direction must fall under to end. The gap to [`STICK_PRESS`] keeps a
+/// stick resting near the threshold from chattering.
 pub const STICK_RELEASE: i16 = 11_000;
-/// Trigger travel that counts as a press, and the level it must fall under
-/// before the next press registers.
+/// Trigger travel that counts as a press, and the level it must fall under before the next press
+/// registers.
 const TRIGGER_PRESS: i16 = 16_000;
 const TRIGGER_RELEASE: i16 = 8_000;
 /// A held direction waits this long before repeating…
 pub const REPEAT_DELAY: Duration = Duration::from_millis(380);
-/// …then repeats at this interval, shortening by `REPEAT_ACCELERATION`
-/// per step down to [`REPEAT_FASTEST`], so long lists stay reachable.
+/// …then repeats at this interval, shortening by `REPEAT_ACCELERATION` per step down to
+/// [`REPEAT_FASTEST`], so long lists stay reachable.
 pub const REPEAT_FIRST: Duration = Duration::from_millis(160);
 pub const REPEAT_FASTEST: Duration = Duration::from_millis(45);
 const REPEAT_ACCELERATION: f64 = 0.82;
@@ -81,7 +81,7 @@ pub enum NavIntent {
 /// The four face buttons by the role their printed legend carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FaceRole {
-    /// `A` (`×` on `PlayStation`).
+    /// `A` (`×` on `PlayStation` ).
     Confirm,
     /// `B` (`○`).
     Cancel,
@@ -91,9 +91,9 @@ pub enum FaceRole {
     Fourth,
 }
 
-/// Linux reports face buttons by position. Nintendo prints `A` east and `B`
-/// south — the mirror of Xbox — so the roles follow the legend, matching
-/// the glyphs [`ui::input::ControllerButton::label`] draws.
+/// Linux reports face buttons by position. Nintendo prints `A` east and `B` south — the mirror of
+/// Xbox — so the roles follow the legend, matching the glyphs
+/// [`ui::input::ControllerButton::label`] draws.
 fn face_role(family: ControllerFamily, button: GamepadButton) -> Option<FaceRole> {
     use GamepadButton::{East, North, South, West};
     Some(match family {
@@ -125,7 +125,7 @@ fn face_role(family: ControllerFamily, button: GamepadButton) -> Option<FaceRole
     })
 }
 
-/// The face button that carries `role` on `family`, for drawing its glyph.
+/// The face button that carries `role` on `family` , for drawing its glyph.
 pub fn face_button(family: ControllerFamily, role: FaceRole) -> ui::input::ControllerButton {
     use ui::input::ControllerButton;
     [
@@ -142,8 +142,7 @@ pub fn face_button(family: ControllerFamily, role: FaceRole) -> ui::input::Contr
 #[derive(Clone, Copy, Debug)]
 struct HeldDirection {
     direction: NavDirection,
-    /// Whether Guide was held when the direction began; a repeat keeps the
-    /// meaning it started with.
+    /// Whether Guide was held when the direction began; a repeat keeps the meaning it started with.
     chrome: bool,
     next: Instant,
     interval: Duration,
@@ -180,8 +179,8 @@ impl ControllerNavMapper {
         self.family
     }
 
-    /// While a fullscreen window (typically a game) has focus, the
-    /// controller is its input: only Guide chords reach the desktop.
+    /// While a fullscreen window (typically a game) has focus, the controller is its input: only
+    /// Guide chords reach the desktop.
     pub fn set_passthrough(&mut self, passthrough: bool) {
         if self.passthrough != passthrough && passthrough {
             self.held = None;
@@ -189,7 +188,7 @@ impl ControllerNavMapper {
         self.passthrough = passthrough;
     }
 
-    /// Translate one event observed at `now`.
+    /// Translate one event observed at `now` .
     pub fn feed(&mut self, event: ForwardedGamepadEvent, now: Instant) -> Vec<NavIntent> {
         let mut out = Vec::new();
         match event {
@@ -221,7 +220,7 @@ impl ControllerNavMapper {
         out
     }
 
-    /// Emit the auto-repeats due by `now`.
+    /// Emit the auto-repeats due by `now` .
     pub fn tick(&mut self, now: Instant) -> Vec<NavIntent> {
         let mut out = Vec::new();
         while let Some(held) = self.held.as_mut()
@@ -246,8 +245,7 @@ impl ControllerNavMapper {
         self.held.map(|held| held.next)
     }
 
-    /// Forget all held state, as when the controller disconnects or is
-    /// leased away mid-press.
+    /// Forget all held state, as when the controller disconnects or is leased away mid-press.
     pub fn reset(&mut self) {
         *self = Self {
             passthrough: self.passthrough,
@@ -273,8 +271,8 @@ impl ControllerNavMapper {
             } else if self.guide_down {
                 self.guide_down = false;
                 if !self.guide_chorded {
-                    // Guide is a chord key first; a bare tap is its own
-                    // action, and belongs to the desktop even in a game.
+                    // Guide is a chord key first; a bare tap is its own action, and belongs to the
+                    // desktop even in a game.
                     out.push(NavIntent::QuickSettings);
                 }
             }
@@ -356,8 +354,8 @@ const fn direction_intent(direction: NavDirection, chrome: bool) -> NavIntent {
     }
 }
 
-/// The D-pad direction, keeping the held one through a diagonal roll so
-/// sliding a thumb across the pad does not re-fire.
+/// The D-pad direction, keeping the held one through a diagonal roll so sliding a thumb across the
+/// pad does not re-fire.
 fn hat_direction(hat: (i8, i8), previous: Option<NavDirection>) -> Option<NavDirection> {
     let horizontal = match hat.0 {
         -1 => Some(NavDirection::Left),
@@ -376,9 +374,8 @@ fn hat_direction(hat: (i8, i8), previous: Option<NavDirection>) -> Option<NavDir
     }
 }
 
-/// The stick direction along its dominant axis, with hysteresis: a held
-/// direction lasts until it falls under [`STICK_RELEASE`], a new one needs
-/// [`STICK_PRESS`].
+/// The stick direction along its dominant axis, with hysteresis: a held direction lasts until it
+/// falls under [`STICK_RELEASE`], a new one needs [`STICK_PRESS`].
 fn stick_direction(stick: (i16, i16), previous: Option<NavDirection>) -> Option<NavDirection> {
     let (x, y) = (i32::from(stick.0), i32::from(stick.1));
     let horizontal = x.unsigned_abs() >= y.unsigned_abs();
@@ -459,8 +456,7 @@ mod tests {
             mapper.feed(axis(GamepadAxis::LeftX, 25_000), t),
             vec![NavIntent::Move(NavDirection::Right)]
         );
-        // Easing back toward the threshold keeps the same held direction
-        // instead of re-firing.
+        // Easing back toward the threshold keeps the same held direction instead of re-firing.
         assert!(mapper.feed(axis(GamepadAxis::LeftX, 14_000), t).is_empty());
         assert!(mapper.feed(axis(GamepadAxis::LeftX, 20_000), t).is_empty());
         // Under the release level it ends; a new deflection fires again.

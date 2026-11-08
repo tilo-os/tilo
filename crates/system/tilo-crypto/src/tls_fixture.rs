@@ -19,11 +19,6 @@ impl Drop for TlsFixture {
 }
 
 /// Generate a constrained ephemeral CA and an IP-SAN server certificate.
-///
-/// # Errors
-///
-/// Returns an error if certificate validity bounds overflow, key generation
-/// fails, or either certificate cannot be encoded or signed.
 pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, String> {
     use rcgen::{
         BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,

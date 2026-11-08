@@ -932,8 +932,8 @@ impl Theme {
         self
     }
 
-    /// Glyph metrics follow the text scale by
-    /// [`crate::tokens::Metrics::icon_growth`]: re-grow them from the scale
+    /// Glyph metrics follow the text scale
+    /// by [`crate::tokens::Metrics::icon_growth`]: re-grow them from the scale
     /// they were grown for to `to`.
     fn regrow_icons(&mut self, from: f32, to: f32) {
         use crate::tokens::Metrics;
@@ -1082,8 +1082,8 @@ impl Theme {
         self
     }
 
-    /// [`crate::tokens::Metrics::text_growth`] of this theme's
-    /// [`Theme::text_scale`]: how much a text-sized extent grows, never
+    /// [`crate::tokens::Metrics::text_growth`] of this
+    /// theme's [`Theme::text_scale`]: how much a text-sized extent grows, never
     /// below 1.
     #[must_use]
     pub fn text_growth(&self) -> f32 {

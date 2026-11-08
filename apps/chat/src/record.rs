@@ -176,9 +176,6 @@ fn migrate(
 /// Move the read marks versions 1 and 2 kept as counts (person, then
 /// channel, to how many messages they had read) to `read_counts`, and start
 /// `read` over as positions in the parts.
-///
-/// # Errors
-/// The document's read or write error.
 fn keep_read_counts(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
     use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value};
     use ui::tilo_resource::Slot;
@@ -209,9 +206,6 @@ fn keep_read_counts(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> 
 /// empty, a category or kind it does not hold. What the item already says
 /// stays, and the flat fields stay where they are. A collection whose every
 /// entry kept its flat `order` is listed in that order again.
-///
-/// # Errors
-/// The document's read or write error.
 fn restore_flat_items(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
     use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
     use ui::tilo_resource::Slot;
@@ -292,9 +286,6 @@ fn restore_flat_items(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError
 /// with; the old field is removed. Nothing is lost with it: a conversation
 /// whose participants are only an agent is listed as that agent's, not
 /// among the workspace's channels.
-///
-/// # Errors
-/// The document's read or write error.
 fn participants_of_old_channels(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
     use automerge::transaction::Transactable as _;
     use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
@@ -469,9 +460,6 @@ fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<
 /// the part it named left in the reference's span. A resource whose provider
 /// was never known could not be opened then either: its words are kept,
 /// quoted, rather than an address nothing could resolve.
-///
-/// # Errors
-/// Returns the document's read or write error.
 fn upgrade_attachments(
     doc: &mut ui::tilo_resource::Doc,
     message: &ObjId,

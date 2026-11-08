@@ -32,9 +32,6 @@ pub use tilo_innertube;
 /// The engine's check binary and the apps' `--probe-youtube-engine` call it,
 /// so a release proves the library loads and runs against the runtime it
 /// ships with, and that the apps load it themselves.
-///
-/// # Errors
-/// Names the identifier or locale `rustypipe` judged wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use rustypipe::param::Language;

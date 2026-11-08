@@ -782,8 +782,6 @@ fn exact_parent(pid: u32, parent: u32) -> io::Result<()> {
 /// Deliver only an actual owned root child already independently authenticated
 /// by the original helper. No command, UID, source or namespace grant is sent.
 /// The proof endpoint must have been created by that exact consuming child.
-/// # Errors
-/// Refuses foreign child/parent, dead peer, replaced installed image or endpoint.
 pub fn send_consuming_bootstrap(
     stream: &mut UnixStream,
     child: &mut Child,
@@ -1044,8 +1042,6 @@ impl ManagedConsumingBootstrap {
     }
     /// Send the single child-created direct Shell proof endpoint on the existing
     /// authenticated root bootstrap transport. No listener is created.
-    /// # Errors
-    /// Refuses repeated delegation or lost actual child/program custody.
     pub fn delegate_shell(&mut self, stream: &mut UnixStream) -> io::Result<()> {
         self.check()?;
         let endpoint = self.shell_endpoint.as_ref().ok_or_else(denied)?;
@@ -1057,8 +1053,6 @@ impl ManagedConsumingBootstrap {
     /// for genuine direct Shell QPE before reading or executing this command.
     /// A local refusal emits exactly TCB0; only attempted shared framing errors
     /// escape as errors and require global bootstrap retirement.
-    /// # Errors
-    /// Refuses incomplete shared framing or an elapsed absolute request budget.
     pub fn delegate_shell_command(
         &mut self,
         stream: &mut UnixStream,
@@ -1124,8 +1118,6 @@ pub enum ConsumingBootstrapCommand {
 impl ManagedConsumingBootstrap {
     /// Deliver the exact frozen target command once, over the same private
     /// parent channel. The independently authenticated Shell checks its digest.
-    /// # Errors
-    /// Refuses repeated command, current custody loss or invalid fixed program.
     pub fn send_command(
         &mut self,
         command: &ConsumerCommand,
@@ -1175,8 +1167,6 @@ pub struct ConsumingBootstrapEntry {
 impl ConsumingBootstrapEntry {
     /// Call after isolating this helper's own mount namespace. The inherited
     /// descriptor alone is insufficient: actual root-parent QPE/image are needed.
-    /// # Errors
-    /// Refuses wrong mode, root, parent, installed image or mount namespace.
     pub fn authenticate(mut control: UnixStream) -> io::Result<Self> {
         if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(denied());
@@ -1239,8 +1229,6 @@ impl ConsumingBootstrapEntry {
     }
     /// Observe the actual target Shell over the child-created private endpoint.
     /// Caller must match it to original parent's certified input before spawn.
-    /// # Errors
-    /// Refuses repeated use, root sender, wrong parent or incomplete mutual QPE.
     pub fn authenticate_shell(&mut self) -> io::Result<ExecutingPeer> {
         self.check()?;
         if self.shell_authenticated {
@@ -1274,8 +1262,6 @@ impl ConsumingBootstrapEntry {
     }
     /// The sole bounded parent-control reader. Exposure control will extend its
     /// finite vocabulary, preserving one owner of this stream.
-    /// # Errors
-    /// Refuses unknown opcodes, duplicate commands, invalid bounds or lost parent.
     pub fn next_command(&mut self) -> io::Result<ConsumingBootstrapCommand> {
         self.check()?;
         self.control
@@ -1318,8 +1304,6 @@ impl ConsumingBootstrapEntry {
     }
     /// Deliver actual ordinary child custody on the independently authenticated
     /// direct Shell stream; caller retains the returned root supervisor.
-    /// # Errors
-    /// Refuses missing mutual QPE or current parent/child/command evidence.
     pub fn handoff_ordinary(&mut self, child: &mut OwnedOrdinaryChild) -> io::Result<()> {
         self.check()?;
         if !self.shell_authenticated || !self.command_received {

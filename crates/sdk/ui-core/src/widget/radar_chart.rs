@@ -15,6 +15,7 @@ use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::chart_geometry;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
@@ -214,12 +215,6 @@ impl RadarMarks {
                 / f64::from(u32::try_from(self.axes.len().max(1)).unwrap_or(u32::MAX))
                 * TAU
     }
-    fn polar(center: Point, radius: f64, angle: f64) -> Point {
-        Point::new(
-            center.x + radius * angle.cos(),
-            center.y + radius * angle.sin(),
-        )
-    }
     fn value_point(&self, series: &RadarSeries, axis: usize) -> Option<Point> {
         let axis_spec = self.axes.get(axis)?;
         let value = *series.values.get(axis)?;
@@ -232,7 +227,7 @@ impl RadarMarks {
             value / axis_spec.max
         };
         let (center, radius) = self.geometry();
-        Some(Self::polar(center, radius * fraction, self.angle(axis)))
+        Some(chart_geometry::polar(center, radius * fraction, self.angle(axis)))
     }
     fn polygon(&self, series: &RadarSeries, fraction: f64) -> BezPath {
         let (center, radius) = self.geometry();
@@ -241,7 +236,7 @@ impl RadarMarks {
             let point = if (fraction - 1.0).abs() <= f64::EPSILON {
                 self.value_point(series, axis).unwrap_or(center)
             } else {
-                Self::polar(center, radius * fraction, self.angle(axis))
+                chart_geometry::polar(center, radius * fraction, self.angle(axis))
             };
             if axis == 0 {
                 path.move_to(point);
@@ -392,7 +387,7 @@ impl PlotMarks for RadarMarks {
             );
         }
         for axis in 0..self.axes.len() {
-            let outer = Self::polar(center, radius, self.angle(axis));
+            let outer = chart_geometry::polar(center, radius, self.angle(axis));
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -401,7 +396,7 @@ impl PlotMarks for RadarMarks {
                 &Line::new(center, outer),
             );
             if let Some(spec) = self.axes.get(axis) {
-                let label_point = Self::polar(center, radius + 20.0, self.angle(axis));
+                let label_point = chart_geometry::polar(center, radius + 20.0, self.angle(axis));
                 let (width, _) =
                     tr.measure_style(&spec.label, None, &theme.text(TextRole::Caption));
                 tr.draw_style(

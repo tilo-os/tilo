@@ -1,10 +1,8 @@
 //! A German desktop reads the surfaces that survive the one shell in German.
-//!
-//! The session publishes its resources — the desk's rows, the windows and the
-//! chrome's own actions — with the labels the action catalogue, the search and
-//! an agent read. Each label is resolved through the toolkit's catalogue
-//! when it is published, so a session on a German desktop publishes German:
-//! this walks what it publishes and reads it.
+//! The session publishes its resources — the desk's rows, the windows and the chrome's own actions
+//! — with the labels the action catalogue, the search and an agent read. Each label is resolved
+//! through the toolkit's catalogue when it is published, so a session on a German desktop publishes
+//! German: this walks what it publishes and reads it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -23,7 +21,7 @@ use tilo_sheets::Seat as _;
 
 use common::{private_home, seeded_session};
 
-/// The words the person reads the actions of `prefix`'s resources by.
+/// The words the person reads the actions of `prefix` 's resources by.
 fn labelled<'a>(labels: &'a [(String, String)], prefix: &str) -> Vec<&'a str> {
     labels
         .iter()
@@ -32,8 +30,7 @@ fn labelled<'a>(labels: &'a [(String, String)], prefix: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// Every action the session publishes, as its address and the words the
-/// person reads it by.
+/// Every action the session publishes, as its address and the words the person reads it by.
 fn published(session: &tilo_session::Session) -> Vec<(String, String)> {
     survey(&session.resources())
         .into_iter()
@@ -52,8 +49,7 @@ fn published(session: &tilo_session::Session) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The name the session publishes `kind` under, wherever it stands in the
-/// tree it offers.
+/// The name the session publishes `kind` under, wherever it stands in the tree it offers.
 fn named(session: &tilo_session::Session, kind: &str) -> Option<String> {
     fn find(specs: &[ResourceSpec], kind: &str) -> Option<String> {
         specs.iter().find_map(|spec| {
@@ -75,17 +71,17 @@ fn speak(locale: &str) {
 #[test]
 fn the_surviving_surfaces_speak_the_persons_language() {
     let root = private_home();
-    // A session first: what publishes its catalogue publishes it once, and
-    // every label after this is resolved in the language set below.
+    // A session first: what publishes its catalogue publishes it once, and every label after this
+    // is resolved in the language set below.
     let session = seeded_session(root.path());
     speak("de-DE");
     let labels = published(&session);
     speak("en-US");
     let in_english = published(&session);
 
-    // The desk's own rows: what a person answers on their avatar, the tray
-    // item of a running application, and stopping an agent. A row stands
-    // only while it applies, so this is what is up now.
+    // The desk's own rows: what a person answers on their avatar, the tray item of a running
+    // application, and stopping an agent. A row stands only while it applies, so this is what is up
+    // now.
     let desk = labelled(&labels, "session:desk/");
     assert!(
         desk.contains(&"Stoppen"),
@@ -98,9 +94,8 @@ fn the_surviving_surfaces_speak_the_persons_language() {
         );
     }
 
-    // What the shell's own views carry, as the old session said it: no
-    // English where the old session had German, and the German the old
-    // session said in its place.
+    // What the shell's own views carry, as the old session said it: no English where the old
+    // session had German, and the German the old session said in its place.
     for (english, german) in [
         ("Show a readout", "Eine Anzeige zeigen"),
         ("About this computer", "Über diesen Computer"),

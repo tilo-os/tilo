@@ -22,7 +22,7 @@ use registry_server::{
 };
 use registry_types::{
     EntryAction, ExternalModerationOperation, ModerationActorRole, ModerationCase,
-    ModerationDestination, ModerationMutation, RegistryEntry, RegistryHandshake, RegistryVersion,
+    ModerationDestination, ModerationMutation, RegistryEntry, RegistryHandshake,
     SignedModerationMutation, SignedRegistrySnapshot, TransparencyPage, sign_change_request,
     sign_external_moderation,
 };
@@ -335,40 +335,28 @@ fn publish_snapshot_of(
 }
 
 fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
-    RegistryEntry {
-        package_id: "so.tilo.editor".into(),
-        kind: registry_types::EntryKind::App,
+    registry_types::RegistryEntry {
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
         tagline: "Edit together".into(),
-        images: registry_types::LocalizedImages::english_icon(
-            "https://apps.tilo.so/images/test-icon.svg",
-            "Test icon",
-        ),
-        supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into()],
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
-        versions: vec![RegistryVersion {
-            version: "2026.06".into(),
-            released_at_unix: 1_800_000_000,
-            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                tapp_url: "https://apps.tilo.so/artifacts/editor/2026.06.tapp".into(),
-                tapp_root_hash_hex: "cd".repeat(32),
-                tapp_size_bytes: 1024,
-                tapp_blake3_hex: "ef".repeat(32),
-                target: registry_types::RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
-            }),
-        }],
+        versions: vec![crate::support::version(
+            "2026.06",
+            1_800_000_000,
+            crate::support::tapp(
+                "https://apps.tilo.so/artifacts/editor/2026.06.tapp",
+                "cd".repeat(32),
+                1024,
+                "ef".repeat(32),
+                None,
+            ),
+        )],
         updated_at_unix: updated_at,
-        signature_hex: String::new(),
+        ..crate::support::entry(
+            "so.tilo.editor",
+            hex::encode(publisher.verifying_key().to_bytes()),
+            Vec::new(),
+        )
     }
 }
 

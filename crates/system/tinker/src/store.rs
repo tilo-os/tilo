@@ -242,10 +242,6 @@ impl Store {
     }
 
     /// Layers that would dangle if `name` were removed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the layers directory exists but can't be read.
     pub fn dependents(&self, name: &str) -> Result<Vec<String>> {
         Ok(self
             .list()?

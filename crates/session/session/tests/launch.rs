@@ -1,7 +1,6 @@
-//! Opening an app in the headless native session, driven only through what
-//! the session publishes: a search row of one of the machine's own apps
-//! starts its program in the session's environment, and one that stops on
-//! its own leaves a notice in its place.
+//! Opening an app in the headless native session, driven only through what the session publishes: a
+//! search row of one of the machine's own apps starts its program in the session's environment, and
+//! one that stops on its own leaves a notice in its place.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -29,7 +28,6 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_action_policy::{ActionKind, Answer, Context};
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
@@ -83,8 +81,8 @@ fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> Pat
     host_app_claiming(home, desktop_id, body, None)
 }
 
-/// The desk's search as these tests find apps in it: the fixture's own host
-/// app, resolved through the entry the session's scan reads.
+/// The desk's search as these tests find apps in it: the fixture's own host app, resolved through
+/// the entry the session's scan reads.
 fn host_search() -> SearchOptions {
     SearchOptions {
         lists: Lists::fixed(AppLists {
@@ -123,8 +121,8 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
         .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
 }
 
-/// Open search on `query` and choose the row `title` through the actions
-/// search publishes, as a person typing and pressing it does.
+/// Open search on `query` and choose the row `title` through the actions search publishes, as a
+/// person typing and pressing it does.
 fn choose(session: &mut Session, query: &str, title: &str) {
     invoke(
         session,
@@ -173,9 +171,8 @@ fn choosing_a_host_app_starts_it_through_the_launcher_on_the_sessions_display() 
         "org.example.Probe",
         "the entry the person chose"
     );
-    // The launcher derives WAYLAND_DISPLAY and XDG_RUNTIME_DIR from the
-    // socket; the session hands it this session's, never the ones its own
-    // process inherited.
+    // The launcher derives WAYLAND_DISPLAY and XDG_RUNTIME_DIR from the socket; the session hands
+    // it this session's, never the ones its own process inherited.
     assert_eq!(
         handed(&records, "--wayland-socket"),
         socket.to_str().unwrap(),
@@ -200,8 +197,8 @@ fn a_document_opens_in_the_app_that_claims_its_type() {
 
     let (mut session, apps, _launches) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
-    // The link a browser or a file manager hands over: the path inside it is
-    // percent-encoded, the path the app opens is not.
+    // The link a browser or a file manager hands over: the path inside it is percent-encoded, the
+    // path the app opens is not.
     let uri = format!(
         "file://{}",
         ui::uri::encode_component(document.to_str().unwrap())
@@ -243,8 +240,8 @@ fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
     });
 }
 
-/// A window of `app` the compositor mapped, its bar saying the app's own id:
-/// the window of an app run without its list, whose tab is named for the app.
+/// A window of `app` the compositor mapped, its bar saying the app's own id: the window of an app
+/// run without its list, whose tab is named for the app.
 fn window(id: u64, app: &str) -> Window {
     Window {
         id,
@@ -254,7 +251,7 @@ fn window(id: u64, app: &str) -> Window {
     }
 }
 
-/// A window of `app` whose bar says `title`, the place it shows.
+/// A window of `app` whose bar says `title` , the place it shows.
 fn titled_window(id: u64, app: &str, title: &str) -> Window {
     Window {
         id,
@@ -316,16 +313,14 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
     );
 }
 
-/// The app the tab tests install: a Tilo package whose window is a tab of the
-/// desktop.
+/// The app the tab tests install: a Tilo package whose window is a tab of the desktop.
 const PROBE: &str = "so.tilo.probe";
-/// What the person reads for [`PROBE`]: the name its package gives it, which
-/// its window bar says and its tab takes.
+/// What the person reads for [`PROBE`]: the name its package gives it, which its window bar says
+/// and its tab takes.
 const PROBE_NAME: &str = "Probe";
 
-/// Install [`PROBE`] in `home`'s own app store, and write the launcher the
-/// session starts it through: it records the pid of every start and runs, as
-/// the app would, until the test is over.
+/// Install [`PROBE`] in `home` 's own app store, and write the launcher the session starts it
+/// through: it records the pid of every start and runs, as the app would, until the test is over.
 fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_test_env::StandIn {
     installed_probe_package(home);
     tilo_test_env::stand_in(
@@ -338,8 +333,8 @@ fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_t
     .unwrap()
 }
 
-/// Install [`PROBE`] in `home`'s own app store: a package whose entrypoint is
-/// the launcher's to start.
+/// Install [`PROBE`] in `home` 's own app store: a package whose entrypoint is the launcher's to
+/// start.
 fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
     let store = home.data().join("tilo-apps");
     let payload = store.join("payload").join(PROBE);
@@ -389,10 +384,9 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
     home.env().set("TILO_APPS_DATA_DIR", &store);
 }
 
-/// This computer's own: a device certified for a person's root key, kept in
-/// an identity root of the test's own, and the person's id — the one their
-/// workspaces' governance names. The root lives as long as the caller keeps
-/// it: the session reads the device's key from it.
+/// This computer's own: a device certified for a person's root key, kept in an identity root of the
+/// test's own, and the person's id — the one their workspaces' governance names. The root lives as
+/// long as the caller keeps it: the session reads the device's key from it.
 fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, String) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
     let paths = tilo_user_identity::IdentityPaths::under(root.path());
@@ -408,8 +402,8 @@ fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, Stri
     (root, hex::encode(cert.user_public_key))
 }
 
-/// A launcher that records the pid of every start and what it was handed, and
-/// runs, as the app would, until the test is over.
+/// A launcher that records the pid of every start and what it was handed, and runs, as the app
+/// would, until the test is over.
 fn recording_launcher(
     home: &tilo_test_env::TestHome,
     started: &Path,
@@ -428,9 +422,8 @@ fn recording_launcher(
     .unwrap()
 }
 
-/// A launcher that records what the session handed it, and runs as an app
-/// would until the test is over: the launcher is a host app's process, and it
-/// ends when the app does.
+/// A launcher that records what the session handed it, and runs as an app would until the test is
+/// over: the launcher is a host app's process, and it ends when the app does.
 fn recording_host_launcher(
     home: &tilo_test_env::TestHome,
     records: &Path,
@@ -445,8 +438,8 @@ fn recording_host_launcher(
     .unwrap()
 }
 
-/// What the last start the launcher at `records` made was handed for `flag`:
-/// the argument that follows it.
+/// What the last start the launcher at `records` made was handed for `flag` : the argument that
+/// follows it.
 fn handed(records: &Path, flag: &str) -> String {
     let recorded = fs::read_to_string(records).expect("the launcher recorded its start");
     let arguments: Vec<&str> = recorded
@@ -465,8 +458,8 @@ fn handed(records: &Path, flag: &str) -> String {
         .to_string()
 }
 
-/// A session whose apps start from `home`'s own app store, the record of the
-/// launches it makes, and the launcher they start through.
+/// A session whose apps start from `home` 's own app store, the record of the launches it makes,
+/// and the launcher they start through.
 fn probe_session(
     home: &mut tilo_test_env::TestHome,
     started: &Path,
@@ -484,8 +477,8 @@ fn probe_session_with_services(
     probe_session_on(home, started, Some(bus))
 }
 
-/// The session `home` starts its apps in, with `bus`'s desktop services
-/// beside it when there is a login to serve.
+/// The session `home` starts its apps in, with `bus` 's desktop services beside it when there is a
+/// login to serve.
 fn probe_session_on(
     home: &mut tilo_test_env::TestHome,
     started: &Path,
@@ -496,8 +489,7 @@ fn probe_session_on(
     (session, apps, launches, probe)
 }
 
-/// A session over `home`'s own app store whose packages start through
-/// `launcher`.
+/// A session over `home` 's own app store whose packages start through `launcher` .
 fn session_through(
     home: &tilo_test_env::TestHome,
     launcher: &tilo_test_env::StandIn,
@@ -532,30 +524,24 @@ fn session_through(
     let services = desktop
         .as_ref()
         .map_or_else(Vec::new, |desktop| desktop.services());
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: host_search(),
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(Rc::clone(&apps)),
-            launches: Arc::clone(&started),
-            services,
-            wake,
-            // A login's services take part in no collaboration plane of their
-            // own; the tests of the desk alone do.
-            collab: desktop.is_none(),
-            desktop,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        search: host_search(),
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(Rc::clone(&apps)),
+        launches: Arc::clone(&started),
+        services,
+        wake,
+        // A login's services take part in no collaboration plane of their own; the tests of the
+        // desk alone do.
+        collab: desktop.is_none(),
+        desktop,
+        ..Options::default()
+    });
     (session, apps, started)
 }
 
-/// What a window's app describes of its own content reaches the session by
-/// name, and the press the session makes there goes back to the app on its
-/// own connection.
+/// What a window's app describes of its own content reaches the session by name, and the press the
+/// session makes there goes back to the app on its own connection.
 #[test]
 fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
     use ui::window_targets::{TargetAction, WindowTarget};
@@ -611,8 +597,8 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
         .press_action("Documents", TargetAction::ShowContextMenu)
         .expect("the window's own control is pressed");
 
-    // The press reaches the app on the connection that described it, as the
-    // control's own context menu, not as a point aimed at.
+    // The press reaches the app on the connection that described it, as the control's own context
+    // menu, not as a point aimed at.
     connection
         .set_read_timeout(Some(Duration::from_millis(20)))
         .unwrap();
@@ -660,8 +646,8 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
     );
 }
 
-/// Every frame the session wrote back on `connection` within `steps` of its
-/// loop: whole lines, each a host message.
+/// Every frame the session wrote back on `connection` within `steps` of its loop: whole lines, each
+/// a host message.
 fn host_frames(
     session: &mut Session,
     connection: &mut UnixStream,
@@ -688,9 +674,8 @@ fn host_frames(
         .collect()
 }
 
-/// A presented frame's marker inventory is read, not refused: the window
-/// paints its own markers at the control an agent would press, and its host
-/// has nothing to add to them.
+/// A presented frame's marker inventory is read, not refused: the window paints its own markers at
+/// the control an agent would press, and its host has nothing to add to them.
 #[test]
 fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     use ui::PaintedActionMarker;
@@ -755,8 +740,8 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     );
 }
 
-/// A message this session does not answer is still said so, so nothing of an
-/// app's waits on an answer that will not come.
+/// A message this session does not answer is still said so, so nothing of an app's waits on an
+/// answer that will not come.
 #[test]
 fn a_message_the_session_cannot_answer_is_said_so() {
     use ui::floating_surface::FloatingSurfaceHostMessage;
@@ -767,8 +752,7 @@ fn a_message_the_session_cannot_answer_is_said_so() {
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
     let (pid, workspace) = probe_showing(&mut session, &apps, &started);
 
-    // An app's card is the app's own window: the session mirrors no region of
-    // a floating surface.
+    // An app's card is the app's own window: the session mirrors no region of a floating surface.
     let mut connection = ask(
         &launches,
         PROBE,
@@ -804,10 +788,9 @@ fn front_workspace(session: &Session) -> (String, Option<String>) {
     })
 }
 
-/// The person who made a workspace is handed their authority in it, so the
-/// notes they open there are theirs to add to: the app is started with the
-/// projection its window bar asks about, and it says the person may make a
-/// note in the workspace nobody else has joined.
+/// The person who made a workspace is handed their authority in it, so the notes they open there
+/// are theirs to add to: the app is started with the projection its window bar asks about, and it
+/// says the person may make a note in the workspace nobody else has joined.
 #[test]
 fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     let _settled = ui::motion::testing::settled();
@@ -881,8 +864,8 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     capture_to(&mut session, "fresh-workspace-new-note");
 }
 
-/// What the projection says about the app's own new-note action: the question
-/// a window bar asks to offer New note.
+/// What the projection says about the app's own new-note action: the question a window bar asks to
+/// offer New note.
 fn may_make_a_note(
     projection: &collab_types::action_authority::AppActionAuthorityProjection,
 ) -> Answer {
@@ -896,8 +879,8 @@ fn may_make_a_note(
         .answer
 }
 
-/// The window groups of the workspace in front, each with its tabs' titles in
-/// order: the tabs a person sees.
+/// The window groups of the workspace in front, each with its tabs' titles in order: the tabs a
+/// person sees.
 fn groups(session: &Session) -> Vec<Vec<String>> {
     session.handle().read(|tree| {
         tree.active_workspace().map_or_else(Vec::new, |workspace| {
@@ -967,10 +950,9 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
     (pid, workspace)
 }
 
-/// Ask the session what `app` asks over a window's own shell-ui connection:
-/// the connection the session makes for a window of an app it runs, which the
-/// service answers for that app's tab. The connection stays open for the
-/// caller.
+/// Ask the session what `app` asks over a window's own shell-ui connection: the connection the
+/// session makes for a window of an app it runs, which the service answers for that app's tab. The
+/// connection stays open for the caller.
 fn ask(
     launches: &Arc<Launches>,
     app: &str,
@@ -1048,9 +1030,9 @@ fn tell(connection: &mut UnixStream, message: &FloatingSurfaceClientMessage) {
     connection.flush().unwrap();
 }
 
-/// A sideways wheel the app under the pointer did not scroll with pans the
-/// strip its window stands in, by the travel it left: the desk moves the
-/// window, and everything the app drew in it, by that much.
+/// A sideways wheel the app under the pointer did not scroll with pans the strip its window stands
+/// in, by the travel it left: the desk moves the window, and everything the app drew in it, by that
+/// much.
 #[test]
 fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
     use ui::window_targets::{TargetAction, WindowTarget};
@@ -1061,8 +1043,8 @@ fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
     let (pid, workspace) = probe_showing(&mut session, &apps, &started);
 
-    // The window in front describes a control of its content, so where it
-    // stands on the desk is something this test reads.
+    // The window in front describes a control of its content, so where it stands on the desk is
+    // something this test reads.
     let mut connection = ask(
         &launches,
         PROBE,
@@ -1188,16 +1170,15 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
     );
 }
 
-/// Where this test's captures are written: in the build's own directory when
-/// it runs somewhere else than where they are read (a remote builder mirrors
-/// that directory back), else under the home's comparison captures.
+/// Where this test's captures are written: in the build's own directory when it runs somewhere else
+/// than where they are read (a remote builder mirrors that directory back), else under the home's
+/// comparison captures.
 fn shots_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("SHELL_UI_SHOTS_OUT") {
         return PathBuf::from(dir);
     }
     // The run says where its target directory is; else this binary stands in
-    // `target/<profile>/deps`, and its build's directory is the one holding
-    // the profile.
+    // `target/<profile>/deps` , and its build's directory is the one holding the profile.
     let binary = std::env::current_exe().expect("the running test's path");
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -1215,8 +1196,7 @@ fn shots_dir() -> PathBuf {
     PathBuf::from(home).join(".cache/visual-compare/shell-ui")
 }
 
-/// Write the frame the session shows now, and the names it gives what it
-/// shows, beside it.
+/// Write the frame the session shows now, and the names it gives what it shows, beside it.
 fn capture_to(session: &mut Session, name: &str) {
     let dir = shots_dir();
     fs::create_dir_all(&dir).expect("create the shots directory");
@@ -1283,8 +1263,8 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     );
     capture_to(&mut session, "app-slots-in-the-bar");
 
-    // The session serves no question about the device's own shell here, so
-    // the app is told the target stays closed on the connection it asked on.
+    // The session serves no question about the device's own shell here, so the app is told the
+    // target stays closed on the connection it asked on.
     let mut asking = ask(
         &launches,
         PROBE,
@@ -1295,8 +1275,8 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     asking
         .set_read_timeout(Some(Duration::from_millis(20)))
         .unwrap();
-    // The session answers on its own pass, so the answer arrives while it
-    // steps; nothing waits on a read while the desk stands still.
+    // The session answers on its own pass, so the answer arrives while it steps; nothing waits on a
+    // read while the desk stands still.
     let mut seen = Vec::new();
     for _ in 0..400 {
         session.step(Duration::from_millis(1)).unwrap();
@@ -1343,7 +1323,7 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
     find(&session.resources(), action)
 }
 
-/// Answer `effect` on the portal sheet's door for `handle`.
+/// Answer `effect` on the portal sheet's door for `handle` .
 fn answer_on_the_sheet(session: &mut Session, handle: &str, effect: &str) {
     let sheet = publisher(session, effect).expect("the sheet publishes that");
     let arguments = serde_json::json!({ "handle": handle })
@@ -1355,10 +1335,9 @@ fn answer_on_the_sheet(session: &mut Session, handle: &str, effect: &str) {
         .expect("the sheet takes the answer");
 }
 
-/// The person's answer to the question about the device's own shell reaches
-/// the app: the question stands on the portal sheet, the answer is handed to
-/// the runtime's supervisor as the allow it records, and the app hears on the
-/// connection it asked on that the target is open.
+/// The person's answer to the question about the device's own shell reaches the app: the question
+/// stands on the portal sheet, the answer is handed to the runtime's supervisor as the allow it
+/// records, and the app hears on the connection it asked on that the target is open.
 #[test]
 fn the_answer_to_the_device_shell_question_reaches_the_app() {
     use tilo_sheets::portal::PortalEffect;
@@ -1371,8 +1350,8 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
         probe_session_with_services(&mut home, &started, &bus);
     let (pid, workspace) = probe_showing(&mut session, &apps, &started);
 
-    // The runtime's supervisor stands where the session dials it, and records
-    // the allow it is handed.
+    // The runtime's supervisor stands where the session dials it, and records the allow it is
+    // handed.
     let socket = launcher::services::socket_for("ush");
     fs::create_dir_all(socket.parent().expect("a socket in a directory")).unwrap();
     let supervisor =
@@ -1420,8 +1399,8 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     asking
         .set_read_timeout(Some(Duration::from_millis(20)))
         .unwrap();
-    // The answer reaches the app on a turn of the session's; a counted number of
-    // turns is not the answer arriving, so the wait is for the answer itself.
+    // The answer reaches the app on a turn of the session's; a counted number of turns is not the
+    // answer arriving, so the wait is for the answer itself.
     let mut seen = Vec::new();
     let heard = common::wait_maybe(&mut session, |session| {
         session.step(Duration::from_millis(1)).unwrap();
@@ -1484,8 +1463,8 @@ fn reopening_a_closed_window_starts_its_app_again() {
     });
     assert!(!records.exists(), "nothing had started the app yet");
 
-    // Reopen puts the tab back and starts the app that opens it again: the
-    // class alone names that app through the entry claiming it.
+    // Reopen puts the tab back and starts the app that opens it again: the class alone names that
+    // app through the entry claiming it.
     assert!(
         session.desktop().with_policy(DesktopPolicy::reopen_closed),
         "the reopen is taken"
@@ -1577,8 +1556,8 @@ fn a_session_dropped_while_its_app_runs_leaves_no_launcher_behind() {
     let (mut session, apps, _launches, launcher) = probe_session(&mut home, &started);
     let (pid, _room) = probe_showing(&mut session, &apps, &started);
 
-    // The session goes while its app runs, as when a test fails part-way:
-    // the launcher it started goes with it, though the test is still here.
+    // The session goes while its app runs, as when a test fails part-way: the launcher it started
+    // goes with it, though the test is still here.
     drop(session);
     drop(apps);
     tilo_test_env::exited("the launcher of a session that is gone", pid);

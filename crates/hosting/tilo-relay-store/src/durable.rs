@@ -248,8 +248,8 @@ impl GenerationGc {
             removed: false,
         })
     }
-    /// Collect after this process just wrote the lineage's CURRENT with
-    /// [`durable_write`]: the first quantum needs no barrier of its own.
+    /// Collect after this process just wrote the lineage's CURRENT
+    /// with [`durable_write`]: the first quantum needs no barrier of its own.
     ///
     /// # Errors
     ///

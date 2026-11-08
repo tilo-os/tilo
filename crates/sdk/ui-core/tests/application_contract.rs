@@ -12,7 +12,6 @@ use tilo_ui::view::{FocusView, ThawError, View};
 
 #[test]
 fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
-    // Case `new_instances_are_distinct_and_catalogue_never_fabricates_apps`.
     {
         let host = ProbeHost::new();
         let a = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -35,7 +34,6 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         ));
     }
 
-    // Case `required_denial_prevents_factory_and_optional_denial_is_visible`.
     {
         let host = ProbeHost::new();
         let mut definition = definition(probe_factory);
@@ -55,7 +53,6 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         assert_eq!(calls(), 1);
     }
 
-    // Case `permission_revocation_between_prepare_and_factory_is_enforced`.
     {
         let host = ProbeHost::new();
         let mut definition = definition(probe_factory);
@@ -91,7 +88,6 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         assert!(host.records.reserve_record(&checkout).is_ok());
     }
 
-    // Case `wrong_store_namespace_fails_before_factory`.
     {
         let host = ProbeHost::new();
         for (root, device, workspace) in [
@@ -127,7 +123,6 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
 )]
 #[test]
 fn restore_paths_validate_bindings_and_never_roll_back_documents() {
-    // Case `old_local_view_restores_without_rolling_back_sibling_document_changes`.
     {
         let host = ProbeHost::new();
         let mut a = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -157,7 +152,6 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         assert_eq!(initializations(), 1);
     }
 
-    // Case `foreign_restore_bindings_never_call_factory_or_replace_persisted_view`.
     {
         let host = ProbeHost::new();
         let mut original =
@@ -186,7 +180,6 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         assert_eq!(body(&host.records, &checkout), "initialized");
     }
 
-    // Case `new_restore_hook_failure_keeps_ready_record_and_old_view_bytes`.
     {
         let host = ProbeHost::new();
         let mut old = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -247,7 +240,6 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
 )]
 #[test]
 fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
-    // Case `instance_store_scopes_device_and_workspace_and_preserves_bad_bytes`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
@@ -303,7 +295,6 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
         );
     }
 
-    // Case `v2_application_envelope_roundtrips_and_default_hook_refuses_payload`.
     {
         use tilo_ui::application_view::ApplicationLocalView;
         let host = ProbeHost::new();
@@ -350,7 +341,6 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
         }
     }
 
-    // Case `invalid_save_never_replaces_a_valid_local_envelope`.
     {
         let host = ProbeHost::new();
         let original = envelope(DEVICE, WORKSPACE, 23.0);
@@ -378,7 +368,6 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
 )]
 #[test]
 fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
-    // Case `successful_initialization_survives_factory_failure_with_only_error_owner`.
     {
         let host = ProbeHost::new();
         let definition = definition(fail_after_initialization);
@@ -428,7 +417,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(captured_handles().iter().take(1).all(|h| !h.is_active()));
     }
 
-    // Case `uninitialized_factory_is_rejected_and_reservation_is_released`.
     {
         let host = ProbeHost::new();
         let definition = definition(omit_initialization);
@@ -445,7 +433,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(!host.view_path(11).exists());
     }
 
-    // Case `factory_cannot_mount_an_unvalidated_component`.
     {
         let host = ProbeHost::new();
         let definition = definition(attempt_premature_mount);
@@ -456,7 +443,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         component.mount(|_| {}).unwrap();
     }
 
-    // Case `invalid_factory_view_retains_new_ready_record_without_saving_view`.
     {
         let host = ProbeHost::new();
         let definition = definition(invalid_contribution);
@@ -491,7 +477,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(captured_handles().iter().all(|h| !h.is_active()));
     }
 
-    // Case `existing_factory_failure_preserves_document_and_view_files`.
     {
         let host = ProbeHost::new();
         let mut original =
@@ -522,7 +507,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(captured_handles().iter().all(|h| !h.is_active()));
     }
 
-    // Case `returned_component_must_be_the_exact_prepared_context`.
     {
         let host = ProbeHost::new();
         let definition = definition(foreign_component);
@@ -553,7 +537,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(captured_handles().iter().all(|handle| !handle.is_active()));
     }
 
-    // Case `failed_initializer_returns_original_typed_error_without_publishing_empty_record`.
     {
         let host = ProbeHost::new();
         let definition = definition(initializer_failure);
@@ -584,7 +567,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
 
 #[test]
 fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
-    // Case `construction_wakes_mount_once_and_close_cancels_local_publication`.
     {
         let host = ProbeHost::new();
         let mut component =
@@ -604,7 +586,6 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
         assert!(drop_was_closed());
     }
 
-    // Case `suspension_saves_and_reconstruction_uses_a_fresh_lifetime`.
     {
         let host = ProbeHost::new();
         let mut component =
@@ -628,7 +609,6 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
         assert_eq!(replacement.capture_local_view().unwrap().scroll, vec![18.0]);
     }
 
-    // Case `second_instance_does_not_replace_history_or_commit_a_typing_transaction`.
     {
         let host = ProbeHost::new();
         let mut first =
@@ -684,7 +664,6 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
 )]
 #[test]
 fn save_and_close_failures_retain_owners_and_retry_persistence() {
-    // Case `failed_view_save_retries_exact_original_store_after_component_drop`.
     {
         let host = ProbeHost::new();
         let mut component =
@@ -712,7 +691,6 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         assert_eq!(saved.workspace_id, WORKSPACE);
     }
 
-    // Case `failed_close_retains_dirty_record_owner_and_recovery_independently`.
     {
         let host = ProbeHost::new();
         let mut component =
@@ -747,7 +725,6 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         records.try_flush().unwrap();
     }
 
-    // Case `native_close_refusal_preserves_live_owner_and_retry_persists_later_edits`.
     {
         use automerge::ReadDoc;
 
@@ -832,7 +809,6 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         assert!(captured_handles().iter().all(|handle| !handle.is_active()));
     }
 
-    // Case `record_save_status_is_delivered_after_document_loan`.
     // Real AppWidget callbacks sample the same store during sync and after release.
     {
         let mut fixture = save_status_fixture::Fixture::new();
@@ -1036,7 +1012,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
 
 #[test]
 fn destructor_panics_propagate_unconverted() {
-    // Case `component_destructor_panics_reach_the_outer_caller_after_scope_closes`.
     {
         for closing in [false, true] {
             let host = ProbeHost::new();
@@ -1059,7 +1034,6 @@ fn destructor_panics_propagate_unconverted() {
         }
     }
 
-    // Case `failed_setup_destructor_panic_is_not_converted_to_a_launch_error`.
     {
         let host = ProbeHost::new();
         let definition = definition(invalid_contribution);
@@ -1083,7 +1057,6 @@ fn destructor_panics_propagate_unconverted() {
 )]
 #[test]
 fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure() {
-    // Case `prepared_driver_semantic_outputs_use_the_canonical_document`.
     {
         let host = ProbeHost::new();
         let component = runner_probe_definition()
@@ -1118,7 +1091,6 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         assert_eq!(calls(), 1);
     }
 
-    // Case `prepared_runner_mount_failure_retains_close_recovery`.
     {
         for native in [false, true] {
             let host = ProbeHost::new();
@@ -1166,7 +1138,6 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         }
     }
 
-    // Case `prepared_headless_action_and_output_failure_keep_exit_one_and_close`.
     {
         for output_failure in [false, true] {
             let host = ProbeHost::new();
@@ -1201,7 +1172,6 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         }
     }
 
-    // Case `prepared_headless_flush_failure_is_durability_exit_with_original_bytes`.
     {
         let host = ProbeHost::new();
         let component = runner_probe_definition()

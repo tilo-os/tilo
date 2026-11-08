@@ -167,9 +167,6 @@ pub trait Host {
     }
 
     /// Runs a tool to completion, capturing its output.
-    ///
-    /// # Errors
-    /// The tool missing.
     fn run(&self, argv: &[&str]) -> Result<Ran> {
         let output = crate::process::run(argv, None, Duration::MAX)?;
         Ok(Ran {
@@ -243,9 +240,6 @@ pub trait Host {
     }
 
     /// `lsblk`'s JSON for `disk`.
-    ///
-    /// # Errors
-    /// lsblk failing or printing something other than JSON.
     fn lsblk(&self, disk: &str) -> Result<Value> {
         let output = checked(
             self,
@@ -1296,9 +1290,6 @@ pub struct Plan {
 }
 
 /// `check-install`: the facts `tilo-install` needs, one `KEY=VALUE` per line.
-///
-/// # Errors
-/// Any fact that differs from the staged plan.
 pub fn check_install(
     host: &dyn Host,
     handoff_path: &Path,
@@ -1383,9 +1374,6 @@ pub fn check_install(
 }
 
 /// `check-mounts`: only the staging partitions are in use.
-///
-/// # Errors
-/// A staging partition missing or changed, or anything else mounted.
 pub fn check_mounts_command(host: &dyn Host, handoff_path: &Path, disk: &str) -> Result<()> {
     let handoff = load_handoff_file(handoff_path)?;
     let (_, partitions) = disk_facts(host, disk, &handoff)?;
@@ -1494,10 +1482,6 @@ pub struct TargetRoot {
 
 /// `write-reclaim-record`: what `tilo-staging-reclaim` needs, in the
 /// installed `/var`.
-///
-/// # Errors
-/// Malformed GUIDs or geometry, a root that does not end at the staged
-/// extent, or a write failing.
 pub fn write_reclaim_record(
     handoff_path: &Path,
     target_var: &Path,
@@ -1635,10 +1619,6 @@ pub struct Finalize {
 /// ours, and sets `BootNext` to the installed Tilo once. Returns the exit
 /// status (0, or 3 when the staging entry was left in place) and what it
 /// printed.
-///
-/// # Errors
-/// A malformed target, an ambiguous or absent target entry, efibootmgr
-/// failing, or a variable that did not persist.
 pub fn firmware_finalize(
     host: &dyn Host,
     handoff_path: &Path,

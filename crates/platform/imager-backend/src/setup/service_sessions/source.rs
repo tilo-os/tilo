@@ -69,9 +69,6 @@ impl SourceGrant {
     }
 
     /// Attach only after the owner explicitly selects this browser's sessions.
-    ///
-    /// # Errors
-    /// Refuses adapters bound to any other owner or profile, or a non-Chromium source.
     pub fn with_chromium_decryptor(
         mut self,
         decryptor: std::sync::Arc<dyn ChromiumDecryptor>,
@@ -339,9 +336,6 @@ pub struct SelectedCounts {
 
 /// Count matching cookie rows and distinct hosts without reading values.
 /// The source is copied consistently and only the private copy is queried.
-///
-/// # Errors
-/// Refuses unavailable/changed sources or an unsupported cookie schema.
 pub fn count_selected(
     grant: &SourceGrant,
     service: Service,

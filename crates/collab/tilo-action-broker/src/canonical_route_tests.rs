@@ -41,6 +41,29 @@ fn canonical_caller(workspace: &signed_worker::OriginalWorkspace) -> tilo_action
     .in_new_execution()
 }
 
+/// The workspace's own certified door, and the caller `workspace`'s device
+/// asks through it.
+fn canonical_host(
+    workspace: &signed_worker::OriginalWorkspace,
+) -> (
+    tilo_actions::remote::Caller,
+    Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+) {
+    let caller = canonical_caller(workspace);
+    let host = workspace
+        .state
+        .certified_local_action_host(
+            &caller,
+            &signed_worker::presentation(
+                &workspace.route.cluster_id,
+                &workspace.cert,
+                &workspace.key,
+            ),
+        )
+        .unwrap();
+    (caller, host)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn canonical_route_rechecks_registration_certificate_and_stream_after_resolve_await() {
     use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
@@ -68,18 +91,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                     )))
                     .await
                     .unwrap();
-                let caller = canonical_caller(&workspace);
-                let host = workspace
-                    .state
-                    .certified_local_action_host(
-                        &caller,
-                        &signed_worker::presentation(
-                            &workspace.route.cluster_id,
-                            &workspace.cert,
-                            &workspace.key,
-                        ),
-                    )
-                    .unwrap();
+                let (caller, host) = canonical_host(&workspace);
                 let page =
                     canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
                         .await
@@ -162,18 +174,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                     .await
                     .unwrap();
             }
-            let caller = canonical_caller(&workspace);
-            let host = workspace
-                .state
-                .certified_local_action_host(
-                    &caller,
-                    &signed_worker::presentation(
-                        &workspace.route.cluster_id,
-                        &workspace.cert,
-                        &workspace.key,
-                    ),
-                )
-                .unwrap();
+            let (caller, host) = canonical_host(&workspace);
             let initial =
                 canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
                     .await
@@ -280,18 +281,7 @@ async fn canonical_route_uses_signed_directory_admission_order_and_fences_replac
                 .publish_action_directory(signed_worker::directory_server(&other_directory))
                 .await
                 .unwrap();
-            let caller = canonical_caller(&workspace);
-            let host = workspace
-                .state
-                .certified_local_action_host(
-                    &caller,
-                    &signed_worker::presentation(
-                        &workspace.route.cluster_id,
-                        &workspace.cert,
-                        &workspace.key,
-                    ),
-                )
-                .unwrap();
+            let (caller, host) = canonical_host(&workspace);
             let page =
                 canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
                     .await
@@ -364,18 +354,7 @@ async fn canonical_route_refuses_cross_workspace_forged_tokens_and_filtered_look
                 ))
                 .await
                 .unwrap();
-            let caller = canonical_caller(&workspace);
-            let host = workspace
-                .state
-                .certified_local_action_host(
-                    &caller,
-                    &signed_worker::presentation(
-                        &workspace.route.cluster_id,
-                        &workspace.cert,
-                        &workspace.key,
-                    ),
-                )
-                .unwrap();
+            let (caller, host) = canonical_host(&workspace);
             let mut wrong_workspace = canonical_query(&workspace);
             wrong_workspace.canonical_route.as_mut().unwrap().workspace =
                 uuid::Uuid::new_v4().to_string();
@@ -441,18 +420,7 @@ async fn a_canonical_provider_answers_another_apps_query_without_asking_its_dire
                 .publish_action_directory(signed_worker::directory_server(&directory))
                 .await
                 .unwrap();
-            let caller = canonical_caller(&workspace);
-            let host = workspace
-                .state
-                .certified_local_action_host(
-                    &caller,
-                    &signed_worker::presentation(
-                        &workspace.route.cluster_id,
-                        &workspace.cert,
-                        &workspace.key,
-                    ),
-                )
-                .unwrap();
+            let (caller, host) = canonical_host(&workspace);
             let announced =
                 canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
                     .await

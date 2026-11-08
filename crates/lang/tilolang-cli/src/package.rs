@@ -75,9 +75,6 @@ pub fn menu_category(declared: &str) -> &'static str {
 }
 
 /// The icon artwork of a declared `icon:` (`.file_text`, the platform glyph `file-text`).
-///
-/// # Errors
-/// The platform has no glyph of that name.
 pub fn icon_artwork(declared: &str) -> Result<String, String> {
     let name = declared.replace('_', "-");
     ui::icons::Icon::from_name(&name)
@@ -275,9 +272,6 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
 }
 
 /// Stage, pack and sign an app as the `.tapp` a session installs.
-///
-/// # Errors
-/// A file cannot be written, the generated manifest does not validate, or the app does not pack.
 fn deliver(
     app: Assembled,
     options: &BuildOptions,

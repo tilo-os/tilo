@@ -192,10 +192,6 @@ fn read_line(reader: &mut impl BufRead) -> io::Result<Option<String>> {
 }
 
 /// Issue the extension that opens `path` to a confined app.
-///
-/// # Errors
-///
-/// The kernel's refusal, for example for a path that does not exist.
 pub fn issue_extension(path: &Path) -> io::Result<String> {
     let class = CString::new(EXTENSION_CLASS).map_err(|_| invalid("extension class"))?;
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| invalid("path has a NUL"))?;
@@ -228,10 +224,6 @@ fn consume_extension(token: &str) -> io::Result<()> {
 /// yet is created empty first, and it is granted with its one
 /// [`crate::portal::save_sibling`], so the app can save by writing that and
 /// renaming it over the destination; nothing else in the folder is granted.
-///
-/// # Errors
-///
-/// A read or write on `stream` that failed.
 pub fn serve(
     stream: UnixStream,
     show: impl Fn(&PickRequest) -> Result<Option<Vec<PathBuf>>, String>,
@@ -297,10 +289,6 @@ fn create_destination(path: &Path) -> io::Result<()> {
 /// panel modally, and write the picked paths (with no tokens: the runtime
 /// that asked grants them) to stdout. Run it as the main thread of a process
 /// of its own; the runtime has no run loop to show a panel on.
-///
-/// # Errors
-///
-/// Reading the request or writing the answer failed.
 pub fn run_chooser_helper() -> io::Result<()> {
     let line = read_line(&mut io::stdin().lock())?
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "no chooser request"))?;
@@ -371,10 +359,6 @@ impl Consent {
 /// The consent helper's whole life: read one [`Consent`] from stdin, ask it
 /// in a native alert, and write `allow` or `deny` to stdout. Like
 /// [`run_chooser_helper`], the main thread of a process of its own.
-///
-/// # Errors
-///
-/// Reading the question or writing the answer failed.
 pub fn run_consent_helper() -> io::Result<()> {
     let line = read_line(&mut io::stdin().lock())?
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "no consent question"))?;
@@ -395,10 +379,6 @@ pub fn run_consent_helper() -> io::Result<()> {
 
 /// Ask `consent` through the helper `command` runs ([`run_consent_helper`]).
 /// Anything but a clear `allow` is a refusal.
-///
-/// # Errors
-///
-/// The helper could not run.
 pub fn ask_consent_in_helper(
     mut command: std::process::Command,
     consent: &Consent,

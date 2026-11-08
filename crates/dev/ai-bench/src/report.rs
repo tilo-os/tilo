@@ -266,10 +266,6 @@ struct RefusedJson {
 
 impl Report {
     /// The report as JSON, pretty-printed with a trailing newline.
-    ///
-    /// # Errors
-    ///
-    /// When the report cannot be written.
     pub fn to_json(&self) -> Result<String, String> {
         let mut text = serde_json::to_string_pretty(&self.json())
             .map_err(|error| format!("the report cannot be written: {error}"))?;
@@ -278,10 +274,6 @@ impl Report {
     }
 
     /// The report read back, for comparing two runs by a program.
-    ///
-    /// # Errors
-    ///
-    /// When `text` is not a report.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let parsed: ReportJson = serde_json::from_str(text)
             .map_err(|error| format!("this is not a benchmark report: {error}"))?;

@@ -287,10 +287,6 @@ impl Journal {
 
     /// Read a previously written journal from the retained Home. The caller
     /// must already hold that Home through a revalidated retained-source mount.
-    ///
-    /// # Errors
-    /// Refuses a missing or changed plan, a journal from another operation,
-    /// a substituted source inode or UID, and any journal edited since review.
     pub fn open(home: &Path, plan: &Plan) -> io::Result<Self> {
         let binding = plan
             .deferred_handoff

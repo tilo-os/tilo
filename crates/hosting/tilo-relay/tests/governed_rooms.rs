@@ -13,6 +13,7 @@
     reason = "one end-to-end scenario whose relays and sessions live until it ends"
 )]
 
+use std::future::Future;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
@@ -185,106 +186,156 @@ fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
         .map(|member| member.role)
 }
 
+/// What every scenario here starts from: Alice's relay governing a room her
+/// laptop owns, Bob's phone admitted through an invitation as `role`, both
+/// replicas converged on the roster, and a session open for each of them.
+struct Governed {
+    alice: TestUser,
+    host: TestDevice,
+    laptop: TestDevice,
+    bob: TestUser,
+    phone: TestDevice,
+    state: tempfile::TempDir,
+    relay: Relay,
+    room: WorkspaceListing,
+    alice_peer: StatePeer,
+    bob_peer: StatePeer,
+    alice_session: RelayCoeditSession,
+    bob_session: RelayCoeditSession,
+    alice_presence: Vec<([u8; 32], Vec<u8>)>,
+    bob_presence: Vec<([u8; 32], Vec<u8>)>,
+}
+
+/// A governed room's whole setup. Boxed: the fixture's own future is far larger
+/// than the tests that only destructure its result.
+fn governed_room(granted: MemberRole) -> std::pin::Pin<Box<dyn Future<Output = Governed> + Send>> {
+    Box::pin(async move {
+        let alice = TestUser::fresh("Alice");
+        let bob = TestUser::fresh("Bob");
+        let host = alice.enrol("alice-home", DeviceCapabilities::host());
+        let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+        let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+        let state = tempfile::tempdir().unwrap();
+        let relay = start(state.path(), &alice, &host).await;
+
+        // Alice's laptop creates a room on her relay and enters it as its owner.
+        // (That Bob's device cannot is `governance_actions`'s to show.)
+        let room = create_and_enter(&relay, &laptop, "Design review").await;
+
+        // Alice invites Bob's person; his device redeems through the signed
+        // address the invitation carries and is admitted by the room's governor.
+        let invitation = invite(&relay, &laptop, &room.workspace, granted, bob.user_pk).await;
+        let verified = decode_and_verify_invitation(
+            &invitation.signed_invitation,
+            None,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        assert_eq!(
+            verified.grant().issuer,
+            host.cert,
+            "the relay answers for the room"
+        );
+        let admission = WorkspaceJoinClient::new(device_endpoint(&phone).await)
+            .redeem_hint(
+                &verified.grant().transport[0],
+                invitation.signed_invitation.clone(),
+                phone.cert.clone(),
+                &phone.sk,
+                [7; 32],
+            )
+            .await
+            .unwrap();
+        let bootstrap = admission.bootstrap;
+        assert_eq!(bootstrap.room, room.workspace);
+        assert_eq!(bootstrap.workspace_id, room.workspace_id);
+        assert_eq!(bootstrap.role, granted);
+
+        // Bob's own replica, from the bootstrap alone, makes him an editor.
+        let mut bob_peer = StatePeer::new(
+            &bootstrap.room,
+            bootstrap.host.clone(),
+            bootstrap.certified_roster.clone(),
+            RevocationList::new(),
+            SystemTime::now(),
+        )
+        .unwrap();
+        bob_peer.select_admission_v5().unwrap();
+        for bytes in &bootstrap.governance_messages {
+            bob_peer
+                .receive_from(
+                    TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
+                    postcard::from_bytes(bytes).unwrap(),
+                    SystemTime::now(),
+                )
+                .unwrap();
+        }
+        assert_eq!(role(&bob_peer, phone.device_pubkey()), Some(granted.into()));
+
+        // Alice's replica learns governance from the relay's retained history.
+        let mut alice_peer = StatePeer::new(
+            &room.workspace,
+            host.cert.clone(),
+            vec![host.cert.clone()],
+            RevocationList::new(),
+            SystemTime::now(),
+        )
+        .unwrap();
+        let alice_session = session(&relay, &laptop, room.workspace_id).await;
+        let bob_session = session(&relay, &phone, room.workspace_id).await;
+        let mut alice_presence = Vec::new();
+        let bob_presence = Vec::new();
+        receive_until(
+            "Alice's replica admits both people",
+            &alice_session,
+            &mut alice_peer,
+            &mut alice_presence,
+            |peer, _| {
+                role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
+                    && role(peer, phone.device_pubkey()) == Some(granted.into())
+            },
+        )
+        .await;
+        crate::common::wait_until_subscribed(&relay, room.workspace_id, &phone.device_pubkey())
+            .await;
+        Governed {
+            alice,
+            host,
+            laptop,
+            bob,
+            phone,
+            state,
+            relay,
+            room,
+            alice_peer,
+            bob_peer,
+            alice_session,
+            bob_session,
+            alice_presence,
+            bob_presence,
+        }
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_removed() {
-    let alice = TestUser::fresh("Alice");
-    let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
-    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
-    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-
-    // Alice's laptop creates a room on her relay and enters it as its owner.
-    // (That Bob's device cannot is `governance_actions`'s to show.)
-    let room = create_and_enter(&relay, &laptop, "Design review").await;
-
-    // Alice invites Bob's person; his device redeems through the signed
-    // address the invitation carries and is admitted by the room's governor.
-    let invitation = invite(
-        &relay,
-        &laptop,
-        &room.workspace,
-        MemberRole::Editor,
-        bob.user_pk,
-    )
-    .await;
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    assert_eq!(
-        verified.grant().issuer,
-        host.cert,
-        "the relay answers for the room"
-    );
-    let admission = WorkspaceJoinClient::new(device_endpoint(&phone).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation.clone(),
-            phone.cert.clone(),
-            &phone.sk,
-            [7; 32],
-        )
-        .await
-        .unwrap();
-    let bootstrap = admission.bootstrap;
-    assert_eq!(bootstrap.room, room.workspace);
-    assert_eq!(bootstrap.workspace_id, room.workspace_id);
-    assert_eq!(bootstrap.role, MemberRole::Editor);
-
-    // Bob's own replica, from the bootstrap alone, makes him an editor.
-    let mut bob_peer = StatePeer::new(
-        &bootstrap.room,
-        bootstrap.host.clone(),
-        bootstrap.certified_roster.clone(),
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    bob_peer.select_admission_v5().unwrap();
-    for bytes in &bootstrap.governance_messages {
-        bob_peer
-            .receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
-                postcard::from_bytes(bytes).unwrap(),
-                SystemTime::now(),
-            )
-            .unwrap();
-    }
-    assert_eq!(
-        role(&bob_peer, phone.device_pubkey()),
-        Some(collab_types::Role::Editor)
-    );
-
-    // Alice's replica learns governance from the relay's retained history.
-    let mut alice_peer = StatePeer::new(
-        &room.workspace,
-        host.cert.clone(),
-        vec![host.cert.clone()],
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    let alice_session = session(&relay, &laptop, room.workspace_id).await;
-    let bob_session = session(&relay, &phone, room.workspace_id).await;
-    let mut alice_presence = Vec::new();
-    let mut bob_presence = Vec::new();
-    receive_until(
-        "Alice's replica admits both people",
-        &alice_session,
-        &mut alice_peer,
-        &mut alice_presence,
-        |peer, _| {
-            role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
-                && role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
-        },
-    )
-    .await;
-    crate::common::wait_until_subscribed(&relay, room.workspace_id, &phone.device_pubkey()).await;
+    let Governed {
+        alice,
+        host,
+        laptop,
+        bob,
+        phone,
+        state,
+        relay,
+        room,
+        mut alice_peer,
+        mut bob_peer,
+        alice_session,
+        bob_session,
+        mut alice_presence,
+        mut bob_presence,
+    } = governed_room(MemberRole::Editor).await;
 
     // Alice writes; Bob's replica verifies and applies it.
     let mut doc = AutoCommit::new();
@@ -484,104 +535,18 @@ type = "String"
         )),
         move |_| Some(hash),
     );
-    let alice = TestUser::fresh("Alice");
-    let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
-    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
-    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-
-    // Alice's laptop creates a room on her relay and enters it as its owner.
-    // (That Bob's device cannot is `governance_actions`'s to show.)
-    let room = create_and_enter(&relay, &laptop, "Design review").await;
-
-    // Alice invites Bob's person; his device redeems through the signed
-    // address the invitation carries and is admitted by the room's governor.
-    let invitation = invite(
-        &relay,
-        &laptop,
-        &room.workspace,
-        MemberRole::Editor,
-        bob.user_pk,
-    )
-    .await;
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    assert_eq!(
-        verified.grant().issuer,
-        host.cert,
-        "the relay answers for the room"
-    );
-    let admission = WorkspaceJoinClient::new(device_endpoint(&phone).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation.clone(),
-            phone.cert.clone(),
-            &phone.sk,
-            [7; 32],
-        )
-        .await
-        .unwrap();
-    let bootstrap = admission.bootstrap;
-    assert_eq!(bootstrap.room, room.workspace);
-    assert_eq!(bootstrap.workspace_id, room.workspace_id);
-    assert_eq!(bootstrap.role, MemberRole::Editor);
-
-    // Bob's own replica, from the bootstrap alone, makes him an editor.
-    let mut bob_peer = StatePeer::new(
-        &bootstrap.room,
-        bootstrap.host.clone(),
-        bootstrap.certified_roster.clone(),
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    bob_peer.select_admission_v5().unwrap();
-    for bytes in &bootstrap.governance_messages {
-        bob_peer
-            .receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
-                postcard::from_bytes(bytes).unwrap(),
-                SystemTime::now(),
-            )
-            .unwrap();
-    }
-    assert_eq!(
-        role(&bob_peer, phone.device_pubkey()),
-        Some(collab_types::Role::Editor)
-    );
-
-    // Alice's replica learns governance from the relay's retained history.
-    let mut alice_peer = StatePeer::new(
-        &room.workspace,
-        host.cert.clone(),
-        vec![host.cert.clone()],
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    let alice_session = session(&relay, &laptop, room.workspace_id).await;
-    let bob_session = session(&relay, &phone, room.workspace_id).await;
-    let mut alice_presence = Vec::new();
-    let mut bob_presence = Vec::new();
-    receive_until(
-        "Alice's replica admits both people",
-        &alice_session,
-        &mut alice_peer,
-        &mut alice_presence,
-        |peer, _| {
-            role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
-                && role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
-        },
-    )
-    .await;
-    crate::common::wait_until_subscribed(&relay, room.workspace_id, &phone.device_pubkey()).await;
+    let Governed {
+        // The relay's storage: kept alive for the whole test.
+        state: _state,
+        laptop,
+        relay,
+        mut alice_peer,
+        mut bob_peer,
+        alice_session,
+        bob_session,
+        mut bob_presence,
+        ..
+    } = governed_room(MemberRole::Editor).await;
 
     // A change claiming a verb the app does not publish: refused by the
     // relay, so it never reaches Bob (whose replica would refuse it loudly).
@@ -672,104 +637,21 @@ params = []
         )),
         move |_| Some(hash),
     );
-    let alice = TestUser::fresh("Alice");
-    let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
-    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
-    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-
-    // Alice's laptop creates a room on her relay and enters it as its owner.
-    // (That Bob's device cannot is `governance_actions`'s to show.)
-    let room = create_and_enter(&relay, &laptop, "Design review").await;
-
-    // Alice invites Bob's person; his device redeems through the signed
-    // address the invitation carries and is admitted by the room's governor.
-    let invitation = invite(
-        &relay,
-        &laptop,
-        &room.workspace,
-        MemberRole::Commenter,
-        bob.user_pk,
-    )
-    .await;
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    assert_eq!(
-        verified.grant().issuer,
-        host.cert,
-        "the relay answers for the room"
-    );
-    let admission = WorkspaceJoinClient::new(device_endpoint(&phone).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation.clone(),
-            phone.cert.clone(),
-            &phone.sk,
-            [7; 32],
-        )
-        .await
-        .unwrap();
-    let bootstrap = admission.bootstrap;
-    assert_eq!(bootstrap.room, room.workspace);
-    assert_eq!(bootstrap.workspace_id, room.workspace_id);
-    assert_eq!(bootstrap.role, MemberRole::Commenter);
-
-    // Bob's own replica, from the bootstrap alone, makes him an editor.
-    let mut bob_peer = StatePeer::new(
-        &bootstrap.room,
-        bootstrap.host.clone(),
-        bootstrap.certified_roster.clone(),
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    bob_peer.select_admission_v5().unwrap();
-    for bytes in &bootstrap.governance_messages {
-        bob_peer
-            .receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
-                postcard::from_bytes(bytes).unwrap(),
-                SystemTime::now(),
-            )
-            .unwrap();
-    }
-    assert_eq!(
-        role(&bob_peer, phone.device_pubkey()),
-        Some(collab_types::Role::Commenter)
-    );
-
-    // Alice's replica learns governance from the relay's retained history.
-    let mut alice_peer = StatePeer::new(
-        &room.workspace,
-        host.cert.clone(),
-        vec![host.cert.clone()],
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    let alice_session = session(&relay, &laptop, room.workspace_id).await;
-    let bob_session = session(&relay, &phone, room.workspace_id).await;
-    let mut alice_presence = Vec::new();
-    let mut bob_presence: Vec<([u8; 32], Vec<u8>)> = Vec::new();
-    receive_until(
-        "Alice's replica admits both people",
-        &alice_session,
-        &mut alice_peer,
-        &mut alice_presence,
-        |peer, _| {
-            role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
-                && role(peer, phone.device_pubkey()) == Some(collab_types::Role::Commenter)
-        },
-    )
-    .await;
-    crate::common::wait_until_subscribed(&relay, room.workspace_id, &phone.device_pubkey()).await;
+    let Governed {
+        // The relay's storage: kept alive for the whole test.
+        state: _state,
+        laptop,
+        phone,
+        relay,
+        room,
+        mut alice_peer,
+        mut bob_peer,
+        alice_session,
+        bob_session,
+        mut alice_presence,
+        mut bob_presence,
+        ..
+    } = governed_room(MemberRole::Commenter).await;
 
     // Alice's chat: the record exists before Bob writes to it.
     let mut doc = AutoCommit::new();

@@ -11,9 +11,8 @@
 
 use smithay::input::keyboard::{Keysym, xkb};
 
-/// The keys that type one character: hold `modifiers` in order, then press
-/// and release `key`. Codes are evdev (the kernel's, as `wl_keyboard.key`
-/// carries them minus 8).
+/// The keys that type one character: hold `modifiers` in order, then press and release `key` .
+/// Codes are evdev (the kernel's, as `wl_keyboard.key` carries them minus 8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stroke {
     pub modifiers: Vec<StrokeModifier>,
@@ -28,8 +27,7 @@ pub struct StrokeModifier {
     pub key: u32,
 }
 
-/// The shift levels a stroke can need, in the order a person reaches for
-/// them.
+/// The shift levels a stroke can need, in the order a person reaches for them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     Shift,
@@ -37,8 +35,8 @@ pub enum Level {
     Level3,
 }
 
-/// The modifier combinations tried, plainest first: a character a key types
-/// unmodified is never typed with Shift or `AltGr` held.
+/// The modifier combinations tried, plainest first: a character a key types unmodified is never
+/// typed with Shift or `AltGr` held.
 const COMBINATIONS: [&[Level]; 4] = [
     &[],
     &[Level::Shift],
@@ -76,13 +74,11 @@ pub fn stroke_for(
                     .contains(&Keysym::new(sym))
             })
         };
-        // A keymap also sets a level from keys most keyboards do not have:
-        // its extra level key (`<LVL3>`, the key a Japanese keyboard's
-        // zenkaku key covers) carries `AltGr` on every layout, ahead of the
-        // right alt in keycode order. A stroke holds the modifier a person
-        // presses, so that comes first; the extra key is the fallback for a
-        // keymap that puts the level nowhere else, so every character stays
-        // typeable.
+        // A keymap also sets a level from keys most keyboards do not have: its extra level key
+        // (`<LVL3>`, the key a Japanese keyboard's zenkaku key covers) carries `AltGr` on every
+        // layout, ahead of the right alt in keycode order. A stroke holds the modifier a person
+        // presses, so that comes first; the extra key is the fallback for a keymap that puts the
+        // level nowhere else, so every character stays typeable.
         sets_level()
             .find(|key| crate::sticky_keys::is_modifier(key.raw().saturating_sub(8)))
             .or_else(|| sets_level().next())
@@ -125,12 +121,11 @@ mod tests {
     use super::*;
 
     fn keymap(layout: &str) -> xkb::Keymap {
-        // A keymap of this test's own: the machine running the test may set
-        // `XKB_DEFAULT_LAYOUT`, `XKB_DEFAULT_VARIANT` or `XKB_DEFAULT_OPTIONS`
-        // (its own layout, and what its desktop asks for), and its xkb
-        // configuration says what an empty name means. None of that may reach
-        // these keymaps, so every name below is stated and the context reads
-        // none from the environment.
+        // A keymap of this test's own: the machine running the test may set `XKB_DEFAULT_LAYOUT` ,
+        // `XKB_DEFAULT_VARIANT` or `XKB_DEFAULT_OPTIONS` (its own layout, and what its desktop asks
+        // for), and its xkb configuration says what an empty name means. None of that may reach
+        // these keymaps, so every name below is stated and the context reads none from the
+        // environment.
         let context = xkb::Context::new(xkb::CONTEXT_NO_ENVIRONMENT_NAMES);
         xkb::Keymap::new_from_names(
             &context,
@@ -184,9 +179,8 @@ mod tests {
 
     #[test]
     fn a_stroke_holds_a_modifier_a_person_presses() {
-        // A broadcast keymap also sets the levels from its extra keys, which
-        // no keyboard but an old Japanese one carries; a stroke must hold a
-        // modifier key instead.
+        // A broadcast keymap also sets the levels from its extra keys, which no keyboard but an old
+        // Japanese one carries; a stroke must hold a modifier key instead.
         for layout in ["us", "de", "fr", "us,de"] {
             let keymap = keymap(layout);
             for ch in ['@', '€', 'Ö', 'Ä', 'ü'] {
@@ -215,8 +209,8 @@ mod tests {
                 .is_none_or(|stroke| stroke.modifiers.iter().all(|modifier| modifier.key != 100)),
             "{stroke:?}"
         );
-        // Without the right alt the keymap's extra level key still holds the
-        // level, so `@` stays typeable rather than becoming text.
+        // Without the right alt the keymap's extra level key still holds the level, so `@` stays
+        // typeable rather than becoming text.
         assert_eq!(stroke.map(|stroke| stroke.key), Some(16), "@");
     }
 

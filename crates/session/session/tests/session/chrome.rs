@@ -1,11 +1,11 @@
-//! The bar's own chrome: what an app's notification shows there, and the
-//! clock that Clocks' live activity feeds.
+//! The bar's own chrome: what an app's notification shows there, and the clock that Clocks' live
+//! activity feeds.
 
 use super::*;
 
-/// Send one notification over the freedesktop interface on `address`, as an
-/// app of the session would, and name the id the daemon gave it. The
-/// connection is the app's: it stays open until the caller drops it.
+/// Send one notification over the freedesktop interface on `address` , as an app of the session
+/// would, and name the id the daemon gave it. The connection is the app's: it stays open until the
+/// caller drops it.
 pub(super) async fn notify(
     address: &str,
     summary: &str,
@@ -44,9 +44,8 @@ pub(super) async fn notify(
     (app, reply.body().deserialize().unwrap())
 }
 
-/// An app's notification over the freedesktop interface, from the process
-/// whose window the session shows: a banner and a centre entry named after
-/// that app, and the bar's bell counting it.
+/// An app's notification over the freedesktop interface, from the process whose window the session
+/// shows: a banner and a centre entry named after that app, and the bar's bell counting it.
 #[test]
 fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     let _settled = ui::motion::testing::settled();
@@ -69,22 +68,17 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     let portal = desktop
         .portal()
         .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: desktop.services(),
-            wake,
-            desktop: Some(Rc::clone(&desktop)),
-            portal,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        services: desktop.services(),
+        wake,
+        desktop: Some(Rc::clone(&desktop)),
+        portal,
+        collab: false,
+        ..Options::default()
+    });
 
-    // The app the session knows by its window; the sender's process is the
-    // one that window's client runs in.
+    // The app the session knows by its window; the sender's process is the one that window's client
+    // runs in.
     let mut client = mapped(&mut session, "so.tilo.mail");
 
     let runtime = desktop.runtime();
@@ -114,8 +108,8 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
         "the bell says what is unread: {bell:?}"
     );
 
-    // The person closes the banner on its own control: it is kept in the
-    // centre, named after the same app.
+    // The person closes the banner on its own control: it is kept in the centre, named after the
+    // same app.
     let dismiss = until(&mut session, &mut client, |session| {
         session
             .banners()

@@ -18,9 +18,6 @@ fn decode<T: DeserializeOwned>(line: Option<Vec<u8>>) -> std::io::Result<Option<
 }
 
 /// Write `message` as one line and flush it.
-///
-/// # Errors
-/// The stream failed, or `message` does not serialize.
 pub fn write_frame<W: Write, T: Serialize>(out: &mut W, message: &T) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(message)?;
     line.push(b'\n');

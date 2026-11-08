@@ -56,9 +56,6 @@ impl SettingsView {
 
 impl AppSettingsHandle {
     /// The view once its revision differs from `after`; at once for 0.
-    ///
-    /// # Errors
-    /// The host refuses or is unavailable.
     pub async fn read(&self, after: u64) -> Result<SettingsView, NotAvailable> {
         SettingsView::from_reply(
             self.channel
@@ -68,9 +65,6 @@ impl AppSettingsHandle {
     }
 
     /// Invoke the host's separately admitted display transaction service.
-    ///
-    /// # Errors
-    /// Refuses oversized requests, unavailable authority and lost replies.
     pub async fn display_control(
         &self,
         command: &[u8],
@@ -104,9 +98,6 @@ impl AppSettingsHandle {
     /// Merge `values_json`, `{"<app id>": {...}}`, into the app's entry in
     /// `section`, answering the view after the write. `action` names the
     /// action that made the change, for the session's history.
-    ///
-    /// # Errors
-    /// Refuses oversized writes, and the host's refusal.
     pub async fn update(
         &self,
         section: &str,
@@ -248,9 +239,6 @@ pub mod host {
     impl AppSettingsServer {
         /// The view, as its revision and JSON, once its revision differs
         /// from `after`; at once for 0.
-        ///
-        /// # Errors
-        /// The channel's admission was withdrawn, or the view is too large.
         #[expect(
             clippy::future_not_send,
             reason = "the host answers each app on its single-threaded broker task"
@@ -272,9 +260,6 @@ pub mod host {
         }
 
         /// Run a display transaction for the device's settings app.
-        ///
-        /// # Errors
-        /// The app holds no display authority, or the transaction failed.
         pub fn display(
             &self,
             command: &[u8],
@@ -297,9 +282,6 @@ pub mod host {
 
         /// Merge `values` (a JSON object) into the app's entry in
         /// `section`, answering the view after the write.
-        ///
-        /// # Errors
-        /// The write is malformed, too large or outside the app's reach.
         pub fn update(
             &self,
             section: &str,

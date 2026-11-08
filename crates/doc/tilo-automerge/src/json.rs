@@ -107,10 +107,6 @@ fn scalar_of(value: &serde_json::Value) -> Result<ScalarValue, JsonError> {
 }
 
 /// The JSON value of a stored scalar.
-///
-/// # Errors
-///
-/// A scalar JSON has no value for: bytes, or a type this crate does not know.
 pub fn scalar_json(scalar: &ScalarValue) -> Result<serde_json::Value, JsonError> {
     Ok(match scalar {
         ScalarValue::Null => serde_json::Value::Null,
@@ -245,10 +241,6 @@ fn object_of<D: ReadDoc + ?Sized>(
 }
 
 /// The JSON value of the entry `value` at `id`, as the document holds it now.
-///
-/// # Errors
-///
-/// When the document cannot be read, or holds what JSON has no value for.
 pub fn read_value<D: ReadDoc + ?Sized>(
     doc: &D,
     value: &Value<'_>,
@@ -259,10 +251,6 @@ pub fn read_value<D: ReadDoc + ?Sized>(
 
 /// The JSON value of the object `id` as it was at `heads`, holding at most
 /// `limit` values: a longer subtree stops where the limit is reached.
-///
-/// # Errors
-///
-/// When the document cannot be read, or holds what JSON has no value for.
 pub fn read_at<D: ReadDoc + ?Sized>(
     doc: &D,
     id: &ObjId,
@@ -289,10 +277,6 @@ fn object_at<D: Transactable + ?Sized>(
 
 /// The map at `prop` of `obj`, made where something else or nothing is
 /// there.
-///
-/// # Errors
-///
-/// The document's own read or write error.
 pub fn map_at<D: Transactable + ?Sized>(
     doc: &mut D,
     obj: &ObjId,
@@ -356,11 +340,6 @@ fn insert_at<D: Transactable + ?Sized>(
 
 /// Write the fields of a JSON object as the map at `prop` of `obj`, dropping
 /// the keys it no longer holds.
-///
-/// # Errors
-///
-/// When the document cannot be written, or a field is not one a document
-/// holds.
 pub fn write_object<D: Transactable + ?Sized>(
     doc: &mut D,
     obj: &ObjId,
@@ -414,11 +393,6 @@ fn write_at<D: Transactable + ?Sized>(
 /// Write `value` at `prop` of `obj`, changing only what differs: a key of an
 /// object or an element of an array that holds the same value is left as it
 /// is. An index one past the end of a list adds an element.
-///
-/// # Errors
-///
-/// When the document cannot be written, or the value is not one a document
-/// holds.
 pub fn write<D: Transactable + ?Sized>(
     doc: &mut D,
     obj: &ObjId,

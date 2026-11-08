@@ -28,9 +28,6 @@ pub trait WriteSetup {
     /// Check authorization before any target preparation.
     fn output_preflight(&self) -> io::Result<()>;
     /// Revalidate the migration sources independently of the target.
-    ///
-    /// # Errors
-    /// Returns an error if a source changed, overlaps the target or cannot be inspected.
     fn validate_pending_source_disks(&self) -> io::Result<()>;
     fn write_descriptor(
         &self,
@@ -46,10 +43,6 @@ pub trait WriteSetup {
     fn write_profile(&self, destination: &Path, should_cancel: &dyn Fn() -> bool)
     -> io::Result<()>;
     /// Apply any staged setup handoff to the written destination.
-    ///
-    /// # Errors
-    /// Returns an error if the destination cannot safely receive the handoff or
-    /// installation or embedding fails.
     fn apply_handoff(&self, destination: &Path) -> io::Result<()>;
     /// Provision protected migration output after writing and handoff.
     ///

@@ -25,7 +25,6 @@ mod common;
 use std::time::Duration;
 
 use serde_json::{Map, json};
-use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
@@ -34,23 +33,18 @@ use common::{
     preset_menu, press, press_sheet, private_home, seeded_session, type_text, until,
 };
 
-/// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the
-/// top, the switch between the presets, and the dock on its edge — and nothing of the desktop's
-/// own bar or strips stands beside it.
+/// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the top,
+/// the switch between the presets, and the dock on its edge — and nothing of the desktop's own bar
+/// or strips stands beside it.
 #[test]
 fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        ..Options::default()
+    });
 
     // The bar: the shell's own parts, drawn over the whole output.
     until(&mut session, "the bar's parts", |session| {
@@ -69,8 +63,8 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
         "the shell covers the display"
     );
 
-    // The preset switch: the bar's own menu, saying the preset the desk shows, offering the
-    // ways of showing the same places.
+    // The preset switch: the bar's own menu, saying the preset the desk shows, offering the ways of
+    // showing the same places.
     let menu = preset_menu(&session).expect("the desk's preset menu");
     press(&mut session, &menu);
     for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
@@ -135,9 +129,8 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
         "the desk is: {desk}"
     );
 
-    // Each action as a program calls it, what it may go without included. The chrome by its
-    // key: a window's control reads under the window's name, and the desk's window is another
-    // `Desktop`.
+    // Each action as a program calls it, what it may go without included. The chrome by its key: a
+    // window's control reads under the window's name, and the desk's window is another `Desktop` .
     let (chrome, failed) = repl.call(
         &mut session,
         "tilo_ls",
@@ -323,8 +316,8 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
     );
     agent.opened(&mut session);
 
-    // The same program, printed by both: the workspace's notes saying "launch", found and
-    // described the same way.
+    // The same program, printed by both: the workspace's notes saying "launch", found and described
+    // the same way.
     let program = "find(\"launch\").take(2)";
     let (typed, typed_failed) = repl.run(&mut session, program);
     let (ran, ran_failed) = agent.run(&mut session, program);
@@ -336,9 +329,9 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
     );
 }
 
-/// Step 8: traditional desktop — a press on a dock item opens it, and the top bar shows the
-/// focused window's actions. (A dock press already opens its item on the strips desk; what is
-/// missing is the traditional desk itself, which this test drives the same way.)
+/// Step 8: traditional desktop — a press on a dock item opens it, and the top bar shows the focused
+/// window's actions. (A dock press already opens its item on the strips desk; what is missing is
+/// the traditional desk itself, which this test drives the same way.)
 #[test]
 fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     fn offered(resources: &[tilo_actions::ResourceSpec], id: &str, label: &str) -> Option<String> {
@@ -378,9 +371,9 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
             .is_some_and(|desk| desk["here"] == json!("launcher"))
     });
 
-    // The top bar shows the focused window's own commands. The seeded note starts pinned, so
-    // its pin control toggles; unpinning it through the note's own published action leaves a
-    // note whose bar offers "Pin", as one it would pin does.
+    // The top bar shows the focused window's own commands. The seeded note starts pinned, so its
+    // pin control toggles; unpinning it through the note's own published action leaves a note whose
+    // bar offers "Pin", as one it would pin does.
     let note = seeded_note(&session, "Groceries");
     let pin = offered(&session.resources(), &note, "Pin").expect("the note offers its pin");
     session
@@ -395,10 +388,10 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
                 .unwrap(),
         )
         .expect("the note is placed");
-    // The bar itself carries the window's own commands: the menu it opens lists them, and the
-    // menu stands on the bar's row, not on the window's. A note whose body also says "Pin" (its
-    // own header) would satisfy a search for the word anywhere; what this step proves is that
-    // the bar holds it, so it presses the bar's menu and reads the row it opens.
+    // The bar itself carries the window's own commands: the menu it opens lists them, and the menu
+    // stands on the bar's row, not on the window's. A note whose body also says "Pin" (its own
+    // header) would satisfy a search for the word anywhere; what this step proves is that the bar
+    // holds it, so it presses the bar's menu and reads the row it opens.
     let name = common::window_name_of(&session, &note);
     // The bar draws the window the arrangement names once the shell has read it: the place is
     // published as the session arranges it, and the next frame carries it to the bar.
@@ -508,7 +501,7 @@ fn step_9_a_theme_switch_changes_looks_only() {
     }
 }
 
-/// The published id of the seeded note titled `title`.
+/// The published id of the seeded note titled `title` .
 fn seeded_note(session: &Session, title: &str) -> String {
     fn find(resources: &[tilo_actions::ResourceSpec], title: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -522,7 +515,7 @@ fn seeded_note(session: &Session, title: &str) -> String {
     find(&session.resources(), title).unwrap_or_else(|| panic!("the seeded note {title:?}"))
 }
 
-/// The window place and node of the field holding `value`, as assistive technology reads it: an
+/// The window place and node of the field holding `value` , as assistive technology reads it: an
 /// editable text field (the shell's own places are drawn by the shell, so its window is the one
 /// that carries them).
 fn title_field(session: &Session, value: &str) -> Option<(usize, ui::accesskit::NodeId)> {
@@ -540,8 +533,8 @@ fn title_field(session: &Session, value: &str) -> Option<(usize, ui::accesskit::
     None
 }
 
-/// What the person types in the canvas's entry stands in it as they type: the entry keeps its
-/// words while the shell's record moves under it.
+/// What the person types in the canvas's entry stands in it as they type: the entry keeps its words
+/// while the shell's record moves under it.
 #[test]
 fn typing_in_the_canvas_entry_shows_what_is_typed() {
     let _settled = ui::motion::testing::settled();

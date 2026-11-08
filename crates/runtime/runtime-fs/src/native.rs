@@ -655,8 +655,6 @@ impl FsSession {
     }
 
     /// Check actual grant/session/ancestor scope without accessing bytes.
-    /// # Errors
-    /// Refuses closed, revoked, foreign or detached lineage.
     pub fn check_entry(&self, entry: &GrantedEntry) -> Result<(), FsError> {
         let table = self.call()?;
         self.validate(&table, entry.lease(), None)
@@ -673,8 +671,6 @@ impl FsSession {
     }
 
     /// Observe an actual held directory or regular file without byte access.
-    /// # Errors
-    /// Refuses revoked scope, wrong type or a changed native identity.
     pub fn entry_stat(
         &self,
         entry: &GrantedEntry,
@@ -728,8 +724,6 @@ impl FsSession {
 
     /// Observe bounded raw bytes of the exact no-follow symlink inode.
     /// This grants neither target traversal nor target content access.
-    /// # Errors
-    /// Refuses absent Enumerate/metadata rights, substitutions, revocation or IO.
     #[cfg(target_os = "linux")]
     pub fn readlink_child(
         &self,

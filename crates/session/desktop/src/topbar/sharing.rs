@@ -1,6 +1,5 @@
-//! The people on the bar: the avatars of everyone here, the colours their
-//! cursor and avatar settle on, who is watching or sharing, and the continuity
-//! chip beside them.
+//! The people on the bar: the avatars of everyone here, the colours their cursor and avatar settle
+//! on, who is watching or sharing, and the continuity chip beside them.
 
 /// The sharing pill's glyph: the eye that says the windows are shared.
 static SHARE_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::Eye];
@@ -8,8 +7,8 @@ static SHARE_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::Eye];
 use super::*;
 
 impl TopBarChrome {
-    /// Where the person's own avatar was last drawn, for anchoring their
-    /// profile card; zero when it is not shown.
+    /// Where the person's own avatar was last drawn, for anchoring their profile card; zero when it
+    /// is not shown.
     pub fn own_avatar_rect(&self) -> Rect {
         self.control_rect(Self::CONTROL_PROFILE)
     }
@@ -26,9 +25,8 @@ impl TopBarChrome {
         t_args("topbar-profile", &[("name", name.into())])
     }
 
-    /// The faces in the people control, one named image each, then the
-    /// "+N" chip for those beyond them. Keyed by the roster id, so a
-    /// reader's place survives someone arriving or leaving.
+    /// The faces in the people control, one named image each, then the "+N" chip for those beyond
+    /// them. Keyed by the roster id, so a reader's place survives someone arriving or leaving.
     pub(super) fn face_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
         let mut faces: Vec<AccessNode> = self
@@ -79,12 +77,11 @@ impl TopBarChrome {
         self.chrome.as_ref()?.snapshot().own
     }
 
-    /// Read how each face looks: who is idle or away, in a call (their ring
-    /// breathing), or bouncing from a wave. What the roster the bar read
-    /// says of each face leads: on a session whose people come from the
-    /// collaboration plane, that is everyone here, and `presence` is empty.
-    /// A face the roster says nothing of falls back to `presence`, which is
-    /// where a wave's bounce always comes from.
+    /// Read how each face looks: who is idle or away, in a call (their ring breathing), or bouncing
+    /// from a wave. What the roster the bar read says of each face leads: on a session whose people
+    /// come from the collaboration plane, that is everyone here, and `presence` is empty. A face
+    /// the roster says nothing of falls back to `presence` , which is where a wave's bounce always
+    /// comes from.
     pub(super) fn read_face_looks(
         &mut self,
         presence: &PresenceCtx,
@@ -138,8 +135,8 @@ impl TopBarChrome {
         self.collaborator_overflow
     }
 
-    /// Pinned so a future revert to the old four-rect quad fails loudly
-    /// instead of silently regressing.
+    /// Pinned so a future revert to the old four-rect quad fails loudly instead of silently
+    /// regressing.
     pub fn overview_glyph_icon() -> ui::icons::Icon {
         ui::icons::Icon::LayoutGrid
     }
@@ -189,9 +186,9 @@ impl TopBarChrome {
         (peers.len(), controllers.len(), surfaces.len())
     }
 
-    /// Named viewers for disclosure prose. Transport ids are joined to the
-    /// active workspace's live roster through `Collaborator::session`; an unknown
-    /// session remains visible under its deterministic peer handle.
+    /// Named viewers for disclosure prose. Transport ids are joined to the active workspace's live
+    /// roster through `Collaborator::session` ; an unknown session remains visible under its
+    /// deterministic peer handle.
     pub(super) fn sharing_viewers(&self) -> Vec<(u64, String, Option<bool>, bool)> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
@@ -271,9 +268,8 @@ impl TopBarChrome {
         )
     }
 
-    /// Glance text puts the privacy state before identity so elision can
-    /// shorten a long display name without ever hiding "controls"/"viewing"
-    /// or whether the participant is an agent.
+    /// Glance text puts the privacy state before identity so elision can shorten a long display
+    /// name without ever hiding "controls"/"viewing" or whether the participant is an agent.
     pub(super) fn sharing_label(&self) -> Option<String> {
         let (viewers, controllers, _) = self.sharing_summary();
         if viewers == 0 {
@@ -324,8 +320,8 @@ impl TopBarChrome {
                             })
                             .map(|tab| (workspace, tab))
                     })
-                    // A window the tree does not list has no name a person
-                    // knows; its surface number would mean nothing to them.
+                    // A window the tree does not list has no name a person knows; its surface
+                    // number would mean nothing to them.
                     .map_or_else(
                         || t("topbar-sharing-unknown-window"),
                         |(workspace, tab)| {
@@ -346,9 +342,9 @@ impl TopBarChrome {
             .collect()
     }
 
-    /// The person's own avatar, ending at `right_x`, in their colour with
-    /// their initials; returns where the controls before it end. It opens
-    /// their profile card, so it is set apart from the others' stack.
+    /// The person's own avatar, ending at `right_x` , in their colour with their initials; returns
+    /// where the controls before it end. It opens their profile card, so it is set apart from the
+    /// others' stack.
     pub(super) fn draw_own_avatar(
         &mut self,
         scene: &mut Scene,
@@ -382,9 +378,9 @@ impl TopBarChrome {
         chip.x0 - f64::from(theme.tokens.spacing.s3)
     }
 
-    /// Paint an explicit, persistent disclosure beside the roster. An eye
-    /// plus a count is retained even for view-only shares; control changes
-    /// the colour and adds a pointer count instead of replacing visibility.
+    /// Paint an explicit, persistent disclosure beside the roster. An eye plus a count is retained
+    /// even for view-only shares; control changes the colour and adds a pointer count instead of
+    /// replacing visibility.
     pub(super) fn draw_sharing_indicator(
         &mut self,
         scene: &mut Scene,
@@ -400,9 +396,8 @@ impl TopBarChrome {
             self.sharing_indicator_rect = Rect::ZERO;
             return right_x;
         };
-        // Sharing is one bar chip: the eye, the words, and the state's tone
-        // washed into the chip's body — warning where someone controls the
-        // windows, the accent while they only view.
+        // Sharing is one bar chip: the eye, the words, and the state's tone washed into the chip's
+        // body — warning where someone controls the windows, the accent while they only view.
         let tokens = &theme.tokens;
         let color = if controllers > 0 {
             tokens.colors.semantic.warning
@@ -432,10 +427,9 @@ impl TopBarChrome {
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
-    /// A quiet offer to continue the tab another of this person's devices
-    /// just moved to, left of the roster, with its own dismiss chip. It
-    /// yields to the centre band: with no room for a readable label it is
-    /// not drawn at all (the palette still offers it).
+    /// A quiet offer to continue the tab another of this person's devices just moved to, left of
+    /// the roster, with its own dismiss chip. It yields to the centre band: with no room for a
+    /// readable label it is not drawn at all (the palette still offers it).
     pub(super) fn draw_continuity_chip(
         &mut self,
         scene: &mut Scene,
@@ -460,8 +454,7 @@ impl TopBarChrome {
         let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
         let natural = ChipFace::intrinsic_width(label, lead, false, text_renderer, theme);
         let room = right - dismiss_w - gap - left_limit;
-        // Below this the label elides to a word or two and stops saying
-        // what it offers.
+        // Below this the label elides to a word or two and stops saying what it offers.
         if room < 96.0 {
             return;
         }
@@ -481,9 +474,8 @@ impl TopBarChrome {
             .paint(scene, transform, text_renderer, theme);
     }
 
-    /// The live continuity offer's label. Read from chrome rather than
-    /// cached, so the semantic surface and the next paint agree even before
-    /// a frame has drawn the chip.
+    /// The live continuity offer's label. Read from chrome rather than cached, so the semantic
+    /// surface and the next paint agree even before a frame has drawn the chip.
     pub(super) fn continuity_label(&self) -> Option<String> {
         self.chrome.as_ref()?.continuity_offer()
     }
@@ -500,10 +492,10 @@ pub(super) struct FaceLook {
     pub(super) scale: f64,
 }
 
-/// Cursor and avatar colours for a workspace, settled over the whole roster so
-/// a peer's avatar matches the colour their cursor is drawn in elsewhere. An
-/// explicit `cursor_color` outranks anything computed; the local user takes
-/// part in the settlement (never the avatar stack) so every host agrees.
+/// Cursor and avatar colours for a workspace, settled over the whole roster so a peer's avatar
+/// matches the colour their cursor is drawn in elsewhere. An explicit `cursor_color` outranks
+/// anything computed; the local user takes part in the settlement (never the avatar stack) so every
+/// host agrees.
 pub(super) fn roster_colors(
     roster: &[tilo_desktop_model::Collaborator],
     local: &str,

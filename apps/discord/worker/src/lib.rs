@@ -209,9 +209,6 @@ impl Ctx {
 
 /// Serve the connector protocol on `input` and `output` until the host
 /// says `Stop` or closes `input`.
-///
-/// # Errors
-/// The host broke the protocol or the pipes failed.
 pub async fn run<R, W>(config: Config, mut input: R, mut output: W) -> Result<(), String>
 where
     R: AsyncBufRead + Unpin,

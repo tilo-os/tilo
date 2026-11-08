@@ -28,9 +28,8 @@
 
 use std::collections::BTreeSet;
 
-/// Apps known to show secrets, by app id, ignoring case. Their windows are
-/// protected whether or not they ask: most cannot ask, since only apps
-/// built on the toolkit reach the session.
+/// Apps known to show secrets, by app id, ignoring case. Their windows are protected whether or not
+/// they ask: most cannot ask, since only apps built on the toolkit reach the session.
 const SECRET_HOLDING_APP_IDS: &[&str] = &[
     "so.tilo.passwords",
     "so.tilo.totp",
@@ -43,24 +42,23 @@ const SECRET_HOLDING_APP_IDS: &[&str] = &[
     "com.belmoussaoui.authenticator",
 ];
 
-/// The colour a protected window is drawn in where its pixels leave the
-/// display: the desktop's own quiet grey, opaque, carrying no text.
+/// The colour a protected window is drawn in where its pixels leave the display: the desktop's own
+/// quiet grey, opaque, carrying no text.
 pub(crate) const PLACEHOLDER: [f32; 4] = [0.16, 0.17, 0.21, 1.0];
 
 /// Whether a copy of a scene holds back what the session keeps private.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Held {
-    /// A copy that leaves the display — a screenshot, a recording, the
-    /// replay buffer, a share stream, a remote viewer, the portal's picture:
-    /// the lock screen and every protected window are the placeholder.
+    /// A copy that leaves the display — a screenshot, a recording, the replay buffer, a share
+    /// stream, a remote viewer, the portal's picture: the lock screen and every protected window
+    /// are the placeholder.
     Back,
-    /// The session's own look at its displays, for a check of what the
-    /// person in front of them sees: they are drawn as they are.
+    /// The session's own look at its displays, for a check of what the person in front of them
+    /// sees: they are drawn as they are.
     Nothing,
 }
 
-/// Whether windows of `app_id` are protected for what the app is, before it
-/// asks.
+/// Whether windows of `app_id` are protected for what the app is, before it asks.
 #[must_use]
 pub fn holds_secrets(app_id: &str) -> bool {
     SECRET_HOLDING_APP_IDS

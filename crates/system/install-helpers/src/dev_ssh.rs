@@ -68,9 +68,6 @@ const SSHD_UNIT: &str = "/usr/lib/systemd/system/sshd.service";
 /// behaviour; tests replace them.
 pub trait Host {
     /// Labels `path` with the security context policy gives `installed`.
-    ///
-    /// # Errors
-    /// `matchpathcon` or `chcon` failing.
     fn label(&self, path: &Path, installed: &str) -> Result<()> {
         let output = Process::new("/usr/sbin/matchpathcon")
             .args(["-n", installed])
@@ -88,9 +85,6 @@ pub trait Host {
     }
 
     /// `ssh-keygen` reads every key in `path`.
-    ///
-    /// # Errors
-    /// `ssh-keygen` refusing the file.
     fn check_keys(&self, path: &Path) -> Result<()> {
         let output = Process::new("ssh-keygen")
             .arg("-l")

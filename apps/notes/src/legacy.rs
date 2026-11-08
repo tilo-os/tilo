@@ -37,9 +37,6 @@ const LEGACY_KEYS: [&str; 5] = [
 /// notebook is rewritten as a [`Notebook`] record with the same notes (ids,
 /// titles, tree, order and bodies), tags and pictures; one already stored as
 /// a record is only checked.
-///
-/// # Errors
-/// Refuses another `from`, or an old notebook whose data does not read.
 pub fn migrate(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
     if from != 1 {
         return Err(ModelError::invalid(format!(

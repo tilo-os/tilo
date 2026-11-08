@@ -470,8 +470,8 @@ impl AvailabilityRegistry {
         self.hydration_generation
     }
 
-    /// A receiver that sees every later change of
-    /// [`Self::hydration_generation`]: a pin, an unpin, a new version or a
+    /// A receiver that sees every later change
+    /// of [`Self::hydration_generation`]: a pin, an unpin, a new version or a
     /// residency change, from any writer of this registry.
     #[must_use]
     pub fn subscribe_hydration(&self) -> tokio::sync::watch::Receiver<u64> {

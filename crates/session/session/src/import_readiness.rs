@@ -1,21 +1,15 @@
-//! The installed folder importer across this login: whether this session's
-//! first use is over, answered on its own socket, and the review the person
-//! left to be opened once it is.
-//!
-//! Add folders opens long after setup, on a saved import the person still has
-//! to finish. Before it continues one it asks the session it is drawn in
-//! whether the identity ceremony is done, and only continues on `ready`:
-//! nothing it carries may land under a half-made identity. The answer comes
-//! from this session's own state, never from a flag or a file a caller could
-//! write, and the socket it arrives on belongs to this session alone
-//! ([`tilo_paths::login::import_readiness_socket`], named for the Wayland
-//! socket the person is looking at).
-//!
-//! The review the importer saves asks, in `show_on_login`, to be opened again
-//! when the person next logs in: the login opens it once their first use is
-//! over, instead of leaving them to remember it. Both are hints and nothing
-//! more: the importer still opens its own private state under its own lock
-//! and revalidates what it carries.
+//! The installed folder importer across this login: whether this session's first use is over,
+//! answered on its own socket, and the review the person left to be opened once it is.
+//! Add folders opens long after setup, on a saved import the person still has to finish. Before it
+//! continues one it asks the session it is drawn in whether the identity ceremony is done, and only
+//! continues on `ready` : nothing it carries may land under a half-made identity. The answer comes
+//! from this session's own state, never from a flag or a file a caller could write, and the socket
+//! it arrives on belongs to this session alone ([`tilo_paths::login::import_readiness_socket`],
+//! named for the Wayland socket the person is looking at).
+//! The review the importer saves asks, in `show_on_login` , to be opened again when the person next
+//! logs in: the login opens it once their first use is over, instead of leaving them to remember
+//! it. Both are hints and nothing more: the importer still opens its own private state under its
+//! own lock and revalidates what it carries.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -32,8 +26,8 @@ const READY: &[u8] = b"tilo-import-ready-v1\n";
 /// How many importers one pass answers before the desk draws.
 const PER_PASS: usize = 8;
 
-/// The desktop entry of the installed folder importer, which the login opens
-/// when the person left a review asking to continue it.
+/// The desktop entry of the installed folder importer, which the login opens when the person left a
+/// review asking to continue it.
 pub(crate) const IMPORT_DESKTOP_ID: &str = "tilo-import-folders";
 
 /// The most the saved review may be, as the importer writes it.
@@ -41,8 +35,8 @@ const REVIEW_BOUND: u64 = 256 * 1024;
 /// The one byte past it that shows the file grew after it was measured.
 const REVIEW_READ: u64 = REVIEW_BOUND + 1;
 
-/// The installed folder importer's side of this login: the socket it asks on
-/// whether first use is over, and the review it saved to be opened when it is.
+/// The installed folder importer's side of this login: the socket it asks on whether first use is
+/// over, and the review it saved to be opened when it is.
 pub(crate) struct Continuation {
     readiness: Readiness,
     /// The saved review asks to be opened once the person's first use is over.
@@ -80,9 +74,9 @@ impl Continuation {
         Ok(())
     }
 
-    /// Answer every importer waiting since the last pass, and say whether the
-    /// saved review opens now: once the person's first use is over, and once
-    /// in this login. A client that does not read cannot stall a frame.
+    /// Answer every importer waiting since the last pass, and say whether the saved review opens
+    /// now: once the person's first use is over, and once in this login. A client that does not
+    /// read cannot stall a frame.
     pub(crate) fn follow(&mut self, first_use_over: bool) -> bool {
         self.readiness.follow(first_use_over);
         if !first_use_over || !self.pending || self.opened {
@@ -99,8 +93,8 @@ struct Readiness {
     /// What ends the loop's wait while an importer asks.
     watch: Option<tilo_compositor::ReadableWatch>,
     path: PathBuf,
-    /// The socket this instance bound: stopping a session never removes the
-    /// socket of another one that bound the path after it.
+    /// The socket this instance bound: stopping a session never removes the socket of another one
+    /// that bound the path after it.
     bound: (u64, u64),
     /// The account that bound it: the one whose saved review the login opens.
     account: u32,
@@ -152,9 +146,8 @@ impl Readiness {
         })
     }
 
-    /// Answer every importer waiting since the last pass: what a click of Add
-    /// folders asks, from the session's state as this pass sees it. A client
-    /// that does not read cannot stall a frame.
+    /// Answer every importer waiting since the last pass: what a click of Add folders asks, from
+    /// the session's state as this pass sees it. A client that does not read cannot stall a frame.
     fn follow(&self, first_use_over: bool) {
         let answer = if first_use_over { READY } else { WAIT };
         for _ in 0..PER_PASS {
@@ -182,8 +175,8 @@ impl Drop for Readiness {
     }
 }
 
-/// Whether the review the importer saved asks to be opened once first use is
-/// over: its own private file of `account`'s, read as the importer wrote it.
+/// Whether the review the importer saved asks to be opened once first use is over: its own private
+/// file of `account` 's, read as the importer wrote it.
 #[allow(
     clippy::verbose_bit_mask,
     reason = "the POSIX 0o077 mask is the check that no one else may read or write the review"
@@ -243,8 +236,8 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
-    /// A runtime directory with a display, and this session's private
-    /// directory as the session makes it.
+    /// A runtime directory with a display, and this session's private directory as the session
+    /// makes it.
     fn login() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("a runtime directory");
         let root = temp.path().canonicalize().expect("a canonical path");
@@ -264,8 +257,7 @@ mod tests {
         .expect("the session's readiness path")
     }
 
-    /// A click of Add folders: connected, and answered on the session's next
-    /// pass.
+    /// A click of Add folders: connected, and answered on the session's next pass.
     fn asking(path: &Path) -> UnixStream {
         let client = UnixStream::connect(path).expect("the readiness socket answers");
         client
@@ -280,8 +272,8 @@ mod tests {
         String::from_utf8(answer.to_vec()).expect("text")
     }
 
-    /// Add folders reads the session's own state: waiting while first use
-    /// runs, ready after, and nothing else of this account can ask.
+    /// Add folders reads the session's own state: waiting while first use runs, ready after, and
+    /// nothing else of this account can ask.
     #[test]
     fn the_readiness_socket_reports_wait_then_ready_and_goes_with_the_session() {
         let temp = login();
@@ -306,8 +298,8 @@ mod tests {
         );
     }
 
-    /// One session answers for one display: a second one on the socket the
-    /// first serves is refused rather than taking over its answers.
+    /// One session answers for one display: a second one on the socket the first serves is refused
+    /// rather than taking over its answers.
     #[test]
     fn a_served_readiness_socket_is_not_taken_over() {
         let temp = login();
@@ -324,8 +316,8 @@ mod tests {
         drop(first);
     }
 
-    /// The review the person left opens once their first use is over, and one
-    /// login opens it once however many passes it draws.
+    /// The review the person left opens once their first use is over, and one login opens it once
+    /// however many passes it draws.
     #[test]
     fn a_saved_review_opens_once_first_use_is_over() {
         let temp = login();
@@ -350,8 +342,8 @@ mod tests {
         );
     }
 
-    /// The importer writes its review for this account alone: a review any
-    /// other account could have written opens nothing.
+    /// The importer writes its review for this account alone: a review any other account could have
+    /// written opens nothing.
     #[test]
     fn only_the_importers_own_private_review_asks_to_open() {
         let home = tilo_test_env::TestHome::new().expect("this login's home");

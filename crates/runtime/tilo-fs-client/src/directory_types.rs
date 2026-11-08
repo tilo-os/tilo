@@ -134,8 +134,6 @@ pub struct HistoryReadObservation {
 }
 impl HistoryReadObservation {
     /// Validate only the finite descriptive vocabulary, never mint authority.
-    /// # Errors
-    /// Refuses malformed native identities or raw component bounds.
     pub fn validate(&self) -> Result<(), String> {
         if self.source_owner == [0; 32]
             || self.root[1] == 0

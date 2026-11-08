@@ -58,7 +58,6 @@ fn mounted_probe() -> (ProbeHost, HeadlessApp) {
 
 #[test]
 fn an_app_publishes_the_resources_a_caller_addresses_it_by() {
-    // Case `the_mounted_app_publishes_its_own_resource`.
     {
         let (_host, app) = mounted_probe();
         assert!(
@@ -74,7 +73,6 @@ fn an_app_publishes_the_resources_a_caller_addresses_it_by() {
         assert_eq!(contract.id, "edit");
     }
 
-    // Case `an_address_the_app_does_not_publish_is_refused_not_guessed`.
     {
         let (_host, mut app) = mounted_probe();
         let refused = app
@@ -89,7 +87,6 @@ fn an_app_publishes_the_resources_a_caller_addresses_it_by() {
 
 #[test]
 fn an_action_runs_and_the_app_is_what_answers_for_it() {
-    // Case `an_immediate_action_runs_and_answers_when_it_returns`.
     {
         let (host, mut app) = mounted_probe();
         let checkout = app.frame().component_record().cloned();
@@ -107,7 +104,6 @@ fn an_action_runs_and_the_app_is_what_answers_for_it() {
         );
     }
 
-    // Case `an_effect_runs_the_operation_the_app_declared_for_it`.
     {
         let (_host, mut app) = mounted_probe();
         let answer = app.call_on("probe:shared", "effect", json!({})).unwrap();
@@ -117,7 +113,6 @@ fn an_action_runs_and_the_app_is_what_answers_for_it() {
         assert_eq!(seen, vec!["Effect"], "an effect has no document to edit");
     }
 
-    // Case `an_argument_the_contract_does_not_accept_is_refused`.
     {
         let (_host, mut app) = mounted_probe();
         let refused = app
@@ -130,7 +125,6 @@ fn an_action_runs_and_the_app_is_what_answers_for_it() {
         );
     }
 
-    // Case `a_question_one_confirmation_answers_is_asked_first`.
     {
         let (_host, mut app) = mounted_probe();
         let refused = app
@@ -144,7 +138,6 @@ fn an_action_runs_and_the_app_is_what_answers_for_it() {
 
 #[test]
 fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_on() {
-    // Case `a_view_action_reads_without_leaving_an_undo_entry`.
     {
         let (host, mut app) = mounted_probe();
         let checkout = app
@@ -167,7 +160,6 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
         assert_eq!(body(&host.records, &checkout), "initialized");
     }
 
-    // Case `an_edit_action_makes_one_undoable_change_the_collaborator_can_undo`.
     {
         let (host, mut app) = mounted_probe();
         let checkout = app
@@ -205,7 +197,6 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
             .unwrap();
     }
 
-    // Case `a_refusal_the_scenario_expected_is_an_outcome_not_a_failure`.
     {
         let (_host, mut app) = mounted_probe();
         let mut step = invokes("absent");
@@ -221,7 +212,6 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
         );
     }
 
-    // Case `a_step_that_cannot_run_ends_the_scenario_and_names_itself`.
     {
         let (_host, mut app) = mounted_probe();
         let outcome: Outcome = app.drive(&[invokes("absent"), invokes("edit")]);

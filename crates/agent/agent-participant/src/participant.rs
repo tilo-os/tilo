@@ -348,10 +348,6 @@ pub struct AgentParticipant {
 impl AgentParticipant {
     /// Connect as `identity` and join `config.workspace`'s durable and live
     /// planes.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not one the delegation covers.
     pub fn start(
         config: ParticipantConfig,
         identity: AgentIdentity,
@@ -373,10 +369,6 @@ impl AgentParticipant {
     /// host starts again on the same grant gets back its channel
     /// memberships and keys, as a device keeps them across a restart, and
     /// opens what the workspace sealed while it was away.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not one the delegation covers.
     pub fn start_with_store(
         config: ParticipantConfig,
         identity: AgentIdentity,
@@ -1928,10 +1920,6 @@ impl AgentParticipant {
     /// Open `app_id` on `record` (a record the workspace already has), or on a
     /// new record it publishes; an app that keeps one record per workspace opens
     /// that one either way. Returns the record's route.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the app may not or could not be opened.
     pub fn open(&mut self, app_id: &str, record: Option<&str>) -> Result<DocumentRoute, String> {
         if !self.identity.delegation.permits_app(app_id) {
             return Err(format!("the agent is not delegated {app_id}"));
@@ -2025,11 +2013,6 @@ impl AgentParticipant {
 
     /// Invoke one action of the record at `route` as the agent, commit the
     /// change it made, and show the agent there.
-    ///
-    /// # Errors
-    ///
-    /// Returns the refusal: paused or stopped, outside the delegation, or
-    /// the app's own door refusing or failing.
     pub fn invoke(
         &mut self,
         route: &DocumentRoute,

@@ -84,10 +84,6 @@ pub struct FileLock {
 
 impl FileLock {
     /// Waits until `file` is locked in `mode`.
-    ///
-    /// # Errors
-    /// Returns the operating system's error when the file cannot be locked
-    /// or its descriptor cannot be marked close-on-exec.
     pub fn lock(file: File, mode: LockMode) -> io::Result<Self> {
         sys::set_cloexec(&file)?;
         sys::lock(&file, mode)?;

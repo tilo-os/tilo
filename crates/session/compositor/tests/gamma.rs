@@ -115,7 +115,7 @@ fn compositor() -> Compositor {
     compositor
 }
 
-/// A table of three ramps of `size`: red full, green half, blue zero.
+/// A table of three ramps of `size` : red full, green half, blue zero.
 fn table(size: u32) -> std::fs::File {
     let size = usize::try_from(size).unwrap();
     let ramp = |scale: f64| -> Vec<u8> {
@@ -224,8 +224,7 @@ fn a_gamma_tool_holds_the_ramp_exclusively_until_it_lets_go() {
 fn a_display_dimmed_in_software_shows_less_light_under_night_light() {
     let mut compositor = compositor();
     let full = shown(&mut compositor);
-    // The brightness service's half: half its linear light, through the
-    // transfer the panel shows.
+    // The brightness service's half: half its linear light, through the transfer the panel shows.
     let half = tilo_color_pipeline::software_dim::dimmed_signal(
         f32::from(full[0]) / 255.0,
         0.5,
@@ -250,8 +249,7 @@ fn a_display_dimmed_in_software_shows_less_light_under_night_light() {
         .expect("undim");
     assert_eq!(shown(&mut compositor), full, "full light is back");
 
-    // Under night light it dims what night light shows, not the untinted
-    // screen.
+    // Under night light it dims what night light shows, not the untinted screen.
     compositor
         .set_night_light(Some(3_000))
         .expect("night light");

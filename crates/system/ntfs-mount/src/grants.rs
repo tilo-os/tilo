@@ -33,10 +33,6 @@ impl GrantStore {
     }
 
     /// The grants `uid` has remembered.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if the file exists and cannot be read or parsed.
     pub fn load(&self, uid: u32) -> io::Result<Vec<Grant>> {
         match fs::read(self.path(uid)) {
             Ok(bytes) => serde_json::from_slice::<File>(&bytes)
@@ -48,10 +44,6 @@ impl GrantStore {
     }
 
     /// Replace `uid`'s grants, atomically.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if the file cannot be written.
     pub fn save(&self, uid: u32, grants: &[Grant]) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
         let path = self.path(uid);

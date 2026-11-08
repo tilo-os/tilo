@@ -34,9 +34,9 @@ pub(super) struct ReplayPointer {
     pub(super) desktop_space: bool,
 }
 
-/// What the desktop looked like at one history entry: every workspace's
-/// strips, `None` when the entry's document state cannot be read back. A
-/// change's state is fixed by its hash, so a checkpoint is computed once.
+/// What the desktop looked like at one history entry: every workspace's strips, `None` when the
+/// entry's document state cannot be read back. A change's state is fixed by its hash, so a
+/// checkpoint is computed once.
 pub(super) type ReplayCheckpoint = Option<Vec<(u64, ReplayWorkspace)>>;
 
 #[cfg(test)]
@@ -46,20 +46,17 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-/// The most recent entries replay shows; a workspace with years of edits still
-/// opens immediately.
+/// The most recent entries replay shows; a workspace with years of edits still opens immediately.
 const REPLAY_FRAMES: usize = 120;
 
 impl WorkspaceActivityPane {
-    /// Build each replay checkpoint from the real causal document state.
-    /// Recent frames are bounded so a workspace with years of edits still opens
-    /// immediately; every retained frame remains an exact Automerge fork.
-    ///
-    /// Forking the document is O(history) and runs on the compositor thread
-    /// whenever the rows move. Checkpoints are therefore kept per entry and
-    /// only entries new since the last rebuild are forked; switching
-    /// workspaces or scope reuses them, and a switch's own change is no
-    /// entry (the history source passes over it).
+    /// Build each replay checkpoint from the real causal document state. Recent frames are bounded
+    /// so a workspace with years of edits still opens immediately; every retained frame remains an
+    /// exact Automerge fork.
+    /// Forking the document is O(history) and runs on the compositor thread whenever the rows move.
+    /// Checkpoints are therefore kept per entry and only entries new since the last rebuild are
+    /// forked; switching workspaces or scope reuses them, and a switch's own change is no entry
+    /// (the history source passes over it).
     pub(super) fn rebuild_replay_frames(
         &mut self,
         tree: &impl ActivityTree,
@@ -79,9 +76,8 @@ impl WorkspaceActivityPane {
         let mut checkpoints = std::mem::take(&mut self.replay_checkpoints);
         let mut frames = Vec::with_capacity(ordered.len().min(REPLAY_FRAMES));
         for entry in ordered.into_iter().skip(skip) {
-            // The entry's heads come from the history log, which read them
-            // with the change: looking them up in the document lists every
-            // change of the workspace again.
+            // The entry's heads come from the history log, which read them with the change: looking
+            // them up in the document lists every change of the workspace again.
             let checkpoint = checkpoints.entry(entry.id).or_insert_with(|| {
                 replay_checkpoint(
                     baseline.get_or_insert_with(|| tree.clone()),
@@ -111,8 +107,8 @@ impl WorkspaceActivityPane {
                     .unwrap_or_default(),
             });
         }
-        // Another workspace's entries stay: switching back replays them
-        // without forking again. Only entries gone from the history go.
+        // Another workspace's entries stay: switching back replays them without forking again. Only
+        // entries gone from the history go.
         let history: HashSet<HistoryEntryId> = self.derived_entry_ids().collect();
         checkpoints.retain(|id, _| history.contains(id));
         self.replay_checkpoints = checkpoints;
@@ -126,9 +122,9 @@ impl WorkspaceActivityPane {
     }
 }
 
-/// The desktop at a history entry of `baseline`'s document: a fork
-/// constrained to the entry's `heads`, read back through the activity cache.
-/// `None` heads (an entry that is not a change of the document) has none.
+/// The desktop at a history entry of `baseline` 's document: a fork constrained to the entry's
+/// `heads` , read back through the activity cache. `None` heads (an entry that is not a change of
+/// the document) has none.
 fn replay_checkpoint<T: ActivityTree>(
     baseline: &mut T,
     heads: Option<Vec<automerge::ChangeHash>>,
@@ -136,11 +132,10 @@ fn replay_checkpoint<T: ActivityTree>(
     #[cfg(test)]
     REPLAY_CHECKPOINT_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
     let heads = heads?;
-    // Automerge 0.8's `fork_at` collector can traverse a valid merged
-    // graph in non-topological order and panic on a dependency that
-    // appears later. Clone the complete graph, then constrain reads to
-    // the historical clock; the replay snapshot is discarded after
-    // this frame is materialised.
+    // Automerge 0.8's `fork_at` collector can traverse a valid merged graph in non-topological
+    // order and panic on a dependency that appears later. Clone the complete graph, then constrain
+    // reads to the historical clock; the replay snapshot is discarded after this frame is
+    // materialised.
     let mut doc = baseline.document_mut().fork();
     tilo_automerge::ApplyIncoming::isolate_at(&mut doc, &heads);
     let mut snapshot = baseline.clone();

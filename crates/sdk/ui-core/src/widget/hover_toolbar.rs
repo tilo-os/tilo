@@ -1,4 +1,4 @@
-//! [`HoverToolbar`]: controls shown over the trailing top corner of a row while it is hovered
+//! [`HoverToolbar`] — controls shown over the trailing top corner of a row while it is hovered
 //! or holds focus: a message's quick reactions and Reply.
 //!
 //! The toolbar is laid out with the row (a layer straddling the row's top edge at its trailing

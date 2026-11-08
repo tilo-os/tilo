@@ -65,9 +65,6 @@ thread_local! {
 /// committed result or error exactly once. Reads bypass the synchronous mirror;
 /// the mirror changes only after commit. The closure must not reenter file writes
 /// in this profile, whose writer lock it holds across awaits.
-///
-/// # Errors
-/// Returns backend or closure failures; non-OPFS directories are unsupported.
 pub fn update_atomic_blocking<F, Fut>(
     dir: &crate::Dir,
     path: &VPath,

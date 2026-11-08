@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn pointer_broadcast_throttle_gates_by_gap_and_resets_on_scope() {
-    // Case `pointer_broadcast_allowed_first_call_always_passes`.
     {
         let now = crate::time::now();
         assert!(pointer_broadcast_allowed(
@@ -12,7 +11,6 @@ fn pointer_broadcast_throttle_gates_by_gap_and_resets_on_scope() {
         ));
     }
 
-    // Case `pointer_broadcast_allowed_blocks_inside_gap`.
     {
         let t0 = crate::time::now();
         let t1 = t0 + Duration::from_millis(10);
@@ -23,7 +21,6 @@ fn pointer_broadcast_throttle_gates_by_gap_and_resets_on_scope() {
         ));
     }
 
-    // Case `pointer_broadcast_allowed_passes_at_and_past_gap`.
     {
         // Exactly at the gap boundary is allowed — strict `>` would
         // accumulate single-ms drift under a sawtooth wakeup schedule.
@@ -40,7 +37,6 @@ fn pointer_broadcast_throttle_gates_by_gap_and_resets_on_scope() {
         ));
     }
 
-    // Case `set_presence_broadcast_scope_resets_throttle`.
     {
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
@@ -60,7 +56,6 @@ fn pointer_broadcast_throttle_gates_by_gap_and_resets_on_scope() {
 
 #[test]
 fn document_broadcast_merges_snapshots_and_leaves_commits_incremental() {
-    // Case `a_commit_leaves_the_edit_for_the_incremental_broadcast`:
     // Guards against `commit_action` serialising the whole document (which
     // advances `AutoCommit::save`'s cursor and leaves `broadcast_doc_delta`
     // nothing to send).
@@ -87,7 +82,6 @@ fn document_broadcast_merges_snapshots_and_leaves_commits_incremental() {
         );
     }
 
-    // Case `document_snapshot_merges_not_replaces`.
     {
         use automerge::transaction::Transactable;
         use automerge::{ObjType, ROOT, ReadDoc};
@@ -149,7 +143,6 @@ fn document_broadcast_merges_snapshots_and_leaves_commits_incremental() {
 
 #[test]
 fn presence_publishes_on_workspace_scope_through_the_sink() {
-    // Case `an_app_in_a_workspace_publishes_presence_without_being_asked`:
     // The scope is what sends `Arrived`, so opt-in would mean an app that
     // forgets to set it never receives state written before it opened.
     {
@@ -166,7 +159,6 @@ fn presence_publishes_on_workspace_scope_through_the_sink() {
         );
     }
 
-    // Case `an_app_with_no_workspace_publishes_nothing`:
     // The nil cluster addresses nobody, so no workspace means nothing published.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -175,7 +167,6 @@ fn presence_publishes_on_workspace_scope_through_the_sink() {
         assert!(app.presence_broadcast_scope().is_none());
     }
 
-    // Case `setting_scope_announces_arrival`.
     {
         use std::sync::{Arc, Mutex};
         let state = State::new();
@@ -200,7 +191,6 @@ fn presence_publishes_on_workspace_scope_through_the_sink() {
         );
     }
 
-    // Case `presence_broadcast_sink_receives_both_key_and_payload`.
     {
         use std::sync::{Arc, Mutex};
         let state = State::new();
@@ -226,7 +216,6 @@ fn presence_publishes_on_workspace_scope_through_the_sink() {
         }
     }
 
-    // Case `clear_presence_broadcast_sink_drops_callback`.
     {
         use std::sync::{Arc, Mutex};
         let state = State::new();

@@ -334,9 +334,6 @@ pub struct Formatted {
 }
 
 /// Formats a package's sources without writing anything.
-///
-/// # Errors
-/// The package has syntax errors; they name their files.
 pub fn format_package(source: &PackageSource) -> Result<Formatted, Vec<Diagnostic>> {
     let parsed = parse_package_files(source)?;
     let mut out = Formatted { files: Vec::new() };

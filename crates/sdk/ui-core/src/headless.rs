@@ -245,7 +245,7 @@ pub struct FrameSchedule {
 /// ([`FrameHarness::frame_requesters`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameDemand {
-    /// [`Widget::needs_animation_frame`]: a frame every vsync.
+    /// [`Widget::needs_animation_frame`] — a frame every vsync.
     Animation,
     /// [`Widget::next_wake_deadline`] is due.
     Deadline,
@@ -4203,8 +4203,8 @@ impl FrameHarness {
     ///
     /// This is the deterministic test seam for worker completions and
     /// asynchronous model notifications. Each attempt runs update, sync,
-    /// layout, and draw. Between attempts the thread parks on the current
-    /// [`crate::background::Background`]: a pumped executor runs its queue and
+    /// layout, and draw. Between attempts the thread parks on the
+    /// current [`crate::background::Background`]: a pumped executor runs its queue and
     /// advances its virtual clock instead of waiting in real time.
     pub fn wait_until(
         &mut self,
@@ -10848,7 +10848,6 @@ mod tests {
 
     #[test]
     fn audits_certify_action_binding_search_projection_and_accessibility() {
-        // Case `native_app_audit_proves_action_binding_and_a11y_together`.
         {
             let resource =
                 crate::widget::resource_actions::resource("example", "Example", "save", "Save");

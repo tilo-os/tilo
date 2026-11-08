@@ -1,24 +1,21 @@
 //! Window management policy, asked by the compositor and decided elsewhere.
-//!
-//! The compositor knows windows as Wayland toplevels; where they go, which
-//! one has focus and how big they start is a policy's answer. The desktop's
-//! strips, workspaces and tabs implement [`WindowPolicy`] on the desktop
-//! model; [`StackPolicy`] is the plain floating stack the compositor runs
-//! with on its own (tests, screenshots, a bare session).
+//! The compositor knows windows as Wayland toplevels; where they go, which one has focus and how
+//! big they start is a policy's answer. The desktop's strips, workspaces and tabs implement
+//! [`WindowPolicy`] on the desktop model; [`StackPolicy`] is the plain floating stack the
+//! compositor runs with on its own (tests, screenshots, a bare session).
 
 use smithay::utils::{Logical, Point, Rectangle};
 
 use crate::input::{GestureEvent, Switch};
 
-/// A point in the layout: logical pixels, as the desktop arranges outputs
-/// and windows.
+/// A point in the layout: logical pixels, as the desktop arranges outputs and windows.
 pub type LayoutPoint = Point<i32, Logical>;
 
 /// A rectangle in the layout, such as an output's: whole logical pixels.
 pub type LayoutRect = Rectangle<i32, Logical>;
 
-/// A finger on the screen, as the desktop reads it while it has the
-/// contact ([`WindowPolicy::touch`]).
+/// A finger on the screen, as the desktop reads it while it has the contact
+/// ([`WindowPolicy::touch`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TouchSample {
     /// A finger touched down here.
@@ -36,22 +33,22 @@ pub enum TouchSample {
 pub struct WindowInfo {
     /// The window's identity, never reused while the compositor runs.
     pub id: u64,
-    /// `xdg_toplevel.set_app_id`, when the client set one.
+    /// `xdg_toplevel.set_app_id` , when the client set one.
     pub app_id: Option<String>,
-    /// `xdg_toplevel.set_title`, when the client set one.
+    /// `xdg_toplevel.set_title` , when the client set one.
     pub title: Option<String>,
-    /// The window it belongs to (`xdg_toplevel.set_parent`, an X11
-    /// window's `WM_TRANSIENT_FOR`): a dialog of that window.
+    /// The window it belongs to (`xdg_toplevel.set_parent`, an X11 window's `WM_TRANSIENT_FOR` ): a
+    /// dialog of that window.
     pub parent: Option<u64>,
     /// The smallest size the client accepts, when it set one.
     pub min_size: Option<(i32, i32)>,
     /// The largest size the client accepts, when it set one.
     pub max_size: Option<(i32, i32)>,
-    /// The process that made the window: what it is asked of, the way a
-    /// portal request names the app it comes from.
+    /// The process that made the window: what it is asked of, the way a portal request names the
+    /// app it comes from.
     pub pid: Option<u32>,
-    /// The icon the window set for itself, when it set one: what its tab
-    /// paints instead of its app kind's glyph.
+    /// The icon the window set for itself, when it set one: what its tab paints instead of its app
+    /// kind's glyph.
     pub icon: Option<std::sync::Arc<crate::toplevel_icon::WindowIcon>>,
 }
 
@@ -96,12 +93,11 @@ pub enum WindowRequest {
 
 /// Decides placement, initial size and focus for windows.
 pub trait WindowPolicy {
-    /// The size a new toplevel is configured to before its first buffer, or
-    /// `None` to let the client choose.
+    /// The size a new toplevel is configured to before its first buffer, or `None` to let the
+    /// client choose.
     fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)>;
 
-    /// Where a toplevel of `size` goes in the logical layout when it first
-    /// shows a buffer.
+    /// Where a toplevel of `size` goes in the logical layout when it first shows a buffer.
     fn place(
         &mut self,
         window: &WindowInfo,
@@ -109,9 +105,9 @@ pub trait WindowPolicy {
         outputs: &[LayoutRect],
     ) -> LayoutPoint;
 
-    /// Lay every mapped window out again (`windows` bottom first, with their
-    /// current rectangles) after one mapped or went away, or the outputs
-    /// changed. `None` leaves every window where it is.
+    /// Lay every mapped window out again (`windows` bottom first, with their current rectangles)
+    /// after one mapped or went away, or the outputs changed. `None` leaves every window where it
+    /// is.
     fn arrange(
         &mut self,
         _windows: &[(WindowInfo, LayoutRect)],
@@ -128,8 +124,8 @@ pub trait WindowPolicy {
     /// in. Told when either changes, before the next arrangement.
     fn monitors(&mut self, _monitors: &[(LayoutRect, String)], _primary: Option<&str>) {}
 
-    /// The pointer moved to `(x, y)` in the logical layout, wherever it
-    /// went: over a window, a hosted surface or nothing.
+    /// The pointer moved to `(x, y)` in the logical layout, wherever it went: over a window, a
+    /// hosted surface or nothing.
     fn pointer_moved(&mut self, _x: f64, _y: f64) {}
 
     /// A pointer button went down at `(x, y)` in the logical layout,
@@ -137,21 +133,19 @@ pub trait WindowPolicy {
     /// whether or not one of them takes it.
     fn pointer_pressed(&mut self, _x: f64, _y: f64) {}
 
-    /// A finger touched down at `(x, y)` in the logical layout, over
-    /// anything. Asked at the touch's begin: return whether the desktop
-    /// takes the contact, so nothing under it does. A taken contact's
-    /// motion and lift come here too, their answer ignored.
+    /// A finger touched down at `(x, y)` in the logical layout, over anything. Asked at the touch's
+    /// begin: return whether the desktop takes the contact, so nothing under it does. A taken
+    /// contact's motion and lift come here too, their answer ignored.
     fn touch(&mut self, _touch: TouchSample) -> bool {
         false
     }
 
-    /// A window asked its size of ([`Self::initial_size`]) went away before
-    /// it showed a buffer, so it never maps: whatever place it was given
-    /// goes.
+    /// A window asked its size of ([`Self::initial_size`]) went away before it showed a buffer, so
+    /// it never maps: whatever place it was given goes.
     fn withdrawn(&mut self, _window: &WindowInfo) {}
 
-    /// Whether `window` floats over the desk as a card an app draws: framed
-    /// square, in front of the windows, and taking no focus.
+    /// Whether `window` floats over the desk as a card an app draws: framed square, in front of the
+    /// windows, and taking no focus.
     fn overlay(&self, _window: &WindowInfo) -> bool {
         false
     }
@@ -166,56 +160,50 @@ pub trait WindowPolicy {
         true
     }
 
-    /// A touchpad gesture of three or more fingers, which belongs to the
-    /// desktop (workspaces, strips, the overview; [`crate::gestures`] turns
-    /// the stream into those actions). Asked at the gesture's begin: return
-    /// whether the desktop takes it. A taken gesture's updates and end come
-    /// here too, their answer ignored; one not taken goes to the client
-    /// under the pointer, as gestures of one or two fingers always do.
+    /// A touchpad gesture of three or more fingers, which belongs to the desktop (workspaces,
+    /// strips, the overview; [`crate::gestures`] turns the stream into those actions). Asked at the
+    /// gesture's begin: return whether the desktop takes it. A taken gesture's updates and end come
+    /// here too, their answer ignored; one not taken goes to the client under the pointer, as
+    /// gestures of one or two fingers always do.
     fn gesture(&mut self, _gesture: &GestureEvent) -> bool {
         false
     }
 
-    /// A switch changed state: the lid closed or opened, a convertible
-    /// folded into or out of tablet shape.
+    /// A switch changed state: the lid closed or opened, a convertible folded into or out of tablet
+    /// shape.
     fn switch(&mut self, _switch: Switch, _on: bool) {}
 
-    /// A window asked to be moved, resized, maximized, made fullscreen or
-    /// minimized. Return `true` to have the compositor do what a floating
-    /// window manager does (a pointer grab; covering the output and
-    /// restoring), `false` when the policy answers it itself (through
-    /// [`WindowPolicy::arrange`], which is asked next). By default every
-    /// request but minimizing, which needs somewhere to bring the window
-    /// back from, is granted.
+    /// A window asked to be moved, resized, maximized, made fullscreen or minimized. Return `true`
+    /// to have the compositor do what a floating window manager does (a pointer grab; covering the
+    /// output and restoring), `false` when the policy answers it itself (through
+    /// [`WindowPolicy::arrange`], which is asked next). By default every request but minimizing,
+    /// which needs somewhere to bring the window back from, is granted.
     fn request(&mut self, _window: &WindowInfo, request: &WindowRequest) -> bool {
         !matches!(request, WindowRequest::Minimize)
     }
 
-    /// The window the policy brought forward itself (a person switching
-    /// windows from the desktop's own controls), asked after every
-    /// arrangement: the compositor gives it the keyboard. `None` leaves
-    /// focus where it is.
+    /// The window the policy brought forward itself (a person switching windows from the desktop's
+    /// own controls), asked after every arrangement: the compositor gives it the keyboard. `None`
+    /// leaves focus where it is.
     fn focused(&mut self) -> Option<u64> {
         None
     }
 
-    /// `window` asked for the keyboard (an xdg-activation request).
-    /// `fresh` is whether its token is recent enough to come from what the
-    /// person just did. Whether it gets the keyboard; a window refused is
-    /// one waiting for the person, which a policy shows where they look.
+    /// `window` asked for the keyboard (an xdg-activation request). `fresh` is whether its token is
+    /// recent enough to come from what the person just did. Whether it gets the keyboard; a window
+    /// refused is one waiting for the person, which a policy shows where they look.
     fn activate(&mut self, _window: &WindowInfo, fresh: bool) -> bool {
         fresh
     }
 
-    /// The windows a person closed through the policy's own controls since
-    /// it was last asked: the compositor asks each client to close them.
+    /// The windows a person closed through the policy's own controls since it was last asked: the
+    /// compositor asks each client to close them.
     fn take_close_requests(&mut self) -> Vec<u64> {
         Vec::new()
     }
 }
 
-/// Floating windows centred on the first output, each focused as it maps
-/// and on click.
+/// Floating windows centred on the first output, each focused as it maps and on click.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StackPolicy;
 

@@ -13,8 +13,8 @@
 //! [`Envelope::VoiceCall`](crate::Envelope::VoiceCall).
 //!
 //! A device subscribed to the workspace joins an active call with
-//! [`Envelope::VoiceJoin`](crate::Envelope::VoiceJoin) and gets a
-//! [`VoiceGrant`]: its participation and the roster of everyone in the call.
+//! [`Envelope::VoiceJoin`](crate::Envelope::VoiceJoin) and gets
+//! a [`VoiceGrant`]: its participation and the roster of everyone in the call.
 //! It repeats the join with its participation every [`HEARTBEAT`]; a
 //! participation not heard from for [`PARTICIPATION_TTL`] ends. When the
 //! roster changes, the relay sends each remaining participant a fresh

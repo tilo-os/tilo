@@ -1,14 +1,12 @@
-//! The questions about the person's apps, on their sheets: whether to add a
-//! program they downloaded to their apps ([`tilo_sheets::add_app`]), and
-//! whether to uninstall one ([`tilo_sheets::uninstall`]).
-//!
+//! The questions about the person's apps, on their sheets: whether to add a program they downloaded
+//! to their apps ([`tilo_sheets::add_app`]), and whether to uninstall one
+//! ([`tilo_sheets::uninstall`]).
 //! Both are about what the registry of the person's downloaded programs
-//! ([`tilo_app_launch::downloaded`]) keeps, and both are answered through
-//! it: the reading lists a program running with no entry as an offer, so a
-//! program is asked about once while it is offered, and the answer is the
-//! registry's own action. Nothing here adds or uninstalls an app by itself:
-//! everything is asked first, and whether it happened is read off the
-//! registry again rather than assumed.
+//! ([`tilo_app_launch::downloaded`]) keeps, and both are answered through it: the reading lists a
+//! program running with no entry as an offer, so a program is asked about once while it is offered,
+//! and the answer is the registry's own action. Nothing here adds or uninstalls an app by itself:
+//! everything is asked first, and whether it happened is read off the registry again rather than
+//! assumed.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, VecDeque};
@@ -39,22 +37,20 @@ pub(crate) struct AppSheets {
     services: Rc<RefCell<Services>>,
     /// The desktop's notices: what an answer did.
     notices: DesktopNotifications,
-    /// The files the add sheet asked about, so a program that keeps running
-    /// is asked about once. A file the registry no longer offers is
-    /// forgotten, so a program whose app was taken off the apps is asked
-    /// about again when it runs.
+    /// The files the add sheet asked about, so a program that keeps running is asked about once. A
+    /// file the registry no longer offers is forgotten, so a program whose app was taken off the
+    /// apps is asked about again when it runs.
     asked: RefCell<BTreeSet<String>>,
-    /// The apps the person asked to uninstall, waiting for the sheet; they
-    /// are asked about one at a time.
+    /// The apps the person asked to uninstall, waiting for the sheet; they are asked about one at a
+    /// time.
     wanted: RefCell<VecDeque<String>>,
-    /// The uninstalls answered, until the registry's reading shows them
-    /// gone.
+    /// The uninstalls answered, until the registry's reading shows them gone.
     uninstalling: RefCell<Vec<Uninstalling>>,
-    /// The last failure the person was told of: the registry's failures are
-    /// said once, in the order they happened.
+    /// The last failure the person was told of: the registry's failures are said once, in the order
+    /// they happened.
     reported: Cell<u64>,
-    /// Whether the person was told that their apps' registry does not read
-    /// back here, which takes their apps off the launcher: said once.
+    /// Whether the person was told that their apps' registry does not read back here, which takes
+    /// their apps off the launcher: said once.
     told: Cell<bool>,
 }
 
@@ -87,8 +83,8 @@ impl AppSheets {
         }
     }
 
-    /// The add sheet's seat: whether it is up and what it asks; `None` when
-    /// the sheet did not mount.
+    /// The add sheet's seat: whether it is up and what it asks; `None` when the sheet did not
+    /// mount.
     pub(crate) fn add(&self) -> Option<&AddSeat> {
         self.add.as_ref()
     }
@@ -98,10 +94,9 @@ impl AppSheets {
         self.uninstall.as_ref()
     }
 
-    /// Ask the person whether to uninstall `app`, named by its entry's id or
-    /// by the name they know it by: the question stands on the uninstall
-    /// sheet until they answer it. Asked about its id, so the same app asked
-    /// about twice is asked once.
+    /// Ask the person whether to uninstall `app` , named by its entry's id or by the name they know
+    /// it by: the question stands on the uninstall sheet until they answer it. Asked about its id,
+    /// so the same app asked about twice is asked once.
     pub(crate) fn ask_uninstall(&self, app: &str, reading: Option<&DownloadedApps>) {
         let asked = reading
             .and_then(|reading| app_named(reading, app))
@@ -112,17 +107,16 @@ impl AppSheets {
         }
     }
 
-    /// Carry out what the person answered on either sheet, ask the next
-    /// question, and say what a finished uninstall did — or why one did not
-    /// happen.
+    /// Carry out what the person answered on either sheet, ask the next question, and say what a
+    /// finished uninstall did — or why one did not happen.
     pub(crate) fn follow(&self, reading: Option<&DownloadedApps>) {
         self.follow_add(reading);
         self.follow_uninstall(reading);
         self.follow_failures(reading);
     }
 
-    /// Whether a question about the person's apps is up: they are asked one
-    /// at a time, in front of what they are doing.
+    /// Whether a question about the person's apps is up: they are asked one at a time, in front of
+    /// what they are doing.
     fn standing(&self) -> bool {
         self.add
             .as_ref()
@@ -133,16 +127,15 @@ impl AppSheets {
                 .is_some_and(|seat| seat.presentation().is_open())
     }
 
-    /// Add programs: the answer to the add sheet, then the next program the
-    /// registry offers that the person has not been asked about.
+    /// Add programs: the answer to the add sheet, then the next program the registry offers that
+    /// the person has not been asked about.
     fn follow_add(&self, reading: Option<&DownloadedApps>) {
         let Some(seat) = &self.add else {
             return;
         };
         let offers: &[wire::DownloadedOffer] = reading.map_or(&[], |reading| &reading.offers);
-        // A file the registry no longer offers is asked about again when it
-        // runs, as an app taken off the apps comes back as a program with
-        // no entry.
+        // A file the registry no longer offers is asked about again when it runs, as an app taken
+        // off the apps comes back as a program with no entry.
         self.asked
             .borrow_mut()
             .retain(|file| offers.iter().any(|offer| offer.file == *file));
@@ -183,9 +176,8 @@ impl AppSheets {
         seat.presentation().open(false);
     }
 
-    /// Uninstall an app: the answer to the uninstall sheet, what the reading
-    /// says came of an earlier one, then the next app the person asked
-    /// about.
+    /// Uninstall an app: the answer to the uninstall sheet, what the reading says came of an
+    /// earlier one, then the next app the person asked about.
     fn follow_uninstall(&self, reading: Option<&DownloadedApps>) {
         let Some(seat) = &self.uninstall else {
             return;
@@ -245,10 +237,9 @@ impl AppSheets {
         }
     }
 
-    /// Invoke one of the registry's actions on `resource`: the same route
-    /// [`crate::Session::invoke`] and [`crate::Session::invoke_confirmed`]
-    /// take, because the person answered the question the action's contract
-    /// asks to confirm.
+    /// Invoke one of the registry's actions on `resource` : the same route
+    /// [`crate::Session::invoke`] and [`crate::Session::invoke_confirmed`] take, because the person
+    /// answered the question the action's contract asks to confirm.
     fn invoke(
         &self,
         resource: &str,
@@ -271,9 +262,8 @@ impl AppSheets {
         }
     }
 
-    /// Say what the registry could not do: the person answered a question or
-    /// chose a row and nothing happened, so this is why. Said once each, as
-    /// the registry counts its attempts.
+    /// Say what the registry could not do: the person answered a question or chose a row and
+    /// nothing happened, so this is why. Said once each, as the registry counts its attempts.
     fn follow_failures(&self, reading: Option<&DownloadedApps>) {
         let Some(reading) = reading else {
             return;
@@ -284,8 +274,8 @@ impl AppSheets {
                 continue;
             }
             reported = failure.attempt;
-            // A failed uninstall leaves the app where it was: nothing more
-            // comes of it, and the notice for the failure is the one to show.
+            // A failed uninstall leaves the app where it was: nothing more comes of it, and the
+            // notice for the failure is the one to show.
             self.uninstalling
                 .borrow_mut()
                 .retain(|pending| pending.desktop_id != failure.subject);
@@ -307,8 +297,7 @@ impl AppSheets {
         self.reported.set(reported);
     }
 
-    /// Say what a finished uninstall did, as the question said what would
-    /// go.
+    /// Say what a finished uninstall did, as the question said what would go.
     fn tell_uninstalled(&self, pending: &Uninstalling) {
         let name = ArgValue::Text(pending.name.clone());
         let (title, body) = match pending.removal {
@@ -341,8 +330,8 @@ impl Shared {
         match serde_json::from_value(reading) {
             Ok(apps) => Some(apps),
             Err(error) => {
-                // Said once: the registry is read on every pass of the
-                // session's loop, and a log that repeats it says nothing new.
+                // Said once: the registry is read on every pass of the session's loop, and a log
+                // that repeats it says nothing new.
                 if !self.app_sheets.told.replace(true) {
                     tracing::warn!(%error, "the downloaded apps registry does not read back");
                     self.notifications
@@ -366,8 +355,8 @@ impl Shared {
     }
 }
 
-/// What the uninstall sheet is asked: the app `asked` names, and every copy
-/// of it that would go to the Trash.
+/// What the uninstall sheet is asked: the app `asked` names, and every copy of it that would go to
+/// the Trash.
 fn question(reading: Option<&DownloadedApps>, asked: &str) -> Option<App> {
     let app = app_named(reading?, asked)?;
     let copies: Vec<PathBuf> = if app.copies.is_empty() {
@@ -386,8 +375,8 @@ fn question(reading: Option<&DownloadedApps>, asked: &str) -> Option<App> {
     })
 }
 
-/// The app of `reading` that `asked` names: by its entry's id, or by the
-/// name the person knows it by (trimmed, in any case).
+/// The app of `reading` that `asked` names: by its entry's id, or by the name the person knows it
+/// by (trimmed, in any case).
 fn app_named<'a>(reading: &'a DownloadedApps, asked: &str) -> Option<&'a wire::DownloadedApp> {
     let asked = asked.trim();
     reading
@@ -422,9 +411,8 @@ mod tests {
     use tilo_app_launch::downloaded::{Downloaded, ObservedWindow};
     use tilo_test_env::TestHome;
 
-    /// A type 2 `AppImage`'s identification: an ELF executable whose padding
-    /// says `AI\x02`. The image carries no name of its own, so it is named
-    /// after its file.
+    /// A type 2 `AppImage` 's identification: an ELF executable whose padding says `AI\x02` . The
+    /// image carries no name of its own, so it is named after its file.
     fn appimage() -> Vec<u8> {
         let mut bytes = vec![0_u8; 64];
         bytes[..4].copy_from_slice(b"\x7fELF");
@@ -434,8 +422,8 @@ mod tests {
         bytes
     }
 
-    /// The session's side of the app sheets: the registry of the person's
-    /// downloaded programs, the two sheets' seats, and the desk's notices.
+    /// The session's side of the app sheets: the registry of the person's downloaded programs, the
+    /// two sheets' seats, and the desk's notices.
     struct Desk {
         sheets: AppSheets,
         services: Rc<RefCell<Services>>,
@@ -445,9 +433,8 @@ mod tests {
         home: TestHome,
     }
 
-    /// A session whose person has `files` in their home (path, contents) and
-    /// is running `running` programs (the window's app id, the file in their
-    /// home it runs).
+    /// A session whose person has `files` in their home (path, contents) and is running `running`
+    /// programs (the window's app id, the file in their home it runs).
     fn desk(files: &[(&str, &[u8])], running: &[(&str, &str)]) -> Desk {
         let home = TestHome::new().expect("a home");
         for (path, contents) in files {
@@ -493,7 +480,7 @@ mod tests {
         }
     }
 
-    /// A runnable file at `path`, with `contents`.
+    /// A runnable file at `path` , with `contents` .
     fn write(path: &std::path::Path, contents: &[u8]) {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::create_dir_all(path.parent().expect("a folder")).expect("a folder");
@@ -503,7 +490,7 @@ mod tests {
         std::fs::set_permissions(path, permissions).expect("a runnable file");
     }
 
-    /// The app `name`, made of `copies` (the first is the one it starts).
+    /// The app `name` , made of `copies` (the first is the one it starts).
     fn app_at(home: &TestHome, key: &str, name: &str, copies: &[PathBuf]) -> String {
         for copy in copies {
             write(copy, &appimage());
@@ -533,18 +520,17 @@ mod tests {
                 )
                 .expect("the app");
         }
-        // The entries are this test's own writes: the memoised scan is told to
-        // read them now, as a writer in this process that must see its own
-        // change does, rather than waiting for a directory notification that
-        // says the same thing later — or, on a machine whose application
-        // directories cannot be watched, never.
+        // The entries are this test's own writes: the memoised scan is told to read them now, as a
+        // writer in this process that must see its own change does, rather than waiting for a
+        // directory notification that says the same thing later — or, on a machine whose
+        // application directories cannot be watched, never.
         desktop_entry::cache::refresh();
         desktop_id
     }
 
     impl Desk {
-        /// Frames of the session's loop: what the registry's worker found
-        /// lands, is read, and the sheets follow it.
+        /// Frames of the session's loop: what the registry's worker found lands, is read, and the
+        /// sheets follow it.
         fn settle(&self) {
             for _ in 0..4 {
                 self.services.borrow_mut().settle();
@@ -554,11 +540,11 @@ mod tests {
             }
         }
 
-        /// Settle until `condition`, which the registry answers on its own
-        /// thread or through the sheet the person answered.
+        /// Settle until `condition` , which the registry answers on its own thread or through the
+        /// sheet the person answered.
         fn until(&self, what: &str, mut condition: impl FnMut() -> bool) {
-            // What this waits for is the registry's own work, so the bound is
-            // the suite's, not a second count.
+            // What this waits for is the registry's own work, so the bound is the suite's, not a
+            // second count.
             let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline {
                 self.settle();
@@ -613,8 +599,8 @@ mod tests {
             desk.add.offer().is_some()
         });
 
-        // The question names the program and the file it runs from, and
-        // offers to move it, since an AppImage is one self-contained file.
+        // The question names the program and the file it runs from, and offers to move it, since an
+        // AppImage is one self-contained file.
         let asked = desk.add.offer().expect("the question");
         assert_eq!(asked.name, "Krita");
         assert_eq!(
@@ -624,8 +610,7 @@ mod tests {
         assert!(asked.appimage);
         assert!(desk.add.offers_move());
 
-        // Answered with the move, the program becomes an app in
-        // Applications.
+        // Answered with the move, the program becomes an app in Applications.
         desk.add.answer(AddAppEffect::Add {
             move_to_applications: Some(true),
         });
@@ -686,8 +671,7 @@ mod tests {
             desk.offers().first().is_some_and(|offer| offer.declined)
         });
 
-        // It is no app, its file stays, and the offer stays marked so search
-        // can still add it.
+        // It is no app, its file stays, and the offer stays marked so search can still add it.
         assert!(desk.apps().is_empty(), "nothing was added");
         assert!(desk.home.home().join("Downloads/Krita.AppImage").is_file());
         assert_eq!(
@@ -744,8 +728,8 @@ mod tests {
             "Tilo Imager",
             &[applications.clone(), downloads.clone()],
         );
-        // The entry is written once per copy; the registry reads both, and the
-        // question is built from the reading that lists every copy.
+        // The entry is written once per copy; the registry reads both, and the question is built
+        // from the reading that lists every copy.
         desk.until("the app, with every copy of it", || {
             desk.apps().first().is_some_and(|app| app.copies.len() == 2)
         });

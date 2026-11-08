@@ -401,9 +401,6 @@ impl PdfApp {
     /// Answer a selection effect: select text on a page, or copy the
     /// selection. Answered at once when the pages' text is here, else when
     /// it arrives (or the document goes).
-    ///
-    /// # Errors
-    /// Returns why the effect cannot run.
     pub(crate) fn selection_effect(
         &mut self,
         effect: &crate::actions::PdfEffect,

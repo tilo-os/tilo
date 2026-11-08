@@ -470,11 +470,6 @@ fn source_line(path: &Path, line: usize) -> Option<String> {
 }
 
 /// Lint one app directory.
-///
-/// # Errors
-///
-/// Returns an error when the app's manifests or a reachable source file cannot
-/// be read or parsed.
 pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
     let table = rules()?;
     let manifest = app_manifest(app_dir)?;
@@ -607,10 +602,6 @@ fn report_for(
 
 /// The app's shipped module trees (library and binaries), test items
 /// removed, for other checks that read the same code as the lint.
-///
-/// # Errors
-///
-/// When the Cargo manifest or a reachable source file cannot be read or parsed.
 pub(crate) fn shipped_sources(app_dir: &Path) -> Result<Vec<(PathBuf, TokenStream)>> {
     let cargo = CargoFacts::read(app_dir, rules()?, &[])?;
     shipped_modules(&cargo.roots(app_dir))
@@ -901,11 +892,6 @@ impl PortabilityGate {
 
 /// The platform code of every app, app model crate and portable SDK crate in
 /// the workspace containing `start`, counted against its baseline.
-///
-/// # Errors
-///
-/// When the workspace, a manifest, a rules table or a source file cannot be
-/// read.
 pub fn gate(start: &Path) -> Result<PortabilityGate> {
     let table = rules()?;
     let (root, _workspace) = workspace_dir(start)?;

@@ -23,11 +23,6 @@ pub(crate) type OpenReplies =
     std::sync::Arc<std::sync::Mutex<Vec<(std::path::PathBuf, Result<(), String>)>>>;
 
 /// Ask the session to open `path` in `app`, or in the app that opens its type.
-///
-/// # Errors
-///
-/// Returns an error message if the file's name cannot be passed to the
-/// session, or the session refused the open.
 pub(crate) fn request(path: &Path, app: Option<&str>) -> Result<(), String> {
     tools::open_document(named(path)?, app)
 }

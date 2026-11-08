@@ -1,15 +1,11 @@
 //! Which way up the device is held, and whether the screen follows it.
-//!
-//! A convertible's built-in panel turns with the machine: the kernel's
-//! accelerometer says which edge is up, and the panel's picture is drawn so
-//! that it reads upright in the person's hands. The rotation lock pins it
-//! instead, for a screen read while the machine lies on its side.
-//!
-//! The lock is the person's own setting
-//! ([`settings_store::hardware::ROTATION_LOCK`]), so this follows the settings
-//! document as the displays do, and hands the turn it found to
-//! [`Displays`](crate::display_settings::Displays) rather than turning an
-//! output itself: one place decides where each output's pixels go.
+//! A convertible's built-in panel turns with the machine: the kernel's accelerometer says which
+//! edge is up, and the panel's picture is drawn so that it reads upright in the person's hands. The
+//! rotation lock pins it instead, for a screen read while the machine lies on its side.
+//! The lock is the person's own setting ([`settings_store::hardware::ROTATION_LOCK`]), so this
+//! follows the settings document as the displays do, and hands the turn it found to
+//! [`Displays`](crate::display_settings::Displays) rather than turning an output itself: one place
+//! decides where each output's pixels go.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -17,10 +13,9 @@ use std::time::{Duration, Instant};
 use os_actions::orientation::{self, DeviceOrientation, RotationControl};
 use tilo_compositor::{OutputInfo, Transform};
 
-/// How often the accelerometer is read. The kernel sends no event for a
-/// device being turned, and the orientation is debounced over consecutive
-/// samples: a quarter of a second is fine enough for a screen to follow a
-/// hand without reading sensors on every frame.
+/// How often the accelerometer is read. The kernel sends no event for a device being turned, and
+/// the orientation is debounced over consecutive samples: a quarter of a second is fine enough for
+/// a screen to follow a hand without reading sensors on every frame.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Where the session reads which way up the device is held.
@@ -29,8 +24,8 @@ pub enum Accelerometer {
     /// This machine's, from the kernel's sensors.
     #[default]
     Machine,
-    /// The sensor under this root (`/sys/bus/iio/devices` on a machine): a
-    /// stand-in, for a session started over a fake one.
+    /// The sensor under this root (`/sys/bus/iio/devices` on a machine): a stand-in, for a session
+    /// started over a fake one.
     At(PathBuf),
     /// None: this session's screens never turn with the device.
     Off,
@@ -39,26 +34,23 @@ pub enum Accelerometer {
 /// The built-in panel's turn, as the device is held now and the lock allows.
 #[derive(Default)]
 pub(crate) struct Rotation {
-    /// The accelerometer's device, once found: a machine's sensor does not
-    /// move, so looking for it again on every pass would only cost.
+    /// The accelerometer's device, once found: a machine's sensor does not move, so looking for it
+    /// again on every pass would only cost.
     device: Option<PathBuf>,
-    /// The lock as the person's settings have it, and the orientation the
-    /// panel shows.
+    /// The lock as the person's settings have it, and the orientation the panel shows.
     control: RotationControl,
-    /// The settings document last read, so an unchanged one is not read
-    /// again on every pass.
+    /// The settings document last read, so an unchanged one is not read again on every pass.
     seen: bool,
     stamp: Option<settings_store::SettingsStamp>,
     /// When the sensor is read next.
     due: Option<Instant>,
-    /// The built-in output and the turn it shows, when the last pass found
-    /// both, so a device that stays put hands back the same turn and the
-    /// displays leave the output alone.
+    /// The built-in output and the turn it shows, when the last pass found both, so a device that
+    /// stays put hands back the same turn and the displays leave the output alone.
     turned: Option<(String, Transform)>,
 }
 
 impl Rotation {
-    /// Mount the reader for `accelerometer`.
+    /// Mount the reader for `accelerometer` .
     pub(crate) fn mount(accelerometer: Accelerometer) -> Self {
         let device = match accelerometer {
             Accelerometer::Machine => orientation::accelerometer(),
@@ -71,11 +63,10 @@ impl Rotation {
         }
     }
 
-    /// The built-in output and the turn the panel shows, `None` when no
-    /// output of this session turns with the device.
-    ///
-    /// Only a built-in panel turns: a monitor on the desk stands still while
-    /// the machine in the person's hands is turned around.
+    /// The built-in output and the turn the panel shows, `None` when no output of this session
+    /// turns with the device.
+    /// Only a built-in panel turns: a monitor on the desk stands still while the machine in the
+    /// person's hands is turned around.
     pub(crate) fn follow(&mut self, outputs: &[OutputInfo]) -> Option<(&str, Transform)> {
         let device = self.device.as_deref()?;
         let Some(panel) = panel(outputs) else {
@@ -110,25 +101,23 @@ impl Rotation {
             .map(|(connector, transform)| (connector.as_str(), *transform))
     }
 
-    /// When the panel next needs a sample of the accelerometer: only a
-    /// machine with a sensor under a panel that turns needs a pass of its
-    /// own.
+    /// When the panel next needs a sample of the accelerometer: only a machine with a sensor under
+    /// a panel that turns needs a pass of its own.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.device.as_ref()?;
         self.due
     }
 }
 
-/// The output of `outputs` that turns with the device: the built-in panel
-/// and nothing else, because a monitor on the desk stands still while the
-/// machine in the person's hands is turned around.
+/// The output of `outputs` that turns with the device: the built-in panel and nothing else, because
+/// a monitor on the desk stands still while the machine in the person's hands is turned around.
 fn panel(outputs: &[OutputInfo]) -> Option<&OutputInfo> {
     outputs
         .iter()
         .find(|output| output.enabled && os_actions::brightness::is_builtin_connector(&output.name))
 }
 
-/// The turn the panel shows when the device is held `orientation`.
+/// The turn the panel shows when the device is held `orientation` .
 fn turn(orientation: DeviceOrientation) -> Transform {
     match orientation {
         DeviceOrientation::Normal => Transform::Normal,

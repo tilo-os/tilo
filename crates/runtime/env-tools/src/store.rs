@@ -27,10 +27,6 @@ pub struct PackageStoreTools {
 impl PackageStoreTools {
     /// Tools signed by `identity`, kept in `store`'s user store. The store's
     /// trust is extended to `identity`, so the tools it builds materialise.
-    ///
-    /// # Errors
-    ///
-    /// On an architecture images aren't built for.
     pub fn new(store: Store, identity: SigningIdentity) -> anyhow::Result<Self> {
         Ok(Self {
             store: trust_builder(store, &identity),

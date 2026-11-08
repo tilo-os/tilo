@@ -37,14 +37,14 @@ use vello::kurbo::{Point, Rect};
 
 use crate::chrome::TopBarPresence;
 
-/// The display's top row of pixels. The pointer cannot travel past it, so a
-/// path that reaches it has stopped there, however fast it arrived; the
-/// edge model, which reads a stop from slowing samples, never sees one.
+/// The display's top row of pixels. The pointer cannot travel past it, so a path that reaches it
+/// has stopped there, however fast it arrived; the edge model, which reads a stop from slowing
+/// samples, never sees one.
 const EDGE_ROW_PX: f64 = ui::tokens::Metrics::BASE.chrome_rule_px as f64;
 
-/// How long a fullscreen window's bar stays after it is shown without the
-/// pointer on it: entering full screen, a key or a swipe from the top edge
-/// shows it, and it goes once this passes with nothing holding it.
+/// How long a fullscreen window's bar stays after it is shown without the pointer on it: entering
+/// full screen, a key or a swipe from the top edge shows it, and it goes once this passes with
+/// nothing holding it.
 pub const FULLSCREEN_BAR_IDLE: Duration = Duration::from_secs(2);
 
 /// How a finger on the screen moved, as the bar's reveal reads it.
@@ -68,19 +68,18 @@ struct BarReveal {
     fullscreen: bool,
     /// The pointer's reach and rest at the top edge.
     edge: TopEdgeReveal,
-    /// The pointer stopped against the display's top edge at this instant
-    /// plus the rest it takes to show the bar.
+    /// The pointer stopped against the display's top edge at this instant plus the rest it takes to
+    /// show the bar.
     edge_due: Option<Instant>,
-    /// A press against the top edge went to the window there: no reveal
-    /// until the pointer leaves the edge.
+    /// A press against the top edge went to the window there: no reveal until the pointer leaves
+    /// the edge.
     edge_click: bool,
-    /// Shown without the pointer: it collapses at this instant unless
-    /// something holds it.
+    /// Shown without the pointer: it collapses at this instant unless something holds it.
     linger: Option<Instant>,
     /// The pointer's last sample was on the bar.
     on_bar: bool,
-    /// When a window entered full screen here, while one is: what the hint
-    /// saying how to leave it follows.
+    /// When a window entered full screen here, while one is: what the hint saying how to leave it
+    /// follows.
     entered: Option<Instant>,
     /// The display's whole rectangle and where the bar stands on it.
     display: Rect,
@@ -115,27 +114,26 @@ impl BarReveal {
         }
     }
 
-    /// Show it for [`FULLSCREEN_BAR_IDLE`], whatever the pointer does over
-    /// the window, and keep it that long again each time.
+    /// Show it for [`FULLSCREEN_BAR_IDLE`], whatever the pointer does over the window, and keep it
+    /// that long again each time.
     fn show_for_idle(&mut self, now: Instant) -> bool {
         self.linger = now.checked_add(FULLSCREEN_BAR_IDLE);
         self.edge.pin()
     }
 
-    /// Whether the bar hides here now: the display is covered or the person
-    /// hides it, and nothing shows it.
+    /// Whether the bar hides here now: the display is covered or the person hides it, and nothing
+    /// shows it.
     fn hidden(&self, hide: bool) -> bool {
         (self.fullscreen || hide) && !self.edge.shown()
     }
 
-    /// A pointer sample at `p`. Returns whether the presence may have
-    /// changed.
+    /// A pointer sample at `p` . Returns whether the presence may have changed.
     fn on_motion(&mut self, p: Point, hide: bool, now: Instant) -> bool {
         if !(self.fullscreen || hide) {
             return false;
         }
-        // The whole strip is the bar: on it, a shown bar stays however fast
-        // the pointer crosses it (from the clock to the status, say).
+        // The whole strip is the bar: on it, a shown bar stays however fast the pointer crosses it
+        // (from the clock to the status, say).
         if self.edge.shown() && self.bar.contains(p) {
             self.on_bar = true;
             return false;
@@ -171,7 +169,7 @@ impl BarReveal {
         p.y < self.display.y0 + EDGE_ROW_PX && p.x >= self.display.x0 && p.x < self.display.x1
     }
 
-    /// A press at `p`: one in the band while the bar hides is the window's.
+    /// A press at `p` : one in the band while the bar hides is the window's.
     fn on_press(&mut self, p: Point, hide: bool) {
         if !(self.fullscreen || hide) {
             return;
@@ -192,9 +190,8 @@ impl BarReveal {
         }
     }
 
-    /// Advance the timers to `now`; `in_use` says the bar on this display is
-    /// being used, which holds it. Returns whether the presence may have
-    /// changed.
+    /// Advance the timers to `now` ; `in_use` says the bar on this display is being used, which
+    /// holds it. Returns whether the presence may have changed.
     fn settle(&mut self, now: Instant, hide: bool, in_use: bool) -> bool {
         if !(self.fullscreen || hide) {
             return false;
@@ -205,8 +202,8 @@ impl BarReveal {
         {
             self.edge_due = None;
             if !self.edge.shown() {
-                // Shown as by a rest in the band; the next pointer sample
-                // decides again whether it stays.
+                // Shown as by a rest in the band; the next pointer sample decides again whether it
+                // stays.
                 self.edge.pin();
                 self.edge.unpin();
                 changed = true;
@@ -220,8 +217,8 @@ impl BarReveal {
             } else {
                 self.linger = None;
                 self.edge.unpin();
-                // On the bar the pointer keeps it, as one that reached for
-                // it does; anywhere else it goes now, sample or not.
+                // On the bar the pointer keeps it, as one that reached for it does; anywhere else
+                // it goes now, sample or not.
                 if !self.on_bar {
                     changed |= self.edge.hide();
                 }
@@ -243,8 +240,8 @@ impl BarReveal {
             .min()
     }
 
-    /// A finger swiped down from the display's top edge: show what hides
-    /// there, as a push against the edge does.
+    /// A finger swiped down from the display's top edge: show what hides there, as a push against
+    /// the edge does.
     fn reveal_by_touch(&mut self, now: Instant) -> bool {
         self.edge_due = None;
         self.edge_click = false;
@@ -256,14 +253,14 @@ impl BarReveal {
     }
 }
 
-/// Every display's bar, and when each shows over the window that covers it.
-/// One instance for the session; the desk's band and the chrome read it.
+/// Every display's bar, and when each shows over the window that covers it. One instance for the
+/// session; the desk's band and the chrome read it.
 #[derive(Debug, Default)]
 pub struct Reveals {
     /// The person's choice: the bar stays out of the way until reached for.
     hide: bool,
-    /// One per display, the display in use first: `None` names it, as a
-    /// full bar stands there, and a compact bar names its own display.
+    /// One per display, the display in use first: `None` names it, as a full bar stands there, and
+    /// a compact bar names its own display.
     bars: Vec<(Option<u32>, BarReveal)>,
     /// How tall the bar stands, which the edge model reads it by.
     height: f64,
@@ -283,8 +280,7 @@ impl Reveals {
         }
     }
 
-    /// How tall the bar stands on its display, which is what it takes of the
-    /// pointer.
+    /// How tall the bar stands on its display, which is what it takes of the pointer.
     pub fn set_height(&mut self, height: f64) {
         if self.height.total_cmp(&height) != std::cmp::Ordering::Equal {
             self.height = height;
@@ -294,9 +290,9 @@ impl Reveals {
         }
     }
 
-    /// Place each display's bar: which displays a window covers, where each
-    /// display is and whether the bar there shows. A window entering or
-    /// leaving a display shows or forgets that display's bar at `now`.
+    /// Place each display's bar: which displays a window covers, where each display is and whether
+    /// the bar there shows. A window entering or leaving a display shows or forgets that display's
+    /// bar at `now` .
     pub fn follow(&mut self, places: &[(Option<u32>, Rect, bool)], now: Instant) {
         let mut bars = Vec::with_capacity(places.len());
         for &(display, rect, fullscreen) in places {
@@ -319,8 +315,7 @@ impl Reveals {
         }
     }
 
-    /// What the bar on `display` is now, given whether something of it holds
-    /// it open.
+    /// What the bar on `display` is now, given whether something of it holds it open.
     pub fn presence(&self, display: Option<u32>, held_open: bool) -> TopBarPresence {
         let Some((_, bar)) = self.bars.iter().find(|(key, _)| *key == display) else {
             return TopBarPresence::Docked;
@@ -335,8 +330,8 @@ impl Reveals {
         }
     }
 
-    /// Whether a window covers `display`, so the bar there is out of the way
-    /// until it is asked for.
+    /// Whether a window covers `display` , so the bar there is out of the way until it is asked
+    /// for.
     pub fn covers_display(&self, display: Option<u32>) -> bool {
         self.bars
             .iter()
@@ -350,8 +345,8 @@ impl Reveals {
             .any(|(key, bar)| *key == display && bar.shown())
     }
 
-    /// The display a window took full screen most recently, and when, while
-    /// one has: what the hint saying how to leave it follows.
+    /// The display a window took full screen most recently, and when, while one has: what the hint
+    /// saying how to leave it follows.
     pub fn entered(&self) -> Option<(Rect, Instant)> {
         self.bars
             .iter()
@@ -359,8 +354,7 @@ impl Reveals {
             .max_by_key(|(_, at)| *at)
     }
 
-    /// A pointer sample at `p`. Returns whether a bar's presence may have
-    /// changed.
+    /// A pointer sample at `p` . Returns whether a bar's presence may have changed.
     pub fn motion(&mut self, p: Point, now: Instant) -> bool {
         let hide = self.hide;
         let mut changed = false;
@@ -374,7 +368,7 @@ impl Reveals {
         changed
     }
 
-    /// A press at `p`, which is the window's while the bar there hides.
+    /// A press at `p` , which is the window's while the bar there hides.
     pub fn press(&mut self, p: Point) {
         let hide = self.hide;
         for (_, bar) in &mut self.bars {
@@ -384,10 +378,9 @@ impl Reveals {
         }
     }
 
-    /// A finger at `p`. Returns whether the desk takes the contact, so
-    /// nothing under it sees it: the contact belongs to the desk when it
-    /// begins in a display's top edge while the bar there hides, and shows
-    /// the bar as it is swiped down.
+    /// A finger at `p` . Returns whether the desk takes the contact, so nothing under it sees it:
+    /// the contact belongs to the desk when it begins in a display's top edge while the bar there
+    /// hides, and shows the bar as it is swiped down.
     pub fn touch(&mut self, finger: Finger, p: Point, now: Instant) -> bool {
         if finger == Finger::Down {
             if self.swipe.is_some() {
@@ -425,8 +418,8 @@ impl Reveals {
         }
     }
 
-    /// The key that asks for the bar went down: show the fullscreen window's
-    /// bar on the display in use for the idle time.
+    /// The key that asks for the bar went down: show the fullscreen window's bar on the display in
+    /// use for the idle time.
     pub fn reveal_by_key(&mut self, now: Instant) -> bool {
         let Some((_, bar)) = self.bars.iter_mut().find(|(key, _)| key.is_none()) else {
             return false;
@@ -434,9 +427,8 @@ impl Reveals {
         bar.fullscreen && bar.show_for_idle(now)
     }
 
-    /// Advance every bar's timers to `now`; `in_use` says whether the bar on
-    /// that display is being used, which holds it. Returns whether any
-    /// presence may have changed.
+    /// Advance every bar's timers to `now` ; `in_use` says whether the bar on that display is being
+    /// used, which holds it. Returns whether any presence may have changed.
     pub fn settle(&mut self, now: Instant, in_use: impl Fn(Option<u32>) -> bool) -> bool {
         let hide = self.hide;
         let mut changed = false;
@@ -466,9 +458,8 @@ fn bar_on(display: Rect, height: f64) -> Rect {
     )
 }
 
-/// Whether `p` is in the band at `display`'s top edge a finger swipes down
-/// from: wider than the pointer's band, since a finger coming off the bezel
-/// lands a few pixels in.
+/// Whether `p` is in the band at `display` 's top edge a finger swipes down from: wider than the
+/// pointer's band, since a finger coming off the bezel lands a few pixels in.
 fn in_touch_edge(display: Rect, p: Point) -> bool {
     p.x >= display.x0 && p.x < display.x1 && p.y >= display.y0 && p.y < display.y0 + TOUCH_EDGE_PX
 }

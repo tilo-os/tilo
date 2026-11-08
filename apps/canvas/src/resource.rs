@@ -441,9 +441,6 @@ pub struct Diff {
 /// URI, kept in the content store where the action is authored: the action
 /// names it by content, so every replica shows the same picture. Answers
 /// its address and size in pixels.
-///
-/// # Errors
-/// Returns why the picture cannot be read or is not a PNG, JPEG or WebP.
 pub fn keep_picture(src: &str) -> Result<(String, (u32, u32)), String> {
     use crate::picture::MAX_PICTURE_BYTES;
     let bytes = if src.starts_with('/') {
@@ -569,9 +566,6 @@ fn title_of(path: &str) -> String {
 
 /// The bytes of the artwork file `file` names: its JSON itself, stored
 /// content, or a file (a package, or JSON).
-///
-/// # Errors
-/// Returns why the file cannot be had.
 fn artwork_bytes(file: &str) -> Result<Vec<u8>, String> {
     let trimmed = file.trim_start();
     if trimmed.starts_with('{') {
@@ -589,9 +583,6 @@ fn artwork_bytes(file: &str) -> Result<Vec<u8>, String> {
 }
 
 /// The bytes of the file at `path`, at most `limit` of them.
-///
-/// # Errors
-/// Returns why the file cannot be read, or that it is too large.
 pub fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, String> {
     let cannot = |error: tilo_files::FsError| format!("cannot read {path}: {error}");
     let (dir, name) = tilo_files::file_at(std::path::Path::new(path)).map_err(cannot)?;

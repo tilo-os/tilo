@@ -61,9 +61,6 @@ impl WorkspaceId {
 
     /// The workspace `raw` names: the primary one for none, an empty id or
     /// `personal`.
-    ///
-    /// # Errors
-    /// `raw` is not a workspace id.
     pub fn parse(raw: Option<&str>) -> Result<Self, String> {
         match raw.map(str::trim) {
             None | Some("" | PRIMARY) => Ok(Self::primary()),
@@ -74,9 +71,6 @@ impl WorkspaceId {
 
     /// The workspace `environment`'s record names: the primary one for a
     /// record made before environments belonged to a workspace.
-    ///
-    /// # Errors
-    /// The record names something that is not a workspace id.
     pub fn of_record(environment: &Environment) -> Result<Self, String> {
         Self::parse(Some(&environment.workspace))
     }
@@ -121,9 +115,6 @@ impl EnvironmentId {
     }
 
     /// The environment `raw` names, as [`ENVIRONMENT_ENV`] spells it.
-    ///
-    /// # Errors
-    /// `raw` is not `<workspace>/<record>`.
     pub fn parse(raw: &str) -> Result<Self, String> {
         let (workspace, record) = raw
             .split_once('/')
@@ -159,9 +150,6 @@ impl std::fmt::Display for EnvironmentId {
 /// The record is read in the room of the workspace the id names, and a
 /// record there that names another workspace is refused, so the answer is
 /// the record's and the id's at once.
-///
-/// # Errors
-/// There is no such environment, or its record cannot be read.
 pub fn environment_workspace(
     store: &Store,
     environment: &EnvironmentId,
@@ -186,9 +174,6 @@ pub fn environment_workspace(
 /// request names (`asked`). An app's is the one it was launched in, and an
 /// app that names another is refused; the session's own process names the
 /// one it wants.
-///
-/// # Errors
-/// An id is malformed, or an app named a workspace it was not launched in.
 pub fn scope_of(
     caller: &crate::host::Caller,
     launched: Option<&str>,

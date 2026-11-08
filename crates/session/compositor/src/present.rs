@@ -38,8 +38,7 @@ pub(crate) enum Shown {
         /// The display's frame counter.
         sequence: u32,
     },
-    /// When the host (another compositor or X server) said so: synced to
-    /// its refresh, timed by us.
+    /// When the host (another compositor or X server) said so: synced to its refresh, timed by us.
     Host,
     /// Not on a display at all (headless): as soon as it is drawn.
     Immediately,
@@ -65,17 +64,16 @@ impl Shown {
 pub struct Presentation {
     feedback: OutputPresentationFeedback,
     refresh: Refresh,
-    /// The frame's serial, which the display's retirement of later frames
-    /// includes.
+    /// The frame's serial, which the display's retirement of later frames includes.
     serial: u64,
-    /// The windows of a launch whose first frame this one is: the app's
-    /// content reached a display with it.
+    /// The windows of a launch whose first frame this one is: the app's content reached a display
+    /// with it.
     first_frames: Vec<u64>,
 }
 
 impl Presentation {
-    /// The frame reached the screen as `shown` says: answer every client
-    /// that asked, and every key it carried.
+    /// The frame reached the screen as `shown` says: answer every client that asked, and every key
+    /// it carried.
     pub(crate) fn shown(mut self, state: &State, shown: Shown) {
         let (time, sequence, flags) = shown.report(Clock::<Monotonic>::new().now());
         self.feedback.presented(time, self.refresh, sequence, flags);
@@ -87,10 +85,9 @@ impl Presentation {
 }
 
 impl State {
-    /// A frame of `output` was drawn: send its surfaces' frame callbacks and
-    /// collect their presentation feedback. `states` says how each element
-    /// was shown (scanned out directly or composited), when the backend
-    /// knows.
+    /// A frame of `output` was drawn: send its surfaces' frame callbacks and collect their
+    /// presentation feedback. `states` says how each element was shown (scanned out directly or
+    /// composited), when the backend knows.
     pub(crate) fn frame_drawn(
         &self,
         output: &Output,
@@ -112,11 +109,10 @@ impl State {
                 },
             );
         }
-        // The session's own surfaces are clients too: they hear of the frame
-        // with everyone else.
+        // The session's own surfaces are clients too: they hear of the frame with everyone else.
         self.layer_frame_drawn(output, time, &mut feedback, states);
-        // The lock screen shows alone while the session is locked: the
-        // frame is its, and it draws the next one after it.
+        // The lock screen shows alone while the session is locked: the frame is its, and it draws
+        // the next one after it.
         self.lock_frame_drawn(output, time, &mut feedback, states);
         if let CursorImageStatus::Surface(surface) = &self.cursor.status {
             send_frames_surface_tree(surface, output, time, Some(Duration::ZERO), |_, _| {
@@ -133,9 +129,8 @@ impl State {
             .current_mode()
             .filter(|mode| mode.refresh > 0)
             .map_or(REFRESH_INTERVAL, |mode| refresh_interval(mode.refresh));
-        // This frame is on its way to the display: what the keys typed since
-        // the last one rides with it, and a workspace switch's frame run
-        // counts it.
+        // This frame is on its way to the display: what the keys typed since the last one rides
+        // with it, and a workspace switch's frame run counts it.
         let serial = self.next_frame_serial();
         let at = Instant::now();
         self.key_latency.frame_submitted(serial, at);
@@ -148,8 +143,8 @@ impl State {
         ) {
             eprintln!("{sample}");
         }
-        // A launch's window maps on its first buffer and is shown here: this
-        // frame's serial is where an app's open ends.
+        // A launch's window maps on its first buffer and is shown here: this frame's serial is
+        // where an app's open ends.
         let awaiting = tilo_startup_metrics::launches_awaiting_first_present();
         let first_frames = if awaiting.is_empty() {
             Vec::new()
@@ -168,8 +163,8 @@ impl State {
         }
     }
 
-    /// Tell the clients on `output` what to allocate: `scanout` for a
-    /// surface the frame showed on a plane, `render` for the rest.
+    /// Tell the clients on `output` what to allocate: `scanout` for a surface the frame showed on a
+    /// plane, `render` for the rest.
     pub(crate) fn send_scanout_feedback(
         &self,
         output: &Output,
@@ -190,8 +185,7 @@ impl State {
         }
     }
 
-    /// A frame of `output` was drawn and is on screen at once (no display
-    /// to wait for).
+    /// A frame of `output` was drawn and is on screen at once (no display to wait for).
     pub(crate) fn frame_shown(&self, output: &Output) {
         self.frame_drawn(output, None)
             .shown(self, Shown::Immediately);

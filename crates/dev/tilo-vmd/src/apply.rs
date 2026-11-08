@@ -433,9 +433,6 @@ impl Restarts {
 
 /// What moving from `from` to `to` requires, and which units the change
 /// restarts.
-///
-/// # Errors
-/// A changed component whose scope does not fit the slot.
 pub fn policy(
     record: &SlotRecord,
     from: &Generation,
@@ -547,9 +544,6 @@ pub enum SessionChange {
 }
 
 /// Bring a slot's system state in line with `generation`.
-///
-/// # Errors
-/// Any failing side effect.
 pub fn activate(
     apply: &mut dyn Apply,
     record: &mut SlotRecord,
@@ -732,9 +726,6 @@ fn activate_login(
 /// Restart the changed system units that outlive a session. A unit's mount
 /// namespace freezes `/usr` when it starts, so a merged layer set or a
 /// refreshed VM `/usr` reaches a long-running service only through a restart.
-///
-/// # Errors
-/// Any failing unit operation.
 pub fn restart_units(
     apply: &mut dyn Apply,
     restarts: &Restarts,
@@ -767,9 +758,6 @@ pub fn restart_units(
 }
 
 /// Restart the changed user units of a login that keeps its user manager.
-///
-/// # Errors
-/// Any failing unit operation.
 pub fn restart_user_units(
     apply: &mut dyn Apply,
     session: &Session,
@@ -793,9 +781,6 @@ pub fn restart_user_units(
 ///
 /// The owner's greetd login is never logged out: its desktop restarts in
 /// place, and while the owner is logged out the next login takes the change.
-///
-/// # Errors
-/// Any failing unit operation.
 pub fn restart_session(
     apply: &mut dyn Apply,
     session: &Session,
@@ -832,9 +817,6 @@ pub fn restart_session(
 
 /// The uid the session runs as: a slot's own user, created when missing,
 /// or the existing account of the device's session, left untouched.
-///
-/// # Errors
-/// A user that cannot be created, or an account that does not exist.
 pub fn session_uid(apply: &mut dyn Apply, session: &Session) -> Result<u32, DaemonError> {
     if session.stand_in {
         apply.ensure_user(&session.user)
@@ -855,9 +837,6 @@ pub fn layered_units(session: &Session, uid: u32) -> Vec<String> {
 /// Undo everything [`activate`] did for a user slot. The session stops
 /// before its seat is released: a vkms card removed under a live session
 /// leaves the unit running with a dead device and `Restart=` never fires.
-///
-/// # Errors
-/// Any failing side effect.
 pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Action>, DaemonError> {
     let mut actions = Vec::new();
     let Some(Session {

@@ -1,11 +1,9 @@
-//! The desk's captures: every state of the new session's desk and overview
-//! rendered headless, beside the old shell's captures of the same states, and
-//! the frames that show the transitions moving.
-//!
-//! Each state is a test of its own with its own session, so what one leaves
-//! open never shows in another's picture. Frames are written to
-//! `$VISUAL_DESK_OUT` (default `~/.cache/visual-desk/shots/new`), and the
-//! pixel-parity set to `$PIXEL_PARITY_OUT`.
+//! The desk's captures: every state of the new session's desk and overview rendered headless,
+//! beside the old shell's captures of the same states, and the frames that show the transitions
+//! moving.
+//! Each state is a test of its own with its own session, so what one leaves open never shows in
+//! another's picture. Frames are written to `$VISUAL_DESK_OUT` (default
+//! `~/.cache/visual-desk/shots/new` ), and the pixel-parity set to `$PIXEL_PARITY_OUT` .
 
 use super::*;
 
@@ -38,10 +36,9 @@ pub(super) fn capture(session: &mut Session, name: &str) {
     .expect("write the frame");
 }
 
-/// Run the session's frame loop on `millis` further than `clock` stands, at
-/// the pace a display presents frames, with the clock pinned to each frame's
-/// instant: a motion then draws where it stands that far in, the same on
-/// every run whatever a frame costs to draw.
+/// Run the session's frame loop on `millis` further than `clock` stands, at the pace a display
+/// presents frames, with the clock pinned to each frame's instant: a motion then draws where it
+/// stands that far in, the same on every run whatever a frame costs to draw.
 fn step_from(session: &mut Session, clock: &mut std::time::Instant, millis: u64) {
     const FRAME: Duration = Duration::from_millis(16);
     let target = *clock + Duration::from_millis(millis);
@@ -66,8 +63,7 @@ fn frame(dir: &std::path::Path, name: &str) -> Vec<u8> {
     std::fs::read(dir.join(format!("{name}.png"))).expect("a written frame")
 }
 
-/// Write the screen `millis` after `clock` stood, with the frame loop run
-/// until then.
+/// Write the screen `millis` after `clock` stood, with the frame loop run until then.
 fn capture_at(
     session: &mut Session,
     dir: &std::path::Path,
@@ -80,14 +76,13 @@ fn capture_at(
     ui::time::testing::with_monotonic_time(at, || capture_to(session, dir, name));
 }
 
-/// Perform the chrome action at `clock`'s instant, so what it starts moves
-/// from there.
+/// Perform the chrome action at `clock` 's instant, so what it starts moves from there.
 fn invoke_at(session: &mut Session, clock: std::time::Instant, action: &str) {
     ui::time::testing::with_monotonic_time(clock, || invoke(session, CHROME_RESOURCE, action));
 }
 
-/// Perform the chrome action with `arguments` at `clock`'s instant, so what it
-/// starts moves from there.
+/// Perform the chrome action with `arguments` at `clock` 's instant, so what it starts moves from
+/// there.
 fn invoke_with_at(
     session: &mut Session,
     clock: std::time::Instant,
@@ -127,21 +122,19 @@ fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) 
     });
 }
 
-/// Hold this test's wall clock at the capture instant, as the launcher holds
-/// a capture's: the bar's date and time are then the same on every run, and a
-/// frame in which nothing but the real minute turned over is not a change.
-/// Only this thread follows it, so the other tests of the process read their
-/// own clock.
+/// Hold this test's wall clock at the capture instant, as the launcher holds a capture's: the bar's
+/// date and time are then the same on every run, and a frame in which nothing but the real minute
+/// turned over is not a change. Only this thread follows it, so the other tests of the process read
+/// their own clock.
 pub(super) fn held_clock() -> ui::time::testing::SharedWall {
     tilo_test_env::held_wall_clock()
 }
 
 #[test]
 fn pixel_parity_frames_match_the_old_shells_scenes() {
-    // The set builds six sessions one after another in one thread, and a
-    // session is built under a stack the size of a whole desk: the room a
-    // test thread gets by default is not enough for the last of them, and a
-    // harness that overflows takes the rest of the suite with it.
+    // The set builds six sessions one after another in one thread, and a session is built under a
+    // stack the size of a whole desk: the room a test thread gets by default is not enough for the
+    // last of them, and a harness that overflows takes the rest of the suite with it.
     std::thread::Builder::new()
         .name("pixel-parity".into())
         .stack_size(64 << 20)
@@ -160,8 +153,8 @@ fn capture_parity_frames() {
     let _clock = held_clock();
     std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
 
-    // The empty desk, both themes: the old shell's `empty-desk` and
-    // `empty-desk` at `--theme light`.
+    // The empty desk, both themes: the old shell's `empty-desk` and `empty-desk` at `--theme light`
+    // .
     {
         let mut session = session();
         settle(&mut session, 4);
@@ -215,8 +208,7 @@ fn capture_parity_frames() {
         capture(&mut session, "search");
     }
 
-    // One notification banner over the desk, saying what the old shell's
-    // `notifications-one` says.
+    // One notification banner over the desk, saying what the old shell's `notifications-one` says.
     {
         use tilo_desktop::notifications::{Banner, BannerFeed, Notification, NotificationSeverity};
         let mut session = session();
@@ -264,25 +256,19 @@ fn capture_parity_frames() {
     // The lock screen over the desk.
     {
         let plane = super::lock::private_home();
-        let mut session = Session::headless(
-            Options {
-                presentation: ui::headless::fixture_runner_inputs,
-                user: "ada".to_owned(),
-                verifier: std::sync::Arc::new(Sesame),
-                collab: false,
-                action_plane: tilo_session::ActionPlane::At(plane.path().join("actions.sock")),
-                surfaces: vec![super::lock::lock_screen()],
-                ..Options::default()
-            },
-            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        )
-        .expect("session");
+        let mut session = crate::common::headless(Options {
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            collab: false,
+            action_plane: tilo_session::ActionPlane::At(plane.path().join("actions.sock")),
+            surfaces: vec![super::lock::lock_screen()],
+            ..Options::default()
+        });
         let client = mapped(&mut session, "org.example.Terminal");
         settle(&mut session, 2);
         invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-        // The screen is a process of its own, and the frame compared here is
-        // the one it drew: until then a locked output shows the blank the
-        // desk left behind.
+        // The screen is a process of its own, and the frame compared here is the one it drew: until
+        // then a locked output shows the blank the desk left behind.
         let deadline = tilo_test_env::hang_deadline();
         while !session.compositor().lock_drawn() {
             assert!(
@@ -298,8 +284,8 @@ fn capture_parity_frames() {
     }
 }
 
-/// One readout scene in both styles: the state the old shell's `media_key_osd`
-/// frames show, drawn by the readout that answers it now.
+/// One readout scene in both styles: the state the old shell's `media_key_osd` frames show, drawn
+/// by the readout that answers it now.
 fn capture_readout(name: &str, readout: &serde_json::Value) {
     for style in ["", "-light"] {
         let mut session = desk_in(style);
@@ -315,8 +301,7 @@ fn capture_readout(name: &str, readout: &serde_json::Value) {
     }
 }
 
-/// The desk a capture draws on, by its style suffix: the default, or the
-/// calm light one.
+/// The desk a capture draws on, by its style suffix: the default, or the calm light one.
 fn desk_in(style: &str) -> Session {
     if style == "-light" {
         light_session()
@@ -325,8 +310,8 @@ fn desk_in(style: &str) -> Session {
     }
 }
 
-/// The desk alone in both styles: what a readout capture is drawn over, so the
-/// pill it adds can be measured against it.
+/// The desk alone in both styles: what a readout capture is drawn over, so the pill it adds can be
+/// measured against it.
 fn capture_readout_desk() {
     for style in ["", "-light"] {
         let mut session = desk_in(style);
@@ -344,13 +329,12 @@ fn pixel_parity_readout_frames_match_the_old_shells_scenes() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
     std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
-    // The desk the readouts float over, in both styles: the frame a readout's
-    // capture differs from, so its pill can be measured against it.
+    // The desk the readouts float over, in both styles: the frame a readout's capture differs from,
+    // so its pill can be measured against it.
     capture_readout_desk();
-    // A content-sized pill that names the device the key changed, its level
-    // drawn as the bar under the name, and a mode change said in words. The
-    // old shell's `media_key_osd` scenes are the same states, so the two sit
-    // side by side.
+    // A content-sized pill that names the device the key changed, its level drawn as the bar under
+    // the name, and a mode change said in words. The old shell's `media_key_osd` scenes are the
+    // same states, so the two sit side by side.
     for (name, readout) in [
         (
             "osd-volume",
@@ -423,9 +407,8 @@ fn pixel_parity_readout_frames_match_the_old_shells_scenes() {
     }
 }
 
-/// The readout names the device it changed, and the level is the bar: a pill
-/// as wide as what it reads, two rows (the device and the value above the bar)
-/// for a level, one for a mode change.
+/// The readout names the device it changed, and the level is the bar: a pill as wide as what it
+/// reads, two rows (the device and the value above the bar) for a level, one for a mode change.
 #[test]
 fn the_readout_names_its_device_and_the_level_is_the_bar() {
     let _settled = ui::motion::testing::settled();
@@ -462,10 +445,9 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
         played.accessible_labels()
     );
 
-    // On a 1280 by 800 output the pill rests one step of sixty-four above the
-    // screen's foot (the line the old shell's pill sat on), centred, two rows
-    // of a device name and value above the bar: nothing of the desk lights up
-    // outside it, so it takes no more room than what it reads.
+    // On a 1280 by 800 output the pill rests one step of sixty-four above the screen's foot (the
+    // line the old shell's pill sat on), centred, two rows of a device name and value above the
+    // bar: nothing of the desk lights up outside it, so it takes no more room than what it reads.
     let (left, top, right, bottom) =
         lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
             .expect("the readout paints something");
@@ -489,8 +471,8 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
         "the pill is {width} wide: as wide as what it reads"
     );
 
-    // A mode change is one row of words, so its pill is shorter than a
-    // level's and rests on the same line.
+    // A mode change is one row of words, so its pill is shorter than a level's and rests on the
+    // same line.
     let mut changed = session();
     settle(&mut changed, 4);
     let before = changed
@@ -529,9 +511,9 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
     );
 }
 
-/// The bounds `(left, top, right, bottom)` in logical pixels of everything
-/// `frame` (`size` physical) paints brighter than `before`: the lit body of a
-/// floating surface, without the shadow it also darkens around itself.
+/// The bounds `(left, top, right, bottom)` in logical pixels of everything `frame` (`size`
+/// physical) paints brighter than `before` : the lit body of a floating surface, without the shadow
+/// it also darkens around itself.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -572,8 +554,7 @@ fn luma(pixel: &[u8]) -> u16 {
     u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])
 }
 
-/// Where the desk scenes are written, beside the old shell's captures of the
-/// same states.
+/// Where the desk scenes are written, beside the old shell's captures of the same states.
 fn desk_shots_dir() -> std::path::PathBuf {
     std::env::var_os("VISUAL_DESK_OUT").map_or_else(
         || {
@@ -584,7 +565,7 @@ fn desk_shots_dir() -> std::path::PathBuf {
     )
 }
 
-/// Write the screen as `<dir>/<name>.png`.
+/// Write the screen as `<dir>/<name>.png` .
 pub(super) fn capture_to(session: &mut Session, dir: &std::path::Path, name: &str) {
     std::fs::create_dir_all(dir).expect("create the shots directory");
     let shot = session
@@ -599,8 +580,7 @@ pub(super) fn capture_to(session: &mut Session, dir: &std::path::Path, name: &st
         image::ColorType::Rgba8,
     )
     .expect("write the frame");
-    // What the frame names, beside it: which state a capture shows, readable
-    // without the picture.
+    // What the frame names, beside it: which state a capture shows, readable without the picture.
     let labels = session.accessible_labels().join("\n");
     std::fs::write(dir.join(format!("{name}.labels")), labels).expect("write the labels");
 }
@@ -622,8 +602,7 @@ fn desk_of_three(session: &mut Session) -> Vec<TestClient> {
     vec![a, b, c]
 }
 
-/// The desk before any window opens, for comparison with the old shell's
-/// `empty-desk` scene.
+/// The desk before any window opens, for comparison with the old shell's `empty-desk` scene.
 #[test]
 fn desk_scene_the_empty_desk() {
     let _settled = ui::motion::testing::settled();
@@ -634,8 +613,8 @@ fn desk_scene_the_empty_desk() {
     capture_to(&mut session, &dir, "desk-empty");
 }
 
-/// Three workspaces, two windows in the one in front, for comparison with
-/// the old shell's `desktop` and `multi-group` scenes.
+/// Three workspaces, two windows in the one in front, for comparison with the old shell's `desktop`
+/// and `multi-group` scenes.
 #[test]
 fn desk_scene_three_workspaces() {
     let _settled = ui::motion::testing::settled();
@@ -647,8 +626,7 @@ fn desk_scene_three_workspaces() {
     capture_to(&mut session, &dir, "desk-three");
 }
 
-/// The workspace menu over that desk, for comparison with the old shell's
-/// `workspace-menu` scene.
+/// The workspace menu over that desk, for comparison with the old shell's `workspace-menu` scene.
 #[test]
 fn desk_scene_the_workspace_menu() {
     let _settled = ui::motion::testing::settled();
@@ -662,8 +640,7 @@ fn desk_scene_the_workspace_menu() {
     capture_to(&mut session, &dir, "workspace-menu");
 }
 
-/// Workspace settings over the desk, for comparison with the old shell's
-/// `ws-settings-*` scenes.
+/// Workspace settings over the desk, for comparison with the old shell's `ws-settings-*` scenes.
 #[test]
 fn desk_scene_workspace_settings() {
     let _settled = ui::motion::testing::settled();
@@ -685,8 +662,8 @@ fn desk_scene_workspace_settings() {
     capture_to(&mut session, &dir, "workspace-settings");
 }
 
-/// The directory of workspaces over the desk, for comparison with the old
-/// shell's `join-empty` and `join-field` scenes.
+/// The directory of workspaces over the desk, for comparison with the old shell's `join-empty` and
+/// `join-field` scenes.
 #[test]
 fn desk_scene_the_directory() {
     let _settled = ui::motion::testing::settled();
@@ -708,8 +685,8 @@ fn desk_scene_the_directory() {
     capture_to(&mut session, &dir, "directory");
 }
 
-/// The overview open over the three workspaces, for comparison with the old
-/// shell's `overview` scene.
+/// The overview open over the three workspaces, for comparison with the old shell's `overview`
+/// scene.
 #[test]
 fn desk_scene_the_overview() {
     let _settled = ui::motion::testing::settled();
@@ -752,8 +729,8 @@ fn desk_scene_the_overview() {
     capture_to(&mut session, &dir, "overview-three");
 }
 
-/// The desk, its bar and the overview on the person's light theme, for
-/// comparison with the old shell's `*-light` scenes.
+/// The desk, its bar and the overview on the person's light theme, for comparison with the old
+/// shell's `*-light` scenes.
 #[test]
 fn desk_scene_the_light_theme() {
     let _settled = ui::motion::testing::settled();
@@ -774,8 +751,8 @@ fn light_runner_inputs() -> ui::application::ComponentRunnerInputs {
     inputs
 }
 
-/// Frames partway through the overview opening and a workspace switch, at the
-/// instants a person sees them as they move.
+/// Frames partway through the overview opening and a workspace switch, at the instants a person
+/// sees them as they move.
 #[test]
 fn desk_motion_frames_match_the_old_shells_films() {
     let _clock = held_clock();
@@ -854,8 +831,8 @@ fn desk_motion_frames_match_the_old_shells_films() {
     capture_at(&mut session, &dir, &mut clock, 500, "workspace-switch-end");
 }
 
-/// The overview shows the windows' own pixels where its cards rest, drawn
-/// by the compositor, rather than a mark standing in for them.
+/// The overview shows the windows' own pixels where its cards rest, drawn by the compositor, rather
+/// than a mark standing in for them.
 #[test]
 fn the_overview_pictures_the_desks_windows() {
     let _settled = ui::motion::testing::settled();
@@ -885,8 +862,7 @@ fn the_overview_pictures_the_desks_windows() {
         "the picture rests on the display: {rect:?}"
     );
 
-    // The compositor draws the window's buffer in the picture: the test
-    // client paints itself red.
+    // The compositor draws the window's buffer in the picture: the test client paints itself red.
     let shot = session
         .compositor()
         .screenshot("HEADLESS-1")
@@ -902,9 +878,8 @@ fn the_overview_pictures_the_desks_windows() {
     );
 }
 
-/// A window the session keeps private is pictured as the placeholder a
-/// capture draws of it: the desk the picture stands on is what a
-/// screenshot, a recording and a share of the overview show.
+/// A window the session keeps private is pictured as the placeholder a capture draws of it: the
+/// desk the picture stands on is what a screenshot, a recording and a share of the overview show.
 #[test]
 fn the_overview_pictures_a_private_window_as_its_placeholder() {
     let _settled = ui::motion::testing::settled();
@@ -934,8 +909,7 @@ fn the_overview_pictures_a_private_window_as_its_placeholder() {
         "the picture carries none of the window: {rect:?}"
     );
 
-    // A copy of the overview, taken through the capture path, shows the
-    // same placeholder.
+    // A copy of the overview, taken through the capture path, shows the same placeholder.
     let copy = session
         .compositor()
         .read_back_region("HEADLESS-1", (0, 0, WIDTH, HEIGHT))
@@ -951,8 +925,7 @@ fn the_overview_pictures_a_private_window_as_its_placeholder() {
     );
 }
 
-/// The person's theme reaches the desk, its bar and the overview, not only
-/// the apps.
+/// The person's theme reaches the desk, its bar and the overview, not only the apps.
 #[test]
 fn the_desk_draws_the_persons_theme() {
     let _settled = ui::motion::testing::settled();
@@ -1007,8 +980,8 @@ fn the_desk_draws_the_persons_theme() {
     );
 }
 
-/// The mean luminance of the `w` by `h` pixels at `(x, y)` of `frame` on a
-/// `size` physical frame, 0 to 255.
+/// The mean luminance of the `w` by `h` pixels at `(x, y)` of `frame` on a `size` physical frame, 0
+/// to 255.
 fn region_luminance(frame: &[u8], size: (u32, u32), rect: (usize, usize, usize, usize)) -> f64 {
     let (width, height) = (size.0 as usize, size.1 as usize);
     let (x0, y0, w, h) = rect;
@@ -1027,8 +1000,8 @@ fn region_luminance(frame: &[u8], size: (u32, u32), rect: (usize, usize, usize, 
     sum / count.max(1.0)
 }
 
-/// How many pixels of `frame` (`size` physical) inside `rect` (logical) are
-/// the red the test client paints itself.
+/// How many pixels of `frame` (`size` physical) inside `rect` (logical) are the red the test client
+/// paints itself.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1054,7 +1027,7 @@ fn red_pixels(frame: &[u8], size: (u32, u32), rect: (f64, f64, f64, f64)) -> u64
     red
 }
 
-/// The mean luminance of `frame`'s pixels, 0 to 255.
+/// The mean luminance of `frame` 's pixels, 0 to 255.
 fn mean_luminance(frame: &[u8]) -> f64 {
     let pixels = frame.chunks_exact(4);
     let (sum, count) = pixels.fold((0.0, 0.0_f64), |(sum, count), pixel| {

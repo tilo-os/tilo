@@ -339,8 +339,6 @@ impl StorageClient {
     /// Request the existing lane's closed enrollment switch and consume its
     /// exact stream. Callers must authenticate the actual installed daemon and
     /// current person/device before trusting any subsequent enrollment reply.
-    /// # Errors
-    /// Refuses unavailable enrollment or any unrelated storage response.
     pub fn bind_external_source(mut self) -> std::io::Result<UnixStream> {
         match self.request(&StorageRequest::BindExternalSource)? {
             StorageResponse::ExternalSourceBinding => Ok(self.stream),

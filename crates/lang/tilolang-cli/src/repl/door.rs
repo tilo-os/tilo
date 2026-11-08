@@ -80,9 +80,6 @@ impl Control {
     }
 
     /// One request, its answer.
-    ///
-    /// # Errors
-    /// The socket is gone, or the session refused the request.
     pub fn request(&self, payload: &Json) -> Result<Json, String> {
         let mut lines = Lines::connect(&self.path)?;
         lines.send(payload)?;
@@ -147,9 +144,6 @@ impl Door {
     /// Connect to the door at `socket` and be admitted: by the person in the session's own
     /// prompt, or, for a nested session (`control`), by the person's remote answer. Admitted, it
     /// works in the task run the session makes for the connection.
-    ///
-    /// # Errors
-    /// The door is not there, the person did not admit the REPL, or the door refused it.
     pub fn open(
         socket: &Path,
         control: Option<&Control>,
@@ -228,9 +222,6 @@ impl Door {
     }
 
     /// Call the tool `name` with `arguments`.
-    ///
-    /// # Errors
-    /// The door refused the call as a protocol error, or went away.
     pub fn call(&mut self, name: &str, arguments: &Json) -> Result<Answer, String> {
         let result = self.request("tools/call", &json!({"name": name, "arguments": arguments}))?;
         let text = result

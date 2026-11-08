@@ -129,9 +129,6 @@ pub struct BrokerActionSurface {
 impl ExportedAction {
     /// Whether this action, read from the app that published it, names a
     /// semantic identity only of its own kind and in bounds.
-    ///
-    /// # Errors
-    /// What is out of bounds, naming the action.
     pub fn check(&self) -> Result<(), String> {
         if self.semantic_identity.as_ref().is_some_and(|identity| {
             identity.kind.len() > ResourceSemanticIdentity::MAX_KIND_BYTES
@@ -301,9 +298,6 @@ impl ActionDirectoryRow {
     /// Whether this row, read from the app that published it, is in bounds:
     /// its presentation valid, its descriptor's semantic identity naming its
     /// kind, and its contract, parameters and visibility contract bounded.
-    ///
-    /// # Errors
-    /// What is out of bounds, naming the row.
     pub fn check(&self) -> Result<(), String> {
         let refuse = |what: &str| {
             Err(format!(
@@ -339,9 +333,6 @@ impl ActionDirectoryRow {
 
 /// Read a directory answer the app gave as JSON: refused when its rows'
 /// size exceeds `max_bytes` or a row is out of bounds.
-///
-/// # Errors
-/// The answer is oversized, malformed or out of bounds.
 pub fn read_directory_answer<T: serde::de::DeserializeOwned>(
     json: &str,
     max_bytes: u64,

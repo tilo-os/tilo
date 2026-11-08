@@ -74,11 +74,6 @@ pub fn stage_setup_handoff(
 /// owner's keys works on a setup machine that has none. `name_target` is
 /// false for installer media, whose installed system takes its name from
 /// the embedded profile instead.
-///
-/// # Errors
-///
-/// Returns a string when the network, a key or the hostname is unusable, or
-/// when the staged files cannot be written.
 pub fn stage_access_handoff(
     profile: &InstallProfile,
     wifi_psk: &str,
@@ -168,11 +163,6 @@ pub(crate) fn home_file_name_is_safe(name: &str) -> bool {
 }
 
 /// Stage `contents` to land as `name` in the home of the disk's account.
-///
-/// # Errors
-///
-/// Returns a string when `name` is not one plain file name or the file
-/// cannot be written.
 pub fn stage_account_home_file(root: &Path, name: &str, contents: &[u8]) -> Result<(), String> {
     if !home_file_name_is_safe(name) {
         return Err(format!(
@@ -193,11 +183,6 @@ pub fn stage_account_home_file(root: &Path, name: &str, contents: &[u8]) -> Resu
 }
 
 /// Add the owner SSH keys to a staged tree. No keys add nothing.
-///
-/// # Errors
-///
-/// Returns a string when a line is not one OpenSSH public key, or the file
-/// cannot be written.
 pub fn install_bringup_ssh_key(root: &Path, ssh_public_keys: &str) -> Result<(), String> {
     let Some(line) = bringup_ssh_key_lines(ssh_public_keys)? else {
         return Ok(());
@@ -401,11 +386,6 @@ pub fn install_staged_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result
 ///
 /// A live installer medium has no installed root yet. The installer extracts
 /// this payload and copies it onto the disk it installs.
-///
-/// # Errors
-///
-/// Returns an error when the payload would overlap the image or the profile
-/// block, or when the device cannot be written.
 pub fn embed_setup_handoff(
     device: &Path,
     image_len: u64,

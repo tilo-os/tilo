@@ -23,9 +23,6 @@ pub struct FdTransport {
 
 impl FdTransport {
     /// Duplicate an explicitly supplied launcher capability.
-    ///
-    /// # Errors
-    /// Refuses descriptors that cannot be duplicated or are not connected sockets.
     pub fn new(descriptor: BorrowedFd<'_>) -> Result<Self, String> {
         let owned: OwnedFd = descriptor
             .try_clone_to_owned()
@@ -41,9 +38,6 @@ impl FdTransport {
     }
 
     /// Capture the launcher capability once; never fall back to a socket path.
-    ///
-    /// # Errors
-    /// Refuses an absent, invalid or disconnected launcher capability.
     pub fn from_launcher() -> Result<Self, String> {
         let stream = crate::service_stream().map_err(|_| "model gateway unavailable")?;
         Self::new(stream.as_fd())

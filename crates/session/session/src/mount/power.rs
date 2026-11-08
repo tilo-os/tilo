@@ -35,17 +35,17 @@ pub(crate) struct PowerRun {
     next: Arc<Mutex<Option<SessionConfig>>>,
     /// What the sleep in flight installed, so a failed one undoes only that.
     sleep: SleepLock,
-    /// Whether the sleep in flight is the idle timer's: its lock stays on
-    /// this device, as the idle timer's own lock does.
+    /// Whether the sleep in flight is the idle timer's: its lock stays on this device, as the idle
+    /// timer's own lock does.
     idle_sleep: bool,
-    /// Keeps the settings watch alive: the loader's one watch, which the
-    /// compositor's assists and the power policy both follow.
+    /// Keeps the settings watch alive: the loader's one watch, which the compositor's assists and
+    /// the power policy both follow.
     watch: Option<settings_store::watch::SettingsWatch>,
 }
 
 impl PowerRun {
-    /// A session that runs no power of its own: the one in a window of
-    /// another desktop, which owns the machine's.
+    /// A session that runs no power of its own: the one in a window of another desktop, which owns
+    /// the machine's.
     fn none() -> Self {
         Self {
             link: None,
@@ -61,9 +61,8 @@ impl PowerRun {
         }
     }
 
-    /// Follow the person's settings, whether or not this session owns the
-    /// machine's power: the compositor's assists and the idle timers both
-    /// come from the one reading.
+    /// Follow the person's settings, whether or not this session owns the machine's power: the
+    /// compositor's assists and the idle timers both come from the one reading.
     fn follow_settings(
         &self,
         waker: std::task::Waker,
@@ -83,16 +82,16 @@ impl PowerRun {
 struct SleepLock {
     /// Whether a sleep is waiting for its lock screen's frame.
     prepared: bool,
-    /// Whether the session was already locked when the sleep began: that
-    /// lock is not this sleep's to lift.
+    /// Whether the session was already locked when the sleep began: that lock is not this sleep's
+    /// to lift.
     locked_before: bool,
     /// Whether the sleep still waits for the frame that shows the lock.
     awaiting: bool,
 }
 
-/// Start the session's power from `options`: the policy its link was made
-/// with — the one the settings loader resolved — applied to the idle timers
-/// now and again whenever the person changes their settings.
+/// Start the session's power from `options` : the policy its link was made with — the one the
+/// settings loader resolved — applied to the idle timers now and again whenever the person changes
+/// their settings.
 pub(crate) fn install(compositor: &mut Compositor, options: &Options) -> PowerRun {
     let waker = compositor.waker();
     let mut run = PowerRun::none();
@@ -108,10 +107,9 @@ pub(crate) fn install(compositor: &mut Compositor, options: &Options) -> PowerRu
         let waker = compositor.waker();
         move || waker.wake_by_ref()
     }));
-    // A hold appearing or lapsing is not a signal the service sends: it
-    // changes what the loop applies to the compositor and what the bar
-    // says, so the loop wakes to read it rather than waiting for the next
-    // frame something else causes.
+    // A hold appearing or lapsing is not a signal the service sends: it changes what the loop
+    // applies to the compositor and what the bar says, so the loop wakes to read it rather than
+    // waiting for the next frame something else causes.
     link.registry().on_change({
         let waker = compositor.waker();
         move || waker.wake_by_ref()
@@ -121,7 +119,7 @@ pub(crate) fn install(compositor: &mut Compositor, options: &Options) -> PowerRu
     run
 }
 
-/// Run `link`'s policy from now on: the idle timers the compositor keeps.
+/// Run `link` 's policy from now on: the idle timers the compositor keeps.
 fn apply(compositor: &mut Compositor, link: &PowerLink) {
     let policy = link.policy();
     compositor.set_idle_config(
@@ -133,11 +131,11 @@ fn apply(compositor: &mut Compositor, link: &PowerLink) {
 }
 
 impl Session {
-    /// Follow the machine's power and the person's settings: what holds it
-    /// awake, what they changed, and what the service over logind asked.
+    /// Follow the machine's power and the person's settings: what holds it awake, what they
+    /// changed, and what the service over logind asked.
     pub(crate) fn follow_power(&mut self) -> Result<(), Error> {
-        // The loader's one reading: the compositor's assists apply in every
-        // session, the machine's policy only where this session owns it.
+        // The loader's one reading: the compositor's assists apply in every session, the machine's
+        // policy only where this session owns it.
         if self.machine.reload.swap(false, Ordering::AcqRel) {
             let next = self
                 .machine
@@ -147,8 +145,8 @@ impl Session {
                 .take();
             if let Some(config) = next {
                 a11y_settings::apply(&mut self.compositor, &config.a11y)?;
-                // The keyboard is started or stopped by the choice the
-                // person made in this change, on this pass's displays.
+                // The keyboard is started or stopped by the choice the person made in this change,
+                // on this pass's displays.
                 self.keyboard_preference = config.on_screen_keyboard;
                 if let Some(link) = &self.machine.link {
                     link.set_policy(config.power);
@@ -171,9 +169,8 @@ impl Session {
             .map(|window| (window.id, idle_inhibitor_name(window)))
             .collect();
         link.set_idle_inhibitors(&inhibitors);
-        // Nothing sleeps while something holds the machine, and nothing
-        // dims, blanks or locks while an app says the person is watching: a
-        // video, a download, a remote session.
+        // Nothing sleeps while something holds the machine, and nothing dims, blanks or locks while
+        // an app says the person is watching: a video, a download, a remote session.
         self.compositor.hold_awake(link.suspend_held());
         self.compositor.hold_idle(link.idle_held());
         for signal in link.bridge().drain_signals() {
@@ -203,9 +200,8 @@ impl Session {
                     locked_before,
                     awaiting: false,
                 };
-                // logind's sleep delay waits for the frame that shows the
-                // lock: the lock screen's window is started here, and the
-                // session admits the machine may sleep once it drew
+                // logind's sleep delay waits for the frame that shows the lock: the lock screen's
+                // window is started here, and the session admits the machine may sleep once it drew
                 // (`follow_lock`).
                 self.follow_lock()?;
                 if self.compositor.lock_drawn() {
@@ -232,27 +228,24 @@ impl Session {
                 self.machine.sleep = SleepLock::default();
             }
             PowerSignal::IdleSuspendChanged(idle_suspend) => {
-                // The machine's power profile or its source changed under the
-                // person's policy: its idle-suspend timer is the one that
-                // now applies.
+                // The machine's power profile or its source changed under the person's policy: its
+                // idle-suspend timer is the one that now applies.
                 let mut policy = link.policy();
                 policy.idle_suspend = *idle_suspend;
                 link.set_policy(policy);
                 apply(&mut self.compositor, link);
             }
             PowerSignal::Notify(battery) => {
-                // What the service saw on the pack in the words this
-                // session's own catalogue has, so the heads-up reads on
-                // every desk as the machine's news rather than an app's
+                // What the service saw on the pack in the words this session's own catalogue has,
+                // so the heads-up reads on every desk as the machine's news rather than an app's
                 // claim.
                 let notice = crate::notices::battery_notice(
                     battery.percent,
                     battery.critical,
                     battery.suspending,
                 );
-                // The battery's own reading carries the same words for the
-                // surfaces that draw the pack's state, so a bar and the
-                // person's notifications never disagree.
+                // The battery's own reading carries the same words for the surfaces that draw the
+                // pack's state, so a bar and the person's notifications never disagree.
                 link.note_notice(tilo_session_power::Notice {
                     summary: notice.title.clone(),
                     body: notice.body.clone(),
@@ -264,9 +257,8 @@ impl Session {
         Ok(())
     }
 
-    /// logind's sleep delay waits for the frame that shows the lock: the
-    /// machine may sleep once the lock screen's own frame is in, and one
-    /// that never came is a sleep logind's own delay ends.
+    /// logind's sleep delay waits for the frame that shows the lock: the machine may sleep once the
+    /// lock screen's own frame is in, and one that never came is a sleep logind's own delay ends.
     pub(crate) fn admit_sleep_if_locked(&mut self) {
         if !self.machine.sleep.awaiting || !self.compositor.lock_drawn() {
             return;
@@ -278,10 +270,9 @@ impl Session {
         link.bridge().lock_screen_drawn();
     }
 
-    /// Lock the session for the machine: a lid, a critical battery, the
-    /// power key. A session that could not be left again never locks
-    /// ([`Session::can_lock`]), and a lock asked of a locked session turns the
-    /// display off instead, so the press always does something the person can
+    /// Lock the session for the machine: a lid, a critical battery, the power key. A session that
+    /// could not be left again never locks ([`Session::can_lock`]), and a lock asked of a locked
+    /// session turns the display off instead, so the press always does something the person can
     /// see.
     fn lock_for_power(&mut self) -> Result<(), Error> {
         if !self.can_lock() {
@@ -295,8 +286,8 @@ impl Session {
         Ok(())
     }
 
-    /// The idle timers ran out: sleep the machine, unless something took a
-    /// hold since the tick that decided it.
+    /// The idle timers ran out: sleep the machine, unless something took a hold since the tick that
+    /// decided it.
     pub(crate) fn suspend_for_idle(&mut self) {
         if self.shared.hosted {
             tracing::info!("a session in a window does not suspend its host");
@@ -304,8 +295,8 @@ impl Session {
         }
         if let Some(link) = &self.machine.link {
             if link.suspend_held() {
-                // A hold taken between the tick and now: the period restarts
-                // from the hold, not from a sleep that never happened.
+                // A hold taken between the tick and now: the period restarts from the hold, not
+                // from a sleep that never happened.
                 self.compositor.cancel_suspend();
                 return;
             }
@@ -317,8 +308,8 @@ impl Session {
                 return;
             }
         }
-        // Without a service over logind (a machine without one) the
-        // session's own action is what sleeping is.
+        // Without a service over logind (a machine without one) the session's own action is what
+        // sleeping is.
         self.machine.idle_sleep = true;
         if let Err(error) = (self.shared.session_actions)(crate::SessionAction::Suspend) {
             tracing::warn!(%error, "suspend");
@@ -326,8 +317,8 @@ impl Session {
     }
 }
 
-/// What the window holding the idle timer off is called to the person: the
-/// window's own title and its app, the app alone, or that an app it is.
+/// What the window holding the idle timer off is called to the person: the window's own title and
+/// its app, the app alone, or that an app it is.
 fn idle_inhibitor_name(window: &WindowInfo) -> String {
     match (window.app_id.as_deref(), window.title.as_deref()) {
         (Some(app), Some(title)) => crate::app_names::window_name(app, title),

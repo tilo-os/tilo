@@ -27,8 +27,6 @@ pub fn reply(output: &mut impl Write, message: &SpeechReply) -> Result<(), Speec
 /// # Safety
 /// Call only in a fresh, single-threaded owned child, with no Rust descriptor
 /// owner for descriptors numbered three or above. Never call in the compositor.
-/// # Errors
-/// Fails if any mandatory process limit or descriptor cleanup cannot be applied.
 pub unsafe fn prepare() -> Result<(), SpeechError> {
     let zero = libc::rlimit {
         rlim_cur: 0,
@@ -152,16 +150,10 @@ pub trait SpeechDecoder {
         DraftPolicy::FullContext
     }
     /// Accept only newly appended PCM, once per audio frame.
-    /// # Errors
-    /// Rejects invalid audio, exhausted resources or native failure.
     fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError>;
     /// Produce the current cumulative hypothesis without retiring the session.
-    /// # Errors
-    /// Rejects invalid state, oversized text or native failure.
     fn draft(&mut self, samples: &[f32]) -> Result<String, SpeechError>;
     /// Flush and retire this decoder, returning cumulative final text.
-    /// # Errors
-    /// Rejects invalid state, oversized text or native failure.
     fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError>;
 }
 
@@ -206,8 +198,6 @@ impl SpeechDecoder for WhisperDecoder {
 }
 
 /// Read the existing strict configuration frame before engine preparation.
-/// # Errors
-/// Rejects an absent, oversized, malformed or out-of-sequence configuration.
 pub fn configure(input: &mut impl Read) -> Result<(SpeechInput, SpeechConfig), SpeechError> {
     let frame = zeroize::Zeroizing::new(
         FRAME
@@ -228,8 +218,6 @@ pub fn configure(input: &mut impl Read) -> Result<(SpeechInput, SpeechConfig), S
 /// Serve the real private pipe using an already prepared confined decoder.
 /// Readiness follows configuration, model verification, confinement and native
 /// preparation. Completion retires the session; failures stop before reuse.
-/// # Errors
-/// Rejects invalid input, native failure, oversized replies or a closed pipe.
 pub fn serve_decoder(
     identity: (&str, &str),
     mut session: SpeechInput,

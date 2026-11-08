@@ -1,8 +1,7 @@
-//! The person's settings reaching the compositor, and what the compositor
-//! reports reaching Settings: their arrangement of the displays applied and
-//! kept, a change that could darken a screen waiting for their answer and
-//! being put back when it does not come, and the keyboard typing in the
-//! input source they chose.
+//! The person's settings reaching the compositor, and what the compositor reports reaching
+//! Settings: their arrangement of the displays applied and kept, a change that could darken a
+//! screen waiting for their answer and being put back when it does not come, and the keyboard
+//! typing in the input source they chose.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -56,14 +55,12 @@ fn session(count: usize) -> Session {
                 .at(WIDTH * i32::try_from(index - 1).unwrap(), 0)
         })
         .collect();
-    Session::headless(
+    crate::common::headless_on(
+        &outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             ..Options::default()
         },
-        &outputs,
     )
-    .expect("session")
 }
 
 /// The monitors attached now, as Settings sees them, and the set they make.
@@ -95,8 +92,7 @@ fn lit(session: &mut Session, connector: &str) -> bool {
         .is_none_or(|output| output.enabled)
 }
 
-/// The scale clients render on the display `connector` at; `None` when no
-/// display says.
+/// The scale clients render on the display `connector` at; `None` when no display says.
 fn scale(session: &mut Session, connector: &str) -> Option<f64> {
     session
         .compositor()
@@ -111,10 +107,8 @@ fn scale(session: &mut Session, connector: &str) -> Option<f64> {
 }
 
 /// Let the session run until `done` holds.
-///
-/// Counting steps would not do: the display tool answers on its own socket
-/// and thread, and a loaded machine can take many steps' worth of time to get
-/// to it.
+/// Counting steps would not do: the display tool answers on its own socket and thread, and a loaded
+/// machine can take many steps' worth of time to get to it.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     let at = std::panic::Location::caller();
@@ -142,7 +136,7 @@ fn tap(session: &mut Session, keycode: u32) {
     }
 }
 
-/// A frame of `output`, once the session has drawn what it has.
+/// A frame of `output` , once the session has drawn what it has.
 fn shot(session: &mut Session, output: &str) -> Screenshot {
     session
         .compositor()
@@ -156,8 +150,7 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
     frame.pixel(x, y).expect("a pixel of the frame")
 }
 
-/// How many pixels `after` has that `before` does not, and the rectangle
-/// they make.
+/// How many pixels `after` has that `before` does not, and the rectangle they make.
 fn changed(before: &Screenshot, after: &Screenshot) -> (usize, (u32, u32, u32, u32)) {
     let mut count = 0;
     let mut bounds = (u32::MAX, u32::MAX, 0, 0);
@@ -177,8 +170,8 @@ fn changed(before: &Screenshot, after: &Screenshot) -> (usize, (u32, u32, u32, u
     (count, bounds)
 }
 
-/// Stage a change through Settings that turns `right` off and keeps `left`
-/// where it is: the one that could leave the person with a dark screen.
+/// Stage a change through Settings that turns `right` off and keeps `left` where it is: the one
+/// that could leave the person with a dark screen.
 fn stage_turning_off(set: &DisplaySet, left: &str, right: &str) {
     let mut candidate = DisplayConfig::default();
     candidate.outputs.insert(
@@ -308,9 +301,8 @@ fn a_countdown_tick_keeps_the_keyboard_where_the_person_tabbed() {
     let mut tool = Tool::connect(&mut session);
     tool.until_heads(&mut session);
 
-    // The clock the question and its countdown are read on is the test's, so
-    // the countdown ticks when this test says it does and not when the
-    // machine gets to the next second.
+    // The clock the question and its countdown are read on is the test's, so the countdown ticks
+    // when this test says it does and not when the machine gets to the next second.
     let start = tilo_clock::now();
     let asked = tilo_clock::testing::with_monotonic_time(start, || {
         tool.rescale(&mut session, "HEADLESS-1", 2.0);
@@ -322,13 +314,13 @@ fn a_countdown_tick_keeps_the_keyboard_where_the_person_tabbed() {
         asking(&session).expect("the question stands").status
     });
     tilo_clock::testing::with_monotonic_time(start + Duration::from_secs(1), || {
-        // A second goes by while the person is still choosing: the sheet is
-        // drawn again under their hands.
+        // A second goes by while the person is still choosing: the sheet is drawn again under their
+        // hands.
         until(&mut session, |session| {
             asking(session).is_some_and(|question| question.status != asked)
         });
-        // The answer they tabbed to is still theirs, and the third answer is
-        // the one they tab to next: Keep and stop asking about this tool.
+        // The answer they tabbed to is still theirs, and the third answer is the one they tab to
+        // next: Keep and stop asking about this tool.
         tap(&mut session, KEY_TAB);
         tap(&mut session, KEY_ENTER);
         until(&mut session, |session| asking(session).is_none());
@@ -348,8 +340,8 @@ fn a_change_that_could_dark_a_screen_asks_and_keep_leaves_it() {
     let (left, right) = (connectors[0].clone(), connectors[1].clone());
     stage_turning_off(&set, &left, &right);
 
-    // The change applies, and the person is asked about it on the display
-    // that is still on, with the time they have left.
+    // The change applies, and the person is asked about it on the display that is still on, with
+    // the time they have left.
     until(&mut session, |session| {
         asking(session).is_some_and(|question| question.displays.len() == 1)
     });
@@ -409,8 +401,8 @@ fn walking_away_puts_the_previous_layout_back_and_takes_the_question_down() {
 fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembered() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    // The card is what changed between the pictures this test compares: the
-    // bar's own minute turning over is not.
+    // The card is what changed between the pictures this test compares: the bar's own minute
+    // turning over is not.
     let _clock = tilo_test_env::held_wall_clock();
     let mut session = session(2);
     attached(&mut session);
@@ -446,13 +438,12 @@ fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembe
                     < f64::EPSILON
             );
 
-            // The card stands on the display the change did not touch, and
-            // on the one it did.
+            // The card stands on the display the change did not touch, and on the one it did.
             let card_left = shot(&mut session, "HEADLESS-1");
             let card_right = shot(&mut session, "HEADLESS-2");
 
-            // Keep and stop asking about this tool: the third answer, after
-            // Keep and Revert in the keyboard's order.
+            // Keep and stop asking about this tool: the third answer, after Keep and Revert in the
+            // keyboard's order.
             tap(&mut session, KEY_TAB);
             tap(&mut session, KEY_TAB);
             tap(&mut session, KEY_ENTER);
@@ -464,8 +455,8 @@ fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembe
             (card_left, card_right)
         });
 
-    // The card is centred on the display the change did not touch: what the
-    // person would miss is drawn in the middle of every display.
+    // The card is centred on the display the change did not touch: what the person would miss is
+    // drawn in the middle of every display.
     let (_, (x0, y0, x1, y1)) = changed(&before_right, &card_right);
     assert!(x1 > x0 && y1 > y0, "nothing was drawn on it");
     let middle = (
@@ -477,8 +468,7 @@ fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembe
         "the card sits at the middle of the display: {x0} {y0} {x1} {y1}"
     );
 
-    // Answering took the card down on every display: each one's middle
-    // shows the desktop again.
+    // Answering took the card down on every display: each one's middle shows the desktop again.
     let (centre_x, centre_y) = (WIDTH / 2, HEIGHT / 2);
     for (name, card) in [("HEADLESS-1", &card_left), ("HEADLESS-2", &card_right)] {
         assert_ne!(
@@ -498,8 +488,8 @@ fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembe
     assert!(lit(&mut session, "HEADLESS-1") && lit(&mut session, "HEADLESS-2"));
 }
 
-/// A display tool on the privileged display socket, speaking
-/// `wlr-output-management` to the session's compositor.
+/// A display tool on the privileged display socket, speaking `wlr-output-management` to the
+/// session's compositor.
 struct Tool {
     connection: Connection,
     queue: EventQueue<ToolState>,
@@ -550,8 +540,8 @@ impl Tool {
         self.connection.flush().expect("flush");
     }
 
-    /// Let the tool and the session talk until `done` holds, for as long as a
-    /// loaded machine takes: the answer comes over the tool's own socket.
+    /// Let the tool and the session talk until `done` holds, for as long as a loaded machine takes:
+    /// the answer comes over the tool's own socket.
     #[track_caller]
     fn pump(&mut self, session: &mut Session, mut done: impl FnMut(&ToolState) -> bool) {
         let deadline = tilo_test_env::hang_deadline();
@@ -575,7 +565,7 @@ impl Tool {
         });
     }
 
-    /// Give the display `name` the scale `scale`, as a layout tool does.
+    /// Give the display `name` the scale `scale` , as a layout tool does.
     #[track_caller]
     fn rescale(&mut self, session: &mut Session, name: &str, scale: f64) {
         let head = self
@@ -776,15 +766,13 @@ fn the_keyboard_types_in_the_next_input_source_and_keeps_the_choice() {
         ]),
     )
     .expect("the person's sources are kept");
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[CompositorOutput::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             config: SessionConfig::load(),
             ..Options::default()
         },
-        &[CompositorOutput::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     assert_eq!(
         session.active_input_source(),
         "us",

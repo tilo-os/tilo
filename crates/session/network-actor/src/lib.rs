@@ -1780,7 +1780,7 @@ impl ActorState {
         self.surface_routes_opening.insert(peer, task);
     }
 
-    /// [`InternalEvent::SurfaceRouteOpened`]: give the viewer what was held
+    /// [`InternalEvent::SurfaceRouteOpened`] — give the viewer what was held
     /// for it, in order; or, when its route could not be opened, keep only
     /// what does not reference lost units, until its next unit opens it
     /// again.
@@ -2152,7 +2152,7 @@ impl ActorState {
         }
     }
 
-    /// [`NetCmd::PublishSurfaceTo`]: one window's stream to exactly its
+    /// [`NetCmd::PublishSurfaceTo`] — one window's stream to exactly its
     /// viewers. Its start and frames take the per-window media fanout
     /// restricted to them, in order, held for a viewer until its route is
     /// up; the stream's end and control grants go to each directly.

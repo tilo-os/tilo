@@ -290,17 +290,17 @@ fn copy_now<B: ClipboardBackend + ?Sized>(backend: &B, content: CopyContent<'_>)
 /// matches the blocking method of the same meaning.
 #[derive(Clone, Copy)]
 pub enum CopyContent<'a> {
-    /// [`ClipboardBackend::set_text`]: may land in an in-process buffer.
+    /// [`ClipboardBackend::set_text`] — may land in an in-process buffer.
     Text(&'a str),
-    /// [`ClipboardBackend::set_shared_text`]: only where other processes
+    /// [`ClipboardBackend::set_shared_text`] — only where other processes
     /// can read it.
     SharedText(&'a str),
     /// [`ClipboardBackend::set_secret_text`].
     SecretText(&'a str),
-    /// [`ClipboardBackend::set_rich_text`]: formatted text as HTML with its
+    /// [`ClipboardBackend::set_rich_text`] — formatted text as HTML with its
     /// plain-text fallback.
     Rich { html: &'a str, plain: &'a str },
-    /// [`ClipboardBackend::set_image`]: RGBA8, `width * height * 4` bytes.
+    /// [`ClipboardBackend::set_image`] — RGBA8, `width * height * 4` bytes.
     Image {
         width: usize,
         height: usize,

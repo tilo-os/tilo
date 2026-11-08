@@ -215,9 +215,6 @@ fn write_held(root: &Path, held: &[HeldLayer]) -> Result<(), DaemonError> {
 
 /// The person brings `layer` back deliberately (a swap names it): it is
 /// no longer held.
-///
-/// # Errors
-/// I/O failures.
 pub fn release(root: &Path, layer: &str) -> Result<(), DaemonError> {
     let mut held = held(root);
     let before = held.len();
@@ -347,9 +344,6 @@ pub fn reconcile(
 
 /// The state root, created as tmpfiles would (0700) when this runs before
 /// `systemd-tmpfiles-setup` on a machine's first boot.
-///
-/// # Errors
-/// I/O failures.
 pub fn ensure_root(root: &Path) -> Result<PathBuf, DaemonError> {
     use std::os::unix::fs::DirBuilderExt;
     if !root.is_dir() {

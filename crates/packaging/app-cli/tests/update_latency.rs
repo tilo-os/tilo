@@ -30,12 +30,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
 use registry_types::{PublisherAuthorization, SignedRegistrySnapshot, sign_snapshot};
 
 use crate::registry_to_installed::{
-    author_tapp_version, scoped_env, signed_entry_version, test_publisher, tilo_install_bin,
+    Device, author_tapp_version, registry_config, signed_entry_version, test_publisher,
 };
 
 /// What a new connection costs before its first request is read: TCP and TLS.
@@ -240,32 +239,11 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
     let base = registry.start();
     let owner = SigningKey::from_bytes(&[23_u8; 32]);
 
-    let config = tempfile::tempdir().unwrap();
-    let cache = tempfile::tempdir().unwrap();
-    let apps = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "far".into(),
-                base_url: base.clone(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config.path()),
-        ("TILO_STORE_CACHE_DIR", cache.path()),
-        ("TILO_APPS_DATA_DIR", apps.path()),
-        ("TILO_INSTALL_BIN", &installer),
-        ("XDG_DATA_HOME", data.path()),
-    ]);
+    let _device = Device::new(
+        Some(registry_config("far", &base, &owner)),
+        &[("XDG_DATA_HOME", data.path())],
+    );
 
     // The device: every app installed at 1.0.0, without the far latency.
     let first = snapshot(publish(&registry, &base, "1.0.0"), &owner, None);

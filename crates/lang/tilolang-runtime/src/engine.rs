@@ -18,8 +18,8 @@
 //! to the compiled module between calls once it is ready. Compiled modules are kept on disk
 //! ([`keep_compiled_in`]), so a module compiled once starts compiled. Without the feature the
 //! engine is wasmi alone. A process can also run on one engine only, wasmi, Cranelift or Winch,
-//! to compare them (docs/tilolang-engines.md). What differs between engines is behind
-//! [`Backend`]: making a module, linking the imports, instantiating with the limits, and one
+//! to compare them (docs/tilolang-engines.md). What differs between engines is
+//! behind [`Backend`]: making a module, linking the imports, instantiating with the limits, and one
 //! call. Caching, pooling, profiling, import dispatch and how errors are reported are written
 //! once, here, so a call gives the same result on every engine, and the same before and after
 //! a module moves to compiled code.
@@ -1011,10 +1011,6 @@ impl Engine {
     /// Compile (or fetch from the cache) the module with these bytes, whose imports `host`
     /// answers: the `tl` table and, when it names one, the imports of its own ABI
     /// ([`Host::guest_abi`]).
-    ///
-    /// # Errors
-    ///
-    /// Fails when the bytes are not a valid module or do not link against the ABI.
     pub fn compile(&self, bytes: &[u8]) -> Result<ModuleHash, CallError> {
         let hash = ModuleHash::of_bytes(bytes);
         let counted =
@@ -1026,10 +1022,6 @@ impl Engine {
     /// Link `abi`'s imports beside the `tl` table, from now on: the imports a host that runs
     /// modules of its own ABI ([`Host::guest_abi`]) answers ([`Host::guest_import`]). A module
     /// loaded after this links with them; one loaded before is dropped and loaded again.
-    ///
-    /// # Errors
-    ///
-    /// The engine cannot link them.
     pub fn link(&self, abi: &'static [Imports]) -> Result<(), String> {
         on_engine!(&self.pooled, pools => pools.link(abi))
     }

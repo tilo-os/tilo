@@ -128,11 +128,6 @@ pub fn get_ntp() -> Result<bool, String> {
 
 /// Enable/disable automatic time synchronisation. Needs privilege, so a
 /// denial surfaces as the command's error string.
-///
-/// # Errors
-///
-/// Returns an error message if `timedatectl` is not installed, is not authorised, or the
-/// command otherwise fails.
 pub fn set_ntp(enabled: bool) -> Result<(), String> {
     run(
         "timedatectl",

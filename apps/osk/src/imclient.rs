@@ -527,9 +527,6 @@ mod wayland {
         /// without holding the client — the client is shared with the thread
         /// that commits typed text, so it cannot block in
         /// [`Self::blocking_dispatch`].
-        ///
-        /// # Errors
-        /// The socket cannot be duplicated or the nudge socket created.
         pub fn connection_wait(
             &self,
         ) -> std::io::Result<(

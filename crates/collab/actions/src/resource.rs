@@ -985,9 +985,6 @@ pub enum ContinuationEvidence {
 impl ContinuationEvidence {
     /// Stream unambiguous comparison data without allocating a serialized copy.
     /// The format is private to comparison consumers, not a wire protocol.
-    ///
-    /// # Errors
-    /// Propagates a sink failure or an unrepresentable component length.
     pub fn write_canonical_identity(&self, sink: &mut impl std::io::Write) -> std::io::Result<()> {
         fn length(sink: &mut impl std::io::Write, value: usize) -> std::io::Result<()> {
             let value = u64::try_from(value).map_err(|_| {

@@ -1,17 +1,12 @@
-//! The lock screen's state, published as the session's own resource: the
-//! clock, what the device says about itself, what plays, and the answer to the
-//! last password.
-//!
-//! The lock screen is a process of its own, so nothing here crosses an `Rc`
-//! between the two: the session keeps the state, publishes it as [`LOCK`], and
-//! the app reads it and invokes its actions as any app reaches a service. The
-//! password is the screen's until the person asks to unlock: it is typed into
-//! the screen's zeroizing field, and [`LockEffect::Unlock`] hands the session
-//! what was typed, which checks it off the loop and publishes what came of it.
-//!
-//! The screen keeps two things of its own and fills them in as it shows them:
-//! whether Caps Lock is on (only its own typing can tell) and whether it draws
-//! its touch keyboard.
+//! The lock screen's state, published as the session's own resource: the clock, what the device
+//! says about itself, what plays, and the answer to the last password.
+//! The lock screen is a process of its own, so nothing here crosses an `Rc` between the two: the
+//! session keeps the state, publishes it as [`LOCK`], and the app reads it and invokes its actions
+//! as any app reaches a service. The password is the screen's until the person asks to unlock: it
+//! is typed into the screen's zeroizing field, and [`LockEffect::Unlock`] hands the session what
+//! was typed, which checks it off the loop and publishes what came of it.
+//! The screen keeps two things of its own and fills them in as it shows them: whether Caps Lock is
+//! on (only its own typing can tell) and whether it draws its touch keyboard.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -31,13 +26,12 @@ pub const LOCK: &str = "lock";
 /// Its kind, as a reader with no words of its own knows it.
 const LOCK_KIND: &str = "lock.screen";
 
-/// How long the screen is given to dissolve once the password unlocked it:
-/// leaving is an animation, and an animation never holds a session locked.
+/// How long the screen is given to dissolve once the password unlocked it: leaving is an animation,
+/// and an animation never holds a session locked.
 const DISSOLVE_LIMIT: Duration = Duration::from_secs(1);
 
-/// What the lock screen shows and what it asked for. The session's loop says
-/// what the device reads; the service hands that to the app and takes what it
-/// asks.
+/// What the lock screen shows and what it asked for. The session's loop says what the device reads;
+/// the service hands that to the app and takes what it asks.
 #[derive(Clone, Default)]
 pub struct Lock {
     shown: Rc<RefCell<Shown>>,
@@ -57,7 +51,7 @@ pub struct Lock {
 }
 
 impl Lock {
-    /// Show `shown`, when it is not what shows already.
+    /// Show `shown` , when it is not what shows already.
     pub fn show(&self, shown: Shown) {
         if *self.shown.borrow() == shown {
             return;
@@ -96,8 +90,8 @@ impl Lock {
         });
     }
 
-    /// The password was accepted: the screen dissolves and says when it is
-    /// gone with [`LockEffect::Dissolved`].
+    /// The password was accepted: the screen dissolves and says when it is gone with
+    /// [`LockEffect::Dissolved`].
     pub fn unlocked(&self) {
         self.gone.set(false);
         self.told.set(false);
@@ -110,8 +104,8 @@ impl Lock {
         });
     }
 
-    /// Whether the lock may be lifted now: the screen finished leaving, or it
-    /// was given long enough to leave.
+    /// Whether the lock may be lifted now: the screen finished leaving, or it was given long enough
+    /// to leave.
     #[must_use]
     pub fn dissolve_finished(&self) -> bool {
         let Some(since) = self.dissolving.get() else {
@@ -123,22 +117,21 @@ impl Lock {
                 .is_some_and(|leaving| leaving >= DISSOLVE_LIMIT)
     }
 
-    /// The passwords given to unlock since the session last asked, oldest
-    /// first; each zeroes itself when dropped.
+    /// The passwords given to unlock since the session last asked, oldest first; each zeroes itself
+    /// when dropped.
     pub fn take_attempts(&self) -> Vec<Zeroizing<String>> {
         std::mem::take(&mut *self.attempts.borrow_mut())
     }
 
-    /// What the screen asked of the session beyond unlocking — the next
-    /// keyboard layout, a power action, the screen leaving — oldest first.
+    /// What the screen asked of the session beyond unlocking — the next keyboard layout, a power
+    /// action, the screen leaving — oldest first.
     pub fn take_asked(&self) -> Vec<LockEffect> {
         std::mem::take(&mut *self.asked.borrow_mut())
     }
 
-    /// Take in what the screen asked: the password it typed, or the attempt
-    /// to unlock with what is in its field. The lock screen's app asks through
-    /// the resource and the session's own view through its channel; both land
-    /// here, so both are checked the same way.
+    /// Take in what the screen asked: the password it typed, or the attempt to unlock with what is
+    /// in its field. The lock screen's app asks through the resource and the session's own view
+    /// through its channel; both land here, so both are checked the same way.
     pub(crate) fn take_in(&self, effect: &LockEffect) {
         match effect {
             LockEffect::TypePassword { password } => {
@@ -175,7 +168,7 @@ pub struct LockService {
 }
 
 impl LockService {
-    /// The service publishing `state`.
+    /// The service publishing `state` .
     #[must_use]
     pub fn new(state: Lock) -> Self {
         let shown = Some(state.shown());
@@ -221,10 +214,9 @@ impl Service for LockService {
     }
 }
 
-/// What plays, as the lock screen shows it: what the services read of the
-/// players here, else what another of the person's devices offers to
-/// continue here. Only what a locked screen may do to it — no queue, no
-/// scrubber, no choice of player.
+/// What plays, as the lock screen shows it: what the services read of the players here, else what
+/// another of the person's devices offers to continue here. Only what a locked screen may do to it
+/// — no queue, no scrubber, no choice of player.
 #[must_use]
 pub fn media(
     readings: &crate::status::Shared,
@@ -246,9 +238,9 @@ pub fn media(
     })
 }
 
-/// The cover the lock card shows: the player's, cut down into the picture
-/// address the screen's own process reads. Cut once per song: the screen asks
-/// on every frame it is up, and encoding a picture is not a per-frame cost.
+/// The cover the lock card shows: the player's, cut down into the picture address the screen's own
+/// process reads. Cut once per song: the screen asks on every frame it is up, and encoding a
+/// picture is not a per-frame cost.
 fn lock_artwork(playing: &tilo_desktop_surface::now_playing::NowPlaying) -> String {
     thread_local! {
         static CUT: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
@@ -263,8 +255,7 @@ fn lock_artwork(playing: &tilo_desktop_surface::now_playing::NowPlaying) -> Stri
         }
         let artwork = tilo_desktop_surface::now_playing::artwork_address(&playing.art);
         if artwork.is_empty() {
-            // Nothing to remember: a player that sends its cover later cuts
-            // it then.
+            // Nothing to remember: a player that sends its cover later cuts it then.
             cut.take();
         } else {
             *cut = Some((key, artwork.clone()));
@@ -273,14 +264,11 @@ fn lock_artwork(playing: &tilo_desktop_surface::now_playing::NowPlaying) -> Stri
     })
 }
 
-/// Carry out what the screen's transport asked: play, pause, or the song
-/// before or after this one. `false` when `asked` was not the transport's, so
-/// the caller knows nothing was done.
-///
-/// A locked session withholds every published action but the screen's own, so
-/// this cannot go through the door a media key uses: it is the session asking
-/// the service that plays, straight. With nothing playing the screen shows no
-/// transport, and nothing is asked of a player.
+/// Carry out what the screen's transport asked: play, pause, or the song before or after this one.
+/// `false` when `asked` was not the transport's, so the caller knows nothing was done.
+/// A locked session withholds every published action but the screen's own, so this cannot go
+/// through the door a media key uses: it is the session asking the service that plays, straight.
+/// With nothing playing the screen shows no transport, and nothing is asked of a player.
 pub fn transport(
     asked: &LockEffect,
     readings: &crate::status::Shared,
@@ -310,9 +298,8 @@ pub fn transport(
 mod tests {
     use super::*;
 
-    /// A locked screen shows what plays here; with nothing playing it shows
-    /// only what another of the person's devices offers to continue, and
-    /// that card leaves the transport alone.
+    /// A locked screen shows what plays here; with nothing playing it shows only what another of
+    /// the person's devices offers to continue, and that card leaves the transport alone.
     #[test]
     fn a_locked_screen_shows_what_plays_else_what_is_offered() {
         let readings: crate::status::Shared = Rc::default();

@@ -3,8 +3,8 @@
 //!
 //! In a Tilo session the address is the window bar's location and the bar
 //! lists the suggestions (`browser_widget::window_bar`); this list then stays
-//! empty, so there is only ever one. Both are the design system's
-//! [`SuggestionList`]: a floating panel under the field, as wide as it, each
+//! empty, so there is only ever one. Both are the design
+//! system's [`SuggestionList`]: a floating panel under the field, as wide as it, each
 //! row the kind's icon, its title and the line under it (a visited page's
 //! address, which engine a search goes to).
 //!

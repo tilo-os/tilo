@@ -662,9 +662,6 @@ impl Default for Shape {
 
 impl Artwork {
     /// The artwork as `doc` holds it, stacked (see [`Self::settle`]).
-    ///
-    /// # Errors
-    /// Returns why the document does not hold an artwork.
     pub fn from_doc(doc: &tilo_resource::Doc) -> Result<Self, tilo_resource::ModelError> {
         let mut art = <Self as tilo_resource::Fields>::read_fields(doc, &ui::automerge::ROOT)?;
         art.settle();
@@ -914,9 +911,6 @@ impl Artwork {}
 /// width) overwrote each other. Version 2 stores each field on its own.
 /// [`retype_json`] reads an old string with its serde form, the form it was
 /// written with, so every value reads as it did.
-///
-/// # Errors
-/// Returns why an old value does not read, or the document's write error.
 pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), tilo_resource::ModelError> {
     use tilo_resource::evolution::{map_values, retype_json};
     if from != 1 {

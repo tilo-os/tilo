@@ -83,11 +83,6 @@ impl UiDocument {
 
     /// Insert `node` into a row or column at `index`. The graph is changed
     /// only after the complete candidate validates.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown/non-collection parent, an out-of-range
-    /// index, or any graph invariant violated by the inserted subtree.
     pub fn insert_child(
         &mut self,
         parent_id: &str,

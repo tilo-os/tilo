@@ -1126,10 +1126,6 @@ impl StatePeer {
     /// Start the workspace's document over from a base ([`workspace::base`]), as its
     /// authority does when the workspace admits someone new. Returns whether it
     /// did: a document holding nothing past its base stays as it is.
-    ///
-    /// # Errors
-    ///
-    /// The document does not copy.
     pub fn rebase_workspace(&mut self) -> Result<bool, String> {
         let Some(held) = self.core.workspace_doc.as_deref() else {
             return Ok(false);
@@ -1577,10 +1573,6 @@ impl StatePeer {
 
     /// Select native schema v5 only as part of an outer owner's reviewed rollout.
     /// This selects candidate serialization; it does not commit any bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the current exact admission index does not fit schema v5.
     pub fn select_admission_v5(&mut self) -> Result<(), AdmissionError> {
         self.core.exact_admissions.encode()?;
         self.core.admission_v5 = true;
@@ -2330,6 +2322,10 @@ impl StatePeer {
                 collab_types::WholeDocumentPayload::Cleartext(mutation)
                     if !candidate.encryption_required || retained_replay =>
                 {
+                    // The record's own document holds it (see `covered`), so
+                    // it covers this writer up to it.
+                    let covered = candidate.covered.entry(hex::encode(source)).or_default();
+                    *covered = (*covered).max(envelope.seq);
                     mutation
                 }
                 collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.admission_v5 => {
@@ -3173,10 +3169,6 @@ impl StatePeer {
             .is_some_and(|(_, current)| current))
     }
     /// Encode this peer's durable state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the state cannot be encoded within its limits.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
         let parts = self.durable_parts()?;
         let mut bytes = Vec::with_capacity(parts.iter().map(|part| part.len()).sum());
@@ -3196,10 +3188,6 @@ impl StatePeer {
     /// settling: a part nothing changed since an earlier call is the same
     /// allocation as then, and whoever stores the parts apart rewrites only
     /// what changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the state cannot be encoded within its limits.
     pub fn durable_parts(&self) -> Result<Vec<std::sync::Arc<[u8]>>, String> {
         fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
             postcard::to_extend(value, out).map_err(err)
@@ -3637,10 +3625,6 @@ impl PeerPublicationMut<'_> {
     }
 
     /// Signed snapshots of every admitted document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a snapshot cannot be signed or encoded.
     pub fn signed_snapshots(
         self,
         key: &SigningKey,

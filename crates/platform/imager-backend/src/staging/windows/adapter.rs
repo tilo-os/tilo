@@ -1,4 +1,4 @@
-//! [`WindowsPlatform`]: the Win32 + Storage-cmdlet implementation of
+//! [`WindowsPlatform`] — the Win32 + Storage-cmdlet implementation of
 //! [`Platform`], and the unprivileged [`probe_facts`].
 
 use std::cell::{Cell, RefCell};

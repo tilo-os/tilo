@@ -1,5 +1,5 @@
-//! Snapshot compatibility for hosts whose workspace carries a desktop tree.
-//! Stream bindings and presentation belong to the receiving device.
+//! Snapshot compatibility for hosts whose workspace carries a desktop tree. Stream bindings and
+//! presentation belong to the receiving device.
 use tilo_desktop_model::{
     DesktopTree, OutputPartition, TabId, TileContent, WindowWidth, WorkspaceSlot,
 };
@@ -42,8 +42,8 @@ pub(crate) fn receive(
     incoming: DesktopTree,
     local_tabs: &[TabId],
 ) -> DesktopTree {
-    // Old senders also send their stream proxies. Those process-local
-    // bindings have no meaning here, even when their ids happen to match.
+    // Old senders also send their stream proxies. Those process-local bindings have no meaning
+    // here, even when their ids happen to match.
     let mut incoming = projection(incoming);
     for workspace in &local.workspaces {
         let Some(target) = incoming
@@ -53,9 +53,8 @@ pub(crate) fn receive(
         else {
             continue; // A removed workspace must not retain access to its streams.
         };
-        // A close is this device's own history, so the workspace it happened
-        // in keeps it: a peer's change is no reason for the person's last
-        // close to stop being undoable here.
+        // A close is this device's own history, so the workspace it happened in keeps it: a peer's
+        // change is no reason for the person's last close to stop being undoable here.
         target.keep_closed_tabs(workspace);
         for strip in &workspace.strips {
             let Some(target) = target.strips.iter_mut().find(|s| s.id == strip.id) else {

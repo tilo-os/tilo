@@ -1,28 +1,19 @@
-//! The Agents tab: who works in the workspace, held in Chat's record of the
-//! workspace's agents.
-//!
-//! An agent is a workspace record of its own kind
-//! ([`tilo_app::tilo_workspace_agent::KIND`]), kept by Chat
-//! ([`tilo_app::tilo_workspace_agent::OWNER`]) and opened here the way every
-//! app of the workspace opens it ([`WorkspaceRecord`]): in the store this
-//! device's apps keep, as the person sitting here. Naming, bounding and
-//! retiring an agent are the record's own actions, decided by the workspace's
-//! grants on Chat's node — the decision the app windows and the action broker
-//! take — so the tab, the apps and the person's other devices hold the one
-//! record, and the tab decides nothing of its own.
-//!
-//! What an agent may do, app by app, is still the workspace's grants: the
-//! tab reads them beside the record. An agent the workspace admitted before
-//! records were is made one of the record's when the tab opens it
-//! ([`Agents::settle`]), under the id its grants name and kept by whoever
-//! admitted it, so the roster, the name a person reads and the search find
-//! the agents that worked here.
-//!
-//! The model an agent plans with is the keeper's to choose, alone: their
-//! devices run it and their credentials pay. This device applies the keeper's
-//! choice to its own Settings when the tab is open
-//! ([`agent_access::choose_agent_model`]), which is where the agent runner
-//! reads it from; the record is the one truth the tab shows.
+//! The Agents tab: who works in the workspace, held in Chat's record of the workspace's agents.
+//! An agent is a workspace record of its own kind ([`tilo_app::tilo_workspace_agent::KIND`]), kept
+//! by Chat ([`tilo_app::tilo_workspace_agent::OWNER`]) and opened here the way every app of the
+//! workspace opens it ([`WorkspaceRecord`]): in the store this device's apps keep, as the person
+//! sitting here. Naming, bounding and retiring an agent are the record's own actions, decided by
+//! the workspace's grants on Chat's node — the decision the app windows and the action broker take
+//! — so the tab, the apps and the person's other devices hold the one record, and the tab decides
+//! nothing of its own.
+//! What an agent may do, app by app, is still the workspace's grants: the tab reads them beside the
+//! record. An agent the workspace admitted before records were is made one of the record's when the
+//! tab opens it ([`Agents::settle`]), under the id its grants name and kept by whoever admitted it,
+//! so the roster, the name a person reads and the search find the agents that worked here.
+//! The model an agent plans with is the keeper's to choose, alone: their devices run it and their
+//! credentials pay. This device applies the keeper's choice to its own Settings when the tab is
+//! open ([`agent_access::choose_agent_model`]), which is where the agent runner reads it from; the
+//! record is the one truth the tab shows.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -49,19 +40,18 @@ const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
 
 /// The workspace's agents as the Agents tab holds them.
 pub(crate) struct Agents {
-    /// Where this device keeps its apps' records: the one store Chat keeps
-    /// the agents in too, which every app of the workspace opens.
+    /// Where this device keeps its apps' records: the one store Chat keeps the agents in too, which
+    /// every app of the workspace opens.
     owners: RecordOwners,
     /// Wakes the session's loop when another replica's change arrives.
     wake: ui::WakeScope,
-    /// The record, once the tab showed it: the workspace, the person and the
-    /// grants it was opened for.
+    /// The record, once the tab showed it: the workspace, the person and the grants it was opened
+    /// for.
     open: RefCell<Option<Open>>,
-    /// What the tab last drew: the record's revision. The tab is shown again
-    /// at each change.
+    /// What the tab last drew: the record's revision. The tab is shown again at each change.
     shown: RefCell<Option<Seen>>,
-    /// The record whose admitted agents and keeper's choices this device was
-    /// last brought in step with: its workspace and revision.
+    /// The record whose admitted agents and keeper's choices this device was last brought in step
+    /// with: its workspace and revision.
     settled: RefCell<Option<(String, u64)>>,
 }
 
@@ -69,8 +59,8 @@ pub(crate) struct Agents {
 struct Open {
     workspace: String,
     person: UserId,
-    /// The grants it was opened with: they decide its actions, so a
-    /// workspace whose grants changed opens the record again.
+    /// The grants it was opened with: they decide its actions, so a workspace whose grants changed
+    /// opens the record again.
     policy: tilo_action_policy::WorkspacePolicy,
     /// `None` where the record could not be opened here.
     record: Option<WorkspaceRecord<Record>>,
@@ -82,8 +72,8 @@ struct Seen {
     revision: u64,
 }
 
-/// What one agent's review reads: the record that keeps it, the workspace it
-/// works in, the agents the tab lists, and this device's apps and Settings.
+/// What one agent's review reads: the record that keeps it, the workspace it works in, the agents
+/// the tab lists, and this device's apps and Settings.
 #[derive(Clone, Copy)]
 struct Review<'a> {
     record: &'a WorkspaceRecord<Record>,
@@ -94,8 +84,8 @@ struct Review<'a> {
 }
 
 impl Agents {
-    /// The workspace's agents in the store rooted at `root`, waking the
-    /// session's loop through `wake` when a change lands.
+    /// The workspace's agents in the store rooted at `root` , waking the session's loop through
+    /// `wake` when a change lands.
     pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
@@ -110,9 +100,9 @@ impl Agents {
         }
     }
 
-    /// The Agents tab as it stands for `person`: the agents that work in the
-    /// workspace from Chat's record, the services the workspace runs beside
-    /// them, and — for `review` — what one of them may do.
+    /// The Agents tab as it stands for `person` : the agents that work in the workspace from Chat's
+    /// record, the services the workspace runs beside them, and — for `review` — what one of them
+    /// may do.
     pub(crate) fn pane(
         &self,
         tree: &DesktopTree,
@@ -133,8 +123,8 @@ impl Agents {
         Self::pane_of(workspace, person, &record, names, apps, review)
     }
 
-    /// The tab with nothing to show here: no workspace in front, or the
-    /// agents could not be opened on this device.
+    /// The tab with nothing to show here: no workspace in front, or the agents could not be opened
+    /// on this device.
     fn not_available(&self) -> sheet::Agents {
         *self.shown.borrow_mut() = Some(Seen { revision: 0 });
         sheet::Agents {
@@ -161,7 +151,7 @@ impl Agents {
         }
     }
 
-    /// The tab as `workspace` stands for `person`.
+    /// The tab as `workspace` stands for `person` .
     fn pane_of(
         workspace: &Workspace,
         person: &UserId,
@@ -266,8 +256,8 @@ impl Agents {
         }
     }
 
-    /// Each app's row in a review: its kinds, each with the answer it has
-    /// now, as the segmented choice shows them.
+    /// Each app's row in a review: its kinds, each with the answer it has now, as the segmented
+    /// choice shows them.
     fn access_apps(rows: &[agent_access::AgentAccessRow]) -> Vec<sheet::AccessApp> {
         let answer_index = |answer: tilo_action_policy::Answer| {
             agent_access::ANSWERS
@@ -294,9 +284,8 @@ impl Agents {
             .collect()
     }
 
-    /// One agent's review: what it may do in each app, the model it plans
-    /// with and the actions it may always take. `None` once the record no
-    /// longer names it.
+    /// One agent's review: what it may do in each app, the model it plans with and the actions it
+    /// may always take. `None` once the record no longer names it.
     fn reviewed(review: &Review<'_>, agent: &str, editable: bool) -> Option<sheet::AgentReview> {
         let Review {
             record,
@@ -311,8 +300,8 @@ impl Agents {
         let status = keeper_line(names, workspace, record, &kept.keeper);
         let tag =
             same_person(&kept.keeper, record.me()).then(|| t("workspace-settings-agent-yours"));
-        // What the turn admits it to, before the answers the person set for
-        // its apps: the cap's grants, narrowed by the bound its record keeps.
+        // What the turn admits it to, before the answers the person set for its apps: the cap's
+        // grants, narrowed by the bound its record keeps.
         let admission = tilo_action_policy::roles::agent_turn(
             &workspace.policy.workspace,
             agent,
@@ -322,8 +311,8 @@ impl Agents {
         .grants;
         let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
         let exceptions = agent_access::agent_exceptions(workspace, agent, apps);
-        // What an agent plans with is its keeper's to choose, alone, and the
-        // record holds the choice.
+        // What an agent plans with is its keeper's to choose, alone, and the record holds the
+        // choice.
         let offered = agent_access::agent_models(config, agent);
         let keeps = same_person(&kept.keeper, record.me());
         let keeper = domain::member_row_name(names, workspace, record.me(), &kept.keeper);
@@ -386,9 +375,8 @@ impl Agents {
         })
     }
 
-    /// Whether the tab would show something else now: the record moved.
-    /// `false` while the record is not open, which the tab does when it is
-    /// first shown.
+    /// Whether the tab would show something else now: the record moved. `false` while the record is
+    /// not open, which the tab does when it is first shown.
     pub(crate) fn moved(&self, tree: &DesktopTree, person: &UserId) -> bool {
         let Some(workspace) = tree.active_workspace() else {
             return false;
@@ -482,17 +470,13 @@ impl Agents {
         *self.settled.borrow_mut() = Some((workspace_id, record.revision()));
     }
 
-    /// Make the record name every agent `workspace` admitted: one made for
-    /// each admission that has none, under the id its grants carry and kept
-    /// by whoever admitted it, so the roster, the names people read and the
-    /// search find the agents that worked here before records were.
-    ///
-    /// An admission names no name of its own — its id is no name a person
-    /// reads — so each is numbered, in id order, around the names the
-    /// workspace already uses.
-    ///
-    /// A model chosen for the agent on this device before the record held one
-    /// is its keeper's choice, and goes into the record with it.
+    /// Make the record name every agent `workspace` admitted: one made for each admission that has
+    /// none, under the id its grants carry and kept by whoever admitted it, so the roster, the
+    /// names people read and the search find the agents that worked here before records were.
+    /// An admission names no name of its own — its id is no name a person reads — so each is
+    /// numbered, in id order, around the names the workspace already uses.
+    /// A model chosen for the agent on this device before the record held one is its keeper's
+    /// choice, and goes into the record with it.
     fn record_admitted(
         workspace: &Workspace,
         person: &UserId,
@@ -506,8 +490,8 @@ impl Agents {
             if state.get(&Id::from_raw(agent.clone())).is_some() {
                 continue;
             }
-            // Its admission names who gave it: an agent admitted by someone
-            // is kept by them. A service's membership is no agent here.
+            // Its admission names who gave it: an agent admitted by someone is kept by them. A
+            // service's membership is no agent here.
             let prefix = format!("agent-member:{agent}:");
             let keeper = workspace
                 .policy
@@ -556,8 +540,8 @@ impl Agents {
         }
     }
 
-    /// Apply the record's choice of model to this device's Settings, for the
-    /// agents this person keeps: once per change of the record.
+    /// Apply the record's choice of model to this device's Settings, for the agents this person
+    /// keeps: once per change of the record.
     fn project_model(
         person: &UserId,
         record: &WorkspaceRecord<Record>,
@@ -717,8 +701,8 @@ impl Agents {
     }
 }
 
-/// Today, as a day's counter keeps it: this device's clock, which is its
-/// keeper's on the device that runs the agent.
+/// Today, as a day's counter keeps it: this device's clock, which is its keeper's on the device
+/// that runs the agent.
 fn today() -> String {
     ui::clock::today().to_string()
 }
@@ -752,9 +736,8 @@ fn limit_of(
     }
 }
 
-/// What `agent` spends against its keeper's day, as its row reads it: the
-/// money it spent today beside what it may, or only the money where its
-/// keeper set no limit.
+/// What `agent` spends against its keeper's day, as its row reads it: the money it spent today
+/// beside what it may, or only the money where its keeper set no limit.
 fn spend_line(agent: &tilo_app::tilo_workspace_agent::Agent) -> String {
     let spent = ui::format::money(agent.spent_on(&today()));
     match agent.spend_limit_micros {
@@ -785,7 +768,7 @@ fn limit_summary(limit_micros: Option<u64>) -> String {
     )
 }
 
-/// Who keeps `agent`, as its row reads it: the person whose devices run it.
+/// Who keeps `agent` , as its row reads it: the person whose devices run it.
 fn keeper_line(
     names: &PeopleNames,
     workspace: &Workspace,
@@ -804,8 +787,8 @@ fn keeper_line(
     )
 }
 
-/// The model `agent` plans with, as its row reads it: the one its keeper
-/// chose, or that none is chosen yet.
+/// The model `agent` plans with, as its row reads it: the one its keeper chose, or that none is
+/// chosen yet.
 fn model_line(
     config: &agent_provider_config::ProviderConfig,
     agent: &str,
@@ -865,8 +848,8 @@ fn model_summary(models: Option<&agent_access::AgentModels>) -> String {
     )
 }
 
-/// The model `key` names as the person reads it, as this device's Settings
-/// offer it; the key itself where they do not.
+/// The model `key` names as the person reads it, as this device's Settings offer it; the key itself
+/// where they do not.
 fn model_label(models: Option<&agent_access::AgentModels>, key: &str) -> String {
     models
         .and_then(|models| {

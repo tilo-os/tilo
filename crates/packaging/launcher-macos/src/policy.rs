@@ -77,11 +77,6 @@ pub fn container_dir(data_home: &Path, workspace_id: Option<&str>, package_id: &
 }
 
 /// Create the container (and its XDG tree and `tmp`) and return its path.
-///
-/// # Errors
-///
-/// Returns the error of creating any of the directories; an app with nowhere
-/// to write loses the user's work, so the launch is refused.
 pub fn prepare_container(
     data_home: &Path,
     workspace_id: Option<&str>,

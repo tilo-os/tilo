@@ -136,9 +136,6 @@ pub fn nearby_bluetooth() -> Result<Vec<NearbyBtDevice>, String> {
 }
 
 /// Look for devices, or stop looking.
-///
-/// # Errors
-/// An adapter that cannot be reached.
 pub fn scan_bluetooth(on: bool) -> Result<(), String> {
     if on {
         crate::bluez::start_scan()
@@ -148,9 +145,6 @@ pub fn scan_bluetooth(on: bool) -> Result<(), String> {
 }
 
 /// Whether this machine is looking for devices now.
-///
-/// # Errors
-/// An adapter that cannot be reached.
 pub fn scanning_bluetooth() -> Result<bool, String> {
     crate::bluez::is_scanning()
 }

@@ -194,12 +194,6 @@ pub struct PageRange(String);
 
 impl PageRange {
     /// `text` as a page range that `lp` will read.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error naming the rule that was broken: an empty range, a
-    /// zero page, a backwards span, or a character that is not a digit, a
-    /// dash or a comma.
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
         if text.is_empty() {

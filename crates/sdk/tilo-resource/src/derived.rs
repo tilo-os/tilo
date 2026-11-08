@@ -78,7 +78,6 @@ impl<R> Bound<R> {
     }
 
     /// Bind one more parameter.
-    ///
     #[must_use]
     pub fn and<P, V: Serialize>(mut self, param: Path<P, V>, value: V) -> Self {
         self.verb.values.push(bound_value(param, &value));

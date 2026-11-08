@@ -1,7 +1,6 @@
 //! The model's authority questions answered at this machine's clock.
-//!
-//! [`Workspace`] takes `now` explicitly so the model stays clock-free; every
-//! host asks through this one trait instead of reading the time itself.
+//! [`Workspace`] takes `now` explicitly so the model stays clock-free; every host asks through this
+//! one trait instead of reading the time itself.
 
 use std::collections::HashMap;
 
@@ -29,19 +28,19 @@ pub trait WorkspaceAuthority {
     fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>>;
     fn has_app_grants(&self) -> bool;
     fn app_grant_ids(&self, app_id: &str) -> Vec<String>;
-    /// Whether `actor` reaches the sandboxed `resource` for `access`.
+    /// Whether `actor` reaches the sandboxed `resource` for `access` .
     fn decide(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> CapDecision;
     fn allows(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> bool;
-    /// Record the sandbox capability `cap`, as `grantor`, who must be
-    /// allowed to grant in the workspace. The capability's id.
+    /// Record the sandbox capability `cap` , as `grantor` , who must be allowed to grant in the
+    /// workspace. The capability's id.
     fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
-    /// Drop the sandbox capability or grant with id `id`, as `revoker`, who
-    /// must be allowed to revoke in the workspace.
+    /// Drop the sandbox capability or grant with id `id` , as `revoker` , who must be allowed to
+    /// revoke in the workspace.
     fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool;
     /// Whether `user` may grant in the workspace.
     fn may_administer(&self, user: &UserId) -> bool;
-    /// Whether `user` is allowed, without asking first, an action of `kind`
-    /// at `relative`, a path below the workspace.
+    /// Whether `user` is allowed, without asking first, an action of `kind` at `relative` , a path
+    /// below the workspace.
     fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool;
     fn role_of(&self, user: &UserId) -> Option<CapRole>;
     /// The sandbox actor a person is in this workspace.
@@ -51,10 +50,9 @@ pub trait WorkspaceAuthority {
     /// The sandbox actor an agent is in this workspace.
     fn actor_for_agent(&self, agent: &str) -> Actor;
     fn roster(&self) -> Vec<(UserId, CapRole)>;
-    /// Agents admitted to the workspace, with the kinds of action their workspace
-    /// grants allow.
+    /// Agents admitted to the workspace, with the kinds of action their workspace grants allow.
     fn agent_members(&self) -> Vec<(String, KindSet)>;
-    /// The grants naming one person each that reach `node`.
+    /// The grants naming one person each that reach `node` .
     fn shares_of(&self, node: &TreePath) -> Vec<&Grant>;
 }
 

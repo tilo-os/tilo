@@ -28,14 +28,14 @@ impl Decode for Legacy {
 fn policy(error: MediaPolicyError) -> Error {
     Error::Policy(error)
 }
-fn strict_error(error: ReadError<MediaPolicyError>) -> Error {
+pub(super) fn strict_error(error: ReadError<MediaPolicyError>) -> Error {
     match error {
         ReadError::Malformed => policy(MediaPolicyError::Malformed),
         ReadError::Capacity => Error::Capacity,
         ReadError::Visitor(error) => policy(error),
     }
 }
-fn visit_error(error: ReadError<Error>) -> Error {
+pub(super) fn visit_error(error: ReadError<Error>) -> Error {
     match error {
         ReadError::Malformed => policy(MediaPolicyError::Malformed),
         ReadError::Capacity => Error::Capacity,

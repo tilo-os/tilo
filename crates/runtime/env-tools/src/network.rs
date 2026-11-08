@@ -53,11 +53,6 @@ const MIRROR_LIST_TIMEOUT: Duration = Duration::from_secs(60);
 /// The policy for builds on the runtime at `tree`: its repositories' hosts
 /// and the mirrors their metalinks list. `scratch` is for the fetch's
 /// sandbox and is left empty.
-///
-/// # Errors
-///
-/// The repositories can't be read, or a metalink can't be fetched (the
-/// build would not find its mirrors).
 pub fn repo_policy(tree: &Path, scratch: &Path) -> Result<EgressPolicy, SandboxError> {
     let mut repos =
         RepoHosts::read(tree, std::env::consts::ARCH).map_err(|source| SandboxError::Io {

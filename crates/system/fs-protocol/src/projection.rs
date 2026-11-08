@@ -188,10 +188,6 @@ pub struct MetadataProjectionV1 {
 
 impl MetadataProjectionV1 {
     /// Validate the metadata projection schema, scope, and bounded properties.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any projection invariant is invalid.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != METADATA_PROJECTION_VERSION || self.record_id.0.is_nil() {
             return Err("invalid metadata projection scope");

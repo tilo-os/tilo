@@ -169,8 +169,8 @@ impl NavShell {
     }
 
     /// The app shows the sidebar toggle in the window's bar
-    /// ([`crate::window_toolbar::WindowToolbar::sidebar`]) and runs it with
-    /// [`Self::toggle_sidebar`]: the header row keeps no toggle of its own,
+    /// ([`crate::window_toolbar::WindowToolbar::sidebar`]) and runs it
+    /// with [`Self::toggle_sidebar`]: the header row keeps no toggle of its own,
     /// and stands only for what else it holds.
     pub fn set_sidebar_toggle_in_window_bar(&mut self, on: bool) {
         let changed = {

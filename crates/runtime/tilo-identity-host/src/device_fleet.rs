@@ -229,11 +229,6 @@ impl DeviceFleetStore {
     }
 
     /// Ensure the current machine appears in the fleet for `identity_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity can't be loaded, if this device's
-    /// certificate can't be read, or if persisting the updated fleet fails.
     pub fn register_current_device(&self, identity_id: &str) -> io::Result<DeviceFleet> {
         let (_, profile) = self.identity(identity_id)?;
         let cert_path = self
@@ -245,12 +240,6 @@ impl DeviceFleetStore {
     }
 
     /// Mint a short-lived enrollment token from this already trusted device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity or this device's key/certificate
-    /// can't be loaded, if the certificate doesn't verify or doesn't grant
-    /// `can_admit_devices`, or if minting or encoding the token fails.
     pub fn mint_enrollment(
         &self,
         identity_id: &str,
@@ -408,12 +397,6 @@ impl DeviceFleetStore {
     }
 
     /// Root-sign a permanent revocation and persist it with the fleet.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity or fleet can't be loaded, if
-    /// `device_public_key` isn't enrolled under `identity_id`, if signing
-    /// the revocation fails, or if persisting the updated fleet fails.
     pub fn revoke(
         &self,
         identity_id: &str,
@@ -486,11 +469,6 @@ impl DeviceFleetStore {
 
     /// Certify a disk-unlock boot key for an enrolled, unrevoked device of
     /// `identity_id`: the root signs `cert` in place.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot sign, the certificate names
-    /// another root, or the device is not an unrevoked member of the fleet.
     pub fn certify_boot_key(
         &self,
         identity_id: &str,
@@ -522,10 +500,6 @@ impl DeviceFleetStore {
 
     /// The person's secret-sync key, when this device holds the root of
     /// `identity_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot be loaded or holds no root.
     pub fn secret_sync_key(&self, identity_id: &str) -> io::Result<tilo_seal::SecretKey> {
         let (root, _) = self.identity(identity_id)?;
         root.secret_sync_key()
@@ -537,11 +511,6 @@ impl DeviceFleetStore {
     /// The setup path uses this so an existing machine accepts a device the
     /// imager certified, and so the new machine accepts the devices it should
     /// join. The certificate must already verify and belong to `identity_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the certificate is invalid, belongs to another
-    /// person, or the fleet cannot be saved.
     pub fn remember_certificate(
         &self,
         identity_id: &str,
@@ -577,11 +546,6 @@ impl DeviceFleetStore {
     /// This device's material of `identity_id`'s key, which signs only
     /// after the person approved what it signs
     /// ([`crate::certification_ceremony`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity is not registered here or cannot be
-    /// opened.
     pub fn identity_key(&self, identity_id: &str) -> io::Result<runtime_identity::SigningIdentity> {
         self.identity(identity_id).map(|(key, _)| key)
     }

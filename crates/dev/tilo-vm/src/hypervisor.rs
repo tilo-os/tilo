@@ -83,14 +83,8 @@ pub struct Output {
 /// Executes command lines; faked in tests.
 pub trait Runner {
     /// Run to completion, capturing output.
-    ///
-    /// # Errors
-    /// The program could not be started.
     fn output(&mut self, command: &CommandLine) -> Result<Output, CliError>;
     /// Run attached to the terminal.
-    ///
-    /// # Errors
-    /// The program could not be started.
     fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError>;
 }
 
@@ -265,9 +259,6 @@ pub trait Hypervisor {
     /// Commands that create the VM from its image. `root_key` is the public
     /// key line for root's `authorized_keys`, passed on where the adapter has
     /// a credential channel ([`Capabilities::credentials`]).
-    ///
-    /// # Errors
-    /// Missing registry fields.
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError>;
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
@@ -280,9 +271,6 @@ pub trait Hypervisor {
     /// files it owns ([`vm_files`]) are removed by the caller.
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     /// Where SSH listens; may query the hypervisor.
-    ///
-    /// # Errors
-    /// The hypervisor could not report an address.
     fn ssh_endpoint(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Result<SshEndpoint, CliError>;
 
     fn capabilities(&self) -> Capabilities {
@@ -308,9 +296,6 @@ pub trait Hypervisor {
     /// Commands that rewrite an existing VM's definition from its registry
     /// entry (for `direct_kernel`), where [`Capabilities::direct_kernel`].
     /// `runner` may query the hypervisor for the VM's identity.
-    ///
-    /// # Errors
-    /// Missing registry fields.
     fn redefine(
         &self,
         _vm: &Vm<'_>,
@@ -428,9 +413,6 @@ fn configured_endpoint(vm: &Vm<'_>, default_host: &str, port: u16) -> SshEndpoin
 
 /// A qcow2 child of the image (a qcow2 dev disk or a raw disk), so the image
 /// stays pristine. Runs the `qemu-img` resolved when the VM was created.
-///
-/// # Errors
-/// The VM has no `disk`.
 pub fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
     let disk = vm.disk()?;
     let qemu_img = vm.entry.qemu_img.as_deref().unwrap_or("qemu-img");
@@ -562,18 +544,12 @@ pub fn domain_xml_path(disk: &str) -> String {
 /// virtio video for virt-manager, and `root_key` as the SMBIOS type 11
 /// credential systemd turns into root's `authorized_keys`. KVM with the
 /// host's CPU, or TCG with the emulator's widest CPU when `emulated`.
-///
-/// # Errors
-/// The VM has no `disk`.
 pub fn domain_xml(vm: &Vm<'_>, root_key: &str) -> Result<String, CliError> {
     domain_xml_with_uuid(vm, root_key, None)
 }
 
 /// [`domain_xml`] for a domain that already exists: libvirt redefines a
 /// domain only under its own UUID.
-///
-/// # Errors
-/// The VM has no `disk`.
 pub fn domain_xml_with_uuid(
     vm: &Vm<'_>,
     root_key: &str,
@@ -998,10 +974,6 @@ pub const UTM_CPUS: u32 = 8;
 /// Import `disk` (qcow2) into UTM as the template VM `name`: an aarch64 guest
 /// on Apple's hypervisor with UEFI, `memory_mb` and `cpus`, and one virtio
 /// disk, on UTM's shared network. UTM copies the disk into the VM's bundle.
-///
-/// # Errors
-///
-/// UTM refused the import, or `osascript` could not run.
 pub fn utm_import_template(
     runner: &mut dyn Runner,
     (name, disk): (&str, &str),

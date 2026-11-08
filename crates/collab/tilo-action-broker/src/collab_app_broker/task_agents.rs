@@ -135,9 +135,6 @@ pub(super) fn verify_task_agent_join(
 }
 
 /// A task agent joins only as itself, an agent.
-///
-/// # Errors
-/// A task agent's session joins as anything else.
 pub(super) fn joins_as(admitted: &AdmittedJoinIdentity, kind: &str) -> Result<(), String> {
     if admitted.task.is_some() && kind != "agent" {
         return Err("a task agent joins only as itself".into());
@@ -164,9 +161,6 @@ pub(super) fn self_row(admitted: &AdmittedJoinIdentity) -> Option<ui::collaborat
 impl AppBrokerState {
     /// Admit a task agent's join under `handle`: the id its delegation names,
     /// for a task that still goes.
-    ///
-    /// # Errors
-    /// Another id, or the task ended or cannot be read.
     pub(super) fn admit_task_join(
         &self,
         workspace: &str,
@@ -183,9 +177,6 @@ impl AppBrokerState {
 
     /// Whether the session of the task agent `task` was delegated for is
     /// still heard in `workspace` ([`task_still_heard`]).
-    ///
-    /// # Errors
-    /// The tracker cannot be read, or the task ended other than by its agent.
     pub(super) fn task_heard(&self, workspace: &str, task: &TaskDelegation) -> Result<(), String> {
         let runs = self
             .tracker_runs(workspace)
@@ -196,9 +187,6 @@ impl AppBrokerState {
 
     /// Whether the task `task` was delegated for still goes in `workspace`'s
     /// tracker ([`task_still_goes`]).
-    ///
-    /// # Errors
-    /// The tracker cannot be read, or the task ended.
     pub(super) fn task_goes(&self, workspace: &str, task: &TaskDelegation) -> Result<(), String> {
         let runs = self
             .tracker_runs(workspace)

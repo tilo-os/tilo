@@ -274,9 +274,6 @@ pub enum ManifestError {
 
 impl Manifest {
     /// Load the manifest, or `Ok(None)` when the file does not exist.
-    ///
-    /// # Errors
-    /// Unreadable or syntactically invalid files.
     pub fn load(path: &Path) -> Result<Option<Self>, ManifestError> {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(&text)

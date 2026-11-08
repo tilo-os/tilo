@@ -99,17 +99,11 @@ pub(crate) trait TypedRoot {
     fn state(&self) -> Rc<dyn Any>;
 
     /// Bring the live state up to `doc`.
-    ///
-    /// # Errors
-    /// The document does not read as the resource.
     fn sync(&self, doc: &AutoCommit) -> Result<bool, ModelError>;
 
     /// Take `reading`, the state the session publishes for this resource, as
     /// the live state — read through the type's own model form, with no
     /// document here (`one-app-model.md` §4). Returns whether it moved.
-    ///
-    /// # Errors
-    /// The reading is not the resource's state.
     fn adopt(&self, reading: &serde_json::Value) -> Result<bool, ModelError>;
 
     /// Whether the live state is `doc`'s.
@@ -122,9 +116,6 @@ pub(crate) trait TypedRoot {
     fn represent(&self);
 
     /// The resource as `doc` holds it.
-    ///
-    /// # Errors
-    /// The document does not read as the resource.
     fn read(&self, doc: &AutoCommit) -> Result<Rc<dyn Any>, ModelError>;
 
     /// Run the views' updaters over what changed since `followed`, the live
@@ -257,9 +248,6 @@ pub(crate) trait TypedRoot {
     fn has_causal_drains(&self) -> bool;
 
     /// Start the effect `op` invokes, when a view registered it.
-    ///
-    /// # Errors
-    /// The effect's refusal.
     fn start_effect(
         &self,
         op: &ResourceOperation<'_>,
@@ -281,9 +269,6 @@ pub(crate) trait TypedRoot {
     fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>);
 
     /// Start the document effects of an applied `operation`.
-    ///
-    /// # Errors
-    /// The effect's refusal.
     fn start_document_effects(
         &self,
         operation: &ResourceOperation<'_>,

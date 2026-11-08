@@ -129,9 +129,6 @@ fn validate_source(
 }
 impl Connector {
     /// Import one owner-consented GOA Google/OneDrive Files grant under its original client.
-    /// # Errors
-    /// Refuses changed source identity/registration, unsupported issuer overrides,
-    /// unavailable original custody, mismatched remote identity or inaccessible files.
     pub fn import_goa(
         &self,
         roots: &SourceRoots,

@@ -240,12 +240,6 @@ fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
 }
 
 /// Durably replace the shared Store/catalogue registry configuration.
-///
-/// # Errors
-///
-/// Returns an error when no config directory is available, the existing
-/// file cannot be read or parsed, serialization fails, or the crash-safe
-/// write cannot be completed.
 pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
     let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
     // A failed load answers with defaults for browsing. Those defaults are

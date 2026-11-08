@@ -103,8 +103,7 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-/// The emoji recents where the session keeps them: in memory, as the test's
-/// own list.
+/// The emoji recents where the session keeps them: in memory, as the test's own list.
 #[derive(Clone)]
 struct MemoryRecents(Rc<RefCell<Vec<String>>>);
 
@@ -118,8 +117,8 @@ impl RecentsStore for MemoryRecents {
     }
 }
 
-/// The chrome over a desk with one window, keeping the emoji card's recents
-/// in `recents` and opening the card where the session says.
+/// The chrome over a desk with one window, keeping the emoji card's recents in `recents` and
+/// opening the card where the session says.
 fn chrome_with_picker(
     recents: Rc<RefCell<Vec<String>>>,
 ) -> (FrameHarness, DesktopHandle, EmojiLink) {
@@ -168,8 +167,7 @@ fn type_text(frame: &mut FrameHarness, text: &str) {
     }
 }
 
-/// Run `visit` on the chrome the frame mounts, as the session's chrome layer
-/// holds it.
+/// Run `visit` on the chrome the frame mounts, as the session's chrome layer holds it.
 fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrome) -> R) -> R {
     let mut chrome = frame.root_mut::<DesktopChrome>();
     visit(&mut chrome)
@@ -194,8 +192,8 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
     let recents = Rc::new(RefCell::new(Vec::new()));
     let (mut frame, _handle, link) = chrome_with_picker(Rc::clone(&recents));
 
-    // The caret of the field the person is typing into, as the session reads
-    // it from the compositor: a text caret on the desk, on the whole display.
+    // The caret of the field the person is typing into, as the session reads it from the
+    // compositor: a text caret on the desk, on the whole display.
     let caret = Rect::new(320.0, 180.0, 322.0, 200.0);
     let display = Rect::new(0.0, 0.0, 1280.0, 800.0);
     link.place_at(EmojiPlace {
@@ -276,8 +274,8 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
     });
 }
 
-/// A field that reported no caret opens the card centred over the desk, and
-/// the picker's own chord closes it again.
+/// A field that reported no caret opens the card centred over the desk, and the picker's own chord
+/// closes it again.
 #[test]
 fn the_picker_opens_centred_without_a_caret_and_its_shortcut_closes_it() {
     let recents = Rc::new(RefCell::new(Vec::new()));

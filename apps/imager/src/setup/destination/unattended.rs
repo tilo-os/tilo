@@ -95,11 +95,6 @@ impl Invocation {
     /// Parse the unattended subset of this binary's arguments. `Ok(None)` and
     /// no arguments starting with `--unattended` keeps the ordinary graphical
     /// installer path untouched.
-    ///
-    /// # Errors
-    ///
-    /// Duplicate sources, a missing value, an unparsable descriptor number, or
-    /// a descriptor that would collide with stdin/stdout/stderr.
     pub fn from_args<I>(args: I) -> Result<Option<Self>, String>
     where
         I: IntoIterator<Item = OsString>,
@@ -185,10 +180,6 @@ impl Invocation {
     /// Run this invocation to completion. On an error before the first disk
     /// write, the ordinary wizard stays alive behind the console socket; the
     /// process does not exit and does not hide a prompt.
-    ///
-    /// # Errors
-    ///
-    /// A command-line or console setup failure that leaves no interactive door.
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         let door = start_console(
             crate::setup::destination::effects::PROVIDER,

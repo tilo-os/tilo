@@ -384,11 +384,6 @@ pub enum SplitError {
 /// carries into `out_dir` as payload objects: `<blob>.blob` for blobs up to
 /// [`CHUNK_BYTES`], `<blob>.chunks` plus `<chunk>.blob` files for larger
 /// ones. Streams: at most one chunk is held in memory.
-///
-/// # Errors
-///
-/// Returns an error when the archive does not decode, lacks a payload blob,
-/// or an object cannot be written.
 pub fn split(reader: impl Read, out_dir: &Path) -> Result<Split, SplitError> {
     split_with_chunk_bytes(reader, out_dir, CHUNK_BYTES)
 }
@@ -516,8 +511,8 @@ impl BlobSink for ObjectWriter<'_> {
     }
 }
 
-/// A directory of payload objects, as [`split`] writes it, read as a
-/// [`BlobSource`]: a whole `<blob>.blob`, or a `<blob>.chunks` list whose
+/// A directory of payload objects, as [`split`] writes it, read as
+/// a [`BlobSource`]: a whole `<blob>.blob`, or a `<blob>.chunks` list whose
 /// chunks are joined and verified one at a time.
 #[derive(Clone, Debug)]
 pub struct ObjectDir {
@@ -532,10 +527,6 @@ impl ObjectDir {
     /// The length of blob `hash`, after reading every byte of it and
     /// checking it against the name, or `None` when the directory has no
     /// object for it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when an object cannot be read or does not verify.
     pub fn verified_len(&self, hash: &BlobHash) -> io::Result<Option<u64>> {
         let Some(blob) = self.open_blob(hash)? else {
             return Ok(None);

@@ -20,10 +20,6 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 /// This Rust capability is never exposed through a wire request.
 pub trait LocalPersonServices: Send + Sync {
     /// Derive the real local certificate for this person and current workspace.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a missing, replaced or revoked identity and retired workspace custody.
     fn certificate(
         &self,
         workspace: &str,
@@ -35,10 +31,6 @@ pub trait LocalPersonServices: Send + Sync {
 /// admitted, running the action against the record as it is then.
 pub trait RecordChangeServices: Send + Sync {
     /// Apply `change` in `workspace` as `invoker`'s step: the origin's answer.
-    ///
-    /// # Errors
-    ///
-    /// The origin cannot be reached or did not answer.
     fn apply(
         &self,
         workspace: &str,
@@ -105,10 +97,6 @@ pub trait WorkspaceAuthority: Send + Sync {
     /// (`None` when this host has no such workspace). Same rules as
     /// [`Self::with_tree`]; a host whose workspaces are not one tree overrides it
     /// to look up only the requested workspace.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the committed authority cannot be read.
     fn with_workspace(
         &self,
         workspace: &str,
@@ -119,10 +107,6 @@ pub trait WorkspaceAuthority: Send + Sync {
 
     /// An owned copy of the committed workspace tree, for the few callers
     /// that must keep one past the read. Never on an admission path.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the committed authority cannot be read.
     fn snapshot(&self) -> Result<DesktopTree, String> {
         let mut copy = None;
         self.with_tree(&mut |tree| copy = Some(tree.clone()))?;
@@ -134,8 +118,8 @@ pub trait WorkspaceAuthority: Send + Sync {
     }
 
     /// Whether every write to what the broker's membership and context
-    /// checks read on this host is announced through
-    /// [`tilo_identity_host::policy_change`]: this tree, the device fleet and
+    /// checks read on this host is announced
+    /// through [`tilo_identity_host::policy_change`]: this tree, the device fleet and
     /// identity registry behind the installed certificate authority, and the
     /// owner's task store. The broker then re-checks on those announcements
     /// and at the next capability or certificate expiry. `false` (the
@@ -178,10 +162,6 @@ pub fn workspace_in<'a>(tree: &'a DesktopTree, workspace_id: &str) -> Option<&'a
 impl dyn WorkspaceAuthority {
     /// One policy sample of the whole tree: `decide` runs once on the
     /// borrowed committed tree and its answer is returned.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the committed authority cannot be read.
     pub fn decide_in_tree<R>(&self, decide: impl FnOnce(&DesktopTree) -> R) -> Result<R, String> {
         let mut decide = Some(decide);
         let mut answer = None;
@@ -195,10 +175,6 @@ impl dyn WorkspaceAuthority {
 
     /// One policy sample of one workspace: `decide` runs once on the borrowed
     /// committed workspace of exactly `workspace` and its answer is returned.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the committed authority cannot be read.
     pub fn decide_in_workspace<R>(
         &self,
         workspace: &str,
@@ -217,10 +193,6 @@ impl dyn WorkspaceAuthority {
 /// Legacy native projection only; success is not an aggregate durability receipt.
 pub trait LegacyWorkspaceProjection: Send + Sync {
     /// Records one effect receipt in the legacy projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the projection cannot record the receipt.
     fn record_effect(
         &self,
         workspace: &str,
@@ -241,8 +213,6 @@ pub type WorkspaceStatusFuture =
 pub trait WorkspaceMemberships: Send + Sync {
     /// Recheck custody, retained integrity and all current source rights before
     /// disclosing a completed checkpoint invocation, including journal retries.
-    /// # Errors
-    /// Refuses stale or damaged results and current permission denial.
     fn checkpoint_result_access(
         &self,
         _workspace: &str,
@@ -508,10 +478,6 @@ impl LaunchReadiness {
 
     /// Observe the adopted window association when the native host supplies custody.
     /// Legacy hosts still settle readiness without inventing an association.
-    ///
-    /// # Errors
-    /// Returns a typed startup failure or lost observation; only the former
-    /// establishes a certain failure.
     pub async fn wait_with_adoption(
         mut self,
     ) -> Result<Option<LaunchAdoption>, LaunchReadinessError> {
@@ -608,15 +574,11 @@ impl ObservedApplicationLaunch {
     }
 
     /// Recheck the actual original caller, pending invocation and policy clock.
-    /// # Errors
-    /// Refuses retired, cancelled, replaced or no-longer-authorized custody.
     pub fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
         (self.check)()
     }
 
     /// Submit this bound app's authorship through the normal published door.
-    /// # Errors
-    /// Refuses missing custody or unavailable/ambiguous membership publication.
     pub fn delegate_authorship(&self) -> Result<crate::collab_app_broker::InvocationJob, String> {
         (self.grant)(&self.certificate()?)
     }
@@ -705,10 +667,6 @@ pub trait LauncherServices: Send + Sync {
     }
     /// Launches `app` into `workspace`, its view of `record` (else the
     /// record it opens by default) opening at `place`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host cannot launch the application.
     fn launch(
         &self,
         app: &str,
@@ -718,10 +676,6 @@ pub trait LauncherServices: Send + Sync {
     ) -> Result<(), String>;
     /// Launch an exact installed package, or an ordinary host application,
     /// and observe its real startup in the authenticated workspace.
-    ///
-    /// # Errors
-    /// Refuses when this host cannot provide startup observations. An empty
-    /// package root selects the ordinary installed application identity.
     fn begin_launch(
         &self,
         app: &str,
@@ -733,8 +687,6 @@ pub trait LauncherServices: Send + Sync {
         Err("observed application startup is unavailable on this host".into())
     }
     /// Observe startup with host-retained original custody, when available.
-    /// # Errors
-    /// Refuses stale original custody or startup failures.
     fn begin_launch_from_original(
         &self,
         app: &str,
@@ -792,9 +744,6 @@ pub trait LauncherServices: Send + Sync {
     /// `window_instance` is the window the connection says it was made for:
     /// a host that makes connections for its own windows keys their launch
     /// records by it; a launched process's record names its own.
-    ///
-    /// # Errors
-    /// The original launch facts changed or cannot be read.
     fn authenticated_launch(
         &self,
         pid: u32,
@@ -829,10 +778,6 @@ pub trait LauncherServices: Send + Sync {
     }
     /// Original declarations of this exact live launch, not the currently
     /// installed replacement package. Unsupported hosts grant no creation.
-    ///
-    /// # Errors
-    ///
-    /// The launch record, process start time or signed package custody changed.
     fn application_creation_evidence(
         &self,
         pid: u32,
@@ -856,10 +801,6 @@ pub trait LauncherServices: Send + Sync {
     /// Ask every window of `app` in `workspace` to close the way a person
     /// closing it would. The next launch starts a fresh process, which picks
     /// up permissions granted since the last one.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host cannot close applications.
     fn close(&self, app: &str, workspace: &Workspace) -> Result<(), String> {
         let _ = (app, workspace);
         Err("closing applications is unsupported on this host".into())
@@ -908,20 +849,12 @@ pub trait WorkspaceGovernanceServices: Send + Sync {
         false
     }
     /// Validate and apply one governance action, recording its effect.
-    ///
-    /// # Errors
-    ///
-    /// Returns a refusal when the caller may not act, confirmation is
-    /// missing, or the action cannot be applied.
     fn invoke(&self, _request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
         Err("this owner action requires asynchronous execution".into())
     }
 
     /// Start a potentially asynchronous owner action without blocking the door.
     /// The default preserves synchronous governance implementations.
-    ///
-    /// # Errors
-    /// Refuses before admission when the invocation cannot start.
     fn start(
         &self,
         request: &WorkspaceGovernanceRequest<'_>,
@@ -996,10 +929,6 @@ pub trait KeyboardShortcutServices: Send + Sync {
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::ActionDescriptor>;
     /// Decode `argument` for `address` and answer it from `keymap`.
-    ///
-    /// # Errors
-    ///
-    /// Why the arguments are malformed.
     fn apply(
         &self,
         keymap: &settings_store::hardware::ShortcutConfig,
@@ -1063,11 +992,6 @@ pub trait HostStepServices: Send + Sync {
     /// at once, or once the step ends (a LAN window, an administrator's
     /// authentication, a step that reaches another device), completed from
     /// another thread.
-    ///
-    /// # Errors
-    ///
-    /// Why the step may not start: the actor may not take it, the arguments
-    /// are malformed, or another step runs.
     fn start(
         &self,
         request: &HostStepRequest<'_>,
@@ -1077,11 +1001,6 @@ pub trait HostStepServices: Send + Sync {
     /// read its result as it is now, and when that may have changed. The
     /// broker reads it once at the start and again after each change, as
     /// long as the caller follows it and may still read it.
-    ///
-    /// # Errors
-    ///
-    /// Why it cannot be followed: the arguments are malformed, or the
-    /// step has no live result.
     fn watch(&self, request: &HostStepRequest<'_>) -> Result<LiveView, String> {
         let _ = request;
         Err("this step has no live result".into())
@@ -1104,10 +1023,6 @@ pub type LiveRead = Result<serde_json::Value, Box<tilo_actions::ActionFailure>>;
 
 pub trait ContinuationServices: Send + Sync {
     /// Reports one application instance's continuation metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host cannot retain the metadata.
     fn report(
         &self,
         workspace: WorkspaceId,
@@ -1117,10 +1032,6 @@ pub trait ContinuationServices: Send + Sync {
         metadata: Vec<u8>,
     ) -> Result<(), String>;
     /// Clears one application instance's continuation metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host cannot clear the metadata.
     fn clear(&self, workspace: WorkspaceId, app: &str, instance: u64) -> Result<(), String>;
     /// One application instance answering a handoff request, or reporting
     /// that the document it shows arrived retired. `message` is an encoded
@@ -1146,10 +1057,6 @@ pub trait SearchIndexServices: Send + Sync {
     /// record `record`. `delta` is an encoded
     /// `ui::search::index_publication::IndexDelta`, at most
     /// [`MAX_SEARCH_INDEX_DELTA_BYTES`]; the host decodes and bounds it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the delta is malformed or cannot be kept.
     fn publish(
         &self,
         workspace: WorkspaceId,
@@ -1181,10 +1088,6 @@ pub trait ContentStoreServices: Send + Sync {
     /// The most bytes one piece of content may have.
     fn max_bytes(&self) -> u64;
     /// Open an upload kept for `workspace` under [`CONTENT_PUT_SCOPE`].
-    ///
-    /// # Errors
-    ///
-    /// Returns why the store cannot take an upload.
     fn begin(&self, workspace: &str) -> Result<Box<dyn ContentSink>, String>;
 
     /// Whether `workspace` still holds `hash`: content it put there that no one
@@ -1202,17 +1105,9 @@ pub trait ContentStoreServices: Send + Sync {
 /// nothing.
 pub trait ContentSink: Send {
     /// Hand the store the next bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the store refused them; the upload is over then.
     fn append(&mut self, bytes: &[u8]) -> Result<(), String>;
     /// Store what was appended, recording the workspace's reference to it, and
     /// answer its hash (lowercase BLAKE3 hex) and length.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the store did not keep it.
     fn finish(self: Box<Self>) -> Result<(String, u64), String>;
 }
 
@@ -1238,10 +1133,6 @@ pub type ControlRevalidate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 /// Opens workspace control sessions; called on the broker `LocalSet`.
 pub trait WorkspaceControlServices: Send + Sync {
     /// Opens the workspace control session of `workspace` with `target`.
-    ///
-    /// # Errors
-    ///
-    /// Why the session cannot be opened.
     fn open(
         &self,
         workspace: WorkspaceId,
@@ -1297,10 +1188,6 @@ impl RealtimeRequestContext {
 /// admission, exact route binding, wire bounds, and disconnect cleanup.
 pub trait RealtimeServices: Send + Sync {
     /// Runs one realtime continuity command.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host refuses or cannot run the command.
     fn command(
         &self,
         context: &RealtimeRequestContext,
@@ -1529,8 +1416,6 @@ impl BrowserServiceSessionRequestContext {
     pub fn read_context(&self) -> &crate::collab_app_broker::NativeDocumentReadContext {
         &self.read
     }
-    /// # Errors
-    /// Refuses a retired route or a caller that no longer has read permission.
     pub fn revalidate(&self) -> Result<(), String> {
         self.read.revalidate()
     }
@@ -1538,14 +1423,8 @@ impl BrowserServiceSessionRequestContext {
 /// Private credential custody, independent of replicated collaboration state.
 pub trait BrowserServiceSessionServices: Send + Sync {
     /// Recheck current route Read permission and the session's own person.
-    ///
-    /// # Errors
-    /// Refuses stale route authority or a session belonging to another person.
     fn authorize(&self, context: &BrowserServiceSessionRequestContext) -> Result<(), String>;
     /// Mutations require a provider's explicit live Admin authorization.
-    ///
-    /// # Errors
-    /// Refuses unauthorized commands, including mutations without live Admin authority.
     fn authorize_command(
         &self,
         context: &BrowserServiceSessionRequestContext,
@@ -1565,9 +1444,6 @@ pub trait BrowserServiceSessionServices: Send + Sync {
         self.authorize(context)
     }
     /// Execute an authorized website session command.
-    ///
-    /// # Errors
-    /// Refuses unavailable sessions, stale authority or credential storage failures.
     fn command(
         &self,
         context: &BrowserServiceSessionRequestContext,
@@ -1607,9 +1483,6 @@ impl FileClipboardContext {
         &self.window
     }
     /// Duplicate an object retained by this exact launcher-attested Files process.
-    ///
-    /// # Errors
-    /// Refuses retired authority or unavailable peer descriptors.
     pub fn duplicate_selected(&self, descriptor: u32) -> Result<std::fs::File, String> {
         self.authorize(tilo_actions::ActionKind::Read)?;
         let file = (self.duplicate)(descriptor)?;
@@ -1638,9 +1511,6 @@ impl FileClipboardContext {
         self.attributed_agent.as_deref()
     }
     /// Recheck the exact caller against live custody and workspace policy.
-    ///
-    /// # Errors
-    /// Refuses retired, revoked, expired or insufficient authority.
     pub fn authorize(&self, permission: tilo_actions::ActionKind) -> Result<(), String> {
         (self.check)(permission)
     }
@@ -1674,8 +1544,6 @@ impl OpenSelectedContext {
         }
         Ok(())
     }
-    /// # Errors
-    /// Refuses stale authority or unavailable actual peer descriptors.
     pub fn duplicate_selected(&self, descriptor: u32) -> Result<std::fs::File, String> {
         self.authorize()?;
         let file = (self.duplicate)(descriptor)?;
@@ -1724,8 +1592,6 @@ impl SelectedDiscoveryContext {
     pub fn certificate(&self) -> &tilo_user_identity::DeviceCert {
         &self.certificate
     }
-    /// # Errors
-    /// Refuses stale caller authority, changed original custody or a retired process.
     pub fn authorize(&self) -> Result<(), String> {
         self.clipboard.authorize(self.needed)?;
         if let Some(original) = &self.original
@@ -1775,9 +1641,6 @@ pub trait FileClipboardServices: Send + Sync {
     }
 
     /// Perform a bounded command under the sealed local admission.
-    ///
-    /// # Errors
-    /// Refuses invalid, unavailable or unauthorized clipboard operations.
     fn command(
         &self,
         context: &FileClipboardContext,
@@ -1790,10 +1653,6 @@ pub trait FileClipboardServices: Send + Sync {
     /// session Files runs in, as the cause of this device's next writes to
     /// `paths` (absolute paths under the workspace mount; a folder covers
     /// what is under it). Presentation only: it grants nothing.
-    ///
-    /// # Errors
-    /// Refuses when the host records no write attribution, or the filesystem
-    /// refused it.
     fn attribute_writes(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
         let _ = (agent, paths);
         Err("write attribution is unavailable".into())
@@ -1845,8 +1704,6 @@ impl DisplayControlContext {
 }
 /// The native host's separately authorized display transaction service.
 pub trait DisplayControlServices: Send + Sync {
-    /// # Errors
-    /// Refuses stale owner authority, invalid intent or failed persistence.
     fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
 }
 

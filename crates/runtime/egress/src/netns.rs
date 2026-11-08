@@ -105,10 +105,6 @@ impl Netns {
     /// A new network namespace in a new user namespace mapping exactly this
     /// process's uid and gid. Only `lo` exists in it, down until
     /// [`Netns::open_inside`] brings it up.
-    ///
-    /// # Errors
-    /// Returns the step that failed — typically `unshare`, where unprivileged
-    /// user namespaces are disabled.
     pub fn create() -> io::Result<Self> {
         // util-linux `unshare` makes the namespaces and becomes `cat`, which
         // reads the release pipe until it closes. A fresh image rather than

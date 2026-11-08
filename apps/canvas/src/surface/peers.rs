@@ -1,7 +1,7 @@
 //! Per-participant views of one open artwork.
 //!
-//! A canvas window an agent (or another collaborator) is working in keeps a
-//! [`PeerViews`]: one view per remote participant, beside the person's own at
+//! A canvas window an agent (or another collaborator) is working in keeps
+//! a [`PeerViews`]: one view per remote participant, beside the person's own at
 //! this screen. A participant's tree is built from its view, and its presence
 //! is published under its own identity, so what one participant has selected
 //! never shapes another's view and never stands in for the person's own

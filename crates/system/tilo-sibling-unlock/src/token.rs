@@ -97,9 +97,6 @@ impl Token {
     }
 
     /// Encodes `cert` as the token stores it.
-    ///
-    /// # Errors
-    /// When the certificate cannot be encoded.
     pub fn encode_cert(cert: &BootKeyCert) -> Result<String> {
         Ok(base64::engine::general_purpose::STANDARD.encode(postcard::to_allocvec(cert)?))
     }

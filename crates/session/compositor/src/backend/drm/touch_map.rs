@@ -1,9 +1,7 @@
 //! Which output a touchscreen touches, and where on it.
-//!
-//! A touchscreen reports positions normalised to its own surface. They are
-//! mapped onto its output, not onto the desktop's combined extent, or a
-//! laptop panel's touches would spread across a docked monitor. udev names
-//! the output of a touchscreen (`WL_OUTPUT`, libinput's `output_name`); one
+//! A touchscreen reports positions normalised to its own surface. They are mapped onto its output,
+//! not onto the desktop's combined extent, or a laptop panel's touches would spread across a docked
+//! monitor. udev names the output of a touchscreen (`WL_OUTPUT`, libinput's `output_name` ); one
 //! without a name is the panel built into the machine.
 
 #![allow(
@@ -18,8 +16,8 @@ use smithay::utils::Transform;
 pub(crate) struct TouchOutput<'a> {
     /// The connector name (`eDP-1`), which udev's tag names.
     pub connector_name: &'a str,
-    /// The output's unique name in the session; the connector name, or a
-    /// GPU-qualified one when two GPUs have a connector of that name.
+    /// The output's unique name in the session; the connector name, or a GPU-qualified one when two
+    /// GPUs have a connector of that name.
     pub key: &'a str,
     /// Top-left corner in the logical layout.
     pub position: (i32, i32),
@@ -34,12 +32,10 @@ pub(crate) fn is_builtin_connector(connector_name: &str) -> bool {
     upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI")
 }
 
-/// Pick a touchscreen's output from udev's name for it. `outputs` come in
-/// layout order, the primary first, so a missing or stale name falls back
-/// to the same output every time. A name two outputs share (two GPUs'
-/// `HDMI-A-1`) falls back too rather than picking one by order. A
-/// touchscreen without a name is the built-in panel's, even when a docked
-/// monitor is the primary.
+/// Pick a touchscreen's output from udev's name for it. `outputs` come in layout order, the primary
+/// first, so a missing or stale name falls back to the same output every time. A name two outputs
+/// share (two GPUs' `HDMI-A-1` ) falls back too rather than picking one by order. A touchscreen
+/// without a name is the built-in panel's, even when a docked monitor is the primary.
 pub(crate) fn touch_output_for_name<'a>(
     outputs: impl IntoIterator<Item = TouchOutput<'a>>,
     output_name: Option<&str>,
@@ -72,9 +68,9 @@ pub(crate) fn touch_output_for_name<'a>(
     }
 }
 
-/// A touch at `(normalized_x, normalized_y)` of the panel (0..=1 each) in
-/// the logical layout. The rotation is undone so touch, pointer and picture
-/// agree on a rotated panel, and the far edge stays inside the output.
+/// A touch at `(normalized_x, normalized_y)` of the panel (0..=1 each) in the logical layout. The
+/// rotation is undone so touch, pointer and picture agree on a rotated panel, and the far edge
+/// stays inside the output.
 pub(crate) fn calibrate_touch_position(
     output: TouchOutput<'_>,
     normalized_x: f64,
@@ -82,8 +78,8 @@ pub(crate) fn calibrate_touch_position(
 ) -> (f64, f64) {
     let x = normalized_x.clamp(0.0, 1.0);
     let y = normalized_y.clamp(0.0, 1.0);
-    // Output rectangles end before their right and bottom edges: a touch at
-    // exactly 1.0 must not land on the neighbouring monitor.
+    // Output rectangles end before their right and bottom edges: a touch at exactly 1.0 must not
+    // land on the neighbouring monitor.
     let w = f64::from(output.size.0.saturating_sub(1).max(0));
     let h = f64::from(output.size.1.saturating_sub(1).max(0));
     let (local_x, local_y) = match output.transform {

@@ -27,9 +27,6 @@ impl ApprovedCheckContext {
         &self.original.request().address.resource
     }
     /// The stable identity retained from the authenticated target publication.
-    ///
-    /// # Errors
-    /// Refuses absent or malformed identity; never derives one from caller strings.
     pub fn resource_identity(&self) -> Result<&tilo_actions::ResourceSemanticIdentity, String> {
         self.original.resource_identity()
     }
@@ -41,9 +38,6 @@ impl ApprovedCheckContext {
     }
     /// Forward a bounded informational observation under this exact run's custody.
     /// It never completes an invocation or establishes command success.
-    ///
-    /// # Errors
-    /// Refuses revoked custody, malformed observations and closed report lanes.
     pub fn report(&self, observation: ReportObservation) -> Result<(), String> {
         self.recheck()?;
         if let Some(reports) = &self.reports {
@@ -52,9 +46,6 @@ impl ApprovedCheckContext {
         Ok(())
     }
     /// Recheck original attribution, current target custody and active cancellation.
-    ///
-    /// # Errors
-    /// Refuses retired workers, cancelled/terminal invocations or changed policy.
     pub fn recheck(&self) -> Result<(), String> {
         let state = self
             .state
@@ -71,9 +62,6 @@ impl ApprovedCheckContext {
 /// Implementations run on the host effect worker, never the broker's `LocalSet`.
 pub trait ApprovedCheckServices: Send + Sync {
     /// Execute this exact approved ID and recheck custody before and during work.
-    ///
-    /// # Errors
-    /// Refuses unsupported registrations, changed authority or unavailable enforcement.
     fn run(&self, context: &ApprovedCheckContext) -> Result<Receipt, String>;
 }
 

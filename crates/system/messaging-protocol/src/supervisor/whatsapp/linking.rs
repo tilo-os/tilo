@@ -198,8 +198,6 @@ impl WhatsappLinking {
     }
     /// Begin only the original new account's explicitly approved linking.
     /// Refresh returns the current SDK presentation and its current attempt.
-    /// # Errors
-    /// Refuses revocation, absent/expired presentation or an interrupted source.
     pub async fn begin(&self) -> Result<Pairing, SendError> {
         if self.resumed.is_some() {
             return Err(SendError::AlreadyReserved);
@@ -235,8 +233,6 @@ impl WhatsappLinking {
     }
     /// Verify the exact SDK device snapshot for the current private attempt.
     /// This supplies self identity, never a grant or public account publication.
-    /// # Errors
-    /// Refuses rotated/expired codes, another self identity or revoked authority.
     pub fn finish(&self, attempt: &str) -> Result<String, SendError> {
         self.check()?;
         let state = self.state.lock().map_err(|_| SendError::Unavailable)?;
@@ -274,15 +270,11 @@ impl WhatsappLinking {
         Ok(verified)
     }
     /// Resume the pinned encrypted identity without creating a pairing presentation.
-    /// # Errors
-    /// Refuses changed SDK identity, logout, relinking or revoked original authority.
     pub fn resume(&self) -> Result<(), SendError> {
         self.verify_resume()?;
         self.start()
     }
     /// Check the exact pinned self identity without connecting or blocking on I/O.
-    /// # Errors
-    /// Refuses changed identity, interrupted linking or revoked original authority.
     pub fn verify_resume(&self) -> Result<(), SendError> {
         self.check()?;
         let expected = self.resumed.as_ref().ok_or(SendError::InvalidRequest)?;
@@ -364,8 +356,6 @@ impl AccountSupervisor {
         WhatsappLinking::new(self.owner.clone(), source, authority, None)
     }
     /// Resume only the already reviewed identity from this exact encrypted SDK.
-    /// # Errors
-    /// Refuses absent credentials, changed self identity or an unlinked device.
     pub fn whatsapp_resume(&self, expected: &str) -> Result<Arc<WhatsappLinking>, SendError> {
         let authority = self.authority.clone().ok_or(SendError::Revoked)?;
         authority.check()?;

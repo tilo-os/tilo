@@ -71,9 +71,6 @@ impl FileStamp {
     }
 
     /// The stamp of the file at `path`, or `None` when there is none.
-    ///
-    /// # Errors
-    /// Returns an error when the file exists but cannot be inspected.
     pub(crate) fn at(path: &Path) -> Result<Option<Self>, StorageError> {
         match std::fs::metadata(path) {
             Ok(metadata) => Ok(Some(Self::of(&metadata))),

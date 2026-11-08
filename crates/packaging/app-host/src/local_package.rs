@@ -111,9 +111,6 @@ pub fn local_expectation(
 
 #[cfg(feature = "service")]
 /// Verify a local archive against existing host trust, without installing it.
-///
-/// # Errors
-/// Refuses malformed, untrusted, revoked, non-app or oversized archives.
 pub fn review(bytes: &[u8]) -> Result<LocalReview, String> {
     let attestors_path = tilo_app_package::trust::default_trusted_attestors_path()
         .ok_or("Local package trust configuration is unavailable")?;
