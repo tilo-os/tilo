@@ -154,9 +154,10 @@ impl Service for RustApps {
                     app: tilo_actions::Noun::new("Chat", "Chat"),
                     root: false,
                 });
-                // What the page's composer runs: the chat's own post, as an agent's step and
-                // the window both post through.
-                chat = chat.with_action(post_action());
+                // What the page's composer runs: the chat's own post, the one verb the session's
+                // `ChatViewService` publishes on a channel, so the fixture and a person's
+                // session offer the same composer.
+                chat = chat.with_action(crate::conversations::post_action());
                 chat.app_id = Some("chat".to_owned());
                 chat
             })
@@ -219,24 +220,6 @@ impl Service for RustApps {
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
-}
-
-/// The chat's `post` action, as its record publishes it: a message from the person to the
-/// channel they name. The encoding carries no arguments; what the door runs reads them from the
-/// invocation, as the demo workspace needs.
-fn post_action() -> tilo_actions::ActionSpec {
-    use tilo_actions::{ActionArgs, EncodedAction, ExecutionLocus, ParamType};
-    tilo_actions::ActionSpec::typed(
-        "post",
-        "Post a message",
-        "a message",
-        ExecutionLocus::ClientLocal,
-        vec![
-            tilo_actions::ActionParam::required("channel", ParamType::Text, "The channel"),
-            tilo_actions::ActionParam::required("text", ParamType::Text, "What it says"),
-        ],
-        |_: &ActionArgs| EncodedAction::written("chat.post".to_owned(), Vec::new()),
-    )
 }
 
 #[cfg(test)]

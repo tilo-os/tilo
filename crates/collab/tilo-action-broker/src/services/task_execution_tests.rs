@@ -899,3 +899,28 @@ fn a_run_inside_a_turn_acts_as_the_person_whose_message_caused_it() {
         "the starter's own refusal reaches the run"
     );
 }
+
+/// A run that answers a person's message in Chat's conversation is a turn of
+/// that conversation, not a task of the Tasks tracker: the run's task id is
+/// the message's address there. The journal accepts it as a native task's
+/// owner beside a tracker issue, so an agent's own invocations on the turn are
+/// admitted.
+#[test]
+fn a_conversation_turns_message_addresses_a_run() {
+    assert!(super::is_conversation_turn(
+        "chat.workspace/channels/c_780ce7269827cf52/messages/d76dff0868974728"
+    ));
+    assert!(super::is_conversation_turn(
+        "chat.workspace/channels/c_1/messages/m_1"
+    ));
+    for refused in [
+        "chat.workspace/channels/c_1",
+        "chat.workspace/channels//messages/m_1",
+        "chat.workspace/channels/c_1/messages/",
+        "chat.workspace/channels/c_1/messages/a/b",
+        "tasks.tracker/issues/i_1",
+        "chat.workspace/other/c_1/messages/m_1",
+    ] {
+        assert!(!super::is_conversation_turn(refused), "{refused}");
+    }
+}

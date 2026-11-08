@@ -505,53 +505,7 @@ fn empty(c: &Channel, cx: &ViewCx) -> Node {
 /// the message's own menu, toolbar and swipe are what its type offers.
 fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> Node {
     let author = c.person(&message.author);
-    let mut body: Vec<Node> = Vec::new();
-    if let Some(quote) = &message.reply_to {
-        body.push(reply_quote(
-            c,
-            quote,
-            &cx.key(format!("quote-{}", message.id)),
-            cx,
-        ));
-    }
-    if message.pinned {
-        body.push(
-            ui::TextBuilder::new(&cx.key(format!("pinned-{}", message.id)), "Pinned")
-                .role(ui::TextRole::Caption)
-                .secondary(true)
-                .into(),
-        );
-    }
-    if !message.text.trim().is_empty() {
-        body.push(
-            ui::TextBuilder::new(&cx.key(format!("text-{}", message.id)), message.text.trim())
-                .role(ui::TextRole::Body)
-                .into(),
-        );
-    }
-    for (index, attachment) in message.attachments.iter().enumerate() {
-        body.push(attachment_row(
-            attachment,
-            &cx.key(format!("attachment-{}-{index}", message.id)),
-            cx,
-        ));
-    }
-    if message.edited {
-        body.push(
-            ui::TextBuilder::new(&cx.key(format!("edited-{}", message.id)), "edited")
-                .role(ui::TextRole::Caption)
-                .secondary(true)
-                .into(),
-        );
-    }
-    if !message.reactions.is_empty() {
-        body.push(reactions(
-            c,
-            message,
-            &cx.key(format!("reactions-{}", message.id)),
-        ));
-    }
-    let said = ui::stack(&cx.key(format!("said-{}", message.id)), Gap::Tight, body);
+    let said = message_said(c, message, cx);
 
     // The avatar and the name with the time, over a run's first message. A run's next message
     // keeps the avatar's room, empty, so a person's messages line up under their name once.
@@ -619,6 +573,59 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
         }
         None => body,
     }
+}
+
+/// What a message says and carries, in the order a conversation reads it: the message it answers
+/// (a quote), that it is pinned, its words, its attachments, that it was edited, and the
+/// reactions on it — one column under the byline.
+fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
+    let mut body: Vec<Node> = Vec::new();
+    if let Some(quote) = &message.reply_to {
+        body.push(reply_quote(
+            c,
+            quote,
+            &cx.key(format!("quote-{}", message.id)),
+            cx,
+        ));
+    }
+    if message.pinned {
+        body.push(
+            ui::TextBuilder::new(&cx.key(format!("pinned-{}", message.id)), "Pinned")
+                .role(ui::TextRole::Caption)
+                .secondary(true)
+                .into(),
+        );
+    }
+    if !message.text.trim().is_empty() {
+        body.push(
+            ui::TextBuilder::new(&cx.key(format!("text-{}", message.id)), message.text.trim())
+                .role(ui::TextRole::Body)
+                .into(),
+        );
+    }
+    for (index, attachment) in message.attachments.iter().enumerate() {
+        body.push(attachment_row(
+            attachment,
+            &cx.key(format!("attachment-{}-{index}", message.id)),
+            cx,
+        ));
+    }
+    if message.edited {
+        body.push(
+            ui::TextBuilder::new(&cx.key(format!("edited-{}", message.id)), "edited")
+                .role(ui::TextRole::Caption)
+                .secondary(true)
+                .into(),
+        );
+    }
+    if !message.reactions.is_empty() {
+        body.push(reactions(
+            c,
+            message,
+            &cx.key(format!("reactions-{}", message.id)),
+        ));
+    }
+    ui::stack(&cx.key(format!("said-{}", message.id)), Gap::Tight, body)
 }
 
 /// What a message offers while the pointer is over it or it holds focus, over its trailing

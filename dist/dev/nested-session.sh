@@ -407,8 +407,14 @@ if [[ -n $community ]]; then
     # The session reads its community site from this file instead of
     # /etc/tilo/community.toml and /usr/share/tilo/community.toml.
     printf 'site = "%s"\n' "$community" > "$state/community.toml"
-    export TILO_COMMUNITY_CONFIG=$state/community.toml
+else
+    # A session nobody named a community for is a new device, not the person's
+    # computer here: it reads its own empty site rather than whatever this
+    # machine belongs to, so nothing it does lands in the machine's community
+    # and nothing the machine belongs to is in front of it.
+    printf 'site = ""\n' > "$state/community.toml"
 fi
+export TILO_COMMUNITY_CONFIG=$state/community.toml
 
 # --- 6. System store -----------------------------------------------------------
 # What a Tilo device's /usr/share/tilo-apps holds that the session's own store

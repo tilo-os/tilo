@@ -119,7 +119,12 @@ impl AppConnection {
         // host-mounted worker's private descriptor carries. Decided here,
         // before the route is held, so a durable broker refuses an
         // unattested application instead of admitting it and withdrawing it.
-        let packaged_app = (self.worker.is_none() && person)
+        // The app is the worker of its own route whichever principal joins it:
+        // a person posting in Chat, and the workspace's kept agent opening the
+        // route its package declares, both speak for that app's records.
+        let packaged_app = self
+            .worker
+            .is_none()
             .then(|| {
                 host_workers::packaged_app_registration(
                     self.app_worker.as_ref(),
@@ -160,13 +165,19 @@ impl AppConnection {
             &record_route,
             joined_record_kind(record_kind.as_deref().unwrap_or_default())?,
         )?;
+        let launcher_attested = packaged_app.is_some();
         if let Some(registration) = packaged_app {
             verified_identity.worker_registration = Some(registration);
         }
-        if (verified_identity.host_scope.is_some()
-            || verified_identity.worker_registration.is_some())
-            && !person
-        {
+        // A connection holding a worker descriptor (a host authority's process,
+        // or a host-mounted worker) never delegates an agent identity: its
+        // authority is the person's own. A packaged app's launcher attestation
+        // is not that — it only says which app's route this connection speaks
+        // for — so the workspace's own agent joins its package's route through
+        // its record (`admit_kept_agent`) like any app of the workspace.
+        let descriptor_worker =
+            verified_identity.worker_registration.is_some() && !launcher_attested;
+        if (verified_identity.host_scope.is_some() || descriptor_worker) && !person {
             return Err(BrokerError::failed(
                 "host worker cannot delegate an agent identity".into(),
             ));

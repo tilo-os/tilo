@@ -290,6 +290,32 @@ pub fn is_tracker_issue(task_id: &str) -> bool {
     task_id.starts_with(TRACKER_ISSUE_PREFIX)
 }
 
+/// The prefix of a run that answers a person's message in a conversation
+/// (`crates/session/session/src/conversations.rs`): Chat's record, the
+/// conversation's id, and the message the agent answers. A run's task id is
+/// that address, so an agent's own invocations on the turn are its actions,
+/// not a task of the Tasks tracker.
+pub const CONVERSATION_RUN_PREFIX: &str = "chat.workspace/channels/";
+/// What separates a conversation's address from the message it answers in a
+/// run's task id.
+const CONVERSATION_MESSAGE: &str = "/messages/";
+
+/// Whether `task_id` names a conversation turn's message: a conversation of
+/// Chat's record and one message in it, each a plain id (`chat.workspace/\
+/// channels/<conversation>/messages/<message>`). A run whose task id is that
+/// is the answer to a person's message, and the turn is its work.
+#[must_use]
+pub fn is_conversation_turn(task_id: &str) -> bool {
+    let Some(rest) = task_id.strip_prefix(CONVERSATION_RUN_PREFIX) else {
+        return false;
+    };
+    let Some((conversation, message)) = rest.rsplit_once(CONVERSATION_MESSAGE) else {
+        return false;
+    };
+    let id = |part: &str| !part.is_empty() && !part.contains('/');
+    id(conversation) && id(message)
+}
+
 /// A message to a run, in the issue's thread: steering the run reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackerDirection {
