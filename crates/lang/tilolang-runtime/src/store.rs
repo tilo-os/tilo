@@ -1746,16 +1746,16 @@ pub trait Store {
     }
 
     /// The field `field` of `at` as it was before the change `change` (a [`Version::change`]):
-    /// what a bound field changed by someone else shows as its previous value.
+    /// what a bound field changed by someone else shows as its previous value, and what a
+    /// removed item's row is named by.
     ///
     /// The cost is the field's, never the record's: one field read in place at the change's
-    /// dependencies, whatever the workspace holds beside it.
+    /// dependencies, whatever the workspace holds beside it. A field of rich text is a document
+    /// of its own, read at a fork of those dependencies: the cost of the text.
     ///
     /// # Errors
     ///
-    /// `NotFound` for a change the store does not hold; `Invalid` for a field whose previous
-    /// value is not one value ([`Self::written`] reads what a change made of a rich text); a
-    /// store that keeps no log says so.
+    /// `NotFound` for a change the store does not hold; a store that keeps no log says so.
     fn read_before(
         &self,
         at: &ResourceRef,
