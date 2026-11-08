@@ -5,9 +5,7 @@ use automerge::{
 };
 use tilo_automerge::ApplyIncoming;
 use tilo_sort::CompactSort as _;
-mod import;
 mod projection;
-pub use import::prepare_external_content_import;
 mod schema;
 mod selection;
 mod writer;
