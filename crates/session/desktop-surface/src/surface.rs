@@ -647,10 +647,7 @@ impl DesktopHandle {
                 return Some(active.tab);
             }
             tree.active_workspace()?
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
+                .tabs()
                 .find(|tab| shows(tab))
                 .map(|tab| tab.id)
         });

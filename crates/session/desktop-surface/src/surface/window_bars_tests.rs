@@ -223,15 +223,7 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
 
     // The window is named by what it shows: its app's location label names the tab, so its bar, the
     // overview and search say the same.
-    let named = handle.read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|tab| tab.id == front)
-            .map(|tab| tab.title.clone())
-    });
+    let named = handle.read(|tree| tree.tab(front).map(|tab| tab.title.clone()));
     assert_eq!(
         named.as_deref(),
         Some("plan.md"),
@@ -329,15 +321,7 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
         frame.relayout();
     }
     assert_eq!(handle.window_name(front), None, "it shows no place now");
-    let back = handle.read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|tab| tab.id == front)
-            .map(|tab| tab.title.clone())
-    });
+    let back = handle.read(|tree| tree.tab(front).map(|tab| tab.title.clone()));
     assert_eq!(
         back.as_deref(),
         Some("App0"),

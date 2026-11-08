@@ -2093,10 +2093,7 @@ pub fn in_app(app: &str) -> String {
 
 fn tab_title_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {
     workspace?
-        .strips
-        .iter()
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .tabs()
         .find(|tab| tab.id == tab_id)
         .map(|tab| tab.title.trim())
         .filter(|title| !title.is_empty())

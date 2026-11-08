@@ -21,7 +21,7 @@ use std::rc::Rc;
 use tilo_sort::CompactSort as _;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
-use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, TabId, TileContent, Workspace, WorkspaceSlot};
 use tilo_desktop_surface::activity::describer::{self, Describer, Job};
 use tilo_desktop_surface::activity::{
     ActivityHost, ActivitySnapshot, DetachedRecordHistory, WorkspaceDeparture,
@@ -343,9 +343,7 @@ fn bound(
         .workspaces
         .iter()
         .filter(|w| w.slot == workspace)
-        .flat_map(|w| &w.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .flat_map(Workspace::tabs)
         .filter_map(|tab| match &tab.tile {
             TileContent::LocalApp { app_id, .. } => Some((tab.id, app_id.clone())),
             _ => None,

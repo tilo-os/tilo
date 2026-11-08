@@ -369,11 +369,7 @@ impl DeskLayer {
 impl ui::resources::PublishesResources for DeskLayer {
     fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let windows: Vec<desk_verbs::Shown> = self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
+            tree.tabs()
                 .map(|tab| {
                     let title = tilo_desktop_model::apps::canonical_app_id(&tab.tile).map_or_else(
                         || tab.title.clone(),
