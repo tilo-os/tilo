@@ -1524,12 +1524,9 @@ mod tests {
         );
         let (before, after) = capture_agent(&mut staged, &event, "tasks-menu-tilolang");
         let marked = changed_pixels(before.as_slice(), after.as_slice(), width, pixels(control));
-        assert!(marked.is_some(), "the agent's marker rests on the row");
+        let mark = marked.expect("the agent's marker rests on the row");
         assert!(
-            control.contains(ui::kurbo::Point::new(
-                f64::from(marked.expect("a mark").0),
-                f64::from(marked.expect("a mark").1)
-            )),
+            control.contains(ui::kurbo::Point::new(f64::from(mark.0), f64::from(mark.1))),
             "the marker is drawn inside the row the action lands on"
         );
 
