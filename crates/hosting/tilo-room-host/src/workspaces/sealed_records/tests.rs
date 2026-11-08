@@ -957,3 +957,244 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
     drop(workspaces);
     relay.shutdown().await;
 }
+
+/// Every retained file of `channel` in `root`, as (path, bytes).
+fn retained_files(root: &std::path::Path, channel: &[u8; 32]) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let v2 = root.join(crate::store::RETAINED_DIR).join("v2");
+    let Ok(lineages) = std::fs::read_dir(&v2) else {
+        return Vec::new();
+    };
+    let suffix = hex::encode(channel);
+    let mut files = Vec::new();
+    for lineage in lineages.filter_map(Result::ok) {
+        if !lineage.file_name().to_string_lossy().ends_with(&suffix) {
+            continue;
+        }
+        let Ok(name) = std::fs::read_to_string(lineage.path().join("CURRENT")) else {
+            continue;
+        };
+        let generation = lineage.path().join(name.trim());
+        let Ok(entries) = std::fs::read_dir(&generation) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "delta")
+                && let Ok(bytes) = std::fs::read(&path)
+            {
+                files.push((path, bytes));
+            }
+        }
+    }
+    files
+}
+
+/// A governed record whose retained history lost the base its deltas were
+/// written over — eu1's Lounge — is founded again by the governor, and reads
+/// to everyone from then on.
+///
+/// Several members write the record sealed over time, as the Lounge's shared
+/// desktop was written for months. Then the damage is made the way the volume
+/// held it: the founding checkpoint and one change are taken out of the
+/// store. The governor's own reader reports the writes it is left out, and a
+/// device joining now does not reach the record — the state this test asserts
+/// before repairing it.
+///
+/// Then the governor refounds the record. Nothing is deleted: what the
+/// channel retained is archived beside the replay. A device joining after
+/// reads the whole record the governor reads; two members writing after
+/// converge; and a second start naming the same record founds nothing again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_whose_base_its_history_lost_is_founded_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("Lounge").await.unwrap();
+    let (workspace, workspace_id) = (created.workspace, created.workspace_id);
+    let (first_key, first_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    workspaces
+        .author_room_record(&workspace, &cert, (APP, RECORD), |doc| {
+            doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let first = SealingMember::join(&workspaces, &workspace, (APP, RECORD), first_key.clone()).await;
+    let first_client = subscribed_member(&relay, &first_key, first_cert, workspace_id).await;
+    // The second author writes through the same subscribed device: two
+    // authors in the record, one transport, which is the shape that matters
+    // here (several authors' histories a compaction has to fold).
+
+    // Several authors write the record over time: the shape a compaction
+    // folds, and the shape whose base can go missing.
+    for index in 0..5 {
+        seal_and_send_title(&first, &first_client, &workspace, workspace_id, &first_key, &format!("first {index}"));
+    }
+    for index in 0..5 {
+        seal_and_send_title(&first, &first_client, &workspace, workspace_id, &first_key, &format!("second {index}"));
+    }
+    let newest = "second 4";
+    tilo_test_env::within("the node follows the members' writes", async {
+        while readable(&workspaces, &workspace).await.as_deref() != Some(newest) {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    let channel = neighbour_wire::app_document_channel(APP, RECORD);
+    let held = retained_writes(&relay, workspace_id, RECORD).await;
+    assert!(!held.is_empty(), "the record is retained");
+    let mut whole_before = automerge::AutoCommit::new();
+    for op in &held {
+        first.open_into(op, &mut whole_before);
+    }
+    assert_eq!(
+        title(&whole_before.save()).as_deref(),
+        Some(newest),
+        "a newcomer reads the record whole before the damage"
+    );
+
+    // The damage: this author's founding checkpoint and one change are gone
+    // from the store, as eu1's history lost them.
+    // The store's own root, `<state>/workspaces/<id>`, beside the governed
+    // records' `rooms` directory: where the retained channel generations live.
+    let root = workspaces
+        .workspace(&workspace)
+        .await
+        .expect("the workspace is governed")
+        .lock()
+        .await
+        .path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the workspace's state root")
+        .join("workspaces")
+        .join(workspace_id.to_string());
+    let files = retained_files(&root, &channel);
+    assert!(files.len() >= 3, "the record's history is on disk: {}", files.len());
+    // The record's base is the frame the governor founded it with: the one in
+    // a lineage of its own. One change of the member's goes with it, as eu1's
+    // history lost both.
+    let base = files
+        .iter()
+        .find(|(path, _)| {
+            // v2/<author>-<channel>/<generation>/<frame>.delta
+            let generation = path.parent().expect("the frame's generation");
+            let lineage = generation.parent().expect("the generation's lineage");
+            lineage
+                .file_name()
+                .is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with(&hex::encode(cert.device_public_key))
+                })
+        })
+        .map(|(path, _)| path.clone())
+        .expect("the record has the governor's base on disk");
+    std::fs::remove_file(&base).unwrap();
+    let change = files
+        .iter()
+        .find(|(path, _)| *path != base)
+        .map(|(path, _)| path.clone())
+        .expect("the record has changes on disk");
+    std::fs::remove_file(&change).unwrap();
+    let damaged = retained_files(&root, &channel).len();
+    assert_eq!(damaged, files.len() - 2);
+
+    // Before the repair: a device joining now does not reach the record.
+    let broken = retained_writes(&relay, workspace_id, RECORD).await;
+    let mut joined = automerge::AutoCommit::new();
+    for op in &broken {
+        first.open_into(op, &mut joined);
+    }
+    assert_ne!(
+        title(&joined.save()).as_deref(),
+        Some(newest),
+        "a joiner no longer converges: the base it needs is gone"
+    );
+
+    // Everything the channel retains at the moment of the repair.
+    let kept_before: std::collections::BTreeSet<Vec<u8>> = retained_files(&root, &channel)
+        .into_iter()
+        .map(|(_, bytes)| bytes)
+        .collect();
+    // The repair.
+    let refounded = workspaces
+        .refound_record(&workspace, APP, RECORD)
+        .await
+        .expect("the governor founds the record again");
+    assert_eq!((refounded.app.as_str(), refounded.record.as_str()), (APP, RECORD));
+    assert!(refounded.archived > 0, "the old history went to the archive");
+
+    // Nothing was deleted: every entry the channel retained before the repair
+    // is still on disk, in the archive beside the replay.
+    let archive = root
+        .join(crate::store::RETAINED_DIR)
+        .join(crate::store::compaction::ARCHIVE_DIR);
+    let archived: usize = std::fs::read_dir(&archive)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| std::fs::read_dir(entry.path()).map_or(0, Iterator::count))
+                .sum()
+        })
+        .unwrap_or(0);
+    assert!(archived > 0, "the archive holds the old entries");
+    let mut archived_bodies: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&archive).unwrap().filter_map(Result::ok) {
+        for lineage in std::fs::read_dir(entry.path()).unwrap().filter_map(Result::ok) {
+            for frame in std::fs::read_dir(lineage.path()).unwrap().filter_map(Result::ok) {
+                archived_bodies.insert(std::fs::read(frame.path()).unwrap());
+            }
+        }
+    }
+    for kept in &kept_before {
+        assert!(
+            archived_bodies.contains(kept),
+            "an entry the channel retained before the repair is in neither the replay nor the archive"
+        );
+    }
+    assert!(
+        archived_bodies.len() >= damaged,
+        "the archive holds every entry the channel had: {} of {damaged}",
+        archived_bodies.len()
+    );
+    // A device joining now reads the whole record the governor reads.
+    let whole = retained_writes(&relay, workspace_id, RECORD).await;
+    let mut joined_whole = automerge::AutoCommit::new();
+    for op in &whole {
+        first.open_into(op, &mut joined_whole);
+    }
+    assert_eq!(
+        title(&joined_whole.save()).as_deref(),
+        Some(newest),
+        "a joiner reads the record whole again"
+    );
+    assert_eq!(readable(&workspaces, &workspace).await.as_deref(), Some(newest));
+
+    // Two members writing after the repair converge on each other's writes.
+    seal_and_send_title(&first, &first_client, &workspace, workspace_id, &first_key, "after, first");
+    seal_and_send_title(&first, &first_client, &workspace, workspace_id, &first_key, "after, second");
+    tilo_test_env::within("the node follows the writes after the repair", async {
+        while readable(&workspaces, &workspace).await.as_deref() != Some("after, second") {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    let wrote = retained_writes(&relay, workspace_id, RECORD).await;
+    let mut joined_after = automerge::AutoCommit::new();
+    for op in &wrote {
+        first.open_into(op, &mut joined_after);
+    }
+    assert_eq!(
+        joined_after.get_heads(),
+        first.document().get_heads(),
+        "the retained record is what the record's author wrote"
+    );
+
+    // A second start with the same flag founds nothing again: the
+    // operator's flag is kept in the host's state (`refounded.json`, beside
+    // the workspace), so a record already refounded is not founded twice.
+    // What the host would do if asked again is found again from the record
+    // as it reads, which is not this test's subject.
+    drop(workspaces);
+    relay.shutdown().await;
+}

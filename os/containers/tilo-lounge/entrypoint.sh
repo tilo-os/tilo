@@ -40,7 +40,7 @@ fail() {
 known='TILO_ROOMS_PERSISTENT TILO_ROOMS_NAME TILO_ROOMS_DESCRIPTION TILO_ROOMS_ADMISSION
 TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
-TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
+TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_REFOUND TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
 TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_ROLES_FILE
 TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
@@ -162,6 +162,23 @@ fi
 set -- "$@" $(comma_flags "${TILO_ROOMS_CHAT_CHANNELS-general}" --chat-channel)
 set -- "$@" $(comma_flags "${TILO_ROOMS_SEED_APPS-so.tilo.chat}" --seed-app)
 set -- "$@" $(comma_flags "${TILO_ROOMS_AUTHOR_APPS:-}" --author-app)
+# Records whose retained history lost the base its deltas were written over:
+# founded again at start from what the workspace still reads, their old
+# history archived beside the replay, never deleted. Named as
+# APP:RECORD (an app id holds no `:`), comma-separated.
+refound=${TILO_ROOMS_REFOUND:-}
+while [ -n "$refound" ]; do
+  case $refound in
+    *,*) entry=${refound%%,*}; refound=${refound#*,} ;;
+    *) entry=$refound; refound= ;;
+  esac
+  entry=$(printf '%s' "$entry" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ -z "$entry" ] && continue
+  case $entry in
+    *:*) set -- "$@" --refound "${entry%%:*}/${entry#*:}" ;;
+    *) fail "TILO_ROOMS_REFOUND entry $entry is not APP:RECORD" ;;
+  esac
+done
 set -- "$@" $(comma_flags "${TILO_ROOMS_SITE_ORIGINS:-}" --allowed-origin)
 if [ -n "${TILO_ROOMS_FEEDBACK_CHANNEL:-}" ]; then
   set -- "$@" --feedback-channel "$TILO_ROOMS_FEEDBACK_CHANNEL"

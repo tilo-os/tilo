@@ -290,6 +290,14 @@ pub struct PersistentArgs {
     /// oldest go first. `0` keeps none.
     #[arg(long = "attachment-room-mib", default_value_t = 2048)]
     pub attachment_room_mib: u64,
+    /// Refound `APP/RECORD` from what the workspace can still read, at start,
+    /// because its retained history lost the base its deltas were written
+    /// over: the record is published again as the workspace's next checkpoint
+    /// of it, and what its channel retained until now is archived beside the
+    /// replay, never deleted. Repeatable; a record already refounded by an
+    /// earlier start is not founded again.
+    #[arg(long = "refound", value_name = "APP/RECORD", requires = "persistent")]
+    pub refound: Vec<String>,
 }
 
 /// What every part of the persistent workspace works with.
@@ -1107,6 +1115,51 @@ fn authored_apps(args: &PersistentArgs) -> Vec<String> {
         .collect()
 }
 
+/// Refound each `APP/RECORD` the operator named, once per start that names it:
+/// a record whose retained history lost the base its deltas were written over
+/// is published again as the workspace's next checkpoint of it, and what its
+/// channel retained until now is archived beside the replay. What was done is
+/// kept in `refounded.json` beside the workspace, so a later start naming the
+/// same record does not found it again.
+async fn refound_records(
+    workspaces: &Workspaces,
+    workspace: &str,
+    named: &[String],
+    state: &Path,
+) -> anyhow::Result<()> {
+    if named.is_empty() {
+        return Ok(());
+    }
+    let done_at = state.join("refounded.json");
+    let done: BTreeMap<String, String> = read_json(&done_at)?;
+    let mut done = done;
+    for entry in named {
+        let (app, record) = entry
+            .split_once('/')
+            .with_context(|| format!("--refound {entry:?} is not APP/RECORD"))?;
+        if done.contains_key(entry) {
+            continue;
+        }
+        let outcome = workspaces
+            .refound_record(workspace, app, record)
+            .await
+            .map_err(|error| anyhow::anyhow!("refound {entry}: {error}"))?;
+        tracing::info!(
+            workspace = %workspace,
+            app = %outcome.app,
+            record = %outcome.record,
+            archived = outcome.archived,
+            "a record was refounded and its old history archived"
+        );
+        done.insert(
+            entry.clone(),
+            format!("archived {} entries", outcome.archived),
+        );
+        write_json(&done_at, &done)?;
+    }
+    Ok(())
+}
+
 /// Make exactly the operator's `apps` authors of the workspace, so its members
 /// write through them, and take authorship back from an app this host made
 /// an author at an earlier start and no longer names (kept in `authored`).
@@ -1404,6 +1457,11 @@ pub(crate) async fn run(
         &state.join("authored-apps.json"),
     )
     .await?;
+    // A record the operator named whose retained history lost the base its
+    // deltas were written over: founded again from what the workspace still
+    // reads, its old history archived beside the replay. Runs once per start
+    // that names it; a record that still reads is left as it is.
+    refound_records(&workspaces, &workspace, &persistent.refound, &state).await?;
     let web = hosted
         .relay
         .serve_web(web_config(&args.web, listen, &state))
