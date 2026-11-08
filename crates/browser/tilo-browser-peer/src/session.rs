@@ -845,6 +845,8 @@ impl PeerHandle {
             received: BTreeSet::new(),
             compactions: BTreeMap::new(),
             voice: crate::voice::Participations::default(),
+            rooms_pending: BTreeMap::new(),
+            rooms_next: 0,
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -1386,6 +1388,11 @@ struct Task {
     compactions: BTreeMap<[u8; 16], Compaction>,
     /// This device's participation in the workspaces' calls.
     voice: crate::voice::Participations,
+    /// The workspace administration this session asked its host and has not
+    /// been answered yet, by the id it asked with.
+    rooms_pending: BTreeMap<u64, RoomsCompletion>,
+    /// The id the next administration request is asked with.
+    rooms_next: u64,
 }
 
 /// An open compaction request: workspace, route and the entries it covers.
@@ -1679,8 +1686,14 @@ impl Task {
                     self.admission_since = Some(tilo_clock::unix_now_ms());
                     match self.serve_naming_proxy(client, &mut commands).await {
                         Exit::Closed => return self.closed(),
-                        Exit::Reconnect => continue,
-                        Exit::Lost(reason) => self.fail("transport-ended", reason),
+                        Exit::Reconnect => {
+                            self.rooms_lost();
+                            continue;
+                        }
+                        Exit::Lost(reason) => {
+                            self.rooms_lost();
+                            self.fail("transport-ended", reason);
+                        }
                     }
                 }
                 Err(error) => {
@@ -2103,7 +2116,7 @@ impl Task {
                 true
             }
             Command::Administer(request, done) => {
-                Self::administer(request, done, client);
+                self.administer(request, done, client);
                 true
             }
             Command::Node(done) => {
@@ -2264,7 +2277,11 @@ impl Task {
         true
     }
 
+    /// Ask the host `request` of its workspace administration: over the
+    /// session it answers, under an id this session picks so the answers of a
+    /// session asking several may come back in any order.
     fn administer(
+        &mut self,
         request: tilo_relay_protocol::workspaces::WorkspacesRequest,
         done: RoomsCompletion,
         client: Option<&Link>,
@@ -2281,8 +2298,46 @@ impl Task {
                 });
             }
             #[cfg(feature = "iroh")]
-            Some(Link::Iroh { .. }) => done(Err("workspaces are administered over HTTPS".into())),
+            Some(Link::Iroh { client, .. }) => {
+                let request_id = self.rooms_next;
+                self.rooms_next = self.rooms_next.wrapping_add(1);
+                let frame = match postcard::to_stdvec(&request) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        return done(Err(format!("the request does not encode: {error}")));
+                    }
+                };
+                self.rooms_pending.insert(request_id, done);
+                if client
+                    .send(Envelope::WorkspacesRequest { request_id, frame })
+                    .is_err()
+                    && let Some(done) = self.rooms_pending.remove(&request_id)
+                {
+                    done(Err("the host's session closed".into()));
+                }
+            }
             None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    /// The host answered administration request `request_id`.
+    fn rooms_answered(&mut self, request_id: u64, frame: &[u8]) {
+        let Some(done) = self.rooms_pending.remove(&request_id) else {
+            return;
+        };
+        done(
+            match postcard::from_bytes::<tilo_relay_protocol::workspaces::WorkspacesReply>(frame) {
+                Ok(reply) => Ok(reply),
+                Err(error) => Err(format!("the answer does not decode: {error}")),
+            },
+        );
+    }
+
+    /// The session ended with requests the host never answered: each is
+    /// answered here, so nothing waits on a connection that is gone.
+    fn rooms_lost(&mut self) {
+        for (_, done) in std::mem::take(&mut self.rooms_pending) {
+            done(Err("the session ended before the host answered".into()));
         }
     }
 
@@ -2698,6 +2753,9 @@ impl Task {
                     record,
                 },
             ),
+            Envelope::WorkspacesReply { request_id, frame } => {
+                self.rooms_answered(request_id, &frame);
+            }
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Ok(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
                 self.fail("protocol-rejected", reason.clone());

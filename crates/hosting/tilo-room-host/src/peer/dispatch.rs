@@ -7,7 +7,7 @@ use super::{
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_commit, handle_compaction,
     handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_live_join,
     handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
-    handle_sync_request, handle_unsubscribe, handle_voice, route_record_content,
+    handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces, route_record_content,
 };
 #[cfg(test)]
 use super::{ReplayWrite, finish_replay_write};
@@ -143,6 +143,9 @@ pub(super) async fn handle_envelope(
             handle_live_join(peer, session, subscribed, workspace_id).await
         }
         Envelope::HostAction { frame } => Ok(handle_host_action(peer, session, &frame)),
+        Envelope::WorkspacesRequest { request_id, frame } => {
+            handle_workspaces(peer, session, request_id, &frame).await
+        }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
@@ -162,7 +165,8 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceRefused { .. }
         | Envelope::VoiceCallList { .. }
         | Envelope::RecordOpened { .. }
-        | Envelope::WorkspaceBootstrap { .. } => Ok(None),
+        | Envelope::WorkspaceBootstrap { .. }
+        | Envelope::WorkspacesReply { .. } => Ok(None),
     }
 }
 
