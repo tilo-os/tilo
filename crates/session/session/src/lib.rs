@@ -164,6 +164,7 @@ mod switcher;
 pub mod sync;
 mod system_sounds;
 mod task_programs;
+mod task_undo;
 pub mod termination;
 pub mod test_control;
 pub mod unlock;
@@ -1544,13 +1545,14 @@ impl Session {
         // The control door `tilo-control` reaches: the development socket and the device admin's,
         // both answered over the broker this session's plane starts. It exists whether or not a
         // socket opens, because a program inside an app this session started is served at it too.
-        let control = test_control::Control::open(
-            &options,
-            std::sync::Arc::new(agent_door::Host::new(
-                action_plane.as_ref().and_then(Plane::agent_broker),
-                std::sync::Arc::clone(&session_doors),
-            )),
-        );
+        // The activity undoes an agent's run in the records it changed through the same door.
+        let door_host = std::sync::Arc::new(agent_door::Host::new(
+            action_plane.as_ref().and_then(Plane::agent_broker),
+            std::sync::Arc::clone(&session_doors),
+        ));
+        let undo_door: std::sync::Arc<dyn task_undo::UndoDoor> = door_host.clone();
+        activity.attach_door(undo_door);
+        let control = test_control::Control::open(&options, door_host);
         tilo_startup_metrics::mark("control-door-open");
         let door = agent_door::mount_named(
             &options,
