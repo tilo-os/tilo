@@ -409,8 +409,12 @@ impl JoinedChannel {
         verify_session_author(&current_identity, envelope.author)
             .map_err(|error| BrokerError::failed(format!("send: {error}")))?;
         state.authorize_certified_document(&route, &current_identity, &envelope)?;
-        let owner_required =
-            state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id);
+        // A record of the person's own scope is kept by their own store, which holds it durably
+        // and carries it to their other devices; no workspace's owner holds it, so nothing of one
+        // commits it.
+        let owner_required = state.personal_route(&route).is_none()
+            && (state.durable_owner_required
+                || state.publisher.requires_owner_for(&route.cluster_id));
         let _owner_order = if owner_required {
             Some(state.owner_commit_order.lock().await)
         } else {

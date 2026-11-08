@@ -9412,12 +9412,9 @@ impl AppBrokerState {
         route: &CrdtRoute,
         envelope: &SignedOp,
     ) -> Result<(), BrokerError> {
-        let Some(personal) = self.services.personal.as_ref() else {
+        let Some(personal) = self.personal_route(route) else {
             return Ok(());
         };
-        if personal.read(tilo_peer_state::PersonalStore::store_key) != route.cluster_id {
-            return Ok(());
-        }
         personal
             .admit_local(&route.app_id, &route.record_id, envelope.clone())
             .map(|_| ())
@@ -9426,6 +9423,18 @@ impl AppBrokerState {
                     "send: the person's own store did not keep the record: {error}"
                 ))
             })
+    }
+
+    /// The person's own store, when `route` is one of the records of their own scope: the store is
+    /// where such a record is durable, and carries it to their other devices, so no workspace's
+    /// owner holds it. `None` for any other route.
+    pub(crate) fn personal_route(
+        &self,
+        route: &CrdtRoute,
+    ) -> Option<&tilo_peer_state::PersonalSync> {
+        let personal = self.services.personal.as_ref()?;
+        (personal.read(tilo_peer_state::PersonalStore::store_key) == route.cluster_id)
+            .then_some(personal)
     }
 }
 
