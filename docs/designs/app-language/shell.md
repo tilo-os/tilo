@@ -106,10 +106,79 @@ The agent does the same work under any of these, and may read them to present it
 
 ## 6. Shells as packages
 
-A shell is a package of views: the root view of the arrangement, its frame and parts. Defaults
-ship: strips, canvas, a dock with a top bar, phone, a single conversation. Anyone may write
-another, and an agent can generate one like any view. A person picks one per device class in
-Settings. Themes change how parts look, never which parts exist.
+A desk style is a tilolang view of the person's arrangement, and nothing more. A person, or an
+agent working for them, makes a new one the way they make any app: write a package, install
+it, pick it. The four styles that ship (strips, frames, spaces, desktop) are written exactly
+that way, and are the examples.
+
+**What makes a view a desk style.** Its first parameter is the session's arrangement, the type
+whose origin is `session.arrangement`:
+
+```tilolang
+use so.tilo.session as session
+use so.tilo.shell as shell        // the shipped parts: bar, dock, notices, quick settings
+
+/// My agents' work as a timeline, today's newest first.
+view timeline(a: shell.Arrangement) {
+    shell.bar(shell.desk)
+    ui.List(a.places.newest(), |p| ui.Card(p.title) { place_view(p) })
+}
+```
+
+There is no list of styles in code and no keyword. The type is the contract, as it is for every
+view (one-app-model.md §2).
+
+**Where styles come from.** Any installed tilolang package may declare desk styles. The session
+reads installed packages from the person's package store the way it reads every tilolang app:
+`package_store::Catalog`, then `Bundle::read(payload_root)` and `Host::load_bundle`. That is
+`seeded_apps.rs`'s path, made the only path.
+- The shell package `so.tilo.shell` is installed in the image's store like any app.
+- `compile_shell()`'s built-in copy (`include_str!` of `apps/tl/shell`) stays only as the
+  fallback described below. It is not the way the shell normally loads.
+
+**Picking a style.** The person's `Viewing` record (`arrangement.tl`, `records: .own`) holds
+the style as a view reference: package and view name. It is not the closed `Preset` enum,
+which goes away.
+- The style switch in the bar and the Desk page of Settings list every desk style of every
+  installed package, by the view's doc line.
+- The shell part's screen layer (`screen_layer()`, today fixed to `so.tilo.shell`'s
+  `desk_view`) shows the referenced view.
+- Switching keeps every place where it was, because the arrangement is the session's and the
+  same in every style.
+
+**What a style can do.** Read the session's resources (arrangement, places, windows, desk,
+notices, people, the device) and call their actions, exactly as the shipped styles do. It can
+show any resource's view in a place (`place_view`). It never draws trusted surfaces: the sheet,
+asks, sign-in and lock stay the system's (§1). Looks stay the theme's: a style names roles, never
+colours, so every theme reaches it.
+
+**Agents make styles with the same commands a person types.**
+1. The agent writes the package's files into the person's workspace.
+2. It checks them: `tilolang check`, also available as a session action.
+3. It installs them: the store's install action, which compiles, signs with the person's
+   development key, and asks the person on the trusted sheet, because installing code is the
+   person's decision.
+4. It switches: `shell.show_style(v, style)`.
+Every step is an action in the broker's catalogue, so the REPL does the same.
+
+**Nothing can lock a person out.** If the chosen style fails to load, fails to compile against
+the installed shell and session packages, or traps on its first frame:
+- the session shows the image's built-in `so.tilo.shell` default;
+- it raises a notice naming the style and the error;
+- it keeps the person's choice, so a fixed reinstall comes back by itself.
+A reinstall re-renders the style live; the session does not restart.
+
+**Steps**
+1. The shell loads from the store. `so.tilo.shell` is installed in the image, dev shells install
+   it as they install the tilolang apps, and the built-in copy becomes the fallback.
+2. Styles are views. `Viewing.showing` becomes a view reference, and the switch and Settings
+   list desk styles from every installed package. The four presets become views found that way.
+3. The fallback and the notice, each with a test where the style fails to compile and one where
+   it traps.
+4. Agent authoring, end to end: a test in which a scripted agent writes, checks and installs a
+   style package and switches to it, and the desk draws it. Then the same live with a real model.
+
+Themes change how parts look, never which parts exist. Styles change which parts exist and where.
 
 ## 7. Performance
 
