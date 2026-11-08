@@ -1,19 +1,23 @@
-//! What the one walk over the document's nodes costs and answers.
+//! What the one walk over the document's nodes costs and answers, and what a
+//! change costs instead.
 //!
-//! `Namespace::read_nodes_once` is the work every namespace open and every
-//! received peer delta pay for the whole workspace: `rebuild_record_index`
-//! reads each node's document once and takes its placement, name, kind and
-//! record id from that object. `node_lookup_count` is the same unit
+//! `Namespace::rebuild_record_index` reads each node's document once and
+//! takes its placement, name, kind and record id from that object: the work
+//! opening a namespace pays for the whole workspace, on load only. A rename
+//! or move of this replica's own, and a peer's delta through any of the
+//! apply entry points, must touch the nodes the change names instead, which
+//! the same counter proves. `node_lookup_count` is the unit
 //! `crates/system/fs/tests/performance_gate.rs` bounds for a listing, so a
 //! per-field re-read fails here rather than in a number nobody attributes.
-//! A rename or move of this replica's own is not such a walk: it re-paths
-//! the moved subtree only, which the same counter proves.
+
+#![allow(clippy::arithmetic_side_effects, reason = "test fixtures")]
 
 use automerge::ObjType;
 use automerge::transaction::Transactable;
 use fs_protocol::FileRecordId;
 use iroh_blobs::Hash;
 
+use super::tests::assert_indexes_match_rebuild;
 use super::*;
 
 fn h(b: u8) -> Hash {
@@ -59,10 +63,9 @@ fn rebuilding_the_index_reads_each_node_document_once() {
         "rebuilding read {reads} node documents for {nodes} nodes"
     );
 
-    // A peer's content edit arrives as a delta, merged and resolved under the
-    // same walk: the record-id backfill and the rebuild read each node once,
-    // and the cycle check walks its parent (two reads a hop). A rebuild that
-    // read a node per field again would add two more per node and fail here.
+    // A peer's content edit arrives as a delta, merged and resolved: it reads
+    // the one node the change names, not the 65 here. A rebuild that read a
+    // node per field again would read every node and fail here.
     let mut peer = Namespace::from_bytes("b", &saved).unwrap();
     let peer_ino = peer.lookup(ROOT_INO, "f3").unwrap().ino.0;
     assert!(peer.set_content(peer_ino, Some(&h(2)), 7, 7));
@@ -71,7 +74,7 @@ fn rebuilding_the_index_reads_each_node_document_once() {
     reopened.apply_remote_and_resolve(&delta).unwrap();
     let reads = reopened.node_lookup_count() - before;
     assert!(
-        reads <= nodes.saturating_mul(5).saturating_add(8),
+        reads <= 32,
         "receiving a peer delta read {reads} node documents for {nodes} nodes"
     );
     let applied = reopened.lookup(ROOT_INO, "f3").unwrap().ino.0;
@@ -137,84 +140,211 @@ fn wide_tree() -> Namespace {
     ns
 }
 
-/// A rename or move re-paths the moved node and its descendants, not the
-/// workspace: on 100,100 nodes it reads a slice of the catalogue, and the
-/// rows it leaves behind equal a from-scratch rebuild.
+/// One change costs the change, not the 100,100-node tree: renames and moves
+/// of this replica's own, and a peer's create, delete, move and concurrent
+/// rename through every entry point that takes a delta, each read the nodes
+/// they name, and each leave behind the index a from-scratch rebuild makes.
 #[test]
-fn a_rename_repaths_only_the_moved_subtree() {
+fn a_change_costs_the_change_not_the_tree() {
     let mut ns = wide_tree();
     let nodes = ns.doc.keys(&ns.nodes).count() as u64;
     assert_eq!(nodes, 100_100, "the fixture is the whole tree");
     assert_eq!(ns.indexed_record_count() as u64, nodes);
 
-    // A file renamed in a 1,000-entry directory.
-    let dir = ns.lookup(ROOT_INO, "dir-000").unwrap().ino.0;
-    let before = ns.node_lookup_count();
-    let start = std::time::Instant::now();
-    assert!(ns.rename(dir, "f-0000", dir, "renamed", 2));
-    let file_rename_ms = start.elapsed().as_millis();
-    let file_rename = ns.node_lookup_count() - before;
-
-    // A 1,000-entry directory moved into another one: its whole subtree.
-    let target = ns.lookup(ROOT_INO, "dir-002").unwrap().ino.0;
-    let before = ns.node_lookup_count();
-    let start = std::time::Instant::now();
-    assert!(ns.rename(ROOT_INO, "dir-001", target, "moved", 3));
-    let dir_move_ms = start.elapsed().as_millis();
-    let dir_move = ns.node_lookup_count() - before;
-
-    eprintln!(
-        "WORK rename-file-in-100k-tree: {file_rename} lookups, {file_rename_ms} ms \
-         ({} nodes)",
-        ns.indexed_record_count()
-    );
-    eprintln!("WORK rename-1000-entry-dir-in-100k-tree: {dir_move} lookups, {dir_move_ms} ms");
-
-    // The rows are where the moves put them.
-    let indexed_path = |ns: &Namespace, ino: u64| {
-        ns.indexed_record(ns.record_id_for(ino).unwrap())
-            .expect("a live node has a catalogue row")
-            .path
-    };
-    let moved = ns.lookup(dir, "renamed").unwrap().ino.0;
-    assert_eq!(indexed_path(&ns, moved), "/dir-000/renamed");
-    let moved_dir = ns.lookup(target, "moved").unwrap().ino.0;
-    assert_eq!(indexed_path(&ns, moved_dir), "/dir-002/moved");
-    let nested = ns.lookup(moved_dir, "f-0001").unwrap().ino.0;
-    assert_eq!(indexed_path(&ns, nested), "/dir-002/moved/f-0001");
-    assert!(ns.lookup(ROOT_INO, "dir-001").is_none());
-
-    // A rename reads what it touches, never the catalogue: the entries of
-    // the directories it joins or leaves (their conflict check) and the moved
-    // subtree. The whole-tree walk this replaced read 4-5 documents per node.
-    let touched = WIDE_FILES as u64 + 1;
-    assert!(
-        file_rename <= 4 * touched + 64,
-        "a file rename read {file_rename} node documents, more than the {touched} entries \
-         of its directory"
-    );
-    assert!(
-        dir_move <= 8 * touched + 64,
-        "moving a 1,000-entry directory read {dir_move} node documents, more than its \
-         {touched} entries and the directory it joined"
-    );
-
+    // What one whole walk of this tree costs, so each change is bounded
+    // against real work on this machine rather than a wall-clock number.
     let mut rebuilt = ns.clone();
     let start = std::time::Instant::now();
     rebuilt.rebuild_record_index();
-    eprintln!("WORK rebuild-100k-tree: {} ms", start.elapsed().as_millis());
-    assert_eq!(ns.record_index, rebuilt.record_index, "rows");
-    assert_eq!(ns.record_index_order, rebuilt.record_index_order, "order");
-    assert_eq!(
-        ns.record_index_digest, rebuilt.record_index_digest,
-        "digest"
+    let rebuild_ms = start.elapsed().as_millis();
+    eprintln!("WORK rebuild-100k-tree: {rebuild_ms} ms");
+
+    local_changes(&mut ns, rebuild_ms);
+    peer_changes(&mut ns, rebuild_ms);
+    assert_indexes_match_rebuild(&ns);
+}
+
+/// Make one change, bounded by the node documents it may read and the time;
+/// the index it leaves must equal a rebuild's.
+fn measure<T>(
+    label: &str,
+    ns: &mut Namespace,
+    reads: u64,
+    ms_bound: u128,
+    rebuild_ms: u128,
+    change: impl FnOnce(&mut Namespace) -> T,
+) -> T {
+    let before = ns.node_lookup_count();
+    let start = std::time::Instant::now();
+    let outcome = change(ns);
+    let ms = start.elapsed().as_millis();
+    let lookups = ns.node_lookup_count() - before;
+    eprintln!(
+        "WORK {label}-in-100k-tree: {lookups} lookups, {ms} ms (one whole rebuild: {rebuild_ms} ms)"
     );
-    assert_eq!(
-        ns.record_index_revision, rebuilt.record_index_revision,
-        "revision"
+    assert!(
+        lookups <= reads,
+        "{label} read {lookups} node documents, more than the {reads} its change touches"
     );
-    assert_eq!(
-        ns.record_index_ambiguous, rebuilt.record_index_ambiguous,
-        "ambiguity"
+    assert!(
+        ms <= ms_bound,
+        "{label} took {ms} ms, more than its {ms_bound} ms bound (one whole rebuild: {rebuild_ms} ms)"
     );
+    assert_indexes_match_rebuild(ns);
+    outcome
+}
+
+fn indexed_path(ns: &Namespace, ino: u64) -> String {
+    ns.indexed_record(ns.record_id_for(ino).unwrap())
+        .expect("a live node has a catalogue row")
+        .path
+}
+
+/// The renames and moves this replica makes itself. A rename reads the
+/// entries of the directories it joins or leaves (for the name conflict
+/// check) and the moved subtree; the walk it replaced read 4-5 documents per
+/// node.
+fn local_changes(ns: &mut Namespace, rebuild_ms: u128) {
+    let one_directory = WIDE_FILES as u64 + 1;
+    let quarter = rebuild_ms / 4;
+    let dir = ns.lookup(ROOT_INO, "dir-000").unwrap().ino.0;
+    measure(
+        "local-rename",
+        ns,
+        4 * one_directory + 64,
+        quarter,
+        rebuild_ms,
+        |ns| assert!(ns.rename(dir, "f-0000", dir, "renamed", 2)),
+    );
+    let renamed = ns.lookup(dir, "renamed").unwrap().ino.0;
+    assert_eq!(indexed_path(ns, renamed), "/dir-000/renamed");
+
+    // A 1,000-entry directory moved into another: its whole subtree is
+    // re-pathed and nothing else in the catalogue moves.
+    let target = ns.lookup(ROOT_INO, "dir-002").unwrap().ino.0;
+    measure(
+        "local-move-1000-entry-dir",
+        ns,
+        8 * one_directory + 64,
+        quarter,
+        rebuild_ms,
+        |ns| assert!(ns.rename(ROOT_INO, "dir-001", target, "moved", 3)),
+    );
+    let moved_dir = ns.lookup(target, "moved").unwrap().ino.0;
+    assert_eq!(indexed_path(ns, moved_dir), "/dir-002/moved");
+    let nested = ns.lookup(moved_dir, "f-0001").unwrap().ino.0;
+    assert_eq!(indexed_path(ns, nested), "/dir-002/moved/f-0001");
+    assert!(ns.lookup(ROOT_INO, "dir-001").is_none());
+}
+
+/// What a peer does to the tree. Inodes are this replica's own, so the peer's
+/// work is found here by path.
+fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
+    let one_directory = WIDE_FILES as u64 + 1;
+    let quarter = rebuild_ms / 4;
+    let mut peer = Namespace::from_bytes("b", &ns.save()).unwrap();
+    peer.prime_baseline();
+    let peer_dir = peer.lookup(ROOT_INO, "dir-003").unwrap().ino.0;
+
+    // A peer creates a file: the row arrives with it.
+    let here = ns.lookup(ROOT_INO, "dir-003").unwrap().ino.0;
+    peer.create_file(peer_dir, "created", Some(&h(2)), 2, 4)
+        .unwrap();
+    let delta = peer.save_incremental();
+    measure("create", ns, 64, quarter, rebuild_ms, |ns| {
+        ns.apply_incremental(&delta).unwrap();
+    });
+    let created = ns.lookup(here, "created").unwrap().ino.0;
+    assert_eq!(indexed_path(ns, created), "/dir-003/created");
+
+    // A peer deletes (= trashes) a file: its row goes.
+    let doomed = ns.lookup(here, "f-0002").unwrap().ino.0;
+    let doomed_record = ns.record_id_for(doomed);
+    let theirs = peer.lookup(peer_dir, "f-0002").unwrap().ino.0;
+    assert!(peer.remove(theirs));
+    measure("delete", ns, 64, quarter, rebuild_ms, |ns| {
+        ns.merge_doc(&mut peer).unwrap();
+    });
+    assert!(ns.indexed_record(doomed_record.unwrap()).is_none());
+
+    // A peer moves a 1,000-entry directory, arriving as its whole document:
+    // reading that is the merge's own load, the catalogue work is the move.
+    let harvest = peer.lookup(ROOT_INO, "dir-006").unwrap().ino.0;
+    assert!(peer.rename(ROOT_INO, "dir-005", harvest, "harvest", 5));
+    let harvest_here = ns.lookup(ROOT_INO, "dir-006").unwrap().ino.0;
+    let document = peer.save();
+    measure(
+        "remote-move-1000-entry-dir",
+        ns,
+        8 * one_directory + 64,
+        3 * rebuild_ms,
+        rebuild_ms,
+        |ns| ns.merge_remote_and_resolve(&document).unwrap(),
+    );
+    let harvest_dir = ns.lookup(harvest_here, "harvest").unwrap().ino.0;
+    assert_eq!(indexed_path(ns, harvest_dir), "/dir-006/harvest");
+    let harvest_file = ns.lookup(harvest_dir, "f-0005").unwrap().ino.0;
+    assert_eq!(indexed_path(ns, harvest_file), "/dir-006/harvest/f-0005");
+
+    // Both sides rename one file at once: the delta arrives by sync, and the
+    // row names the winner.
+    let contested_dir = peer.lookup(ROOT_INO, "dir-007").unwrap().ino.0;
+    assert!(peer.rename(contested_dir, "f-0003", contested_dir, "peer-name", 6));
+    let ours = ns.lookup(ROOT_INO, "dir-007").unwrap().ino.0;
+    let contested = ns.lookup(ours, "f-0003").unwrap().ino.0;
+    assert!(ns.rename(ours, "f-0003", ours, "local-name", 7));
+    let mut our_state = ns.begin_sync_with(&PEER);
+    let mut their_state = peer.begin_sync_with(&DEVICE);
+    measure(
+        "sync-conflicting-rename",
+        ns,
+        64,
+        quarter,
+        rebuild_ms,
+        |ns| {
+            exchange(ns, &mut our_state, &mut peer, &mut their_state);
+        },
+    );
+    measure(
+        "post-sync-resolution",
+        ns,
+        64,
+        quarter,
+        rebuild_ms,
+        Namespace::post_sync_resolve,
+    );
+    let winner = ns
+        .name_of(ns.id_for_ino(contested).unwrap())
+        .unwrap_or_default();
+    assert_eq!(
+        indexed_path(ns, contested),
+        format!("/dir-007/{}", String::from_utf8_lossy(&winner))
+    );
+}
+
+const PEER: [u8; 32] = [7; 32];
+const DEVICE: [u8; 32] = [9; 32];
+
+/// One sync exchange between `ns` and `peer` until both have nothing left to
+/// send.
+fn exchange(
+    ns: &mut Namespace,
+    our_state: &mut automerge::sync::State,
+    peer: &mut Namespace,
+    their_state: &mut automerge::sync::State,
+) {
+    for _ in 0..16 {
+        let mut quiet = true;
+        if let Some(message) = peer.sync_generate(their_state) {
+            ns.sync_receive(our_state, &message).unwrap();
+            quiet = false;
+        }
+        if let Some(message) = ns.sync_generate(our_state) {
+            peer.sync_receive(their_state, &message).unwrap();
+            quiet = false;
+        }
+        if quiet {
+            break;
+        }
+    }
 }

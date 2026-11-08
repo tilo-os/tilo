@@ -93,6 +93,24 @@ impl ChangeTrackedDoc {
         self.doc.diff_obj(obj, before, after, recursive)
     }
 
+    /// Record the patches of the changes applied from now on: what a peer's
+    /// delta touched, and only that, so derived state follows it without a
+    /// walk over the document.
+    pub(super) fn arm_patches(&mut self) {
+        self.doc.update_diff_cursor();
+    }
+
+    /// The patches of everything applied since [`Self::arm_patches`].
+    /// The document re-arms past them, so [`Self::disarm_patches`] is what
+    /// stops the log from growing again.
+    pub(super) fn take_patches(&mut self) -> Vec<automerge::Patch> {
+        self.doc.diff_incremental()
+    }
+
+    pub(super) fn disarm_patches(&mut self) {
+        self.doc.reset_diff_cursor();
+    }
+
     /// The changes this document holds beyond `heads`.
     pub(super) fn get_changes(&mut self, heads: &[ChangeHash]) -> Vec<automerge::Change> {
         self.doc.get_changes(heads)
