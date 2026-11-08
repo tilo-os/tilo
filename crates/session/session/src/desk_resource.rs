@@ -26,7 +26,7 @@ use crate::notifications::NoticeSignals;
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DeskKey {
     /// The revisions, the minute, the signals and the names the reading is made of.
-    reading: (u64, i64, u32, bool, u64, u64, u64, u64, u64, u64, String),
+    reading: (u64, i64, bool, u64, u64, u64, u64, u64, u64, String),
     /// The agents seated at the person's agent door.
     agents: u64,
     /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
@@ -651,7 +651,6 @@ impl Desk {
             reading: (
                 self.handle.revision(),
                 ui::clock::local_now().timestamp().div_euclid(60),
-                self.signals.unread(),
                 self.signals.quiet(),
                 self.sync
                     .as_ref()
@@ -737,9 +736,7 @@ impl Desk {
                 }),
             weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
             date: ui::format::month_day(now.date_naive()),
-            unread: self.signals.unread(),
             quiet: self.signals.quiet(),
-            status_panel: self.surfaces.status_panel,
             workspace: tree
                 .active_workspace()
                 .map(|workspace| workspace.name.clone())
@@ -862,21 +859,13 @@ fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_pa
             title: notification.title.clone(),
             body: notification.body.clone(),
             origin_app: notification.app_name.clone().unwrap_or_default(),
-            icon: String::new(),
             kind: match notification.severity {
                 tilo_desktop_surface::notifications::NotificationSeverity::Info => "info",
                 tilo_desktop_surface::notifications::NotificationSeverity::Warning => "warning",
                 tilo_desktop_surface::notifications::NotificationSeverity::Error => "error",
             }
             .to_owned(),
-            // Seen or not is the desk's own count, the same set the bell counts: the centre's rows
-            // and its header never disagree about what is new.
-            read: !notices.is_unread(notification.id),
-            group: notification
-                .app_name
-                .clone()
-                .unwrap_or_else(|| notification.id.to_string()),
-            wants_reply: false,
+            seen: !notices.is_unread(notification.id),
         })
         .collect()
 }

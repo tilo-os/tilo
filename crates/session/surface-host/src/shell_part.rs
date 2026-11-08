@@ -325,22 +325,19 @@ pub struct RoomReading {
     pub activity: String,
 }
 
-/// A notification in the centre, as its sender or its task named it.
+/// Something a sender told the person here: an app, or the agent task that did.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoticeReading {
     pub key: String,
     pub title: String,
     pub body: String,
     pub origin_app: String,
-    pub icon: String,
     /// `info`, `success`, `warning` or `error`.
     pub kind: String,
-    pub read: bool,
-    pub group: String,
-    pub wants_reply: bool,
+    pub seen: bool,
 }
 
-/// One action a notification offers, as its sender named it.
+/// One action a notice offers, as its sender named it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoticeActionReading {
     pub notice: String,
@@ -387,9 +384,7 @@ pub struct DeskReading {
     pub ask: Option<AskReading>,
     pub weekday: String,
     pub date: String,
-    pub unread: u32,
     pub quiet: bool,
-    pub status_panel: bool,
     pub workspace: String,
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
@@ -421,7 +416,7 @@ pub struct DeskReading {
     /// The workspaces the person is in, with who is in each and what it holds.
     #[serde(default)]
     pub rooms: Vec<RoomReading>,
-    /// The notifications in the centre, newest first.
+    /// What the person was told, newest first.
     #[serde(default)]
     pub notices: Vec<NoticeReading>,
     /// Each action a notice offers, naming the notice it is on, in its sender's order.
@@ -915,19 +910,9 @@ impl SessionOrigin {
         );
         set("date", text(&reading.date), reading.date != was.date);
         set(
-            "unread",
-            Value::Int(i64::from(reading.unread)),
-            reading.unread != was.unread,
-        );
-        set(
             "quiet",
             Value::Bool(reading.quiet),
             reading.quiet != was.quiet,
-        );
-        set(
-            "status_panel",
-            Value::Bool(reading.status_panel),
-            reading.status_panel != was.status_panel,
         );
         set(
             "workspace",
@@ -1152,11 +1137,8 @@ impl SessionOrigin {
                         ("title", text(&n.title)),
                         ("body", text(&n.body)),
                         ("origin_app", text(&n.origin_app)),
-                        ("icon", text(&n.icon)),
                         ("kind", text(&n.kind)),
-                        ("read", Value::Bool(n.read)),
-                        ("group", text(&n.group)),
-                        ("wants_reply", Value::Bool(n.wants_reply)),
+                        ("seen", Value::Bool(n.seen)),
                     ]
                 },
             ));

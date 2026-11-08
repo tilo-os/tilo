@@ -55,11 +55,7 @@ d-gi7d6wct = Weekday
 
 d-5cs3vm3f = Date
 
-d-ydlbntd5 = Unread
-
 d-hj6eqjwk = Quiet
-
-d-lc33lyrs = Status panel
 
 d-c5k5ua2t = Workspace
 
@@ -100,11 +96,7 @@ d-4jk2lkpt-filter-timer_stopwatch = Timer stopwatch
 
 d-4jk2lkpt-filter-ask_open = Ask open
 
-d-4jk2lkpt-filter-unread = Unread
-
 d-4jk2lkpt-filter-quiet = Quiet
-
-d-4jk2lkpt-filter-status_panel = Status panel
 
 d-4jk2lkpt-filter-bar_reached = Bar reached
 
@@ -277,7 +269,7 @@ d-jlqw5py5-filter-current = Current
 d-jlqw5py5-filter-present = Present
 
 d-zk7pzrt2 = Notice
-    .doc = A notification in the centre, as its sender or its task named it.
+    .doc = Something a sender told the person here: an app, or the agent task that did.
     .noun = { $count ->
         [one] notice
        *[other] notices
@@ -291,22 +283,14 @@ d-wauytevp = Body
 
 d-nxunr2dc = Origin app
 
-d-xofho4e2 = Icon
-
 d-bsp6shbm = Kind
 
-d-z67wqj3i = Read
+d-z67wqj3i = Seen
 
-d-uvxcllkj = Group
-
-d-b4i657ss = Wants reply
-
-d-zk7pzrt2-filter-read = Read
-
-d-zk7pzrt2-filter-wants_reply = Wants reply
+d-zk7pzrt2-filter-seen = Seen
 
 d-7rjfrgeo = Notice action
-    .doc = One action a notification offers, as its sender named it.
+    .doc = One action a notice offers, as its sender named it.
     .noun = { $count ->
         [one] notice action
        *[other] notice actions
@@ -842,6 +826,9 @@ d-5yz5iwzs = Remove from the dock
 
 d-aitkuflo = Open item
     .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this desk comes to the front, so the desk says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
+
+d-vjnksgzm = Seed waiting
+    .doc = Two notices a sender left and the person has not seen: what the shell stages on a desk it shows before the person has caught up, so the bar's bell has something to count.
 
 d-j4ax4otm = Seed notices
     .doc = The desk's notices a scenario starts from: what apps and an agent said today.

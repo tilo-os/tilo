@@ -38,9 +38,7 @@ type Desk (origin: session.desk) {
     ask_open: Bool
     weekday: Text merge register
     date: Text merge register
-    unread: Int
     quiet: Bool
-    status_panel: Bool
     workspace: Text merge register
     strip: Text merge register
     workspaces: Collection<Workspace>
@@ -146,20 +144,18 @@ type Room (origin: session.room) {
     activity: Text merge register
 }
 
-/// A notification in the centre, as its sender or its task named it.
+/// Something a sender told the person here: an app, or the agent task that did. How the centre
+/// counts, groups and marks them is this shell's; what a notice is stays its sender's.
 type Notice (origin: session.notice) {
     key: Text merge register
     title: Text merge register
     body: Text merge register
     origin_app: Text merge register
-    icon: Text merge register
     kind: Text merge register
-    read: Bool
-    group: Text merge register
-    wants_reply: Bool
+    seen: Bool
 }
 
-/// One action a notification offers, as its sender named it.
+/// One action a notice offers, as its sender named it.
 type NoticeAction (origin: session.notice_action) {
     notice: Text merge register
     key: Text merge register
@@ -446,15 +442,16 @@ view battery_status() {
 /// the bell nor the control beside it.
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
-    let label = if d.unread == 0 {
+    let waiting = unread(d)
+    let label = if waiting == 0 {
         name
-    } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
+    } else if waiting == 1 { "{name}, 1 unread" } else { "{name}, {waiting} unread" }
     ui.Button(
         label,
         icon: if d.quiet { .bell_off } else { .bell },
         icon_only: true,
         role: .bar,
-        count: d.unread,
+        count: waiting,
     ) {
         on press: device.show_surface(device.desk, surface: "centre")
     }

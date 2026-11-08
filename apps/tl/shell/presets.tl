@@ -11,7 +11,7 @@ scenario "the default shell on a desk" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -43,7 +43,7 @@ scenario "a full dock" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -93,7 +93,7 @@ scenario "the dock on the left" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -118,7 +118,7 @@ scenario "the dock on the right" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -142,7 +142,7 @@ scenario "moving an item on the dock" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -165,7 +165,7 @@ scenario "a rearranged bar" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -188,7 +188,7 @@ scenario "the Tilo preset" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -210,7 +210,7 @@ scenario "the macos preset" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -232,7 +232,7 @@ scenario "the windows preset" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -254,7 +254,7 @@ scenario "the gnome preset" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -271,7 +271,7 @@ scenario "the minimal preset" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    d.unread = 2
+    seed_waiting(d)
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
