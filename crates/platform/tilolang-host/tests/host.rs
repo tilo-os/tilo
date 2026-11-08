@@ -2493,8 +2493,8 @@ fn choices_of(node: &patch::Node) -> Vec<(String, String)> {
             let patch::Value::List(parts) = case else {
                 panic!("a case: {case:?}");
             };
-            match (&parts[0], &parts[1]) {
-                (patch::Value::Text(value), patch::Value::Text(label)) => {
+            match parts.as_slice() {
+                [patch::Value::Text(value), patch::Value::Text(label), ..] => {
                     (value.clone(), label.clone())
                 }
                 other => panic!("a case's value and label: {other:?}"),
@@ -2503,17 +2503,9 @@ fn choices_of(node: &patch::Node) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The palette runs an action whose arguments it does not give, and the form asks for them by
-/// their types: a task is added by typing its title, and its reminder set by picking the moment
-/// it names, both through the invocation the palette sends for any command
-/// (forms-and-diagrams.md §1).
-#[test]
-fn the_palette_asks_the_form_for_a_title_and_a_moment() {
-    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-    assert_eq!(app, TASKS);
-    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
-    settle(&mut host, &mut window);
-
+/// The palette runs "New task", which still needs the title: its form asks for it, and the
+/// person types it. Returns the task the form made.
+fn a_task_typed_into_the_palettes_form(host: &mut TilolangHost, window: &mut Window) -> Value {
     // The palette takes "New task", which still needs the title: its form asks for it.
     let new_task = host
         .instances()
@@ -2529,52 +2521,57 @@ fn the_palette_asks_the_form_for_a_title_and_a_moment() {
         address: new_task,
         argument: None,
     }]);
-    settle(&mut host, &mut window);
+    settle(host, window);
     assert_eq!(
         window.form.as_ref().map(|form| form.title.as_str()),
         Some("New task…"),
         "the form stands for the action, asking what it was not given"
     );
-    type_into(&mut window, "form~title", "Call Ada");
-    settle(&mut host, &mut window);
-    assert_eq!(
-        form_text(&window, "form~title").as_deref(),
-        Some("Call Ada")
-    );
-    submit_form(&mut window);
-    settle(&mut host, &mut window);
+    type_into(window, "form~title", "Call Ada");
+    settle(host, window);
+    assert_eq!(form_text(window, "form~title").as_deref(), Some("Call Ada"));
+    submit_form(window);
+    settle(host, window);
     assert!(
         window.form.is_none(),
         "the form closes once the action runs: {:?}",
         window.form.as_ref().map(|form| form.error.clone())
     );
+    tasks_of(host.instances().next().expect("the instance runs"))
+        .first()
+        .cloned()
+        .expect("the task it made")
+}
 
-    // The window holds the task, and offers its actions: "Remind me" asks when, the moments a
-    // person names offered to pick from.
-    let (task, remind) = {
-        let hosted = host.instances().next().expect("the instance runs");
-        let task = tasks_of(hosted).first().cloned().expect("the task it made");
-        let remind = hosted
-            .published()
-            .iter()
-            .find(|action| action.action_label == "Remind me…")
-            .expect("the task offers its reminder")
-            .address
-            .clone();
-        (task, remind)
-    };
+/// "Remind me…" asks when, the moments a person names offered to pick from: the person picks
+/// one, and the pick answers the form by itself.
+fn a_reminder_picked_from_the_forms_choices(
+    host: &mut TilolangHost,
+    window: &mut Window,
+    task: &Value,
+) {
+    let remind = host
+        .instances()
+        .next()
+        .expect("the instance runs")
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Remind me…")
+        .expect("the task offers its reminder")
+        .address
+        .clone();
     window.send(&[ToApp::Invoke {
         address: remind,
         argument: None,
     }]);
-    settle(&mut host, &mut window);
+    settle(host, window);
     assert_eq!(
         window.form.as_ref().map(|form| form.title.as_str()),
         Some("Remind me…"),
         "the reminder's form asks when"
     );
     assert_eq!(
-        form_text(&window, "form~when").as_deref(),
+        form_text(window, "form~when").as_deref(),
         Some(""),
         "it starts with no moment, the task having no reminder"
     );
@@ -2583,13 +2580,13 @@ fn the_palette_asks_the_form_for_a_title_and_a_moment() {
         "a moment is required: nothing reads yet, so submit waits"
     );
     assert!(
-        !form_node(&window, "form~when~field")
+        !form_node(window, "form~when~field")
             .expect("the moment's field")
             .props
             .contains_key("label"),
         "a form of one question says what it asks in its title"
     );
-    let choices = choices_of(form_node(&window, "form~when~quick").expect("the moments offered"));
+    let choices = choices_of(form_node(window, "form~when~quick").expect("the moments offered"));
     assert!(
         choices.iter().all(|(_, label)| label != "None"),
         "a required moment offers no way to leave it unanswered: {choices:?}"
@@ -2600,29 +2597,43 @@ fn the_palette_asks_the_form_for_a_title_and_a_moment() {
         .unwrap_or_else(|| panic!("tomorrow morning is offered: {choices:?}"));
     assert_eq!(
         window.form.as_ref().expect("the form").answers,
-        [form_node(&window, "form~when~quick")
+        [form_node(window, "form~when~quick")
             .expect("its choices")
             .key
             .clone()],
         "picking a moment answers the form by itself"
     );
-    type_into(&mut window, "form~when~quick", moment);
-    settle(&mut host, &mut window);
+    type_into(window, "form~when~quick", moment);
+    settle(host, window);
     assert_eq!(
-        form_text(&window, "form~when").as_deref(),
+        form_text(window, "form~when").as_deref(),
         Some(moment.as_str()),
         "the field reads as the moment the pick names"
     );
-    submit_form(&mut window);
-    settle(&mut host, &mut window);
+    submit_form(window);
+    settle(host, window);
     assert!(
         window.form.is_none(),
         "the form closes once the action runs: {:?}",
         window.form.as_ref().map(|form| form.error.clone())
     );
     assert_eq!(
-        reminder_of(host.instances().next().expect("the instance runs"), &task),
-        *moment,
+        &reminder_of(host.instances().next().expect("the instance runs"), task),
+        moment,
         "the task is reminded at the moment picked"
     );
+}
+
+/// The palette runs an action whose arguments it does not give, and the form asks for them by
+/// their types: a task is added by typing its title, and its reminder set by picking the moment
+/// it names, both through the invocation the palette sends for any command
+/// (forms-and-diagrams.md §1).
+#[test]
+fn the_palette_asks_the_form_for_a_title_and_a_moment() {
+    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+    assert_eq!(app, TASKS);
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
+    settle(&mut host, &mut window);
+    let task = a_task_typed_into_the_palettes_form(&mut host, &mut window);
+    a_reminder_picked_from_the_forms_choices(&mut host, &mut window, &task);
 }

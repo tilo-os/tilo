@@ -136,7 +136,7 @@ impl Shown {
             UiEvent::Fire(key, event, _) => (key.clone(), event.strip_prefix("pick.")?.to_owned()),
             _ => return None,
         };
-        let answered = self.completes.iter().any(|key| *key == field);
+        let answered = self.completes.contains(&field);
         let edit = ToApp::FormEdit {
             form: self.id,
             field,
