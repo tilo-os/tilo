@@ -6,7 +6,7 @@
 //! size of the resource. Materializing the resource as a [`crate::DynRecord`] instead
 //! would read every item of every collection in it for each field a view reads.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use automerge::legacy::Key as LegacyKey;
@@ -489,7 +489,7 @@ pub fn changed_by(
 
 /// The changes of `doc` that wrote a resource of the record, and whose messages are read for
 /// one: a change that wrote nothing but where the record places its resources (`$chunks`) names
-/// no resource and makes no version of one ([`Changed::wrote`]).
+/// no resource and makes no version of one ([`Places::wrote`]).
 #[must_use]
 pub fn naming<'c>(changes: &'c [Change], doc: &Doc) -> Vec<&'c Change> {
     let mut places = Places::of(doc);
@@ -543,11 +543,12 @@ impl<'d> Places<'d> {
         // of it: a change on a workspace of a hundred thousand items writes one key of one
         // object, and the record's own document holds a hundred thousand such changes.
         let mut writes: Vec<Writes<'_>> = Vec::new();
-        // Where each object the change wrote stands, once walked: a change writes few objects,
-        // and a hundred thousand of them write one each.
-        let mut known: Vec<(automerge::legacy::ObjectId, Option<usize>)> = Vec::new();
+        // Where each object the change wrote stands, once walked, by its id: most changes write
+        // one object, but the change that adds ten thousand items writes ten thousand, and a
+        // search of the ones seen for each op would read them once an op.
+        let mut known: HashMap<&automerge::legacy::ObjectId, Option<usize>> = HashMap::new();
         for op in &expanded.operations {
-            let at = if let Some((_, at)) = known.iter().find(|(obj, _)| *obj == op.obj) {
+            let at = if let Some(at) = known.get(&op.obj) {
                 *at
             } else {
                 let at = writes.len();
@@ -555,22 +556,16 @@ impl<'d> Places<'d> {
                     // Where the record places its resources: written once an item, and no
                     // resource's fields, place or version is read of it.
                     Some(path) if places_only(&path) => None,
-                    Some(path) => {
+                    path => {
                         writes.push(Writes {
-                            path: Some(path),
+                            path,
                             keys: Vec::new(),
-                        });
-                        Some(at)
-                    }
-                    None => {
-                        writes.push(Writes {
-                            path: None,
-                            keys: Vec::new(),
+                            seen: HashMap::new(),
                         });
                         Some(at)
                     }
                 };
-                known.push((op.obj.clone(), walked));
+                known.insert(&op.obj, walked);
                 walked
             };
             let Some(at) = at else {
@@ -584,10 +579,7 @@ impl<'d> Places<'d> {
                 LegacyKey::Seq(_) => None,
             };
             let made = matches!(op.action, automerge::legacy::OpType::Make(_));
-            match wrote.keys.iter_mut().find(|(seen, _)| *seen == key) {
-                Some((_, held)) => *held = *held || made,
-                None => wrote.keys.push((key, made)),
-            }
+            wrote.note(key, made);
         }
         if writes.is_empty() {
             return out.finish();
@@ -610,9 +602,24 @@ impl<'d> Places<'d> {
         out.finish()
     }
 
-    /// [`Self::written`], for a change read only for whether it wrote a resource at all.
+    /// Whether `change` wrote anything but where the record places its resources (`$chunks`),
+    /// for a change read only for that: the first object it wrote elsewhere answers, and what
+    /// it wrote there is not read. A change that adds ten thousand items is answered by its
+    /// first op, not walked to each item's place.
     pub fn wrote(&mut self, change: &Change) -> bool {
-        self.written(change, &BTreeMap::new()).wrote()
+        let expanded = change.decode();
+        let mut seen: HashSet<&automerge::legacy::ObjectId> = HashSet::new();
+        for op in &expanded.operations {
+            if !seen.insert(&op.obj) {
+                continue;
+            }
+            match self.path(&op.obj.to_string()) {
+                Some(path) if places_only(&path) => {}
+                // Written elsewhere in the record, or where no place could be walked.
+                _ => return true,
+            }
+        }
+        false
     }
 
     /// The keys from the record's root down to the object `obj` (as Automerge prints its id),
@@ -675,6 +682,21 @@ struct Writes<'a> {
     /// Where the object stands in the record; `None` when its place could not be walked.
     path: Option<Rc<[Prop]>>,
     keys: Vec<(Option<&'a str>, bool)>,
+    /// Where each key stands in `keys`: a map the change put ten thousand keys in is read a
+    /// key at a time, not searched once a key.
+    seen: HashMap<Option<&'a str>, usize>,
+}
+
+impl<'a> Writes<'a> {
+    /// The key `key` written, with an object made under it when `made`.
+    fn note(&mut self, key: Option<&'a str>, made: bool) {
+        if let Some((_, held)) = self.seen.get(&key).and_then(|at| self.keys.get_mut(*at)) {
+            *held = *held || made;
+        } else {
+            self.seen.insert(key, self.keys.len());
+            self.keys.push((key, made));
+        }
+    }
 }
 
 /// Whether an object stands where the record places its resources (`$chunks`): a write there
