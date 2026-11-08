@@ -2386,6 +2386,7 @@ impl Workspaces {
                 .map_err(CollaborationError::new)?
                 .ok_or_else(|| CollaborationError::new("the record does not read"))?;
             let keys = workspace.record_keys(app, record).await;
+            drop(workspace);
             (readable, keys)
         };
         // Keep what the channel retained until now beside the replay: never
@@ -2394,6 +2395,7 @@ impl Workspaces {
             crate::compaction::owner_run(&hosted, move |store| store.archive_channel(&channel))
                 .await
                 .map_err(CollaborationError::new)?;
+        drop(hosted);
         let mut workspace = state.lock().await;
         let mut candidate = workspace.peer().clone();
         let sealed = match keys {

@@ -334,7 +334,7 @@ fn write_atomic(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::SigningKey;
 
     fn envelope(root: &SigningKey) -> String {
         serde_json::json!({

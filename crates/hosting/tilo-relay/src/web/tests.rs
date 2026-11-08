@@ -121,6 +121,7 @@ async fn stop(relay: Relay, serving: tokio::task::JoinHandle<()>) {
     crate::daemon::Relay::shutdown(relay).await;
 }
 
+#[cfg(feature = "agents")]
 async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
     let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
     let header = format!(
