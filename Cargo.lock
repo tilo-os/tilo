@@ -19201,6 +19201,7 @@ dependencies = [
  "tilo-clock",
  "tilo-identity-client",
  "tilo-lock",
+ "workspace-hack",
 ]
 
 [[package]]
