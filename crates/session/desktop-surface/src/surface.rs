@@ -725,7 +725,7 @@ const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
 /// apart, all well inside this; the pauses between spins are mostly longer.
 const SWIPE_GAP: Duration = Duration::from_millis(200);
 /// How soon search looks again for an app's answer that is still coming.
-const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
+const SEARCH_ANSWER_POLL: Duration = tilo_desktop_search::ANSWER_POLL;
 
 /// Sideways travel that steps focus one window on a strip that cannot pan
 /// that way. About the width of a window: a Normal one is two thirds of a

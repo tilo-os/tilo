@@ -204,6 +204,13 @@ impl RowRoom {
     }
 }
 
+/// How soon a host looks again while an application's answer to the query is
+/// still coming: the answer arrives on the host's clock, so the host asks
+/// [`DesktopSearch::refresh`] until it does. A host that draws only what asks
+/// for a frame schedules one at this pace for as long as
+/// [`DesktopSearch::waiting`] holds.
+pub const ANSWER_POLL: ui::time::Duration = ui::time::Duration::from_millis(50);
+
 pub struct DesktopSearch {
     palette: ActionPalette,
     sources: Option<Sources>,

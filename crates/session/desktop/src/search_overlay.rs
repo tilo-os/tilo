@@ -200,11 +200,38 @@ impl Widget for SearchOverlay {
         // palette, over everything the card stands above, the window in front included. Then the
         // card, where it was laid out.
         ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
-        let search = self.handle.search_palette();
-        let mut search = search.borrow_mut();
-        if let Some(palette) = search.palette_mut() {
-            palette.draw(scene, transform, text, theme, presence);
-        }
+        // The card is one part of the page's scene, bounded by what it paints: a person typing into
+        // it (every key, its caret) or a result arriving repaints the card, not the scrimmed
+        // display under it. Without the part the card's commands sit outside every part, which the
+        // retained-damage producer cannot prove sparse, so every frame of a search repaints the
+        // whole display — seconds a frame under a software rasteriser. The scrim stays outside the
+        // part on purpose: it paints the whole area, and a part's bounds must cover everything it
+        // paints; it changes only as the search opens or the theme does.
+        let card = {
+            let search = self.handle.search_palette();
+            let search = search.borrow();
+            search
+                .palette()
+                .map(ui::widget::Widget::get_rect)
+                .filter(|card| !card.is_zero_area())
+        };
+        let Some(card) = card else {
+            // No card laid out yet: nothing of the palette draws this frame.
+            self.shown = (true, self.handle.search_revision());
+            return;
+        };
+        let key = ui::scene_parts::PartKey::new("desktop.search-overlay", ());
+        ui::scene_parts::part_drawn(scene, key, |scene| {
+            let search = self.handle.search_palette();
+            let mut search = search.borrow_mut();
+            if let Some(palette) = search.palette_mut() {
+                palette.draw(scene, transform, text, theme, presence);
+            }
+            vec![
+                transform
+                    .transform_rect_bbox(ui::widget::floating_surface::painted_bounds(card, theme)),
+            ]
+        });
         self.shown = (true, self.handle.search_revision());
     }
 
@@ -373,7 +400,21 @@ impl Widget for SearchOverlay {
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let search = self.handle.search_palette();
         let search = search.borrow();
-        search.palette().and_then(ui::Widget::next_wake_deadline)
+        // A search still filling in is looked for again shortly: its rows arrive off the frame (a
+        // worker's answer wakes the desk; an application's answer comes on the host's clock), and
+        // a desk with nothing else to draw presents none. The desk's own schedule is not the
+        // chrome's — the palette is drawn from here — so the deadline goes with the card's. A
+        // search that never asked for it shows the rows it had when the person stopped typing,
+        // and Enter on an app's row comes long after the person pressed it.
+        let answering = (self.handle.search_open() && self.handle.search_searching())
+            .then(|| ui::time::now().checked_add(tilo_desktop_search::ANSWER_POLL))
+            .flatten();
+        search
+            .palette()
+            .and_then(ui::Widget::next_wake_deadline)
+            .into_iter()
+            .chain(answering)
+            .min()
     }
 
     fn name(&self) -> &'static str {

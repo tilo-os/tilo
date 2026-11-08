@@ -51,7 +51,7 @@ pub use model::{
     OPEN_ACTION, OPEN_ANCHOR, SHOW_COLLABORATORS, SearchStream, Source, Target, Thing,
     WORKSPACE_COMMAND_PREFIX, search, search_stream,
 };
-pub use palette::{DesktopSearch, SearchData};
+pub use palette::{ANSWER_POLL, DesktopSearch, SearchData};
 pub use preferences::SearchPreferences;
 pub use ui::search::system::ResourceKind;
 pub use usage::Usage;

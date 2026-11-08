@@ -213,11 +213,27 @@ const paletteRows = async tab => {
 // waits on that, not on a stopwatch, however slow presenting is. A page
 // drawing a megapixel through a software rasteriser draws a few frames a
 // second, and every wait here is a number of frames for that reason.
-const settle = async (tab, by = 2) => {
+//
+// A desk with nothing to draw presents none — it waits for what changes —
+// so a frame count is progress only while the desk owes work. `owed` says
+// whether it still does: the wait ends when the frames came or the desk says
+// it has nothing left to draw, and never outlives the work it waits for.
+const settle = async (tab, by = 2, owed = () => true) => {
   const from = await tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
-  await until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
-    `the desk stepping ${by} more frame(s)`, 120_000);
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    if (await tab.evaluate(`(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`)) return;
+    if (!await owed()) return;
+    if (Date.now() > deadline) {
+      await until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
+        `the desk stepping ${by} more frame(s)`, 1);
+    }
+    await sleep(100);
+  }
 };
+// Whether the open search still owes rows: the desk's own answer, which a
+// settled frame would not carry, as a settled desk presents none.
+const searching = tab => tab.evaluate('globalThis.tiloMount?.state()?.searchSearching === true');
 // A person's search: the chord, the query, and Enter on the row the palette
 // offers for it. The host answers a query a moment after the last key, and the
 // rows it shows before that answer are the previous query's: they are read
@@ -225,7 +241,7 @@ const settle = async (tab, by = 2) => {
 // first result under the palette's heading, which is what the highlight sits
 // on. Reading only for the row's presence raced that answer and sent Enter to
 // a row left over from the query before.
-const search = async (tab, command, query, row) => {
+const search = async (tab, command, query, row, opens = null) => {
   // The desk keeps the search up until what it opened has arrived, and the
   // chord toggles it: it is opened only when it is down.
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
@@ -242,12 +258,18 @@ const search = async (tab, command, query, row) => {
   const deadline = Date.now() + 120_000;
   // The text is in before its answer is: two reads a frame apart, agreeing,
   // are the palette's answer to this query and not a frame of the one before.
-  await settle(tab, 2);
+  // A settled desk presents no frame, so the wait between the two reads is
+  // the desk's search saying it owes no more rows as much as a frame.
+  await settle(tab, 2, () => searching(tab));
   for (;;) {
     const rows = await paletteRows(tab);
-    await settle(tab, 1);
+    await settle(tab, 1, () => searching(tab));
     const again = await paletteRows(tab);
     if (first(rows) === row && JSON.stringify(rows) === JSON.stringify(again)) {
+      // Enter is what opens the app: the watch is in the page before the press,
+      // so the frame it closes search and the frame the app's window arrives on
+      // are told apart on the page's own clock.
+      if (opens) await watchOpen(tab, opens);
       await key(tab, 'Enter');
       chosen = rows;
       break;
@@ -260,6 +282,42 @@ const search = async (tab, command, query, row) => {
   await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 180_000);
   return chosen;
 };
+// A page-side clock around the person's Enter. What a person waits for is the
+// desk showing the app's window, and this desk paints into one canvas: the
+// window is on screen when the frame that carries it is presented. So both
+// moments are frames the page presented — the first after Enter that closed
+// search, and the first that lists the window — kept on the page's own clock,
+// where a round trip from here never lands in the number. A desk that paints
+// at a display's pace shows the window on the frame right after the key.
+const watchOpen = (tab, app) => tab.evaluate(`(() => {
+  const mount = globalThis.tiloMount;
+  const host = mount.canvas.parentElement;
+  const watch = globalThis.__tiloOpen = {app: ${JSON.stringify(app)}, pressedAt: null, shownAt: null};
+  const read = () => {
+    // Enter is taken on the frame the search closes: that frame's own time is
+    // the press, however long the round trip to read this was.
+    if (watch.pressedAt === null && mount.state()?.searchOpen === false) {
+      const shown = Number(host.dataset.frames ?? 0);
+      watch.pressedAt = performance.now();
+      watch.framesAtPress = shown;
+    }
+    if (watch.pressedAt !== null && watch.shownAt === null && host.dataset.phase === 'presented'
+        && Number(host.dataset.frames ?? 0) > (watch.framesAtPress ?? 0)
+        && (mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === watch.app)) {
+      watch.shownAt = performance.now();
+    }
+  };
+  new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames', 'data-phase']});
+  read();
+  return true;
+})()`);
+const openMs = tab => tab.evaluate(`(() => {
+  const watch = globalThis.__tiloOpen;
+  globalThis.__tiloOpen = undefined;
+  if (!watch || watch.shownAt === null || watch.pressedAt === null) return -1;
+  return Math.round(watch.shownAt - watch.pressedAt);
+})()`);
+
 // A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away
 // from the keyboard (Meta on a Mac, as the desktop reads it).
 const canvasTopLeft = tab => tab.evaluate(`(() => {
@@ -847,18 +905,32 @@ try {
   const applications = (await nav(a.tab))?.applications ?? [];
   if (!applications.length) failed('the Lounge offers no app');
   const opened = [];
+  // What a person waits for: Enter on the app's row, to the desk showing its
+  // window. Opening an app is a window on the desk the person already has;
+  // the app's own code arriving is that window filling in, and it must not
+  // hold the window back. A tenth of a second is the bar: past it the desk
+  // reads as not having heard the person.
+  const OPEN_BOUND_MS = 100;
+  const timings = [];
   const started = Date.now();
   for (const application of applications) {
-    await search(a.tab, a.command, application.label.toLowerCase(), application.label);
+    await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
       `the window of ${application.label}`, 180_000);
+    const presentMs = await openMs(a.tab);
+    timings.push({app: application.id, presentMs});
     const shot = await a.tab.screenshot();
     if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
     opened.push(application.id);
   }
   const spent = Math.round((Date.now() - started) / 1000);
-  report.applications = {offered: applications.map(application => application.id), opened, seconds: spent};
+  report.applications = {offered: applications.map(application => application.id), opened, seconds: spent, presented: timings};
+  const slow = timings.filter(timing => timing.presentMs > OPEN_BOUND_MS);
   console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search (${spent}s)`);
+  for (const timing of timings) console.log(`  ${timing.app}: ${timing.presentMs} ms from Enter to its window`);
+  if (slow.length) {
+    failed(`${slow.length} of ${timings.length} apps took more than ${OPEN_BOUND_MS} ms from Enter to their window: ${slow.map(timing => `${timing.app} ${timing.presentMs} ms`).join(', ')}`);
+  }
 
   // Two fingers sideways over Notes, which does not scroll that way: the
   // strip pans by the gesture and the windows stay as they were.

@@ -2799,6 +2799,11 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            // Whether the open search still owes rows. A settled desk presents no
+            // frame until something changes, so a page that waits for the palette's
+            // answer reads this rather than counting presented frames: the answer
+            // is the desk's own, and a frame of it may wait for the next minute.
+            "searchSearching": self.desktop.as_ref().is_some_and(|d| d.handle.search_searching()),
             // The page titles its tab after it.
             "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
