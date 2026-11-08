@@ -260,6 +260,11 @@ pub(crate) fn reconcile(session: &crate::Session) {
         }
     }
     for (app, origin, workspace) in needed {
+        // A connector that already runs needs nothing: its service was reached when it started,
+        // and attaching to it again every pass would make a connection no reader holds.
+        if session.connectors.runs(&app, &origin, &workspace) {
+            continue;
+        }
         let workspace = apps.workspace_named(&workspace);
         let reached = session
             .connectors
