@@ -580,10 +580,10 @@ impl Invitations for PageInvite {
 
 /// A part a link may bring someone in at, as the workspace's governance names
 /// one.
-type Role = tilo_action_policy::Role;
+pub(crate) type Role = tilo_action_policy::Role;
 
 /// The role a link's part names, when it is one.
-fn role_from_id(id: &str) -> Option<Role> {
+pub(crate) fn role_from_id(id: &str) -> Option<Role> {
     tilo_desktop_model::role_from_id(id)
 }
 
@@ -598,12 +598,12 @@ fn role_preview(role: Role) -> String {
 }
 
 /// A role's id in the sheet and in the host's requests.
-fn role_id(role: Role) -> &'static str {
+pub(crate) fn role_id(role: Role) -> &'static str {
     tilo_desktop_model::role_id(role)
 }
 
 /// The part a host's invitation grants, as the sheet names it.
-fn role_of(role: WorkspaceRole) -> Role {
+pub(crate) fn role_of(role: WorkspaceRole) -> Role {
     match role {
         WorkspaceRole::Viewer => Role::Viewer,
         WorkspaceRole::Commenter => Role::Commenter,
@@ -613,7 +613,7 @@ fn role_of(role: WorkspaceRole) -> Role {
 }
 
 /// The role a host is asked for, when a link may grant it.
-fn workspace_role(role: Role) -> Option<WorkspaceRole> {
+pub(crate) fn workspace_role(role: Role) -> Option<WorkspaceRole> {
     match role {
         Role::Viewer => Some(WorkspaceRole::Viewer),
         Role::Commenter => Some(WorkspaceRole::Commenter),

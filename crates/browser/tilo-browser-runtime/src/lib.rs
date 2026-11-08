@@ -195,6 +195,9 @@ mod person_records;
 mod presence_clock;
 #[cfg(target_arch = "wasm32")]
 mod replication;
+// The workspaces a host governs, as the page administers them.
+#[cfg(target_arch = "wasm32")]
+mod rooms;
 #[cfg(target_arch = "wasm32")]
 #[cfg(target_arch = "wasm32")]
 mod semantics_status;

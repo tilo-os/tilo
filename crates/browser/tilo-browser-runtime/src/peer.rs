@@ -437,7 +437,7 @@ pub async fn certify_device(
     .map_err(js_error)
 }
 
-fn device_key(text: &str) -> Result<[u8; 32], JsError> {
+pub(crate) fn device_key(text: &str) -> Result<[u8; 32], JsError> {
     hex::decode(text)
         .map_err(js_error)?
         .try_into()
@@ -1420,6 +1420,28 @@ fn set_member_name(handle: &PeerHandle, workspace: &str, name: &str) {
     let _ = handle.rooms_then(request, Box::new(|_| {}));
 }
 
+impl WasmPeer {
+    /// Ask the host `request`, and resolve to its answer.
+    pub(crate) async fn rooms_request(
+        &self,
+        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
+    ) -> Result<tilo_relay_protocol::workspaces::WorkspacesReply, JsError> {
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .rooms_then(
+                request,
+                Box::new(move |answer| {
+                    let _ = reply.send(answer);
+                }),
+            )
+            .map_err(js_error)?;
+        receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)
+    }
+}
+
 #[wasm_bindgen]
 impl WasmPeer {
     /// Start a session. `configJson` is `{cert, hostCert}` from
@@ -1639,28 +1661,6 @@ impl WasmPeer {
         self.id
     }
 
-    /// Administer the host's workspaces as this device: `request` is a
-    /// `WorkspacesRequest` as JSON (serde's external tagging, byte arrays as
-    /// arrays of numbers); resolves to the `WorkspacesReply` as JSON.
-    pub async fn govern(&self, request: String) -> Result<String, JsError> {
-        let request: tilo_relay_protocol::workspaces::WorkspacesRequest =
-            serde_json::from_str(&request).map_err(js_error)?;
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .rooms_then(
-                request,
-                Box::new(move |answer| {
-                    let _ = reply.send(answer);
-                }),
-            )
-            .map_err(js_error)?;
-        let answer = receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)?;
-        serde_json::to_string(&answer).map_err(js_error)
-    }
-
     /// The session token the host's fetch proxy (`/peer/v1/fetch`) takes,
     /// while this page is connected to a host that serves one; `undefined`
     /// otherwise. It changes when the page reconnects, so the page's fetch
@@ -1673,13 +1673,14 @@ impl WasmPeer {
     /// Pre-admit whoever redeems the invitation this issues and presents
     /// the token whose SHA-256 the grant names: `options` is JSON
     /// `{requestId, workspace, role, tokenSha256, label, expiresInSeconds,
-    /// inviterName?}` (hex ids, `role` `Viewer`/`Commenter`/`Editor`); the
-    /// owner's `root` signs the grant. Resolves to the `WorkspacesReply` as JSON.
+    /// inviterName?}` (hex ids, `role` `viewer`/`commenter`/`editor`/
+    /// `moderator`); the owner's `root` signs the grant. Resolves to the
+    /// invitation's text.
     ///
     /// # Errors
     ///
-    /// Rejects for malformed options, when the root does not sign, or as
-    /// [`Self::workspaces`].
+    /// Rejects for malformed options, when the root does not sign, or when the
+    /// host refuses.
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
         use tilo_browser_peer::DeviceSigner as _;
@@ -1688,22 +1689,25 @@ impl WasmPeer {
         struct Options {
             request_id: String,
             workspace: String,
-            role: tilo_relay_protocol::workspaces::WorkspaceRole,
+            role: String,
             token_sha256: String,
             label: String,
             expires_in_seconds: u64,
             inviter_name: Option<String>,
         }
         let options: Options = serde_json::from_str(&options).map_err(js_error)?;
+        if options.label.trim().is_empty() {
+            return Err(js_error("a pre-admission needs a label"));
+        }
+        let seconds = crate::rooms::seconds(Some(options.expires_in_seconds))?;
         let root = PageSigner::from_js(&root)?;
         let now_ns = ui::time::unix_now_ns();
         let mut grant = tilo_relay_protocol::workspaces::PreAdmission {
             workspace: options.workspace,
-            role: options.role,
+            role: crate::rooms::wire_role(&options.role)?,
             token_sha256: device_key(&options.token_sha256)?,
             label: options.label,
-            expires_at_ns: now_ns
-                .saturating_add(options.expires_in_seconds.saturating_mul(1_000_000_000)),
+            expires_at_ns: now_ns.saturating_add(seconds.saturating_mul(1_000_000_000)),
             owner_user_public_key: root.device_public_key(),
             signature: [0; 64],
         };
@@ -1711,17 +1715,16 @@ impl WasmPeer {
             .sign(grant.digest().map_err(js_error)?.to_vec())
             .await
             .map_err(|error| js_error(error.0))?;
-        self.govern(
-            serde_json::to_string(
-                &tilo_relay_protocol::workspaces::WorkspacesRequest::PreAdmit {
+        let reply = self
+            .rooms_request(
+                tilo_relay_protocol::workspaces::WorkspacesRequest::PreAdmit {
                     request_id: request_id(&options.request_id)?,
                     grant,
                     inviter_name: options.inviter_name,
                 },
             )
-            .map_err(js_error)?,
-        )
-        .await
+            .await?;
+        crate::rooms::invitation_text(reply)
     }
 
     /// Say this page's `value` of itself in `workspace` (the live layer's

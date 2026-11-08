@@ -4,7 +4,7 @@
  * An app may also invoke the workspace's own membership actions (`remove-member`,
  * `ban`, `unban` on the workspace's governance resource, provider
  * `tilo.workspace`): they become the peer's `/rooms` requests
- * (`membership()`, see `membership.mjs`), which the host decides by the
+ * (`membership()`, see `peer.mjs`), which the host decides by the
  * workspace's policy. The answer is the invocation's receipt. Any other action
  * the workspace's host runs (a workspace record's, `record:<app>:<record>`, or the
  * workspace's own, `workspace:<workspace>`) goes to the host over the peer's carrier
@@ -34,7 +34,7 @@ const refusal = (code, reason) => Promise.reject(new Error(`${code}: ${reason}`)
  * them on the page: `remove-member`, `ban` and `unban` on `workspace`'s
  * governance resource, each `{person}` (the person's root key, hex). They
  * become the same `/rooms` requests an app's do (`membership`, see
- * `membership.mjs`), which the host decides by the workspace's policy; removing
+ * `peer.mjs`), which the host decides by the workspace's policy; removing
  * and banning run only with `confirm`, as the door runs any action whose
  * contract asks first.
  *
