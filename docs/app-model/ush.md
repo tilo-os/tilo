@@ -2,9 +2,10 @@
 
 `ush` is not a shell language. It is a locked-down application runtime that
 *hosts* a shell: it builds a guest from an [environment](environments.md)
-record — a read-only stack of images for `/usr` and `/etc`, the workspace's
-folder as `~`, the directories it was granted — puts a shell inside it, and brokers
-every request that would reach past it.
+record — a read-only stack of images for `/usr` and `/etc`, its workspace's
+own files as `~`, the directories it was granted — puts a shell inside it, and brokers
+every request that would reach past it. Every environment belongs to the
+workspace its Terminal was opened in (see [Workspaces](#workspaces)).
 
 Where it is going: [`ush-portable.md`](ush-portable.md), a shell that runs
 Tilo's own commands as actions anywhere, and starts a Linux guest only for the
@@ -35,7 +36,8 @@ pub struct Environment {
     pub tools: Vec<ToolRef>,      // { packages, images: arch -> tapp:<hex> }
     pub grants: Json<Vec<CapOverride>>, // FsPath and NetHost grants, subject so.tilo.ush
     pub home: HomePolicy,         // Persistent (default) | Ephemeral
-    pub home_dir: String,         // what `~` is: the workspace's folder
+    pub home_dir: String,         // what `~` is: the workspace's own files
+    pub workspace: String,        // the workspace it belongs to; empty: the primary one
 }
 ```
 
@@ -50,13 +52,13 @@ Its actions are `add-tool`, `remove-tool`, `grant-dir`, `allow-host`,
 `revoke-grant`, `set-runtime`, `set-home` and `rename`. History and undo come from the record layer; there
 is no other package manifest and no other permission file.
 
-The supervisor keeps the records where Terminal keeps its own —
-`<data home>/tilo-rooms/personal/so.tilo.terminal/.local/share`, in the
-`personal` scope (the directory keeps its stored `rooms` spelling) — joins
-the record's shared writers, applies actions through the
+The supervisor keeps the records where Terminal opened in the workspace keeps
+its own — `<data home>/tilo-rooms/<workspace>/so.tilo.terminal/.local/share`,
+in that workspace's room (the directory keeps its stored `rooms` spelling) —
+joins the record's shared writers, applies actions through the
 record layer (attributed to `so.tilo.ush`), and appends. A session that names
-no record gets the **default environment**, created on first use with the
-system store's current `env-runtime`.
+no record gets its workspace's **default environment**, created on first use
+with the system store's current `env-runtime`; every workspace has its own.
 
 ## The root a guest gets
 
@@ -65,7 +67,7 @@ system store's current `env-runtime`.
                (/etc also carries the session's passwd, group and resolver
                on top); no writable upper anywhere
 /bin /sbin /lib /lib64   links into /usr
-~              the workspace's folder, through its grant (see "Home")
+~              the workspace's own files, through their grant (see "Home")
 <grants>       one bind per FsPath grant, at the same path as on the host
 /tmp /run /proc /dev     fresh
 /var           tmpfs, plus the environment's own /var/lib and /var/cache
@@ -194,11 +196,14 @@ One line of JSON out, one line plus the session descriptors back:
 
 ```json
 {"op":"open-session","target":{"kind":"environment"},"cols":80,"rows":24}
-{"op":"open-session","target":{"kind":"environment","record":"work"}}
+{"op":"open-session","target":{"kind":"environment","record":"work"},"workspace":"3f2504e0-…"}
 ```
 
 `record` is a record key (`[A-Za-z0-9._-]`, at most 64 bytes); the owning app
-and the scope are fixed by the supervisor, never taken from the request. The
+is fixed by the supervisor, never taken from the request. Any request may
+carry `workspace`, the workspace it is for; an app the launcher started
+cannot name any but the one it was launched in (see
+[Workspaces](#workspaces)). The
 answer is `{"result":"session","session":…,"environment":…}` with the pty
 master attached, or `{"result":"denied","reason":…}`.
 
@@ -210,7 +215,7 @@ no namespace, filter or Landlock ruleset. It is answered only when all of
 these hold (`crates/runtime/ush/src/host.rs`):
 
 1. **The caller is Terminal.** `tilo-launcher` writes `QUS1`, a little-endian
-   `u32` length and `{"protocol":1,"app_id":…}` on a sandboxed app's
+   `u32` length and `{"protocol":1,"app_id":…,"workspace":…}` on a sandboxed app's
    connection before the app holds it; any other app id is refused. A
    connection without that preamble comes from outside every app sandbox —
    the shell hosting Terminal in-process.
@@ -231,7 +236,59 @@ these hold (`crates/runtime/ush/src/host.rs`):
 `{"op":"list-environments"}`, `{"op":"create-environment","name":…}` and
 `{"op":"environment-action","record":…,"action":"rename","args":{"name":…}}`
 answer `{"result":"environments","environments":[{"key","name","tools",
-"grants"}…]}` — what Terminal's target picker and environments panel show.
+"grants"}…]}` — what Terminal's target picker and environments panel show:
+the environments of the request's workspace, and no other's.
+
+### Workspaces
+
+Several people and agents work on one device at once, each in a workspace of
+their own; an environment is one workspace's
+([`ush::workspace`](../../crates/runtime/ush/src/workspace.rs)). The
+workspace a request is for:
+
+- **An app the launcher started** (a sandboxed Terminal): the workspace it
+  was launched in, which `tilo-launcher` writes in the `QUS1` handoff's
+  `workspace` before the app holds the connection. A request naming another
+  is refused, in words.
+- **The session's own process** (the shell hosting Terminal in-process,
+  which holds the person's authority): the `workspace` its request names.
+- **Neither**: the **primary workspace**, `personal` — the room the
+  launcher gives a launch in no workspace.
+
+What is the workspace's:
+
+| | The primary workspace | Any other workspace `W` |
+|---|---|---|
+| Records | `tilo-rooms/personal/…` (unchanged) | `tilo-rooms/W/so.tilo.terminal/…`, room `W` |
+| `~` | the device's files folder (`/var/workspace`) | `W`'s own tree: `/var/workspace/.workspaces/W` |
+| Homes, `/var` state | `environments/<record>/` | `workspaces/W/environments/<record>/` |
+| May be granted | as before | its own tree; nothing else under the files folder |
+
+Two Terminals in two workspaces open two environments, side by side, each
+with its own `~`: an agent in one sees neither the other's files nor its
+records. A record names its workspace (`workspace`), written when it is made
+and changed by no action; one found in another workspace's room is not
+opened. An environment of `W` is refused a grant of another workspace's
+tree, of the files folder that holds every tree, and of anything above it —
+asked by `perm trust-dir` in its guest, by Terminal or by `set-home` — and a
+grant that reached its record anyway (written by a Tilo without this check)
+is not read. Directories outside the files folder are granted as before.
+Every workspace's records stay under a mask in every guest, as the store
+does, so a guest granted the user's data home reaches none of them.
+
+Environments made before this are in `personal` and name no workspace:
+they are the primary workspace's, open as they did, with everything they
+held, from a request in no workspace. Nothing is moved.
+
+Every program of a session, in its guest and on the Tilo side, starts with:
+
+- `TILO_WORKSPACE` — the workspace's id (`personal` for the primary one);
+- `TILO_ENVIRONMENT` — the environment's id on this device, the same for
+  every session of it: `<workspace>/<record>`
+  ([`EnvironmentId`](../../crates/runtime/ush/src/workspace.rs)).
+
+From outside a session, `ush::workspace::environment_workspace(&Store::discover(), &EnvironmentId::parse(id)?)`
+answers which workspace an environment belongs to, from its record.
 
 The private lease is the session's lifetime in both directions: replacing or
 closing the Terminal session shuts down that lease and reaps its exact guest;
@@ -257,16 +314,22 @@ starts the shell.
 
 ## Home
 
-`~` is the workspace's home: the workspace's main folder, the one synced
-between its devices and collaborators (`/var/workspace` on a Tilo Linux
-session). It is not a directory per environment: every environment of the
+`~` is the workspace's own files: for the primary workspace, the device's
+files folder, the one synced between its devices and collaborators
+(`/var/workspace` on a Tilo Linux session); for any other workspace `W`, its
+tree in that folder, `/var/workspace/.workspaces/W`
+([`tilo_paths::workspace_tree`](../../crates/platform/tilo-paths/src/lib.rs)).
+The filesystem daemon serves one namespace per device, and its access checks
+(`FsPath` grants, scoped by path prefix) cover each tree as they cover any
+folder. It is not a directory per environment: every environment of the
 workspace sees that same folder at `~`, on the Tilo side and in its guest,
 at its own path, and `$HOME` and the guest's `passwd` say so. Access is the
-grants': the first time a device with the workspace opens an environment
-that has no home, the record's `set-home` makes the folder its home and
+grants': the first time a device with the files opens an environment
+that has no home, the workspace's tree is made if it is not there, and the
+record's `set-home` makes it its home and
 grants it read-write, attributed to `so.tilo.ush` in History; revoking that
 grant later is kept. `cd ~` works, and `~/.ushrc` and other dotfiles live in
-the workspace folder, synced like everything else.
+the workspace's files, synced like everything else.
 
 An environment made before this had its home in the ush store
 (`environments/<record>/home`). Nothing there is moved or deleted: when it
@@ -768,13 +831,17 @@ as the app is open.
                                 workspace's folder, or where there is none
   environments/<record>/content/ what its writes name by reference
   environments/<record>/var/    its /var/lib and /var/cache
+  workspaces/<id>/environments/ the same, for a workspace other than the
+                                primary one
   sessions/<id>/                generated /etc entries, the broker socket,
                                 an ephemeral home
   audit/                        the broker's append-only log, one file per day
 ```
 
-`$TILO_USH_WORKSPACE` names the workspace's folder (the supervisor hands the
-one it found to its sessions; a moved store has none unless it is set).
+`$TILO_USH_WORKSPACE` names the folder `~` is, `$TILO_USH_FILES` the device's
+files folder and `$TILO_USH_WORKSPACE_ID` the session's workspace (the
+supervisor hands all three to its sessions; a moved store has no files unless
+they are set).
 `$TILO_USH_HOME` moves the store (and, with it, the records);
 `$TILO_USH_RECORDS` moves the records alone. The supervisor hands both to the
 sessions it starts. Images live in the package store; tests point

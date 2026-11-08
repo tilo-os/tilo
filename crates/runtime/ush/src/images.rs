@@ -495,7 +495,7 @@ mod tests {
             builds.clone(),
         );
         session.resolve().unwrap();
-        crate::records::Records::at(session.store.records_root())
+        crate::records::Records::of(&session.store)
             .apply(
                 DEFAULT_RECORD,
                 Environment::ADD_TOOL.with((

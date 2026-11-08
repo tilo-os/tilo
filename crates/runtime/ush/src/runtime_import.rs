@@ -12,7 +12,7 @@ use crate::store::Store;
 /// the app's own start, and the store's lock lets the session wait for the copy under way
 /// instead of making a second one. The journal records how long it took.
 pub(crate) fn start(store: &Store) {
-    let records = Records::at(store.records_root());
+    let records = Records::of(store);
     let spawned = std::thread::Builder::new()
         .name("ush-runtime-import".into())
         .spawn(move || {
