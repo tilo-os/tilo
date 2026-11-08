@@ -178,9 +178,6 @@ pub(crate) struct PageHistory {
     peer: Option<u32>,
     author: String,
     shared: crate::desktop::Shared,
-    /// The profile's own copy of the desk's document, kept by
-    /// `desktop::Persistence`.
-    document: Rc<RefCell<AutoCommit>>,
     host: Rc<PageActivityHost>,
     /// Who each actor of the desk's document is, from the last read.
     authors: BTreeMap<String, String>,
@@ -235,7 +232,6 @@ impl PageHistory {
         Self {
             peer,
             author: author.clone(),
-            document: Rc::clone(&writer.document),
             shared,
             host: Rc::new(PageActivityHost {
                 author,
@@ -275,7 +271,7 @@ impl PageHistory {
             return;
         }
         let job = {
-            let mut document = self.document.borrow_mut();
+            let mut document = self.writer.desk.document_mut();
             self.describer.next(&mut document)
         };
         let Some(job) = job else {
@@ -311,7 +307,7 @@ impl PageHistory {
         let document = self
             .peer
             .and_then(crate::replication::desktop_history)
-            .unwrap_or_else(|| self.document.borrow().clone());
+            .unwrap_or_else(|| self.writer.desk.document());
         crate::desktop::as_desk_document(&document, &self.author)
     }
 
@@ -646,7 +642,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.peer
             .and_then(crate::replication::desktop_history_heads)
-            .unwrap_or_else(|| self.document.borrow().base_heads())
+            .unwrap_or_else(|| self.writer.desk.heads())
             .hash(&mut hasher);
         let mut tree_records = self.shared.bound_records();
         tree_records.compact_sort_by_key(|(tab, _)| *tab);

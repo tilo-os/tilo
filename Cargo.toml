@@ -413,6 +413,7 @@ members = [
     "crates/session/crash-records",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
+    "crates/session/core",
     "crates/session/desktop-model",
     "crates/session/desktop-policy",
     "crates/session/desktop-search",

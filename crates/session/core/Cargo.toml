@@ -1,0 +1,24 @@
+[package]
+name = "tilo-session-core"
+description = "The session's roles that every host runs: the desk's own document and, as they move here, the arrangement it holds."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-desktop-model = { path = "../desktop-model" }
+# The undo log and the clock are the toolkit's shared, portable parts.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+
+# The hack unifies the workspace's native features; this crate also builds for
+# wasm32, where it would drag mio in.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -944,6 +944,25 @@ pub fn change_author(message: Option<&str>) -> Option<String> {
         .filter(|actor| !actor.is_empty())
 }
 
+/// Commit what `doc` holds as one change, by `author` at `time` (seconds since the epoch), so the
+/// desk's history says who did it and when. An `action` names what they did, as the change's own
+/// entry; without one the change is the author's edit of the desk.
+pub fn commit_change(
+    doc: &mut AutoCommit,
+    author: &str,
+    time: i64,
+    action: Option<&tilo_actions::ActionContext>,
+) {
+    let message = action
+        .and_then(tilo_actions::ActionContext::change_message)
+        .unwrap_or_else(|| change_message(Some(author)));
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(message)
+            .with_time(time),
+    );
+}
+
 pub mod continuation;
 pub mod device;
 pub mod guard;

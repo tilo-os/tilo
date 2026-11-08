@@ -83,6 +83,8 @@ tilo-model-host = { path = "../../sdk/tilo-model-host" }
 tilo-model-abi = { path = "../../sdk/tilo-model-abi" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 tilo-desktop = { path = "../desktop" }
+# The roles every host runs: the desk's document and the arrangement it holds.
+tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 # The desk's window policy, whose tab calls an app's asks are answered with.

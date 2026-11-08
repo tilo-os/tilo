@@ -17822,6 +17822,7 @@ dependencies = [
  "tilo-reference",
  "tilo-relay-protocol",
  "tilo-secrets",
+ "tilo-session-core",
  "tilo-sheets",
  "tilo-sort",
  "tilo-ui",
@@ -21350,6 +21351,7 @@ dependencies = [
  "tilo-seal",
  "tilo-secrets",
  "tilo-service",
+ "tilo-session-core",
  "tilo-session-logging",
  "tilo-session-power",
  "tilo-settings-service",
@@ -21391,6 +21393,19 @@ dependencies = [
  "xkeysym",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-session-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-desktop-model",
+ "tilo-ui",
+ "workspace-hack",
 ]
 
 [[package]]
