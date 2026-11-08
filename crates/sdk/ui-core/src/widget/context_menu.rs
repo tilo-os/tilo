@@ -508,10 +508,8 @@ pub struct ContextMenu {
     measured_width: f64,
     /// The rows as the one floating list lays them out: their heights, the
     /// bar beside them, the armed row and the arrow keys are the engine's.
-    list: FloatingList<MenuRow>,
-    /// The theme the geometry was taken from, which the scroll region also
-    /// needs between paints (to hit-test and to read a wheel).
-    theme: Theme,
+    /// It keeps the theme too, so a menu owned by many widgets stays small.
+    list: Box<FloatingList<MenuRow>>,
     active_touch: Option<u64>,
     text_scale: f64,
     viewport: Option<Rect>,
@@ -599,11 +597,10 @@ impl ContextMenu {
             row_height: ROW_HEIGHT,
             measured_width: MENU_WIDTH,
             list: {
-                let mut list = FloatingList::new();
+                let mut list = Box::new(FloatingList::new());
                 list.set_overlaid_bars();
                 list
             },
-            theme: Theme::dark(),
             active_touch: None,
             text_scale: 1.0,
             viewport: None,
@@ -1057,8 +1054,8 @@ impl ContextMenu {
     /// Remember the theme the geometry was taken from; the rows' bar needs
     /// it between paints (a wheel, a bar's hover).
     fn cache_theme(&mut self, theme: &Theme) {
-        if self.theme.tokens != theme.tokens {
-            self.theme = theme.clone();
+        if self.list.theme().tokens != theme.tokens {
+            self.list.set_theme(theme);
             self.dirty = true;
         }
     }
