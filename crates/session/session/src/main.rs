@@ -1207,6 +1207,17 @@ fn search_options() -> tilo_session::SearchOptions {
         }
         Err(error) => eprintln!("tilo-session: earlier app ids: {error}"),
     }
+    // What the apps installed here declare, held where a launched app's surface is: the records an
+    // app keeps of the person's are known before it runs, so its endpoint — the Files daemon, on
+    // the record route — publishes its tree with the app never opened.
+    match app_catalogue::apps::signed_surfaces_from_env() {
+        Ok(surfaces) => {
+            for (app, _name, surface) in surfaces {
+                tilo_action_broker::register_package_surface(&app, &surface);
+            }
+        }
+        Err(error) => eprintln!("tilo-session: installed app surfaces: {error}"),
+    }
     tilo_session::SearchOptions {
         lists: tilo_session::Lists::of_device(),
         content: Some(content),

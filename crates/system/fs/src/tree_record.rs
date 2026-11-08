@@ -15,6 +15,7 @@
 //! change where the files are, so nothing here carries an action: a change
 //! is the namespace's own edit, made by the mount.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -40,33 +41,28 @@ pub const FILES_APP: &str = "so.tilo.file-explorer";
 const RECONNECT: Duration = Duration::from_secs(2);
 
 /// Publish `namespace` on `cluster` as the Files app's record, for as long as
-/// the daemon serves it.
+/// the daemon serves it, on the collaboration socket at `socket`.
 ///
-/// The writer dials the session's collaboration socket and rejoins whenever
-/// that connection ends; a session that is not up yet is waited for, not
-/// given up on, since the daemon starts beside it.
+/// The writer rejoins whenever that connection ends; a session that is not up
+/// yet is waited for, not given up on, since the daemon starts beside it.
 #[must_use = "the handle is how a daemon stops publishing before it unmounts"]
 pub fn spawn(
     namespace: Arc<Mutex<Namespace>>,
     cluster: String,
     credentials: PeerCredentials,
+    socket: PathBuf,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            match serve_once(&namespace, &cluster, &credentials).await {
+            match serve_once(&namespace, &cluster, &credentials, &socket).await {
                 Ok(()) => tracing::debug!(cluster, "the workspace tree's record connection ended"),
                 Err(error) => {
-                    tracing::warn!(cluster, %error, "the workspace tree is not published");
+                    tracing::warn!(cluster, ?error, "the workspace tree is not published");
                 }
             }
             tokio::time::sleep(RECONNECT).await;
         }
     })
-}
-
-/// Where the session's collaboration broker listens.
-fn socket() -> std::path::PathBuf {
-    tilo_paths::xdg::service_socket("collab")
 }
 
 /// One connection to the session, joined and publishing `namespace` until the
@@ -75,9 +71,9 @@ async fn serve_once(
     namespace: &Arc<Mutex<Namespace>>,
     cluster: &str,
     credentials: &PeerCredentials,
+    path: &Path,
 ) -> Result<()> {
-    let path = socket();
-    let mut stream = tilo_files::native::socket::connect(&path)
+    let mut stream = tilo_files::native::socket::connect(path)
         .with_context(|| format!("connect to the session at {}", path.display()))?;
     // The app and workspace, as the first thing on the connection: what the
     // session attests against the launch it recorded for this process.

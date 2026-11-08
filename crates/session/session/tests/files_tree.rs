@@ -22,6 +22,7 @@
     clippy::expect_used,
     clippy::panic,
     clippy::significant_drop_tightening,
+    clippy::too_many_lines,
     reason = "test fixtures: a failed step is the assertion, and the session \
               lives until the mounts it serves are done"
 )]
@@ -177,6 +178,128 @@ fn a_tree_changed_here_reaches_the_persons_other_devices() {
     );
 }
 
+/// The tree a person's mount holds reaches their other device over the
+/// record route, as two real sessions of theirs serve them.
+#[test]
+fn a_tree_changed_on_one_device_reaches_the_persons_other_device() {
+    let (site, ada, laptop, phone) = common::people::two_devices_of_one_person_with_files();
+    let installed = package_store::Catalog::at(laptop.store(), None);
+    assert_eq!(
+        app_catalogue::apps::signed_surface_of(&installed, FILES)
+            .expect("the store reads")
+            .as_deref(),
+        Some(SURFACE),
+        "the surface Files' installed package carries"
+    );
+    let cluster = collab_types::personal_cluster(&ada.public).to_string();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for the mounts");
+    let _in_runtime = runtime.enter();
+
+    let here = namespace("ada-laptop");
+    here.lock_recover()
+        .create_dir(ROOT_INO, "Notes", 1_000)
+        .expect("a folder");
+    here.lock_recover()
+        .create_file(ROOT_INO, "readme.txt", None, 5, 1_000)
+        .expect("a file");
+    let _laptop_mount = mount_on(&laptop, &here, &cluster);
+
+    let there = namespace("ada-phone");
+    let _phone_mount = mount_on(&phone, &there, &cluster);
+    wait_held(
+        &site,
+        &[&laptop, &phone],
+        &there,
+        &["Notes", "readme.txt"],
+        "the tree the laptop holds",
+    );
+
+    here.lock_recover()
+        .create_file(ROOT_INO, "todo.md", None, 0, 2_000)
+        .expect("a file");
+    wait_held(
+        &site,
+        &[&laptop, &phone],
+        &there,
+        &["Notes", "readme.txt", "todo.md"],
+        "the file the laptop added",
+    );
+    let notes = here
+        .lock_recover()
+        .resolve_path_ino("Notes")
+        .expect("the folder the laptop made");
+    assert!(
+        here.lock_recover()
+            .rename(ROOT_INO, "todo.md", notes, "todo.md", 3_000),
+        "the laptop moves its file into the folder"
+    );
+    wait_held(
+        &site,
+        &[&laptop, &phone],
+        &there,
+        &["Notes", "Notes/todo.md", "readme.txt"],
+        "the move the laptop made",
+    );
+    assert!(
+        here.lock_recover()
+            .rename(notes, "todo.md", notes, "todo-1.md", 4_000),
+        "the laptop renames the file it moved"
+    );
+    wait_held(
+        &site,
+        &[&laptop, &phone],
+        &there,
+        &["Notes", "Notes/todo-1.md", "readme.txt"],
+        "the rename the laptop made",
+    );
+    let moved = here
+        .lock_recover()
+        .resolve_path_ino("Notes/todo-1.md")
+        .expect("the renamed file");
+    assert!(here.lock_recover().remove(moved), "the laptop deletes it");
+    wait_held(
+        &site,
+        &[&laptop, &phone],
+        &there,
+        &["Notes", "readme.txt"],
+        "the deletion the laptop made",
+    );
+
+    // What the other device changes reaches the first one the same way.
+    there
+        .lock_recover()
+        .create_file(ROOT_INO, "from-phone.md", None, 0, 5_000)
+        .expect("a file");
+    wait_held(
+        &site,
+        &[&laptop, &phone],
+        &here,
+        &["Notes", "readme.txt", "from-phone.md"],
+        "the file the phone made",
+    );
+}
+
+/// Wait until `namespace` holds exactly `expected`, naming what was waited for.
+fn wait_held(
+    site: &common::people::Site,
+    devices: &[&common::people::Device],
+    namespace: &Arc<Mutex<Namespace>>,
+    expected: &[&str],
+    what: &str,
+) {
+    let mut expected: Vec<String> = expected.iter().map(|path| (*path).to_owned()).collect();
+    expected.sort();
+    common::people::waited(what, site, devices, || {
+        let mut held = contents(&tree(namespace));
+        held.sort();
+        held == expected
+    });
+}
+
 /// `namespace`'s tree as the record reads it: the projection the Files app
 /// renders.
 fn tree(namespace: &Arc<Mutex<Namespace>>) -> Tree {
@@ -230,7 +353,41 @@ fn mount(
     .expect("this device's certificate is valid")
     .into_parts()
     .1;
-    fs::tree_record::spawn(Arc::clone(namespace), cluster.to_owned(), credentials)
+    fs::tree_record::spawn(
+        Arc::clone(namespace),
+        cluster.to_owned(),
+        credentials,
+        tilo_paths::xdg::service_socket("collab"),
+    )
+}
+
+/// Publish `namespace` on `cluster` as `device`'s mount does: the daemon of
+/// that device, on the collaboration socket its session serves.
+fn mount_on(
+    device: &common::people::Device,
+    namespace: &Arc<Mutex<Namespace>>,
+    cluster: &str,
+) -> tokio::task::JoinHandle<()> {
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock reads after the epoch")
+        .as_nanos();
+    let credentials = fs::identity::load_certified_mount_identity(
+        &device.identity(),
+        u64::try_from(now_ns).expect("the clock reads a time a certificate holds"),
+    )
+    .expect("this device's certificate is valid")
+    .into_parts()
+    .1;
+    fs::tree_record::spawn(
+        Arc::clone(namespace),
+        cluster.to_owned(),
+        credentials,
+        device
+            .directory()
+            .join("runtime")
+            .join("tilo/services/collab.sock"),
+    )
 }
 
 /// Run `session` until this device's tree holds exactly `expected`, failing

@@ -16,6 +16,9 @@ use crate::Launches;
 const UNIT: &str = "tilo-files-workspace.service";
 /// The app whose endpoint the daemon is: the one that keeps the tree record.
 const FILES_APP: &str = "so.tilo.file-explorer";
+/// The process to record instead of the unit's, for a run where something other than the login's
+/// unit serves the trees: a test that mounts them itself names its own process here.
+const ENDPOINT_PID: &str = "TILO_FILES_ENDPOINT_PID";
 /// How long the session waits for the unit to run its process.
 const WAIT: Duration = Duration::from_secs(30);
 /// How often it looks while waiting.
@@ -32,7 +35,7 @@ pub fn record(launches: Arc<Launches>, cluster: Option<String>) {
     let recorded = std::thread::Builder::new()
         .name("tilo-files-endpoint".into())
         .spawn(move || {
-            let Some(pid) = wait_for_process() else {
+            let Some(pid) = named_endpoint().or_else(wait_for_process) else {
                 tracing::warn!(
                     unit = UNIT,
                     "the files daemon runs no process to record: its tree reaches no device"
@@ -43,6 +46,23 @@ pub fn record(launches: Arc<Launches>, cluster: Option<String>) {
         });
     if let Err(error) = recorded {
         tracing::warn!(%error, "the files daemon's launch cannot be recorded");
+    }
+}
+
+/// The process named as the endpoint, when this session runs where the trees are served by
+/// something other than the login's unit.
+fn named_endpoint() -> Option<u32> {
+    let named = std::env::var(ENDPOINT_PID).ok()?;
+    match named.trim().parse::<u32>() {
+        Ok(pid) if pid > 0 => Some(pid),
+        Ok(_) => {
+            tracing::warn!(%named, "the named files endpoint is no process");
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%named, %error, "the named files endpoint is not a pid");
+            None
+        }
     }
 }
 
