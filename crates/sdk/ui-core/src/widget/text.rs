@@ -958,6 +958,10 @@ impl Widget for Text {
             .filter(|shown| !shown.is_empty())
     }
 
+    fn page_title_is_heading(&self) -> bool {
+        self.accessible_heading_level() == Some(1)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document_ref(state, path);
         self.observe_i18n_revision();

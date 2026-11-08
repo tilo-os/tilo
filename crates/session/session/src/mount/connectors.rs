@@ -28,7 +28,7 @@ use tilo_lock::MutexRecover as _;
 use runtime_portal::origin_connector;
 
 /// Which connector: the app, its origin and the workspace.
-type Key = (String, String, String);
+pub type Key = (String, String, String);
 
 /// A running connector: the session's end of its door.
 struct Running {
@@ -48,6 +48,38 @@ impl ConnectorHost {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether a connector runs for `app`'s `origin` in `workspace` now.
+    #[must_use]
+    pub fn runs(&self, app: &str, origin: &str, workspace: &str) -> bool {
+        let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
+        self.running.lock_recover().contains_key(&key)
+    }
+
+    /// Every connector running now, by app, origin and workspace: what a pass that starts the
+    /// ones a workspace needs stops the ones it no longer does.
+    #[must_use]
+    pub fn keys(&self) -> Vec<Key> {
+        self.running.lock_recover().keys().cloned().collect()
+    }
+
+    /// Stop the connector of `app`'s `origin` in `workspace` when one runs: nothing of that app
+    /// in that workspace reads the service any more, so what the service says next waits nowhere
+    /// and the process, with the network and custody its sandbox gave it, ends. Whether one ran.
+    pub fn stop(&self, app: &str, origin: &str, workspace: &str) -> bool {
+        let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
+        let stopped = self.running.lock_recover().remove(&key);
+        let Some(mut running) = stopped else {
+            return false;
+        };
+        // The door goes first: the connector's loop ends on it, and the child is then ended
+        // rather than left to see a closed socket as a refused service.
+        drop(running.door);
+        let _ = running.child.kill();
+        let _ = running.child.wait();
+        tracing::info!(app, origin, workspace, "an origin connector stopped");
+        true
     }
 
     /// A connection a reader of `app`'s records in `workspace` reaches the connector of
@@ -145,52 +177,112 @@ impl Drop for ConnectorHost {
 /// whose package declares it, in the sandbox its signed manifest gives that origin, and the service
 /// reached through it.
 /// A connector is the app's own launch with no window (`--tilolang-connector <origin>`): it holds
-/// the network and the custody the session and the tilolang host never have. It runs whether or not
-/// a window of the app is open, so what the service says meanwhile waits in it. A session that
-/// cannot start one says why and goes on: the app's records then stand as they are, and its views
-/// show what they last held.
-pub(crate) fn start_all(session: &crate::Session) {
+/// the network and the custody the session and the tilolang host never have. A session that
+/// cannot start one says why and goes on: the app's records then stand as they are, and its
+/// views show what they last held.
+///
+/// A workspace needs an app's connector while it has a place of that app's records, or a window
+/// of the app there: one workspace's connector writes that workspace's record and its media
+/// scope, so a record the record service keeps per workspace is kept in step in each workspace
+/// that shows it, never only in the one in front. `reconcile` runs every pass: it starts the
+/// connectors the desk's workspaces now need and stops the ones none does.
+pub(crate) fn reconcile(session: &crate::Session) {
     // An origin's own crate registers how the platform reaches its connector, so a session reaches
     // one without naming the crate that keeps the service.
     tilolang_mail::register();
     tilolang_youtube::register();
-    let wake = session.shared.wake_handle.clone();
-    // The service that keeps an origin in step is told what wakes the loop: an answer from the
-    // service it asked, which the next pass polls and writes.
-    session.shared.services.borrow_mut().wake_origins(&wake);
     let connectors = session.shared.services.borrow().connectors();
     if connectors.is_empty() {
         return;
     }
+    let wake = session.shared.wake_handle.clone();
+    // The service that keeps an origin in step is told what wakes the loop: an answer from the
+    // service it asked, which the next pass polls and writes.
+    session.shared.services.borrow_mut().wake_origins(&wake);
     let Some(apps) = session.shared.launch.clone() else {
         return;
     };
-    let workspace = apps.workspace_named(&session.shared.active_workspace_id());
-    for connector in connectors {
+    // The app the record `resource` belongs to, when it is one the desk holds: `tl:<app>:<id>`
+    // names its app, and an app's own resources (`<app>.<Kind>`) name theirs in the catalogue.
+    let app_of = |resource: &str| -> Option<String> {
+        resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(app, _)| app.to_owned())
+            .or_else(|| {
+                session
+                    .shared
+                    .services
+                    .borrow()
+                    .resources()
+                    .into_iter()
+                    .find(|spec| spec.id.as_str() == resource)
+                    .and_then(|spec| spec.app().map(str::to_owned))
+            })
+    };
+    // Every workspace the desk holds, by id, and the apps whose records stand in it: what needs a
+    // connector there. A workspace with no place of an app's records needs none, however the
+    // person moves between workspaces.
+    let mut needed: std::collections::BTreeSet<Key> = std::collections::BTreeSet::new();
+    for (workspace, records) in session.shared.arrangement.borrow().records_by_workspace() {
+        for app in records.iter().filter_map(|record| app_of(record)) {
+            for connector in &connectors {
+                if connector.app == app {
+                    needed.insert((app.clone(), connector.origin.clone(), workspace.clone()));
+                }
+            }
+        }
+    }
+    // The record service keeps the records of the workspace in front: what it holds is kept in
+    // step there whether or not a place shows it yet (a search's answer, a task made by an agent),
+    // so that workspace's connector runs from the start as it always did.
+    let active = session.shared.active_workspace_id();
+    if !active.is_empty() {
+        let hosted: Vec<String> = connectors
+            .iter()
+            .map(|connector| connector.app.clone())
+            .filter(|app| session.shared.services.borrow().hosted(app).is_some())
+            .collect();
+        for app in hosted {
+            for connector in &connectors {
+                if connector.app == app {
+                    needed.insert((app.clone(), connector.origin.clone(), active.clone()));
+                }
+            }
+        }
+    }
+    // The connectors running for no workspace any more end: their records stand as they were,
+    // and a workspace that shows the app again starts one when it does.
+    for key in session.connectors.keys() {
+        if !needed.contains(&key) {
+            let (app, origin, workspace) = key;
+            session.connectors.stop(&app, &origin, &workspace);
+        }
+    }
+    for (app, origin, workspace) in needed {
+        // A connector that already runs needs nothing: its service was reached when it started,
+        // and attaching to it again every pass would make a connection no reader holds.
+        if session.connectors.runs(&app, &origin, &workspace) {
+            continue;
+        }
+        let workspace = apps.workspace_named(&workspace);
         let reached = session
             .connectors
-            .connection(
-                &connector.app,
-                &connector.origin,
-                &workspace.id,
-                &|origin| apps.plan_connector(&connector.app, origin, &workspace),
-            )
+            .connection(&app, &origin, &workspace.id, &|origin| {
+                apps.plan_connector(&app, origin, &workspace)
+            })
             .and_then(|connection| {
                 {
                     let mut services = session.shared.services.borrow_mut();
-                    tilo_service::Service::connect(&mut *services, &connector.origin, connection)
+                    tilo_service::Service::connect(&mut *services, &origin, connection)
                 }
-                .map_err(|error| {
-                    format!(
-                        "{}'s {} is not reached: {error}",
-                        connector.app, connector.origin
-                    )
-                })
+                .map_err(|error| format!("{app}'s {origin} is not reached: {error}"))
             });
         if let Err(error) = reached {
             tracing::warn!(
-                app = %connector.app,
-                origin = %connector.origin,
+                app = %app,
+                origin = %origin,
+                workspace = %workspace.id,
                 %error,
                 "an outside origin's connector does not run: its records stand as they are"
             );

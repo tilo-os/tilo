@@ -198,7 +198,11 @@ fn session(state: &Path, apps: Rc<Apps>, served: bool) -> Session {
 }
 
 #[test]
-fn an_app_the_session_serves_is_launched_hosted() {
+fn an_app_the_session_serves_restores_as_a_place_of_its_root() {
+    // An app whose model the session serves has no window process: the window the person left
+    // open comes back as the place its root stands in, drawn by the shell from the session's
+    // reading, and the launcher is never handed it
+    // (`docs/designs/app-language/one-app-model.md` §3).
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_tasks(&mut home);
     let handed = home.home().join("handed");
@@ -213,13 +217,12 @@ fn an_app_the_session_serves_is_launched_hosted() {
 
     let apps = apps_at(&home, launcher.path().to_owned());
     let mut session = session(&state, apps, true);
-    common::wait_for(&mut session, "the launch is made", |_| {
-        launched(&handed).then_some(())
+    common::until(&mut session, "the app's root on the canvas", |session| {
+        common::placed(session, ADDRESS) > 0
     });
-    assert_eq!(
-        hosted_at(&handed).as_deref(),
-        Some(ADDRESS),
-        "the launch names the resource the session's document host publishes for the app"
+    assert!(
+        !launched(&handed),
+        "a served app opens no window process: its place is the shell's"
     );
 }
 

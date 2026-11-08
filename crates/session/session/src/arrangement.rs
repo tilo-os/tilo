@@ -499,6 +499,17 @@ impl Arrangement {
     /// # Errors
     /// The desk has no workspace in front, or `strip` is not a strip on this desk.
     pub fn surface_at_strip(&self, strip: Option<u64>) -> Result<Surface, String> {
+        self.surface_on(None, strip)
+    }
+
+    /// The surface a place made in `workspace` (a slot) in `strip` stands on: as
+    /// [`Self::surface_at_strip`], for a place the session makes in a workspace of its own
+    /// choosing rather than the one in front. `workspace` `None` is the workspace in front.
+    ///
+    /// # Errors
+    /// The desk has no such workspace, no workspace in front, or `strip` is not a strip on
+    /// this desk.
+    fn surface_on(&self, workspace: Option<u64>, strip: Option<u64>) -> Result<Surface, String> {
         let tree = self.handle.read(Clone::clone);
         if let Some(strip) = strip {
             let held = tree.workspaces.iter().find_map(|workspace| {
@@ -520,9 +531,16 @@ impl Arrangement {
             });
         }
         let (workspace, row) = {
-            let workspace = tree
-                .active_workspace()
-                .ok_or("the desk has no workspace in front")?;
+            let workspace = match workspace {
+                Some(slot) => tree
+                    .workspaces
+                    .iter()
+                    .find(|held| held.slot.0 == slot)
+                    .ok_or("that workspace is not on this desk")?,
+                None => tree
+                    .active_workspace()
+                    .ok_or("the desk has no workspace in front")?,
+            };
             let row = tree
                 .active_strip
                 .get(&workspace.slot)
@@ -665,6 +683,71 @@ impl Arrangement {
         })
     }
 
+    /// Show the resource `resource` as the app the session itself runs shows it
+    /// (`docs/designs/app-language/one-app-model.md` §3): a place of the person's arrangement in
+    /// `workspace`, drawn by the shell from what the session publishes, exactly as a place made by
+    /// `place` is. There is no window process behind it — the place's frame, bar and tabs are the
+    /// shell's.
+    ///
+    /// A workspace that already holds a place of `resource` brings that place forward rather than
+    /// standing a second one: opening an app the person already has open raises what shows it.
+    ///
+    /// `resource` and `view` are placed as `place` places them: it must be one what the session
+    /// publishes now ([`Catalog`]), and `view` empty shows its primary view.
+    ///
+    /// Returns the place's id, or `None` when the workspace already held one.
+    ///
+    /// # Errors
+    /// The workspace is not on this desk, or `resource` names nothing published.
+    pub fn place_root(
+        &mut self,
+        asked: &str,
+        workspace: u64,
+        resource: &str,
+        view: &str,
+    ) -> Result<Option<u64>, String> {
+        if let Some(held) = self.place_in(workspace, resource) {
+            self.ask(
+                asked,
+                ArrangementAction::Activate { place: held },
+                Busy::default(),
+            )?;
+            return Ok(None);
+        }
+        let surface = self.surface_on(Some(workspace), None)?;
+        let action = ArrangementAction::Place {
+            workspace: surface.workspace,
+            row: surface.row,
+            strip: surface.strip,
+            place: surface.place,
+            resource: resource.to_owned(),
+            view: view.to_owned(),
+            x: 0,
+            y: 0,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+            float: None,
+        };
+        self.ask(asked, action, Busy::default())?;
+        Ok(Some(surface.place))
+    }
+
+    /// The place of `workspace` (a workspace's slot) that already shows `resource`, if one
+    /// stands: what opening an app the workspace already shows brings forward.
+    fn place_in(&self, workspace: u64, resource: &str) -> Option<u64> {
+        let records = self.records();
+        self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .filter(|held| held.slot.0 == workspace)
+                .flat_map(|held| held.strips.iter())
+                .flat_map(|row| row.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| records.get(&tab.id) == Some(&resource.to_owned()))
+                .map(|tab| tab.id)
+        })
+    }
+
     /// The arrangement as a shell's views read it: every workspace, row, strip and place, each by
     /// its key, laid out as the shell's arrangement type holds it. This is what the session
     /// publishes on its door for a shell to draw, read off the desk as it stands.
@@ -680,6 +763,30 @@ impl Arrangement {
     /// placed on, and what a window took up.
     fn records(&self) -> BTreeMap<TabId, String> {
         self.desk.records().into_iter().collect()
+    }
+
+    /// Every record a place of the desk shows, by the id of the workspace (a hex device key) the
+    /// place stands in: what the outside services keeping those records in step are due for. A
+    /// workspace's places and the records of the apps' windows there are all of them, on every
+    /// workspace of the desk, not only the one in front.
+    #[must_use]
+    pub fn records_by_workspace(&self) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+        let records = self.records();
+        self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|held| {
+                    let shown = held
+                        .strips
+                        .iter()
+                        .flat_map(|row| row.window_groups.iter())
+                        .flat_map(|group| group.tabs.iter())
+                        .filter_map(|tab| records.get(&tab.id).cloned())
+                        .collect();
+                    (held.id().to_string(), shown)
+                })
+                .collect()
+        })
     }
 
     /// The arrangement as the session publishes it now: what [`resources`] publishes, with a

@@ -695,6 +695,19 @@ impl Service for RecordService {
         out
     }
 
+    /// The address this host publishes `app`'s record at: this service keeps every loaded
+    /// package's records, so a launch it makes for the app names one and the app's process opens
+    /// no record of its own (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
+    ///
+    /// It names the app's root: the resource every view of the package reads its state from
+    /// (`root YouTube`, `root Tasklist`), by its published id. An app whose package this host
+    /// loaded but which declares no root names none, so a launch of it opens its own record.
+    fn hosted(&self, app: &str) -> Option<String> {
+        let package = self.host.package(app)?;
+        let root = package.meta.roots.first()?;
+        Some(crate::publish::resource_id(app, &format!("root-{root}")))
+    }
+
     fn read(&self, resource: &str) -> Option<Json> {
         let (app, path) = resource.strip_prefix("tl:")?.split_once(':')?;
         self.host.package(app)?;

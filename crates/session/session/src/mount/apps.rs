@@ -109,6 +109,10 @@ struct State {
     /// model, and if so names the resource it publishes for the app, so the app launches hosted
     /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
     services: Option<Rc<RefCell<crate::Services>>>,
+    /// The person's arrangement, once it lent it: an app whose model the session runs itself is
+    /// opened by placing its root on the canvas, not by starting a window process of its own
+    /// (`docs/designs/app-language/one-app-model.md` §3).
+    arrangement: Option<Rc<RefCell<crate::arrangement::Arrangement>>>,
 }
 
 /// An agent this device started, as the record of it the launch pass keeps.
@@ -174,6 +178,7 @@ impl Apps {
                 wake,
                 agents: BTreeMap::new(),
                 services: None,
+                arrangement: None,
             }),
         }
     }
@@ -220,12 +225,93 @@ impl Apps {
         self.state.borrow_mut().services = Some(services);
     }
 
+    /// The person's arrangement: from here on opening an app whose model the session runs itself
+    /// places its root on the canvas as a view of the session's record, in the workspace the
+    /// person opened it in, rather than starting a window process of its own
+    /// (`docs/designs/app-language/one-app-model.md` §3, "Windows belong to the shell").
+    pub fn lend_arrangement(&self, arrangement: Rc<RefCell<crate::arrangement::Arrangement>>) {
+        self.state.borrow_mut().arrangement = Some(arrangement);
+    }
+
     /// The resource address the session's document host publishes `app` 's record at, when a
     /// service runs its model: whether this launch is hosted follows from that, and no per-app code
     /// says otherwise.
     fn hosted(&self, app: &str) -> Option<String> {
         let services = self.state.borrow().services.clone()?;
         services.borrow().hosted(app)
+    }
+
+    /// Whether a service of this session runs `app`'s model: its windows are places of the shell's
+    /// arrangement, drawn from the session's reading, and no window process of it starts
+    /// (`docs/designs/app-language/one-app-model.md` §3).
+    #[must_use]
+    pub fn serves(&self, app: &str) -> bool {
+        self.hosted(app).is_some()
+    }
+
+    /// Place the root of the app `app` whose model the session runs, on the canvas of `workspace`,
+    /// as the shell's own place: the place draws the app's default view over the session's
+    /// reading of its root, and no window process of the app starts
+    /// (`docs/designs/app-language/one-app-model.md` §3). `view` empty shows the root's primary
+    /// view. Returns the place's id, or `None` for an app no service runs — which launches as
+    /// every app does — and for one the workspace already shows, which came forward instead.
+    fn place_served(
+        &self,
+        app: &str,
+        view: &str,
+        workspace: &Workspace,
+    ) -> Option<Result<Option<u64>, DoorError>> {
+        let root = self.hosted(app)?;
+        let arrangement = self.state.borrow().arrangement.clone();
+        let Some(arrangement) = arrangement else {
+            // No arrangement to place on: the app opens its own window as it always did.
+            return None;
+        };
+        // The place is the person's own arranging step, in the workspace they opened the app in:
+        // one attributed, undoable change of the desk, exactly as typing what the app shows and
+        // pressing it would be (shell.md §8).
+        let Some(slot) = self.workspace_slot(&workspace.id) else {
+            return None;
+        };
+        let person = self.state.borrow().person.clone();
+        let placed = arrangement
+            .borrow_mut()
+            .place_root(&person, slot, &root, view);
+        Some(placed.map_err(|error| DoorError::Failed(error.to_string())))
+    }
+
+    /// Stand the root of the served app `app` on the canvas of the workspace `workspace` (a slot),
+    /// as the place its window would have been: what a device that left the app open restores,
+    /// the place the desk draws from the session's reading instead of a window process. Whether a
+    /// place stands there now.
+    pub(crate) fn restore_served(&self, app: &str, workspace: u64) -> bool {
+        let view = "";
+        let Some(root) = self.hosted(app) else {
+            return false;
+        };
+        let Some(arrangement) = self.state.borrow().arrangement.clone() else {
+            return false;
+        };
+        let person = self.state.borrow().person.clone();
+        matches!(
+            arrangement
+                .borrow_mut()
+                .place_root(&person, workspace, &root, view),
+            Ok(Some(_))
+        )
+    }
+
+    /// The desk's slot for the workspace `id` : where a place the session makes in that workspace
+    /// stands. `None` for a workspace this desk does not hold.
+    fn workspace_slot(&self, id: &str) -> Option<u64> {
+        let desktop = self.desktop.borrow().clone()?;
+        let handle = desktop.with_policy(|policy| policy.handle().clone());
+        handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|held| held.id().to_string() == id)
+                .map(|held| held.slot.0)
+        })
     }
 
     /// The session's action broker: from here on an action an app publishes is delivered through
@@ -953,6 +1039,18 @@ impl Apps {
     ) -> Result<bool, DoorError> {
         let authored = self.authored(launch, workspace);
         let workspace = &authored;
+        // An app whose model the session runs itself — a tilolang app — has no window process:
+        // opening it stands its root on the canvas as a place of the shell's arrangement, drawn
+        // by the shell from the session's reading of the record
+        // (`docs/designs/app-language/one-app-model.md` §3, "Windows belong to the shell").
+        // Only a plain open of the app is a place: a named record or a view the person asked for
+        // opens as every app's does, and an app no service runs launches as it always did.
+        if let Launch::Package { app, open: None } = launch
+            && let Some(placed) = self.place_served(app, "", workspace)
+        {
+            narrate_placed(app, &workspace.id, &placed);
+            return placed.map(|_| true);
+        }
         // A service running this app's model serves its record: the launch names the resource the
         // session publishes, so the app opens no record of its own (`docs/architecture/apps.md` §8
         // step 2).
@@ -1361,6 +1459,22 @@ fn no_action_host() -> DoorError {
     DoorError::Unavailable {
         code: "action_host_unavailable".into(),
         reason: "The session runs without an action host".into(),
+    }
+}
+
+/// Say where an app the session runs itself was put: the place its root stands in, on the
+/// workspace's canvas, or that the workspace already showed it.
+fn narrate_placed(app: &str, workspace: &str, placed: &Result<Option<u64>, DoorError>) {
+    match placed {
+        Ok(Some(place)) => {
+            tracing::info!(app, workspace, place, "the app's root stands on the canvas");
+        }
+        Ok(None) => {
+            tracing::info!(app, workspace, "the app's place came forward");
+        }
+        Err(error) => {
+            tracing::warn!(app, workspace, %error, "the app's place was not made");
+        }
     }
 }
 
