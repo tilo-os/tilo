@@ -93,7 +93,7 @@ pub use settle::{AgentBlock, InvocationRecord};
 pub use space::Space;
 pub use store::{
     ANY_FIELD, ChangeNote, ChangeSummary, FieldKey, Listing, ListingChange, PagedItems, Splice,
-    Store, StoreError,
+    Store, StoreError, moved_splices,
 };
 pub use value::{ActionRef, CollRef, EnumValue, RecordInit, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};

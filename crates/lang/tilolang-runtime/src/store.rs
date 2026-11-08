@@ -942,44 +942,180 @@ impl Splice {
     }
 }
 
+/// Where an item stands in a listing, with the item.
+pub type Place<'a> = (usize, &'a str);
+
+/// Where an item both listings hold stood and where it stands, with the item.
+pub type Stayed<'a> = (usize, usize, &'a str);
+
 /// The steps from `before` to `after`, two listings of one query (a filtered or sorted view of a
 /// collection), when only the items `moved` came, went or moved between them and the others
 /// kept their order: each is found where it was and where it is ([`Listing::position`]), so the
 /// steps cost the items that changed, not the listing's length. The removals come first, from
-/// the last, then the insertions in order; an item in the same place in both takes no step.
-/// `None` when a listing cannot say where an item is.
+/// the last, then the insertions in order; an item that stays takes no step of its own — its
+/// place follows the items that came and went, and only one that comes to stand among other
+/// items than it did is taken out and put back. `None` when a listing cannot say where an item
+/// is.
 #[must_use]
 pub fn moved_steps<'a>(
     before: &Listing,
     after: &Listing,
     moved: impl IntoIterator<Item = &'a str>,
 ) -> Option<Vec<Splice>> {
-    let mut gone: Vec<(usize, &str)> = Vec::new();
-    let mut come: Vec<(usize, &str)> = Vec::new();
-    let mut same = true;
+    let mut gone: Vec<Place<'_>> = Vec::new();
+    let mut come: Vec<Place<'_>> = Vec::new();
+    let mut both: Vec<Stayed<'_>> = Vec::new();
     for id in moved {
-        let was = before.position(id)?;
-        let now = after.position(id)?;
-        same &= was == now;
-        gone.extend(was.map(|at| (at, id)));
-        come.extend(now.map(|at| (at, id)));
+        match (before.position(id)?, after.position(id)?) {
+            (Some(was), Some(now)) => both.push((was, now, id)),
+            (was, now) => {
+                gone.extend(was.map(|at| (at, id)));
+                come.extend(now.map(|at| (at, id)));
+            }
+        }
     }
-    // Each where it was, and the others in their order around them: nothing moved.
-    if same {
-        return Some(Vec::new());
+    Some(moved_splices(
+        before.len(),
+        after.len(),
+        &gone,
+        &come,
+        &both,
+    ))
+}
+
+/// The steps from one listing to another for the items a change touched: `both` holds where
+/// each item both listings hold stood and where it stands, `gone` those only the first holds
+/// and `come` those only the second. The removals come from the last, then the insertions in
+/// order; an item that stays takes no step of its own — its place follows the items that came
+/// and went, and only one that comes to stand among others than it did is taken out and put
+/// back.
+#[must_use]
+pub fn moved_splices<'a>(
+    before: usize,
+    after: usize,
+    gone: &[Place<'a>],
+    come: &[Place<'a>],
+    both: &[Stayed<'a>],
+) -> Vec<Splice> {
+    // The longest run of the items both listings hold that already stands in its order: those
+    // are the items the ones that came and went settle around, and the rest came to stand
+    // among others than they did, so each is taken out and put back.
+    let kept = in_order(both);
+    let moved_one = |at: usize| !kept.get(at).copied().unwrap_or(true);
+    let mut moving: Vec<Stayed<'_>> = both
+        .iter()
+        .enumerate()
+        .filter(|&(at, _)| moved_one(at))
+        .map(|(_, &(was, now, id))| (was, now, id))
+        .collect();
+    let (mut removed, mut added) = with_spliced(gone, come, &moving);
+    let slots = settling(before, both, &removed, &added);
+    let placed = slots.len() == after
+        && both
+            .iter()
+            .enumerate()
+            .filter(|&(at, _)| !moved_one(at))
+            .all(|(_, &(_, now, id))| slots.iter().position(|held| *held == Some(id)) == Some(now));
+    if !placed {
+        // The items do not keep an order that settles them: each of the ones both hold is
+        // taken out and put back, in its place.
+        moving = both.to_vec();
+        (removed, added) = with_spliced(gone, come, &moving);
+    }
+    let mut out = Vec::with_capacity(removed.len().saturating_add(added.len()));
+    out.extend(removed.into_iter().map(|(at, id)| Splice::Remove {
+        at,
+        item: id.to_owned(),
+    }));
+    out.extend(added.into_iter().map(|(at, id)| Splice::Insert {
+        at,
+        item: id.to_owned(),
+    }));
+    out
+}
+
+/// The steps of `before` for `gone` and of `after` for `come`, with the items `spliced` taken out
+/// of the one and put back into the other: the removals from the last, then the insertions in
+/// order, as a reader applies them.
+fn with_spliced<'a>(
+    gone: &[Place<'a>],
+    come: &[Place<'a>],
+    spliced: &[Stayed<'a>],
+) -> (Vec<Place<'a>>, Vec<Place<'a>>) {
+    let mut gone = gone.to_vec();
+    let mut come = come.to_vec();
+    for &(was, now, id) in spliced {
+        gone.push((was, id));
+        come.push((now, id));
     }
     gone.sort_unstable_by(|a, b| b.cmp(a));
     come.sort_unstable();
-    let mut out = Vec::with_capacity(gone.len().saturating_add(come.len()));
-    out.extend(gone.into_iter().map(|(at, id)| Splice::Remove {
-        at,
-        item: id.to_owned(),
-    }));
-    out.extend(come.into_iter().map(|(at, id)| Splice::Insert {
-        at,
-        item: id.to_owned(),
-    }));
-    Some(out)
+    (gone, come)
+}
+
+/// Which of the items both listings hold are already in the order they stand in each, the
+/// longest such run: an item of it only shifts with the items that came and went.
+fn in_order(both: &[Stayed<'_>]) -> Vec<bool> {
+    // The items in the order `before` holds them, by their place in `after`: the longest run of
+    // places that grows is the longest run of items that keeps its order.
+    let mut places: Vec<(usize, usize, usize)> = both
+        .iter()
+        .enumerate()
+        .map(|(at, &(was, now, _))| (was, now, at))
+        .collect();
+    places.sort_unstable_by_key(|&(was, ..)| was);
+    let now_at = |place: usize| places.get(place).map_or(usize::MAX, |&(_, now, _)| now);
+    let mut runs: Vec<usize> = Vec::new();
+    let mut from: Vec<Option<usize>> = Vec::with_capacity(places.len());
+    for (place, &(_, now, _)) in places.iter().enumerate() {
+        let width = runs.partition_point(|&run| now_at(run) < now);
+        from.push(
+            width
+                .checked_sub(1)
+                .and_then(|short| runs.get(short).copied()),
+        );
+        match runs.get_mut(width) {
+            Some(run) => *run = place,
+            None => runs.push(place),
+        }
+    }
+    let mut kept = vec![false; both.len()];
+    let mut walk = runs.last().copied();
+    while let Some(place) = walk {
+        if let Some(&(.., at)) = places.get(place)
+            && let Some(slot) = kept.get_mut(at)
+        {
+            *slot = true;
+        }
+        walk = from.get(place).copied().flatten();
+    }
+    kept
+}
+
+/// Where the items of `both` stand once `gone` is taken out and `come` put in, `None` for every
+/// item the steps do not name: read over the items that stayed, it says which of them only
+/// shifted with the items around them and which came to stand among others.
+fn settling<'a>(
+    len: usize,
+    both: &[Stayed<'a>],
+    gone: &[Place<'a>],
+    come: &[Place<'a>],
+) -> Vec<Option<&'a str>> {
+    let mut slots: Vec<Option<&'a str>> = vec![None; len];
+    for &(was, _, id) in both {
+        if let Some(slot) = slots.get_mut(was) {
+            *slot = Some(id);
+        }
+    }
+    for (at, _) in gone {
+        if *at < slots.len() {
+            slots.remove(*at);
+        }
+    }
+    for (at, id) in come {
+        slots.insert((*at).min(slots.len()), Some(*id));
+    }
+    slots
 }
 
 /// How a collection's listing changed: the steps, in order, from the listing as the store held
@@ -1797,4 +1933,74 @@ pub fn removed_of_log(
             stood_here.then(|| (resource, last.clone()))
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ids` as a listing the store holds whole.
+    fn listing(ids: &[&str]) -> Listing {
+        Listing::from_ids(ids.iter().map(|id| (*id).to_owned()))
+    }
+
+    /// The order the steps leave, applied as a reader applies them: each removal names the item
+    /// it takes out, each insertion goes in at its index.
+    fn replayed(before: &[&str], steps: &[Splice]) -> Vec<String> {
+        let mut order: Vec<String> = before.iter().map(|id| (*id).to_owned()).collect();
+        for step in steps {
+            match step {
+                Splice::Remove { at, item } => {
+                    assert_eq!(order.get(*at).map(String::as_str), Some(item.as_str()));
+                    order.remove(*at);
+                }
+                Splice::Insert { at, item } => order.insert(*at, item.clone()),
+            }
+        }
+        order
+    }
+
+    #[test]
+    fn the_items_that_stayed_take_no_step_though_another_one_went() {
+        let before = ["a", "b", "c", "d"];
+        let after = ["a", "b", "d"];
+        let steps = moved_steps(&listing(&before), &listing(&after), before).unwrap();
+        assert_eq!(
+            steps,
+            vec![Splice::Remove {
+                at: 2,
+                item: "c".to_owned(),
+            }],
+            "the three that stayed take no step"
+        );
+        assert_eq!(replayed(&before, &steps), after);
+    }
+
+    #[test]
+    fn a_moved_item_is_a_removal_and_an_insertion_and_the_others_take_none() {
+        let before = ["a", "b", "c", "d"];
+        let after = ["c", "a", "b", "d"];
+        let steps = moved_steps(&listing(&before), &listing(&after), before).unwrap();
+        assert_eq!(replayed(&before, &steps), after);
+        assert!(
+            !steps
+                .iter()
+                .any(|step| step.item() == "d" && matches!(step, Splice::Remove { .. })),
+            "the row that stayed is not taken out and put back: {steps:?}"
+        );
+        assert_eq!(
+            steps,
+            vec![
+                Splice::Remove {
+                    at: 2,
+                    item: "c".to_owned(),
+                },
+                Splice::Insert {
+                    at: 0,
+                    item: "c".to_owned(),
+                },
+            ],
+            "only the row that came to stand among others moves, and one step of its own"
+        );
+    }
 }
