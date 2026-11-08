@@ -290,7 +290,11 @@ impl Session {
     }
 
     /// The chat action that records work on the reply to the turn's message,
-    /// as the broker publishes it to this agent.
+    /// as the broker publishes it to this agent: absent when the agent's
+    /// catalogue offers no `record-work` on that reply, which is what a
+    /// workspace whose Chat is closed — or whose agent was admitted without
+    /// the chat app's actions — leaves, and the reason the reply a person
+    /// asked for never appears.
     fn record_work_action(&mut self, arguments: &Map<String, Value>) -> Option<TaskAction> {
         let message = arguments.get("message").and_then(Value::as_str)?;
         let reply = format!("{MESSAGES}{message}");
@@ -304,7 +308,16 @@ impl Session {
                         && offer.descriptor.address.resource.ends_with(&reply)
                 })
                 .cloned()
-        }?;
+        };
+        let Some(offer) = offer else {
+            tracing::warn!(
+                reply = %reply,
+                action = RECORD_WORK,
+                "the conversation publishes no `record-work` on the turn's reply: \
+                 the person's message gets no answer, and this agent's catalogue is why"
+            );
+            return None;
+        };
         match super::task_action_from_offer(&offer, arguments.clone()) {
             Ok(action) => Some(action),
             Err(error) => {
