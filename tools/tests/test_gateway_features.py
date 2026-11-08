@@ -40,18 +40,20 @@ class GatewayFeaturesTests(unittest.TestCase):
     def added_flags(self, argv, command):
         """What the wrapper added after the command a caller gave it.
 
-        The additions are flags, not positions: the profile CI's failure output
-        and timings expect, and the no-fail-fast the timings need. Anything else
-        is a feature flag the wrapper had no business adding.
+        Named flags, not positions: with CI set a run that names its packages
+        builds them beside the family's `unify` member, and a test run takes
+        CI's profile and the no-fail-fast the timings need. Features are never
+        added this way; they come through that member's manifest.
         """
         self.assertEqual(argv[:len(command)], command)
         extra = list(argv[len(command):])
-        self.assertIn("--profile", extra)
-        profile = extra.index("--profile")
-        self.assertEqual(extra[profile + 1], "ci", extra)
-        del extra[profile:profile + 2]
-        if extra and extra[-1] == "--no-fail-fast":
-            extra.pop()
+        for flag, value in (("-p", "workspace-unify"), ("--profile", "ci")):
+            if flag in extra:
+                at = extra.index(flag)
+                self.assertEqual(extra[at:at + 2], [flag, value], extra)
+                del extra[at:at + 2]
+        if "--no-fail-fast" in extra:
+            extra.remove("--no-fail-fast")
         return extra
 
     def test_ci_and_t_wrapper_execute_the_gateway_recipe_without_workspace_features(self):
@@ -79,8 +81,9 @@ class GatewayFeaturesTests(unittest.TestCase):
                         ["bash", str(ci / "nextest.sh"), *command],
                         capture_output=True, text=True, check=True, env=env)
                     argv = json.loads(result.stdout)
-                    # Its tests' features come through workspace-unify, never as --features.
                     self.assertEqual(self.added_flags(argv, command), [])
+                    # Its tests' features come through workspace-unify, never as --features.
+                    self.assertIn("workspace-unify", argv[len(command):])
                     self.assertNotIn("--features", argv)
                     self.assertNotIn("--all-features", argv)
                     self.assertNotIn("--workspace", argv)
