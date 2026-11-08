@@ -164,7 +164,6 @@ start_image() {
     TILO_ROOMS_NAME=Lounge \
     TILO_ROOMS_DESCRIPTION='The Tilo community: chat, notes and a shared desktop' \
     TILO_ROOMS_DEFAULT_ROLE=editor \
-    TILO_ROOMS_LAYOUT=shared \
     TILO_ROOMS_ADMISSION=open \
     TILO_ROOMS_RELAY_ORIGIN="$relay_origin" \
     TILO_ROOMS_LIVE="127.0.0.1:$live_port" \

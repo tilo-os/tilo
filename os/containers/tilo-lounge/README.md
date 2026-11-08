@@ -45,7 +45,6 @@ Optional, with these defaults:
 | --- | --- | --- |
 | `TILO_ROOMS_NAME` | the name, capitalized | the name people see |
 | `TILO_ROOMS_DEFAULT_ROLE` | `editor` | the role everyone who joins through the door gets |
-| `TILO_ROOMS_LAYOUT` | `shared` | every member sees the same strips and windows |
 | `TILO_ROOMS_CHAT_CHANNELS` | `general` | comma-separated channels the Chat opens with |
 | `TILO_ROOMS_FEEDBACK_CHANNEL` | none | the channel members report problems to |
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
