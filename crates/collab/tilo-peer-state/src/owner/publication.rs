@@ -230,7 +230,12 @@ fn fresh(entry: &StoredOutgoing, now: SystemTime) -> bool {
         && timestamp <= now.checked_add(skew).unwrap_or(now)
 }
 pub(crate) fn state(view: &NativeCommittedView) -> Result<&StoredPublication, String> {
-    view.record
+    state_of(&view.record)
+}
+
+/// The outgoing custody of a record, published or in the making.
+pub(crate) fn state_of(record: &record::StoredWorkspace) -> Result<&StoredPublication, String> {
+    record
         .publication
         .as_ref()
         .ok_or_else(|| "native publication state is missing".into())
@@ -450,8 +455,8 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     )
 }
 /// Workspace for `bytes` in the outgoing custody.
-fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
-    let publication = state(view)?;
+fn reserve(view: &record::StoredWorkspace, bytes: &[u8]) -> Result<(), String> {
+    let publication = state_of(view)?;
     let total = bounds(publication)?;
     if publication.entries.len() >= MAX_ENTRIES
         || total
@@ -464,17 +469,18 @@ fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
 }
 
 pub(crate) fn replace_governance_checkpoint(
-    view: &mut NativeCommittedView,
+    live: &StatePeer,
+    view: &mut record::StoredWorkspace,
     binding: CommitBinding,
     now: SystemTime,
 ) -> Result<(), String> {
-    let message = view.peer.workspace_message();
+    let message = live.workspace_message();
     let bytes = encode(&message, MAX_BYTES)?;
-    let existing = state(view)?.governance.first();
+    let existing = state_of(view)?.governance.first();
     if existing.is_some_and(|entry| entry.bytes == bytes && entry.binding == binding) {
         return Ok(());
     }
-    let total = bounds(state(view)?)?;
+    let total = bounds(state_of(view)?)?;
     let old = existing.map_or(0, |entry| entry.bytes.len());
     if total
         .checked_sub(old)
@@ -488,11 +494,7 @@ pub(crate) fn replace_governance_checkpoint(
     if retention != Retention::Checkpoint {
         return Err("native governance publication is not a checkpoint".into());
     }
-    let publication = view
-        .record
-        .publication
-        .as_mut()
-        .ok_or("publication absent")?;
+    let publication = view.publication.as_mut().ok_or("publication absent")?;
     publication.version = 3;
     let ordinal = publication.next_ordinal;
     publication.next_ordinal = ordinal
@@ -520,12 +522,13 @@ pub(crate) fn replace_governance_checkpoint(
 /// until the workspace's governance carries them all
 /// ([`retire_member_changes`]).
 pub(crate) fn add_member_changes(
-    view: &mut NativeCommittedView,
+    live: &StatePeer,
+    view: &mut record::StoredWorkspace,
     changes: Vec<Vec<u8>>,
     binding: CommitBinding,
     now: SystemTime,
 ) -> Result<(), String> {
-    let mut joined = match state(view)?.governance.first() {
+    let mut joined = match state_of(view)?.governance.first() {
         Some(existing) if existing.incremental => member_changes(&existing.bytes)?,
         _ => Vec::new(),
     };
@@ -536,14 +539,15 @@ pub(crate) fn add_member_changes(
     }
     let message = NeighbourMsg::SyncResp {
         changes: joined,
-        room: view.record.workspace.to_string(),
+        room: view.workspace.to_string(),
     };
     let bytes = encode(&message, MAX_BYTES)?;
-    let old = state(view)?
+    let _ = live;
+    let old = state_of(view)?
         .governance
         .first()
         .map_or(0, |entry| entry.bytes.len());
-    let total = bounds(state(view)?)?;
+    let total = bounds(state_of(view)?)?;
     if total
         .checked_sub(old)
         .and_then(|size| size.checked_add(bytes.len()))
@@ -556,11 +560,7 @@ pub(crate) fn add_member_changes(
     if retention != Retention::Delta {
         return Err("native membership publication is not a delta".into());
     }
-    let publication = view
-        .record
-        .publication
-        .as_mut()
-        .ok_or("publication absent")?;
+    let publication = view.publication.as_mut().ok_or("publication absent")?;
     publication.version = 3;
     let ordinal = publication.next_ordinal;
     publication.next_ordinal = ordinal
@@ -610,28 +610,21 @@ pub(crate) fn change_hashes(
 /// over from a newer base no longer holds them as they were made: that base
 /// is what the workspace is now, and they go too.
 pub(crate) fn retire_member_changes(
-    view: &mut NativeCommittedView,
+    live: &StatePeer,
+    view: &mut record::StoredWorkspace,
     governed: &BTreeSet<automerge::ChangeHash>,
 ) -> Result<(), String> {
-    let Some(existing) = state(view)?.governance.first() else {
+    let Some(existing) = state_of(view)?.governance.first() else {
         return Ok(());
     };
     if !existing.incremental {
         return Ok(());
     }
     let made = change_hashes(&member_changes(&existing.bytes)?)?;
-    if !made.is_subset(governed)
-        && made
-            .iter()
-            .all(|hash| view.peer.workspace_holds_change(hash))
-    {
+    if !made.is_subset(governed) && made.iter().all(|hash| live.workspace_holds_change(hash)) {
         return Ok(());
     }
-    let publication = view
-        .record
-        .publication
-        .as_mut()
-        .ok_or("publication absent")?;
+    let publication = view.publication.as_mut().ok_or("publication absent")?;
     publication.governance.clear();
     publication.revision = publication
         .revision
@@ -640,23 +633,25 @@ pub(crate) fn retire_member_changes(
     Ok(())
 }
 
-pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> Result<(), String> {
-    let Some(existing) = state(view)?.governance.first().cloned() else {
+pub(crate) fn refresh_governance_checkpoint(
+    live: &StatePeer,
+    view: &mut record::StoredWorkspace,
+) -> Result<(), String> {
+    let Some(existing) = state_of(view)?.governance.first().cloned() else {
         return Ok(());
     };
     // A member's own changes stay as it made them until they are admitted.
     if existing.incremental {
         return Ok(());
     }
-    let bytes = encode(&view.peer.workspace_message(), MAX_BYTES)?;
+    let bytes = encode(&live.workspace_message(), MAX_BYTES)?;
     let binding = if matches!(
         existing.binding.target,
         crate::owner_commit::CommitTarget::NativeCheckpointRoot { .. }
     ) {
         crate::owner::checkpoint::binding(
-            view.record.workspace,
-            view.peer
-                .workspace()
+            view.workspace,
+            live.workspace()
                 .workspace_checkpoint_root()?
                 .ok_or("native checkpoint root disappeared")?,
         )
@@ -666,7 +661,7 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     if bytes == existing.bytes && binding == existing.binding {
         return Ok(());
     }
-    let total = bounds(state(view)?)?;
+    let total = bounds(state_of(view)?)?;
     if total
         .checked_sub(existing.bytes.len())
         .and_then(|size| size.checked_add(bytes.len()))
@@ -674,11 +669,7 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     {
         return Err("refreshed native governance checkpoint exceeds outgoing capacity".into());
     }
-    let publication = view
-        .record
-        .publication
-        .as_mut()
-        .ok_or("publication absent")?;
+    let publication = view.publication.as_mut().ok_or("publication absent")?;
     publication.revision = publication
         .revision
         .checked_add(1)
@@ -691,9 +682,9 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     }];
     Ok(())
 }
-fn append(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
+fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), String> {
     let id = *blake3::hash(&bytes).as_bytes();
-    if state(view)?
+    if state_of(view)?
         .entries
         .iter()
         .any(|entry| entry.id == id && entry.bytes == bytes)
@@ -704,11 +695,7 @@ fn append(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> 
     let message: NeighbourMsg = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
     let (timestamp_ns, channel, incremental) = metadata(&message)?;
     let binding = request(&message)?.binding()?;
-    let publication = view
-        .record
-        .publication
-        .as_mut()
-        .ok_or("publication absent")?;
+    let publication = view.publication.as_mut().ok_or("publication absent")?;
     let ordinal = publication.next_ordinal;
     publication.next_ordinal = ordinal
         .checked_add(1)
@@ -728,19 +715,18 @@ fn append(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> 
     });
     Ok(())
 }
-pub(crate) fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
-    if !view.hosted_here() {
+pub(crate) fn append_local(
+    view: &mut record::StoredWorkspace,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    if view.device != view.workspace_host {
         return append(view, bytes);
     }
     // The workspace's own device is its keeper: what it admits is already
     // where the workspace's records live, and no one else answers a publish.
     // Nothing waits here, and what an earlier record kept waiting is released
     // with this commit, so custody of a device-hosted workspace stays empty.
-    let publication = view
-        .record
-        .publication
-        .as_mut()
-        .ok_or("publication absent")?;
+    let publication = view.publication.as_mut().ok_or("publication absent")?;
     if publication.entries.is_empty() {
         return Ok(());
     }
@@ -751,8 +737,8 @@ pub(crate) fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Re
         .ok_or("native publication revision exhausted")?;
     Ok(())
 }
-pub(crate) fn has_exact(view: &NativeCommittedView, bytes: &[u8]) -> Result<bool, String> {
-    Ok(state(view)?
+pub(crate) fn has_exact(view: &record::StoredWorkspace, bytes: &[u8]) -> Result<bool, String> {
+    Ok(state_of(view)?
         .entries
         .iter()
         .any(|entry| entry.bytes == bytes))
@@ -917,11 +903,15 @@ fn validate_member_changes(
 }
 /// An exact replay changes no peer state; reuse its barrier only when there
 /// is no retirement or checkpoint refresh to publish.
-pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool, String> {
-    let publication = state(view)?;
+pub(crate) fn exact_replay_unchanged(
+    live: &StatePeer,
+    view: &record::StoredWorkspace,
+) -> Result<bool, String> {
+    let publication = state_of(view)?;
+    let device = view.device.device_public_key;
     let originals = decode_entries(&publication.entries)?;
     for message in &originals {
-        if retired(&view.peer, message, view.device().device_public_key).unwrap_or(false) {
+        if retired(live, message, device).unwrap_or(false) {
             return Ok(false);
         }
     }
@@ -929,43 +919,44 @@ pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool,
     // them, which any replay may bring.
     if let Some(checkpoint) = publication.governance.first()
         && (checkpoint.incremental
-            || encode(&view.peer.workspace_message(), MAX_BYTES)? != checkpoint.bytes)
+            || encode(&live.workspace_message(), MAX_BYTES)? != checkpoint.bytes)
     {
         return Ok(false);
     }
     Ok(true)
 }
 
-pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
-    let publication = state(view)?;
+pub(crate) fn retire(live: &StatePeer, view: &mut record::StoredWorkspace) -> Result<bool, String> {
+    let publication = state_of(view)?;
     let mut remove = BTreeSet::new();
     for entry in &publication.entries {
         let message: NeighbourMsg =
             postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
         // A refused query cannot discard newly admitted revocations or prerequisites.
-        if retired(&view.peer, &message, view.device().device_public_key).unwrap_or(false) {
+        if retired(live, &message, view.device.device_public_key).unwrap_or(false) {
             remove.insert(entry.id);
         }
     }
-    if !remove.is_empty() {
-        let publication = view
-            .record
-            .publication
-            .as_mut()
-            .ok_or("publication absent")?;
-        publication
-            .entries
-            .retain(|entry| !remove.contains(&entry.id));
-        publication.revision = publication
-            .revision
-            .checked_add(1)
-            .ok_or("native publication revision exhausted")?;
+    if remove.is_empty() {
+        return Ok(false);
     }
-    Ok(())
+    let publication = view.publication.as_mut().ok_or("publication absent")?;
+    publication
+        .entries
+        .retain(|entry| !remove.contains(&entry.id));
+    publication.revision = publication
+        .revision
+        .checked_add(1)
+        .ok_or("native publication revision exhausted")?;
+    Ok(true)
 }
-pub(crate) fn retry_covered(view: &NativeCommittedView, bytes: &[u8]) -> Result<bool, String> {
+pub(crate) fn retry_covered(
+    live: &StatePeer,
+    view: &record::StoredWorkspace,
+    bytes: &[u8],
+) -> Result<bool, String> {
     let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
-    retired(&view.peer, &message, view.device().device_public_key)
+    retired(live, &message, view.device.device_public_key)
 }
 impl NativeWorkspaceOwner {
     /// Read `workspace`'s outgoing custody: what the relay session may send now.
@@ -1005,23 +996,21 @@ impl NativeWorkspaceOwner {
     /// receipt names, and commit the retirement.
     pub fn retire_outgoing(&self, workspace: WorkspaceId) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        let candidate = self.view(workspace)?;
         let now = SystemTime::now();
         candidate
             .peer
             .permissions(candidate.device().device_public_key, now)
             .map_err(|error| error.to_string())?;
-        let before = state(&candidate)?.revision;
-        retire(&mut candidate)?;
-        if before != state(&candidate)?.revision {
-            candidate.record.peer = candidate.peer.durable()?;
-            candidate.record.generation = candidate
-                .generation()
-                .checked_add(1)
-                .ok_or("native owner generation exhausted")?;
-            self.publish_workspace(workspace, candidate, None)?;
+        let (changed, mut record) = candidate.change(|live, record| retire(live, record))?;
+        if !changed {
+            return Ok(());
         }
-        Ok(())
+        record.generation = record
+            .generation
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_record(workspace, &candidate, record, None)
     }
     /// Renew this device's sealed writes that expired in custody before the
     /// governor retired them, through `reseal`, the channels' key holder
@@ -1041,7 +1030,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        let candidate = self.view(workspace)?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("native outgoing signer differs from selected device".into());
         }
@@ -1049,44 +1038,44 @@ impl NativeWorkspaceOwner {
             .peer
             .permissions(candidate.device().device_public_key, now)
             .map_err(|error| error.to_string())?;
-        let mut renewed = false;
-        for entry in state(&candidate)?.entries.clone() {
-            let original: NeighbourMsg =
-                postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
-            let renewal = match candidate
-                .peer
-                .outbox_mut()
-                .renew_local_sealed(&original, reseal, key, now)
-            {
-                Ok(Some(renewal)) => renewal,
-                Ok(None) => continue,
-                Err(error) => {
-                    // The write stays valid only until its own expiry: a
-                    // person whose change does not reach the workspace needs
-                    // this in the journal, not below what the journal keeps.
-                    tracing::warn!(%error, "sealed write stays unrenewed in custody");
-                    continue;
-                }
-            };
-            candidate
-                .record
-                .publication
-                .as_mut()
-                .ok_or("publication absent")?
-                .entries
-                .retain(|kept| kept.id != entry.id);
-            append(&mut candidate, encode(&renewal, MAX_BYTES)?)?;
-            renewed = true;
-        }
+        let (renewed, mut record) = candidate.change(|live, record| {
+            let mut renewed = false;
+            for entry in state_of(record)?.entries.clone() {
+                let original: NeighbourMsg =
+                    postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+                let renewal = match live
+                    .outbox_mut()
+                    .renew_local_sealed(&original, reseal, key, now)
+                {
+                    Ok(Some(renewal)) => renewal,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        // The write stays valid only until its own expiry: a
+                        // person whose change does not reach the workspace needs
+                        // this in the journal, not below what the journal keeps.
+                        tracing::warn!(%error, "sealed write stays unrenewed in custody");
+                        continue;
+                    }
+                };
+                record
+                    .publication
+                    .as_mut()
+                    .ok_or("publication absent")?
+                    .entries
+                    .retain(|kept| kept.id != entry.id);
+                append(record, encode(&renewal, MAX_BYTES)?)?;
+                renewed = true;
+            }
+            Ok(renewed)
+        })?;
         if !renewed {
             return Ok(());
         }
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = candidate
-            .generation()
+        record.generation = record
+            .generation
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
-        self.publish_workspace(workspace, candidate, None)
+        self.publish_record(workspace, &candidate, record, None)
     }
     /// Compact every sealed record history of `workspace` that has used most of
     /// its bound into one sealed checkpoint, and commit the compactions
@@ -1123,7 +1112,7 @@ impl NativeWorkspaceOwner {
             return Ok(0);
         }
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        let candidate = self.view(workspace)?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("native compaction signer differs from selected device".into());
         }
@@ -1131,38 +1120,40 @@ impl NativeWorkspaceOwner {
             .peer
             .permissions(candidate.device().device_public_key, now)
             .map_err(|error| error.to_string())?;
-        let due = candidate.peer.publication().sealed_records_to_compact();
-        let mut compacted = 0usize;
-        for (app, record) in &due {
-            // Compacted on a copy: a history that cannot be committed as one
-            // custody entry stays where it is rather than folding here only.
-            let mut attempt = candidate.peer.clone();
-            let mut seal = |snapshot: &[u8]| seal(app, record, snapshot);
-            let made = attempt
-                .publication_mut()
-                .compact_sealed_history(app, record, open, &mut seal, key, now)
-                .and_then(|message| encode(&message, MAX_BYTES));
-            match made {
-                Ok(bytes) => {
-                    candidate.peer = attempt;
-                    append(&mut candidate, bytes)?;
-                    compacted = compacted.saturating_add(1);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, %app, %record,
-                        "sealed record history stays uncompacted here");
+        let (compacted, mut record) = candidate.change(|live, record| {
+            let due = live.publication().sealed_records_to_compact();
+            let mut compacted = 0usize;
+            for (app, record_id) in &due {
+                // Compacted on a copy: a history that cannot be committed as one
+                // custody entry stays where it is rather than folding here only.
+                let mut attempt = live.clone();
+                let mut seal = |snapshot: &[u8]| seal(app, record_id, snapshot);
+                let made = attempt
+                    .publication_mut()
+                    .compact_sealed_history(app, record_id, open, &mut seal, key, now)
+                    .and_then(|message| encode(&message, MAX_BYTES));
+                match made {
+                    Ok(bytes) => {
+                        *live = attempt;
+                        append(record, bytes)?;
+                        compacted = compacted.saturating_add(1);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, %app, %record_id,
+                            "sealed record history stays uncompacted here");
+                    }
                 }
             }
-        }
+            Ok(compacted)
+        })?;
         if compacted == 0 {
             return Ok(0);
         }
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = candidate
-            .generation()
+        record.generation = record
+            .generation
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
-        self.publish_workspace(workspace, candidate, None)?;
+        self.publish_record(workspace, &candidate, record, None)?;
         Ok(compacted)
     }
 }

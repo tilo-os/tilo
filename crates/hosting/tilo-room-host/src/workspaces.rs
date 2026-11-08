@@ -82,7 +82,7 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
-use std::sync::MutexGuard;
+use tilo_peer_state::replica::PeerGuard;
 
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::{GovernedAccess, StatePeer};
@@ -465,7 +465,7 @@ impl GovernedWorkspace {
         Ok(())
     }
 
-    fn peer(&self) -> MutexGuard<'_, StatePeer> {
+    fn peer(&self) -> PeerGuard<'_> {
         self.peer.lock()
     }
 

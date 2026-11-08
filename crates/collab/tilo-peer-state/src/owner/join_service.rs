@@ -6,10 +6,8 @@
 //! bootstrap, published by this device like any other change it makes. No
 //! device answers for another, and no device holds a privilege the workspace's
 //! governance does not give it.
-use super::record::StoredJoinReceipt;
-use super::{
-    NativeCommittedView, NativeWorkspaceOwner, StoredPendingEnrollment, WorkspaceId, publication,
-};
+use super::record::{self, StoredJoinReceipt};
+use super::{NativeWorkspaceOwner, WorkspaceId, publication};
 use crate::StatePeer;
 use crate::join::TransportHint;
 use crate::join::invitations::{
@@ -18,6 +16,7 @@ use crate::join::invitations::{
 use crate::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use crate::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
 use crate::owner_commit::{CommitBinding, CommitTarget, OwnerCommitReceipt};
+use crate::replica::Replica;
 use ed25519_dalek::SigningKey;
 use std::future::Future;
 use std::time::{Duration, SystemTime};
@@ -59,16 +58,20 @@ fn join_binding(
     })
 }
 
-/// One workspace of this device's engine while a join is decided: a candidate the
-/// answer publishes once, so nothing of it is observable before it is
-/// durable, and the ledger staged by the exchange is kept with it.
+/// One workspace of this device's engine while a join is decided: the state the
+/// exchange decides on, and the record it stages beside it, published once so
+/// nothing of it is observable before it is durable.
 struct OwnerWorkspace<'a> {
     owner: &'a NativeWorkspaceOwner,
     workspace: WorkspaceId,
     /// The workspace's id as the exchange names it.
     named: String,
     workspace_id: u64,
-    candidate: NativeCommittedView,
+    /// The workspace state this exchange decides on and answers with.
+    peer: StatePeer,
+    record: record::StoredWorkspace,
+    /// This device's live replica, which the answer is installed into.
+    replica: Replica,
     staged: bool,
 }
 
@@ -79,13 +82,14 @@ impl OwnerWorkspace<'_> {
         if !self.staged {
             return Ok(());
         }
-        let mut next = self.candidate.clone();
-        next.record.generation = next
-            .generation()
+        self.record.generation = self
+            .record
+            .generation
             .checked_add(1)
             .ok_or_else(|| JoinError::new("native join generation exhausted"))?;
+        *self.replica.lock() = self.peer.clone();
         self.owner
-            .publish_workspace(self.workspace, next, None::<&StoredPendingEnrollment>)
+            .publish(self.workspace, &self.replica, self.record.clone(), None)
             .map_err(JoinError::new)?;
         self.staged = false;
         Ok(())
@@ -94,7 +98,7 @@ impl OwnerWorkspace<'_> {
 
 impl GovernanceMessages for OwnerWorkspace<'_> {
     fn governance_messages(&self) -> Result<Vec<Vec<u8>>, String> {
-        self.candidate.peer().governance_messages()
+        self.peer.governance_messages()
     }
 }
 
@@ -105,21 +109,21 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
 
     fn governed(&self) -> Governed<'_> {
         Governed {
-            peer: self.candidate.peer().into(),
-            host: self.candidate.device(),
+            peer: (&self.peer).into(),
+            host: &self.record.device,
             workspace_id: self.workspace_id,
-            generation: self.candidate.generation(),
+            generation: self.record.generation,
             governance_messages: None,
         }
     }
 
     fn ledger(&self) -> &JoinLedger {
-        &self.candidate.record.join_ledger
+        &self.record.join_ledger
     }
 
     fn stage_ledger(&mut self, ledger: JoinLedger) {
-        if *self.ledger() != ledger {
-            self.candidate.record.join_ledger = ledger;
+        if self.record.join_ledger != ledger {
+            self.record.join_ledger = ledger;
             self.staged = true;
         }
     }
@@ -130,59 +134,63 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
         now: u64,
         decide: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
     ) -> Result<(), JoinError> {
-        let mut next = self.candidate.clone();
-        let before = next.peer.workspace_heads().unwrap_or_default();
-        next.peer = peer;
-        let generation = next
-            .generation()
+        let before = self.peer.workspace_heads().unwrap_or_default();
+        self.peer = peer;
+        let generation = self
+            .record
+            .generation
             .checked_add(1)
             .ok_or_else(|| JoinError::new("native join generation exhausted"))?;
         let answered = {
             let governed = Governed {
-                peer: (&next.peer).into(),
-                host: next.device(),
+                peer: (&self.peer).into(),
+                host: &self.record.device,
                 workspace_id: self.workspace_id,
                 generation,
                 governance_messages: None,
             };
             decide(&governed)?
         };
-        let changes = next.peer.workspace_changes_since(&before);
-        next.record.join_ledger = answered;
-        next.record.generation = generation;
-        next.record.peer = next.peer.durable().map_err(JoinError::new)?;
+        let changes = self.peer.workspace_changes_since(&before);
+        self.record.join_ledger = answered;
+        self.record.generation = generation;
         if !changes.is_empty() {
             let binding = join_binding(
                 self.workspace,
-                next.device().device_public_key,
-                &next.record.join_ledger,
+                self.record.device.device_public_key,
+                &self.record.join_ledger,
                 &changes,
             )
             .map_err(JoinError::new)?;
-            if next.record.join_admissions.len() >= MAX_JOIN_RECEIPTS {
+            if self.record.join_admissions.len() >= MAX_JOIN_RECEIPTS {
                 return Err(JoinError::new("native join custody capacity exhausted"));
             }
-            next.record.join_admissions.insert(
+            self.record.join_admissions.insert(
                 hex::encode(binding.request_digest),
                 StoredJoinReceipt {
                     receipt: OwnerCommitReceipt {
                         binding: binding.clone(),
                         generation,
-                        aggregate_hash: *blake3::hash(&next.record.peer).as_bytes(),
+                        aggregate_hash: *blake3::hash(
+                            &self.peer.durable().map_err(JoinError::new)?,
+                        )
+                        .as_bytes(),
                     },
                 },
             );
-            publication::add_member_changes(&mut next, changes, binding, at(now))
-                .map_err(JoinError::new)?;
-        }
-        self.owner
-            .publish_workspace(
-                self.workspace,
-                next.clone(),
-                None::<&StoredPendingEnrollment>,
+            publication::add_member_changes(
+                &self.peer,
+                &mut self.record,
+                changes,
+                binding,
+                at(now),
             )
             .map_err(JoinError::new)?;
-        self.candidate = next;
+        }
+        *self.replica.lock() = self.peer.clone();
+        self.owner
+            .publish(self.workspace, &self.replica, self.record.clone(), None)
+            .map_err(JoinError::new)?;
         self.staged = false;
         Ok(())
     }
@@ -225,10 +233,7 @@ impl OwnerJoinWorkspaces {
         let workspace = WorkspaceId::parse(workspace)
             .ok_or_else(|| JoinError::new("this device holds no such workspace"))?;
         let _turn = self.owner.0.mutation.lock();
-        let candidate = self
-            .owner
-            .with_current(workspace, |view| Ok(view.clone()))
-            .map_err(JoinError::new)?;
+        let view = self.owner.view(workspace).map_err(JoinError::new)?;
         let workspace_id = crate::join::room_workspace_id(&workspace.to_string())
             .map_err(|error| JoinError::new(error.to_string()))?;
         let mut held = OwnerWorkspace {
@@ -236,7 +241,9 @@ impl OwnerJoinWorkspaces {
             workspace,
             named: workspace.to_string(),
             workspace_id,
-            candidate,
+            peer: view.live().clone(),
+            record: view.record.clone(),
+            replica: view.replica.clone(),
             staged: false,
         };
         let answer = decide(&mut held);
@@ -287,44 +294,42 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<IssuedInvitation, String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
-        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
-            return Err("invitation is not signed by this device".into());
-        }
-        let mut nonce = [0; 16];
-        getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
-        candidate.peer.require_member_writer(key, now)?;
-        candidate
-            .peer
-            .require_invitation_authority(key, request.role.into(), now)?;
-        let mut ledger = candidate.record.join_ledger.clone();
-        let issued = {
-            let governed = Governed {
-                peer: (&candidate.peer).into(),
-                host: candidate.device(),
-                workspace_id: crate::join::room_workspace_id(&workspace.to_string())
-                    .map_err(|error| error.to_string())?,
-                generation: candidate.generation(),
-                governance_messages: None,
+        self.change_record(workspace, |view, record| {
+            if key.verifying_key().to_bytes() != record.device.device_public_key {
+                return Err("invitation is not signed by this device".into());
+            }
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
+            view.peer().require_member_writer(key, now)?;
+            view.peer()
+                .require_invitation_authority(key, request.role.into(), now)?;
+            let issued = {
+                let governed = Governed {
+                    peer: view.peer().into(),
+                    host: &record.device,
+                    workspace_id: crate::join::room_workspace_id(&workspace.to_string())
+                        .map_err(|error| error.to_string())?,
+                    generation: record.generation,
+                    governance_messages: None,
+                };
+                record
+                    .join_ledger
+                    .issue(
+                        &governed,
+                        administrator,
+                        request,
+                        transport,
+                        Signer { key, nonce },
+                        crate::owner::enrollment::ns(now)?,
+                    )
+                    .map_err(|error| error.to_string())?
             };
-            ledger
-                .issue(
-                    &governed,
-                    administrator,
-                    request,
-                    transport,
-                    Signer { key, nonce },
-                    crate::owner::enrollment::ns(now)?,
-                )
-                .map_err(|error| error.to_string())?
-        };
-        candidate.record.join_ledger = ledger;
-        candidate.record.generation = candidate
-            .generation()
-            .checked_add(1)
-            .ok_or("native join generation exhausted")?;
-        self.publish_workspace(workspace, candidate, None)?;
-        Ok(issued)
+            record.generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("native join generation exhausted")?;
+            Ok(issued)
+        })
     }
 
     /// Cancel the invitation `request` names in `workspace` as this device,
@@ -349,29 +354,31 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
-        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
-            return Err("invitation is not cancelled by this device".into());
-        }
-        candidate.peer.require_member_writer(key, now)?;
-        let mut ledger = candidate.record.join_ledger.clone();
-        let issuer = ledger
-            .issuer_of(request.invite_id)
-            .ok_or("invitation does not exist")?;
-        if issuer != candidate.device().user_public_key {
-            return Err("an invitation is cancelled by the person who issued it".into());
-        }
-        let changed = ledger.cancel(request).map_err(|error| error.to_string())?;
-        if !changed {
-            return Ok(false);
-        }
-        candidate.record.join_ledger = ledger;
-        candidate.record.generation = candidate
-            .generation()
-            .checked_add(1)
-            .ok_or("native join generation exhausted")?;
-        self.publish_workspace(workspace, candidate, None)?;
-        Ok(true)
+        self.change_record(workspace, |view, record| {
+            if key.verifying_key().to_bytes() != record.device.device_public_key {
+                return Err("invitation is not cancelled by this device".into());
+            }
+            view.peer().require_member_writer(key, now)?;
+            let issuer = record
+                .join_ledger
+                .issuer_of(request.invite_id)
+                .ok_or("invitation does not exist")?;
+            if issuer != record.device.user_public_key {
+                return Err("an invitation is cancelled by the person who issued it".into());
+            }
+            if !record
+                .join_ledger
+                .cancel(request)
+                .map_err(|error| error.to_string())?
+            {
+                return Ok(false);
+            }
+            record.generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("native join generation exhausted")?;
+            Ok(true)
+        })
     }
 
     /// The invitations into `workspace` still redeemable at `now`, as this

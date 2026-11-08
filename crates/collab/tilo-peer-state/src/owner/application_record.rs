@@ -141,7 +141,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        let candidate = self.view(workspace)?;
         if creator != candidate.device()
             || key.verifying_key().to_bytes() != creator.device_public_key
         {
@@ -151,43 +151,44 @@ impl NativeWorkspaceOwner {
             .peer
             .permissions(creator.device_public_key, now)
             .map_err(|error| error.to_string())?;
-        if candidate.peer.document(&route.app, &route.record).is_some() {
-            return Ok(false);
-        }
-        if creator != candidate.workspace_host() {
-            if !member
-                .policy
-                .app_authors(&route.app, &tilo_action_policy::Context::at_time(now))
-            {
-                return Err(
-                    "the workspace does not let this application author its records".into(),
-                );
+        let node =
+            collab_types::document_node(candidate.peer.workspace_id(), &route.app, &route.record);
+        let (created, record) = candidate.change(|live, record| {
+            if live.document(&route.app, &route.record).is_some() {
+                return Ok(false);
             }
-            let node = collab_types::document_node(
-                candidate.peer.workspace_id(),
+            if creator != candidate.workspace_host() {
+                if !member
+                    .policy
+                    .app_authors(&route.app, &tilo_action_policy::Context::at_time(now))
+                {
+                    return Err(
+                        "the workspace does not let this application author its records".into(),
+                    );
+                }
+                if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
+                    return Err("application record creator may not change the record".into());
+                }
+            }
+            let message = live.publication_mut().publish_document(
                 &route.app,
                 &route.record,
-            );
-            if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
-                return Err("application record creator may not change the record".into());
-            }
+                automerge::AutoCommit::new().save(),
+                key,
+                now,
+            )?;
+            let outgoing = publication::prepare(&publication::request(&message)?)?;
+            publication::append_local(record, outgoing)?;
+            record.generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("native application generation exhausted")?;
+            Ok(true)
+        })?;
+        if !created {
+            return Ok(false);
         }
-        let message = candidate.peer.publication_mut().publish_document(
-            &route.app,
-            &route.record,
-            automerge::AutoCommit::new().save(),
-            key,
-            now,
-        )?;
-        let outgoing = publication::prepare(&publication::request(&message)?)?;
-        publication::append_local(&mut candidate, outgoing)?;
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = candidate
-            .record
-            .generation
-            .checked_add(1)
-            .ok_or("native application generation exhausted")?;
-        self.publish_workspace(workspace, candidate, None)?;
+        self.publish_record(workspace, &candidate, record, None)?;
         Ok(true)
     }
 }

@@ -13,10 +13,10 @@
 //! Nothing here draws randomness or reads a clock; the host passes nonces
 //! and `now`, so the ledger runs wherever the workspace engine does.
 
+use crate::replica::PeerGuard;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Deref;
-use std::sync::MutexGuard;
 
 use web_time::SystemTime;
 
@@ -118,7 +118,7 @@ pub enum PeerRef<'a> {
     /// A replica the caller holds.
     Borrowed(&'a StatePeer),
     /// A replica behind the engine's lock, held while the ledger reads it.
-    Held(MutexGuard<'a, StatePeer>),
+    Held(PeerGuard<'a>),
 }
 
 impl Deref for PeerRef<'_> {
@@ -138,8 +138,8 @@ impl<'a> From<&'a StatePeer> for PeerRef<'a> {
     }
 }
 
-impl<'a> From<MutexGuard<'a, StatePeer>> for PeerRef<'a> {
-    fn from(peer: MutexGuard<'a, StatePeer>) -> Self {
+impl<'a> From<PeerGuard<'a>> for PeerRef<'a> {
+    fn from(peer: PeerGuard<'a>) -> Self {
         Self::Held(peer)
     }
 }

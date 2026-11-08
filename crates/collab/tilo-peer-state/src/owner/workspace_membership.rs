@@ -39,18 +39,12 @@ impl NativeWorkspaceOwner {
             return Err("unsupported native membership owner commit family".into());
         };
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        let candidate = self.view(workspace)?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("membership mutation is not signed by this device".into());
         }
         let id = serde_json::to_string(&(caller.device_public_key, invocation))
             .map_err(|error| error.to_string())?;
-        let before = candidate.peer.workspace_heads().unwrap_or_default();
-        // Always revalidate current authority, including retries. Apply to a
-        // clone so retry validation cannot publish another mutation.
-        let mut peer = candidate.peer.clone();
-        peer.workspace_mut()
-            .apply_workspace_membership_command(&caller, &command, key, now)?;
         if let Some(existing) = candidate.record.workspace_memberships.get(&id) {
             if existing.receipt.binding != binding {
                 return Err("membership invocation was already bound to another command".into());
@@ -60,64 +54,71 @@ impl NativeWorkspaceOwner {
         if candidate.record.workspace_memberships.len() >= MAX_COMMANDS {
             return Err("native membership custody capacity exhausted".into());
         }
-        let next_generation = candidate
-            .generation()
-            .checked_add(1)
-            .ok_or("native membership generation exhausted")?;
         // What this device signs, it publishes: a device of the workspace's owner
         // its governance as a checkpoint, carrying its durable state; any
         // other member the changes it made, which every participant admits.
         let writes_checkpoint = candidate
             .peer
             .signed_by_owner(&candidate.device().device_public_key);
-        let written = if writes_checkpoint {
-            let messages = peer.publication_mut().durable_mutation_messages(
-                &candidate.peer,
-                key,
-                now,
-                next_generation,
-            )?;
-            for message in &messages {
-                if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
-                    let outgoing = crate::owner::publication::prepare(
-                        &crate::owner::publication::request(message)?,
-                    )?;
-                    crate::owner::publication::append_local(&mut candidate, outgoing)?;
+        let previous = candidate.peer.clone();
+        let (receipt, record) = candidate.change(|live, record| {
+            let before = live.workspace_heads().unwrap_or_default();
+            live.workspace_mut()
+                .apply_workspace_membership_command(&caller, &command, key, now)?;
+            let next_generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("native membership generation exhausted")?;
+            let written = if writes_checkpoint {
+                let messages = live.publication_mut().durable_mutation_messages(
+                    &previous,
+                    key,
+                    now,
+                    next_generation,
+                )?;
+                for message in &messages {
+                    if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+                        let outgoing = crate::owner::publication::prepare(
+                            &crate::owner::publication::request(message)?,
+                        )?;
+                        crate::owner::publication::append_local(record, outgoing)?;
+                    }
                 }
+                Vec::new()
+            } else {
+                live.workspace_changes_since(&before)
+            };
+            record.generation = next_generation;
+            let receipt = OwnerCommitReceipt {
+                binding: binding.clone(),
+                generation: next_generation,
+                aggregate_hash: *blake3::hash(&live.durable()?).as_bytes(),
+            };
+            record.workspace_memberships.insert(
+                id.clone(),
+                StoredMembershipReceipt {
+                    receipt: receipt.clone(),
+                },
+            );
+            if writes_checkpoint {
+                crate::owner::publication::replace_governance_checkpoint(
+                    live,
+                    record,
+                    receipt.binding.clone(),
+                    now,
+                )?;
+            } else if !written.is_empty() {
+                crate::owner::publication::add_member_changes(
+                    live,
+                    record,
+                    written,
+                    receipt.binding.clone(),
+                    now,
+                )?;
             }
-            Vec::new()
-        } else {
-            peer.workspace_changes_since(&before)
-        };
-        candidate.peer = peer;
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = next_generation;
-        let receipt = OwnerCommitReceipt {
-            binding,
-            generation: next_generation,
-            aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
-        };
-        candidate.record.workspace_memberships.insert(
-            id,
-            StoredMembershipReceipt {
-                receipt: receipt.clone(),
-            },
-        );
-        if writes_checkpoint {
-            crate::owner::publication::replace_governance_checkpoint(
-                &mut candidate,
-                receipt.binding.clone(),
-                now,
-            )?;
-        } else if !written.is_empty() {
-            crate::owner::publication::add_member_changes(
-                &mut candidate,
-                written,
-                receipt.binding.clone(),
-                now,
-            )?;
-        }
-        self.publish_workspace(workspace, candidate, None)?;
+            Ok(receipt)
+        })?;
+        self.publish_record(workspace, &candidate, record, None)?;
         Ok(receipt)
     }
 }

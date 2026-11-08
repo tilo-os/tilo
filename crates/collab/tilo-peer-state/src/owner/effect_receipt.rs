@@ -3,6 +3,8 @@
 //! receiver ([`crate::workspace::effect_slices_kept`]). A device keeps
 //! its newest receipts' commit receipts hot and archives the rest to a cold
 //! history it anchors in its slice.
+use crate::StatePeer;
+use crate::owner::record::StoredWorkspace;
 use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ed25519_dalek::SigningKey;
@@ -55,15 +57,15 @@ pub(crate) fn validate(view: &crate::owner::NativeCommittedView) -> Result<(), S
 }
 
 fn validate_fact(
-    view: &crate::owner::NativeCommittedView,
+    record: &StoredWorkspace,
     fact: &crate::owner::effect_history::Fact,
     effects: &EffectIndex,
 ) -> Result<(), String> {
-    let request = crate::owner::effect_history::request(&view.record.workspace.to_string(), fact);
+    let request = crate::owner::effect_history::request(&record.workspace.to_string(), fact);
     let effect = decode(&request)?;
     if request.binding()? != fact.receipt.binding
         || fact.receipt.generation == 0
-        || fact.receipt.generation > view.generation()
+        || fact.receipt.generation > record.generation
         || !effects
             .get(&effect.invocation.0)
             .is_some_and(|receipts| receipts.contains(&effect))
@@ -84,11 +86,10 @@ fn index_effects(effects: Vec<tilo_desktop_model::WorkspaceEffectReceipt>) -> Ef
     index
 }
 
-fn public_effect_index(view: &crate::owner::NativeCommittedView) -> Result<EffectIndex, String> {
+fn public_effect_index(peer: &StatePeer) -> Result<EffectIndex, String> {
     Ok(index_effects(
         tilo_desktop_model::projection::workspace_effect_receipts_of(
-            view.peer()
-                .admitted_workspace()
+            peer.admitted_workspace()
                 .ok_or("effect workspace is absent")?,
         ),
     ))
@@ -119,24 +120,24 @@ pub(crate) fn validate_history(
     let count = effects.len();
     let effects = index_effects(effects);
     crate::owner::effect_history::validate(store, root, count, |fact| {
-        validate_fact(view, fact, &effects)
+        validate_fact(&view.record, fact, &effects)
     })
 }
 
 fn archive_one(
-    view: &mut crate::owner::NativeCommittedView,
+    peer: &mut StatePeer,
+    view: &mut StoredWorkspace,
     store: &dyn crate::owner::Store,
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<(), String> {
     let (id, stored) = view
-        .record
         .effect_receipts
         .iter()
         .min_by_key(|(_, value)| value.receipt.generation)
         .ok_or("effect hot cache is absent")?;
     let id = id.clone();
-    let effects = public_effect_index(view)?;
+    let effects = public_effect_index(peer)?;
     let effect = effects
         .values()
         .flatten()
@@ -148,16 +149,15 @@ fn archive_one(
         receipt: stored.receipt.clone(),
     };
     validate_fact(view, &fact, &effects)?;
-    let root = crate::owner::effect_history::insert(store, view.record.effect_history_root, fact)?;
-    let device = view.device().clone();
-    view.peer
-        .workspace_mut()
+    let root = crate::owner::effect_history::insert(store, view.effect_history_root, fact)?;
+    let device = view.device.clone();
+    peer.workspace_mut()
         .set_workspace_effect_history_root(&device, root, key, now)?;
-    view.record.effect_history_root = Some(root);
+    view.effect_history_root = Some(root);
     // Older readers must refuse an archived owner record, not ignore the
     // index and mint a different original receipt for an already-known UUID.
-    view.record.version = 3;
-    view.record.effect_receipts.remove(&id);
+    view.version = 3;
+    view.effect_receipts.remove(&id);
     Ok(())
 }
 
@@ -195,20 +195,16 @@ impl NativeWorkspaceOwner {
         let binding = request.binding()?;
         let workspace = WorkspaceId::parse(&request.workspace).ok_or("invalid effect workspace")?;
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        let candidate = self.view(workspace)?;
         let device = candidate.device().clone();
         if key.verifying_key().to_bytes() != device.device_public_key {
             return Err("an effect receipt is signed by this device's own key".into());
         }
         let id = effect.invocation.0.to_string();
-        let mut checked = candidate.peer.clone();
-        let is_new = checked
-            .workspace_mut()
-            .apply_own_effect_receipt(&device, &effect, key, now)?;
         // A signed root without this device's exact retained history is not
         // an empty index. No authority is inferred from an unknown UUID.
         if candidate
-            .peer
+            .peer()
             .workspace()
             .workspace_effect_history_root(&device)?
             != candidate.record.effect_history_root
@@ -221,76 +217,76 @@ impl NativeWorkspaceOwner {
             }
             return Ok(existing.receipt.clone());
         }
+        let effects = public_effect_index(candidate.peer())?;
         if let Some(fact) = crate::owner::effect_history::lookup(
             self.0.store.as_ref(),
             candidate.record.effect_history_root,
             effect.invocation.0,
         )? {
-            validate_fact(&candidate, &fact, &public_effect_index(&candidate)?)?;
+            validate_fact(&candidate.record, &fact, &effects)?;
             if fact.receipt.binding != binding {
                 return Err("cold effect invocation already has another receipt".into());
             }
             return Ok(fact.receipt);
         }
-        if !is_new {
-            return Err("signed effect UUID lacks its immutable receipt history".into());
-        }
         let governs = candidate.hosted_here();
-        let before = candidate.peer.workspace_heads().unwrap_or_default();
-        if candidate.record.effect_receipts.len() >= 128 {
-            archive_one(&mut candidate, self.0.store.as_ref(), key, now)?;
-        }
-        let mut peer = candidate.peer.clone();
-        peer.workspace_mut()
-            .apply_own_effect_receipt(&device, &effect, key, now)?;
-        let generation = candidate
-            .generation()
-            .checked_add(1)
-            .ok_or("effect generation exhausted")?;
-        let written = if governs {
-            // The signed delta includes the root update as well as the new receipt.
-            self.with_current(workspace, |previous| {
-                peer.publication_mut().durable_mutation_messages(
-                    &previous.peer,
-                    key,
+        let previous = candidate.peer.clone();
+        let (receipt, record) = candidate.change(|live, record| {
+            let before = live.workspace_heads().unwrap_or_default();
+            // A publication that did not reach disk leaves the replica holding
+            // this receipt's fact already; the retry writes the record it left
+            // behind instead of refusing a receipt the workspace has.
+            let is_new = live
+                .workspace_mut()
+                .apply_own_effect_receipt(&device, &effect, key, now)?;
+            if record.effect_receipts.len() >= 128 {
+                archive_one(live, record, self.0.store.as_ref(), key, now)?;
+            }
+            let generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("effect generation exhausted")?;
+            let written = if !is_new {
+                Vec::new()
+            } else if governs {
+                // The signed delta includes the root update as well as the new receipt.
+                live.publication_mut()
+                    .durable_mutation_messages(&previous, key, now, generation)?;
+                Vec::new()
+            } else {
+                live.workspace_changes_since(&before)
+            };
+            record.generation = generation;
+            let receipt = OwnerCommitReceipt {
+                binding: binding.clone(),
+                generation,
+                aggregate_hash: *blake3::hash(&live.durable()?).as_bytes(),
+            };
+            record.effect_receipts.insert(
+                id.clone(),
+                StoredEffectReceipt {
+                    receipt: receipt.clone(),
+                },
+            );
+            if governs {
+                crate::owner::publication::replace_governance_checkpoint(
+                    live,
+                    record,
+                    receipt.binding.clone(),
                     now,
-                    generation,
                 )?;
-                Ok(())
-            })?;
-            Vec::new()
-        } else {
-            peer.workspace_changes_since(&before)
-        };
-        candidate.peer = peer;
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = generation;
-        let receipt = OwnerCommitReceipt {
-            binding,
-            generation,
-            aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
-        };
-        candidate.record.effect_receipts.insert(
-            id,
-            StoredEffectReceipt {
-                receipt: receipt.clone(),
-            },
-        );
-        if governs {
-            crate::owner::publication::replace_governance_checkpoint(
-                &mut candidate,
-                receipt.binding.clone(),
-                now,
-            )?;
-        } else if !written.is_empty() {
-            crate::owner::publication::add_member_changes(
-                &mut candidate,
-                written,
-                receipt.binding.clone(),
-                now,
-            )?;
-        }
-        self.publish_workspace(workspace, candidate, None)?;
+            } else if !written.is_empty() {
+                crate::owner::publication::add_member_changes(
+                    live,
+                    record,
+                    written,
+                    receipt.binding.clone(),
+                    now,
+                )?;
+            }
+            Ok(receipt)
+        })?;
+        self.publish_record(workspace, &candidate, record, None)?;
         Ok(receipt)
     }
 }

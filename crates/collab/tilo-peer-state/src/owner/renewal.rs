@@ -35,11 +35,11 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
-        if &candidate.record.device == renewed {
+        let candidate = self.view(workspace)?;
+        if candidate.device() == renewed {
             return Ok(());
         }
-        if !renews(renewed, &candidate.record.device) {
+        if !renews(renewed, candidate.device()) {
             return Err("the certificate does not renew this device's in the workspace".into());
         }
         if bootstrap.device_cert != *renewed
@@ -48,17 +48,20 @@ impl NativeWorkspaceOwner {
         {
             return Err("the answer is not this workspace's renewal".into());
         }
-        crate::owner::enrollment::install_governance(&mut candidate.peer, bootstrap, now)?;
-        if !candidate.peer.certificates().contains(renewed) {
-            return Err("the workspace's governance does not hold the renewed certificate".into());
-        }
-        candidate.record.device = renewed.clone();
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = candidate
-            .record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish_workspace(workspace, candidate, None)
+        let ((), record) = candidate.change(|live, record| {
+            crate::owner::enrollment::install_governance(live, bootstrap, now)?;
+            if !live.certificates().contains(renewed) {
+                return Err(
+                    "the workspace's governance does not hold the renewed certificate".into(),
+                );
+            }
+            record.device = renewed.clone();
+            record.generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            Ok(())
+        })?;
+        self.publish_record(workspace, &candidate, record, None)
     }
 }
