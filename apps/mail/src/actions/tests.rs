@@ -870,7 +870,7 @@ fn mailbox_publishes_bounded_stable_places() {
         assert!(effects.contains(&"refresh"), "{effects:?}");
         ui::testing::action_contract::assert_ctrl_k_publishes(
             &live_resources,
-            &["Compose message", "Archive messages"],
+            &["Compose message", "Discard draft"],
         );
         let refresh = live_mailbox
             .actions
@@ -1147,7 +1147,7 @@ ui::action_contract_tests! {
     seed: mailbox_seed(),
     registry: registry(),
     resources: |_| with_seeded(|seeded| published(&mut seeded.app)),
-    palette: ["Archive messages", "Discard draft"],
+    palette: ["Compose message", "Discard draft"],
     replay: [
         star => |doc| {
             let mail = read(doc);
