@@ -2160,9 +2160,31 @@ fn field_and_keys(app: &GreeterApp) -> (Option<Rect>, Option<Rect>) {
 }
 
 #[test]
+fn a_pin_pad_is_four_rows_and_a_password_keyboard_five() {
+    let theme = Theme::dark();
+    let (key, gap) = (
+        f64::from(theme.tokens.metrics.panel_row_height),
+        f64::from(theme.tokens.spacing.s2),
+    );
+    let rows_of = |app: &mut GreeterApp| {
+        let keyboard = shown_keyboard(app);
+        let rect = field_and_keys(app).1.expect("the keyboard is laid out");
+        assert!(
+            (rect.height() - keyboard.height(key, gap)).abs() < 0.5,
+            "{rect:?}"
+        );
+        ((rect.height() + gap) / (key + gap)).round()
+    };
+    let rows = rows_of(&mut GreeterApp::for_shot(AuthScenario::PersonalPin));
+    assert!((rows - 4.0).abs() < 0.01, "{rows}");
+    let rows = rows_of(&mut GreeterApp::for_shot(AuthScenario::Personal));
+    assert!((rows - 5.0).abs() < 0.01, "{rows}");
+}
+
+#[test]
 fn the_on_screen_keyboard_is_a_number_pad_for_a_pin_and_letters_for_a_password() {
     let mut pin = GreeterApp::for_shot(AuthScenario::PersonalPin);
-    assert!(shown_keyboard(&mut pin).shows_pad());
+    assert!(shown_keyboard(&mut pin).is_for_pin());
     let field = passcode_node(pin.composed.element().expect("composed"));
     assert!(
         field
@@ -2173,7 +2195,7 @@ fn the_on_screen_keyboard_is_a_number_pad_for_a_pin_and_letters_for_a_password()
     );
 
     let mut password = GreeterApp::for_shot(AuthScenario::Personal);
-    assert!(!shown_keyboard(&mut password).shows_pad());
+    assert!(!shown_keyboard(&mut password).is_for_pin());
 
     // At boot the supervisor's list says, and choosing another person
     // opens their keyboard.
@@ -2192,13 +2214,13 @@ fn the_on_screen_keyboard_is_a_number_pad_for_a_pin_and_letters_for_a_password()
         ],
         highlighted: 0,
     });
-    assert!(shown_keyboard(&mut app).shows_pad());
+    assert!(shown_keyboard(&mut app).is_for_pin());
     app.boot_message(ToGreeter::Ask {
         person: 1,
         note: Note::None,
         several: true,
     });
-    assert!(!shown_keyboard(&mut app).shows_pad());
+    assert!(!shown_keyboard(&mut app).is_for_pin());
 }
 
 #[test]
@@ -2310,7 +2332,7 @@ fn cant_sign_in_after_boot_opens_the_recovery_form_and_cancel_returns() {
         Some("Recovery key")
     );
     assert!(
-        !shown_keyboard(&mut app).shows_pad(),
+        !shown_keyboard(&mut app).is_for_pin(),
         "a recovery key is typed on the letters"
     );
 
@@ -2462,31 +2484,6 @@ fn the_recovery_key_sets_a_new_secret_and_a_wrong_one_says_so() {
         }))
     );
     assert!(untouched(&doc), "no secret reaches the document");
-}
-
-#[test]
-fn switching_between_the_pad_and_the_letters_keeps_the_card_in_place() {
-    use ui::passcode_keyboard::PasscodeKey;
-    let mut app = GreeterApp::for_shot(AuthScenario::PersonalPin);
-    let mut keyboard = shown_keyboard(&mut app);
-    let placed = field_and_keys(&app);
-    assert!(placed.0.is_some() && placed.1.is_some(), "{placed:?}");
-
-    keyboard.press(PasscodeKey::Letters);
-    app.touch_keyboard.keyboard.set(keyboard);
-    assert!(
-        !shown_keyboard(&mut app).shows_pad(),
-        "a PIN may have letters"
-    );
-    assert_eq!(field_and_keys(&app), placed);
-
-    keyboard.press(PasscodeKey::Symbols);
-    app.touch_keyboard.keyboard.set(keyboard);
-    assert!(
-        shown_keyboard(&mut app).shows_pad(),
-        "?123 comes back to the pad"
-    );
-    assert_eq!(field_and_keys(&app), placed);
 }
 
 /// What the screen reader said, through the toolkit's recording speaker.

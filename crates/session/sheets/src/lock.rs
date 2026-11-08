@@ -1338,9 +1338,9 @@ fn key_metrics(theme: &ui::theme::Theme) -> (f64, f64) {
 
 /// Where the keyboard stands on a screen of `bounds`: along the bottom edge,
 /// no wider than a wide sheet so its keys stay a thumb's reach apart.
-fn keyboard_rect(theme: &ui::theme::Theme, bounds: Rect) -> Rect {
+fn keyboard_rect(theme: &ui::theme::Theme, keyboard: PasscodeKeyboard, bounds: Rect) -> Rect {
     let (key_height, gap) = key_metrics(theme);
-    let height = PasscodeKeyboard::height(key_height, gap);
+    let height = keyboard.height(key_height, gap);
     let margin = f64::from(Spacing::BASE.s4);
     let widest = (bounds.width() - margin * 2.0)
         .max(1.0)
@@ -1533,9 +1533,9 @@ impl ui::widget::Decorator for Stage {
         // same arrival, same shake, same fade when it leaves.
         let showed = self.seat.shown().keyboard;
         let (key_height, gap) = key_metrics(theme);
-        let place = keyboard_rect(theme, bounds);
-        self.keyboard_place.set((place, key_height, gap));
         let keyboard = self.keyboard.get();
+        let place = keyboard_rect(theme, keyboard, bounds);
+        self.keyboard_place.set((place, key_height, gap));
         pose.paint(scene, placement, bounds, |scene, xform| {
             content.draw(scene, xform, text_renderer, theme, presence);
             if showed {

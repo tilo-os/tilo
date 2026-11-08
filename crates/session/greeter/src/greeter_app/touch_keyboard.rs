@@ -8,9 +8,9 @@
 //! pointer: the keyboard's layout depends on the screen and the theme
 //! alone, and a tap reaches it as the pointer press the toolkit makes of it.
 //!
-//! A PIN opens the number pad, a password the letters; either switches to
-//! the other. Each key is a button to the screen reader, named as it types
-//! or by what it does, row by row.
+//! A PIN opens the number pad, a password the letters. Each key is a
+//! button to the screen reader, named as it types or by what it does, row
+//! by row.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -148,9 +148,9 @@ fn metrics(theme: &Theme) -> (f64, f64) {
 }
 
 /// The height the keyboard takes, its gap above included.
-pub(super) fn height(theme: &Theme) -> f64 {
+pub(super) fn height(theme: &Theme, keyboard: PasscodeKeyboard) -> f64 {
     let (key, gap) = metrics(theme);
-    PasscodeKeyboard::height(key, gap) + f64::from(theme.tokens.spacing.s2)
+    keyboard.height(key, gap) + f64::from(theme.tokens.spacing.s2)
 }
 
 /// Never wider than a wide sheet, so keys stay a thumb's reach apart.
@@ -208,9 +208,7 @@ fn key_name(keyboard: PasscodeKeyboard, key: PasscodeKey) -> String {
     }
     t(match key {
         PasscodeKey::Shift => "greeter-key-shift",
-        PasscodeKey::Symbols if keyboard.is_for_pin() => "greeter-key-numbers",
         PasscodeKey::Symbols => "greeter-key-symbols",
-        PasscodeKey::Letters => "greeter-key-letters",
         PasscodeKey::Space => "greeter-key-space",
         PasscodeKey::Backspace => "greeter-key-delete",
         PasscodeKey::Enter | PasscodeKey::Char(_) => "greeter-key-enter",
@@ -234,7 +232,11 @@ impl Widget for TouchKeyboard {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = metrics(theme);
-        let height = PasscodeKeyboard::height(self.metrics.0, self.metrics.1);
+        let height = self
+            .shared
+            .keyboard
+            .get()
+            .height(self.metrics.0, self.metrics.1);
         let style = Style {
             flex_shrink: 0.0,
             size: taffy::Size {
@@ -387,7 +389,12 @@ mod tests {
             0.0,
             400.0,
             720.0,
-            400.0 + PasscodeKeyboard::height(keyboard.metrics.0, keyboard.metrics.1),
+            400.0
+                + keyboard
+                    .shared
+                    .keyboard
+                    .get()
+                    .height(keyboard.metrics.0, keyboard.metrics.1),
         );
         keyboard
     }
@@ -444,26 +451,24 @@ mod tests {
     }
 
     #[test]
-    fn the_pad_taps_digits_and_its_letters_key_opens_the_letters_and_back() {
+    fn the_pad_taps_digits_then_enter() {
         let theme = Theme::dark();
         let keyboard = laid_out_for(&theme, PasscodeKeyboard::for_pin());
         for key in [
             PasscodeKey::Char('2'),
-            PasscodeKey::Letters,
-            PasscodeKey::Char('k'),
-            PasscodeKey::Symbols,
             PasscodeKey::Char('0'),
+            PasscodeKey::Backspace,
             PasscodeKey::Enter,
         ] {
             assert!(keyboard.press_at(centre_of(&keyboard, key)), "{key:?}");
         }
-        assert!(keyboard.shared.keyboard.get().shows_pad());
+        assert!(keyboard.shared.keyboard.get().is_for_pin());
         assert_eq!(
             *keyboard.shared.typed.borrow(),
             [
                 PasscodeInput::Text("2".into()),
-                PasscodeInput::Text("k".into()),
                 PasscodeInput::Text("0".into()),
+                PasscodeInput::Backspace,
                 PasscodeInput::Enter,
             ]
         );
@@ -476,7 +481,7 @@ mod tests {
         assert_eq!(
             spoken_keys(&keyboard),
             [
-                "1", "2", "3", "4", "5", "6", "7", "8", "9", "Letters", "0", "Delete", "Enter"
+                "1", "2", "3", "4", "5", "6", "7", "8", "9", "Delete", "0", "Enter"
             ]
         );
         let node = keyboard
@@ -488,36 +493,55 @@ mod tests {
                 && key.action_target.is_some())
         );
         assert_eq!(
-            ui::screen_reader::describe(&node.children[11]),
+            ui::screen_reader::describe(&node.children[9]),
             "Delete, button"
         );
 
-        // Activating "Letters" opens the letters, named as they type.
-        let letters = node
+        // Activating a digit from the screen reader types it.
+        let two = node
             .children
             .iter()
-            .find(|key| key.name.as_deref() == Some("Letters"))
+            .find(|key| key.name.as_deref() == Some("2"))
             .and_then(|key| key.action_target.clone())
             .unwrap();
         let mut doc = automerge::AutoCommit::new();
         let mut edits = ui::widget::Edits::lend(&mut doc);
         assert!(keyboard.perform_semantic_action(
-            &letters,
+            &two,
             &Action::Activate,
             &mut edits,
             &automerge::ROOT
         ));
-        let spoken = spoken_keys(&keyboard);
         assert_eq!(
-            &spoken[..10],
-            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+            *keyboard.shared.typed.borrow(),
+            [PasscodeInput::Text("2".into())]
         );
-        assert_eq!(spoken[10], "q");
-        for name in ["Shift", "Delete", "Numbers", "Space", "Enter"] {
+
+        // The letters keyboard names what each key does, row by row.
+        let mut letters = laid_out_for(&theme, PasscodeKeyboard::default());
+        let spoken = spoken_keys(&letters);
+        for name in ["Shift", "Delete", "Symbols", "Space", "Enter"] {
             assert!(
                 spoken.iter().any(|said| said == name),
                 "{name} in {spoken:?}"
             );
         }
+        let symbols = letters
+            .accessibility()
+            .expect("the keyboard is accessible")
+            .children
+            .iter()
+            .find(|key| key.name.as_deref() == Some("Symbols"))
+            .and_then(|key| key.action_target.clone())
+            .unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        let mut edits = ui::widget::Edits::lend(&mut doc);
+        assert!(letters.perform_semantic_action(
+            &symbols,
+            &Action::Activate,
+            &mut edits,
+            &automerge::ROOT
+        ));
+        assert_eq!(spoken_keys(&letters)[10], "!");
     }
 }

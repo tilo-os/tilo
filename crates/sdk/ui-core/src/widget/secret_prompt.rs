@@ -57,7 +57,7 @@ use crate::a11y::{AccessNode, AccessState, Politeness, Role};
 use crate::caps_lock::CapsLockEstimate;
 use crate::icons::Icon;
 use crate::interaction::{InputModality, InteractionEnvironment, PointerPrecision};
-use crate::passcode_keyboard::{KeyFace, PasscodeInput, PasscodeKey, PasscodeKeyboard};
+use crate::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -398,9 +398,7 @@ pub struct SecretPrompt {
     notice_lines: usize,
     /// Whether the keypad showed when the body was last measured.
     measured_keypad: bool,
-    /// Whether the pad was the layer shown when the body was last measured.
-    measured_pad: bool,
-    /// The keypad's state: the pad or the letters, its one-shot shift.
+    /// The keypad's state: the PIN's number pad.
     keyboard: PasscodeKeyboard,
     layout: PromptLayout,
     cursor: Option<Point>,
@@ -437,7 +435,6 @@ struct Chrome {
     choice: usize,
     option: Option<bool>,
     keypad: bool,
-    keypad_pad: bool,
     can_submit: bool,
 }
 
@@ -474,7 +471,6 @@ impl SecretPrompt {
             measured_notice: None,
             notice_lines: 1,
             measured_keypad: false,
-            measured_pad: kind.is_pin(),
             keyboard: PasscodeKeyboard::for_secret(kind.is_pin()),
             layout: PromptLayout::default(),
             cursor: None,
@@ -913,12 +909,7 @@ impl SecretPrompt {
         match key {
             PasscodeKey::Backspace => crate::i18n!("secret-prompt-keypad-delete"),
             PasscodeKey::Enter => crate::i18n!("secret-prompt-keypad-enter"),
-            PasscodeKey::Shift => crate::i18n!("secret-prompt-keypad-shift"),
-            PasscodeKey::Space => crate::i18n!("secret-prompt-keypad-space"),
-            other => match self.keyboard.face(other) {
-                KeyFace::Text(label) => label,
-                KeyFace::Icon(_) => String::new(),
-            },
+            other => self.keyboard.character(other).unwrap_or_default(),
         }
     }
 
@@ -1284,8 +1275,9 @@ impl SecretPrompt {
         ControlSize::Regular.height(theme)
     }
 
-    fn keypad_height(theme: &Theme) -> f64 {
-        PasscodeKeyboard::height(Self::keypad_key_height(theme), Self::gap(theme))
+    fn keypad_height(&self, theme: &Theme) -> f64 {
+        self.keyboard
+            .height(Self::keypad_key_height(theme), Self::gap(theme))
     }
 
     fn button_height(theme: &Theme) -> f64 {
@@ -1296,7 +1288,6 @@ impl SecretPrompt {
     /// return the body's height.
     fn measure_body(&mut self, width: f64, text: &mut TextRenderer, theme: &Theme) -> f64 {
         self.measured_keypad = self.shows_keypad();
-        self.measured_pad = self.keyboard.shows_pad();
         self.resource_h = if self.resource.is_empty() || width <= 0.0 {
             0.0
         } else {
@@ -1387,12 +1378,12 @@ impl SecretPrompt {
         let mut keypad_area = Rect::ZERO;
         if self.shows_keypad() {
             y += f64::from(spacing.s4);
-            let pad = Rect::new(rect.x0, y, rect.x1, y + Self::keypad_height(theme));
+            let pad = Rect::new(rect.x0, y, rect.x1, y + self.keypad_height(theme));
             keypad_area = pad;
             keypad = self
                 .keyboard
                 .layout(pad, Self::keypad_key_height(theme), gap);
-            y += Self::keypad_height(theme);
+            y += self.keypad_height(theme);
         }
         let (cancel, primary) = if self.presentation == Presentation::Inline {
             y += gap;
@@ -1539,7 +1530,6 @@ impl SecretPrompt {
             choice: self.choice,
             option: self.option_checked(),
             keypad: self.shows_keypad(),
-            keypad_pad: self.keyboard.shows_pad(),
             can_submit: self.can_submit(),
         }
     }
@@ -1596,8 +1586,7 @@ impl SecretPrompt {
     }
 
     /// Press a keypad key: a character goes into the field, backspace takes
-    /// one back, enter moves on or answers; a layer key changes what the
-    /// keypad shows and nothing else.
+    /// one back, enter moves on or answers.
     fn press_keypad(&mut self, key: PasscodeKey) {
         match self.keyboard.press(key) {
             Some(PasscodeInput::Text(text)) => {
@@ -1623,17 +1612,8 @@ impl SecretPrompt {
                 self.after_edit(true);
             }
             Some(PasscodeInput::Enter) => self.enter_in_field(),
-            None => self.relayout_keypad(),
+            None => {}
         }
-    }
-
-    /// The keypad's layer changed under the same room: place its keys again.
-    fn relayout_keypad(&mut self) {
-        let theme = self.theme.clone();
-        let area = self.layout.keypad_area;
-        self.layout.keypad =
-            self.keyboard
-                .layout(area, Self::keypad_key_height(&theme), Self::gap(&theme));
     }
 
     /// Enter in a field: on to the next field, or answer from the last.
@@ -2653,7 +2633,6 @@ impl Widget for SecretPrompt {
     fn layout_needs_measure(&self) -> bool {
         self.rect == Rect::ZERO
             || self.measured_keypad != self.shows_keypad()
-            || self.measured_pad != self.keyboard.shows_pad()
             || self.measured_notice != self.notice_line().map(|(line, _)| line)
     }
 

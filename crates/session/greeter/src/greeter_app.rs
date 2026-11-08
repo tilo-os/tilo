@@ -2349,7 +2349,8 @@ impl Widget for GreeterApp {
     ) -> NodeId {
         self.layout_text_scale = theme.text_scale;
         self.layout_keyboard_height = if self.shows_touch_keyboard() {
-            touch_keyboard::height(theme)
+            self.fit_touch_keyboard_to_secret();
+            touch_keyboard::height(theme, self.touch_keyboard.keyboard.get())
         } else {
             0.0
         };

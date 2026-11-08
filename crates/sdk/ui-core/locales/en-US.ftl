@@ -401,8 +401,6 @@ secret-prompt-attempts-left = { $count ->
 secret-prompt-pins-differ = The new PINs don’t match
 secret-prompt-keypad-delete = Delete
 secret-prompt-keypad-enter = Done
-secret-prompt-keypad-shift = Shift
-secret-prompt-keypad-space = Space
 
 # Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
 screen-reader-turned-on = Screen reader on
