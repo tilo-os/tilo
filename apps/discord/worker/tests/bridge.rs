@@ -411,7 +411,7 @@ impl Bridge {
         // The host decides what members and the bot change against the
         // surfaces of the apps it runs, as a workspace host does.
         let _ = AppCatalogue::native();
-        tilo_relay::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
+        tilo_relay::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
         let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
             tilo_relay::RelayConfig {
                 state_root: scratch.path().join("relay"),

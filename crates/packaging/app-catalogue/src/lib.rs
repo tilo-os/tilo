@@ -48,7 +48,13 @@
 //! [`Installed`], [`BlockList`] and the loaders in [`appstream`] and
 //! [`tilo`]. Fields are only ever added to these types, never renamed or
 //! removed, so both sides can move independently.
+//!
+//! The other half — what this device has — is [`apps`]: each installed
+//! package read through the signed manifest it was admitted with, for the
+//! session, the runtime and app-host. A catalogue entry is `installed` or
+//! offered by exactly one of the two.
 
+pub mod apps;
 pub mod appstream;
 /// The block list, which apps reach through the registry vocabulary.
 pub use registry_types::block;
@@ -57,6 +63,7 @@ pub mod entry;
 pub mod flathub;
 pub mod tilo;
 
+pub use apps::{DeclaredActions, InstalledApp};
 pub use block::{Block, BlockList, Blocker, UnblockError};
 pub use catalogue::{Catalogue, Installed};
 pub use entry::{CatalogueAction, CatalogueEntry, Installation, ResourceType, Source};

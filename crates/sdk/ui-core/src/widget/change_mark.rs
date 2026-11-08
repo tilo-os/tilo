@@ -29,6 +29,9 @@ pub struct ChangeMarkProps {
     pub said: Option<String>,
     /// What one item of it is called, plural ("tasks"): the noun a window's count names.
     pub noun: Option<String>,
+    /// What one item of it is called, singular ("task"): one change names one, so the count
+    /// and the noun agree in number.
+    pub noun_one: Option<String>,
     /// The task run it was part of, as its task is titled.
     pub run: Option<String>,
     /// What they did: `created`, `changed` or `removed`.
@@ -74,6 +77,7 @@ impl ChangeMarkProps {
             by_all: self.by_all.clone(),
             said: self.said.clone(),
             noun: self.noun.clone(),
+            noun_one: self.noun_one.clone(),
             run: self.run.clone(),
             kind: self.kind.clone(),
             count: self.count,
@@ -193,6 +197,7 @@ impl ChangeMarkProps {
         let by = self.by.clone()?;
         let by_all = self.by_all.clone();
         let noun = self.noun.clone();
+        let noun_one = self.noun_one.clone();
         let count = self.count;
         let window = self.window;
         let more = self.more;
@@ -228,7 +233,10 @@ impl ChangeMarkProps {
                     &[
                         ("who", names.into()),
                         ("count", count.into()),
-                        ("noun", noun.into()),
+                        ("noun", noun.clone().into()),
+                        // One change names one item, so the sentence agrees in number: the
+                        // singular noun the type's own catalogue gives, the plural otherwise.
+                        ("one", noun_one.unwrap_or(noun).into()),
                     ],
                 ),
                 None => crate::i18n::widget_format(
@@ -424,5 +432,29 @@ impl component::Described for ChangeMark {
             .downcast_mut::<crate::widget::arrange::Arranged<crate::widget::arrange::FlexLayout>>(
             )?;
         Some(column)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A window's mark names one change in the singular and several in the type's plural:
+    /// "Mia changed one message", never "changed one messages".
+    #[test]
+    fn a_mark_names_one_change_in_the_singular() {
+        crate::i18n::I18nManager::register_widget_messages();
+        crate::i18n::I18nManager::set_locale("en-US");
+        let said = |count: usize| {
+            crate::i18n::widget_format(
+                "change-window-changed",
+                &[
+                    ("who", "Mia".into()),
+                    ("count", count.into()),
+                    ("noun", "messages".into()),
+                    ("one", "message".into()),
+                ],
+            )
+        };
+        assert_eq!(said(1), "Mia changed one message");
+        assert_eq!(said(3), "Mia changed 3 messages");
     }
 }

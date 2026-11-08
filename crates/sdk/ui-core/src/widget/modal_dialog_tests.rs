@@ -12,13 +12,19 @@ use vello_encoding::DrawTag;
 const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
+/// How the person reaches the window in these tests: the pointer, unless a
+/// test sets another.
+fn environment() -> crate::interaction::InteractionEnvironment {
+    crate::interaction::InteractionEnvironment::default()
+}
+
 fn themes() -> Vec<(&'static str, Theme)> {
     vec![("dark", Theme::dark()), ("light", Theme::light())]
 }
 
 fn lay(spec: &ModalSpec<'_>, theme: &Theme) -> ModalLayout {
     let mut tr = TextRenderer::new();
-    layout(VIEWPORT, spec, &mut tr, theme)
+    layout_for(VIEWPORT, spec, &mut tr, theme, environment())
 }
 
 /// Fixed empty content: no paint, no events.
@@ -140,6 +146,51 @@ fn laid_out_counting(open: bool) -> (ModalDialog<CountingContent>, Rc<Cell<usize
     (d, events)
 }
 
+/// A finger needs a target of its own: the sheet's actions and close control grow to it, and
+/// the sheet keeps them inside the window.
+#[test]
+fn a_coarse_pointer_grows_the_sheets_controls_to_a_fingers_target() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let actions = [
+        ModalAction::primary("Save"),
+        ModalAction::secondary("Cancel"),
+    ];
+    let spec = ModalSpec::new("Save?").actions(&actions).body_height(40.0);
+    let mut tr = TextRenderer::new();
+    let touch = layout_for(
+        VIEWPORT,
+        &spec,
+        &mut tr,
+        &theme,
+        crate::interaction::InteractionEnvironment::TOUCH,
+    );
+    for action in &touch.actions {
+        assert!(
+            action.height() >= 48.0 && action.width() >= 48.0,
+            "an action is a finger's target: {action:?}"
+        );
+        assert!(
+            VIEWPORT.contains(action.center()) && touch.card.contains(action.center()),
+            "the target stands on the sheet and in the window: {action:?}"
+        );
+    }
+    let close = touch.close.expect("the sheet closes");
+    assert!(
+        close.height() >= 48.0,
+        "the close is a finger's target: {close:?}"
+    );
+    let pointer = lay(&spec, &theme);
+    assert!(
+        pointer.actions[0].height() < touch.actions[0].height(),
+        "a mouse needs no finger's room"
+    );
+    assert!(
+        pointer.card.height() < touch.card.height(),
+        "the sheet grows with them"
+    );
+}
+
 #[test]
 fn sheet_sizes_to_its_body_within_the_window() {
     // Motion reads at its end: this test checks the resting frame.
@@ -183,7 +234,7 @@ fn sheet_sizes_to_its_body_within_the_window() {
         let spec = ModalSpec::new("Workspace invite").body_height(600.0);
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let l = layout(small, &spec, &mut tr, &theme);
+        let l = layout_for(small, &spec, &mut tr, &theme, environment());
         let gutter = f64::from(theme.tokens.spacing.s6);
         assert_eq!(l.card, small, "a compact modal fills the viewport");
         assert!(l.body.x0 >= gutter - 0.5 && l.body.x1 <= small.x1 - gutter + 0.5);
@@ -195,7 +246,7 @@ fn sheet_sizes_to_its_body_within_the_window() {
         let wide = Rect::new(0.0, 0.0, 3840.0, 2160.0);
         let spec = ModalSpec::new("Workspace invite").body_height(200.0);
         let mut tr = TextRenderer::new();
-        let l = layout(wide, &spec, &mut tr, &Theme::dark());
+        let l = layout_for(wide, &spec, &mut tr, &Theme::dark(), environment());
         assert!(l.card.width() <= MODAL_MAX_WIDTH + 0.5);
     }
 
@@ -233,7 +284,7 @@ fn sheet_sizes_to_its_body_within_the_window() {
                     .max_width(max_width)
                     .body_height(120.0);
                 let mut tr = TextRenderer::new();
-                let l = layout(window, &spec, &mut tr, &theme);
+                let l = layout_for(window, &spec, &mut tr, &theme, environment());
                 let predicted = body_width(window, max_width, &theme);
                 assert!(
                     (l.body.width() - predicted).abs() < 0.01,
@@ -287,7 +338,7 @@ fn a_modal_scrim_runs_under_the_foreground_materials_recorded_backdrop() {
     for (name, theme) in themes() {
         let mut text = TextRenderer::new();
         let spec = ModalSpec::new("Foreground").body_height(160.0);
-        let geometry = layout(window, &spec, &mut text, &theme);
+        let geometry = layout_for(window, &spec, &mut text, &theme, environment());
         let mut scene = Scene::new();
         scene.fill(
             Fill::NonZero,
@@ -354,7 +405,7 @@ fn compact_modals_fill_the_window_and_keep_their_controls_on_the_foreground_page
                 .actions(&actions)
                 .body_height(1200.0);
             let mut text = TextRenderer::new();
-            let geometry = layout(window, &spec, &mut text, &theme);
+            let geometry = layout_for(window, &spec, &mut text, &theme, environment());
             assert_eq!(
                 geometry.card, window,
                 "{name}: compact dialog is the whole foreground page"
@@ -431,7 +482,7 @@ fn modal_controls_are_hittable_and_show_their_states() {
                 .actions(&actions)
                 .body_height(80.0);
             let mut tr = TextRenderer::new();
-            let l = layout(VIEWPORT, &spec, &mut tr, &theme);
+            let l = layout_for(VIEWPORT, &spec, &mut tr, &theme, environment());
             let mut scene = Scene::new();
             paint_actions(&mut scene, Affine::IDENTITY, &mut tr, &theme, &l, &spec);
             scene.encoding().draw_data.clone()
@@ -460,7 +511,7 @@ fn modal_controls_are_hittable_and_show_their_states() {
         let theme = Theme::light();
         let paint = |spec: &ModalSpec<'_>| {
             let mut tr = TextRenderer::new();
-            let l = layout(VIEWPORT, spec, &mut tr, &theme);
+            let l = layout_for(VIEWPORT, spec, &mut tr, &theme, environment());
             let mut scene = Scene::new();
             paint_backdrop(&mut scene, Affine::IDENTITY, &mut tr, &theme, &l, spec);
             scene.encoding().draw_data.clone()
@@ -491,7 +542,7 @@ fn narrow_large_text_footer_stacks_full_actions_without_covering_the_body() {
             .platform_conventions(PlatformConventions::new(Platform::Linux))
             .actions(&actions)
             .body_height(600.0);
-        let geometry = layout(window, &spec, &mut text, &theme);
+        let geometry = layout_for(window, &spec, &mut text, &theme, environment());
         assert_eq!(geometry.actions.len(), 3);
         assert!(geometry.body_overflows, "the real body must scroll");
         assert_eq!(geometry.primary, Some(1), "Enter remains the safe Cancel");

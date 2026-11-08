@@ -44,6 +44,19 @@ const ALIGN: &str = "align";
 /// The room a node takes of its row: a weight, divided among the nodes that fill.
 const FILL: &str = "fill";
 
+/// The prop a view places the actions of what it shows with (`actions:`): its ordered list, each
+/// entry the action's id, the run of commands the view puts it in and whether the view makes it
+/// the primary one. The host reads it while it builds the surfaces and takes it off the node, so
+/// the tree it sends carries only what the widget declares.
+const PLACEMENT: &str = "actions";
+/// Where each field of a placed action stands, as the checker lowers one.
+const PLACED_ID: usize = 0;
+const PLACED_GROUP: usize = 1;
+const PLACED_PRIMARY: usize = 2;
+/// The run of commands a menu draws what its view left over in.
+const MORE_RUN: &str = "tilolang-more";
+const MORE_RUN_WORDS: &str = "More";
+
 const MENU: &str = "menu";
 const SWIPE: &str = "swipe";
 const OVERVIEW: &str = "overview";
@@ -121,12 +134,19 @@ impl Core {
         self.item_surfaces(root)?;
         self.subject_menus(root)?;
         self.list_selections(root)?;
+        // The window's shell, wherever the view's own frames put it: a window that draws itself
+        // through `std.page` or `std.list` keeps its shell one boundary down. What the view
+        // placed in its bar is read here, before the tree is sent: it is the host's, not the
+        // shell's.
+        let shell = self.find_shell(root)?;
+        let placed = match shell {
+            Some(shell) => self.take_placement(shell)?,
+            None => None,
+        };
         let Some(subject) = subject else {
             return Ok(());
         };
-        // The window's shell, wherever the view's own frames put it: a window that draws itself
-        // through `std.page` or `std.list` keeps its shell one boundary down.
-        let Some(shell) = self.find_shell(root)? else {
+        let Some(shell) = shell else {
             return Ok(());
         };
         // Only what the window's own place offers: an action that reads a row over it has
@@ -154,7 +174,7 @@ impl Core {
             if overview {
                 self.fill_selection_bar(shell, OVERVIEW_ACTIONS, &offered, chosen.len())?;
             } else if self.has_title(shell, &subject) {
-                self.put_under_title(shell, &subject, &offered, None)?;
+                self.put_under_title(shell, &subject, &offered, None, None)?;
             } else {
                 self.fill_selection_bar(shell, ACTIONS, &offered, chosen.len())?;
             }
@@ -165,15 +185,29 @@ impl Core {
             if let Some(switch) = self.view_switch(&subject, shown)? {
                 self.put_at_in_slot(shell, OVERVIEW_ACTIONS, switch)?;
             }
-            self.fill_bar(shell, OVERVIEW_ACTIONS, listed, &acted, entry.as_deref())?;
+            self.fill_bar(
+                shell,
+                OVERVIEW_ACTIONS,
+                listed,
+                &acted,
+                entry.as_deref(),
+                placed.as_deref(),
+            )?;
         } else if self.has_title(shell, &subject) {
             let switch = self.view_switch(&subject, shown)?;
-            self.put_under_title(shell, &subject, &acted, switch)?;
+            self.put_under_title(shell, &subject, &acted, switch, placed.as_deref())?;
         } else {
             if let Some(switch) = self.view_switch(&subject, shown)? {
                 self.put_at_in_slot(shell, ACTIONS, switch)?;
             }
-            self.fill_bar(shell, ACTIONS, listed, &acted, entry.as_deref())?;
+            self.fill_bar(
+                shell,
+                ACTIONS,
+                listed,
+                &acted,
+                entry.as_deref(),
+                placed.as_deref(),
+            )?;
         }
         Ok(())
     }
@@ -373,11 +407,12 @@ impl Core {
     fn item_surfaces(&self, at: usize) -> Result<(), RuntimeError> {
         let kind = self.kind(at)?;
         if MEMBERS.contains(&kind.as_str()) {
+            let placed = self.take_placement(at)?;
             let props = self.props(at)?;
             if let Some(item) = ref_prop(&props, "item") {
                 let above = ref_prop(&props, "above")
                     .map_or_else(Value::none, |over| Value::some(Value::Ref(over)));
-                self.item_actions(at, &kind, &item, &above)?;
+                self.item_actions(at, &kind, &item, &above, placed.as_deref())?;
             }
         }
         for child in self.children(at)? {
@@ -387,13 +422,16 @@ impl Core {
     }
 
     /// The actions of `item` on the node `at` of `kind`: each in its menu, and the row's
-    /// destructive one (or its first) as its swipe, offered where `above` stands over it.
+    /// destructive one (or its first) as its swipe, offered where `above` stands over it. A view
+    /// that placed them (`actions:`) has the ones it named first, in its order, and the rest
+    /// behind its own "More"; without a placement, each stands as its type offers it.
     fn item_actions(
         &self,
         at: usize,
         kind: &str,
         item: &RefValue,
         above: &Value,
+        placed: Option<&Placed>,
     ) -> Result<(), RuntimeError> {
         let taken: Vec<Value> = self
             .actions_on(item, above)
@@ -407,23 +445,97 @@ impl Core {
         // What publishing the item's offers costs a profile: the actions its menu shows.
         self.costs
             .publish(u64::try_from(taken.len()).unwrap_or(u64::MAX));
+        let (shown, rest) = Self::as_placed(taken, placed);
+        // A swipe is a placement too: a view that placed its actions gets one of those it
+        // placed, and none while it placed none.
+        let direct = shown.len();
         let key = self.key(at)?;
-        for (index, action) in taken.iter().enumerate() {
+        let mut menu = shown;
+        for action in rest {
+            menu.push(self.behind_more(action));
+        }
+        for (index, action) in menu.iter().enumerate() {
             let item = Self::menu_item(action, &format!("{key}~action-{index}"));
             self.put_in_slot(at, MENU, item)?;
         }
+        let swipeable = if placed.is_some() {
+            menu.get(..direct).unwrap_or_default()
+        } else {
+            &menu[..]
+        };
         if kind == LIST_ITEM && self.slot(at, SWIPE)?.is_none() {
-            let swipe = taken
+            let swipe = swipeable
                 .iter()
                 .filter(|action| flag(action, AVAILABLE))
                 .find(|action| flag(action, DESTRUCTIVE))
-                .or_else(|| taken.iter().find(|action| flag(action, AVAILABLE)));
+                .or_else(|| menu.iter().find(|action| flag(action, AVAILABLE)));
             if let Some(action) = swipe {
                 let node = Self::swipe_action(action, &format!("{key}~swipe"));
                 self.put_in_slot(at, SWIPE, node)?;
             }
         }
         Ok(())
+    }
+
+    /// `offered` as the view placed it: the actions it named, in its order, each with the group
+    /// and the primacy it gave it; then the rest, which a menu draws behind its "More". Without
+    /// a placement, every action stands as offered and nothing is left over.
+    fn as_placed(offered: Vec<Value>, placed: Option<&Placed>) -> (Vec<Value>, Vec<Value>) {
+        let Some(placed) = placed else {
+            return (offered, Vec::new());
+        };
+        let mut left: Vec<Option<Value>> = offered.into_iter().map(Some).collect();
+        let mut shown = Vec::with_capacity(placed.len());
+        for (id, group, primary) in placed {
+            let Some(index) = left.iter().position(|action| {
+                action
+                    .as_ref()
+                    .is_some_and(|action| opt_text(action, ID) == Some(id.as_str()))
+            }) else {
+                continue;
+            };
+            let Some(mut action) = left.get_mut(index).and_then(Option::take) else {
+                continue;
+            };
+            Self::put_field(&mut action, FREQUENT, Value::Bool(false));
+            if *primary {
+                Self::put_field(&mut action, PRIMARY, Value::Bool(true));
+            }
+            // A view that places an action says which run of commands it stands in: the
+            // placement is the menu, and the action's own run is what its type says where no
+            // view placed it.
+            Self::put_field(
+                &mut action,
+                GROUP,
+                group
+                    .as_ref()
+                    .map_or_else(Value::none, |group| Value::some(Value::text(group))),
+            );
+            shown.push(action);
+        }
+        let rest = left.into_iter().flatten().collect();
+        (shown, rest)
+    }
+
+    /// `action` as one a menu draws behind its "More": in that run, and no longer the primary
+    /// or the frequent one of a bar.
+    fn behind_more(&self, mut action: Value) -> Value {
+        let more = self.words.borrow().word(MORE_RUN, &[], MORE_RUN_WORDS);
+        Self::put_field(&mut action, PRIMARY, Value::Bool(false));
+        Self::put_field(&mut action, FREQUENT, Value::Bool(false));
+        Self::put_field(&mut action, GROUP, Value::some(Value::text(&more)));
+        action
+    }
+
+    /// What the view placed on the node `at`, taken off it: the host reads the placement while
+    /// it builds the surfaces, and the tree it sends carries only what the widget declares.
+    fn take_placement(&self, at: usize) -> Result<Option<Vec<PlacedAction>>, RuntimeError> {
+        let props = self.props(at)?;
+        let placed = placement(&props);
+        if placed.is_some() {
+            self.remove_prop(at, PLACEMENT)?;
+        }
+        Ok(placed)
     }
 
     /// Each menu a view opened onto a resource gets that resource's actions: a bar naming the
@@ -593,7 +705,9 @@ impl Core {
     }
 
     /// The window's bar's controls: what the shell searches with, then the primary action, the
-    /// frequent ones, and the rest where the bar's own door lists them.
+    /// frequent ones, and the rest where the bar's own door lists them. A view that placed the
+    /// window's actions (`actions:`) has the ones it named in its bar, in its order, and the
+    /// rest behind a "More" the bar keeps itself.
     fn fill_bar(
         &self,
         shell: usize,
@@ -601,19 +715,21 @@ impl Core {
         listed: bool,
         acted: &[Value],
         entry: Option<&str>,
+        placed: Option<&Placed>,
     ) -> Result<(), RuntimeError> {
         let key = self.key(shell)?;
+        let (acted, rest) = Self::as_placed(acted.to_vec(), placed);
         let mut by_place: [Vec<Value>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         for action in acted {
-            let place = if flag(action, PRIMARY) {
+            let place = if flag(&action, PRIMARY) {
                 0
-            } else if flag(action, FREQUENT) {
+            } else if flag(&action, FREQUENT) {
                 1
             } else {
                 2
             };
             if let Some(actions) = by_place.get_mut(place) {
-                actions.push(action.clone());
+                actions.push(action);
             }
         }
         if listed || slot == OVERVIEW_ACTIONS {
@@ -632,7 +748,31 @@ impl Core {
             );
             self.put_in_slot(shell, slot, node)?;
         }
+        if !rest.is_empty() {
+            let more = self.more_menu(&format!("{key}~{slot}~more"));
+            let at = self.push(more)?;
+            for (index, action) in rest.iter().enumerate() {
+                let item = Self::menu_item(action, &format!("{key}~{slot}~more-{index}"));
+                let child = self.push(item)?;
+                self.insert(at, usize::MAX, child)?;
+            }
+            self.put_at_in_slot(shell, slot, at)?;
+            self.costs
+                .publish(u64::try_from(rest.len()).unwrap_or(u64::MAX));
+        }
         Ok(())
+    }
+
+    /// The button a bar keeps what its view left over behind: the shell's own "More", which
+    /// lists what it holds.
+    fn more_menu(&self, key: &str) -> NodeBuild {
+        let mut menu = empty("ui.MenuButton", key);
+        let label = self.words.borrow().word(MORE, &[], "More actions");
+        menu.props.insert("label".to_owned(), Value::text(&label));
+        menu.props
+            .insert("icon".to_owned(), Value::text("more-horizontal"));
+        menu.props.insert("icon_only".to_owned(), on_off(true));
+        menu
     }
 
     /// The window's bar while a choice of many items holds: how many items the person chose,
@@ -716,13 +856,16 @@ impl Core {
     /// switch `switch` before it, for a resource whose type offers more than one view. An item
     /// that offers neither shows no "…": a door opening on nothing only takes a line of the
     /// page. One that offers either keeps it at the trailing edge of the title's line, which is
-    /// made for it when the view left the title in a column of its own.
+    /// made for it when the view left the title in a column of its own. A view that placed the
+    /// actions (`actions:`) has the ones it named beside the title, in its order, and the rest
+    /// behind the "…".
     fn put_under_title(
         &self,
         shell: usize,
         subject: &RefValue,
         acted: &[Value],
         switch: Option<usize>,
+        placed: Option<&Placed>,
     ) -> Result<(), RuntimeError> {
         if acted.is_empty() && switch.is_none() {
             return Ok(());
@@ -732,21 +875,35 @@ impl Core {
             return Ok(());
         };
         let (line, after) = self.title_line(parent, index, &key)?;
-        let mut menu = empty("ui.MenuButton", &format!("{key}~more"));
-        let label = self.words.borrow().word(MORE, &[], "More actions");
-        menu.props.insert("label".to_owned(), Value::text(&label));
-        menu.props
-            .insert("icon".to_owned(), Value::text("more-horizontal"));
-        menu.props.insert("icon_only".to_owned(), on_off(true));
-        let at = self.push(menu)?;
-        for (index, action) in acted.iter().enumerate() {
-            let item = Self::menu_item(action, &format!("{key}~more-{index}"));
-            let child = self.push(item)?;
-            self.insert(at, usize::MAX, child)?;
+        // Without a placement every action stands behind the door, as the types offer them; a
+        // view that placed some has those beside the title and the rest behind the door.
+        let (shown, rest) = if placed.is_some() {
+            Self::as_placed(acted.to_vec(), placed)
+        } else {
+            (Vec::new(), acted.to_vec())
+        };
+        let mut beside = after;
+        for (index, action) in shown.iter().enumerate() {
+            let node = Self::action_button(action, &format!("{key}~more-bar-{index}"), None, true);
+            let child = self.push(node)?;
+            self.insert(line, beside, child)?;
+            beside = beside.saturating_add(1);
         }
-        self.insert(line, after, at)?;
+        // A view that placed every action it offers leaves nothing for the door: it opens on
+        // nothing, so it does not stand there.
+        if !rest.is_empty() {
+            let menu = self.more_menu(&format!("{key}~more"));
+            let at = self.push(menu)?;
+            for (index, action) in rest.iter().enumerate() {
+                let item = Self::menu_item(action, &format!("{key}~more-{index}"));
+                let child = self.push(item)?;
+                self.insert(at, usize::MAX, child)?;
+            }
+            self.insert(line, beside, at)?;
+            beside = beside.saturating_add(1);
+        }
         if let Some(switch) = switch {
-            self.insert(line, after, switch)?;
+            self.insert(line, beside, switch)?;
         }
         Ok(())
     }
@@ -844,6 +1001,18 @@ impl Core {
                 .get_mut(at)
                 .ok_or_else(|| "unknown ui node".to_owned())?;
             node.props.insert(name.to_owned(), value);
+            Ok(())
+        })
+    }
+
+    /// Take the prop `name` off `at`, when it carries one.
+    fn remove_prop(&self, at: usize, name: &str) -> Result<(), RuntimeError> {
+        self.arena(|view| {
+            let node = view
+                .nodes
+                .get_mut(at)
+                .ok_or_else(|| "unknown ui node".to_owned())?;
+            node.props.remove(name);
             Ok(())
         })
     }
@@ -1117,6 +1286,40 @@ fn empty(kind: &str, key: &str) -> NodeBuild {
         events: BTreeMap::new(),
         anchor: None,
     }
+}
+
+/// A view's placement of one action: the action's id, the run of commands the view puts it in,
+/// and whether the view makes it the primary one.
+type PlacedAction = (String, Option<String>, bool);
+
+/// A view's placement, in the order the view named the actions.
+type Placed = [PlacedAction];
+
+/// The actions a view placed on a node, when it did.
+fn placement(props: &BTreeMap<String, Value>) -> Option<Vec<PlacedAction>> {
+    let Value::List(entries) = props.get(PLACEMENT)? else {
+        return None;
+    };
+    let mut placed = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Value::Tuple(fields) = entry else {
+            continue;
+        };
+        let Some(id) = fields.get(PLACED_ID).and_then(Value::as_text) else {
+            continue;
+        };
+        let group = match fields.get(PLACED_GROUP) {
+            Some(Value::Opt(Some(held))) => held.as_text().map(str::to_owned),
+            held => held.and_then(Value::as_text).map(str::to_owned),
+        };
+        let primary = match fields.get(PLACED_PRIMARY) {
+            Some(Value::Bool(flag)) => *flag,
+            Some(Value::Int(n)) => *n != 0,
+            _ => false,
+        };
+        placed.push((id.to_owned(), group, primary));
+    }
+    Some(placed)
 }
 
 fn action_field(action: &Value, at: usize) -> Option<&Value> {

@@ -179,10 +179,6 @@ impl App {
         &mut self.presence_ctx
     }
 
-    pub fn set_followed_peer(&mut self, user_id: Option<String>) {
-        self.presence.followed_peer = user_id;
-    }
-
     pub fn followed_peer(&self) -> Option<&str> {
         self.presence.followed_peer.as_deref()
     }

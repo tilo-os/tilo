@@ -163,6 +163,13 @@ impl WidgetHost {
             ui::permissions::UserId(String::new()),
         );
         host.set_caller_palette_enabled(false);
+        // This host presents on its own frame clock, the compositor's, as a
+        // browser page does on animation frames: a word typed, a drag or a
+        // wheel arrives faster than frames, so the key down, the text and the
+        // key up of one keystroke reach the tree's next frame instead of
+        // three of their own. Each event still reaches the widgets at once,
+        // against the layout the person saw.
+        host.set_coalesce_input_frames(true);
         // Each frame is compared with the one the layer shows, so only what
         // changed is drawn again.
         host.track_scene_parts(true);

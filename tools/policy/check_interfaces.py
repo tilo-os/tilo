@@ -20,10 +20,9 @@ one the code and the image's ``system-interfaces.toml`` carry.
 the code declares changed incompatibly since BASE's code without a higher
 version; both are read by this extractor, so a change to how a schema is
 written is never taken for a change to the interface. An added optional field
-of a JSON or TOML message, an added Cap'n Proto struct field, a new type, and a
-postcard field under another name that keeps its position and type are
-compatible; everything else that changes what one side sends or reads, a new
-Cap'n Proto union member included, is not.
+of a JSON or TOML message, a new type, and a postcard field under another name
+that keeps its position and type are compatible; everything else that changes
+what one side sends or reads is not.
 
 ``write`` rewrites every ``interface.toml`` from the code, keeping the
 authored header (where the version lives, the sources, the roots, the opaque
@@ -34,7 +33,7 @@ type alias reachable from the interface's root types through the listed
 source files, with the serde attributes that change the wire form. A type the
 sources do not define must be a known standard type or be listed under
 ``[opaque]`` with what it is, so nothing on the wire goes unexamined by
-accident. Cap'n Proto schemas are read from their ``.capnp`` files.
+accident.
 """
 
 from __future__ import annotations
@@ -526,7 +525,6 @@ class Spec:
     encoding: str
     sources: list[str]
     roots: list[str]
-    capnp: list[str]
     opaque: dict[str, str]
     serves: bool
     path: Path
@@ -541,7 +539,6 @@ def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
         encoding=data.get("encoding", "json"),
         sources=list(data.get("sources", [])),
         roots=list(data.get("roots", [])),
-        capnp=list(data.get("capnp", [])),
         opaque=dict(data.get("opaque", {})),
         serves=bool(data.get("served_to_apps", False)),
         path=path,
@@ -550,7 +547,7 @@ def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
         raise InterfaceError(f"{path}: encoding must be one of {', '.join(ENCODINGS)}")
     # A file listed twice would read every type it defines twice, and the schema
     # would blame the code for defining it more than once.
-    for listed in ("sources", "roots", "capnp"):
+    for listed in ("sources", "roots"):
         names = getattr(spec, listed)
         twice = sorted({name for name in names if names.count(name) > 1})
         if twice:
@@ -709,105 +706,19 @@ def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
 
 
 
-_CAPNP_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|@0x[0-9a-fA-F]+|@[0-9]+|0x[0-9a-fA-F]+|[A-Za-z_][A-Za-z0-9_.]*|->|\S')
-
-
-def capnp_tokens(text: str) -> list[str]:
-    text = re.sub(r"#[^\n]*", "", text)
-    return _CAPNP_TOKEN.findall(text)
-
-
-def capnp_schema(path: str, root: Path = ROOT) -> dict[str, str]:
-    """`Scope.member` lines for every struct field, union and group member,
-    interface method and enumerant in a `.capnp` file."""
-    tokens = capnp_tokens((root / path).read_text())
-    schema: dict[str, str] = {}
-    scopes: list[tuple[str, str]] = []  # (name, kind)
-    i = 0
-
-    def scope_name() -> str:
-        return ".".join(name for name, _ in scopes if name)
-
-    while i < len(tokens):
-        t = tokens[i]
-        if t in ("struct", "interface", "enum") and i + 1 < len(tokens):
-            name = tokens[i + 1]
-            j = i + 2
-            while tokens[j] != "{":
-                j += 1
-            scopes.append((name, t))
-            schema[scope_name()] = t
-            i = j + 1
-            continue
-        if t == "union" and tokens[i + 1] == "{":
-            scopes.append(("", "union"))
-            i += 2
-            continue
-        if t == "}":
-            if scopes:
-                scopes.pop()
-            i += 1
-            continue
-        if t in ("using", "const", "annotation") or t.startswith("@0x"):
-            while i < len(tokens) and tokens[i] != ";":
-                i += 1
-            i += 1
-            continue
-        if scopes and i + 1 < len(tokens) and tokens[i + 1].startswith("@"):
-            name, ordinal = t, tokens[i + 1]
-            kind = next((k for _, k in reversed(scopes) if k != "union"), "struct")
-            j = i + 2
-            body: list[str] = []
-            while j < len(tokens) and tokens[j] not in (";", "{"):
-                body.append(tokens[j])
-                j += 1
-            key = f"{scope_name()}.{name}"
-            if j < len(tokens) and tokens[j] == "{":
-                # A named group or union member.
-                schema[key] = f"{ordinal} {' '.join(body)}".strip()
-                scopes.append((name, "struct"))
-                i = j + 1
-                continue
-            text = re.sub(r"\s*([:(),\[\]<>=])\s*", r"\1", " ".join(body))
-            in_union = bool(scopes) and scopes[-1][1] == "union"
-            value = f"{ordinal} {text}".strip() if kind != "enum" else ordinal
-            # An older reader cannot tell what a union member it does not know
-            # means, so a new one is not compatible the way a new field is.
-            schema[key] = f"{value} union" if in_union else value
-            i = j + 1
-            continue
-        if scopes and i + 2 < len(tokens) and tokens[i + 1] == ":" and tokens[i + 2] in ("group", "union"):
-            name = t
-            j = i + 3
-            schema[f"{scope_name()}.{name}"] = tokens[i + 2]
-            scopes.append((name, "union" if tokens[i + 2] == "union" else "struct"))
-            i = j + 1
-            continue
-        i += 1
-    return {f"capnp:{Path(path).name}:{key}": value for key, value in schema.items()}
-
-
 def schema_of(spec: Spec, root: Path = ROOT) -> dict[str, str]:
     schema = rust_schema(spec, root) if spec.roots else {}
-    for path in spec.capnp:
-        schema.update(capnp_schema(path, root))
     return dict(sorted(schema.items()))
 
 
 
 def owner_of(key: str) -> str:
     """The type a schema line belongs to."""
-    if key.startswith("capnp:"):
-        prefix, _, rest = key.partition(":")[2].partition(":")
-        return f"capnp:{prefix}:{rest.rsplit('.', 1)[0] if '.' in rest else rest}"
     head = key.split(".", 1)[0]
     return head.split("::", 1)[0]
 
 
 def top_type(key: str) -> str:
-    if key.startswith("capnp:"):
-        _, file, rest = key.split(":", 2)
-        return f"capnp:{file}:{rest.split('.', 1)[0]}"
     return key.split(".", 1)[0].split("::", 1)[0]
 
 
@@ -860,12 +771,6 @@ def incompatible(before: dict[str, str], now: dict[str, str], encoding: str) -> 
             continue
         if top_type(key) not in old_types:
             continue  # a new type: judged where it is used
-        if key.startswith("capnp:"):
-            parent = key.rsplit(".", 1)[0]
-            if before.get(parent) in ("struct", "union", "group") and not value.endswith(" union"):
-                continue
-            reasons.append(f"`{key}` is new ({value})")
-            continue
         parent = key.rsplit(".", 1)[0] if "." in key else None
         added_field = parent is not None and parent in before
         if (
@@ -1048,7 +953,7 @@ def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, di
         target.write_text(text)
         try:
             spec, committed = load_spec(target)
-            wanted = {*spec.sources, *spec.capnp, spec.version_const.partition(":")[0]}
+            wanted = {*spec.sources, spec.version_const.partition(":")[0]}
             for source in wanted:
                 content = at_revision(root, revision, source)
                 if content is None:

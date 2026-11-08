@@ -343,36 +343,6 @@ impl WorkspaceDirectory {
         Ok(self.doc.put_str_if_changed(&obj, TOPIC_KEY, topic)?)
     }
 
-    /// The name the old shell still lists a workspace by; it goes when the
-    /// shell does.
-    #[doc(hidden)]
-    pub fn add_room_workspace(
-        &mut self,
-        id: WorkspaceId,
-        topic: &str,
-        name: &str,
-    ) -> Result<(), DirectoryError> {
-        self.add_workspace_with_topic(id, topic, name)
-    }
-
-    /// Record who governs workspace `id`, or that the person
-    /// does (`None`). Unchanged values write nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DirectoryError::Automerge`] if the underlying
-    /// Automerge document operation fails.
-    pub fn set_governor(
-        &mut self,
-        id: WorkspaceId,
-        governor: Option<&str>,
-    ) -> Result<(), DirectoryError> {
-        let obj = self.ensure_workspace_obj(id)?;
-        Ok(self
-            .doc
-            .put_opt_str_if_changed(&obj, "governor", governor)?)
-    }
-
     /// Place workspace `id` at `order` in the person's list (see
     /// [`WorkspaceMeta::order`]). An unchanged value writes nothing; a
     /// non-finite one is refused.

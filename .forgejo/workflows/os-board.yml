@@ -132,26 +132,55 @@ jobs:
             cat /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory 2>&1 || true
             command -v dmesg >/dev/null && { sudo -n dmesg 2>&1 | tail -20 || true; }
           }
-          (
-            set +e
+          # What the build prints dates its progress, and the build runs in its own
+          # process group, so a build that stops moving can be ended below.
+          fifo=$(mktemp -u)
+          mkfifo "$fifo"
+          ( set +e
+            while IFS= read -r line; do
+              printf '%7ds %s\n' "$((SECONDS - start))" "$line"
+              printf '%(%s)T\n' -1 > "$progress"
+            done < "$fifo"
+          ) &
+          prefix_pid=$!
+          stalled=$(mktemp)
+          rm -f "$stalled"
+          setsid bash tools/ci/build-os.sh --target "$target" --jobs "$JOBS" \
+            image dev-image board "$BOARD" > "$fifo" 2>&1 &
+          build=$!
+          ( set +e
             reported=0
-            while true; do
+            while kill -0 "$build" 2>/dev/null; do
               sleep 30
               quiet=$(( $(date +%s) - $(cat "$progress") ))
               if (( quiet > 480 && quiet - reported > 600 )); then
                 reported=$quiet
                 report_waiting "$quiet"
               fi
+              # Nothing printed and nothing running: the build waits on something
+              # that will not come back, such as a connection that stopped
+              # delivering. End it here, with the report above, rather than hold
+              # this slot to the job's ceiling.
+              load=$(awk '{ print int($1 * 100) }' /proc/loadavg)
+              if (( quiet > 900 && load < 100 )); then
+                echo "::error::the build printed nothing for ${quiet}s and runs nothing; ending it"
+                : > "$stalled"
+                kill -TERM -- "-$build" 2>/dev/null || kill -TERM "$build" 2>/dev/null || true
+                break
+              fi
             done
           ) &
           watchdog=$!
           trap 'kill "$watchdog" 2>/dev/null || true' EXIT
-          bash tools/ci/build-os.sh --target "$target" --jobs "$JOBS" \
-            image dev-image board "$BOARD" 2>&1 \
-          | while IFS= read -r line; do
-              printf '%7ds %s\n' "$((SECONDS - start))" "$line"
-              printf '%(%s)T\n' -1 > "$progress"
-            done
+          status=0
+          wait "$build" || status=$?
+          # The reader ends when the build's output does; anything the build left
+          # behind that still holds it must not keep the step waiting.
+          timeout 60 tail --pid="$prefix_pid" -f /dev/null 2>/dev/null || true
+          kill "$prefix_pid" 2>/dev/null || true
+          rm -f "$fifo"
+          test ! -e "$stalled" || exit 1
+          (( status == 0 )) || exit "$status"
           ls -l "$target/publish/os-board/$BOARD" "$target/publish/os-board/$BOARD/disk"
 
       - name: Publish the board image and move its dev channel

@@ -711,25 +711,6 @@ pub fn installed_for_update() -> Result<std::collections::HashMap<String, Instal
         .collect()
 }
 
-/// Installed package versions, parsed once for bulk update checks.
-///
-/// # Errors
-///
-/// Returns an error if the installed-app registry or any installed package
-/// manifest cannot be read.
-pub fn installed_versions() -> Result<std::collections::HashMap<String, String>, String> {
-    let entries = package_store::list_installed()
-        .map_err(|error| format!("could not read the installed app registry: {error}"))?;
-    entries
-        .into_iter()
-        .map(|entry| {
-            installed_manifest_version(&entry.manifest_path)
-                .map(|version| (entry.id.clone(), version))
-                .ok_or_else(|| format!("could not read the installed manifest for {}", entry.id))
-        })
-        .collect()
-}
-
 fn installed_manifest_version(path: &std::path::Path) -> Option<String> {
     // Runtime packages may have no executable entrypoint. Parse their normal
     // package manifest rather than requiring the launcher's app-only view.

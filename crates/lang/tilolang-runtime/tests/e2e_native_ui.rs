@@ -335,4 +335,84 @@ action add(l: Tasks, title: Text) {
         assert_eq!(card.props["count"], Value::Int(3), "{}", dump(&summary));
         assert!(matches!(&card.props["item"], Value::Ref(r) if *r.target == l));
     }
+
+    const SUMMARY: &str = r#"app so.tilo.summary "Summary"
+
+type Task {
+    title: Text
+}
+
+type Tasks {
+    items: Collection<Task>
+}
+
+row view task_row for Task
+
+view task_row(t: Task) {
+    row(t.title)
+}
+
+template view card<R, T>(of: R, items: List<T>, row: (T) -> View) {
+    ui.Card(item: of, title: "Tasks", count: items.len()) {
+        list(items) { x -> row(x) }
+        if items.len() > preview_rows() {
+            ui.Button("Show all {items.len()}", role: .plain) {
+                on press: open(of)
+            }
+        }
+        on activate: open(of)
+    }
+}
+
+view summary(l: Tasks) {
+    card(l, l.items) { t ->
+        task_row(t)
+    }
+}
+
+action add(l: Tasks, title: Text) {
+    l.items.insert(Task(title: title))
+}
+"#;
+
+    #[test]
+    fn a_card_shows_the_first_rows_of_a_list_and_says_how_many_it_leaves_out() {
+        let app = App::compile(SUMMARY, &[]);
+        let rt = runtime(&app);
+        let l = rt.create("Tasks").unwrap();
+        for title in [
+            "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight",
+        ] {
+            rt.invoke_action(
+                &me(),
+                (
+                    app.action("add").as_str(),
+                    vec![Value::resource(&l), Value::text(title)],
+                ),
+            )
+            .unwrap();
+        }
+        let mut view = rt
+            .open_view(&me(), &app.view("summary"), vec![Value::resource(&l)])
+            .unwrap();
+        view.set_lazy_rows(false).unwrap();
+        let tree = view.tree().clone();
+        let card = of_kind(&tree, "ui.Card")[0];
+        assert_eq!(card.props["count"], Value::Int(8), "{}", dump(&tree));
+        let list = of_kind(&tree, "list")[0];
+        assert_eq!(list.props["len"], Value::Int(8), "{}", dump(&tree));
+        let rows: Vec<String> = of_kind(list, "ui.ListRow")
+            .iter()
+            .map(|r| text_prop(r, "title"))
+            .collect();
+        assert_eq!(
+            rows,
+            ["One", "Two", "Three", "Four", "Five"],
+            "{}",
+            dump(&tree)
+        );
+        let show_all = of_kind(&tree, "ui.Button");
+        assert_eq!(show_all.len(), 1, "{}", dump(&tree));
+        assert_eq!(text_prop(show_all[0], "label"), "Show all 8");
+    }
 }

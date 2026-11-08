@@ -38,19 +38,6 @@ impl WindowGroup {
         self.fullscreen_presentation && self.fullscreen_bar_drawn() && !self.external_navigation
     }
 
-    /// Whether the window's bar is in use (its location field, its search,
-    /// a tab being dragged), so a fullscreen window's bar stays.
-    #[must_use]
-    pub fn bar_in_use(&self) -> bool {
-        self.editing_location() || self.search.is_open() || self.drag_in_flight()
-    }
-
-    /// Whether a fullscreen window's bar shows over it now.
-    #[must_use]
-    pub fn fullscreen_bar_shown(&self) -> bool {
-        self.fullscreen_presentation && self.fullscreen_bar.revealed && !self.external_navigation
-    }
-
     /// The bar and the window's search under it.
     pub(super) fn draw_bar(
         &mut self,

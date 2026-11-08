@@ -212,91 +212,60 @@ fn type_key(session: &mut Session, keycode: u32) {
     }
 }
 
+/// The query the open search carries, as the desk publishes it.
+fn query(session: &Session) -> Option<String> {
+    find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label)
+}
+
+/// A session with key repeat pushed past the test's own steps: a held key
+/// repeats, and a step of a headless session can take longer than a repeat
+/// waits, so these keys are tapped instead.
+fn seated() -> Session {
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    session
+}
+
+/// Open the desk's search: by its own action, or by the chord the person
+/// presses, Super+Space through the seat.
+fn open(session: &mut Session, by_chord: bool) {
+    if by_chord {
+        chord(session);
+    } else {
+        invoke(session, DESK_RESOURCE, "search", serde_json::json!({}));
+    }
+    until(session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+}
+
 /// Keys typed while the desk's search is open go into its query field: the
 /// desk takes the keyboard while its own search shows, rather than leaving
-/// the letters to the window behind it.
+/// the letters to the window behind it. Where the search was opened by its
+/// action or by the chord, and whether the letters are tapped at once or
+/// after the desk has settled, they all reach the same field.
 #[test]
-fn typing_into_the_open_search_reaches_its_query() {
+fn typing_reaches_the_searches_query_however_it_was_opened() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    // A held key repeats; these keys are tapped, and a step of a headless
-    // session can take longer than a repeat waits.
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    for keycode in [46, 30, 38] {
-        type_key(&mut session, keycode);
+    for (by_chord, waited) in [(false, false), (true, false), (true, true)] {
+        let mut session = seated();
+        open(&mut session, by_chord);
+        if waited {
+            // The field keeps the keyboard while the desk redraws under it,
+            // so a person who takes their time before typing loses nothing.
+            await_search(&mut session, None);
+        }
+        for keycode in [46, 30, 38] {
+            type_key(&mut session, keycode);
+        }
+        until(&mut session, |session| {
+            query(session).as_deref() == Some("cal")
+        });
     }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
-    });
-}
-
-/// The same, for search opened by the chord the person presses: Super+Space
-/// through the seat reaches the desk's own search, and what they type next
-/// reaches its query.
-#[test]
-fn typing_after_the_search_chord_reaches_its_query() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-        session
-            .compositor()
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    for keycode in [46, 30, 38] {
-        type_key(&mut session, keycode);
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
-    });
-}
-
-/// The same a moment later: the field keeps the keyboard while search stays
-/// open and the desk redraws under it, so a person who takes their time
-/// before typing loses nothing.
-#[test]
-fn typing_once_search_has_settled_reaches_its_query() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-        session
-            .compositor()
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    await_search(&mut session, None);
-    for keycode in [46, 30, 38] {
-        type_key(&mut session, keycode);
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
-    });
 }
 
 /// Letters a fast typist sends close together reach the query all the same:
@@ -304,22 +273,8 @@ fn typing_once_search_has_settled_reaches_its_query() {
 #[test]
 fn typing_letters_in_one_batch_reaches_the_query() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-        session
-            .compositor()
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
+    let mut session = seated();
+    open(&mut session, true);
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
     }
@@ -335,9 +290,8 @@ fn typing_letters_in_one_batch_reaches_the_query() {
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
     }
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     assert_eq!(
-        label.as_deref(),
+        query(&session).as_deref(),
         Some("cal"),
         "every letter reaches the query"
     );
@@ -348,37 +302,24 @@ fn typing_letters_in_one_batch_reaches_the_query() {
 #[test]
 fn typing_after_deleting_the_whole_query_reaches_it_again() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-        session
-            .compositor()
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
+    let mut session = seated();
+    open(&mut session, true);
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
     }
     // Letters and deletions alike arrive a frame apart, as a person's do.
-    let untyped = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
+    let untyped = query(&session);
     keys(&mut session, &[46, 30, 38]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
-    assert_eq!(label.as_deref(), Some("cal"), "the first letters reach it");
-    keys(&mut session, &[14, 14, 14]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
-    assert_eq!(label, untyped, "the query is empty again");
-    keys(&mut session, &[48, 24, 24]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     assert_eq!(
-        label.as_deref(),
+        query(&session).as_deref(),
+        Some("cal"),
+        "the first letters reach it"
+    );
+    keys(&mut session, &[14, 14, 14]);
+    assert_eq!(query(&session), untyped, "the query is empty again");
+    keys(&mut session, &[48, 24, 24]);
+    assert_eq!(
+        query(&session).as_deref(),
         Some("boo"),
         "typing after deleting still lands"
     );
@@ -1460,286 +1401,124 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
     );
 }
 
+/// A session whose search lists the apps this device has — the machine's
+/// `Alacritty` and the person's `Notes` — with `host` taking the launches.
+fn host_session(host: Rc<Host>) -> Session {
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            search: SearchOptions {
+                lists: Lists::fixed(host_app_lists()),
+                ..SearchOptions::default()
+            },
+            apps: Some(host as Rc<dyn AppActions>),
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).expect("step");
+    session
+}
+
+/// The titles of the rows the search shows now.
+fn labels(session: &Session) -> Vec<String> {
+    rows(session).into_iter().map(|row| row.label).collect()
+}
+
+/// The ways a person reaches search, each of which searches the session's one
+/// list of apps.
+#[derive(Clone, Copy, Debug)]
+enum Opening {
+    /// The platform search door (`tilo.host:search`): what a window's search
+    /// control, its toolbar's magnifier and Ctrl+K run, and what an agent asks.
+    HostDoor,
+    /// The desk's own `search` verb, in the workspace scope its chip names.
+    Desk,
+    /// The applications alone, as the launchpad's "Open an app" lists them.
+    Applications,
+}
+
+impl Opening {
+    /// Open search this way, already asking `query`.
+    fn open(self, session: &mut Session, query: &str) {
+        match self {
+            Self::HostDoor => {
+                invoke(
+                    session,
+                    HOST_SEARCH,
+                    "open",
+                    serde_json::json!({ "query": query }),
+                );
+            }
+            Self::Desk => {
+                invoke(
+                    session,
+                    DESK_RESOURCE,
+                    "search",
+                    serde_json::json!({ "query": query }),
+                );
+            }
+            Self::Applications => {
+                session
+                    .handle()
+                    .open_search(ui::search::Scope::WindowGroup(None), Some(query.to_owned()));
+            }
+        }
+        await_search(session, Some(query));
+    }
+}
+
 /// Every way into search finds the person's apps by name, from one list of
-/// apps. The platform search door (`tilo.host:search`) is what a window's
-/// search control, its toolbar's magnifier and Ctrl+K run, and what an agent
-/// asks; opening it here must search what the desk's own search searches —
-/// the apps this device has, both of them, from the session's one list.
+/// apps: the machine's `Alacritty` and the person's `Notes` alike.
 #[test]
-fn the_host_search_finds_a_host_app_by_name() {
+fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::new(Host::default())),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-
-    invoke(&mut session, HOST_SEARCH, "open", serde_json::json!({}));
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    type_at_the_seat(&mut session, "alacritty");
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE)
-            .is_some_and(|search| search.label == "alacritty")
-    });
-    await_search(&mut session, Some("alacritty"));
-    assert!(
-        titled(&session, "Alacritty").is_some(),
-        "the machine's app is found by name from the platform search door: {:?}",
-        rows(&session)
-            .into_iter()
-            .map(|row| row.label)
-            .collect::<Vec<_>>()
-    );
+    for (query, title) in [("alacritty", "Alacritty"), ("notes", "Notes")] {
+        let mut session = host_session(Rc::new(Host::default()));
+        Opening::HostDoor.open(&mut session, query);
+        assert!(
+            titled(&session, title).is_some(),
+            "{title} is found by name from the platform search door: {:?}",
+            labels(&session)
+        );
+    }
+    for opening in [Opening::Desk, Opening::Applications] {
+        let mut session = host_session(Rc::new(Host::default()));
+        opening.open(&mut session, "alacritty");
+        assert!(
+            titled(&session, "Alacritty").is_some(),
+            "{opening:?} lists an app the person can open: {:?}",
+            labels(&session)
+        );
+    }
 }
 
-/// The same for one of the person's Tilo apps: the list the door searches is
-/// the session's one list of apps, so an installed app is found by name too.
+/// Choosing the row any search found starts the app: the launch reaches the
+/// launcher, as choosing a row of the desk's own search does.
 #[test]
-fn the_host_search_finds_an_installed_app_by_name() {
+fn choosing_the_row_any_search_found_starts_the_app() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::new(Host::default())),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-
-    invoke(&mut session, HOST_SEARCH, "open", serde_json::json!({}));
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    type_at_the_seat(&mut session, "notes");
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "notes")
-    });
-    await_search(&mut session, Some("notes"));
-    assert!(
-        titled(&session, "Notes").is_some(),
-        "the person's own app is found by name from the platform search door: {:?}",
-        rows(&session)
-            .into_iter()
-            .map(|row| row.label)
-            .collect::<Vec<_>>()
-    );
-}
-
-/// Choosing the row the platform search door found starts the app: the launch
-/// reaches the launcher, as choosing a row of the desk's own search does.
-#[test]
-fn choosing_the_host_app_the_host_search_found_starts_it() {
-    let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::clone(&host) as Rc<dyn AppActions>),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).expect("step");
-
-    invoke(
-        &mut session,
-        HOST_SEARCH,
-        "open",
-        serde_json::json!({ "query": "alacritty" }),
-    );
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE)
-            .is_some_and(|search| search.label == "alacritty")
-    });
-    await_search(&mut session, Some("alacritty"));
-    let app = titled(&session, "Alacritty").unwrap_or_else(|| {
-        panic!(
-            "the app's row: {:?}",
-            rows(&session)
-                .into_iter()
-                .map(|row| row.label)
-                .collect::<Vec<_>>()
-        )
-    });
-    invoke(
-        &mut session,
-        app.id.as_str(),
-        "choose-search-row",
-        serde_json::json!({}),
-    );
-    until(&mut session, |_| !host.started.borrow().is_empty());
-    assert_eq!(
-        host.started.borrow().as_slice(),
-        ["Alacritty.desktop"],
-        "the app the platform search door found starts"
-    );
-}
-
-/// The desktop's own search finds the machine's apps by name, however it is
-/// opened: the field's scope chip names the workspace the search reaches
-/// into, and that never hides what the person can open.
-#[test]
-fn the_desk_search_finds_a_host_app_by_name_whichever_way_it_opens() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::new(Host::default())),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-
-    // Opened with nothing typed, as the desk's `search` verb does: the field
-    // shows the Workspace scope chip.
-    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    type_at_the_seat(&mut session, "alacritty");
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE)
-            .is_some_and(|search| search.label == "alacritty")
-    });
-    await_search(&mut session, Some("alacritty"));
-    assert!(
-        titled(&session, "Alacritty").is_some(),
-        "an app the person can open is found by its name from the search in the workspace scope: {:?}",
-        rows(&session)
-            .into_iter()
-            .map(|row| row.label)
-            .collect::<Vec<_>>()
-    );
-}
-
-/// Choosing that row starts the app: the launch reaches the launcher.
-#[test]
-fn choosing_the_host_app_found_by_search_starts_it() {
-    let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::clone(&host) as Rc<dyn AppActions>),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).expect("step");
-    search_for(&mut session, "alacritty");
-    let app = titled(&session, "Alacritty").expect("the app's row");
-    invoke(
-        &mut session,
-        app.id.as_str(),
-        "choose-search-row",
-        serde_json::json!({}),
-    );
-    until(&mut session, |_| !host.started.borrow().is_empty());
-    assert_eq!(
-        host.started.borrow().as_slice(),
-        ["Alacritty.desktop"],
-        "the app the row names starts"
-    );
-}
-
-/// The applications a window group's new tab may show, and the empty desk's
-/// launchpad opens: each app this device has, by its name.
-#[test]
-fn the_applications_scope_lists_a_host_app() {
-    let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::clone(&host) as Rc<dyn AppActions>),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).expect("step");
-    // The launchpad's "Open an app": the applications alone.
-    session.handle().open_search(
-        ui::search::Scope::WindowGroup(None),
-        Some("alacritty".to_owned()),
-    );
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    await_search(&mut session, Some("alacritty"));
-    let app = titled(&session, "Alacritty").unwrap_or_else(|| {
-        panic!(
-            "an app the person can open is listed by the applications' own search: {:?}",
-            rows(&session)
-                .into_iter()
-                .map(|row| row.label)
-                .collect::<Vec<_>>()
-        )
-    });
-    // And it opens: the row's launch is the one the session starts.
-    invoke(
-        &mut session,
-        app.id.as_str(),
-        "choose-search-row",
-        serde_json::json!({}),
-    );
-    until(&mut session, |_| !host.started.borrow().is_empty());
-    assert_eq!(host.started.borrow().as_slice(), ["Alacritty.desktop"]);
+    for opening in [Opening::HostDoor, Opening::Desk, Opening::Applications] {
+        let host = Rc::new(Host::default());
+        let mut session = host_session(Rc::clone(&host));
+        opening.open(&mut session, "alacritty");
+        let app = titled(&session, "Alacritty")
+            .unwrap_or_else(|| panic!("the app's row from {opening:?}: {:?}", labels(&session)));
+        invoke(
+            &mut session,
+            app.id.as_str(),
+            "choose-search-row",
+            serde_json::json!({}),
+        );
+        until(&mut session, |_| !host.started.borrow().is_empty());
+        assert_eq!(
+            host.started.borrow().as_slice(),
+            ["Alacritty.desktop"],
+            "the app found by {opening:?} starts"
+        );
+    }
 }
 
 /// Tasks as it publishes its capture to the workspace: its root, with the

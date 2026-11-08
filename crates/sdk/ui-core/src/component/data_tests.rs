@@ -8,124 +8,10 @@
     reason = "in a test these are the assertion"
 )]
 
-use std::collections::BTreeMap;
-
+use super::testing::*;
 use super::*;
 use crate::headless::FrameHarness;
-use crate::theme::Theme;
 use crate::widget::Widget;
-
-/// An instance as a test gives it: values by prop, the events it handles queued on `queue`,
-/// and the components in its slots.
-struct Node {
-    kind: &'static str,
-    key: String,
-    props: BTreeMap<String, Value>,
-    events: Vec<&'static str>,
-    slots: Vec<(&'static str, Node)>,
-    queue: crate::Intents<Fired>,
-}
-
-impl Node {
-    fn new(kind: &'static str, key: &str, queue: &crate::Intents<Fired>) -> Self {
-        Self {
-            kind,
-            key: key.to_owned(),
-            props: BTreeMap::new(),
-            events: Vec::new(),
-            slots: Vec::new(),
-            queue: queue.clone(),
-        }
-    }
-
-    fn prop(mut self, name: &str, value: Value) -> Self {
-        self.props.insert(name.to_owned(), value);
-        self
-    }
-
-    fn on(mut self, event: &'static str) -> Self {
-        self.events.push(event);
-        self
-    }
-
-    fn holding(mut self, slot: &'static str, child: Node) -> Self {
-        self.slots.push((slot, child));
-        self
-    }
-}
-
-impl Source for Node {
-    fn key(&self) -> &str {
-        &self.key
-    }
-
-    fn prop(&mut self, name: &str) -> Option<Value> {
-        self.props.get(name).cloned()
-    }
-
-    fn state(&mut self, name: &str) -> Option<Value> {
-        self.props.get(name).cloned()
-    }
-
-    fn event(&mut self, name: &str) -> Event {
-        if self.events.contains(&name) {
-            Event::View(Intent::new(&self.queue, &self.key, name))
-        } else {
-            Event::None
-        }
-    }
-
-    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
-        None
-    }
-
-    fn children(&mut self, _slot: &str) -> Vec<Element> {
-        Vec::new()
-    }
-
-    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
-        self.slots
-            .iter()
-            .filter(|(name, _)| *name == slot)
-            .map(|(_, child)| Some(child.kind.to_owned()))
-            .collect()
-    }
-
-    fn components(
-        &mut self,
-        slot: &str,
-        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
-    ) -> Result<usize, String> {
-        let mut count = 0;
-        for (name, child) in &mut self.slots {
-            if *name == slot {
-                read(child)?;
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-}
-
-fn text(value: &str) -> Value {
-    Value::Text(value.to_owned())
-}
-
-fn resource(id: &str) -> Value {
-    Value::Resource(id.to_owned())
-}
-
-fn harness<W: Widget + 'static>(root: W) -> FrameHarness {
-    FrameHarness::for_root(crate::State::new(), root, (900, 600), Theme::light())
-}
-
-fn fired(key: &str, event: &str, value: Option<Value>) -> Fired {
-    Fired {
-        key: key.to_owned(),
-        event: event.to_owned(),
-        value,
-    }
-}
 
 fn column(header: &str) -> Node {
     Node::new("DataTableColumn", header, &crate::Intents::default()).prop("header", text(header))
@@ -203,17 +89,13 @@ fn a_table_with_changed_rows_and_a_changed_selection_is_taken_in_place() {
     let props = crate::widget::DataTableProps::from_source(&mut node).unwrap();
     let mut table = crate::widget::DescribedTable::from_props("songs", props);
 
-    let mut next = table_node(&queue);
-    next.slots.push((
+    let mut next = table_node(&queue).holding(
         "rows",
         Node::new("DataTableRow", "doc/song:3", &queue)
             .prop("item", resource("doc/song:3"))
             .holding("cells", cell_node("Name", "third")),
-    ));
-    next.props.insert(
-        "selection".into(),
-        Value::List(vec![resource("doc/song:2")]),
     );
+    next = next.prop("selection", Value::List(vec![resource("doc/song:2")]));
     let props = crate::widget::DataTableProps::from_source(&mut next).unwrap();
     assert!(table.set_props(props), "changed rows are taken in place");
     assert_eq!(table.table().view_rows().len(), 3);
@@ -362,7 +244,7 @@ fn a_tree_view_reads_its_nodes_and_reports_the_resource_a_node_shows() {
             .prop("label", text(label))
             .prop("item", resource(item));
         if let Some(parent) = parent {
-            part.props.insert("parent".into(), resource(parent));
+            part = part.prop("parent", resource(parent));
         }
         part.on("select").on("activate")
     };
@@ -409,7 +291,7 @@ fn a_tree_view_takes_its_expansion_and_selection_in_place() {
             .prop("label", text(label))
             .prop("item", resource(item));
         if let Some(parent) = parent {
-            part.props.insert("parent".into(), resource(parent));
+            part = part.prop("parent", resource(parent));
         }
         part
     };
@@ -429,14 +311,9 @@ fn a_tree_view_takes_its_expansion_and_selection_in_place() {
             "nodes",
             node_part("src", Some("doc/dir:root"), "doc/dir:src"),
         );
-    next.props.insert(
-        "expanded".into(),
-        Value::List(vec![resource("doc/dir:root")]),
-    );
-    next.props.insert(
-        "selection".into(),
-        Value::List(vec![resource("doc/dir:src")]),
-    );
+    next = next
+        .prop("expanded", Value::List(vec![resource("doc/dir:root")]))
+        .prop("selection", Value::List(vec![resource("doc/dir:src")]));
     let props = crate::widget::TreeViewProps::from_source(&mut next).unwrap();
     assert!(tree.set_props(props), "the state is taken in place");
     assert!(tree.is_open("doc/dir:root"), "the given branch is open");

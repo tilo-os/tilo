@@ -285,18 +285,26 @@ fn a_reader_whose_state_a_view_holds_copies_only_the_touched_item() {
     }
 }
 
-#[test]
-fn a_held_state_stays_as_it_was_shown_while_the_reader_follows() {
-    let mut rng = Lcg(23);
-    let mut replica = Replica::<Notebook>::new();
-    for step in 0..20 {
-        random_action(&mut replica, &mut rng, step);
+/// A reader that follows `change`'s `steps`: every state it hands out keeps
+/// what it was shown, and after each change it reads what a fresh replica
+/// state is.
+fn held_states_follow_the_reader<R: Resource>(
+    seed: u64,
+    steps: std::ops::Range<usize>,
+    change: fn(&mut Replica<R>, &mut Lcg, usize),
+) where
+    R::State: PartialEq + std::fmt::Debug,
+{
+    let mut rng = Lcg(seed);
+    let mut replica = Replica::<R>::new();
+    for step in 0..steps.start {
+        change(&mut replica, &mut rng, step);
     }
-    let mut reader = Reader::<Notebook>::open(replica.doc_mut()).unwrap();
-    let mut held: Vec<(Rc<Notebook>, Notebook)> = Vec::new();
-    for step in 20..220 {
+    let mut reader = Reader::<R>::open(replica.doc_mut()).unwrap();
+    let mut held: Vec<(Rc<R::State>, R::State)> = Vec::new();
+    for step in steps.clone() {
         held.push((Rc::clone(reader.state()), replica.state().unwrap()));
-        random_action(&mut replica, &mut rng, step);
+        change(&mut replica, &mut rng, step);
         reader.sync(replica.doc()).unwrap();
         assert_eq!(
             reader.state().as_ref(),
@@ -305,8 +313,18 @@ fn a_held_state_stays_as_it_was_shown_while_the_reader_follows() {
         );
     }
     for (at, (shown, read)) in held.iter().enumerate() {
-        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 20);
+        assert_eq!(
+            shown.as_ref(),
+            read,
+            "state shown before step {}",
+            at + steps.start
+        );
     }
+}
+
+#[test]
+fn a_held_state_stays_as_it_was_shown_while_the_reader_follows() {
+    held_states_follow_the_reader(23, 20..220, random_action);
 }
 
 #[test]
@@ -643,26 +661,7 @@ fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_grid() {
 
 #[test]
 fn a_held_grid_stays_as_it_was_shown_while_the_reader_follows() {
-    let mut rng = Lcg(29);
-    let mut replica = Replica::<Sheet>::new();
-    for step in 0..60 {
-        random_sheet_action(&mut replica, &mut rng, step);
-    }
-    let mut reader = Reader::<Sheet>::open(replica.doc_mut()).unwrap();
-    let mut held: Vec<(Rc<Sheet>, Sheet)> = Vec::new();
-    for step in 60..360 {
-        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
-        random_sheet_action(&mut replica, &mut rng, step);
-        reader.sync(replica.doc()).unwrap();
-        assert_eq!(
-            reader.state().as_ref(),
-            &replica.state().unwrap(),
-            "after step {step}"
-        );
-    }
-    for (at, (shown, read)) in held.iter().enumerate() {
-        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 60);
-    }
+    held_states_follow_the_reader(29, 60..360, random_sheet_action);
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -832,26 +831,7 @@ fn a_reader_whose_state_a_view_holds_copies_only_the_touched_items() {
 
 #[test]
 fn held_items_and_sets_stay_as_they_were_shown_while_the_reader_follows() {
-    let mut rng = Lcg(31);
-    let mut replica = Replica::<Board>::new();
-    for step in 0..40 {
-        random_board_action(&mut replica, &mut rng, step);
-    }
-    let mut reader = Reader::<Board>::open(replica.doc_mut()).unwrap();
-    let mut held: Vec<(Rc<Board>, Board)> = Vec::new();
-    for step in 40..340 {
-        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
-        random_board_action(&mut replica, &mut rng, step);
-        reader.sync(replica.doc()).unwrap();
-        assert_eq!(
-            reader.state().as_ref(),
-            &replica.state().unwrap(),
-            "after step {step}"
-        );
-    }
-    for (at, (shown, read)) in held.iter().enumerate() {
-        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 40);
-    }
+    held_states_follow_the_reader(31, 40..340, random_board_action);
 }
 
 /// A cue at a place on a track: keyed by id, held in memory by place.
@@ -1140,26 +1120,7 @@ fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_map() {
 
 #[test]
 fn a_held_map_stays_as_it_was_shown_while_the_reader_follows() {
-    let mut rng = Lcg(37);
-    let mut replica = Replica::<Shelf>::new();
-    for step in 0..120 {
-        random_shelf_action(&mut replica, &mut rng, step);
-    }
-    let mut reader = Reader::<Shelf>::open(replica.doc_mut()).unwrap();
-    let mut held: Vec<(Rc<Shelf>, Shelf)> = Vec::new();
-    for step in 120..520 {
-        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
-        random_shelf_action(&mut replica, &mut rng, step);
-        reader.sync(replica.doc()).unwrap();
-        assert_eq!(
-            reader.state().as_ref(),
-            &replica.state().unwrap(),
-            "after step {step}"
-        );
-    }
-    for (at, (shown, read)) in held.iter().enumerate() {
-        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 120);
-    }
+    held_states_follow_the_reader(37, 120..520, random_shelf_action);
 }
 
 #[test]
@@ -1829,6 +1790,36 @@ fn an_item_pushed_onto_a_local_copy_is_compared_with_nothing() {
     assert_eq!(edits, edits_of(&apart(&before), &apart(&after)));
 }
 
+/// `seeds` local copies of a `cut`, each changed up to `changes` times by
+/// `change`: the edits of comparing them item by item are those of a whole
+/// comparison, and each list keeps its ids' positions.
+fn local_copy_edits_match_comparing_every_item(
+    change: fn(&mut Cut, &mut Lcg, usize),
+    seeds: u32,
+    changes: usize,
+) {
+    for seed in 0..seeds {
+        let mut rng = Lcg(u64::from(seed));
+        let mut before = cut(40);
+        if seed % 2 == 0 {
+            before.shots.settle();
+        }
+        let mut after = before.clone();
+        for step in 0..rng.next(changes) {
+            change(&mut after, &mut rng, step);
+        }
+        assert_eq!(
+            edits_of(&before, &after),
+            edits_of(&apart(&before), &apart(&after)),
+            "seed {seed}"
+        );
+        for shot in &after.shots {
+            let first = after.shots.iter().position(|other| other.id == shot.id);
+            assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
+        }
+    }
+}
+
 /// Change `cut`'s lists at random, items added among the changes: new ids,
 /// ids already held, items changed after they came, and changes a copy
 /// cannot follow item by item.
@@ -1874,26 +1865,7 @@ fn add_and_change(cut: &mut Cut, rng: &mut Lcg, step: usize) {
 
 #[test]
 fn the_edits_of_a_local_copy_items_were_added_to_match_comparing_every_item() {
-    for seed in 0..60 {
-        let mut rng = Lcg(seed);
-        let mut before = cut(40);
-        if seed % 2 == 0 {
-            before.shots.settle();
-        }
-        let mut after = before.clone();
-        for step in 0..rng.next(10) {
-            add_and_change(&mut after, &mut rng, step);
-        }
-        assert_eq!(
-            edits_of(&before, &after),
-            edits_of(&apart(&before), &apart(&after)),
-            "seed {seed}"
-        );
-        for shot in &after.shots {
-            let first = after.shots.iter().position(|other| other.id == shot.id);
-            assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
-        }
-    }
+    local_copy_edits_match_comparing_every_item(add_and_change, 60, 10);
 }
 
 #[test]
@@ -1991,26 +1963,7 @@ fn remove_and_change(cut: &mut Cut, rng: &mut Lcg, step: usize) {
 
 #[test]
 fn the_edits_of_a_local_copy_items_were_removed_from_match_comparing_every_item() {
-    for seed in 0..120 {
-        let mut rng = Lcg(seed);
-        let mut before = cut(40);
-        if seed % 2 == 0 {
-            before.shots.settle();
-        }
-        let mut after = before.clone();
-        for step in 0..rng.next(12) {
-            remove_and_change(&mut after, &mut rng, step);
-        }
-        assert_eq!(
-            edits_of(&before, &after),
-            edits_of(&apart(&before), &apart(&after)),
-            "seed {seed}"
-        );
-        for shot in &after.shots {
-            let first = after.shots.iter().position(|other| other.id == shot.id);
-            assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
-        }
-    }
+    local_copy_edits_match_comparing_every_item(remove_and_change, 120, 12);
 }
 
 #[test]

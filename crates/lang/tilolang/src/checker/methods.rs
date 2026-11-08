@@ -49,6 +49,7 @@ const LIST: &[&str] = &[
     "all",
     "find",
     "count",
+    "counted",
     "index_of",
     "contains",
     "sort_by",
@@ -65,8 +66,8 @@ const LIST: &[&str] = &[
 
 /// The methods a set has: the list's, less the ones that need an order or a nesting.
 const SET: &[&str] = &[
-    "len", "is_empty", "first", "last", "map", "filter", "any", "all", "find", "count", "index_of",
-    "contains", "sort_by", "count_by", "group", "take", "each", "single",
+    "len", "is_empty", "first", "last", "map", "filter", "any", "all", "find", "count", "counted",
+    "index_of", "contains", "sort_by", "count_by", "group", "take", "each", "single",
 ];
 
 /// The methods a collection's items have, as a view reads them: the list's, less `of`, which
@@ -84,6 +85,7 @@ const COLLECTION: &[&str] = &[
     "all",
     "find",
     "count",
+    "counted",
     "index_of",
     "contains",
     "sort_by",

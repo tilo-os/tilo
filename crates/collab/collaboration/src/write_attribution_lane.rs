@@ -3,11 +3,11 @@
 //! ([`runtime_collab::write_attribution`]). It sends no actor: the host takes
 //! that from its own custody of the invocation.
 use crate::invocation_scope::WriteAttributionReceipt;
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
-const MAX_ROUTES: usize = 16;
+use crate::lane::{Lane, Registration};
+
 const MAX_PENDING: usize = 4;
 
 struct Request {
@@ -16,23 +16,10 @@ struct Request {
     reply: std::sync::mpsc::SyncSender<Result<(), String>>,
 }
 
-struct Endpoint(mpsc::Sender<Request>);
+pub(crate) struct Endpoint(mpsc::Sender<Request>);
 
-pub(super) struct Registration {
-    _endpoint: Arc<Endpoint>,
-    worker: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for Registration {
-    fn drop(&mut self) {
-        self.worker.abort();
-    }
-}
-
-fn registry() -> &'static Mutex<BTreeMap<String, Weak<Endpoint>>> {
-    static REGISTRY: OnceLock<Mutex<BTreeMap<String, Weak<Endpoint>>>> = OnceLock::new();
-    REGISTRY.get_or_init(Mutex::default)
-}
+/// The routes this kind of lane serves.
+static LANE: Lane<Endpoint> = Lane::new("write attribution");
 
 /// Ask the host on `route` to name the agent behind `invocation` as the
 /// cause of the writes to `paths` this app is about to make.
@@ -46,12 +33,7 @@ pub fn enqueue(
 ) -> Result<WriteAttributionReceipt, String> {
     let command = runtime_collab::write_attribution::Request::new(paths);
     command.validate()?;
-    let endpoint = registry()
-        .lock()
-        .map_err(|_| "write attribution lane unavailable")?
-        .get(route)
-        .and_then(Weak::upgrade)
-        .ok_or("no write attribution lane on this route")?;
+    let endpoint = LANE.endpoint(route)?;
     let (reply, receive) = std::sync::mpsc::sync_channel(1);
     endpoint
         .0
@@ -64,22 +46,6 @@ pub fn enqueue(
     Ok(WriteAttributionReceipt::new(receive))
 }
 
-fn admit(route: String, endpoint: &Arc<Endpoint>) -> Result<(), String> {
-    let mut entries = registry()
-        .lock()
-        .map_err(|_| "write attribution lane unavailable")?;
-    entries.retain(|_, endpoint| endpoint.strong_count() != 0);
-    if route.is_empty()
-        || route.len() > 1024
-        || entries.contains_key(&route)
-        || entries.len() >= MAX_ROUTES
-    {
-        return Err("write attribution route is ambiguous or exceeds admission bounds".into());
-    }
-    entries.insert(route, Arc::downgrade(endpoint));
-    Ok(())
-}
-
 /// Serve the lane for `route` over `channel` while the registration lives.
 ///
 /// # Errors
@@ -87,10 +53,10 @@ fn admit(route: String, endpoint: &Arc<Endpoint>) -> Result<(), String> {
 pub(super) fn register(
     route: String,
     channel: runtime_collab::ChannelHandle,
-) -> Result<Registration, String> {
+) -> Result<Registration<Endpoint>, String> {
     let (send, mut receive) = mpsc::channel(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
-    admit(route, &endpoint)?;
+    LANE.admit(route, &endpoint)?;
     let worker = tokio::task::spawn_local(async move {
         while let Some(request) = receive.recv().await {
             let result = channel
@@ -100,10 +66,7 @@ pub(super) fn register(
             let _ = request.reply.try_send(result);
         }
     });
-    Ok(Registration {
-        _endpoint: endpoint,
-        worker,
-    })
+    Ok(Registration::new(endpoint, worker))
 }
 
 #[cfg(test)]
@@ -118,7 +81,7 @@ mod tests {
         assert!(enqueue("no-such-route", invocation, vec!["/var/workspace/a".into()]).is_err());
         let (send, receive) = mpsc::channel(MAX_PENDING);
         let endpoint = Arc::new(Endpoint(send));
-        admit("files-route".into(), &endpoint).unwrap();
+        LANE.admit("files-route".into(), &endpoint).unwrap();
         assert!(enqueue("files-route", invocation, vec!["relative".into()]).is_err());
         let receipt = enqueue("files-route", invocation, vec!["/var/workspace/a".into()]).unwrap();
         drop(receive);

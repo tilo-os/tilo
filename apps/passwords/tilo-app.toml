@@ -41,9 +41,9 @@ mode = "off"
 secrets = "via-host"
 
 [sandbox.services]
-tilo-fs = "optional@18"
+tilo-fs = "optional@19"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
-shell-ui = "optional@24"
+shell-ui = "optional@25"
 # The permission requests the messaging service makes for Messages.
 messaging = "optional@1"
 

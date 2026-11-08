@@ -1,23 +1,14 @@
 //! The session's agent door.
-//!
 //! `$XDG_RUNTIME_DIR/tilo-session/agent.sock` (0600, in the session's 0700
 //! directory) is where a program of this login — an AI agent in a terminal —
-//! reaches this desktop's actions as an *agent*, never as the person.
-//! Framing is newline-delimited MCP JSON-RPC, as
-//! [`tilo_runtime::session_door`] carries it into this session.
-//!
-//! Three things stand between a connection and the desktop.
-//!
-//! **The peer**: this session's own account, in this session's user and
-//! mount namespaces. Anything else is told why and let go.
-//!
-//! **The person** ([`Questions`]): nothing the client sends past its
-//! `initialize` is read until the person, on the sheet the question opens,
-//! allows it to work in the workspace in front of them as an agent.
-//! Answering admits it as an agent acting for them
-//! ([`tilo_actions::remote::Caller::delegated_to`]): what it does is that
-//! agent's, for the person, and no more than the person and the delegation a
-//! device gives its agents both allow. An agent is not a member; the person's
+//! reaches this desktop's actions as an *agent*, never as the person. Framing is
+//! newline-delimited MCP JSON-RPC ([`tilo_runtime::session_door`]).
+//! Three gates stand between a connection and the desktop: its peer must be this
+//! session's own account in this session's namespaces; the person must allow it, on
+//! the sheet the question opens, to work in the workspace in front of them
+//! ([`Questions`]); and the broker then serves it as
+//! `Caller::local_person(person).delegated_to(agent)`, so discovery and invocation
+//! pass the same gate as every other caller. An agent is not a member; the person's
 //! session is what ends it.
 //!
 //! **The broker**: an admitted connection is served as
@@ -1773,7 +1764,7 @@ fn catalogue(
             })
         })
         .collect();
-    let installed = match tilo_installed_apps::signed_surfaces_from_env() {
+    let installed = match app_catalogue::apps::signed_surfaces_from_env() {
         Ok(installed) => installed,
         Err(error) => {
             tracing::warn!(%error, "agent door: the installed apps' surfaces are not read");

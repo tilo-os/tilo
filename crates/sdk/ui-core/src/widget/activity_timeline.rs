@@ -1,19 +1,16 @@
 //! `ActivityTimeline` — the history pane, grouped.
 //!
-//! Renders history as scrolling **groups** ([`crate::widget::history_group`])
-//! that expand to individual [`HistoryEntry`] rows, because typing coalesces
-//! on a one-second debounce and an afternoon of work would otherwise be
-//! hundreds of rows reading `+3 -0 chars`. A group of one unnamed change
-//! renders as a plain row, so the flat list is the degenerate case rather
-//! than a second code path.
+//! Renders history as scrolling **groups** ([`crate::widget::history_group`]) that expand to
+//! individual [`HistoryEntry`] rows, because typing coalesces on a one-second debounce and an
+//! afternoon of work would otherwise be hundreds of rows reading `+3 -0 chars`. A group of one
+//! unnamed change renders as a plain row, so the flat list is the degenerate case rather than a
+//! second code path.
 //!
-//! Naming is retroactive (click `[Name]`, or shift-click a run to name it).
-//! The widget has no document, so naming only fires [`NameGroupCallback`];
-//! the host persists it through `tilo_ui::history_source::groups`.
-//!
-//! The filter chip strip's grouping is computed over the *unfiltered*
-//! history, so toggling a chip narrows the list without re-chunking it under
-//! the reader.
+//! Naming is retroactive (click `[Name]`, or shift-click a run to name it). The widget has no
+//! document, so naming only fires [`NameGroupCallback`]; the host persists it through
+//! `tilo_ui::history_source::groups`. The filter chip strip's grouping is computed over the
+//! *unfiltered* history, so toggling a chip narrows the list without re-chunking it under the
+//! reader.
 
 use crate::num::f64_of_usize;
 use crate::time::SystemTime;
@@ -74,12 +71,11 @@ const AUTO_EXPAND_BUDGET: usize = 14;
 /// Past this many top-level bands, nothing auto-expands regardless of budget.
 const DENSE_GROUP_COUNT: usize = 6;
 
-/// The pane paints on `surfaces.raised` (its own card, or the host's), where
-/// `Colors::lift` (base → raised) has nowhere left to go, so every tier
-/// inside it — hovered row, band backdrop, selected row — is **one ordered
-/// ramp** of translucent steps against that fill, polarity chosen the way
-/// `hairline_on` chooses it (HIG §9.3 caveat, §9.5). Ascending: hover /
-/// band rest, band hover, selected.
+/// The pane paints on `surfaces.raised` (its own card, or the host's), where `Colors::lift` has
+/// nowhere left to go, so every tier inside it — hovered row, band backdrop, selected row — is
+/// **one ordered ramp** of translucent steps against that fill, polarity chosen the way
+/// `hairline_on` chooses it (HIG §9.3 caveat, §9.5). Ascending: hover and band rest, band hover,
+/// selected.
 const WASH_HOVER: u8 = 26;
 const WASH_BAND_HOVER: u8 = 40;
 const WASH_SELECTED: u8 = 56;
@@ -111,12 +107,10 @@ fn author_face(author: &HistoryAuthor, colour: Color) -> crate::widget::avatar::
     }
 }
 
-/// Top edge that centres one line of `size`-px text on `center_y`. The line
-/// box the renderer paints is `line_height × size` — a quarter taller than
-/// the font size at the default 1.25 — and it carries the accessibility text
-/// scale, so centring on the *measured* height (never on `size / 2`) is what
-/// keeps a row's text on the same centre line as its avatar dot at every
-/// type scale.
+/// Top edge that centres one line of `size`-px text on `center_y`. The line box the renderer paints
+/// is `line_height × size`, a quarter taller than the font size at the default 1.25, and it carries
+/// the accessibility text scale, so centring on the *measured* height (never `size / 2`) keeps a
+/// row's text on its avatar dot's centre line at every type scale.
 fn text_top(tr: &mut TextRenderer, style: &TextStyle, center_y: f64) -> f64 {
     center_y - f64::from(tr.measure_style("Ag", None, style).1) / 2.0
 }
@@ -1525,12 +1519,10 @@ impl ActivityTimeline {
         ))
     }
 
-    /// The pointer target for a chip painted as `painted` inside `within`:
-    /// grown vertically to the minimum pointer target, centred on the paint
-    /// and clamped to its container, while the paint stays the designed
-    /// 20 / 28 px pill. Neighbouring chips only ever differ in x, so grown
-    /// targets never overlap each other. Hit-testing and accessibility read
-    /// this rect; painting reads the original.
+    /// The pointer target for a chip painted as `painted` inside `within`: grown vertically to the
+    /// minimum pointer target, centred on the paint and clamped to its container, while the paint
+    /// stays the designed 20 / 28 px pill. Neighbouring chips differ only in x, so grown targets
+    /// never overlap. Hit-testing and accessibility read this rect; painting reads the original.
     fn hit_rect_within(&self, painted: Rect, within: Rect) -> Rect {
         if painted.is_zero_area() {
             return Rect::ZERO;
@@ -6022,13 +6014,11 @@ mod group_tests {
             paint(&mut t);
         }
 
-        /// Row text is centred on the renderer's measured line box, which is
-        /// what keeps it on the avatar's centre line when type is scaled.
-        /// Every chip the timeline offers the pointer — the filter strip's
-        /// class chips, the author pill, a band header's Name/Restore — is at
-        /// least the minimum pointer target tall and no two claim the same
-        /// pixels, while the strip's chips stay inside their strip. The paint
-        /// is still the 28 / 20 px pill; only the target grew.
+        /// Row text is centred on the renderer's measured line box, which keeps it on the avatar's
+        /// centre line when type is scaled. Every chip the timeline offers the pointer — the filter
+        /// strip's class chips, the author pill, a band header's Name/Restore — is at least the
+        /// minimum pointer target tall and no two claim the same pixels, while the strip's chips
+        /// stay inside their strip.
         fn chip_targets_meet_the_minimum_pointer_target_and_never_overlap() {
             let mut t = ActivityTimeline::with_entries(typing_run(20))
                 .on_revert(|_| {})

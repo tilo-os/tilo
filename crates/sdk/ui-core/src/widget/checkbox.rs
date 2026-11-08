@@ -4,6 +4,7 @@ use super::bool_control::{
 use crate::text_render::TextRenderer;
 use crate::text_render::TextStyle;
 use crate::theme::Theme;
+use crate::widget::Interaction;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -26,15 +27,6 @@ pub(crate) const BOX_EDGE: f64 = 18.0;
 /// its 32 px target empty on that side.
 const LABEL_GAP: f32 = 10.0;
 
-/// Interaction state for an immediate-mode checkbox face. Canvas apps keep
-/// their own hit-testing while sharing the retained checkbox's visual states.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct CheckboxInteract {
-    pub hovered: bool,
-    pub focused: bool,
-    pub disabled: bool,
-}
-
 /// Stateless checkbox presentation for hand-laid-out canvases.
 ///
 /// [`Checkbox`] remains the right choice when the value is bound directly to
@@ -44,7 +36,7 @@ pub struct CheckboxFace {
     rect: Rect,
     checked: bool,
     indeterminate: bool,
-    interact: CheckboxInteract,
+    interact: Interaction,
     /// A radio: a circle with a dot, one of a set.
     radio: bool,
     /// Where its [`CheckMotion`] is this frame; at rest on the value when
@@ -209,7 +201,7 @@ impl CheckboxFace {
             rect,
             checked,
             indeterminate: false,
-            interact: CheckboxInteract::default(),
+            interact: Interaction::default(),
             radio: false,
             pose: None,
             ring: None,
@@ -475,11 +467,6 @@ impl Checkbox {
         self.indeterminate
     }
 
-    /// Show a mixed mark, or stop; the value does not change.
-    pub fn set_indeterminate(&mut self, indeterminate: bool) {
-        self.indeterminate = indeterminate;
-    }
-
     /// Paint a checkbox without taking ownership of its state or events.
     ///
     /// The box is always square: the largest square centred in `face.rect`,
@@ -493,13 +480,7 @@ impl Checkbox {
         };
         let shape = RoundedRect::from_rect(rect, radius);
         if face.interact.disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &shape,
-            );
+            crate::widget::paint_disabled(scene, transform, &shape);
         }
 
         // HIG §9.5: unchecked is the raised control surface with an edge

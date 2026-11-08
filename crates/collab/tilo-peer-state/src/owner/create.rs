@@ -21,7 +21,9 @@ impl NativeWorkspaceOwner {
     /// device, and its governance admits any other device the owner invites.
     /// `host_hint` is where this device's host keeps the workspace's records,
     /// signed by `device` itself: a workspace founded here is reached at its
-    /// own host, and the device that can act as its own host says where.
+    /// own host, and the device that can act as its own host says where. A
+    /// device with no address of its own founds the workspace without one,
+    /// and names it in the record once it has one ([`Self::name_host`]).
     /// Nothing of it is its founder's private state: it is the workspace's,
     /// published like every other change this device makes.
     ///
@@ -36,7 +38,7 @@ impl NativeWorkspaceOwner {
         name: &str,
         device: &DeviceCert,
         key: &SigningKey,
-        host_hint: TransportHint,
+        host_hint: Option<TransportHint>,
         now: SystemTime,
     ) -> Result<WorkspaceId, String> {
         let name = valid_workspace_name(name)?;
@@ -57,7 +59,9 @@ impl NativeWorkspaceOwner {
         let workspace = id.to_string();
         let workspace_id =
             crate::join::room_workspace_id(&workspace).map_err(|error| error.to_string())?;
-        crate::owner::validate_host_hint(&host_hint, &workspace, workspace_id, device)?;
+        if let Some(host_hint) = &host_hint {
+            crate::owner::validate_host_hint(host_hint, &workspace, workspace_id, device)?;
+        }
         let roster = vec![device.clone()];
         let mut peer = StatePeer::new(
             &workspace,
@@ -99,7 +103,7 @@ impl NativeWorkspaceOwner {
                 // own host is reached is what `host_hint` says.
                 enrollment: None,
                 vouched: None,
-                host_hint: Some(host_hint),
+                host_hint,
                 peer: peer.durable()?,
                 generation: 1,
                 continuity: 0,

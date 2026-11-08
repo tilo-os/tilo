@@ -1,9 +1,8 @@
 //! Policy and convergent state for one person's certified Tilo devices.
-//!
-//! Tilo does not equate proximity, Bluetooth pairing, or a shared network with
-//! trust. The private same-identity lane authenticates and encrypts peers; this
-//! module applies one policy model to media, clipboard, roaming preferences,
-//! secret references and cross-screen input.
+//! Tilo does not equate proximity, Bluetooth pairing or a shared network with trust.
+//! The private same-identity lane authenticates and encrypts peers; this module
+//! applies one policy model to media, clipboard, roaming preferences, secret
+//! references and cross-screen input.
 
 pub mod clock;
 mod i18n {
@@ -12,13 +11,9 @@ mod i18n {
 pub mod link;
 pub mod notification;
 pub mod random;
-pub mod realtime_session;
-pub mod remote_capture;
 pub mod runtime;
 pub mod secrets;
-pub mod spatial_calibration;
 pub mod speaker_group;
-pub mod tethering;
 pub mod unlock;
 pub mod wake;
 
@@ -290,17 +285,6 @@ impl MediaSession {
     }
 }
 
-/// Atomic stop-here/start-there instruction for the media runtime.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MediaHandoff {
-    pub session_id: String,
-    pub source: DeviceId,
-    pub target: DeviceId,
-    pub position_ms: u64,
-    pub resume_playing: bool,
-    pub pause_source: bool,
-}
-
 /// A locator usable on another Tilo device. Workspace paths hydrate through
 /// Files; stream URLs travel only in an ephemeral exact-target action and are
 /// never persisted in the fabric snapshot.
@@ -432,7 +416,7 @@ pub enum PersonalFabricAction {
         accepted: bool,
     },
     /// Durable object offer. The source path never leaves its device; the ID
-    /// addresses an immutable private spool object. A `MediaHandoff` offer is
+    /// addresses an immutable private spool object. A played-on transfer is
     /// admitted by the `ResumeMedia` that named its ID, never by Files.
     NearbyTransferOffer {
         transfer_id: [u8; 16],
@@ -477,23 +461,18 @@ pub enum PersonalFabricAction {
         id: crate::notification::ContinuityNotificationId,
         action_key: String,
     },
-    /// Metadata-only realtime handoff offer. Capture grants, media handles,
-    /// and join URLs are deliberately not representable on this wire.
-    RealtimeOffer {
-        offer: crate::realtime_session::RealtimeFabricOffer,
-    },
-    RealtimeAccept {
-        session_id: crate::realtime_session::RealtimeFabricSessionId,
-    },
-    RealtimeMediaReady {
-        session_id: crate::realtime_session::RealtimeFabricSessionId,
-    },
-    RealtimeStopSource {
-        session_id: crate::realtime_session::RealtimeFabricSessionId,
-    },
-    RealtimeCancel {
-        session_id: crate::realtime_session::RealtimeFabricSessionId,
-    },
+    /// Retired: a metadata-only realtime handoff offer. No build produced
+    /// one; a call's continuity is the live plane's, so the variant stays only
+    /// so every later Postcard discriminant keeps its value.
+    RetiredRealtimeOffer,
+    /// Retired with [`Self::RetiredRealtimeOffer`].
+    RetiredRealtimeAccept,
+    /// Retired with [`Self::RetiredRealtimeOffer`].
+    RetiredRealtimeMediaReady,
+    /// Retired with [`Self::RetiredRealtimeOffer`].
+    RetiredRealtimeStopSource,
+    /// Retired with [`Self::RetiredRealtimeOffer`].
+    RetiredRealtimeCancel,
     /// Request one fixed-profile virtual gamepad on the exact target. The
     /// payload contains semantic controls only: descriptors, HID reports,
     /// serials, and arbitrary evdev codes are not representable.
@@ -564,27 +543,20 @@ pub enum PersonalFabricAction {
     RemoteAudioCancel {
         session_id: [u8; 16],
     },
-    /// Bounded semantic negotiation for a camera, microphone, or document
-    /// scanner. PipeWire/V4L2 identities and local app approvals never appear
-    /// in this payload.
-    RemoteCaptureSignal {
-        signal: crate::remote_capture::RemoteCaptureSignal,
-    },
-    /// One bounded media or scanner chunk. The runtime validates it again
-    /// against the exact authenticated peer/session/grant/profile binding.
-    RemoteCaptureChunk {
-        chunk: crate::remote_capture::RemoteCaptureChunk,
-    },
-    /// Shell-owned liveness and RTT probe. The random nonce is bound to the
-    /// exact authenticated peer and is never exposed through an app contract.
-    DeviceHealthProbe {
-        nonce: [u8; 16],
-    },
-    /// Power is diagnostic routing context, never authorization. Latency is
-    /// deliberately absent because the probing compositor measures it.
-    DeviceHealthReport {
-        report: crate::spatial_calibration::DeviceHealthReport,
-    },
+    /// Retired: negotiation for using another of the person's devices as a
+    /// camera, microphone or scanner. No build produced one, and there is no
+    /// capture path to hand it to; the variant stays only so every later
+    /// Postcard discriminant keeps its value.
+    RetiredRemoteCaptureSignal,
+    /// Retired with [`Self::RetiredRemoteCaptureSignal`].
+    RetiredRemoteCaptureChunk,
+    /// Retired: a liveness and RTT probe between one person's devices. No
+    /// build produced one and nothing measured what it would have reported;
+    /// the variant stays only so every later Postcard discriminant keeps its
+    /// value.
+    RetiredDeviceHealthProbe,
+    /// Retired with [`Self::RetiredDeviceHealthProbe`].
+    RetiredDeviceHealthReport,
     /// Fabric clock probe, sent only while something on the prober holds
     /// this peer's clock in sync. `sent_us` is the prober's
     /// `CLOCK_MONOTONIC` send time in microseconds, echoed back so the
@@ -598,11 +570,12 @@ pub enum PersonalFabricAction {
     FabricClockReport {
         report: crate::clock::ClockReport,
     },
-    /// Consent-bound request, grant, sealed credential, or teardown for an
-    /// exact certified phone. Plaintext Wi-Fi secrets are not representable.
-    Tethering {
-        signal: crate::tethering::TetheringSignal,
-    },
+    /// Retired: consent-bound request, grant, sealed credential or teardown
+    /// for an exact certified phone. Sharing this device's connection is the
+    /// connectivity service's own `tethering` resource, so no build produced
+    /// one of these; the variant stays only so every later Postcard
+    /// discriminant keeps its value.
+    RetiredTethering,
     /// Abort one exact authenticated Bluetooth transaction. Both peers roll
     /// back only the accessory bound to this request; no inventory or bond
     /// material is disclosed.
@@ -678,11 +651,10 @@ pub enum PersonalFabricAction {
     SpeakerIdentify {
         output: crate::speaker_group::EndpointSelector,
     },
-    /// The group's leader, calibrating, asks a member to play the
-    /// measurement sweep so its first sample leaves the speaker at `start_ns`
-    /// on the member's own `CLOCK_MONOTONIC`. The leader converts its
-    /// schedule through its estimate of the member's clock, and refuses to
-    /// calibrate without one.
+    /// The group's leader, calibrating, asks a member to play the measurement sweep so
+    /// its first sample leaves the speaker at `start_ns` on the member's own
+    /// `CLOCK_MONOTONIC`. The leader converts its schedule through its estimate of the
+    /// member's clock, and refuses to calibrate without one.
     SpeakerSweep {
         group: crate::speaker_group::SpeakerGroupId,
         start_ns: i64,
@@ -701,11 +673,9 @@ pub enum PersonalFabricAction {
         group: crate::speaker_group::SpeakerGroupId,
         accepted: bool,
     },
-    /// The calibrating leader asks a consenting device to record around one
-    /// member's sweep, whose first sample leaves the speaker at `start_ns` on
-    /// the listening device's own `CLOCK_MONOTONIC`. The leader converts its
-    /// schedule through the fabric clock estimate it holds of that device, so
-    /// the listener needs no estimate of its own.
+    /// The calibrating leader asks a consenting device to record around one member's
+    /// sweep, whose first sample leaves the speaker at `start_ns` on the listening
+    /// device's own clock. The listener needs no estimate of its own.
     SpeakerListen {
         group: crate::speaker_group::SpeakerGroupId,
         sweep: [u8; 16],
@@ -719,12 +689,11 @@ pub enum PersonalFabricAction {
         sweep: [u8; 16],
         hearing: crate::speaker_group::SpeakerHearing,
     },
-    /// The legacy app windows this device shows right now, each at the size
-    /// it shows it. The device running a listed window streams that one
-    /// window here, and stops once a refresh no longer lists it or the
-    /// refreshes stop. An empty list ends every stream to this device.
-    /// `decode` is what this device's hardware decoders take, so the host
-    /// encodes nothing they would hand back to the CPU.
+    /// The legacy app windows this device shows right now, each at the size it shows it.
+    /// The device running a listed window streams that one window here and stops once a
+    /// refresh no longer lists it or the refreshes stop. `decode` is what this device's
+    /// hardware decoders take, so the host encodes nothing they would hand back to the
+    /// CPU.
     WindowViews {
         views: Vec<WindowView>,
         decode: Vec<HardwareDecode>,
@@ -851,12 +820,9 @@ pub struct PersonalFabricActionEnvelope {
 }
 
 impl PersonalFabricActionEnvelope {
-    /// Validate transport-bound authorship, target, freshness, and payload.
-    ///
+    /// Validate transport-bound authorship, target, freshness and payload.
     /// # Errors
-    ///
-    /// Returns an error for a replay-shaped, misaddressed, oversized, or
-    /// semantically invalid action.
+    /// A replay-shaped, misaddressed, oversized or semantically invalid action.
     #[allow(
         clippy::too_many_lines,
         reason = "all authenticated action payload rules stay in one exhaustive validator so a new wire variant cannot bypass review"
@@ -1102,20 +1068,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::RemoteCaptureSignal { signal } => {
-                if !signal.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::RemoteCaptureChunk { chunk } => {
-                use crate::remote_capture::RemoteCaptureKind;
-                if !chunk.valid_for(RemoteCaptureKind::Camera)
-                    && !chunk.valid_for(RemoteCaptureKind::Microphone)
-                    && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::ShowTab { tab } => {
                 if *tab == 0 {
                     return Err(FabricError::InvalidAction);
@@ -1127,8 +1079,7 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::DeviceHealthProbe { nonce }
-            | PersonalFabricAction::WakeProbe { nonce }
+            PersonalFabricAction::WakeProbe { nonce }
             | PersonalFabricAction::WakeProbeReply { nonce }
             | PersonalFabricAction::FabricClockProbe { nonce, .. }
             | PersonalFabricAction::InputLeaseRevoked { nonce } => {
@@ -1136,20 +1087,10 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::DeviceHealthReport { report } => {
-                if !report.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::FabricClockReport { report } => {
                 if !report.valid() {
                     return Err(FabricError::InvalidAction);
                 }
-            }
-            PersonalFabricAction::Tethering { signal } => {
-                signal
-                    .validate_transport(transport_source, local_target, now_unix_ms)
-                    .map_err(|_| FabricError::InvalidAction)?;
             }
             PersonalFabricAction::BluetoothHandoffPrepare { address, name } => {
                 if !os_actions::bluez::valid_address(address)
@@ -1288,18 +1229,17 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::RealtimeOffer { offer } => {
-                if !offer.valid_at(now_unix_ms) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::RealtimeAccept { session_id }
-            | PersonalFabricAction::RealtimeMediaReady { session_id }
-            | PersonalFabricAction::RealtimeStopSource { session_id }
-            | PersonalFabricAction::RealtimeCancel { session_id } => {
-                if !session_id.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
+            PersonalFabricAction::RetiredRealtimeOffer
+            | PersonalFabricAction::RetiredRealtimeAccept
+            | PersonalFabricAction::RetiredRealtimeMediaReady
+            | PersonalFabricAction::RetiredRealtimeStopSource
+            | PersonalFabricAction::RetiredRealtimeCancel
+            | PersonalFabricAction::RetiredRemoteCaptureSignal
+            | PersonalFabricAction::RetiredRemoteCaptureChunk
+            | PersonalFabricAction::RetiredDeviceHealthProbe
+            | PersonalFabricAction::RetiredDeviceHealthReport
+            | PersonalFabricAction::RetiredTethering => {
+                return Err(FabricError::InvalidAction);
             }
             PersonalFabricAction::GamepadForwardRequest {
                 forwarding_id,
@@ -1453,12 +1393,10 @@ pub struct ClipboardEntry {
 }
 
 impl ClipboardEntry {
-    /// Construct a content-addressed item after the caller has classified it
-    /// as safe to leave the originating device.
-    ///
+    /// Construct a content-addressed item the caller has classified as safe to leave the
+    /// originating device.
     /// # Errors
-    ///
-    /// Returns an error for an oversized/invalid payload or foreign stamp.
+    /// An oversized or invalid payload, or a foreign stamp.
     pub fn shareable(
         payload: ClipboardPayload,
         origin: DeviceId,
@@ -1519,11 +1457,9 @@ impl ClipboardHistory {
         self.entries.iter()
     }
 
-    /// Add or promote an item while enforcing the bounded history policy.
-    ///
+    /// Add or promote an item, enforcing the bounded history policy.
     /// # Errors
-    ///
-    /// Returns an error for an invalid item or when every history slot is pinned.
+    /// An invalid item, or every history slot pinned.
     pub fn push(&mut self, entry: ClipboardEntry) -> Result<bool, FabricError> {
         entry.payload.validate()?;
         if let Some(index) = self.entries.iter().position(|item| item.id == entry.id) {
@@ -1651,53 +1587,6 @@ pub struct DisplayPlacement {
 }
 
 impl DisplayPlacement {
-    /// Only the owner may accept a request over its exact published revision.
-    pub fn accepts_move(&self, expected: &FabricStamp, rect: DisplayRect) -> bool {
-        expected == &self.stamp
-            && !self.outputs.is_empty()
-            && rect.width == self.rect.width
-            && rect.height == self.rect.height
-            && valid_display_rect(&rect)
-            && self.outputs.iter().all(|output| {
-                rect.x
-                    .checked_add(output.rect.x)
-                    .zip(rect.y.checked_add(output.rect.y))
-                    .is_some_and(|(x, y)| {
-                        valid_display_rect(&DisplayRect {
-                            x,
-                            y,
-                            ..output.rect
-                        })
-                    })
-            })
-    }
-
-    /// Shared plane rectangle paired with the owner's seat rectangle.
-    fn screens(&self) -> Vec<(DisplayRect, DisplayRect)> {
-        if self.outputs.is_empty() {
-            return vec![(
-                self.rect,
-                DisplayRect {
-                    x: 0,
-                    y: 0,
-                    ..self.rect
-                },
-            )];
-        }
-        self.outputs
-            .iter()
-            .filter_map(|output| {
-                let global = DisplayRect {
-                    x: self.rect.x.checked_add(output.rect.x)?,
-                    y: self.rect.y.checked_add(output.rect.y)?,
-                    ..output.rect
-                };
-                global.logical_placement()?;
-                Some((global, output.rect))
-            })
-            .collect()
-    }
-
     fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if &self.device != owner
             || &self.stamp.device != owner
@@ -1725,14 +1614,6 @@ impl DisplayPlacement {
         }
         Ok(())
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EdgeTransition {
-    pub from: DeviceId,
-    pub to: DeviceId,
-    pub target_x: i32,
-    pub target_y: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1820,10 +1701,8 @@ impl InputLease {
     }
 
     /// Check the target-issued lease at the moment an input event is routed.
-    ///
     /// # Errors
-    ///
-    /// Returns an error when the lease shape is invalid or it has expired.
+    /// An invalid lease shape, or one that has expired.
     pub fn validate_at(&self, now_unix_ms: u64) -> Result<(), FabricError> {
         if self.controller == self.target
             || self.expires_unix_ms <= self.issued_unix_ms
@@ -1837,30 +1716,6 @@ impl InputLease {
         }
         Ok(())
     }
-}
-
-/// The existing target-issued spatial-input gate, shared by the runtime and
-/// native transport fixtures. Same-user identity is never a substitute for a
-/// currently retained lease with the exact controller, target and nonce.
-pub fn permits_spatial_input(
-    lease: Option<&InputLease>,
-    controller: &DeviceId,
-    target: &DeviceId,
-    input: ([u8; 16], FabricInputEvent),
-    now_unix_ms: u64,
-) -> bool {
-    let (nonce, event) = input;
-    lease.is_some_and(|lease| {
-        lease.nonce == nonce
-            && lease.binds(controller, target)
-            && lease.validate_at(now_unix_ms).is_ok()
-            && match event {
-                FabricInputEvent::PointerMotion { .. }
-                | FabricInputEvent::PointerButton { .. }
-                | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
-                FabricInputEvent::Key { .. } => lease.allow_keyboard,
-            }
-    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1880,11 +1735,9 @@ pub struct DeviceFabricSnapshot {
 }
 
 impl DeviceFabricSnapshot {
-    /// Validate authorship, size, uniqueness, and feature-specific invariants.
-    ///
+    /// Validate authorship, size, uniqueness and feature-specific invariants.
     /// # Errors
-    ///
-    /// Returns the first violated fabric invariant.
+    /// The first violated fabric invariant.
     pub fn validate(&self) -> Result<(), FabricError> {
         if self.schema_version != FABRIC_SCHEMA_VERSION {
             return Err(FabricError::UnsupportedSchema(self.schema_version));
@@ -1931,44 +1784,6 @@ pub struct DeviceFabric {
 }
 
 impl DeviceFabric {
-    /// Use actual native screen interiors, including legacy aggregate fallbacks.
-    pub fn display_destination_clear(&self, target: &DeviceId, rect: DisplayRect) -> bool {
-        let Some(display) = self
-            .snapshots
-            .get(target)
-            .and_then(|snapshot| snapshot.display.as_ref())
-        else {
-            return false;
-        };
-        if !display.accepts_move(&display.stamp, rect) {
-            return false;
-        }
-        let moved = DisplayPlacement {
-            rect,
-            ..display.clone()
-        };
-        let screens = moved.screens();
-        let others = self
-            .snapshots
-            .iter()
-            .filter(|(device, snapshot)| *device != target && snapshot.presence.online)
-            .filter_map(|(_, snapshot)| snapshot.display.as_ref())
-            .flat_map(DisplayPlacement::screens)
-            .map(|(screen, _)| screen)
-            .collect::<Vec<_>>();
-        !others
-            .iter()
-            .any(|other| screens.iter().any(|(screen, _)| screen.intersects(*other)))
-            && others.iter().any(|other| {
-                screens.iter().any(|(screen, _)| {
-                    screen
-                        .logical_placement()
-                        .zip(other.logical_placement())
-                        .is_some_and(|(screen, other)| screen.touches(other))
-                })
-            })
-    }
-
     pub fn snapshots(&self) -> &BTreeMap<DeviceId, DeviceFabricSnapshot> {
         &self.snapshots
     }
@@ -2011,10 +1826,8 @@ impl DeviceFabric {
     }
 
     /// Encode a validated, bounded aggregate for durable local storage.
-    ///
     /// # Errors
-    ///
-    /// Returns an error when retained state is invalid or exceeds its wire bound.
+    /// Retained state is invalid or exceeds its wire bound.
     pub fn encode_checkpoint(&self) -> Result<Vec<u8>, FabricError> {
         if self.snapshots.len() > MAX_DEVICES {
             return Err(FabricError::TooManyDevices);
@@ -2033,10 +1846,8 @@ impl DeviceFabric {
     }
 
     /// Decode and validate an aggregate before it reaches live fabric state.
-    ///
     /// # Errors
-    ///
-    /// Returns an error for malformed, oversized, or invariant-violating input.
+    /// Malformed, oversized or invariant-violating input.
     pub fn decode_checkpoint(bytes: &[u8]) -> Result<Self, FabricError> {
         if bytes.len() > MAX_FABRIC_CHECKPOINT_BYTES {
             return Err(FabricError::CheckpointTooLarge);
@@ -2053,11 +1864,9 @@ impl DeviceFabric {
     }
 
     /// Merge one device's newest self-authored snapshot.
-    ///
     /// # Errors
-    ///
-    /// Returns an error for invalid state, capacity exhaustion, or an equal
-    /// revision carrying conflicting content.
+    /// Invalid state, capacity exhaustion, or an equal revision with conflicting
+    /// content.
     pub fn upsert(&mut self, snapshot: DeviceFabricSnapshot) -> Result<bool, FabricError> {
         snapshot.validate()?;
         if !self.snapshots.contains_key(&snapshot.owner) && self.snapshots.len() >= MAX_DEVICES {
@@ -2275,140 +2084,6 @@ impl DeviceFabric {
             .filter(|device| device.online)
     }
 
-    /// Prepare an atomic output transfer for a logical media session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session/device is unknown or the online
-    /// target lacks the required media capabilities.
-    pub fn handoff_media(
-        &self,
-        session_id: &str,
-        target: &DeviceId,
-    ) -> Result<MediaHandoff, FabricError> {
-        let (source, session) = self
-            .snapshots
-            .iter()
-            .flat_map(|(device, snapshot)| snapshot.media.iter().map(move |item| (device, item)))
-            .filter(|(_, item)| item.id == session_id)
-            .max_by(|(_, a), (_, b)| a.stamp.cmp(&b.stamp))
-            .ok_or(FabricError::UnknownMediaSession)?;
-        let destination = self
-            .snapshots
-            .get(target)
-            .ok_or(FabricError::UnknownDevice)?;
-        let caps = destination.presence.capabilities;
-        if !destination.presence.online
-            || !caps.audio_output
-            || (session.has_video && !caps.video_output)
-        {
-            return Err(FabricError::IncompatibleMediaTarget);
-        }
-        Ok(MediaHandoff {
-            session_id: session.id.clone(),
-            source: source.clone(),
-            target: target.clone(),
-            position_ms: session.position_ms,
-            resume_playing: session.playing,
-            pause_source: source != target,
-        })
-    }
-
-    pub fn cross_edge(
-        &self,
-        from: &DeviceId,
-        edge: DisplayEdge,
-        local_x: i32,
-        local_y: i32,
-    ) -> Option<EdgeTransition> {
-        let snapshot = self.snapshots.get(from)?;
-        if !snapshot.presence.online {
-            return None;
-        }
-        let display = snapshot.display.as_ref()?;
-        display.rect.logical_placement()?;
-        let screens = display.screens();
-        let (left, top, right, bottom) = seat_bounds(&screens)?;
-        let x = local_x.clamp(left, right.checked_sub(1)?);
-        let y = local_y.clamp(top, bottom.checked_sub(1)?);
-        let (source, seat) = screens
-            .into_iter()
-            .find(|(_, seat)| seat.contains_x(x) && seat.contains_y(y))?;
-        let source_placement = source.logical_placement()?;
-        let global_x = source.x.checked_add(x.checked_sub(seat.x)?)?;
-        let global_y = source.y.checked_add(y.checked_sub(seat.y)?)?;
-        self.snapshots
-            .values()
-            .filter(|peer| {
-                peer.owner != *from
-                    && peer.presence.online
-                    && peer.presence.capabilities.display
-                    && peer.presence.capabilities.pointer
-            })
-            .filter_map(|peer| Some((&peer.owner, peer.display.as_ref()?)))
-            .flat_map(|(device, display)| {
-                display
-                    .screens()
-                    .into_iter()
-                    .map(move |(rect, seat)| (device, rect, seat))
-            })
-            .filter(|(_, target, _)| {
-                target
-                    .logical_placement()
-                    .is_some_and(|rect| rect.touches(source_placement))
-            })
-            .filter(|(_, target, _)| match edge {
-                DisplayEdge::Left => {
-                    target.x.saturating_add_unsigned(target.width) == source.x
-                        && target.contains_y(global_y)
-                }
-                DisplayEdge::Right => {
-                    target.x == source.x.saturating_add_unsigned(source.width)
-                        && target.contains_y(global_y)
-                }
-                DisplayEdge::Top => {
-                    target.y.saturating_add_unsigned(target.height) == source.y
-                        && target.contains_x(global_x)
-                }
-                DisplayEdge::Bottom => {
-                    target.y == source.y.saturating_add_unsigned(source.height)
-                        && target.contains_x(global_x)
-                }
-            })
-            .min_by_key(|(device, target, _)| ((*device).clone(), target.x, target.y))
-            .map(|(device, target, seat)| EdgeTransition {
-                from: from.clone(),
-                to: device.clone(),
-                target_x: seat.x.saturating_add(match edge {
-                    DisplayEdge::Left => i32::try_from(target.width)
-                        .unwrap_or(i32::MAX)
-                        .saturating_sub(1),
-                    DisplayEdge::Right => 0,
-                    DisplayEdge::Top | DisplayEdge::Bottom => global_x.saturating_sub(target.x),
-                }),
-                target_y: seat.y.saturating_add(match edge {
-                    DisplayEdge::Top => i32::try_from(target.height)
-                        .unwrap_or(i32::MAX)
-                        .saturating_sub(1),
-                    DisplayEdge::Bottom => 0,
-                    DisplayEdge::Left | DisplayEdge::Right => global_y.saturating_sub(target.y),
-                }),
-            })
-    }
-
-    pub fn cross_right_edge(&self, from: &DeviceId, local_y: i32) -> Option<EdgeTransition> {
-        let right = self
-            .snapshots
-            .get(from)?
-            .display
-            .as_ref()?
-            .screens()
-            .iter()
-            .filter_map(|(_, seat)| seat.x.checked_add(i32::try_from(seat.width).ok()?))
-            .max()?;
-        self.cross_edge(from, DisplayEdge::Right, right.checked_sub(1)?, local_y)
-    }
-
     /// Resolve roaming keys from authenticated authored records. Display
     /// arrangements merge per display; other keys keep their newest record.
     /// Keeping the stamp and author lets runtimes distinguish a remote apply
@@ -2556,17 +2231,14 @@ impl DeviceFabric {
             .collect()
     }
 
-    /// Admission rules for a group its leader is about to publish: every
-    /// member is one of this person's certified devices, can join speaker
-    /// groups (the leader's own outputs always can), and offers the named
-    /// output.
-    ///
+    /// Admission rules for a group its leader is about to publish: every member is one of
+    /// this person's certified devices, can join speaker groups (the leader's own outputs
+    /// always can), and offers the named output.
     /// # Errors
-    ///
     /// [`FabricError::InvalidSpeakerGroup`] for a structural problem,
     /// [`FabricError::UnknownDevice`] for a device outside the fabric, and
-    /// [`FabricError::IneligibleSpeakerMember`] for a device that cannot
-    /// join or does not offer that output.
+    /// [`FabricError::IneligibleSpeakerMember`] for a device that cannot join or does not
+    /// offer that output.
     pub fn admit_speaker_group(
         &self,
         group: &crate::speaker_group::SpeakerGroup,
@@ -2601,20 +2273,6 @@ fn valid_mime(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
-}
-
-fn seat_bounds(screens: &[(DisplayRect, DisplayRect)]) -> Option<(i32, i32, i32, i32)> {
-    let left = screens.iter().map(|(_, seat)| seat.x).min()?;
-    let top = screens.iter().map(|(_, seat)| seat.y).min()?;
-    let right = screens
-        .iter()
-        .filter_map(|(_, seat)| seat.x.checked_add(i32::try_from(seat.width).ok()?))
-        .max()?;
-    let bottom = screens
-        .iter()
-        .filter_map(|(_, seat)| seat.y.checked_add(i32::try_from(seat.height).ok()?))
-        .max()?;
-    Some((left, top, right, bottom))
 }
 
 fn valid_display_rect(rect: &DisplayRect) -> bool {
@@ -2754,12 +2412,8 @@ pub enum FabricError {
     TooManyDevices,
     #[error("same device revision carried conflicting state")]
     ConflictingRevision,
-    #[error("unknown media session")]
-    UnknownMediaSession,
     #[error("unknown target device")]
     UnknownDevice,
-    #[error("target device cannot play this media")]
-    IncompatibleMediaTarget,
     #[error("invalid personal-fabric action")]
     InvalidAction,
     #[error("personal-fabric action exceeds its wire bound")]
@@ -3208,77 +2862,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn media_handoff_and_media_actions_are_capability_and_locator_checked() {
-        fn media_handoff_preserves_playhead_and_pauses_source() {
-            let caps = FabricCapabilities {
-                display: true,
-                pointer: true,
-                audio_output: true,
-                video_output: true,
-                ..FabricCapabilities::default()
-            };
-            let mut laptop = snapshot("laptop", 1, 0, caps);
-            laptop.media.push(MediaSession {
-                id: "movie-1".into(),
-                app_id: "so.tilo.video".into(),
-                title: "Film".into(),
-                content_id: "record:film".into(),
-                position_ms: 42_000,
-                duration_ms: Some(90_000),
-                playing: true,
-                has_video: true,
-                output_device: id("laptop"),
-                stamp: stamp("laptop", 1),
-            });
-            let mut fabric = DeviceFabric::default();
-            fabric.upsert(laptop).unwrap();
-            fabric.upsert(snapshot("tablet", 1, 1000, caps)).unwrap();
-            let transfer = fabric.handoff_media("movie-1", &id("tablet")).unwrap();
-            assert_eq!(transfer.position_ms, 42_000);
-            assert!(transfer.resume_playing && transfer.pause_source);
-        }
-
-        fn video_cannot_be_sent_to_an_audio_only_device() {
-            let mut source = snapshot(
-                "laptop",
-                1,
-                0,
-                FabricCapabilities {
-                    audio_output: true,
-                    video_output: true,
-                    ..FabricCapabilities::default()
-                },
-            );
-            source.media.push(MediaSession {
-                id: "movie".into(),
-                app_id: "video".into(),
-                title: String::new(),
-                content_id: "record:1".into(),
-                position_ms: 0,
-                duration_ms: None,
-                playing: false,
-                has_video: true,
-                output_device: id("laptop"),
-                stamp: stamp("laptop", 1),
-            });
-            let mut fabric = DeviceFabric::default();
-            fabric.upsert(source).unwrap();
-            fabric
-                .upsert(snapshot(
-                    "speaker",
-                    1,
-                    1000,
-                    FabricCapabilities {
-                        audio_output: true,
-                        ..FabricCapabilities::default()
-                    },
-                ))
-                .unwrap();
-            assert_eq!(
-                fabric.handoff_media("movie", &id("speaker")),
-                Err(FabricError::IncompatibleMediaTarget)
-            );
-        }
-
         fn media_action_locators_reject_host_paths_and_url_credentials() {
             let source = id("source");
             let target = id("target");
@@ -3361,8 +2944,6 @@ mod tests {
             );
         }
 
-        media_handoff_preserves_playhead_and_pauses_source();
-        video_cannot_be_sent_to_an_audio_only_device();
         media_action_locators_reject_host_paths_and_url_credentials();
         media_terminal_actions_require_exact_nonzero_request_and_session();
     }
@@ -3776,7 +3357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_device_that_went_away_keeps_its_place_but_takes_no_edge_until_back() {
+    fn a_device_that_went_away_keeps_its_place_until_back() {
         let caps = FabricCapabilities {
             display: true,
             pointer: true,
@@ -3787,15 +3368,10 @@ mod tests {
         fabric.upsert(snapshot("laptop", 1, 0, caps)).unwrap();
         fabric.upsert(tablet.clone()).unwrap();
         assert!(fabric.mark_departed(&id("tablet")));
-        assert!(fabric.cross_right_edge(&id("laptop"), 417).is_none());
         let gone = &fabric.snapshots()[&id("tablet")];
         assert!(!gone.presence.online && gone.display.is_some());
         // Its last revision again, from itself: it is back.
         assert_eq!(fabric.upsert(tablet), Ok(true));
-        assert_eq!(
-            fabric.cross_right_edge(&id("laptop"), 417).unwrap().to,
-            id("tablet")
-        );
         // A restart keeps only this device online.
         let restored = fabric.restored(Some(&id("laptop")));
         let online: Vec<_> = restored
@@ -3804,98 +3380,6 @@ mod tests {
             .collect();
         assert_eq!(online, vec![id("laptop")]);
         assert!(restored.snapshots().contains_key(&id("tablet")));
-    }
-
-    #[test]
-    fn display_edges_map_into_the_adjacent_screen() {
-        fn adjacent_displays_cross_without_a_vertical_jump() {
-            let caps = FabricCapabilities {
-                display: true,
-                pointer: true,
-                ..FabricCapabilities::default()
-            };
-            let mut fabric = DeviceFabric::default();
-            fabric.upsert(snapshot("laptop", 1, 0, caps)).unwrap();
-            fabric.upsert(snapshot("tablet", 1, 1000, caps)).unwrap();
-            let transition = fabric.cross_right_edge(&id("laptop"), 417).unwrap();
-            assert_eq!(transition.to, id("tablet"));
-            assert_eq!(transition.target_y, 417);
-        }
-
-        fn every_touching_display_edge_maps_into_the_adjacent_screen() {
-            let caps = FabricCapabilities {
-                display: true,
-                pointer: true,
-                ..FabricCapabilities::default()
-            };
-            let mut center = snapshot("center", 1, 0, caps);
-            center.display.as_mut().unwrap().rect = DisplayRect {
-                x: 0,
-                y: 0,
-                width: 1000,
-                height: 800,
-            };
-            let mut left = snapshot("left", 1, -600, caps);
-            left.display.as_mut().unwrap().rect = DisplayRect {
-                x: -600,
-                y: 200,
-                width: 600,
-                height: 600,
-            };
-            let mut right = snapshot("right", 1, 1000, caps);
-            right.display.as_mut().unwrap().rect = DisplayRect {
-                x: 1000,
-                y: 100,
-                width: 700,
-                height: 700,
-            };
-            let mut top = snapshot("top", 1, 100, caps);
-            top.display.as_mut().unwrap().rect = DisplayRect {
-                x: 100,
-                y: -500,
-                width: 700,
-                height: 500,
-            };
-            let mut bottom = snapshot("bottom", 1, 200, caps);
-            bottom.display.as_mut().unwrap().rect = DisplayRect {
-                x: 200,
-                y: 800,
-                width: 800,
-                height: 400,
-            };
-            let mut fabric = DeviceFabric::default();
-            for display in [center, left, right, top, bottom] {
-                fabric.upsert(display).unwrap();
-            }
-            let left = fabric
-                .cross_edge(&id("center"), DisplayEdge::Left, 0, 417)
-                .unwrap();
-            assert_eq!(
-                (left.to, left.target_x, left.target_y),
-                (id("left"), 599, 217)
-            );
-            let right = fabric
-                .cross_edge(&id("center"), DisplayEdge::Right, 999, 417)
-                .unwrap();
-            assert_eq!(
-                (right.to, right.target_x, right.target_y),
-                (id("right"), 0, 317)
-            );
-            let top = fabric
-                .cross_edge(&id("center"), DisplayEdge::Top, 417, 0)
-                .unwrap();
-            assert_eq!((top.to, top.target_x, top.target_y), (id("top"), 317, 499));
-            let bottom = fabric
-                .cross_edge(&id("center"), DisplayEdge::Bottom, 417, 799)
-                .unwrap();
-            assert_eq!(
-                (bottom.to, bottom.target_x, bottom.target_y),
-                (id("bottom"), 217, 0)
-            );
-        }
-
-        adjacent_displays_cross_without_a_vertical_jump();
-        every_touching_display_edge_maps_into_the_adjacent_screen();
     }
 
     #[test]
@@ -4124,51 +3608,17 @@ mod tests {
             })
             .unwrap();
             assert_eq!(notification.first(), Some(&21));
-            let realtime_id = crate::realtime_session::RealtimeFabricSessionId {
-                broker: [1; 16],
-                nonce: [2; 16],
-            };
             for (action, index) in [
-                (
-                    PersonalFabricAction::RealtimeOffer {
-                        offer: crate::realtime_session::RealtimeFabricOffer {
-                            session_id: realtime_id,
-                            app_id: "so.tilo.chat".into(),
-                            workspace_id: "room".into(),
-                            provider: "chat".into(),
-                            room_id: "call".into(),
-                            semantic_position: None,
-                            media_bits: 1,
-                            controls: crate::realtime_session::RealtimeControlState::default(),
-                            expires_unix_ms: 20_000,
-                        },
-                    },
-                    24,
-                ),
-                (
-                    PersonalFabricAction::RealtimeAccept {
-                        session_id: realtime_id,
-                    },
-                    25,
-                ),
-                (
-                    PersonalFabricAction::RealtimeMediaReady {
-                        session_id: realtime_id,
-                    },
-                    26,
-                ),
-                (
-                    PersonalFabricAction::RealtimeStopSource {
-                        session_id: realtime_id,
-                    },
-                    27,
-                ),
-                (
-                    PersonalFabricAction::RealtimeCancel {
-                        session_id: realtime_id,
-                    },
-                    28,
-                ),
+                (PersonalFabricAction::RetiredRealtimeOffer, 24),
+                (PersonalFabricAction::RetiredRealtimeAccept, 25),
+                (PersonalFabricAction::RetiredRealtimeMediaReady, 26),
+                (PersonalFabricAction::RetiredRealtimeStopSource, 27),
+                (PersonalFabricAction::RetiredRealtimeCancel, 28),
+                (PersonalFabricAction::RetiredRemoteCaptureSignal, 38),
+                (PersonalFabricAction::RetiredRemoteCaptureChunk, 39),
+                (PersonalFabricAction::RetiredDeviceHealthProbe, 40),
+                (PersonalFabricAction::RetiredDeviceHealthReport, 41),
+                (PersonalFabricAction::RetiredTethering, 44),
             ] {
                 assert_eq!(
                     postcard::to_allocvec(&action).unwrap().first(),
@@ -4264,64 +3714,9 @@ mod tests {
             );
         }
 
-        fn realtime_offer_rejects_spoofing_urls_and_stale_metadata() {
-            let source = id("source");
-            let target = id("target");
-            let mut offer = crate::realtime_session::RealtimeFabricOffer {
-                session_id: crate::realtime_session::RealtimeFabricSessionId {
-                    broker: [1; 16],
-                    nonce: [2; 16],
-                },
-                app_id: "so.tilo.chat".into(),
-                workspace_id: "room".into(),
-                provider: "chat".into(),
-                room_id: "call-7".into(),
-                semantic_position: Some("stage".into()),
-                media_bits: 1,
-                controls: crate::realtime_session::RealtimeControlState::default(),
-                expires_unix_ms: 20_000,
-            };
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [9; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action: PersonalFabricAction::RealtimeOffer {
-                    offer: offer.clone(),
-                },
-            };
-            assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
-            assert_eq!(
-                envelope.validate_at(&id("spoof"), &target, 10_000),
-                Err(FabricError::InvalidAction)
-            );
-            offer.room_id = "https://secret.example/join?token=x".into();
-            assert_eq!(
-                PersonalFabricActionEnvelope {
-                    action: PersonalFabricAction::RealtimeOffer {
-                        offer: offer.clone(),
-                    },
-                    ..envelope.clone()
-                }
-                .validate_at(&source, &target, 10_000),
-                Err(FabricError::InvalidAction)
-            );
-            offer.room_id = "call-7".into();
-            offer.expires_unix_ms = 9_999;
-            assert_eq!(
-                PersonalFabricActionEnvelope {
-                    action: PersonalFabricAction::RealtimeOffer { offer },
-                    ..envelope
-                }
-                .validate_at(&source, &target, 10_000),
-                Err(FabricError::InvalidAction)
-            );
-        }
-
         ephemeral_actions_are_transport_bound_and_fresh();
         new_action_variants_do_not_renumber_existing_wire_actions();
         notification_actions_are_source_bound_bounded_and_fresh();
-        realtime_offer_rejects_spoofing_urls_and_stale_metadata();
     }
 
     #[test]

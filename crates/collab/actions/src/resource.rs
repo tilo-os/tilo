@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
 use crate::contract::{
     ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy, ExecutionMode,
-    ResultSpec, RetryPolicy, RiskLevel,
+    ResultSpec, RiskLevel,
 };
 use crate::door::ActionAddress;
 use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
@@ -786,13 +786,6 @@ impl ResourceSpec {
     pub fn with_child(mut self, child: ResourceSpec) -> Self {
         self.children.push(child);
         self
-    }
-
-    /// Whether it mirrors a control or a host operation rather than being
-    /// something of the app's own ([`kind_mirrors_a_control`]).
-    #[must_use]
-    pub fn mirrors_a_control(&self) -> bool {
-        kind_mirrors_a_control(&self.kind)
     }
 
     /// Whether a palette may list it: a titled resource that offers a
@@ -2443,12 +2436,6 @@ impl ActionSpec {
     #[must_use]
     pub fn below_field(mut self, field: impl Into<String>) -> Self {
         self.type_mut().contract.field = Some(field.into());
-        self
-    }
-
-    #[must_use]
-    pub fn retry_policy(mut self, retry: RetryPolicy) -> Self {
-        self.type_mut().contract.retry = retry;
         self
     }
 

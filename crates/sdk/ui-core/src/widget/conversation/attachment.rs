@@ -19,7 +19,7 @@
 //! is here is the part every conversation needs in common — the same four rungs,
 //! the same words, the same order.
 
-use vello::kurbo::{Point, Rect, RoundedRect, Size};
+use vello::kurbo::{Point, Rect, Size};
 
 use crate::format;
 use crate::icons::Icon;
@@ -355,15 +355,6 @@ impl<'a> AttachmentFace<'a> {
         parts.join(" · ")
     }
 
-    /// The height the meta line takes at `width`.
-    pub fn meta_height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
-        let style = theme.text(TextRole::Caption);
-        f64::from(
-            text.measure_style(&self.meta(), Some(crate::num::f32_of_f64(width)), &style)
-                .1,
-        )
-    }
-
     /// Paint the meta line with its top-left at `origin`, wrapped at `width`.
     /// Returns the height it took.
     pub fn paint_meta(&self, paint: &mut PaintCtx<'_>, origin: Point, width: f64) -> f64 {
@@ -409,20 +400,6 @@ impl<'a> AttachmentFace<'a> {
             .hovered(hovered)
             .paint(scene, *transform, text, theme);
     }
-
-    /// Whether the pointer at `point` is over the badge [`Self::paint_open_badge`]
-    /// paints in `preview`.
-    pub fn badge_contains(
-        &self,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        preview: Rect,
-        point: Point,
-    ) -> bool {
-        let word = super::t("conversation-attachment-open");
-        let inset = f64::from(theme.tokens.spacing.s2);
-        chip_rect(text, theme, &word, preview, inset).contains(point)
-    }
 }
 
 /// The badge's rect: its content plus its padding, inside `preview`'s top
@@ -446,41 +423,4 @@ fn chip_rect(
         x0 + width + pad_x,
         preview.y0 + inset + height,
     )
-}
-
-/// The upload progress bar's height, so a row can reserve for it.
-#[must_use]
-pub fn progress_bar_height(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.metrics.chrome_rule_px).max(2.0)
-}
-
-/// Paint an upload's progress across `band`: a filled fraction of the track,
-/// both derived from the ground it sits on. With no known total the bar is not
-/// painted at all — the word says it is working.
-pub fn paint_progress(paint: &mut PaintCtx<'_>, band: Rect, progress: UploadProgress) {
-    let Some(fraction) = progress.fraction() else {
-        return;
-    };
-    let theme = paint.theme;
-    let track = theme
-        .tokens
-        .colors
-        .lift_on(theme.tokens.colors.surfaces.content, 1.0);
-    let fill = theme.tokens.colors.intent.value_fill;
-    paint.fill_round(band, band.height() / 2.0, track);
-    let width = band.width() * f64::from(fraction);
-    if width <= 0.0 {
-        return;
-    }
-    let filled = RoundedRect::from_rect(
-        Rect::new(band.x0, band.y0, band.x0 + width, band.y1),
-        band.height() / 2.0,
-    );
-    paint.scene.fill(
-        crate::vello::peniko::Fill::NonZero,
-        paint.transform,
-        fill,
-        None,
-        &filled,
-    );
 }

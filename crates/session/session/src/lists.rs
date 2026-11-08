@@ -56,7 +56,7 @@ impl AppLists {
     /// blocked. Reads the disk only, never the network.
     #[must_use]
     pub fn read() -> Self {
-        let installed = tilo_installed_apps::read_from_env().unwrap_or_else(|error| {
+        let installed = app_catalogue::apps::read_from_env().unwrap_or_else(|error| {
             tracing::warn!(%error, "the installed apps are not read");
             Vec::new()
         });
@@ -178,7 +178,7 @@ impl AppLists {
     /// what it would find.
     #[must_use]
     pub fn directories() -> Vec<PathBuf> {
-        let mut directories = tilo_installed_apps::store_directories();
+        let mut directories = app_catalogue::apps::store_directories();
         directories.extend(desktop_entry::scan::application_dirs());
         directories.extend(app_cli::last_accepted_directories());
         directories.extend(app_catalogue::appstream::cache_directories());
@@ -193,7 +193,7 @@ impl AppLists {
 /// capabilities a grant is decided on are read, and only for the app the
 /// image could grant one to: the manifest is read for that app alone.
 fn launchable(
-    installed: &[tilo_installed_apps::InstalledApp],
+    installed: &[app_catalogue::apps::InstalledApp],
     entries: &[desktop_entry::entry::DesktopEntry],
 ) -> Vec<LaunchableApplication> {
     let packages: std::collections::HashSet<String> = installed
@@ -243,7 +243,7 @@ fn launchable(
 /// person added or a downloaded program is uninstalled, a Flatpak of theirs
 /// with its data, and anything the system keeps is only taken off their apps.
 fn listed_apps(
-    installed: &[tilo_installed_apps::InstalledApp],
+    installed: &[app_catalogue::apps::InstalledApp],
     entries: &[desktop_entry::entry::DesktopEntry],
     icons: &BTreeMap<String, PathBuf>,
 ) -> Vec<ListedApp> {
@@ -363,7 +363,7 @@ fn machine_entry(
 /// Each app's declared reach of the action door, from its signed manifest:
 /// the ceiling the broker admits its calls against.
 fn declared(
-    installed: &[tilo_installed_apps::InstalledApp],
+    installed: &[app_catalogue::apps::InstalledApp],
 ) -> BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess> {
     installed
         .iter()

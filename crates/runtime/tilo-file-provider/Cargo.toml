@@ -12,7 +12,6 @@ description = "The C bridge the macOS File Provider extension reads the runtime'
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-capnp.workspace = true
 libc.workspace = true
 runtime-fs = { path = "../runtime-fs" }
 runtime-portal = { path = "../runtime-portal" }

@@ -385,17 +385,6 @@ impl GrantSubject {
         }
     }
 
-    /// Who a grant of the workspace's tree for this subject names.
-    pub fn to_grantee(&self) -> Option<tilo_action_policy::Subject> {
-        use tilo_action_policy::Subject as Who;
-        match self.kind {
-            SubjectKind::App | SubjectKind::AppAction => Some(Who::App(self.id.clone())),
-            SubjectKind::Member => Some(Who::Person(self.id.clone())),
-            SubjectKind::Agent => Some(Who::Agent(self.id.clone())),
-            SubjectKind::Role | SubjectKind::Other => None,
-        }
-    }
-
     pub fn display(&self, ws: &Workspace, local_user: &str, apps: &dyn AppDirectory) -> String {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => person_name(ws, local_user, &self.id),
@@ -519,17 +508,6 @@ impl Default for GrantDraft {
 }
 
 impl GrantDraft {
-    /// Advances to the next subject, wrapping at `len`. `len == 0` (an
-    /// empty subject list) lands back on index 0 via `checked_rem`'s
-    /// `None` fallback, same as the guard this replaced.
-    pub fn cycle_subject(&mut self, len: usize) {
-        self.subject_index = self
-            .subject_index
-            .wrapping_add(1)
-            .checked_rem(len)
-            .unwrap_or(0);
-    }
-
     pub fn cycle_choice(&mut self) {
         self.choice_index = self
             .choice_index
@@ -1481,7 +1459,11 @@ mod agents_tests {
         {
             let mut ws = ws_with_agent();
             let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
-            assert_eq!(edit.revoked.len(), 2, "its workspace grant and its app grant");
+            assert_eq!(
+                edit.revoked.len(),
+                2,
+                "its workspace grant and its app grant"
+            );
             assert!(ws.agent_members_at(tilo_clock::unix_now()).is_empty());
             assert_eq!(
                 agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),

@@ -1,48 +1,39 @@
-//! File-picker dialog widget: the system file chooser, which the shell shows
-//! for the `FileChooser` portal and for an app's path request, and any "open /
-//! save file from app menu" flow. It draws and hit-tests itself; the host
-//! positions it as a modal sheet and drains [`FilePicker::take_outcome`].
+//! File-picker dialog widget: the system file chooser, which the shell shows for the `FileChooser`
+//! portal and for an app's path request, and any "open / save file from app menu" flow. It draws
+//! and hit-tests itself; the host positions it as a modal sheet and drains
+//! [`FilePicker::take_outcome`].
 //!
-//! Choosing a file in it gives the asking app that file, so the sheet says
-//! who is asking: the app's icon and name, with what it wants ("TOTP wants
-//! to open a file") or the app's own purpose ("Choose a QR code image")
-//! ([`FilePicker::with_requester`]). The primary button stays the outcome
-//! (Open, Save, Choose folder).
+//! Choosing a file gives the asking app that file, so the sheet says who is asking: the app's icon
+//! and name with what it wants ("TOTP wants to open a file") or the app's own purpose ("Choose a
+//! QR code image") ([`FilePicker::with_requester`]). The primary button stays the outcome (Open,
+//! Save, Choose folder).
 //!
-//! Top to bottom: who is asking; a toolbar with Up, the location and the
-//! search field; the places sidebar beside the file list; a filename field
-//! in Save mode, the type filter (only when the app named more than one
-//! type) and Cancel and the primary button.
+//! Top to bottom: who is asking; a toolbar with Up, the location and the search field; the places
+//! sidebar beside the file list; a filename field in Save mode, the type filter (only when the app
+//! named more than one type) and Cancel and the primary button.
 //!
-//! * The location is a path bar: the shared [`Breadcrumb`] trail from the
-//!   place it is in ("Home › Projects"), each ancestor a click away. A click
-//!   on the trail's empty space, or Ctrl+L, turns it into a field to type a
-//!   path into; Enter goes there, Escape puts the trail back.
-//! * The sidebar leads with Recent (what was chosen here before, when the
-//!   host says what that is) and then Home, the usual folders under it and
-//!   every other place the person can reach.
+//! * The location is a path bar: the shared [`Breadcrumb`] trail from the place it is in
+//!   ("Home › Projects"), each ancestor a click away. A click on the trail's empty space, or
+//!   Ctrl+L, turns it into a field to type a path into; Enter goes there, Escape puts the trail back.
+//! * The sidebar leads with Recent (what was chosen here before, when the host says what that is)
+//!   and then Home, the usual folders under it and every other place the person can reach.
 //! * The file list is the desktop's one list of files
-//!   ([`crate::widget::file_table::FileTable`]), the same one the file
-//!   manager shows: its columns, sorting, scrolling, touch and rows.
-//!   Directory click navigates in file modes and selects in directory mode;
-//!   double-click navigates or chooses; Ctrl/Shift multi-select when
-//!   enabled.
-//! * Typing searches. The shared [`SearchField`] narrows the folder in view
-//!   as the person types ("3 of 40"); Enter searches every place the person
-//!   can reach through the system search the host hands in
-//!   ([`FilePicker::with_search`]). Typing while the list has the keyboard
-//!   types into the search field. The same search is the picker's `search`
-//!   operation ([`semantic::PickerOperation::Search`]), for the keyboard and
-//!   for agents.
+//!   ([`crate::widget::file_table::FileTable`]), the same one the file manager shows. Directory
+//!   click navigates in file modes and selects in directory mode; double-click navigates or
+//!   chooses; Ctrl/Shift multi-select when enabled.
+//! * Typing searches. The shared [`SearchField`] narrows the folder in view as the person types
+//!   ("3 of 40"); Enter searches every place the person can reach through the system search the
+//!   host hands in ([`FilePicker::with_search`]). Typing while the list has the keyboard types into
+//!   the search field. The same search is the picker's `search` operation
+//!   ([`semantic::PickerOperation::Search`]), for the keyboard and for agents.
 //!
-//! Keyboard: Tab moves between the controls, Up/Down move the selection,
-//! Enter opens/enters, Backspace goes to the parent, Escape cancels (or
-//! clears the search first).
+//! Keyboard: Tab moves between the controls, Up/Down move the selection, Enter opens/enters,
+//! Backspace goes to the parent, Escape cancels (or clears the search first).
 //!
 //! Constructed with "accessible roots" — the paths the caller may be given.
-//! [`FilePicker::can_navigate_to`] gates every path mutation against them so
-//! the person can't `..` out of them, and every chosen path is checked
-//! against their real paths again before it is answered.
+//! [`FilePicker::can_navigate_to`] gates every path mutation against them so the person can't `..`
+//! out of them, and every chosen path is checked against their real paths again before it is
+//! answered.
 
 mod places;
 mod reading;

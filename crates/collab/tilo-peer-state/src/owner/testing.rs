@@ -6,7 +6,7 @@
     reason = "test fixtures: a failed step is the test failing"
 )]
 use crate::owner::{
-    NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
+    NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner,
     VerifiedNativeEnrollmentIntent, WorkspaceId, publication,
 };
 use crate::owner_commit::OwnerCommitRequest;
@@ -14,7 +14,7 @@ use crate::{SeedDocument, SeedState, StatePeer, join, seed_workspace, workspace:
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use std::{collections::BTreeMap, sync::Arc, time::SystemTime};
+use std::{collections::BTreeMap, time::SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -83,7 +83,7 @@ pub fn founded(
         name,
         certificate,
         key,
-        own_host_hint_here(workspace, certificate, key),
+        Some(own_host_hint_here(workspace, certificate, key)),
         now,
     )?;
     Ok(workspace)
@@ -181,11 +181,6 @@ pub fn enroll_into(
         .unwrap();
     Ok(governor)
 }
-/// Most outgoing entries one workspace holds.
-pub const MAX_OUTGOING_ENTRIES: usize = publication::MAX_ENTRIES;
-/// Largest outgoing publication one workspace holds.
-pub const MAX_OUTGOING_BYTES: usize = publication::MAX_BYTES;
-
 pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -410,18 +405,6 @@ pub fn pending_id(
 ) -> crate::owner::PendingEnrollmentId {
     crate::owner::PendingEnrollmentId::new(workspace, generation, [0; 32])
 }
-/// The host an owner opened with [`crate::owner::open_file_with`] follows its
-/// publications through, for a host test to downcast.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn file_host(owner: &NativeWorkspaceOwner) -> Option<Arc<dyn crate::owner::FileHost>> {
-    let store: Arc<dyn Store> = Arc::clone(&owner.0.store);
-    let store: Arc<dyn std::any::Any + Send + Sync> = store;
-    store
-        .downcast::<crate::owner::file_store::FileStore>()
-        .ok()
-        .map(|store| Arc::clone(&store.host))
-}
 /// # Errors
 /// `now` is before the epoch or beyond `u64` nanoseconds.
 pub fn ns(now: SystemTime) -> Result<u64, String> {
@@ -455,13 +438,6 @@ pub fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), String>
 pub fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
     publication::append_local(view, bytes)
 }
-pub fn peer_mut(view: &mut NativeCommittedView) -> &mut StatePeer {
-    &mut view.peer
-}
-#[must_use]
-pub fn durable_peer(view: &NativeCommittedView) -> &[u8] {
-    &view.record.peer
-}
 /// Record the live peer as the view's durable peer.
 ///
 /// # Errors
@@ -472,16 +448,6 @@ pub fn seal(view: &mut NativeCommittedView) -> Result<(), String> {
 }
 pub fn bump_generation(view: &mut NativeCommittedView) {
     view.record.generation = view.record.generation.saturating_add(1);
-}
-pub fn insert_workspace(
-    storage: &mut NativeAuthorityStorage,
-    workspace: WorkspaceId,
-    view: NativeCommittedView,
-) {
-    storage.workspaces.insert(workspace, view.record);
-}
-pub fn bump_revision(storage: &mut NativeAuthorityStorage) {
-    storage.revision = storage.revision.saturating_add(1);
 }
 /// What a record keeps of one workspace.
 pub struct Stored {

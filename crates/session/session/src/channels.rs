@@ -1,30 +1,14 @@
 //! This device's end-to-end encrypted channels: the keys of every record the
-//! workspaces it holds keep sealed, the workspace's governance that decides
-//! who reads each one, and the devices each workspace admits, which its window
-//! streams carry between.
-//!
-//! A record a workspace keeps sealed is opened on no one's machine but a
-//! member's: the workspace's devices agree, group by group, that exactly the
-//! devices the workspace's access policy admits take part
-//! ([`ChannelDirectory`]), and each sealed write travels with the key material
-//! of the group it was written under. The keys live here, never in the
-//! document: that is what lets a person invited today read what the workspace
-//! said a year ago, while its membership moves on without the history being
-//! re-encrypted.
-//!
-//! This device is one participant of the channels of every workspace it holds.
-//! It asks the workspace's governor for a channel's keys the first time it
-//! reads or writes the channel's record ([`crate::engine::Engine::record`]),
-//! takes in the frames the workspace's transport carries here
-//! ([`ChannelLink`]), and settles the groups on their own thread ([`Pump`]) as
-//! the workspace's policy and the people in it change. Nothing here decides
-//! who may read what: the workspace's governance does, and this device only
-//! follows it.
-//!
-//! The same thread tells the collaboration plane which devices each workspace
-//! admits ([`Rosters`]): a workspace's window streams carry between those
-//! devices and no others, and the plane is told again whenever the workspace's
-//! state moves.
+//! workspaces it holds keep sealed, the governance that decides who reads each one,
+//! and the devices each workspace admits, which its window streams carry between.
+//! A sealed record is opened on no one's machine but a member's: the workspace's
+//! devices agree, group by group, that exactly the devices its access policy admits
+//! take part ([`ChannelDirectory`]), and each sealed write travels with the key
+//! material of its group. The keys live here, never in the document, which is what
+//! lets a person invited today read what the workspace said a year ago while its
+//! membership moves on.
+//! Nothing here decides who may read what: the workspace's governance does, and
+//! this device only follows it.
 
 mod vault;
 

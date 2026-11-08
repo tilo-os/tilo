@@ -1287,9 +1287,6 @@ pub enum RemoteActionMessage {
 /// Largest piece of a record one answer carries, before encoding.
 pub const MAX_RECORD_PIECE_BYTES: usize = 384 * 1024;
 
-/// Largest record a device fetches from another at all.
-pub const MAX_FETCHED_RECORD_BYTES: u64 = 64 * 1024 * 1024;
-
 /// Which record to read, and from where in its stored bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -23,15 +23,13 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
 use tilo_test_env::ScopedEnv;
 
-use crate::support::{isolated_options, workspacetest_payload};
+use crate::support::{bwrap, isolated_options, manifest, workspacetest_payload};
 
 const PACKAGE: &str = "so.tilo.envtest";
 
@@ -50,63 +48,6 @@ const SESSION_PRIVATE: &[(&str, &str)] = &[
     ),
     ("TILO_IDENTITY_BROKER_FD", "42"),
 ];
-
-fn manifest() -> ManifestView {
-    ManifestView {
-        package_id: PACKAGE.to_string(),
-        name: None,
-        localized_names: BTreeMap::default(),
-        keywords: Vec::new(),
-        category: None,
-        icon: None,
-        version: "0.0.0".to_string(),
-        kind: "app".to_string(),
-        runtime: None,
-        required_runtimes: Vec::new(),
-        entrypoint: Entrypoint {
-            bin: "bin/workspacetest".to_string(),
-            r#type: launcher::manifest::EntrypointType::Gui,
-            gui_bin: None,
-            cli_bin: None,
-            runtime: None,
-            origins: Vec::new(),
-        },
-        sandbox: Sandbox {
-            net: Net {
-                mode: "off".to_string(),
-                ..Net::default()
-            },
-            fs: Fs::default(),
-            services: BTreeMap::new(),
-            portals: BTreeMap::new(),
-            ..Sandbox::default()
-        },
-        cli_commands: Vec::new(),
-        opens_ext: Vec::new(),
-        opens_mime: Vec::new(),
-        opens_schemes: Vec::new(),
-        opens_secondary: false,
-        continuity: launcher::manifest::ContinuityContract::default(),
-        capabilities: Vec::new(),
-    }
-}
-
-/// Resolved on `PATH` rather than at a fixed `/usr/bin/bwrap`, since
-/// the distro decides where it lives.
-fn bwrap() -> PathBuf {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("bwrap"))
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| {
-            panic!(
-                "bwrap is not on PATH ({}). It is how a Tilo app runs, so \
-                 this is a broken environment rather than a reason to skip the \
-                 test.",
-                path.to_string_lossy()
-            )
-        })
-}
 
 /// Variables set on *this* process for the duration of one test, put
 /// back afterwards — what the launcher carries when it builds the
@@ -131,8 +72,12 @@ fn run(argv: &[&str]) -> String {
         },
         ..isolated_options(data.path())
     };
-    let (status, out) =
-        run_with_captured(&manifest(), workspacetest_payload(), &opts).expect("launch");
+    let (status, out) = run_with_captured(
+        &manifest(PACKAGE, "bin/workspacetest", "off"),
+        workspacetest_payload(),
+        &opts,
+    )
+    .expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -226,6 +171,9 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "TILO_WORKSPACE_ROOTS".to_string(),
             "TILO_PARTICIPATION".to_string(),
             "TILO_CLI_COMMAND".to_string(),
+            // The shared font index's directory, set beside its bind
+            // (`appdir::push_font_index`).
+            tilo_process::environment::FONT_INDEX_ENV.to_string(),
             // The egress gate and proxy variables naming it. Absent here (this
             // fixture declares `net = "off"`), but part of the set.
             "TILO_NET_GATE".to_string(),
@@ -455,7 +403,7 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
     std::fs::copy(inspect, payload.join("bin/gst-inspect")).unwrap();
     std::fs::copy(launch, payload.join("bin/gst-launch")).unwrap();
     let confined = |bin: &str, argv: Vec<String>| {
-        let mut manifest = manifest();
+        let mut manifest = manifest(PACKAGE, "bin/workspacetest", "off");
         manifest.runtime = Some("tilo-runtime/gst-relocation-fixture".into());
         manifest.entrypoint.bin = format!("bin/{bin}");
         let opts = RunOptions {

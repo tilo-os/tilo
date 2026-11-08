@@ -822,11 +822,10 @@ impl WorkspaceActivityPane {
                                     || item.id.strip_prefix("file:") == Some(resource)
                             })
                         }) || self.projected_origins.get(&entry.id).is_some_and(|origin| {
-                            matches!(
-                                &origin.origin,
-                                crate::activity::index::HistoryOrigin::Record { id, .. }
-                                    if id.as_str() == resource
-                            )
+                            origin
+                                .origin
+                                .record()
+                                .is_some_and(|id| id.as_str() == resource)
                         })
                     })
                     .map(|entry| entry.id)

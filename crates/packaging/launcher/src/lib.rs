@@ -41,6 +41,8 @@ pub mod chromium_frame;
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
 pub mod dev_env;
+#[cfg(target_os = "linux")]
+mod fd;
 pub mod gpu;
 pub mod hardening;
 #[cfg(target_os = "linux")]

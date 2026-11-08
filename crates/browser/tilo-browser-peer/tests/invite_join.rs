@@ -1,8 +1,8 @@
 //! Inviting a different person to a workspace the host governs, page to page
 //! over HTTPS: the owner's page issues an invitation; the other person's
 //! page, with its own user root and a device it certified itself, redeems
-//! it and waits; the owner admits it; it then holds a session and
-//! subscribes, until the owner removes it.
+//! it, which admits it by the inviter's own grant; it then holds a session
+//! and subscribes, until the owner removes it.
 
 #![allow(
     clippy::unwrap_used,
@@ -215,59 +215,40 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         .unwrap(),
         JoinReply::Refused(_)
     ));
-    assert_eq!(
-        workspaces(
-            &owner,
-            WorkspacesRequest::Requests {
-                workspace: created.workspace.clone()
-            }
-        )
-        .await,
-        WorkspacesReply::Requests(vec![])
-    );
-
-    // He asks; the request waits for Alice.
+    // He asks; the invitation admits him by the grant of whoever issued it,
+    // so nobody waits to be let in.
     let bob_request = [2; 32];
-    assert_eq!(
-        ask_to_join(
-            https.as_ref(),
-            &signed_invitation,
-            &bob.cert,
-            &bob.key,
-            bob_request,
-            "Bob"
-        )
-        .await
-        .unwrap(),
-        JoinReply::Waiting
-    );
-    assert_eq!(
-        status(https.as_ref(), &bob, bob_request).await,
-        JoinReply::Waiting
-    );
-    let WorkspacesReply::Requests(waiting) = workspaces(
-        &owner,
-        WorkspacesRequest::Requests {
-            workspace: created.workspace.clone(),
-        },
+    let asked = ask_to_join(
+        https.as_ref(),
+        &signed_invitation,
+        &bob.cert,
+        &bob.key,
+        bob_request,
+        "Bob",
     )
     .await
-    else {
-        panic!("no requests");
-    };
-    assert_eq!(waiting.len(), 1);
-    assert_eq!(waiting[0].name, "Bob");
-    assert_eq!(waiting[0].user_public_key, bob.cert.user_public_key);
-    assert_eq!(waiting[0].role, WorkspaceRole::Editor);
-
-    // A reloaded page uses the retained request and certified device to
-    // recover Waiting, without consuming a second invitation.
-    assert_eq!(
-        status(https.as_ref(), &bob, bob_request).await,
-        JoinReply::Waiting
+    .unwrap();
+    assert!(
+        matches!(
+            asked,
+            JoinReply::Admitted {
+                role: WorkspaceRole::Editor,
+                ..
+            }
+        ),
+        "{asked:?}"
     );
-
-    // Someone else with the same invitation is turned away while he waits.
+    assert!(
+        matches!(
+            status(https.as_ref(), &bob, bob_request).await,
+            JoinReply::Admitted {
+                role: WorkspaceRole::Editor,
+                ..
+            }
+        ),
+        "a reloaded page hears what became of its request"
+    );
+    // Someone else with the same invitation is turned away: he redeemed it.
     let carol = guest("Carol").await;
     assert!(matches!(
         ask_to_join(
@@ -283,30 +264,15 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         JoinReply::Refused(_)
     ));
 
-    // Alice admits him: he is a member by his own root, and subscribes.
+    // He is a member by his own root, and subscribes.
     let admitted = workspace(
         workspaces(
             &owner,
-            WorkspacesRequest::Admit {
+            WorkspacesRequest::Enter {
                 workspace: created.workspace.clone(),
-                request_id: bob_request,
             },
         )
         .await,
-    );
-    // Losing the admission response must not require a second invitation.
-    assert_eq!(
-        workspace(
-            workspaces(
-                &owner,
-                WorkspacesRequest::Admit {
-                    workspace: created.workspace.clone(),
-                    request_id: bob_request,
-                }
-            )
-            .await
-        ),
-        admitted,
     );
     let bob_member = admitted
         .members
@@ -356,13 +322,6 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             wait_list_entry: None,
             recipient: None,
         },
-        WorkspacesRequest::Requests {
-            workspace: created.workspace.clone(),
-        },
-        WorkspacesRequest::Admit {
-            workspace: created.workspace.clone(),
-            request_id: bob_request,
-        },
     ] {
         assert!(matches!(
             workspaces(&member, request).await,
@@ -409,7 +368,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     drop(member);
 
     // Alice invites him back: a person who left has no way in left, so
-    // returning takes a new invitation and her admission.
+    // returning takes a new invitation.
     let WorkspacesReply::Invitation {
         signed_invitation: again,
         ..
@@ -430,7 +389,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         panic!("no invitation");
     };
     let bob_again = [15; 32];
-    assert_eq!(
+    assert!(matches!(
         ask_to_join(
             https.as_ref(),
             &again,
@@ -441,14 +400,13 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         )
         .await
         .unwrap(),
-        JoinReply::Waiting
-    );
+        JoinReply::Admitted { .. }
+    ));
     let readmitted = workspace(
         workspaces(
             &owner,
-            WorkspacesRequest::Admit {
+            WorkspacesRequest::Enter {
                 workspace: created.workspace.clone(),
-                request_id: bob_again,
             },
         )
         .await,
@@ -471,7 +429,8 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         }
     ));
 
-    // A second invitation: Carol asks and Alice declines.
+    // A second invitation for Carol: Alice cancels it before anyone redeems
+    // it, and it offers nothing any more.
     let WorkspacesReply::Invitation {
         signed_invitation: second,
         invite_id: second_id,
@@ -504,41 +463,6 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].invite_id, second_id);
     assert_eq!(
-        ask_to_join(
-            https.as_ref(),
-            &second,
-            &carol.cert,
-            &carol.key,
-            [5; 32],
-            "Carol"
-        )
-        .await
-        .unwrap(),
-        JoinReply::Waiting
-    );
-    assert_eq!(
-        workspaces(
-            &owner,
-            WorkspacesRequest::Decline {
-                workspace: created.workspace.clone(),
-                request_id: [5; 32],
-            },
-        )
-        .await,
-        WorkspacesReply::Requests(vec![])
-    );
-    assert_eq!(
-        status(https.as_ref(), &carol, [5; 32]).await,
-        JoinReply::Declined
-    );
-    assert!(
-        connect(carol.cert.clone(), carol.key.clone())
-            .await
-            .is_err()
-    );
-
-    // Alice cancels the invitation: it offers nothing any more.
-    assert_eq!(
         workspaces(
             &owner,
             WorkspacesRequest::Cancel {
@@ -551,11 +475,29 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         WorkspacesReply::Pending(vec![])
     );
     assert!(matches!(
-        join(https.as_ref(), &JoinStep::Inspect { invitation: second })
+        join(https.as_ref(), &JoinStep::Inspect { invitation: second.clone() })
             .await
             .unwrap(),
         JoinReply::Refused(reason) if reason.contains("cancelled")
     ));
+    assert!(matches!(
+        ask_to_join(
+            https.as_ref(),
+            &second,
+            &carol.cert,
+            &carol.key,
+            [5; 32],
+            "Carol"
+        )
+        .await
+        .unwrap(),
+        JoinReply::Refused(_)
+    ));
+    assert!(
+        connect(carol.cert.clone(), carol.key.clone())
+            .await
+            .is_err()
+    );
 
     // She makes Bob a viewer, then removes him: his session loses the workspace.
     let viewer = workspace(
@@ -708,42 +650,26 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
         panic!("no invitation");
     };
     let request = [21; 32];
-    assert_eq!(
-        ask_to_join(
-            running.https().as_ref(),
-            &signed_invitation,
-            &bob.cert,
-            &bob.key,
-            request,
-            "Bob"
-        )
-        .await
-        .unwrap(),
-        JoinReply::Waiting
-    );
-    // Decisions on the same request serialize even while admission awaits
-    // publication. A decline cannot report success after admission committed.
-    let authority = running.relay.workspaces().unwrap();
-    let (admission, decline) = tokio::join!(
-        authority.page_rooms(
-            &owner.cert,
-            WorkspacesRequest::Admit {
-                workspace: created.workspace.clone(),
-                request_id: request,
-            }
-        ),
-        authority.page_rooms(
-            &owner.cert,
-            WorkspacesRequest::Decline {
-                workspace: created.workspace.clone(),
-                request_id: request,
-            }
-        ),
-    );
-    workspace(admission);
+    // The invitation admits him by itself: no decision of the owner stands
+    // between his ask and his membership.
     assert!(
-        matches!(decline, WorkspacesReply::Refused(_)),
-        "{decline:?}"
+        matches!(
+            ask_to_join(
+                running.https().as_ref(),
+                &signed_invitation,
+                &bob.cert,
+                &bob.key,
+                request,
+                "Bob"
+            )
+            .await
+            .unwrap(),
+            JoinReply::Admitted {
+                role: WorkspaceRole::Editor,
+                ..
+            }
+        ),
+        "the invitation admits the person who holds it"
     );
 
     // A profile record belonging to another certified device/root is a

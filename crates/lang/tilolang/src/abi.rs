@@ -125,6 +125,7 @@ imports! {
     CollWhere = "coll_where" ([H, H] -> [H]);
     CollRelatives = "coll_relatives" ([H, H, H, H, I32] -> [H]);
     CollCount = "coll_count" ([H] -> [I64]);
+    CollCounted = "coll_counted" ([H] -> [H]);
     CollEmpty = "coll_empty" ([H] -> [I32]);
     SetAdd = "set_add" ([H, H, H] -> []);
     SetRemove = "set_remove" ([H, H, H] -> []);

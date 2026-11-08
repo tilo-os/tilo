@@ -76,9 +76,6 @@ pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
 mod workspace_status;
 pub use workspace_status::WorkspaceStatus;
 
-/// The name the old shell still reads it by; it goes when the shell does.
-pub type RoomStatus = WorkspaceStatus;
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkspaceControlRoute {
     Direct,
@@ -229,11 +226,6 @@ impl TaskAgentJoinIdentity {
         postcard::from_bytes(encoded).map(Some)
     }
 }
-
-/// The directory, in a task agent's app directory, where the desktop that
-/// launches it leaves its [`TaskAgentCredentials`], one file per task agent
-/// named by its id. The agent reads its file once and removes it.
-pub const TASK_AGENT_CREDENTIALS_DIR: &str = "task-agents";
 
 /// What the desktop hands a task agent it launches for one task: the key it
 /// minted for the task, and what the agent presents to join with it.

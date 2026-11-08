@@ -7,7 +7,7 @@
 //! `tl.so.tilo.lang.tasks.TodoItem`. Nothing is rewritten.
 //!
 //! Who builds the table decides whom to believe: the installed catalogue honours a claim only
-//! from the publisher that signed the earlier id (`tilo_installed_apps::earlier_ids`), a host
+//! from the publisher that signed the earlier id (`app_catalogue::apps::earlier_ids`), a host
 //! the packages it loaded.
 
 use std::collections::BTreeMap;

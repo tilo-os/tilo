@@ -18,7 +18,7 @@ FROM ${BOOTC_BUILD_IMAGE} AS bootc-builder
 ARG BOOTC_VERSION=1.16.13
 ARG BOOTC_SOURCE=bootc-fa0d3f9.tar.gz
 ARG BOOTC_SHA256=e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac
-ARG BOOTC_BUILD_PACKAGES="ostree-devel patch"
+ARG BOOTC_BUILD_PACKAGES="ostree-devel patch git"
 COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch \
     os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch /patches/
@@ -30,15 +30,23 @@ COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
 # Fetches from the internet, so it runs in the build job's own network: podman hands a
 # nested build container public resolvers (the job's /etc/resolv.conf names only its own),
 # and the CI runners' egress serves those unreliably.
+# What it fetches includes a dependency that lives in a git repository, and a connection
+# that stops delivering leaves such a fetch waiting without end: libgit2 has no timeout of
+# its own, so the build then holds its job until it is cancelled. Cargo asks the git
+# command for that dependency, and the command aborts a transfer that stays below
+# http.lowSpeedLimit for http.lowSpeedTime, which cargo retries.
 RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     configure-fedora-mirrors \
     && dnf install -y ${BOOTC_BUILD_PACKAGES} \
     && dnf clean all \
+    && git config --global http.lowSpeedLimit 1000 \
+    && git config --global http.lowSpeedTime 20 \
     && echo "${BOOTC_SHA256}  /tilo-assets/${BOOTC_SOURCE}" | sha256sum -c - \
     && mkdir "/bootc-${BOOTC_VERSION}" \
     && tar -xzf "/tilo-assets/${BOOTC_SOURCE}" --strip-components=1 -C "/bootc-${BOOTC_VERSION}" \
     && cd "/bootc-${BOOTC_VERSION}" \
     && for p in /patches/*.patch; do patch -p1 < "$p"; done \
+    && export CARGO_NET_GIT_FETCH_WITH_CLI=true CARGO_NET_RETRY=6 \
     && cargo test --locked -p bootc-internal-blockdev \
     && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols \
        cargo build --locked --release -p bootc \

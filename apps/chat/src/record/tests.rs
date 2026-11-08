@@ -612,6 +612,7 @@ fn the_workspaces_channels_are_arranged_in_one_go() {
                 category: Some(id(under)),
                 kind: None,
                 topic: None,
+                participants: None,
             }),
         )
         .unwrap();
@@ -1741,5 +1742,105 @@ fn two_devices_opening_the_same_conversation_at_once_share_one() {
     assert_eq!(
         Chat::direct_participants(&from_ada).map(|participants| participants.len()),
         Some(2)
+    );
+}
+
+/// A conversation the workspace keeps, such as a person's with an agent
+/// (`docs/designs/app-language/shell.md` §8.1), is a channel: its id is a
+/// channel id — the one every device derives for the same participants, in
+/// any order — so `create-channel-with-id` makes it once and it takes posts
+/// as any channel does. A direct conversation is not one: its id names its
+/// participants and is nothing the record holds.
+#[test]
+fn a_kept_conversation_is_a_channel_the_same_set_derives_on_every_device() {
+    const AGENT: &str = "agent-task:44444444-4444-4444-8444-444444444444";
+    let people = [Participant::person(ADA), Participant::agent(AGENT)];
+    let id = Chat::conversation_channel_id(people.clone());
+    assert_eq!(
+        id,
+        Chat::conversation_channel_id([
+            Participant::agent(AGENT),
+            Participant::person(ADA),
+            Participant::person(ADA),
+        ]),
+        "the id is the set, in any order"
+    );
+    assert_eq!(
+        id.as_str(),
+        format!("c_{:016x}", {
+            use std::hash::Hasher as _;
+            let mut hash = fnv::FnvHasher::default();
+            for key in Chat::direct_id(people.clone())
+                .as_str()
+                .trim_start_matches(DIRECT_CONVERSATION_PREFIX)
+                .split('|')
+            {
+                hash.write(key.as_bytes());
+                hash.write(&[0]);
+            }
+            hash.finish()
+        }),
+        "the id is derived from the participant keys and nothing else"
+    );
+    assert_ne!(
+        id,
+        Chat::direct_id(people.clone()),
+        "a kept conversation is no direct one"
+    );
+
+    let participants = people.iter().map(Participant::key).collect::<Vec<_>>();
+    let mut ada = Talk::new();
+    ada.chat
+        .apply(
+            Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
+                id: id.as_str().to_owned(),
+                name: "Assistant".parse().unwrap(),
+                category: None,
+                kind: None,
+                topic: None,
+                participants: Some(participants.clone()),
+            }),
+        )
+        .unwrap();
+    ada.apply(post_to(id.as_str(), "what is on my task list?"))
+        .unwrap();
+    let chat = ada.chat.state().unwrap();
+    let made = chat.channels.get(&id).expect("the conversation is made");
+    assert_eq!(made.name, "Assistant");
+    assert_eq!(
+        chat.conversation_participants(&id),
+        vec![Participant::person(ADA), Participant::agent(AGENT)],
+        "the agent takes part, so the person's message is a turn of its"
+    );
+    assert_eq!(
+        ada.rows(id.as_str())
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect::<Vec<_>>(),
+        ["what is on my task list?"],
+        "the conversation takes the person's message"
+    );
+    // A second ask meets the one made, as a step run again does.
+    ada.chat
+        .apply(
+            Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
+                id: id.as_str().to_owned(),
+                name: "Renamed".parse().unwrap(),
+                category: None,
+                kind: None,
+                topic: None,
+                participants: Some(participants),
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        ada.chat
+            .state()
+            .unwrap()
+            .channels
+            .get(&id)
+            .map(|made| made.name.clone()),
+        Some("Assistant".to_owned()),
+        "naming the conversation again leaves it as it is"
     );
 }

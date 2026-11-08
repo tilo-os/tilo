@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::GroupId;
+use crate::layout::Strip;
 
 /// Which arrangement a workspace shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -111,6 +112,13 @@ impl CanvasPlace {
 /// The space kept between two windows on the canvas, in canvas pixels: the
 /// design language's `group` rhythm.
 pub const CANVAS_GAP: u32 = 24;
+
+/// The window a group the desk opened takes on the canvas when nobody named a place for it:
+/// the framed canvas's window, in canvas pixels, which is what the arrangement's own place
+/// action defaults to for a place a person types at.
+const MISSING_PLACE_WIDTH: u32 = 720;
+/// See [`MISSING_PLACE_WIDTH`].
+const MISSING_PLACE_HEIGHT: u32 = 520;
 
 /// The corner of the work area a floated window keeps its distance from, so
 /// the window lands sensibly on every member's screen size.
@@ -333,12 +341,6 @@ impl Arrangement {
         self.kind == ArrangementKind::Strips && self.places.is_empty() && self.floats.is_empty()
     }
 
-    /// Whether the workspace shows its canvas.
-    #[must_use]
-    pub fn is_canvas(&self) -> bool {
-        self.kind == ArrangementKind::Canvas
-    }
-
     /// Where `group` stands, once placed.
     #[must_use]
     pub fn place_of(&self, group: GroupId) -> Option<CanvasPlace> {
@@ -496,6 +498,47 @@ impl Arrangement {
         self.floats.retain(|id, _| live(*id));
         self.places.len().saturating_add(self.floats.len()) != held
     }
+
+    /// Stand every group `strips` hold that has no place yet, and keep every place that
+    /// is there: the framed canvas, the spaces canvas and the traditional desktop draw a
+    /// group by its place, so a window the desk opened and nobody placed stands on none of
+    /// them, and a desk a person opened an app on looks empty.
+    ///
+    /// The groups of a strip stand in a row from the strip's corner (`canvas.md` §6), so the
+    /// next one goes just past the last one that stands; a strip whose windows none stand yet
+    /// starts at the origin, where the first place a person types at also lands. The point an
+    /// absent group belongs to is the free space nearest its strip's row, so a window the
+    /// person opened is where they look for it. Returns whether any was placed.
+    pub fn place_missing(&mut self, strips: &[Strip]) -> bool {
+        let gap = i64::from(CANVAS_GAP);
+        let step = i64::from(MISSING_PLACE_WIDTH).saturating_add(gap);
+        // Where each group that does not stand yet belongs, walking each strip's row from
+        // its corner: a strip starts at the origin and each group of it follows the one
+        // before, at its right edge, whether that one stands already or is about to.
+        let mut wanted: Vec<(GroupId, (i32, i32))> = Vec::new();
+        for strip in strips {
+            let mut x = 0_i64;
+            for group in &strip.window_groups {
+                if let Some(place) = self.place_of(group.id) {
+                    x = place.right().saturating_add(gap);
+                    continue;
+                }
+                wanted.push((group.id, (clamp_point(x), 0)));
+                x = x.saturating_add(step);
+            }
+        }
+        for (group, anchor) in &wanted {
+            let place =
+                self.free_place_near(*anchor, MISSING_PLACE_WIDTH, MISSING_PLACE_HEIGHT, None);
+            self.places.insert(*group, place);
+        }
+        !wanted.is_empty()
+    }
+}
+
+/// A canvas coordinate as a place keeps it.
+fn clamp_point(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
 #[cfg(test)]

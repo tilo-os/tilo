@@ -171,21 +171,6 @@ impl Pick {
         truncate_chars(&mut self.app, 128);
         truncate_chars(&mut self.app_name, 128);
     }
-
-    /// Where content is drawn under this pick: what a screenshot of it
-    /// hides. The pick itself when it is content without bounds of its own.
-    #[must_use]
-    pub fn content_areas(&self) -> Vec<Area> {
-        let mut areas: Vec<Area> = self
-            .label
-            .iter()
-            .chain(&self.texts)
-            .filter(|text| text.kind == TextKind::Content)
-            .map(|text| text.area.unwrap_or(self.area))
-            .collect();
-        areas.dedup();
-        areas
-    }
 }
 
 fn truncate_chars(text: &mut String, limit: usize) {

@@ -116,35 +116,6 @@ impl WorkspaceStore {
         Ok(lineages)
     }
 
-    /// Every channel this store retains entries of.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the retained lineages cannot be listed.
-    #[cfg(feature = "agents")]
-    pub fn retained_channels(&self) -> Result<std::collections::BTreeSet<[u8; 32]>, StoreError> {
-        let v2 = self.root.join(RETAINED_DIR).join("v2");
-        let mut channels = std::collections::BTreeSet::new();
-        let entries = match fs::read_dir(&v2) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(channels),
-            Err(error) => return Err(error.into()),
-        };
-        for entry in entries {
-            let name = entry?.file_name();
-            if let Some(channel) = name
-                .to_str()
-                .and_then(|name| name.split_once('-'))
-                // ignored-failure: an entry not named `<author>-<channel>` is not a lineage
-                .and_then(|(_, channel)| hex::decode(channel).ok())
-                .and_then(|channel| <[u8; 32]>::try_from(channel).ok())
-            {
-                channels.insert(channel);
-            }
-        }
-        Ok(channels)
-    }
-
     /// Every entry retained for `channel`, over all its authors. Reads only
     /// immutable files and needs no owner; a generation that disappears
     /// under the read fails it.
@@ -190,7 +161,6 @@ impl WorkspaceStore {
         snapshot: Option<SnapshotWrite>,
         remove: &dyn Fn(&[u8]) -> bool,
     ) -> Result<Replaced, StoreError> {
-        self.tail_cache.invalidate();
         // Rewrites lineages of every author on the channel.
         self.forget_channel_listing(channel);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
@@ -253,7 +223,6 @@ impl WorkspaceStore {
     /// Returns an error when a link, write or directory barrier fails; a
     /// lineage is switched only once its entries are linked into the archive.
     pub(crate) fn archive_channel(&self, channel: &[u8; 32]) -> Result<usize, StoreError> {
-        self.tail_cache.invalidate();
         self.forget_channel_listing(channel);
         let archive = self
             .root

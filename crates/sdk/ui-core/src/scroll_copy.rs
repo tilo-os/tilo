@@ -1,36 +1,29 @@
 //! Scrolling by copying the pixels that stay on screen.
 //!
-//! A scroll moves every pixel of a scroller's content, so damage alone
-//! repaints its whole viewport on every frame of a scroll. When the content
-//! moved by a pure translation since the frame the host last presented, most
-//! of those pixels are already in the host's retained target, one delta away.
+//! A scroll moves every pixel of a scroller's content, so damage alone repaints its whole
+//! viewport on every frame of a scroll. When the content moved by a pure translation since the
+//! frame the host last presented, most of those pixels are already in the host's retained
+//! target, one delta away.
 //!
-//! A scroller says so from its `collect_damage` ([`offer`]) instead of
-//! damaging its viewport: where its content paints, how far it moved, and
-//! what it paints over its content that does not move with it (a scroll bar,
-//! an edge fade). A host that keeps the last frame's pixels collects damage
-//! inside [`accepting`]; any other host gets the viewport damage as before,
+//! A scroller says so from its `collect_damage` ([`offer`]) instead of damaging its viewport:
+//! where its content paints, how far it moved, and what it paints over its content that does
+//! not move with it (a scroll bar, an edge fade). A host that keeps the last frame's pixels
+//! collects damage inside [`accepting`]; any other host gets the viewport damage as before,
 //! because [`offer`] answers `false` there.
 //!
-//! The host then plans each offer ([`plan`]) against the widget tree it just
-//! drew: the copy is clipped by every ancestor's child clip and kept to whole
-//! device pixels; a delta that is not a whole number of device pixels, or a
-//! scroller drawn under another transform than the window's, is refused (the
-//! viewport is damaged instead). What may paint over or under the content
-//! without moving with it is damage: the scroller's own overlays, every
-//! other widget whose box (with its effect reach) reaches into the viewport,
-//! and the edges of every ancestor and of every frame that holds the
-//! viewport (a border or an inset shadow drawn over children). Damage a copy
-//! reads, those overlays and whatever else changed in place this frame, is
-//! carried to where the copy lands ([`carry`]), and what the copy exposed is
-//! repainted. The renderer copies first ([`encode_copies`], or
-//! [`copy_pixels`] on a CPU canvas), then rasterizes the damage.
+//! The host plans each offer ([`plan`]) against the tree it just drew: the copy is clipped by
+//! every ancestor's child clip and kept to whole device pixels; a delta that is not a whole
+//! number of them, or a scroller drawn under another transform than the window's, is refused.
+//! What may paint over or under the content without moving with it is damage (the scroller's
+//! overlays, every other widget whose box reaches into the viewport, the edges of every
+//! ancestor and of every frame holding the viewport); damage a copy reads is carried to where
+//! the copy lands ([`carry`]) and what the copy exposed is repainted. The renderer copies first
+//! ([`encode_copies`], or [`copy_pixels`] on a CPU canvas), then rasterizes the damage.
 //!
-//! A relayout's moves are checked against the offers (`moves_besides`):
-//! content that moved by its scroller's delta is the copy's; content that
-//! came, went or stayed put (a long list mounting rows, a pinned title, a
-//! sticky header) is damage; anything else that moved makes the host
-//! repaint as it would without copies.
+//! A relayout's moves are checked against the offers (`moves_besides`): content that moved by
+//! its scroller's delta is the copy's; content that came, went or stayed put (a long list
+//! mounting rows, a pinned title) is damage; anything else that moved makes the host repaint as
+//! it would without copies.
 
 use std::cell::RefCell;
 

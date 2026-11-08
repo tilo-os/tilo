@@ -39,17 +39,6 @@ impl HostIdentity {
         self.current_material(Some(ws))
     }
 
-    /// [`Self::current_native_material`] as the person this device is: what
-    /// its own host is opened with and what it asks its person's hosts with.
-    ///
-    /// # Errors
-    /// As [`Self::current_native_material`].
-    pub fn current_person_material(
-        &self,
-    ) -> Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>), String> {
-        self.current_material(None)
-    }
-
     fn current_material(
         &self,
         ws: Option<WorkspaceId>,

@@ -20,7 +20,8 @@ test-support = []
 # The machine's own applications: their entries, entry kinds and launch plans.
 # Reading a downloaded `AppImage`'s own name and artwork needs its image.
 desktop-entry = { version = "0.1.0", package = "tilo-desktop-entry", path = "../../system/desktop-entry", features = ["appimage"] }
-tilo-installed-apps = { version = "0.1.0", path = "../../packaging/installed-apps" }
+# An installed app read through the signed manifest it was admitted with.
+app-catalogue = { path = "../../packaging/app-catalogue" }
 # The workspace's grants, as the launcher's capability file carries them, and
 # the policy the person's authority in it is projected from.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
@@ -46,6 +47,8 @@ tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 # The type a document's path names, for the app that claims it.
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
+# The signed manifest an installed app was admitted with.
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

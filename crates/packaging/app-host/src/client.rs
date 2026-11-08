@@ -416,17 +416,6 @@ impl BlockingClient {
         self.invoke(Action::Remove { id: *id.as_bytes() }).map(drop)
     }
 
-    /// Launch an installed desktop application.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the host service cannot launch the desktop application.
-    pub fn launch_desktop(&self, desktop_id: &str) -> Result<String, String> {
-        text(self.invoke(Action::LaunchDesktop {
-            desktop_id: desktop_id.to_owned(),
-        })?)
-    }
-
     /// Run a Flatpak lifecycle operation through the host service.
     ///
     /// # Errors

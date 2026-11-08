@@ -257,19 +257,6 @@ fn export_home_peer_bundle(
     assert!(status.success(), "home-peer bundle export failed: {status}");
 }
 
-fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl: &Path) {
-    let status = Command::new(binary)
-        .env(fs::identity::IDENTITY_ROOT_ENV, identity)
-        .env(
-            "TILO_AUTHORITY_SOCKET_DIR",
-            authority_sockets(workspace_cache),
-        )
-        .args(["publish-authority", "--acl", acl.to_str().unwrap()])
-        .status_locked()
-        .unwrap();
-    assert!(status.success(), "authority publication failed: {status}");
-}
-
 fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> ReplicaProcess {
     let mut child = Command::new(binary)
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
@@ -1131,7 +1118,6 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         assert!(!reader_mount.join("deleted.txt").exists());
         reader_process.stop();
 
-        let revoked_acl = temp.path().join("revoked-acl.json");
         let revoked_caps = vec![
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
@@ -1152,12 +1138,13 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::caps::Access::Read,
             ),
         ];
+        // The person narrows the list the owner's mount reads; the daemon signs
+        // it into the next authority revision by itself, as it does in production.
         std::fs::write(
-            &revoked_acl,
+            &acl,
             serde_json::to_vec(&collab_types::FsAuthority::from(revoked_caps.clone())).unwrap(),
         )
         .unwrap();
-        publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
         let replica_authority = replica_cache
             .join(original.workspace_id().to_string())
             .join("workspace-authority.bin");

@@ -460,13 +460,6 @@ impl CollaboratorsOverlay {
         self.register_targets(model.host);
     }
 
-    /// How the host draws the roster now, while it arrives: input is
-    /// hit-tested where it is drawn ([`ui::motion::Pose::to_local`]), not
-    /// where it will rest.
-    pub fn set_drawn_pose(&mut self, pose: ui::motion::Pose) {
-        self.drawn = pose;
-    }
-
     /// Open the row the host says is open, on the disclose motion.
     fn follow_expansion(&mut self, model: &CollaboratorsModel<'_>) {
         let wanted = model
@@ -1291,38 +1284,6 @@ impl CollaboratorsOverlay {
         self.targets.wants_pointer_capture()
     }
 
-    /// Release/repeat edges still belong to the roster after its action
-    /// changes the active surface. They must be consumed before ordinary
-    /// modal routing.
-    pub fn consume_sequence_edge(&mut self, event: &WindowEvent, open: bool) -> bool {
-        if !open
-            || matches!(
-                event,
-                WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. }
-            )
-        {
-            self.interrupt();
-        }
-        let WindowEvent::KeyboardInput { event: key, .. } = event else {
-            return false;
-        };
-        let index = match key.logical_key {
-            Key::Named(NamedKey::Enter) => 0,
-            Key::Named(NamedKey::Space) => 1,
-            _ => return false,
-        };
-        let Some(held) = self.held_submit.get_mut(index) else {
-            return false;
-        };
-        if *held && (key.repeat || key.state == ElementState::Released) {
-            if key.state == ElementState::Released {
-                *held = false;
-            }
-            return true;
-        }
-        false
-    }
-
     fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let Some(theme) = self.scroll_theme.clone() else {
             return false;
@@ -1984,18 +1945,6 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
     rows_of(desktop.active_workspace(), &roster, local_user)
 }
 
-/// Everyone present in `workspace` (not only the active one) as the roster
-/// lists them: the presence its collaborators last published, which is what
-/// the overview and the strip show of a workspace too. The active workspace
-/// reads [`collaborator_roster_rows`], which also merges the tree-wide mirror.
-#[must_use]
-pub fn workspace_roster_rows(
-    workspace: &tilo_desktop_model::Workspace,
-    local_user: &str,
-) -> Vec<RosterRow> {
-    rows_of(Some(workspace), &workspace.collaborators, local_user)
-}
-
 fn rows_of(
     workspace: Option<&tilo_desktop_model::Workspace>,
     roster: &[Collaborator],
@@ -2009,7 +1958,8 @@ fn rows_of(
         .map(|participant| {
             let is_bot =
                 workspace.is_some_and(|workspace| is_workspace_bot(workspace, participant));
-            let is_agent = is_bot || names_agent(&agents, participant) || has_agent_marker(participant);
+            let is_agent =
+                is_bot || names_agent(&agents, participant) || has_agent_marker(participant);
             let (red, green, blue) = colors
                 .get(&participant.id)
                 .copied()
@@ -2113,9 +2063,9 @@ fn agent_members(workspace: Option<&tilo_desktop_model::Workspace>, now: u64) ->
 
 /// Whether `participant` is one of `agents`, by id or by the name it shows.
 fn names_agent(agents: &[String], participant: &Collaborator) -> bool {
-    agents.iter().any(|agent| {
-        agent == &participant.id || agent == &participant.name
-    })
+    agents
+        .iter()
+        .any(|agent| agent == &participant.id || agent == &participant.name)
 }
 
 /// A recorded role id as people read it; an id this model does not define
@@ -2442,14 +2392,14 @@ mod tests {
         let mut workspace = Workspace::new(WorkspaceSlot(71), "Shared");
         workspace.set_owner("owner");
         let node = workspace.node();
-    workspace.grant(tilo_action_policy::Grant::new(
-        "agent-member:scribe",
-        tilo_action_policy::Subject::agent("scribe"),
-        node,
-        tilo_action_policy::KindSet::READ,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person("owner"),
-    ));
+        workspace.grant(tilo_action_policy::Grant::new(
+            "agent-member:scribe",
+            tilo_action_policy::Subject::agent("scribe"),
+            node,
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::person("owner"),
+        ));
         workspace
             .collaborators
             .push(Collaborator::new("scribe", "Release Notes Agent"));

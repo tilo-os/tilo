@@ -237,7 +237,7 @@ impl Planned {
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
         let launcher = context.launcher.clone().ok_or(PlanError::NoLauncher)?;
-        let installed = tilo_installed_apps::read_one_from_env(app)
+        let installed = app_catalogue::apps::read_one_from_env(app)
             .ok()
             .flatten()
             .ok_or_else(|| PlanError::NotInstalled(app.to_owned()))?;

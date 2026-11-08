@@ -1,10 +1,15 @@
-use capnp_rpc::rpc_twoparty_capnp;
 use std::collections::{HashMap, HashSet};
-use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::Mutex;
 
+use runtime_portal::NotAvailable;
+use tilo_fs_client::connection::{Capabilities, Connection, Object, ServeObject};
+use tilo_fs_client::wire::FsReply;
+
 use super::*;
+
+/// What one served capability answers with.
+type Dispatch = Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>>;
 
 /// Scope-checked in-memory backend: the protocol's contract, not the
 /// daemon's storage.
@@ -438,112 +443,68 @@ impl Recording {
     }
 }
 
-fn settled(result: Result<(), capnp::Error>) -> Promise<(), capnp::Error> {
-    match result {
-        Ok(()) => Promise::ok(()),
-        Err(error) => Promise::err(error),
+fn ready(reply: Result<FsReply, String>) -> Dispatch {
+    Box::pin(std::future::ready(reply))
+}
+
+impl ServeObject for Recording {
+    fn dispatch(self: Arc<Self>, capabilities: &Capabilities, request: FsRequest) -> Dispatch {
+        match request {
+            FsRequest::Put { bytes, mime } => ready(Ok(FsReply::Blob(self.keep(bytes, mime)))),
+            FsRequest::Upload { mime } => {
+                let upload = RecordingUpload {
+                    store: Arc::clone(&self),
+                    mime,
+                    buffer: Mutex::new(Vec::new()),
+                };
+                ready(Ok(FsReply::Handle(Some(
+                    capabilities.register(Arc::new(upload)),
+                ))))
+            }
+            FsRequest::Get {
+                hash,
+                offset,
+                max_len,
+            } => ready(Ok(FsReply::BlobRead(self.read(&hash, offset, max_len)))),
+            _ => ready(Err("unexpected document media request".into())),
+        }
     }
 }
 
-#[allow(
-    refining_impl_trait,
-    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
-)]
-impl document_blobs::Server for Recording {
-    fn put(
-        self: Rc<Self>,
-        params: document_blobs::PutParams,
-        mut results: document_blobs::PutResults,
-    ) -> Promise<(), capnp::Error> {
-        settled((|| {
-            let request = params.get()?;
-            let stored = self.keep(
-                request.get_bytes()?.to_vec(),
-                text_param(request.get_mime())?,
-            );
-            write_ref(results.get().init_ref(), &stored);
-            Ok(())
-        })())
-    }
-
-    fn upload(
-        self: Rc<Self>,
-        params: document_blobs::UploadParams,
-        mut results: document_blobs::UploadResults,
-    ) -> Promise<(), capnp::Error> {
-        settled((|| {
-            let mime = text_param(params.get()?.get_mime())?;
-            results
-                .get()
-                .set_upload(capnp_rpc::new_client(RecordingUpload {
-                    store: Rc::clone(&self),
-                    mime,
-                    buffer: RefCell::new(Vec::new()),
-                }));
-            Ok(())
-        })())
-    }
-
-    fn get(
-        self: Rc<Self>,
-        params: document_blobs::GetParams,
-        mut results: document_blobs::GetResults,
-    ) -> Promise<(), capnp::Error> {
-        settled((|| {
-            let request = params.get()?;
-            let hash = text_param(request.get_hash())?;
-            let mut read = results.get().init_read();
-            let Some(bytes) = self.content.lock().unwrap().get(&hash).cloned() else {
-                read.set_status(WireReadStatus::Unavailable);
-                return Ok(());
-            };
-            let start = usize::try_from(request.get_offset())
-                .unwrap()
-                .min(bytes.len());
-            let end = start
-                .saturating_add(request.get_max_len() as usize)
-                .min(bytes.len());
-            read.set_status(WireReadStatus::Ready);
-            read.set_bytes(&bytes[start..end]);
-            read.set_total_len(bytes.len() as u64);
-            Ok(())
-        })())
+impl Recording {
+    fn read(&self, hash: &str, offset: u64, max_len: u32) -> ReadOutcome {
+        let Some(bytes) = self.content.lock().unwrap().get(hash).cloned() else {
+            return ReadOutcome::Unavailable;
+        };
+        let start = usize::try_from(offset).unwrap().min(bytes.len());
+        let end = start.saturating_add(max_len as usize).min(bytes.len());
+        ReadOutcome::Ready {
+            bytes: bytes[start..end].to_vec(),
+            total_len: bytes.len() as u64,
+        }
     }
 }
 
 struct RecordingUpload {
-    store: Rc<Recording>,
+    store: Arc<Recording>,
     mime: String,
-    buffer: RefCell<Vec<u8>>,
+    buffer: Mutex<Vec<u8>>,
 }
 
-#[allow(
-    refining_impl_trait,
-    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
-)]
-impl blob_upload::Server for RecordingUpload {
-    fn write(
-        self: Rc<Self>,
-        params: blob_upload::WriteParams,
-        _results: blob_upload::WriteResults,
-    ) -> Promise<(), capnp::Error> {
-        settled((|| {
-            let bytes = params.get()?.get_bytes()?;
-            self.store.writes.lock().unwrap().push(bytes.len());
-            self.buffer.borrow_mut().extend_from_slice(bytes);
-            Ok(())
-        })())
-    }
-
-    fn finish(
-        self: Rc<Self>,
-        _params: blob_upload::FinishParams,
-        mut results: blob_upload::FinishResults,
-    ) -> Promise<(), capnp::Error> {
-        let bytes = std::mem::take(&mut *self.buffer.borrow_mut());
-        let stored = self.store.keep(bytes, self.mime.clone());
-        write_ref(results.get().init_ref(), &stored);
-        Promise::ok(())
+impl ServeObject for RecordingUpload {
+    fn dispatch(self: Arc<Self>, _: &Capabilities, request: FsRequest) -> Dispatch {
+        match request {
+            FsRequest::UploadWrite { bytes } => {
+                self.store.writes.lock().unwrap().push(bytes.len());
+                self.buffer.lock().unwrap().extend_from_slice(&bytes);
+                ready(Ok(FsReply::Empty))
+            }
+            FsRequest::UploadFinish => {
+                let bytes = std::mem::take(&mut *self.buffer.lock().unwrap());
+                ready(Ok(FsReply::Blob(self.store.keep(bytes, self.mime.clone()))))
+            }
+            _ => ready(Err("unexpected upload request".into())),
+        }
     }
 }
 
@@ -558,10 +519,10 @@ struct Recorded {
 fn recording_client() -> Recorded {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let content = Arc::new(Mutex::new(HashMap::new()));
-    let recording = Recording {
+    let recording = Arc::new(Recording {
         content: Arc::clone(&content),
         writes: Arc::clone(&writes),
-    };
+    });
     let (app_end, server_end) = StdUnixStream::pair().unwrap();
     server_end.set_nonblocking(true).unwrap();
     std::thread::spawn(move || {
@@ -569,10 +530,9 @@ fn recording_client() -> Recorded {
             .enable_all()
             .build()
             .unwrap();
-        tokio::task::LocalSet::new().block_on(&runtime, async move {
+        runtime.block_on(async move {
             let server_end = tokio::net::UnixStream::from_std(server_end).unwrap();
-            let bootstrap: document_blobs::Client = capnp_rpc::new_client(recording);
-            let _ = runtime_portal::serve_connected_io(server_end, bootstrap.client).await;
+            let _ = serve_connected(server_end, recording).await;
         });
     });
     Recorded {
@@ -716,10 +676,10 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
 }
 
 /// Runs `scenario` against the `room-1` photos scope of `harness` as a raw
-/// Cap'n Proto peer, which `BlobClient`'s own checks do not constrain.
+/// framed peer, which `BlobClient`'s own checks do not constrain.
 fn raw_app<F, Fut>(harness: &Harness, scenario: F)
 where
-    F: FnOnce(document_blobs::Client) -> Fut,
+    F: FnOnce(Arc<Object>) -> Fut,
     Fut: Future<Output = ()>,
 {
     let mut stream = StdUnixStream::connect(&harness.socket).unwrap();
@@ -728,47 +688,32 @@ where
         &BlobPrincipal::App(BlobScope::new("room-1", "so.tilo.photos").unwrap()),
     )
     .unwrap();
+    let connection = Connection::connect("test-raw-media", stream).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    tokio::task::LocalSet::new().block_on(&runtime, async move {
-        let Ok(rpc) = runtime_portal::UnixCapnpClient::from_connected_fd(
-            stream.into_raw_fd(),
-            rpc_twoparty_capnp::Side::Client,
-        ) else {
-            panic!("the test connection could not be driven");
-        };
-        scenario(rpc.bootstrap()).await;
-    });
+    runtime.block_on(scenario(Object::root(connection)));
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc clients are Rc-based and run on a LocalSet by construction"
-)]
-async fn open_upload(blobs: &document_blobs::Client) -> blob_upload::Client {
-    let mut request = blobs.upload_request();
-    request.get().set_mime("");
-    request
-        .send()
-        .promise
+async fn open_upload(blobs: &Arc<Object>) -> Arc<Object> {
+    let answered = blobs
+        .call(FsRequest::Upload {
+            mime: String::new(),
+        })
+        .await;
+    let Ok(FsReply::Handle(Some(upload))) = answered else {
+        panic!("the server did not hand back an upload: {answered:?}");
+    };
+    blobs.capability(upload)
+}
+
+async fn write_upload(upload: &Arc<Object>, bytes: &[u8]) -> Result<FsReply, NotAvailable> {
+    upload
+        .call(FsRequest::UploadWrite {
+            bytes: bytes.to_vec(),
+        })
         .await
-        .unwrap()
-        .get()
-        .unwrap()
-        .get_upload()
-        .unwrap()
-}
-
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc clients are Rc-based and run on a LocalSet by construction"
-)]
-async fn write_upload(upload: &blob_upload::Client, bytes: &[u8]) -> Result<(), capnp::Error> {
-    let mut request = upload.write_request();
-    request.get().set_bytes(bytes);
-    request.send().promise.await.map(drop)
 }
 
 /// Waits until the backend has seen `count` uploads end without finishing.
@@ -811,7 +756,10 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
         let harness = Harness::start();
         raw_app(&harness, |blobs| async move {
             let upload = open_upload(&blobs).await;
-            write_upload(&upload, &[7; 1000]).await.unwrap();
+            assert!(matches!(
+                write_upload(&upload, &[7; 1000]).await,
+                Ok(FsReply::Empty)
+            ));
             drop(upload);
         });
         await_abandoned(&harness.backend, 1);
@@ -827,7 +775,7 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
                 write_upload(&upload, &chunk).await.unwrap();
             }
             assert!(write_upload(&upload, &[1]).await.is_err());
-            assert!(upload.finish_request().send().promise.await.is_err());
+            assert!(upload.call(FsRequest::UploadFinish).await.is_err());
         });
         await_abandoned(&harness.backend, 1);
         assert!(harness.backend.bytes.lock().unwrap().is_empty());
@@ -838,15 +786,19 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
         let stall = harness.backend.stall.blocking_lock();
         raw_app(&harness, |blobs| async move {
             let upload = open_upload(&blobs).await;
-            // The backend reads nothing yet, so the first write cannot be
-            // taken in full before the second arrives.
-            let mut first = upload.write_request();
-            first.get().set_bytes(&vec![2_u8; MAX_PUT_CHUNK]);
-            let first = first.send().promise;
-            assert!(write_upload(&upload, &[3]).await.is_err());
+            // The backend reads nothing yet, so whichever write is taken
+            // cannot be taken in full before the other arrives.
+            let bytes = vec![2_u8; MAX_PUT_CHUNK];
+            let first = write_upload(&upload, &bytes);
+            let second = write_upload(&upload, &bytes);
+            let (first, second) = tokio::join!(first, second);
+            assert!(
+                second.is_err(),
+                "a write pipelined behind another is refused"
+            );
+            assert!(first.is_err(), "a refused pipeline ends its upload");
             drop(stall);
-            let _ = first.await;
-            assert!(upload.finish_request().send().promise.await.is_err());
+            assert!(upload.call(FsRequest::UploadFinish).await.is_err());
         });
         await_abandoned(&harness.backend, 1);
         assert!(harness.backend.bytes.lock().unwrap().is_empty());

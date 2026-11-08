@@ -221,7 +221,7 @@ impl Slots {
 /// The tilolang package `binding` names, when this machine installed it as
 /// an app: its payload holds the compiled module.
 fn installed(binding: &Binding) -> Option<View> {
-    let app = tilo_installed_apps::read_one_from_env(&binding.app)
+    let app = app_catalogue::apps::read_one_from_env(&binding.app)
         .ok()
         .flatten()?;
     package_at(&app.payload_root, binding)

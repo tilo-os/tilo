@@ -17,14 +17,15 @@
 
 mod common;
 
+use common::audio::Card;
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
-use media::audio::{AudioDevice, AudioGraph, GraphControl};
+use media::audio::{AudioDevice, AudioGraph};
 use runtime_collab::{SpeakerCommand, SpeakerMemberSpec, SpeakerReply, SpeakerRoleSpec};
 use serde_json::{Map, Value, json};
 use tilo_actions::DoorError;
-use tilo_audio_service::sound::{self, Graph, Read, SoundService};
+use tilo_audio_service::sound::{self, Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::Connectivity;
 use tilo_connectivity_service::device::{Change, Device, Readings};
@@ -62,11 +63,7 @@ impl Device for Radios {
     }
 }
 
-/// A sound card in memory: two outputs, the speakers in use.
-struct Card {
-    graph: Mutex<AudioGraph>,
-}
-
+/// A device the card reports, as the audio service reads one.
 fn output(id: u32, label: &str, default: bool) -> AudioDevice {
     AudioDevice {
         id,
@@ -81,69 +78,16 @@ fn output(id: u32, label: &str, default: bool) -> AudioDevice {
     }
 }
 
-impl Graph for Card {
-    fn read(&self) -> Read {
-        Read {
-            graph: self.graph.lock().unwrap().clone(),
-            uses: Vec::new(),
-        }
-    }
-
-    fn control(&self) -> &dyn GraphControl {
-        self
-    }
-}
-
-impl GraphControl for Card {
-    fn set_default_sink(&self, node_id: u32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            sink.is_default = sink.id == node_id;
-        }
-        Ok(())
-    }
-
-    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            if sink.id == node_id {
-                sink.volume = Some(perceptual);
-            }
-        }
-        Ok(())
-    }
-
-    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 /// The sound service served over lines on a thread, as `tilo-audio
 /// --serve` serves it on its pipes; the session's end of the lines.
 fn audio_over_lines() -> Remote {
-    let card: Arc<dyn Graph> = Arc::new(Card {
-        graph: Mutex::new(AudioGraph {
-            sinks: vec![
-                output(40, "Speakers", true),
-                output(41, "Headphones", false),
-            ],
-            ..AudioGraph::default()
-        }),
-    });
+    let card: Arc<dyn Graph> = Arc::new(Card::new(AudioGraph {
+        sinks: vec![
+            output(40, "Speakers", true),
+            output(41, "Headphones", false),
+        ],
+        ..AudioGraph::default()
+    }));
     let (requests_in, requests_out) = std::io::pipe().unwrap();
     let (events_in, events_out) = std::io::pipe().unwrap();
     let (sender, incoming, wake) = lines::incoming();

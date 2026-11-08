@@ -411,7 +411,7 @@ fn publish_snapshot(bots: &Bots) {
 async fn a_published_bot_installs_from_the_directory() {
     let bots = spawn().await;
     let program = echo_program();
-    let release = registry_client::BotRelease {
+    let release = app_registry::publisher::BotRelease {
         program: &program,
         package_id: "so.tilo.bots.echo",
         version: "1.0.0",
@@ -419,9 +419,10 @@ async fn a_published_bot_installs_from_the_directory() {
         connectors: &[],
     };
     let entry =
-        registry_client::build_bot_entry(&release, &bots.publisher, None, None, 100).unwrap();
+        app_registry::publisher::build_bot_entry(&release, &bots.publisher, None, None, 100)
+            .unwrap();
     tokio::task::block_in_place(|| {
-        let client = registry_client::RegistryClient::new(&bots.base).unwrap();
+        let client = app_registry::publisher::RegistryClient::new(&bots.base).unwrap();
         let url = client.upload_program(&bots.publisher, &program).unwrap();
         assert_eq!(url, entry.versions[0].bot().unwrap().program_url);
     });

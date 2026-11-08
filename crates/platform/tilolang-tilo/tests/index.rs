@@ -16,7 +16,7 @@ use tilolang_tilo::host::{Host, Opening};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::DynValue;
 
-use crate::fixtures::{Replica, TODO, field_id, type_id};
+use crate::fixtures::{APP as APP_COUNTER, COUNTER, Replica, TODO, field_id, type_id};
 
 const APP: &str = "so.tilo.todo";
 const KIND: &str = "tl.so.tilo.todo.TodoList";
@@ -209,32 +209,140 @@ fn workspace() -> (Replica, String, String) {
     (ada, root.doc, lock)
 }
 
-/// Each replica adds the list's first item before the two meet: the record keeps one of the maps
-/// the items sit in, and the items of the other go with it. The index kept change by change holds
-/// the item the record holds, and no row for the one it does not.
+/// What a person sees of the list: the rows of its `items`, and the items the record holds.
+fn listed(replica: &Replica, root: &str) -> Vec<String> {
+    let meta = &replica.host.packages()[0].meta;
+    let list = ResourceRef::root(root, type_id(meta, "TodoList"));
+    let spec = tilolang_runtime::store::FieldSpec {
+        id: field_id(meta, "TodoList", "items"),
+        kind: tilolang_runtime::meta::FieldKind::Collection,
+    };
+    tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
+        .unwrap()
+        .ids()
+}
+
+/// The maps the record `root` of `replica` keeps its items in.
+fn item_maps(replica: &Replica, root: &str) -> Vec<automerge::ObjId> {
+    let held = tilolang_tilo::reads::resource_obj(&replica.doc, APP, root).unwrap();
+    tilolang_tilo::containers::maps(&replica.doc, &held, tilolang_runtime::place::ITEMS_KEY)
+}
+
+/// How many maps the record `root` of `replica` keeps items in: one once the record has folded
+/// the copies a replica made into the one it keeps.
+fn maps_holding_items(replica: &Replica, root: &str) -> usize {
+    use automerge::ReadDoc as _;
+    item_maps(replica, root)
+        .iter()
+        .filter(|items| replica.doc.keys(items).next().is_some())
+        .count()
+}
+
+/// Each replica adds the list's first item before the two meet: the record is made with the map
+/// its items go in, so both items go into it and both are the list's.
 #[test]
-fn an_index_keeps_no_item_of_an_item_map_the_record_does_not() {
+fn an_item_each_replica_added_before_they_met_is_the_lists_on_both() {
     let (mut ada, root, lock) = workspace();
     let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+    assert_eq!(
+        item_maps(&ada, &root).len(),
+        1,
+        "the record is made with the map its items go in"
+    );
     let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
     ada.apply(&ada_first);
     let grace_first = plan(&grace, "add", json!({ "text": "grace's" }), &root);
     grace.apply(&grace_first);
     ada.sync_with(&mut grace);
     for (name, replica) in [("ada", &ada), ("grace", &grace)] {
-        assert_eq!(kept(replica), anew(replica, &lock), "{name}");
-        // What a person sees: the rows of the list are the items the record holds.
-        let items = items(replica, &root);
-        let meta = &replica.host.packages()[0].meta;
-        let list = ResourceRef::root(&root, type_id(meta, "TodoList"));
-        let spec = tilolang_runtime::store::FieldSpec {
-            id: field_id(meta, "TodoList", "items"),
-            kind: tilolang_runtime::meta::FieldKind::Collection,
+        assert_eq!(
+            items(replica, &root).len(),
+            2,
+            "{name}: both items are the list's"
+        );
+        assert_eq!(
+            maps_holding_items(replica, &root),
+            1,
+            "{name}: one map of items"
+        );
+        assert_eq!(listed(replica, &root), items(replica, &root), "{name}");
+        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+    }
+}
+
+/// A record written before the platform made its map of items with it, two replicas that each
+/// added an item to it before they met, and a write on either side: both items read on both, and
+/// the record folds the two maps into one, wherever the write was made.
+#[test]
+fn a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one() {
+    for write_by in ["ada", "grace"] {
+        let (mut ada, root, lock) = workspace();
+        // The record as an earlier version of the platform left it: no map of items at all.
+        let held = tilolang_tilo::reads::resource_obj(&ada.doc, APP, &root).unwrap();
+        let items_key = tilolang_runtime::place::ITEMS_KEY;
+        {
+            use automerge::ReadDoc as _;
+            use automerge::transaction::Transactable as _;
+            assert!(ada.doc.get(&held, items_key).unwrap().is_some());
+            ada.doc.delete(&held, items_key).unwrap();
+            ada.doc.commit();
+        }
+        let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+        let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
+        ada.apply(&ada_first);
+        let grace_first = plan(&grace, "add", json!({ "text": "grace's" }), &root);
+        grace.apply(&grace_first);
+        ada.sync_with(&mut grace);
+        assert_eq!(
+            maps_holding_items(&ada, &root),
+            2,
+            "{write_by}: each replica made a map of items"
+        );
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(
+                items(replica, &root).len(),
+                2,
+                "{write_by}: {name} reads both maps' items"
+            );
+            assert_eq!(
+                listed(replica, &root),
+                items(replica, &root),
+                "{write_by}: {name}: the rows are the items"
+            );
+        }
+
+        // A write on one side folds the two maps into the one the record keeps, and both items
+        // stay the list's on both.
+        let writer = if write_by == "ada" {
+            &mut ada
+        } else {
+            &mut grace
         };
-        let listed = tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
-            .unwrap()
-            .ids();
-        assert_eq!(listed, items, "{name}: the rows are the record's items");
+        let second = plan(writer, "add", json!({ "text": "later" }), &root);
+        writer.apply(&second);
+        ada.sync_with(&mut grace);
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(
+                maps_holding_items(replica, &root),
+                1,
+                "{write_by}: {name}: the record keeps one map of items"
+            );
+            assert_eq!(
+                items(replica, &root).len(),
+                3,
+                "{write_by}: {name}: every item is the list's"
+            );
+            assert_eq!(
+                listed(replica, &root),
+                items(replica, &root),
+                "{write_by}: {name}"
+            );
+            assert_eq!(
+                kept(replica),
+                anew(replica, &lock),
+                "{write_by}: {name}: the index"
+            );
+        }
     }
 }
 
@@ -706,4 +814,172 @@ fn a_documents_newest_versions_are_read_a_page_at_a_time() {
     // The newest version of an item is the one the page reads of it.
     let item = ResourceRef::parse_id(&all[1].0, String::new()).unwrap();
     assert_eq!(store.newest(&item).unwrap(), Some(all[1].1.clone()));
+}
+
+/// How many maps the document keeps at `path`, counting only those that hold something: a fold
+/// empties the copies it merges, and leaves them where they are.
+fn maps_holding(replica: &Replica, path: &[&str]) -> usize {
+    use automerge::ReadDoc as _;
+    tilolang_tilo::containers::reach(&replica.doc, &automerge::ROOT, path)
+        .iter()
+        .filter(|held| replica.doc.keys(held).next().is_some())
+        .count()
+}
+
+/// The ids of the records of the app the workspace holds.
+fn ids(replica: &Replica) -> Vec<String> {
+    tilolang_tilo::action::resource_ids(&replica.doc, APP)
+}
+
+/// A record of the todo list `id`, made by the store as a window's creation makes one.
+fn create(replica: &mut Replica, id: &str) {
+    let list = type_id(
+        &replica
+            .host
+            .packages()
+            .iter()
+            .find(|package| package.meta.app == APP)
+            .expect("the app is open")
+            .meta,
+        "TodoList",
+    );
+    replica
+        .host
+        .store()
+        .create_with_id(
+            &tilolang_runtime::store::NewRecord {
+                ty: list,
+                app: APP.to_owned(),
+                fields: Vec::new(),
+            },
+            id,
+        )
+        .unwrap();
+    replica.commit();
+}
+
+/// Each replica founds the workspace with the first record of the app it makes, before the two
+/// meet: each made the workspace's `tl` map and the app's map of its own. Both records are the
+/// app's on both, and the index holds what deriving it anew holds; the next write keeps one map
+/// of each, on both.
+#[test]
+fn the_first_record_each_replica_made_of_a_new_workspace_is_the_apps_on_both() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
+    let lock = packages[0].ids.clone();
+    let mut grace = Replica::new("grace", AutoCommit::new(), &[(TODO, &lock)]).0;
+    // Each device opens the app and makes its first record on it, offline.
+    ada.host.root_of(APP).unwrap();
+    ada.commit();
+    create(&mut ada, "ada-list");
+    grace.host.root_of(APP).unwrap();
+    grace.commit();
+    create(&mut grace, "grace-list");
+    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+        assert_eq!(
+            maps_holding(replica, &["tl"]),
+            1,
+            "{name}: a map of its own"
+        );
+        assert_eq!(
+            maps_holding(replica, &["tl", APP]),
+            1,
+            "{name}: an app map of its own"
+        );
+    }
+    ada.sync_with(&mut grace);
+    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+        assert_eq!(maps_holding(replica, &["tl"]), 2, "{name}: two maps met");
+        for id in ["ada-list", "grace-list"] {
+            assert!(
+                tilolang_tilo::reads::resource_obj(&replica.doc, APP, id).is_some(),
+                "{name}: {id} is one of the app's records"
+            );
+            assert!(
+                replica.host.store().record(id).is_ok(),
+                "{name}: {id} reads"
+            );
+        }
+        assert_eq!(
+            ids(replica).len(),
+            3,
+            "{name}: both lists and the app's root"
+        );
+        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+    }
+
+    // A write on one side keeps one map of each, with both records in it, on both.
+    create(&mut grace, "later");
+    ada.sync_with(&mut grace);
+    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+        assert_eq!(maps_holding(replica, &["tl"]), 1, "{name}: one map");
+        assert_eq!(
+            maps_holding(replica, &["tl", APP]),
+            1,
+            "{name}: one app map"
+        );
+        let held = ids(replica);
+        for id in ["ada-list", "grace-list", "later"] {
+            assert!(held.iter().any(|held| held == id), "{name}: {id} stays");
+            assert!(replica.host.store().record(id).is_ok(), "{name}: {id}");
+        }
+        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+    }
+}
+
+/// The same for the app's map alone: the workspace's `tl` map is one, and each replica makes
+/// the app's first record of its own, so the two app maps met.
+#[test]
+fn the_first_record_each_replica_made_of_a_new_app_is_the_apps_on_both() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, ""), (TODO, "")]);
+    let counter = packages[0].ids.clone();
+    let lock = packages[1].ids.clone();
+    // The workspace holds the counter's records; the todo app's map is made by the first record
+    // of it, which each device makes on its own.
+    ada.host.root_of(APP_COUNTER).unwrap();
+    ada.commit();
+    let mut grace = ada.fork("grace", &[(COUNTER, &counter), (TODO, &lock)]);
+    create(&mut ada, "ada-list");
+    create(&mut grace, "grace-list");
+    assert_eq!(maps_holding(&ada, &["tl"]), 1, "one workspace map");
+    assert_eq!(
+        maps_holding(&grace, &["tl"]),
+        1,
+        "one workspace map on grace's side too"
+    );
+    ada.sync_with(&mut grace);
+    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+        assert_eq!(maps_holding(replica, &["tl"]), 1, "{name}: one map");
+        assert_eq!(
+            maps_holding(replica, &["tl", APP]),
+            2,
+            "{name}: each replica made the app's map"
+        );
+        for id in ["ada-list", "grace-list"] {
+            assert!(
+                tilolang_tilo::reads::resource_obj(&replica.doc, APP, id).is_some(),
+                "{name}: {id} is one of the app's records"
+            );
+            assert!(
+                replica.host.store().record(id).is_ok(),
+                "{name}: {id} reads"
+            );
+        }
+        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+    }
+
+    create(&mut ada, "later");
+    ada.sync_with(&mut grace);
+    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+        assert_eq!(
+            maps_holding(replica, &["tl", APP]),
+            1,
+            "{name}: the app's maps are one"
+        );
+        let held = ids(replica);
+        for id in ["ada-list", "grace-list", "later"] {
+            assert!(held.iter().any(|held| held == id), "{name}: {id} stays");
+            assert!(replica.host.store().record(id).is_ok(), "{name}: {id}");
+        }
+        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+    }
 }

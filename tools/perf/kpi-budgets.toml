@@ -1446,16 +1446,23 @@ source = "navigation to the desktop's first presented frame, fresh browser conte
 # Resource Timing API's encodedBodySize (what came over the wire, compressed)
 # and its entry count. Transfer bytes and requests are deterministic counters,
 # so their rule is the default one: a regression is a rise over the median of
-# the stored runs, not a night's noise. The ceilings are the live entry's
-# first load (tilo.coffee, measured 2026-10-27: 1 HTML page, the start module
-# 23,078,266 B raw / 5,715,416 B brotli, 67 entry-page modules and the
-# startup fonts, about 8.4 MB over the wire) with a tenth of
-# headroom; t's perf-browser check serves the same bundle unversioned from
-# loopback, so its numbers are the bundle's, not the edge's.
+# the stored runs, not a night's noise.
+#
+# Two series measure it. The live entry (tilo.coffee, 2026-10-27: 1 HTML page,
+# the start module 23,078,266 B raw / 5,715,416 B brotli, 67 entry-page
+# modules and the startup fonts, about 8.4 MB over the wire) sets the request
+# ceiling with a tenth of headroom. t's perf-browser check serves the same
+# bundle unversioned from loopback, so it measures the bundle alone and comes
+# out higher; the transfer ceiling has to cover that series, and is its first
+# load (9,537,404 B, median of 3; 9,659,030 B at its worst, 2026-11-07) plus
+# the 1% headroom the size budgets keep, rounded up to 64 KiB. Both ceilings
+# are enforced: a first visit that adds a resource it did not need fails here
+# instead of only drifting through the medians.
 
 [kpi."browser.load.transfer_bytes"]
 unit = "bytes"
-max = 9300000.0
+max = 9764864.0
+enforce = true
 baseline_min_runs = 1
 source = "summed encodedBodySize of every resource that started before the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
 

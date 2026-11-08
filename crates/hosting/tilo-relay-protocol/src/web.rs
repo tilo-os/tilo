@@ -23,7 +23,6 @@
 //! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/live` ([`LIVE_INFO_PATH`]) | [`LiveRequest`] | [`LiveInfo`]; `403` when the page's device is not admitted |
-//! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
 //! `/fetch` is the host's fetch proxy, offered when the session grant
@@ -345,9 +344,6 @@ pub struct EventsPage {
     /// The envelopes the relay stream would have delivered.
     pub envelopes: Vec<Envelope>,
 }
-
-/// The route of the host's workspace join exchange over HTTPS.
-pub const WORKSPACE_JOIN_PATH: &str = "/workspace-join";
 
 /// Route of the live plane: how a page learns where the relay's WebTransport
 /// listener is and which certificate to pin for it.

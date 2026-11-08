@@ -26,10 +26,9 @@ use fs::share_refresh::{
 };
 use fs::sync::{self, SyncHandle};
 use fs::workspace_authority::{
-    AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
-    local_authority_request, local_authority_socket_path, local_content_socket_path,
-    register_local_content_peer, remove_local_content_peers, serve_local_authority,
-    serve_local_content_peer,
+    WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
+    local_authority_socket_path, local_content_socket_path, register_local_content_peer,
+    remove_local_content_peers, serve_local_authority, serve_local_content_peer,
 };
 use fs::{
     AclHandle, CapabilityFile, ContentStore, FileHistoryStore, FileShareLinkV2,
@@ -490,9 +489,6 @@ enum Command {
         /// Seed the workspace from this directory's current contents.
         #[arg(short, long)]
         seed: Option<PathBuf>,
-        /// Serve the document control socket here.
-        #[arg(long)]
-        control_sock: Option<PathBuf>,
         /// Serve typed hydration accounting and safe eviction here.
         #[arg(long)]
         storage_sock: Option<PathBuf>,
@@ -515,9 +511,6 @@ enum Command {
         /// Persistent content cache directory (the iroh-blobs store root).
         #[arg(short, long)]
         cache_dir: Option<PathBuf>,
-        /// Serve the document control socket here.
-        #[arg(long)]
-        control_sock: Option<PathBuf>,
         /// Serve typed hydration accounting and safe eviction here.
         #[arg(long)]
         storage_sock: Option<PathBuf>,
@@ -643,12 +636,6 @@ enum Command {
         #[arg(long = "relay-workspace-id")]
         relay_workspace_ids: Vec<u64>,
     },
-    /// Sign and atomically publish the current workspace capability policy.
-    /// Exits with status 77 on a device that holds no governor key.
-    PublishAuthority {
-        #[arg(long)]
-        acl: PathBuf,
-    },
     /// Register a direct filesystem endpoint obtained from authenticated relay
     /// discovery with the running local filesystem daemon.
     RegisterContentPeer {
@@ -677,28 +664,6 @@ enum Command {
     },
 }
 
-/// Exit status of `publish-authority` when this device holds no governor key:
-/// only the person's primary device signs the workspace's authority, so a
-/// joined device has nothing to publish and its desktop stops retrying.
-const PUBLISH_AUTHORITY_NOT_GOVERNOR_EXIT: i32 = 77;
-
-/// `publish-authority` found no governor key on this device.
-#[derive(Debug)]
-struct NotGovernor(std::io::Error);
-
-impl std::fmt::Display for NotGovernor {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "this device holds no workspace governor key ({}); only the primary device publishes \
-             workspace authority",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for NotGovernor {}
-
 fn main() -> Result<()> {
     // Before the runtime starts any thread: this executable also serves as
     // the Automerge worker the conflict merge decodes peer versions in.
@@ -711,14 +676,7 @@ fn main() -> Result<()> {
     }
     // FUSE callbacks poll their futures on the fuser threads via the
     // runtime handle; the workers only serve iroh, sockets and timers.
-    let result = tilo_rt::daemon("tilo-fs").run(run_command(cli))?;
-    if let Err(error) = &result
-        && error.downcast_ref::<NotGovernor>().is_some()
-    {
-        eprintln!("{error}");
-        std::process::exit(PUBLISH_AUTHORITY_NOT_GOVERNOR_EXIT);
-    }
-    result
+    tilo_rt::daemon("tilo-fs").run(run_command(cli))?
 }
 
 #[allow(
@@ -743,7 +701,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             mount_point,
             cache_dir,
             seed,
-            control_sock,
             storage_sock,
             blob_sock,
             acl,
@@ -760,7 +717,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                 mount_point,
                 cache_dir,
                 seed,
-                control_sock,
                 storage_sock,
                 blob_sock,
                 acl,
@@ -772,7 +728,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             mount_point,
             ticket,
             cache_dir,
-            control_sock,
             storage_sock,
             blob_sock,
             acl,
@@ -782,7 +737,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                 mount_point,
                 ticket,
                 cache_dir,
-                control_sock,
                 storage_sock,
                 blob_sock,
                 acl,
@@ -890,7 +844,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             principals,
             relay_workspace_ids,
         ),
-        Command::PublishAuthority { acl } => publish_authority(acl).await,
         Command::RegisterContentPeer {
             cache_dir,
             endpoint_stdin,
@@ -934,52 +887,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             Ok(())
         }
     }
-}
-
-/// Sign `acl` as the workspace governor and hand it to the local daemon.
-/// Runs in the person's session: it reads only the person's governor key and
-/// the group-reachable socket directory, never the daemon's root-only cache.
-async fn publish_authority(acl: PathBuf) -> Result<()> {
-    let paths = identity_paths();
-    let governor = match tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey) {
-        Ok(governor) => governor,
-        Err(tilo_user_identity::persist::PersistError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound =>
-        {
-            return Err(NotGovernor(error).into());
-        }
-        Err(error) => return Err(error).context("read workspace governor key"),
-    };
-    let capabilities: collab_types::FsAuthority = serde_json::from_slice(
-        &std::fs::read(&acl).with_context(|| format!("read capability list {}", acl.display()))?,
-    )?;
-    let (workspace, socket) = fs::workspace_authority::find_local_authority().await?;
-    let current = local_authority_request(
-        &socket,
-        AuthorityRequest {
-            workspace,
-            publish: None,
-        },
-    )
-    .await?
-    .authority;
-    let revision = current.map_or(1, |current| current.revision.saturating_add(1));
-    let envelope =
-        WorkspaceAuthorityEnvelope::sign(workspace, revision, capabilities, false, &governor)?;
-    let accepted = local_authority_request(
-        &socket,
-        AuthorityRequest {
-            workspace,
-            publish: Some(envelope.clone()),
-        },
-    )
-    .await?
-    .authority;
-    anyhow::ensure!(
-        accepted.as_ref() == Some(&envelope),
-        "workspace authority publication lost a concurrent revision; retry"
-    );
-    Ok(())
 }
 
 async fn mount_bearer_share(
@@ -1255,31 +1162,6 @@ fn bind_private_socket(path: &Path) -> std::io::Result<tokio::net::UnixListener>
     let listener = tilo_files::native::private::bind_socket(path)?;
     listener.set_nonblocking(true)?;
     tokio::net::UnixListener::from_std(listener)
-}
-
-/// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
-fn spawn_control(
-    sock: &Path,
-    namespace: Arc<Mutex<Namespace>>,
-    sync: Arc<SyncHandle>,
-    enforcement: fs::control::Enforcement,
-) -> tokio::task::JoinHandle<()> {
-    // The socket can read and edit every document — restrict to the owner.
-    match bind_private_socket(sock) {
-        Ok(listener) => {
-            println!("Document control socket at {}", sock.display());
-            tokio::spawn(fs::control::serve(
-                listener,
-                namespace,
-                Some(sync),
-                enforcement,
-            ))
-        }
-        Err(e) => {
-            eprintln!("could not bind control socket {}: {e}", sock.display());
-            tokio::spawn(async {})
-        }
-    }
 }
 
 fn spawn_share_control(
@@ -1836,7 +1718,6 @@ async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
     seed: Option<PathBuf>,
-    control_sock: Option<PathBuf>,
     storage_sock: Option<PathBuf>,
     blob_sock: Option<PathBuf>,
     acl_args: AclArgs,
@@ -2369,8 +2250,6 @@ async fn serve(
         .as_ref()
         .and_then(|_| share_socket.clone())
         .map(ServedSocket);
-    let _control = control_sock
-        .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     let mount_outcome = run_mount(
         MountConfig {
@@ -2453,7 +2332,6 @@ async fn mount(
     mount_point: PathBuf,
     ticket: String,
     cache_dir: Option<PathBuf>,
-    control_sock: Option<PathBuf>,
     storage_sock: Option<PathBuf>,
     blob_sock: Option<PathBuf>,
     acl_args: AclArgs,
@@ -2621,8 +2499,6 @@ async fn mount(
         })
         .transpose()?;
 
-    let _control = control_sock
-        .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         MountConfig {

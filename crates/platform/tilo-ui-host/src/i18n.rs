@@ -1,6 +1,36 @@
 //! The host's fluent catalogue: chrome only. What an app says comes from the app's own source.
 
-ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+// A window's frames are drawn in every window, so their words are part of the binary, in every
+// language they ship, rather than read from a language pack: a window that speaks German says
+// "Alle Notizen" beside the app's "Notiz" even where nobody installed a pack. They are shared
+// rather than a window's own, so they follow its language and never choose it (see
+// `ui::i18n::WIDGET_CATALOG`).
+pub static CATALOG: ui::i18n::EmbeddedCatalog = {
+    let catalog = ui::i18n::EmbeddedCatalog::new(
+        "en-US",
+        &[
+            ("en-US", include_str!("../locales/en-US.ftl")),
+            ("de-DE", include_str!("../locales/de-DE.ftl")),
+        ],
+    )
+    .with_system_locale()
+    .as_shared();
+    #[cfg(test)]
+    let catalog = catalog.with_pinned_locale("en-US");
+    catalog
+};
+
+/// The catalogue's word `key` on this thread.
+#[must_use]
+pub fn t(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// The catalogue's word `key`, interpolating `args`.
+#[must_use]
+pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
+}
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
@@ -91,14 +121,22 @@ mod tests {
         }
     }
 
-    /// A window's language reaches the host's own words: a package that ships German makes
-    /// its frames' sort menu and its More button speak German too, where the desktop's own
-    /// catalogue would leave them in its source language.
+    /// A window's language reaches the host's own words: a window that speaks German — because
+    /// the app it shows ships German — says its frames' sort menu and its More button in
+    /// German too, where the desktop's own catalogue would leave them in its source language.
+    /// The catalogue is shared, so the host's German alone does not make an English app's
+    /// window German: the app's own catalogue is what says which language the window speaks.
     #[test]
     fn a_windows_language_covers_the_hosts_own_words() {
         ensure();
         ui::i18n::I18nManager::register_widget_messages();
         ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(
+            t("tilolang-sort"),
+            "Sort",
+            "no app speaks German here, so the window stays in its source language"
+        );
+        ui::i18n::I18nManager::add_resource("de-DE", "app-title = Titel".to_owned());
         assert_eq!(t("tilolang-sort"), "Sortieren");
         assert_eq!(ui::i18n!("window-toolbar-more"), "Weitere Aktionen");
         ui::i18n::I18nManager::set_locale("en-US");

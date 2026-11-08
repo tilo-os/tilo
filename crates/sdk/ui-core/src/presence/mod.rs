@@ -77,11 +77,10 @@ pub const TYPING_FADE: crate::time::Duration = crate::motion::Trace::LIFE;
 /// ([`crate::motion::Trace::STEPS`]).
 pub const TYPING_FADE_STEPS: u32 = crate::motion::Trace::STEPS;
 
-/// Longest forward caret jump still read as "this peer just wrote that"
-/// (see the `Caret` arm of [`PresenceCtx::apply_remote_presence`]).
-/// Generous on purpose: a caret key is per *block*, so a stray mark is
-/// bounded to one paragraph, while too tight a cap would drop the marker
-/// on the edit most worth seeing (an agent replacing a line with a sentence).
+/// Longest forward caret jump still read as "this peer just wrote that" (the `Caret` arm of
+/// [`PresenceCtx::apply_remote_presence`]). Generous on purpose: a caret key is per *block*, so a
+/// stray mark is bounded to one paragraph, while too tight a cap would drop the marker on the edit
+/// most worth seeing.
 const TYPING_DERIVE_MAX_RUN: usize = 512;
 
 /// How long after a remote text edit an advancing caret may still be read as
@@ -438,11 +437,9 @@ pub const POINTER_IDLE: Duration = Duration::from_secs(5);
 /// ([`crate::motion::Follow::FADE`]). See [`PresenceCtx::pointer_opacity`].
 pub const POINTER_FADE: Duration = crate::motion::Follow::FADE;
 
-/// Longest a peer's pointer takes to glide to a newly heard position. Peers
-/// publish at ~30 Hz, so a moving pointer glides over the gap between its
-/// last two samples (~33 ms) and arrives as the next one is due; this caps
-/// the glide after a pause ([`crate::motion::Follow::GLIDE_MAX`]). See
-/// [`PresenceCtx::pointer_position_at`].
+/// Longest a peer's pointer takes to glide to a newly heard position. Peers publish at ~30 Hz, so a
+/// moving pointer glides over the gap between its last two samples and arrives as the next is due;
+/// this caps the glide after a pause ([`crate::motion::Follow::GLIDE_MAX`]).
 pub const POINTER_EASE_MAX: Duration = crate::motion::Follow::GLIDE_MAX;
 
 /// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
@@ -588,11 +585,9 @@ pub struct PresenceCtx {
     /// frame it sent comes back stamped with. Empty means "unknown", which
     /// suppresses nobody. See [`Self::set_own_identity`].
     own: std::collections::HashSet<UserId>,
-    /// Which participant in the workspace this session *is* — the `is_self` row
-    /// of `CollabEvent::Context`. Deliberately not in [`Self::names`]/
-    /// [`Self::here`]/the pointer-caret stores, which describe *other*
-    /// people (a row for yourself there is a pill over your own document).
-    /// `None` until the workspace has said.
+    /// Which participant in the workspace this session *is* — the `is_self` row of
+    /// `CollabEvent::Context`. Deliberately not in [`Self::names`], [`Self::here`] or the pointer
+    /// and caret stores, which describe *other* people. `None` until the workspace has said.
     self_participant: Option<(UserId, String)>,
     /// When the workspace admitted each participant, this session's own
     /// included, Unix milliseconds, as the roster
@@ -603,11 +598,10 @@ pub struct PresenceCtx {
     /// [`Self::names`], [`Self::self_participant`] and [`Self::joined`]
     /// whenever one changes. See [`ParticipantLabels`].
     labels: ParticipantLabels,
-    /// The surface this process draws, spelled as [`crate::local_surface_id`]
-    /// spells it, compared against a pointer's claimed surface to decide
-    /// whether a content-space position is this process's to place. `None`
-    /// fails closed — a pointer in the wrong window should stay invisible,
-    /// not get placed wrong.
+    /// The surface this process draws, spelled as [`crate::local_surface_id`] spells it, compared
+    /// against a pointer's claimed surface to decide whether a content-space position is this
+    /// process's to place. `None` fails closed: a pointer in the wrong window stays invisible
+    /// rather than being placed wrong.
     surface: Option<String>,
 }
 
@@ -783,12 +777,10 @@ impl PresenceCtx {
             .filter(|n| !n.is_empty())
     }
 
-    /// Whether `user_id` is this session's own participant. Checks
-    /// `self_participant` before the declared list (which
-    /// [`Self::set_own_identity`] replaces wholesale), and also matches the
-    /// workspace's *name* for this session — a locally-sent frame is stamped
-    /// `Bob`, the announced row is `ada`; safe because a remote id is
-    /// always `peer@<handle>`, never a bare name.
+    /// Whether `user_id` is this session's own participant. Checks `self_participant` before the
+    /// declared list (which [`Self::set_own_identity`] replaces wholesale), and also matches the
+    /// workspace's *name* for this session: a locally-sent frame is stamped `Bob`, the announced
+    /// row `ada`, and a remote id is always `peer@<handle>`.
     pub fn is_own_identity(&self, user_id: &str) -> bool {
         if user_id.trim().is_empty() {
             return false;
@@ -940,13 +932,10 @@ impl PresenceCtx {
         );
     }
 
-    /// Where to paint `user`'s pointer at `key` at `now`: on its way from
-    /// where it was shown to where it was last heard, eased over the gap
-    /// between its last two samples (at most [`POINTER_EASE_MAX`]), so a
-    /// ~30 Hz stream of samples moves smoothly on a faster display instead
-    /// of stepping. `None` when there is no such pointer. Painters of peer
-    /// pointers read this rather than [`Self::pointer_for`]'s raw position,
-    /// except under reduced motion, where the raw position is the answer.
+    /// Where to paint `user`'s pointer at `key` at `now`: on its way from where it was shown to
+    /// where it was last heard, eased over the gap between its last two samples (at most
+    /// [`POINTER_EASE_MAX`]). `None` when there is no such pointer; painters read this rather than
+    /// [`Self::pointer_for`]'s raw position.
     pub fn pointer_position_at(
         &self,
         key: &PresenceKey,
@@ -1030,11 +1019,10 @@ impl PresenceCtx {
         crate::motion::Follow::fading(left, fade)
     }
 
-    /// How opaque to paint the name beside `user`'s pointer at `key`: whole
-    /// while it moves and while they are talking ([`CursorChats::talking`]),
-    /// then fading over the last `fade` of [`POINTER_NAME_LINGER`] once it
-    /// stands still. A zero `fade` (reduced motion) keeps it whole until the
-    /// linger is up.
+    /// How opaque to paint the name beside `user`'s pointer at `key`: whole while it moves and
+    /// while they are talking ([`CursorChats::talking`]), then fading over the last `fade` of
+    /// [`POINTER_NAME_LINGER`] once it stands still. A zero `fade` (reduced motion) keeps it whole
+    /// until the linger is up.
     pub fn pointer_name_opacity(
         &self,
         key: &PresenceKey,
@@ -1431,12 +1419,10 @@ impl PresenceCtx {
         self.display_name(&UserId(user.to_owned()))
     }
 
-    /// The friendly name to show for `user`, this session's own
-    /// participant included, falling back to the raw id when the roster
-    /// hasn't announced one. Never blank. People who share a name carry
-    /// their number ("Ada (2)", see [`ParticipantLabels`]). Software acting
-    /// for a person is named with that person ("Claude, for Ada"), else
-    /// with its kind ("Claude · Agent").
+    /// The friendly name to show for `user`, this session's own participant included, falling back
+    /// to the raw id when the roster has not announced one. Never blank. People sharing a name
+    /// carry their number ("Ada (2)", [`ParticipantLabels`]); software acting for a person is named
+    /// with that person ("Claude, for Ada"), else with its kind.
     pub fn display_name(&self, user: &UserId) -> String {
         let name = self.names.get(user).cloned().or_else(|| {
             self.self_participant
@@ -1772,12 +1758,10 @@ impl PresenceCtx {
     // carries peer ids as `String`, the rest of `PresenceCtx` is keyed by
     // [`UserId`]. Let the pump forward straight from the event payload.
 
-    // `key` is only ever borrowed inside these three wrappers, so clippy
-    // would rather see `&PresenceKey` — but they're the public wire-decode
-    // entrypoints called from `shell::peer_presence` and app crates
-    // (`apps/notes`, `apps/word-processor`) outside this file's ownership,
-    // each handing over an owned `PresenceKey` it just decoded; narrowing
-    // the parameter would ripple into call sites this pass can't touch.
+    // `key` is only borrowed inside these three wrappers, so clippy would rather see `&PresenceKey`
+    // — but they are public wire-decode entrypoints called from `shell::peer_presence` and app
+    // crates (`apps/notes`, `apps/word-processor`), each handing over an owned `PresenceKey` it
+    // just decoded, so narrowing would ripple into call sites this pass can't touch.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "public wire-decode API called from crates outside ui; narrowing to &PresenceKey would require updating call sites out of scope for this pass"
@@ -1813,17 +1797,14 @@ impl PresenceCtx {
         }
     }
 
-    /// Fold one inbound presence frame into this context — the whole decode
-    /// of a `RemotePresenceUpdate`. Lives on `PresenceCtx` rather than `App`
-    /// because the compositor also subscribes to the identical stream, and
-    /// two decoders would drift. The returned [`RemotePresenceEffect`] names
-    /// what a bare presence store can't do for itself.
-    // `payload`'s variants are all Copy fields, but `PresencePayload` itself
-    // isn't, so clippy would rather see `&PresencePayload` here — this is
-    // the same public wire-decode entrypoint called from
-    // `shell::peer_presence` and app crates outside this file's ownership,
-    // so narrowing it would ripple into call sites out of scope for this
-    // pass.
+    /// Fold one inbound presence frame into this context — the whole decode of a
+    /// `RemotePresenceUpdate`. Lives on `PresenceCtx` rather than `App` because the compositor
+    /// subscribes to the identical stream, and two decoders would drift. The returned
+    /// [`RemotePresenceEffect`] names what a bare presence store can't do for itself.
+    // `payload`'s variants are all Copy but `PresencePayload` isn't, so clippy would rather see
+    // `&PresencePayload` — the same public wire-decode entrypoint called from
+    // `shell::peer_presence` and app crates, where narrowing it would ripple into call sites out of
+    // scope for this pass.
     /// Who is composing a message in `key` now, the person looking excluded: a channel's
     /// "Mia is typing". A composer gone quiet for [`COMPOSING_LINGER`] without saying they
     /// stopped drops out, so a crashed window leaves no one typing forever.
@@ -1857,11 +1838,9 @@ impl PresenceCtx {
         self.apply_remote_presence_at(user_id, key, payload, crate::time::now())
     }
 
-    /// [`Self::apply_remote_presence`] with the instant the frame was heard
-    /// supplied. A compositor re-placing a pointer it heard earlier (its tile
-    /// moved) passes the original instant, so the move is carried rather
-    /// than read as the peer moving again ([`Self::set_pointer_at`]); tests
-    /// pass a clock they control.
+    /// [`Self::apply_remote_presence`] with the instant the frame was heard supplied. A compositor
+    /// re-placing a pointer it heard earlier (its tile moved) passes the original instant, so the
+    /// move is carried rather than read as the peer moving again ([`Self::set_pointer_at`]).
     #[allow(
         clippy::too_many_lines,
         reason = "public wire-decode API called from crates outside ui; narrowing payload to &PresencePayload would require updating call sites out of scope for this pass"

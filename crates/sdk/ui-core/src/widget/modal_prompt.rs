@@ -1,10 +1,7 @@
-//! Shared content body for a text-entry [`ModalDialog`](crate::widget::ModalDialog).
-//!
-//! [`PromptBody`] drops into `ModalDialog` as the content `C`; the dialog
-//! owns the backdrop/box/title/footer/Esc while the body renders an
-//! optional caption, an optional field label, and a [`TextInput`] with
-//! selection, clipboard, and accessibility support. The host reads the result
-//! with [`PromptBody::value`] on submit.
+//! Shared content body for a text-entry [`ModalDialog`](crate::widget::ModalDialog): [`PromptBody`]
+//! drops in as the content `C` while the dialog owns the backdrop, title, footer and Esc, and
+//! the body renders an optional caption, an optional field label and a [`TextInput`] with
+//! selection, clipboard and accessibility. The host reads the result with [`PromptBody::value`].
 //!
 //! ```ignore
 //! let body = PromptBody::new("Name", "New volume")
@@ -17,9 +14,8 @@
 //! // …on submit: dialog.content().value()
 //! ```
 //!
-//! A confirmation that waits for a typed phrase (erasing a disk, deleting a
-//! vault) is [`PromptBody::confirm_phrase`] with the dialog's primary action
-//! gated on [`PromptBody::confirms`]:
+//! A confirmation that waits for a typed phrase (erasing a disk, deleting a vault) is
+//! [`PromptBody::confirm_phrase`] with the primary action gated on [`PromptBody::confirms`]:
 //!
 //! ```ignore
 //! ModalDialog::new("Erase sdb?", PromptBody::confirm_phrase(message, "sdb"))

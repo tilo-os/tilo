@@ -70,6 +70,8 @@ tilolang-done = Erledigt
 tilolang-no-date = Kein Datum
 # Said over the items of a list done with, where every one of them is: the list is not empty, it is finished.
 tilolang-all-done = Alles erledigt
+# What one of an app's places says on another app's page when nothing stands in it.
+tilolang-all-caught-up = Nichts offen
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-selected = { $count ->
@@ -105,8 +107,6 @@ tilolang-history-changes = { $count ->
 tilolang-history-show = Änderungen zeigen
 tilolang-history-hide = Änderungen ausblenden
 tilolang-history-undo-run = Ausführung rückgängig machen
-tilolang-history-made = Erstellt
-tilolang-history-removed = Entfernt
 
 # Wie ein wiederkehrendes Element wiederkehrt und wann daran erinnert wird. Die Anzahl wählt den
 # Plural („alle 2 Wochen“, „3 Tage nach Erledigung“).

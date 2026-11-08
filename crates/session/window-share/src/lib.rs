@@ -3,9 +3,8 @@
 //! the codec its viewers negotiated and wraps them in the neighbour
 //! protocol's stream envelopes ([`flatpak_share::SharedFlatpakSession`]);
 //! the encoders behind it ([`encoder`]); the registry of who views a share
-//! and may drive its input ([`streaming`]); the counters the OSD shows
-//! ([`diagnostics`]); and the settings it is encoded with ([`config`],
-//! [`hdr_metadata`]).
+//! and may drive its input ([`streaming`]); and the settings it is encoded
+//! with ([`config`], [`hdr_metadata`]).
 //!
 //! Transport, capture and input injection stay in the compositor, which
 //! provides its frame store ([`window_frames::provide`]). This crate sits
@@ -13,7 +12,6 @@
 //! path and its tests run on their own.
 
 pub mod config;
-pub mod diagnostics;
 pub mod encoder;
 pub mod flatpak_share;
 pub mod hdr_metadata;

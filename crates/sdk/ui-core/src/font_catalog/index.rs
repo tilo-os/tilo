@@ -1,30 +1,22 @@
-//! The font database a launch builds, kept on disk so the next launch reads
-//! it instead of building it again.
+//! The font database a launch builds, kept on disk so the next launch reads it instead of
+//! building it again.
 //!
-//! Building the database verifies the product catalog (hashing every font
-//! of a catalog that is not on an immutable mount) and parses every face of
-//! the catalog and of the system's fonts: tens of milliseconds a process
-//! spent before it could set any text, on every launch. The index records
-//! the database that build produced, face by face (the file, its face index,
-//! families, style, weight, width), with the identity of every file and
-//! directory it was built from. A later process that finds every one of
-//! them unchanged builds the same database from the index alone: it parses
-//! no font and hashes nothing.
+//! Building it verifies the product catalog (hashing every font of a catalog not on an immutable
+//! mount) and parses every face of the catalog and of the system's fonts: tens of milliseconds
+//! before a process could set any text. The index records the database face by face (file, face
+//! index, families, style, weight, width) with the identity of every file and directory it was
+//! built from, so a later process that finds them all unchanged parses no font and hashes
+//! nothing.
 //!
-//! Identity is the device, inode, size, modification and change times. A
-//! catalog font whose identity is the one it had when it was hashed holds
-//! the bytes that were hashed: rewriting a file, or changing its times,
-//! moves its change time, which no unprivileged process can set. A font
-//! added to or removed from a font directory moves that directory's times.
-//! Anything that does not match, or an index from another build, is
-//! ignored and the database is built as before; a process that may write
-//! the index then records the new one.
+//! Identity is device, inode, size, modification and change times: a catalog font whose identity
+//! is the one it had when hashed holds the bytes that were hashed, since rewriting a file or
+//! changing its times moves its change time, which no unprivileged process can set, and a font
+//! added to or removed from a directory moves that directory's times. Anything that does not
+//! match, or an index from another build, is ignored and the database is built as before.
 //!
-//! Every app's home is its own, so without sharing each launch of each app
-//! builds a database of its own. The launcher binds one directory in the
-//! user's data home into every sandbox and names it in `TILO_FONT_INDEX`, so
-//! the first app opened on the device records the database and every launch
-//! after it — any app, any workspace — reads the record.
+//! Every app's home is its own, so the launcher binds one directory in the user's data home into
+//! every sandbox and names it in `TILO_FONT_INDEX`: the first app opened records the database and
+//! every launch after it, any app in any workspace, reads the record.
 
 use cosmic_text::fontdb;
 use serde::{Deserialize, Serialize};

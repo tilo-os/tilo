@@ -80,8 +80,10 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // No window in this fixture draws a count.
             | Kind::ZeroCount
             | Kind::RepeatedCount
-            // No window in this fixture floats a popover or a sheet.
-            | Kind::PastWindow => "(no view)",
+            // No window in this fixture floats a popover or a sheet, and none composes a
+            // shell whose title the row's actions squeeze.
+            | Kind::PastWindow
+            | Kind::TitleClippedWithRoom => "(no view)",
         };
         assert_eq!(
             finding.view,

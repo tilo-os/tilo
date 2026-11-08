@@ -167,25 +167,6 @@ async fn an_address_left_at_the_door_is_on_the_wait_list_and_never_a_person_to_a
     assert_eq!(entry.contact, "Bo@Example.org");
     let request_id = entry.request_id;
 
-    // The address is nobody to let in: no join request, nothing to admit
-    // or decline under its id.
-    assert!(matches!(
-        ask(WorkspacesRequest::Requests { workspace: workspace.clone() }).await,
-        WorkspacesReply::Requests(waiting) if waiting.is_empty()
-    ));
-    for request in [
-        WorkspacesRequest::Admit {
-            workspace: workspace.clone(),
-            request_id,
-        },
-        WorkspacesRequest::Decline {
-            workspace: workspace.clone(),
-            request_id,
-        },
-    ] {
-        assert!(matches!(ask(request).await, WorkspacesReply::Refused(_)));
-    }
-
     // Taken off the list once, then there is nothing to take off.
     let unlist = || WorkspacesRequest::Unlist {
         workspace: workspace.clone(),
@@ -715,7 +696,7 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
         workspaces
             .page_rooms(
                 &ada,
-                WorkspacesRequest::Requests {
+                WorkspacesRequest::WaitList {
                     workspace: workspace.clone()
                 }
             )
@@ -746,12 +727,12 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
         workspaces
             .page_rooms(
                 &ada,
-                WorkspacesRequest::Requests {
+                WorkspacesRequest::WaitList {
                     workspace: workspace.clone()
                 }
             )
             .await,
-        WorkspacesReply::Requests(_)
+        WorkspacesReply::WaitList(_)
     ));
     assert!(matches!(
         workspaces
@@ -936,12 +917,12 @@ async fn an_administrator_invites_within_their_role(
         workspaces
             .page_rooms(
                 ada,
-                WorkspacesRequest::Requests {
+                WorkspacesRequest::WaitList {
                     workspace: workspace.to_owned()
                 }
             )
             .await,
-        WorkspacesReply::Requests(_)
+        WorkspacesReply::WaitList(_)
     ));
 }
 

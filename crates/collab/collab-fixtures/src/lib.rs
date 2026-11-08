@@ -12,8 +12,8 @@
 use std::time::{Duration, SystemTime};
 
 use collab_types::{
-    ArtifactId, Attestation, AttestationId, ChannelId, Claim, Ed25519PublicKey, EncryptionMetadata,
-    OpKind, Role, RoleAttestation, Signature, SignedOp, sign_event, sign_op,
+    ArtifactId, Attestation, AttestationId, ChannelId, Claim, Ed25519PublicKey, OpKind, Role,
+    RoleAttestation, Signature, SignedOp, sign_event, sign_op,
 };
 use ed25519_dalek::SigningKey;
 
@@ -146,48 +146,6 @@ pub fn signed_op(
         kind,
         SystemTime::now(),
         seq,
-    );
-    sign_op(&mut op, author_sk).expect("op must sign");
-    op
-}
-
-/// [`signed_op`] with encryption metadata attached, for tests pushing an op through the MLS-wrapped path.
-///
-/// # Panics
-///
-/// Panics if signing fails — meaning the fixture itself is broken, which
-/// should fail loudly rather than hand a test a silently-unsigned op.
-#[allow(
-    clippy::similar_names,
-    reason = "author_sk/author_pk (secret vs public key) is the established key-pair naming \
-              convention across this codebase; renaming would make the pairing less obvious, \
-              not more"
-)]
-#[allow(
-    clippy::expect_used,
-    reason = "this crate exists purely to build valid signed test fixtures (see the module \
-              doc); a failure here means the fixture itself is broken and must fail loudly, \
-              not be silently propagated into whatever test happens to call this"
-)]
-pub fn signed_op_encrypted(
-    author_sk: &SigningKey,
-    author_pk: Ed25519PublicKey,
-    artifact: ArtifactId,
-    attestation_id: AttestationId,
-    kind: OpKind,
-    payload: Vec<u8>,
-    seq: u64,
-    encryption: EncryptionMetadata,
-) -> SignedOp {
-    let mut op = SignedOp::new_unsigned_with_encryption(
-        payload,
-        artifact,
-        author_pk,
-        attestation_id,
-        kind,
-        SystemTime::now(),
-        seq,
-        encryption,
     );
     sign_op(&mut op, author_sk).expect("op must sign");
     op

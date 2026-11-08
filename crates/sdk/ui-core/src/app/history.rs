@@ -963,9 +963,8 @@ impl App {
     #[cfg(feature = "native")]
     pub(crate) fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
         self.history
-            .as_ref()
-            .filter(|history| history.offers_control())
-            .map(|history| crate::widget::HistoryControl::of(history.is_open()))
+            .as_deref()
+            .and_then(crate::history_mode::host::window_control)
     }
 
     /// The window's History control was pressed: run it on this app's
@@ -976,11 +975,7 @@ impl App {
         control: crate::widget::HistoryControl,
     ) -> Result<(), String> {
         let history = self.history.as_mut().ok_or("History is unavailable")?;
-        let intent = crate::history_mode::door::history_control_binding(control)
-            .invoke(())
-            .map_err(|error| error.to_string())?;
-        crate::history_mode::embedded::run_door_control(history.as_mut(), &intent)
-            .map_err(|error| error.to_string())?;
+        crate::history_mode::host::press_window_control(history.as_mut(), control)?;
         self.needs_sync = true;
         self.layout.layout_dirty = true;
         Ok(())

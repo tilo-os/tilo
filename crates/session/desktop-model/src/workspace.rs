@@ -550,15 +550,6 @@ impl Workspace {
         self.policy.is_owner(user)
     }
 
-    /// Whether any of the workspace's strips holds a window. One without
-    /// any shows its launchpad.
-    #[must_use]
-    pub fn has_windows(&self) -> bool {
-        self.strips
-            .iter()
-            .any(|strip| !strip.window_groups.is_empty())
-    }
-
     /// The workspace this workspace is, given when it was made and never changed.
     #[must_use]
     pub fn id(&self) -> WorkspaceId {
@@ -589,21 +580,6 @@ impl Workspace {
     #[must_use]
     pub fn subject_authority(&self, subject: Subject) -> Authority<'_> {
         Authority::person(self.policy.party_of(subject))
-    }
-
-    /// The authority of a delegation (an agent, a task, a Shortcut, an app)
-    /// acting for `person`: the person's own, bounded by the grants the workspace
-    /// holds for the delegation and by `extra` (grants it carries itself, such
-    /// as an agent delegation's).
-    #[must_use]
-    pub fn delegated_authority<'a>(
-        &'a self,
-        person: &str,
-        delegation: Subject,
-        extra: &'a [Grant],
-    ) -> Authority<'a> {
-        let bound = self.policy.party_of(delegation).with_grants(extra);
-        self.person_authority(person).bounded_by(bound)
     }
 
     #[must_use]
@@ -719,20 +695,6 @@ impl Workspace {
         let user = user.into();
         self.policy.members.remove(&user);
         self.policy.owner = Some(user);
-    }
-
-    /// Give up governance because this workspace joined a workspace it did not
-    /// mint: drops the recorded owner and every grant of governance actions,
-    /// so this machine answers for nothing it does not own.
-    pub fn surrender_governance(&mut self) -> bool {
-        let had_owner = self.policy.owner.take().is_some();
-        let governance = roles::workspace_resource(&self.policy.workspace);
-        let dropped = self.revoke_grants_matching(|grant| {
-            matches!(grant.subject, Subject::Person(_))
-                && grant.answer != Answer::Deny
-                && grant.node.is_within(&governance)
-        });
-        had_owner || !dropped.is_empty()
     }
 
     /// The role `user` holds: `Owner` for the owner, `None` for a non-member.
@@ -939,38 +901,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// [`Self::save_preset_with_at`] as `actor` acting as themselves.
-    ///
-    /// # Errors
-    /// As [`Self::save_preset_with_at`].
-    pub fn save_preset_as_at(
-        &mut self,
-        actor: &str,
-        preset: Preset,
-        now: u64,
-    ) -> Result<(), PresetMutationError> {
-        let policy = self.policy.clone();
-        let authority = Authority::person(policy.party(actor));
-        self.save_preset_with_at(&authority, preset, now)
-    }
-
-    /// [`Self::assign_preset_with_at`] as `actor` acting as themselves.
-    ///
-    /// # Errors
-    /// As [`Self::assign_preset_with_at`].
-    pub fn assign_preset_as_at(
-        &mut self,
-        actor: &str,
-        name: &str,
-        subject: &Subject,
-        lifetime: &Lifetime,
-        now: u64,
-    ) -> Result<Vec<GrantId>, PresetMutationError> {
-        let policy = self.policy.clone();
-        let authority = Authority::person(policy.party(actor));
-        self.assign_preset_with_at(actor, &authority, name, subject, lifetime, now)
-    }
-
     /// Assign a saved grant set to `subject`, as `actor` acting through
     /// `authority`. Assigning is granting, so the workspace's grant action covers
     /// every set; a grant on one set's assign node covers that set only.
@@ -1135,13 +1065,6 @@ impl Workspace {
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             retired_fields: serde_json::Map::new(),
         }
-    }
-
-    /// This workspace's collaboration cluster id — [`Self::id`], not the
-    /// local [`Self::slot`]. Unminted returns the nil uuid, which
-    /// `CrdtRoute::delivers_to` refuses to deliver to.
-    pub fn collab_cluster_id(&self) -> uuid::Uuid {
-        self.id.as_uuid()
     }
 
     /// Mark `surface_id` as being streamed to `peer_id`. Additive — two

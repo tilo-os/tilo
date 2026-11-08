@@ -424,7 +424,7 @@ tempfile.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 # Paused-clock tests of the collaboration lanes' deadlines.
 tokio = { workspace = true, features = ["test-util"] }
-tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
+tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }
 threshold-identity = { path = "../../collab/threshold-identity" }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
 tilo-host = { path = "../tilo-host", features = ["test-support"] }
@@ -469,10 +469,6 @@ required-features = ["native"]
 name = "startup-surface-probe"
 path = "examples/startup_surface_probe.rs"
 required-features = ["native"]
-
-[[test]]
-name = "hosted-platform"
-path = "tests/hosted_platform.rs"
 
 # Its own binary: it installs a counting global allocator.
 [[test]]

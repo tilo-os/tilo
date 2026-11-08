@@ -355,11 +355,11 @@ struct Shared {
     /// The turns this session's agents answer: a person's message in a
     /// conversation the agent takes part in, read every pass from Chat's
     /// record of each workspace.
-    conversations: conversations::Conversations,
+    conversations: std::rc::Rc<conversations::Conversations>,
     /// The agents each workspace keeps, read every pass from its record of
     /// them: who keeps an agent is that record's word, and what the broker
     /// admits an agent's session on.
-    agents: agents::Agents,
+    agents: std::rc::Rc<agents::Agents>,
     /// The agents the person admitted at its agent door, as the desk and the bar show them.
     seats: std::sync::Arc<agent_door::Seats>,
     /// It runs in a window of a desktop it did not start (see
@@ -983,10 +983,56 @@ impl Session {
                     .unwrap_or_default()
             })
         };
+        // What text that asks does (shell.md §8.1, "Asking from the canvas"):
+        // the session's own ask, which reads Chat's record, the workspace in
+        // front and its agents. It is answered here and reads what the
+        // session mounts further down, so it is late-bound the way the search
+        // is: the door holds the seam, and the closure looks the session up
+        // by the cell it was given at each call.
+        // The conversations this session's agents answer in, and the agents
+        // each workspace keeps, both read from Chat's record of them: made
+        // here, before the door, because what text that asks does reads them
+        // and the desk in front (shell.md §8.1, "Asking from the canvas").
+        let conversations = Rc::new(conversations::Conversations::new(
+            cli::data_home(),
+            options.wake.handle(),
+        ));
+        let agents = Rc::new(agents::Agents::new(cli::data_home(), options.wake.handle()));
+        let ask: arrangement::Ask = {
+            let handle = handle.clone();
+            let person = options.person.clone();
+            let conversations = Rc::clone(&conversations);
+            let agents = Rc::clone(&agents);
+            let catalog = arrangement.borrow().targets();
+            Rc::new(move |text: &str| {
+                let (workspace, policy) = handle.read(|tree| {
+                    tree.active_workspace()
+                        .map(|held| (held.id().to_string(), held.policy.clone()))
+                })?;
+                let agent = agents.keep_one(&workspace, &policy, &person)?;
+                let channel = conversations.ask(&person, &workspace, &policy, &agent, text)?;
+                // A channel the ask just made is a resource the arrangement may
+                // place the moment it is asked to: search has not read Chat's
+                // record yet, so the place's app and default view are put where
+                // the catalog is read from besides the door's own tree
+                // (`Catalog::remember`), and the next read of the door's
+                // resources carries it like any other.
+                catalog.borrow_mut().remember(
+                    &channel,
+                    arrangement::Target {
+                        app: "so.tilo.chat".to_owned(),
+                        views: Vec::new(),
+                        title: crate::i18n::t("session-ask-conversation"),
+                    },
+                );
+                Some(channel)
+            })
+        };
         doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
             Rc::clone(&arrangement),
             Rc::new(move || underway.get()),
             find.clone(),
+            ask,
         ))));
         // What the person's settings say the desk shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep
@@ -1503,14 +1549,6 @@ impl Session {
         // workspaces the engine holds: the broker's decisions and the
         // automation's arming both refuse a device its workspace revoked.
         let revocations = engine::revocations_of(engine.as_ref());
-        // The conversations this session's agents answer in, read from
-        // Chat's record of each workspace: the broker delivers their turns to
-        // the agents and admits what they do there.
-        let conversations =
-            conversations::Conversations::new(cli::data_home(), options.wake.handle());
-        // The agents each workspace keeps, read from its record of them: who
-        // keeps an agent, and so whose session runs it.
-        let agents = agents::Agents::new(cli::data_home(), options.wake.handle());
         // The typed opens an app asks this session for: one service, made
         // here so the broker below serves Files' waits for its lists'
         // changes, and started from the doors table.
@@ -2401,6 +2439,16 @@ impl Session {
     #[must_use]
     pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
         &self.shared.arrangement
+    }
+
+    /// Chat's record of the workspace `workspace` as this session holds it: the
+    /// conversation a person asked in, and its messages. `None` where the
+    /// session holds no record of it yet. A test reads what a person's ask wrote
+    /// through the same open record the session holds, never by opening a second
+    /// writer on the same store.
+    #[must_use]
+    pub fn chat_of(&self, workspace: &str) -> Option<chat::Chat> {
+        self.shared.conversations.chat(workspace)
     }
 
     /// What the windows ask of the workspace's activity and follow, as this

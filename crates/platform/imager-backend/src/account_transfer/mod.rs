@@ -34,7 +34,7 @@ pub use discovery::discover_home_profiles;
 pub use discovery::{Candidate, Inventory, Origin, Provider, SourceRoots, discover};
 #[cfg(target_os = "linux")]
 pub use goa_pending::{AccountImportReceipt, import_selected as import_selected_goa};
-pub use portable::{PasswordSealedAccounts, SealedAccounts};
+pub use portable::{PasswordSealedAccounts, SealedAccounts, inspect_prepared_consumer};
 pub use thunderbird_source::{
     MAX_THUNDERBIRD_ARTIFACT, PasswordSealedThunderbird, SealedThunderbird,
     ThunderbirdAccountReceipt, ThunderbirdAccountSelection, ThunderbirdFolderReceipt,

@@ -256,13 +256,16 @@ fn signed_snapshot(
 }
 
 /// A minimal HTTP server: GET /entries returns the catalogue JSON, GET /<name>.tapp returns the package bytes.
-struct Registry {
+///
+/// Shared with [`crate::registry_recovery`], whose registry is the same
+/// service after a lost disk.
+pub(crate) struct Registry {
     port: u16,
     _thread: std::thread::JoinHandle<()>,
 }
 
 impl Registry {
-    fn start(entries_json: String, tapp: Vec<u8>) -> Self {
+    pub(crate) fn start(entries_json: String, tapp: Vec<u8>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
         let port = listener.local_addr().unwrap().port();
         let entries = Arc::new(entries_json);
@@ -281,7 +284,7 @@ impl Registry {
         }
     }
 
-    fn base_url(&self) -> String {
+    pub(crate) fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
 }

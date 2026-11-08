@@ -19,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-registry-client = { path = "../../crates/packaging/registry-client" }
+app-registry = { path = "../../crates/packaging/app-registry" }
 registry-types = { path = "../../crates/packaging/registry-types" }
 workspace-hack = { version = "0.1" }
 

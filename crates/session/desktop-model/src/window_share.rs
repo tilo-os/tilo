@@ -1,36 +1,15 @@
 //! A window one member shares with a workspace whose layout is personal.
-//!
 //! In a personal workspace each member's windows stay on their device
-//! ([`crate::projection::WorkspaceLayout::Personal`]). A member who wants the
-//! others to see one of them shares it, and the share is the workspace's
-//! resource share ([`tilo_action_policy::share`]) of the window's own node,
-//! `workspace › <app> › window › <tab>`: grants the workspace's governor writes into
-//! its governance at the sharer's request, naming who gave them
-//! (`granted_by`) and until when (`lifetime`). The governor takes such a
-//! share only from the device that minted the tab's id: every device mints
-//! under the salt its key derives ([`crate::ids::device_salt_of_key`]), and
-//! the workspace knows its members' device keys ([`device_salts`]), so the tab
-//! says which device hosts the window, and nobody shares another device's
-//! window.
-//!
-//! A Tilo app's window is a view of a resource that already lives in the
-//! workspace, so its share also says what the window shows: the share
-//! [`window_shows_share_id`] of the resource's own node (the record, or the
-//! item of it the window is at). Its sharer streams none of its pixels; every
-//! other member opens the same app on that resource. A window with no such
-//! share is an outside window (a terminal, any Wayland or X client), whose
-//! state lives in its process: it is streamed.
-//!
-//! Every device reads the workspace's live window shares from the workspace's
-//! governance ([`window_shares`]): the sharer streams only the outside
-//! windows among them to the workspace, and every other member shows each as a
-//! tab of the sharer's window in its own layout, for as long as the share
-//! lasts.
-//!
-//! A window that closes ends its share as it goes
-//! ([`Workspace::end_window_shares`]): the grants are in the same workspace
-//! the close already changes, so the close retracts them itself, and the
-//! workspace stops naming a window that no longer exists.
+//! ([`crate::projection::WorkspaceLayout::Personal`]); a member who wants the
+//! others to see one shares it, and the share is the workspace's resource share
+//! ([`tilo_action_policy::share`]) of the window's own node. The governor takes
+//! such a share only from the device that minted the tab's id, so nobody shares
+//! another device's window.
+//! A Tilo app's window is a view of a resource that already lives in the workspace,
+//! so its share also says what the window shows ([`window_shows_share_id`]) and its
+//! sharer streams no pixels; an outside window, whose state lives in its process,
+//! is streamed. A window that closes ends its share as it goes: the grants are in
+//! the same workspace the close already changes.
 
 use std::collections::BTreeMap;
 

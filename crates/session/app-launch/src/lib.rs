@@ -69,7 +69,7 @@ pub fn name_surface(planned: &Planned) {
     if planned.kind != Kind::Package {
         return;
     }
-    match tilo_installed_apps::signed_surface_of_from_env(&planned.app) {
+    match app_catalogue::apps::signed_surface_of_from_env(&planned.app) {
         Ok(Some(surface)) => collaboration::app_surface::register_package(&planned.app, &surface),
         Ok(None) => tracing::debug!(
             app = %planned.app,

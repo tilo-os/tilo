@@ -191,8 +191,7 @@ async fn release_group(state: &Arc<Mutex<State>>, workers: &Arc<Semaphore>) {
 }
 
 /// Which of an owner's ordered queues a job is admitted to. Both take their
-/// sequences from one counter, so a capture's prerequisite names a prefix
-/// of both; each is FIFO, and the owner prefers the host's.
+/// sequences from one counter; each is FIFO, and the owner prefers the host's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lane {
     /// Members' state and every other ordered job.
@@ -201,7 +200,6 @@ pub(crate) enum Lane {
     Host,
 }
 struct ReplayJob {
-    prerequisite: Option<u64>,
     job: Job,
 }
 
@@ -682,29 +680,6 @@ impl Lanes {
     }
 }
 
-/// The highest normal job sequence every one at or below which is done.
-/// The lanes complete out of sequence order, so a capture's prerequisite
-/// (every normal job admitted before it) is this watermark, never the
-/// highest sequence done.
-#[derive(Default)]
-struct Completed {
-    watermark: u64,
-    /// Done above a gap, until the gap closes: at most what both queues hold.
-    above: std::collections::BTreeSet<u64>,
-}
-
-impl Completed {
-    fn done(&mut self, sequence: u64) {
-        if sequence <= self.watermark {
-            return;
-        }
-        self.above.insert(sequence);
-        while self.above.remove(&(self.watermark.saturating_add(1))) {
-            self.watermark = self.watermark.saturating_add(1);
-        }
-    }
-}
-
 /// [`run_owner_lanes`] with no host commits, as tests drive an owner.
 #[cfg(test)]
 async fn run_owner(
@@ -776,7 +751,6 @@ async fn run_owner_lanes(
     let mut reclaiming = false;
     let mut prefer_normal = false;
     let mut replay_open = true;
-    let mut completed = Completed::default();
     let mut pending_replay = None;
     loop {
         enum Work {
@@ -796,29 +770,7 @@ async fn run_owner_lanes(
         if !lanes.open() && !replay_open && pending_replay.is_none() {
             break;
         }
-        // A first shell basis may depend on normal jobs already queued when the
-        // capture was admitted. Its fixed watermark excludes later traffic, so
-        // unrelated continuous input cannot extend this prerequisite window.
-        let mut waiting_prerequisite = pending_replay
-            .as_ref()
-            .and_then(|job| job.prerequisite)
-            .is_some_and(|required| required > completed.watermark);
-        if waiting_prerequisite {
-            let shared = state.clone();
-            let has_basis = blocking(workers.clone(), move || {
-                shared.lock_recover().store.replay_capture_has_basis()
-            })
-            .await;
-            if matches!(has_basis, Ok(Ok(true))) {
-                if let Some(job) = pending_replay.as_mut() {
-                    job.prerequisite = None;
-                }
-                waiting_prerequisite = false;
-            }
-        }
-        let work = if waiting_prerequisite && lanes.open() {
-            lanes.next().await.map_or(Work::Idle, Work::Normal)
-        } else if prefer_normal && lanes.open() {
+        let work = if prefer_normal && lanes.open() {
             if let Some(job) = lanes.try_next() {
                 Work::Normal(job)
             } else if let Some(job) = pending_replay.take() {
@@ -859,9 +811,7 @@ async fn run_owner_lanes(
                 while let Some(job) = next.take() {
                     if !job.grouped {
                         release_group(&state, &workers).await;
-                        for sequence in std::mem::take(&mut grouped) {
-                            completed.done(sequence);
-                        }
+                        grouped.clear();
                     }
                     {
                         let mut state = state.lock_recover();
@@ -880,7 +830,6 @@ async fn run_owner_lanes(
                         state.store.forget_listed(None);
                     }
                     if !job.grouped {
-                        completed.done(job.sequence);
                         break;
                     }
                     grouped.push(job.sequence);
@@ -894,9 +843,6 @@ async fn run_owner_lanes(
                     }
                 }
                 release_group(&state, &workers).await;
-                for sequence in grouped {
-                    completed.done(sequence);
-                }
                 prefer_normal = false;
             }
             Work::Replay(job) => {
@@ -1397,7 +1343,6 @@ impl Persistence {
     )]
     pub(crate) async fn submit_replay_resumable_wait<P, PF, T, F, C, CF>(
         &self,
-        capture: bool,
         bytes: usize,
         preparation: PF,
         operation: F,
@@ -1440,13 +1385,12 @@ impl Persistence {
             completion,
         );
         let _admission = self.admission.lock().await;
-        let prerequisite = capture.then(|| self.normal_sequence.load(Ordering::Acquire));
         #[cfg(test)]
         if let Some(hook) = &self.replay_admission_hook {
             hook();
         }
         self.replay_tx
-            .send(ReplayJob { prerequisite, job })
+            .send(ReplayJob { job })
             .await
             .map_err(|_| error("state persistence unavailable"))?;
         Ok(rx)
@@ -1681,7 +1625,6 @@ pub(crate) async fn blocking<T: Send + 'static>(
 )]
 mod tests {
     use super::*;
-    use tilo_relay_shell::ShellAuthority as _;
 
     fn test_persistence(
         root: &std::path::Path,
@@ -1897,7 +1840,6 @@ mod tests {
         );
         let replay = owner
             .submit_replay_resumable_wait(
-                false,
                 1,
                 async { Ok(()) },
                 |_, _| Ok(Step::Done(())),
@@ -1953,14 +1895,12 @@ mod tests {
             .unwrap();
         replay_tx
             .send(ReplayJob {
-                prerequisite: None,
                 job: record_job(order.clone(), "replay-1"),
             })
             .await
             .unwrap();
         replay_tx
             .send(ReplayJob {
-                prerequisite: None,
                 job: record_job(order.clone(), "replay-2"),
             })
             .await
@@ -1975,89 +1915,6 @@ mod tests {
             *order.lock_recover(),
             ["replay-1", "normal-1", "replay-2", "normal-2"]
         );
-    }
-
-    #[tokio::test]
-    async fn first_basis_prerequisites_run_before_priority_capture() {
-        let tmp = tempfile::tempdir().unwrap();
-        let authority = tilo_relay_shell::selection::fixtures::producer_authority(
-            &tilo_relay_shell::selection::fixtures::producer_metadata(),
-        );
-        let workspace = crate::room_workspace_id(authority.workspace()).unwrap();
-        let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
-        store.bind_shell_authority(authority).unwrap();
-        let state = Arc::new(Mutex::new(State {
-            store,
-            doc: None,
-            sequence: None,
-            reserved: 0,
-            replays: replay::Replays::default(),
-            retention_scratch: None,
-            retention_candidates: Vec::new(),
-            workers: isolated_test_workers(),
-            replay_worker: Arc::new(Semaphore::new(1)),
-            retaining_only: false,
-            group: Group::default(),
-        }));
-        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
-        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
-        let order = Arc::new(Mutex::new(Vec::new()));
-        let normal_order = order.clone();
-        normal_tx
-            .send(NormalJob {
-                sequence: 1,
-                grouped: false,
-                job: Box::new(move |state| {
-                    Box::pin(async move {
-                        let root = state
-                            .lock_recover()
-                            .store
-                            .root()
-                            .join(crate::store::shell_selection::DIRECTORY);
-                        let generation = "00000000000000000000000000000001";
-                        std::fs::create_dir_all(root.join(generation)).unwrap();
-                        std::fs::write(root.join("CURRENT"), generation).unwrap();
-                        normal_order.lock().unwrap().push("normal-basis");
-                    })
-                }),
-            })
-            .await
-            .unwrap();
-        replay_tx
-            .send(ReplayJob {
-                prerequisite: Some(1),
-                job: record_job(order.clone(), "replay-capture"),
-            })
-            .await
-            .unwrap();
-        drop(normal_tx);
-        drop(replay_tx);
-        Box::pin(run_owner(normal_rx, replay_rx, state)).await;
-        assert_eq!(*order.lock().unwrap(), ["normal-basis", "replay-capture"]);
-    }
-
-    /// An owner whose store is bound to a shell authority but holds no
-    /// basis yet, so a first capture waits for its prerequisite.
-    fn unbased_state(root: &std::path::Path) -> Arc<Mutex<State>> {
-        let authority = tilo_relay_shell::selection::fixtures::producer_authority(
-            &tilo_relay_shell::selection::fixtures::producer_metadata(),
-        );
-        let workspace = crate::room_workspace_id(authority.workspace()).unwrap();
-        let mut store = WorkspaceStore::open(root, workspace, false).unwrap();
-        store.bind_shell_authority(authority).unwrap();
-        Arc::new(Mutex::new(State {
-            store,
-            doc: None,
-            sequence: None,
-            reserved: 0,
-            replays: replay::Replays::default(),
-            retention_scratch: None,
-            retention_candidates: Vec::new(),
-            workers: isolated_test_workers(),
-            replay_worker: Arc::new(Semaphore::new(1)),
-            retaining_only: false,
-            group: Group::default(),
-        }))
     }
 
     /// Host commits go ahead of the member jobs queued before them, at most
@@ -2106,61 +1963,6 @@ mod tests {
         let mut expected = labels[..burst].to_vec();
         expected.extend(["member-1", labels[burst], "member-2"]);
         assert_eq!(*order.lock().unwrap(), expected);
-    }
-
-    /// A capture's prerequisite is every normal job admitted before it, on
-    /// either lane: a later host commit that completes first does not let
-    /// the capture past a member job still queued below it.
-    #[tokio::test]
-    async fn a_capture_prerequisite_waits_for_every_earlier_job_of_either_lane() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = unbased_state(tmp.path());
-        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
-        let (host_tx, host_rx) = mpsc::channel::<NormalJob>(8);
-        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
-        let order = Arc::new(Mutex::new(Vec::new()));
-        normal_tx
-            .send(NormalJob {
-                sequence: 1,
-                grouped: false,
-                job: record_job(order.clone(), "member-1"),
-            })
-            .await
-            .unwrap();
-        host_tx
-            .send(NormalJob {
-                sequence: 2,
-                grouped: false,
-                job: record_job(order.clone(), "host-2"),
-            })
-            .await
-            .unwrap();
-        replay_tx
-            .send(ReplayJob {
-                prerequisite: Some(2),
-                job: record_job(order.clone(), "capture"),
-            })
-            .await
-            .unwrap();
-        host_tx
-            .send(NormalJob {
-                sequence: 3,
-                grouped: false,
-                job: record_job(order.clone(), "host-3"),
-            })
-            .await
-            .unwrap();
-        drop((normal_tx, host_tx, replay_tx));
-        Box::pin(run_owner_lanes(
-            Lanes::new(normal_rx, host_rx),
-            replay_rx,
-            state,
-        ))
-        .await;
-        assert_eq!(
-            *order.lock().unwrap(),
-            ["host-2", "host-3", "member-1", "capture"]
-        );
     }
 
     /// What captures listed survives a job that changes retained history
@@ -2242,24 +2044,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_completed_watermark_only_moves_over_a_contiguous_prefix() {
-        let mut completed = Completed::default();
-        completed.done(2);
-        completed.done(4);
-        assert_eq!(completed.watermark, 0, "sequence 1 is not done");
-        completed.done(1);
-        assert_eq!(completed.watermark, 2);
-        completed.done(3);
-        assert_eq!(completed.watermark, 4);
-        assert!(completed.above.is_empty());
-        completed.done(4);
-        assert_eq!(
-            completed.watermark, 4,
-            "a sequence done twice changes nothing"
-        );
-    }
-
     /// A host commit is admitted while the members' normal budget is
     /// exhausted, and runs before the member jobs queued ahead of it.
     #[tokio::test]
@@ -2320,206 +2104,14 @@ mod tests {
         running.await.unwrap();
     }
 
-    #[tokio::test]
-    async fn first_basis_capture_waits_only_for_its_fixed_normal_watermark() {
-        let tmp = tempfile::tempdir().unwrap();
-        let authority = tilo_relay_shell::selection::fixtures::producer_authority(
-            &tilo_relay_shell::selection::fixtures::producer_metadata(),
-        );
-        let workspace = crate::room_workspace_id(authority.workspace()).unwrap();
-        let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
-        store.bind_shell_authority(authority).unwrap();
-        let state = Arc::new(Mutex::new(State {
-            store,
-            doc: None,
-            sequence: None,
-            reserved: 0,
-            replays: replay::Replays::default(),
-            retention_scratch: None,
-            retention_candidates: Vec::new(),
-            workers: isolated_test_workers(),
-            replay_worker: Arc::new(Semaphore::new(1)),
-            retaining_only: false,
-            group: Group::default(),
-        }));
-        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
-        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
-        let order = Arc::new(Mutex::new(Vec::new()));
-        normal_tx
-            .send(NormalJob {
-                sequence: 1,
-                grouped: false,
-                job: record_job(order.clone(), "normal-prerequisite"),
-            })
-            .await
-            .unwrap();
-        replay_tx
-            .send(ReplayJob {
-                prerequisite: Some(1),
-                job: record_job(order.clone(), "replay-capture"),
-            })
-            .await
-            .unwrap();
-        for (sequence, label) in [(2, "normal-later-1"), (3, "normal-later-2")] {
-            normal_tx
-                .send(NormalJob {
-                    sequence,
-                    grouped: false,
-                    job: record_job(order.clone(), label),
-                })
-                .await
-                .unwrap();
-        }
-        drop(normal_tx);
-        drop(replay_tx);
-        Box::pin(run_owner(normal_rx, replay_rx, state)).await;
-        assert_eq!(
-            *order.lock().unwrap(),
-            [
-                "normal-prerequisite",
-                "replay-capture",
-                "normal-later-1",
-                "normal-later-2",
-            ]
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn production_admission_linearizes_normal_prefix_before_capture_watermark() {
-        let tmp = tempfile::tempdir().unwrap();
-        let authority = tilo_relay_shell::selection::fixtures::producer_authority(
-            &tilo_relay_shell::selection::fixtures::producer_metadata(),
-        );
-        let workspace = crate::room_workspace_id(authority.workspace()).unwrap();
-        let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
-        store.bind_shell_authority(authority).unwrap();
-        let state = Arc::new(Mutex::new(State {
-            store,
-            doc: None,
-            sequence: None,
-            reserved: 0,
-            replays: replay::Replays::default(),
-            retention_scratch: None,
-            retention_candidates: Vec::new(),
-            workers: isolated_test_workers(),
-            replay_worker: Arc::new(Semaphore::new(1)),
-            retaining_only: false,
-            group: Group::default(),
-        }));
-        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
-        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
-        let entered = Arc::new(std::sync::Barrier::new(2));
-        let release = Arc::new(std::sync::Barrier::new(2));
-        let admitted = Arc::new(tokio::sync::Notify::new());
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let hook = {
-            let entered = entered.clone();
-            let release = release.clone();
-            let first = first.clone();
-            Arc::new(move || {
-                if first.swap(false, Ordering::SeqCst) {
-                    entered.wait();
-                    release.wait();
-                }
-            }) as Arc<dyn Fn() + Send + Sync>
-        };
-        let owner = Persistence {
-            tx: normal_tx,
-            host_tx: mpsc::channel(1).0,
-            replay_tx,
-            normal_sequence: Arc::new(AtomicU64::new(0)),
-            admission: Arc::new(tokio::sync::Mutex::new(())),
-            budgets: AdmissionBudgets::global(),
-            ended: tokio::sync::watch::channel(()).1,
-            admission_hook: Some(hook),
-            replay_admission_hook: Some({
-                let admitted = admitted.clone();
-                Arc::new(move || admitted.notify_one())
-            }),
-        };
-        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state));
-        let order = Arc::new(Mutex::new(Vec::new()));
-
-        let first_owner = owner.clone();
-        let first_order = order.clone();
-        let first_job = tokio::spawn(async move {
-            let rx = first_owner
-                .submit_resumable_wait(
-                    1,
-                    async { Ok(()) },
-                    move |_, _| {
-                        first_order.lock().unwrap().push("normal-1");
-                        Ok(Step::Done(()))
-                    },
-                    |result| async { result },
-                )
-                .await?;
-            receipt(rx).await
-        });
-        tokio::task::spawn_blocking(move || entered.wait())
-            .await
-            .unwrap();
-
-        let replay_owner = owner.clone();
-        let replay_order = order.clone();
-        let capture = tokio::spawn(async move {
-            let rx = replay_owner
-                .submit_replay_resumable_wait(
-                    true,
-                    1,
-                    async { Ok(()) },
-                    move |_, _| {
-                        replay_order.lock().unwrap().push("capture");
-                        Ok(Step::Done(()))
-                    },
-                    |result| async { result },
-                )
-                .await?;
-            receipt(rx).await
-        });
-        tokio::task::spawn_blocking(move || release.wait())
-            .await
-            .unwrap();
-        admitted.notified().await;
-        let later_owner = owner.clone();
-        let later_order = order.clone();
-        let later = tokio::spawn(async move {
-            let rx = later_owner
-                .submit_resumable_wait(
-                    1,
-                    async { Ok(()) },
-                    move |_, _| {
-                        later_order.lock().unwrap().push("normal-2");
-                        Ok(Step::Done(()))
-                    },
-                    |result| async { result },
-                )
-                .await?;
-            receipt(rx).await
-        });
-        first_job.await.unwrap().unwrap();
-        capture.await.unwrap().unwrap();
-        later.await.unwrap().unwrap();
-        drop(owner);
-        running.await.unwrap();
-        assert_eq!(*order.lock().unwrap(), ["normal-1", "capture", "normal-2"]);
-    }
-
     #[test]
     fn retained_checkpoint_payload_never_materializes_the_plain_state_document() {
-        let meta = tilo_relay_shell::selection::fixtures::producer_metadata();
-        let row = meta["checkpoint2"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["kind"] == "Checkpoint")
-            .unwrap();
-        let bytes = tilo_relay_shell::selection::fixtures::producer_frame(&meta, row, 2);
-        let crate::transport::Envelope::Delta { delta, .. } =
-            crate::transport::decode(&bytes[4..]).unwrap()
-        else {
-            panic!("checkpoint fixture is not a delta")
-        };
+        let delta = crate::coedit::CoeditPayload::Checkpoint {
+            channel: [9; 32],
+            body: vec![1, 2, 3],
+        }
+        .encode()
+        .unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let state = state(tmp.path());
         let mut state = state.lock().unwrap();

@@ -172,7 +172,7 @@ fn window(manage: bool) -> Window {
 fn opened(theme: &Theme) -> EmojiPicker {
     let mut picker = EmojiPicker::framed();
     picker.open_at(
-        Rect::new(100.0, 40.0, 130.0, 70.0),
+        Some(Rect::new(100.0, 40.0, 130.0, 70.0)),
         Rect::new(0.0, 0.0, 1280.0, 800.0),
         theme,
     );
@@ -401,7 +401,7 @@ fn moving_an_open_picker_moves_its_grid_and_field_with_it() {
     let from = picker.rect().origin();
     // A host placing the open picker on every frame, as its window moves.
     picker.place_at(
-        Rect::new(500.0, 300.0, 530.0, 330.0),
+        Some(Rect::new(500.0, 300.0, 530.0, 330.0)),
         Rect::new(0.0, 0.0, 1280.0, 800.0),
         &theme,
     );
@@ -455,5 +455,200 @@ fn the_picker_is_a_dialog_with_its_field_tabs_and_named_emoji() {
     assert_eq!(
         emoji_catalogue::emoji_name("👍🏽"),
         "thumbs up, medium skin tone"
+    );
+}
+
+fn paint(picker: &mut EmojiPicker, theme: &Theme) {
+    picker.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        theme,
+        &PresenceCtx::default(),
+    );
+}
+
+fn contains(outer: Rect, inner: Rect) -> bool {
+    inner.x0 >= outer.x0 && inner.y0 >= outer.y0 && inner.x1 <= outer.x1 && inner.y1 <= outer.y1
+}
+
+/// The skin tones of the emoji the search found, offered.
+fn tones_opened(viewport: Rect, theme: &Theme) -> EmojiPicker {
+    let mut picker = EmojiPicker::sheet();
+    picker.open_at(None, viewport, theme);
+    picker.set_query("thumbs");
+    paint(&mut picker, theme);
+    shift(&mut picker, NamedKey::Enter);
+    picker
+}
+
+#[test]
+fn a_short_display_keeps_the_card_the_grid_and_the_chosen_emoji_inside_it() {
+    for theme in [
+        Theme::light(),
+        Theme::dark().with_text_scale(2.0),
+        Theme::light().with_ui_scale(1.5).with_text_scale(1.3),
+    ] {
+        let window = window(false);
+        let _in = window.scope.enter();
+        let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
+        let mut picker = EmojiPicker::sheet();
+        picker.open_at(None, viewport, &theme);
+        picker.set_query("thumbs");
+        paint(&mut picker, &theme);
+        assert!(
+            contains(viewport, picker.rect()),
+            "the card stays on the short display: {:?}",
+            picker.rect()
+        );
+        assert!(
+            picker.geometry.grid.height() >= picker.geometry.cell,
+            "the chrome leaves the emoji a row: {:?}",
+            picker.geometry
+        );
+        let selected = picker
+            .item_rect(picker.selected)
+            .expect("the found emoji is in view");
+        assert!(selected.height() > 0.0);
+        assert!(
+            contains(picker.rect(), selected),
+            "the emoji found is in the card: {selected:?} in {:?}",
+            picker.rect()
+        );
+    }
+}
+
+#[test]
+fn narrow_tones_wrap_inside_the_card_at_the_emoji_cell_size() {
+    let window = window(false);
+    let _in = window.scope.enter();
+    let theme = Theme::light();
+    let picker = tones_opened(Rect::new(0.0, 0.0, 240.0, 360.0), &theme);
+    let tones = picker.tones.as_ref().expect("the skin tones");
+    assert!(
+        contains(picker.rect(), tones.rect),
+        "the tones wrap rather than leave the card: {:?} in {:?}",
+        tones.rect,
+        picker.rect()
+    );
+    assert_eq!(tones.cells.len(), 6);
+    for cell in &tones.cells {
+        assert!(
+            contains(tones.rect, *cell),
+            "{cell:?} is in {:?}",
+            tones.rect
+        );
+        assert_eq!(cell.width(), picker.geometry.cell);
+        assert_eq!(cell.height(), picker.geometry.cell);
+    }
+}
+
+#[test]
+fn wrapped_tones_walk_row_by_row_and_the_last_one_picks() {
+    let window = window(false);
+    let _in = window.scope.enter();
+    let theme = Theme::dark();
+    let card = Rect::new(0.0, 0.0, 240.0, 360.0);
+    let mut picker = tones_opened(card, &theme);
+    let columns = usize_of_f64(
+        ((picker.rect().width() - 2.0 * f64::from(theme.tokens.spacing.s1)) / picker.geometry.cell)
+            .floor(),
+    )
+    .max(1);
+    assert!(columns < 6, "the tones wrap at this width: {columns}");
+    press(&mut picker, &named_key(NamedKey::ArrowDown));
+    assert_eq!(
+        picker.tones.as_ref().expect("tones").selected,
+        columns,
+        "down reaches the next painted row"
+    );
+    press(&mut picker, &named_key(NamedKey::ArrowUp));
+    assert_eq!(picker.tones.as_ref().expect("tones").selected, 0);
+    press(&mut picker, &named_key(NamedKey::End));
+    let (target, expected) = {
+        let tones = picker.tones.as_ref().expect("tones");
+        (
+            tones.cells.last().expect("six tones").center(),
+            tones.forms.last().expect("six tones").clone(),
+        )
+    };
+    click(&mut picker, target);
+    assert_eq!(picker.take_events(), [PickerEvent::Picked(expected)]);
+}
+
+#[test]
+fn a_narrow_card_stacks_the_group_tabs_on_their_own_rows() {
+    let window = window(false);
+    let _in = window.scope.enter();
+    let theme = Theme::dark();
+    let viewport = Rect::new(0.0, 0.0, 120.0, 480.0);
+    let mut picker = EmojiPicker::sheet();
+    picker.open_at(None, viewport, &theme);
+    paint(&mut picker, &theme);
+    assert_eq!(picker.geometry.tab_columns, 1, "one tab to a row");
+    let first = picker.tab_rect(0).expect("the first group");
+    let second = picker.tab_rect(1).expect("the second group");
+    assert!(first.y1 <= second.y0, "the tabs stack rather than shrink");
+    let card = picker.rect();
+    assert!(contains(card, first) && contains(card, second));
+    click(&mut picker, second.center());
+    assert_eq!(picker.group(), 1, "a tab on its own row chooses its group");
+}
+
+#[test]
+fn a_touch_presses_and_picks_where_a_mouse_does() {
+    let window = window(false);
+    let _in = window.scope.enter();
+    let mut picker = opened(&Theme::dark());
+    let target = picker
+        .item_rect(1)
+        .expect("the second emoji is in view")
+        .center();
+    let touch = |phase| {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(target.x, target.y),
+            force: None,
+            id: 7,
+        })
+    };
+    press(&mut picker, &touch(TouchPhase::Started));
+    assert!(
+        picker.take_events().is_empty(),
+        "a finger down picks nothing by itself"
+    );
+    press(&mut picker, &touch(TouchPhase::Ended));
+    assert_eq!(
+        picker.take_events(),
+        [PickerEvent::Picked(":pizza_cat:".into())],
+        "lifting the finger picks what it pressed"
+    );
+    // A touch the system took back presses nothing.
+    let mut picker = opened(&Theme::dark());
+    press(&mut picker, &touch(TouchPhase::Started));
+    press(&mut picker, &touch(TouchPhase::Cancelled));
+    press(&mut picker, &touch(TouchPhase::Ended));
+    assert!(picker.take_events().is_empty());
+}
+
+#[test]
+fn a_framed_card_without_a_caret_centres_over_the_display_it_was_given() {
+    let window = window(false);
+    let _in = window.scope.enter();
+    let theme = Theme::light();
+    let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    let mut picker = EmojiPicker::sheet();
+    picker.open_at(None, viewport, &theme);
+    paint(&mut picker, &theme);
+    let card = picker.rect();
+    assert!(contains(viewport, card));
+    assert!(
+        (card.center().x - viewport.center().x).abs() < 0.5,
+        "centred across the display: {card:?}"
+    );
+    assert!(
+        card.y0 > viewport.y0 && card.y0 < viewport.center().y,
+        "and high up rather than off the top: {card:?}"
     );
 }

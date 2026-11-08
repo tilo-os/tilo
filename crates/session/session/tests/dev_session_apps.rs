@@ -4,9 +4,10 @@
 //! `dist/dev/shell-run.sh` builds each app of `apps/tl` into a signed `.tapp` and installs it
 //! into the session's own app store; the session then reads each app from its store row, the way
 //! it reads a device's installed apps, and the manifest it reads there is what the launcher and
-//! the connector planning see (`tilo_session::mount::apps::Apps::plan_connector`). So the YouTube
-//! client's connector is planned from its installed manifest, and Mail's from its own: their
-//! origins are the apps' declarations, never something a test or a seed path supplies.
+//! the connector planning see (`tilo_session::mount::apps::Apps::plan_connector`). So the
+//! `YouTube` client's connector is planned from its installed manifest, and Mail's from its
+//! own: their origins are the apps' declarations, never something a test or a seed path
+//! supplies.
 //!
 //! Nothing here loads a package into the session from a test's own copy: what runs is what the
 //! store holds, which is what a person's device would hold.
@@ -38,7 +39,7 @@ fn every_dev_session_app_is_an_installed_package() {
     let installed = common::dev_apps::install(&store, &runtime);
     home.env().set("TILO_APPS_DATA_DIR", &store);
     for app in installed {
-        let found = tilo_installed_apps::read_one_from_env(&app)
+        let found = app_catalogue::apps::read_one_from_env(&app)
             .ok()
             .flatten()
             .unwrap_or_else(|| panic!("{app} is installed in the session's store"));
@@ -58,7 +59,7 @@ fn every_dev_session_app_is_an_installed_package() {
     }
 }
 
-/// The session plans each app's connector from its installed manifest: the YouTube client's
+/// The session plans each app's connector from its installed manifest: the `YouTube` client's
 /// `youtube` connector and Mail's `imap` one are the apps' own declarations, and their launch is
 /// the app's own with the origin named (`--tilolang-connector <origin>`).
 #[test]
@@ -104,7 +105,18 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests() {
     }
 }
 
-/// Each installed app's first scenario fills the session's records: the seeded YouTube client
+/// Every kind the resources `resources` publish, at any depth.
+fn kinds_of(
+    resources: &[tilo_actions::ResourceSpec],
+    kinds: &mut std::collections::BTreeSet<String>,
+) {
+    for resource in resources {
+        kinds.insert(resource.kind.clone());
+        kinds_of(&resource.children, kinds);
+    }
+}
+
+/// Each installed app's first scenario fills the session's records: the seeded `YouTube` client
 /// holds the channels its subscriptions feed shows, and Notes its notebook, so what those apps
 /// draw and what a search's answer lands beside are there. Nothing here seeds after the fact:
 /// the scenario is the package's own, run once as a development session runs it.
@@ -119,16 +131,7 @@ fn the_installed_apps_scenarios_fill_the_sessions_records() {
 
     let apps = common::seeded_apps_in(&store);
     let mut kinds = std::collections::BTreeSet::new();
-    fn walk(
-        resources: &[tilo_actions::ResourceSpec],
-        kinds: &mut std::collections::BTreeSet<String>,
-    ) {
-        for resource in resources {
-            kinds.insert(resource.kind.clone());
-            walk(&resource.children, kinds);
-        }
-    }
-    walk(&apps.resources(), &mut kinds);
+    kinds_of(&apps.resources(), &mut kinds);
     for kind in [
         "tl.so.tilo.lang.tube.Channel",
         "tl.so.tilo.lang.tube.Video",

@@ -1,29 +1,18 @@
-//! The app's window-bar slots in a row of the window's own, outside a Tilo
-//! session.
+//! The app's window-bar slots in a row of the window's own, outside a Tilo session.
 //!
-//! An app declares its toolbar once, as slots in the window's bar
-//! ([`crate::window_toolbar`]); in a Tilo session the desktop draws them in
-//! the one bar it draws per window. Run anywhere else (another desktop, a
-//! window of its own, a browser page) nothing hosts them, so the host draws
-//! them itself, with the same [`ToolbarRow`] the desktop's bar uses, in one
-//! row across the top of the window under whatever frame the host gives it.
-//! The app draws no toolbar of its own either way, and hears what the person
-//! did in the row exactly as it hears the desktop's bar
-//! ([`crate::window_toolbar::take_events`]).
+//! An app declares its toolbar once, as slots in the window's bar ([`crate::window_toolbar`]); in
+//! a Tilo session the desktop draws them in the one bar per window. Run anywhere else (another
+//! desktop, a window of its own, a browser page) nothing hosts them, so the host draws them
+//! itself, with the same [`ToolbarRow`] the desktop's bar uses, in one row across the top of the
+//! window; the app draws no toolbar of its own either way and hears what the person did exactly
+//! as it hears the desktop's bar ([`crate::window_toolbar::take_events`]).
 //!
-//! The window's History is one more slot of the row, in its menu, as the
-//! desktop's bar carries it beside the app's: the app's History draws no
-//! band of its own above an app whose controls are its slots.
+//! The window's History is one more slot of the row, in its menu, as the desktop's bar carries it
+//! beside the app's. The row ends with the window's search, the same [`WindowSearch`] the
+//! desktop's bar ends with: the one search entry a window has, in a session or not.
 //!
-//! The row ends with the window's search, the same [`WindowSearch`] the
-//! desktop's bar ends with: the one search entry a window has, in a session
-//! or not. The row hosts the app's slots ([`crate::window_toolbar::is_hosted`])
-//! and presents its search, so the app draws neither a toolbar nor a search
-//! field of its own here either.
-//!
-//! [`SlotRow`] is that row for every host: the native runner's window of its
-//! own and the browser's page that mounts one app
-//! ([`crate::headless::FrameHarness::host_window_slots`]). Each host lends it
+//! [`SlotRow`] is that row for every host: the native runner's own window and the browser's page
+//! that mounts one app ([`crate::headless::FrameHarness::host_window_slots`]), each lending it
 //! the app it serves through [`SlotRowHost`].
 
 use taffy::{NodeId, TaffyTree};

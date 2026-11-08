@@ -75,12 +75,19 @@ fn session_at(state: &Path) -> Session {
 
 /// The titles of the issues the session's record holds now.
 fn titles(reading: &Value) -> Vec<String> {
-    reading["issues"]
-        .as_array()
+    reading
+        .get("issues")
+        .and_then(Value::as_array)
         .map(|issues| {
             issues
                 .iter()
-                .filter_map(|issue| issue["value"]["title"].as_str().map(str::to_owned))
+                .filter_map(|issue| {
+                    issue
+                        .get("value")?
+                        .get("title")?
+                        .as_str()
+                        .map(str::to_owned)
+                })
                 .collect()
         })
         .unwrap_or_default()

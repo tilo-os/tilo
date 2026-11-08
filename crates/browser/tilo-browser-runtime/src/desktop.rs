@@ -1797,15 +1797,3 @@ pub(crate) fn mount(
     let (surface, handle) = DesktopSurface::new(tree, salt, Box::new(tiles));
     Ok((surface, handle, shared, persistence))
 }
-
-/// Parse a `DesktopTree` (JSON) changed elsewhere, for
-/// [`DesktopHandle::replace_tree`].
-pub(crate) fn parse_tree(json: &str) -> Result<DesktopTree, String> {
-    let tree = serde_json::from_str(json)
-        .and_then(DesktopTree::from_json)
-        .map_err(|error| error.to_string())?;
-    if tree.workspaces.is_empty() {
-        return Err("a desktop needs a workspace".into());
-    }
-    Ok(tree)
-}

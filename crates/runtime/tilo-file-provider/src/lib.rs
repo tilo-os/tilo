@@ -4,7 +4,7 @@
 //! The extension is a sandboxed Swift process; the workspace is the runtime
 //! daemon's, served read only on its profile's `files.sock`
 //! (`runtime_fs::workspace_server`). A session keeps one connection, on a
-//! thread of its own because the Cap'n Proto client is single-threaded, and
+//! thread of its own because the filesystem client is single-threaded, and
 //! reconnects when the runtime restarts. Items are named by
 //! workspace-relative path, the root being `""`.
 //!

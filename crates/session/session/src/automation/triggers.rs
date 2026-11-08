@@ -1,59 +1,15 @@
 //! What starts a saved shortcut without anyone invoking it.
-//!
 //! A [`TriggerSource`] watches for one kind of event and turns it into
-//! [`Firing`]s for the shortcuts that are armed on this device. Sources are
-//! pure over what they are shown: the session hands them events (a pressed
-//! chord, the passing of time read from an injected [`Clock`]) and the
-//! shortcuts it has armed, and starts a run for every firing through the
-//! action broker, which checks again that the shortcut still exists and that
-//! its saver may still run it.
-//!
-//! Only shortcuts saved by the person this device acts for in their
-//! workspace are armed ([`armed`]), so a collaborator's shortcut never fires on someone
-//! else's behalf, and deleting a shortcut disarms it at the next event.
-//!
-//! - [`KeyboardTriggers`] fires on a chord in the desktop's own notation.
-//! - [`AppOpenedTriggers`] fires when an application starts publishing its
-//!   actions to the broker.
-//! - [`WorkspaceJoinedTriggers`] fires when this device joins a workspace.
-//! - [`FileChangedTriggers`] fires on a change inside a folder a workspace
-//!   capability shares with the saver ([`watched_folders`]).
-//! - [`FocusModeTriggers`] fires when Do Not Disturb or the focus schedule
-//!   switches on or off.
-//! - [`AppEventTriggers`] fires on the events applications declare next to
-//!   their actions, read as the record changes they publish.
-//! - [`RecordChangedTriggers`] fires on a committed change to a record of a
-//!   watched kind in the saver's workspace, unless a shortcut's run made the
-//!   change: see [`record_firings`].
-//! - [`IncomingMessageTriggers`] fires on a message someone else received in
-//!   the saver's workspaces (a change its app marks as one).
-//!
-//! What an event says (the app, the workspace, the file, the mode) is the
-//! trigger's payload ([`TriggerSpec::payload`]); each value is handed to the
-//! run as the shortcut's input of the same name and type.
-//!
-//! - [`ScheduleTriggers`] fires at intervals or at local wall-clock times.
-//!   Each schedule's next fire time is persisted before the firing is handed
-//!   over, so a restart neither repeats a fire nor forgets one; a fire time
-//!   missed while the device was off or asleep is skipped or run once,
-//!   according to the trigger's [`CatchUp`] policy. The ledger is written on
-//!   the state writer, never on the compositor's loop: a firing waits until
-//!   the write that records it has finished and is handed over by a later
-//!   tick ([`TriggerHost::take_settled_firings`]).
-//!
-//! A shortcut reaches every device of the person who saved it, and each of
-//! them arms it. A schedule still runs once per fire time: the saver's
-//! online devices ([`PersonalDevices`]) rank themselves for each fire time
-//! by a hash of it, the first runs it at once and records a
-//! [`ScheduleClaim`] in the workspace, which syncs like the shortcut, and
-//! each other device waits [`CLAIM_GRACE`] per rank before taking a fire
-//! time nobody has claimed — so an elected device that is asleep or offline
-//! is covered by the next one.
-//!
-//! A record trigger runs on one of the saver's devices the same way:
-//! devices rank themselves by a hash of the change, the first runs it at
-//! once, each other waits [`CLAIM_GRACE`] per rank and drops it if the
-//! run's first change has appeared.
+//! [`Firing`]s for the shortcuts armed on this device; the session starts each run
+//! through the action broker, which checks again that the shortcut still exists and
+//! that its saver may still run it. Only shortcuts saved by the person this device
+//! acts for in their workspace are armed ([`armed`]), so a collaborator's shortcut
+//! never fires on someone else's behalf.
+//! A shortcut reaches every device of its saver: they rank themselves for each fire
+//! time or record change by a hash, the first runs it at once and records a
+//! [`ScheduleClaim`] that syncs like the shortcut, and each other waits
+//! [`CLAIM_GRACE`] per rank, so an asleep device is covered by the next. A
+//! schedule's next fire is persisted before it is handed over.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

@@ -335,27 +335,6 @@ fn bootstrap_hides_ancestor_metadata_and_standalone_ignores_it() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn adopting_service_descriptor_restores_close_on_exec() {
-    use std::os::fd::IntoRawFd;
-    let (socket, _peer) = UnixStream::pair().unwrap();
-    let raw = socket.into_raw_fd();
-    unsafe {
-        assert_eq!(libc::fcntl(raw, libc::F_SETFD, 0), 0);
-    }
-    let client = runtime_portal::UnixCapnpClient::from_connected_fd(
-        raw,
-        capnp_rpc::rpc_twoparty_capnp::Side::Client,
-    )
-    .unwrap();
-    assert_ne!(
-        unsafe { libc::fcntl(raw, libc::F_GETFD) } & libc::FD_CLOEXEC,
-        0,
-        "SDK-owned service leaked into subsequent execs"
-    );
-    drop(client);
-}
-
 #[test]
 fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_inside_it() {
     let root = std::env::temp_dir().join(format!("tilo-host-choice-test-{}", std::process::id()));

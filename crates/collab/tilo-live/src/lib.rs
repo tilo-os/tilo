@@ -27,7 +27,7 @@ pub mod grant;
 
 /// The carrier over a direct iroh connection, beside the browser's
 /// WebTransport one.
-#[cfg(feature = "native")]
+#[cfg(feature = "iroh")]
 pub mod native;
 
 /// Another relay of one scope, carried into this one: members split across

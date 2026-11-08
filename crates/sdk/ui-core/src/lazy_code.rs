@@ -1,29 +1,22 @@
 //! A surface whose code loads on first use.
 //!
-//! A program built to fetch some of its code later (the browser desktop,
-//! whose start module is what every visitor waits for) keeps a surface such
-//! as History, the palettes or Feedback out of the code it starts with.
-//! Three parts make a surface lazy, and each has one shape:
+//! A program built to fetch some of its code later (the browser desktop, whose start module is
+//! what every visitor waits for) keeps surfaces such as History, the palettes or Feedback out of
+//! the code it starts with. Three parts make a surface lazy:
 //!
-//! - **The code**, declared with `lazy_code!`: a [`LazyCode`] that holds a
-//!   *maker*, a plain function that builds the surface as a trait object.
-//!   A build without the surface's lazy feature links the maker; a build
-//!   with it asks the program for it the first time it is wanted
-//!   ([`LazyCode::get`]), and the program fetches the module that holds it
-//!   and hands it over ([`LazyCode::install`]). Everything the surface's
-//!   code reaches is reached only through the maker, so a module splitter
-//!   moves it out of the start module.
-//! - **The surface**, held as a [`LazySurface`]: made at once when the code
-//!   is in, otherwise its arguments kept until it is ([`LazySurface::poll`],
-//!   called where its owner lays out or updates).
-//! - **The wait**, drawn with [`draw_loading`]: a quiet panel where the
-//!   surface will stand, so a person who asked for it never sees nothing.
+//! - **The code**, declared with `lazy_code!`: a [`LazyCode`] holding a *maker*, a plain function
+//!   that builds the surface as a trait object. Everything the surface's code reaches is reached
+//!   only through the maker, so a module splitter moves it out of the start module; a build
+//!   without the surface's lazy feature links the maker, one with it asks the program the first
+//!   time it is wanted ([`LazyCode::get`]) and is handed the module ([`LazyCode::install`]).
+//! - **The surface**, held as a [`LazySurface`]: made at once when the code is in, otherwise its
+//!   arguments kept until it is ([`LazySurface::poll`]).
+//! - **The wait**, drawn with [`draw_loading`]: a quiet panel where the surface will stand, so a
+//!   person who asked for it never sees nothing.
 //!
-//! The browser desktop declares each split point with its `split_code!`
-//! macro (`crates/browser/tilo-web-desktop/src/lazy.rs`). A surface the
-//! desktop does not draw in its first frame starts out lazy: when the start
-//! module outgrows its budget, `tools/web/wasm_size_ratchet.py` names the
-//! parts of the program that grew.
+//! The browser desktop declares each split point with its `split_code!` macro
+//! (`crates/browser/tilo-web-desktop/src/lazy.rs`); when the start module outgrows its budget,
+//! `tools/web/wasm_size_ratchet.py` names the parts that grew.
 
 use crate::deferred::Deferred;
 

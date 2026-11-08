@@ -533,6 +533,20 @@ impl Core {
         Ok(count)
     }
 
+    /// [`Core::coll_count`], when the store has read the whole workspace, and none before it
+    /// has: a view shows a number only when it is the workspace's, never the part read so far.
+    pub(crate) fn coll_counted(&self, coll: &Rc<CollRef>) -> HResult<Option<usize>> {
+        let listing = self.coll_listing(coll)?;
+        let count = listing.count();
+        self.saw(coll, Read::Count(count), listing.len());
+        Ok(self.settled().then_some(count))
+    }
+
+    /// Whether the store has read the whole workspace ([`crate::store::Store::settled`]).
+    pub(crate) fn settled(&self) -> bool {
+        self.store.borrow().settled()
+    }
+
     /// Whether `coll` holds nothing: whether it shows no first item. A listing read page by
     /// page answers that by reading the page its first item is on, never by reading its run to
     /// the end, which is what counting it costs ([`Self::coll_count`]).

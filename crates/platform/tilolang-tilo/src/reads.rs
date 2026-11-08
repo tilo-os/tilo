@@ -39,26 +39,16 @@ pub(crate) fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Option<ObjId> {
 }
 
 /// The map of the resource `id` of `app`: under the app's id, or under an id it was published as
-/// before (`previously:`), where its older records stay.
+/// before (`previously:`), where its older records stay. Every copy of the levels above it is
+/// read ([`crate::containers::reach`]): a record made before two replicas met may be in the map
+/// the document does not keep, and it is as much the app's record as any.
 pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
-    let records = map_at(doc, &automerge::ROOT, RECORDS_KEY)?;
-    if let Some(found) = map_at(doc, &records, app).and_then(|held| map_at(doc, &held, id)) {
-        return Some(found);
-    }
-    crate::schema::previously(app)
-        .iter()
-        .find_map(|old| map_at(doc, &map_at(doc, &records, old)?, id))
-}
-
-/// Whether the record holds more than one map of the items of `doc` of `app`: two replicas made
-/// one before they met, and the items of the map the record does not keep are not in it.
-fn items_made_twice(record: &Doc, app: &str, doc: &str) -> bool {
-    let Some(root) = resource_obj(record, app, doc) else {
-        return false;
-    };
-    record
-        .get_all(&root, ITEMS_KEY)
-        .is_ok_and(|held| held.len() > 1)
+    crate::schema::stored_under(app).iter().find_map(|stored| {
+        crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY, stored])
+            .iter()
+            .rev()
+            .find_map(|held| map_at(doc, held, id))
+    })
 }
 
 /// The type stored in `$type` of the map `obj`.
@@ -184,20 +174,23 @@ pub fn collection_holds(doc: &Doc, root: &ObjId, field: &FieldSchema) -> bool {
     if map_at(doc, root, &field.id).is_some_and(|coll| doc.length(&coll) > 0) {
         return true;
     }
-    let Some(items) = map_at(doc, root, tilolang_runtime::place::ITEMS_KEY) else {
-        return false;
-    };
-    doc.keys(&items).any(|id| {
-        let Some(obj) = map_at(doc, &items, &id) else {
-            return false;
-        };
-        tilolang_runtime::place::held_at(doc, &obj).is_some_and(|held| match held.placement {
-            tilolang_runtime::place::Placement::At { place, .. } => {
-                place.parent.is_none() && place.field.as_str() == field.id
-            }
-            tilolang_runtime::place::Placement::Removed => false,
+    crate::containers::maps(doc, root, tilolang_runtime::place::ITEMS_KEY)
+        .iter()
+        .any(|items| {
+            doc.keys(items).any(|id| {
+                let Some(obj) = map_at(doc, items, &id) else {
+                    return false;
+                };
+                tilolang_runtime::place::held_at(doc, &obj).is_some_and(|held| {
+                    match held.placement {
+                        tilolang_runtime::place::Placement::At { place, .. } => {
+                            place.parent.is_none() && place.field.as_str() == field.id
+                        }
+                        tilolang_runtime::place::Placement::Removed => false,
+                    }
+                })
+            })
         })
-    })
 }
 
 /// The value of `field` from what its key holds (`None` when nothing): [`read_field`] once
@@ -540,7 +533,9 @@ impl ChangedBuilder {
         let Some(Some(doc)) = keys.get(2).copied() else {
             // `tl` and `tl/<app>`, the maps above the resources: every chunk makes them with
             // its first write. Making one creates no resource and moves none, so nothing read of
-            // any resource changed; removing one takes away every resource it held.
+            // any resource changed; removing one takes away every resource it held, and so does
+            // a write that folds the copies a replica made into the one the document keeps
+            // ([`crate::containers`]), which empties the copies it leaves.
             if !made {
                 self.structure = true;
                 self.layout = true;
@@ -590,11 +585,8 @@ impl ChangedBuilder {
     ) {
         let Some(Some(item)) = below.first().copied() else {
             // The map the record's items sit in, made with the first of them and removed with
-            // the last: the items it gains or loses are named by their own writes. One a
-            // replica made as well — two copies of the map, of which the record keeps one —
-            // takes the items of the copy it replaces with it, and no write of theirs is here
-            // to name them: the record is derived whole.
-            if !made || items_made_twice(record, app, doc) {
+            // the last: the items it gains or loses are named by their own writes.
+            if !made {
                 self.whole(doc);
             }
             return;
@@ -611,8 +603,13 @@ impl ChangedBuilder {
             Some(Some(key)) if key.starts_with('$') => {}
             Some(_) => {
                 let schema = resource_obj(record, app, doc)
-                    .and_then(|root| map_at(record, &root, ITEMS_KEY))
-                    .and_then(|items| map_at(record, &items, item))
+                    .map(|root| crate::containers::maps(record, &root, ITEMS_KEY))
+                    .and_then(|items| {
+                        items
+                            .iter()
+                            .rev()
+                            .find_map(|items| map_at(record, items, item))
+                    })
                     .and_then(|obj| type_at(record, &obj))
                     .and_then(|ty| lookup(&ty));
                 match schema {

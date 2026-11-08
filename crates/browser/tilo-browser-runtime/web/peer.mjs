@@ -964,9 +964,9 @@ async function connect({
     /** Issue an invitation to the workspace (`membership.mjs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
-    /** The workspace's members, waiting people and invitations, for its owner
-     * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
-     * `remove`, `cancelInvitation`. */
+    /** The workspace's members and invitations, for its owner
+     * (`membership.mjs`): `list()`, `setRole`, `remove`,
+     * `cancelInvitation`. */
     get membership() { return membership; },
     /** The workspaces the host governs (`membership.mjs`): `list()`,
      * `create(name)`, `enter(workspace)`; needs no workspace. */

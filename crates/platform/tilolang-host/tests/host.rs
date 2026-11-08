@@ -140,6 +140,9 @@ struct Window {
     /// What the instance says each bound control holds, by key: its type is what a window
     /// reads to know how a field takes typing.
     bound: BTreeMap<String, patch::Value>,
+    /// The form the instance shows for the action waiting for its arguments, as the window
+    /// last had it.
+    form: Option<Box<patch::Form>>,
 }
 
 impl Window {
@@ -184,6 +187,7 @@ impl Window {
                     ToUi::Bound { key, value, .. } => {
                         self.bound.insert(key, value);
                     }
+                    ToUi::Form(form) => self.form = form,
                     _ => {}
                 }
             }
@@ -337,6 +341,7 @@ fn instance_on(
         detail_target: None,
         activated: false,
         bound: BTreeMap::new(),
+        form: None,
     };
     (window, sent, inbox)
 }
@@ -427,6 +432,7 @@ fn opened_from_own_copy_in(
         detail_target: None,
         activated: false,
         bound: BTreeMap::new(),
+        form: None,
     };
     (host, window, sent, route)
 }
@@ -1071,6 +1077,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
         detail_target: None,
         activated: false,
         bound: BTreeMap::new(),
+        form: None,
     };
 
     // The first instance's window presses +: its next frame comes at once, while the second
@@ -1194,6 +1201,7 @@ fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
         detail_target: None,
         activated: false,
         bound: BTreeMap::new(),
+        form: None,
     };
     second.send(&[ToApp::Fire {
         lane: Lane::Root,
@@ -2397,5 +2405,173 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
         in_app("widths", "so.tilo.lang.notes"),
         0,
         "scoped to another app: it is not"
+    );
+}
+
+/// The text the form the window shows holds for the field `key`, or none while no form is open
+/// or the form has no such field.
+fn form_text(window: &Window, key: &str) -> Option<String> {
+    let form = window.form.as_ref()?;
+    form.fields
+        .iter()
+        .find(|(field, _)| field == key)
+        .map(|(_, text)| text.clone())
+}
+
+/// The person typed `text` into the field `field` of the form the window shows.
+fn type_into(window: &mut Window, field: &str, text: &str) {
+    let form = window
+        .form
+        .as_ref()
+        .expect("a form is open to type into")
+        .id;
+    window.send(&[ToApp::FormEdit {
+        form,
+        field: field.to_owned(),
+        text: text.to_owned(),
+    }]);
+}
+
+/// The person submitted the form the window shows.
+fn submit_form(window: &mut Window) {
+    let form = window.form.as_ref().expect("a form is open to submit").id;
+    window.send(&[ToApp::FormSubmit { form }]);
+}
+
+/// The tasks in the root `hosted` runs, as the runtime reads them.
+fn tasks_of(hosted: &Hosted) -> Vec<Value> {
+    let instance = hosted.instance();
+    let host = instance.host().expect("the runtime");
+    let root = host.root_of(TASKS).expect("the tasks root");
+    match host.runtime().read(&root, "items").expect("the items") {
+        Value::List(items) => items,
+        other => panic!("a list: {other:?}"),
+    }
+}
+
+/// When the task `task` is reminded of, as its reminder reads.
+fn reminder_of(hosted: &Hosted, task: &Value) -> String {
+    let Value::Ref(task) = task else {
+        panic!("a task is a resource: {task:?}")
+    };
+    let instance = hosted.instance();
+    let host = instance.host().expect("the runtime");
+    match host
+        .runtime()
+        .read(&task.target, "remind")
+        .expect("its reminder")
+    {
+        Value::Opt(Some(at)) => match *at {
+            Value::Text(at) => at,
+            other => panic!("a moment: {other:?}"),
+        },
+        other => panic!("a reminder: {other:?}"),
+    }
+}
+
+const TASKS: &str = "so.tilo.lang.tasks";
+
+/// What the clock reads now, in the seconds a moment is held as.
+fn now_secs() -> i64 {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch");
+    i64::try_from(at.as_secs()).expect("the seconds fit")
+}
+
+/// The palette runs an action whose arguments it does not give, and the form asks for them by
+/// their types: a task is added by typing its title, and its reminder set by a segment of a
+/// length of time, both through the invocation the palette sends for any command
+/// (forms-and-diagrams.md §1).
+#[test]
+fn the_palette_asks_the_form_for_a_title_and_a_length_of_time() {
+    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+    assert_eq!(app, TASKS);
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
+    settle(&mut host, &mut window);
+
+    // The palette takes "New task", which still needs the title: its form asks for it.
+    let new_task = host
+        .instances()
+        .next()
+        .expect("the instance runs")
+        .published()
+        .iter()
+        .find(|action| action.action_label == "New task")
+        .expect("the tasks publish the action that makes one")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address: new_task,
+        argument: None,
+    }]);
+    settle(&mut host, &mut window);
+    assert_eq!(
+        window.form.as_ref().map(|form| form.title.as_str()),
+        Some("New task…"),
+        "the form stands for the action, asking what it was not given"
+    );
+    type_into(&mut window, "form~title", "Call Ada");
+    settle(&mut host, &mut window);
+    assert_eq!(
+        form_text(&window, "form~title").as_deref(),
+        Some("Call Ada")
+    );
+    submit_form(&mut window);
+    settle(&mut host, &mut window);
+    assert!(
+        window.form.is_none(),
+        "the form closes once the action runs: {:?}",
+        window.form.as_ref().map(|form| form.error.clone())
+    );
+
+    // The window holds the task, and offers its actions: "Remind me", which takes a length of
+    // time, asks for it the same way.
+    let (task, remind) = {
+        let hosted = host.instances().next().expect("the instance runs");
+        let task = tasks_of(hosted).first().cloned().expect("the task it made");
+        let remind = hosted
+            .published()
+            .iter()
+            .find(|action| action.action_label == "Remind me…")
+            .expect("the task offers its reminder")
+            .address
+            .clone();
+        (task, remind)
+    };
+    window.send(&[ToApp::Invoke {
+        address: remind,
+        argument: None,
+    }]);
+    settle(&mut host, &mut window);
+    assert_eq!(
+        window.form.as_ref().map(|form| form.title.as_str()),
+        Some("Remind me…"),
+        "the reminder's form asks when"
+    );
+    assert_eq!(
+        form_text(&window, "form~after").as_deref(),
+        Some(""),
+        "it starts with no length of time, the task having no reminder"
+    );
+    type_into(&mut window, "form~after~quick", "15m");
+    settle(&mut host, &mut window);
+    assert_eq!(
+        form_text(&window, "form~after").as_deref(),
+        Some("15m"),
+        "the segment reads as the length of time it offers"
+    );
+    let before = now_secs();
+    submit_form(&mut window);
+    settle(&mut host, &mut window);
+    let after = now_secs();
+    let at = tilolang::calendar::instant(&reminder_of(
+        host.instances().next().expect("the instance runs"),
+        &task,
+    ))
+    .expect("the reminder reads as a moment");
+    assert!(
+        at >= before + 900 && at <= after + 900,
+        "the task is reminded a quarter of an hour on: {at}, {before}..{after}"
     );
 }

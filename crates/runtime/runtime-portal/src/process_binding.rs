@@ -4,7 +4,7 @@
 
 /// Launcher-authored protocol selection, never authority or an identity claim.
 pub const ENV: &str = "TILO_COLLAB_EXEC_PEER";
-/// One-time native process binding before Cap'n Proto traffic begins.
+/// One-time native process binding before a service connection carries traffic.
 pub const MAGIC: [u8; 4] = *b"QPE1";
 
 mod proof;

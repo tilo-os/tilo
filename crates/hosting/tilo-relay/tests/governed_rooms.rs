@@ -29,18 +29,9 @@ use tilo_relay::workspaces::{
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser};
+use crate::common::{TestDevice, TestUser, device_endpoint};
 
 const APP: &str = "so.tilo.chat";
-
-/// An endpoint whose key is the device's own, as a device dials with.
-async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
-}
 
 async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> Relay {
     Relay::start(

@@ -10,7 +10,7 @@ use crate::RawFd;
 
 /// Claim the launcher's managed-agent collaboration descriptor
 /// (`TILO_SVC_COLLAB_FD`) and finish the launcher's kernel-credential
-/// attestation on it before any Cap'n Proto traffic.
+/// attestation on it before any collaboration traffic.
 ///
 /// The descriptor can be claimed once per process.
 pub fn claim_managed_agent_fd() -> io::Result<RawFd> {
@@ -58,7 +58,7 @@ mod imp {
         Ok(UnixStream::connect(path)?.into_raw_fd())
     }
 
-    /// Finish launcher kernel-credential attestation before starting Cap'n Proto.
+    /// Finish launcher kernel-credential attestation before the connection's traffic.
     pub(super) fn complete_managed_handshake(stream: &mut UnixStream) -> io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;

@@ -661,6 +661,96 @@ mod tests {
         );
     }
 
+    /// The same record, admitted the way the shell admits it: as an app
+    /// record read from a detached document rather than a mounted store.
+    fn detached_records(
+        records: &RecordStore,
+        record: &RecordId,
+    ) -> Vec<crate::activity::DetachedRecordHistory> {
+        vec![crate::activity::DetachedRecordHistory {
+            app: "org.tilo.Writer".to_string(),
+            checkout: ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document")),
+            document: records.read(record, Clone::clone),
+        }]
+    }
+
+    fn detached_row(pane: &WorkspaceActivityPane, change: HistoryEntryId) -> usize {
+        pane.timeline
+            .entries()
+            .iter()
+            .position(|entry| {
+                pane.projected_origins.get(&entry.id).is_some_and(|origin| {
+                    matches!(
+                        origin.origin,
+                        crate::activity::index::HistoryOrigin::AppRecord { .. }
+                    ) && origin.change == change
+                })
+            })
+            .expect("the app record's row")
+    }
+
+    #[test]
+    fn a_detached_record_row_restores_through_the_record_store() {
+        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
+        let oldest = pane.agent_runs[0].run.steps[0].run.start;
+        let row = detached_row(&pane, oldest);
+        pane.timeline.set_selection(Some((row, row)));
+        assert!(
+            pane.selection_detail()
+                .is_some_and(|detail| detail.can_undo),
+            "an app record's row offers undo instead of hiding it"
+        );
+        let before = records
+            .with(&record, automerge::AutoCommit::get_heads)
+            .unwrap();
+        let outcome = pane.apply_detail_action(DetailAction::Restore, &mut tree, Some(&records));
+        assert!(
+            outcome.reverted,
+            "restore writes the record it came from, not the workspace"
+        );
+        let after = records
+            .with(&record, automerge::AutoCommit::get_heads)
+            .unwrap();
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_detached_record_row_undoes_its_own_change() {
+        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
+        let newest = pane.agent_runs[0].run.steps[0].run.end;
+        let row = detached_row(&pane, newest);
+        pane.timeline.set_selection(Some((row, row)));
+        let before = records
+            .with(&record, automerge::AutoCommit::get_heads)
+            .unwrap();
+        let outcome = pane.apply_detail_action(DetailAction::Undo, &mut tree, Some(&records));
+        assert!(outcome.reverted, "undo writes the record's own document");
+        let after = records
+            .with(&record, automerge::AutoCommit::get_heads)
+            .unwrap();
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_detached_record_row_selects_the_agent_task_receipt() {
+        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
+        assert!(
+            !pane.agent_runs.is_empty(),
+            "the refresh the shell uses reads the runs"
+        );
+        let end = pane.agent_runs[0].run.steps[0].run.end;
+        let row = detached_row(&pane, end);
+        pane.timeline.set_selection(Some((row, row)));
+        let task = pane.selected_agent_task().expect("the run's receipt");
+        assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
+        assert!(pane.can_undo_agent_run());
+        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree, Some(&records));
+        assert!(outcome.reverted, "the task is undone through its record");
+    }
+
     #[test]
     fn a_window_someone_opened_is_listed_in_history_but_is_not_news() {
         let (mut tree, workspace, _) = busy_workspace();

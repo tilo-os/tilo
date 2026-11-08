@@ -16,143 +16,18 @@
 
 mod common;
 
-use std::io::Write as _;
-use std::os::fd::AsFd as _;
 use std::time::Duration;
 
+use common::window::Client;
 use settings_store::hardware::{
     DisplayConfig, DisplaySet, DisplayTransaction, OutputConfig as StoredOutput,
 };
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
-use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_registry, wl_registry::WlRegistry, wl_shm,
-    wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
-};
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{
-    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
-    xdg_wm_base::XdgWmBase,
-};
 
 const WIDTH: i32 = 1000;
 const HEIGHT: i32 = 700;
-
-/// What one toplevel was told.
-#[derive(Default)]
-struct Toplevel {
-    configured: bool,
-    size: Option<(i32, i32)>,
-}
-
-#[derive(Default)]
-struct Seen {
-    compositor: Option<WlCompositor>,
-    shm: Option<WlShm>,
-    wm_base: Option<XdgWmBase>,
-    toplevels: Vec<Toplevel>,
-}
-
-/// One client with toplevels of a solid colour.
-struct TestClient {
-    connection: Connection,
-    queue: EventQueue<Seen>,
-    seen: Seen,
-    windows: Vec<(WlSurface, XdgToplevel)>,
-}
-
-impl TestClient {
-    fn connect(compositor: &mut tilo_compositor::Compositor) -> Self {
-        let socket = compositor.connect_client().expect("client socket");
-        let connection = Connection::from_socket(socket).expect("connection");
-        let queue = connection.new_event_queue();
-        connection.display().get_registry(&queue.handle(), ());
-        Self {
-            connection,
-            queue,
-            seen: Seen::default(),
-            windows: Vec::new(),
-        }
-    }
-
-    /// Send what is queued, read what arrived, without blocking.
-    fn exchange(&mut self) {
-        self.connection.flush().expect("flush");
-        if let Some(guard) = self.connection.prepare_read() {
-            // Nothing to read is fine: WouldBlock.
-            let _ = guard.read();
-        }
-        self.queue
-            .dispatch_pending(&mut self.seen)
-            .expect("dispatch");
-        self.connection.flush().expect("flush");
-    }
-
-    /// Open toplevel number `self.windows.len()` of `app_id`. Returns its
-    /// index.
-    fn open(&mut self, app_id: &str) -> usize {
-        let index = self.windows.len();
-        let qh = self.queue.handle();
-        let surface = self
-            .seen
-            .compositor
-            .as_ref()
-            .expect("wl_compositor")
-            .create_surface(&qh, ());
-        let xdg = self
-            .seen
-            .wm_base
-            .as_ref()
-            .expect("xdg_wm_base")
-            .get_xdg_surface(&surface, &qh, index);
-        let toplevel = xdg.get_toplevel(&qh, index);
-        toplevel.set_app_id(app_id.into());
-        surface.commit();
-        self.seen.toplevels.push(Toplevel::default());
-        self.windows.push((surface, toplevel));
-        index
-    }
-
-    /// Attach a buffer of one colour to toplevel `index` and commit it.
-    fn show(&self, index: usize, width: i32, height: i32) {
-        let qh = self.queue.handle();
-        let stride = width * 4;
-        let len = usize::try_from(stride * height).unwrap();
-        let fd =
-            rustix::fs::memfd_create("tilo-session-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
-        let mut file = std::fs::File::from(fd);
-        file.write_all(&[40, 40, 200, 255].repeat(len / 4)).unwrap();
-        let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
-            file.as_fd(),
-            stride * height,
-            &qh,
-            (),
-        );
-        let buffer =
-            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
-        let surface = &self.windows[index].0;
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, width, height);
-        surface.commit();
-        pool.destroy();
-    }
-}
-
-/// Let the session and `client` talk until `done` holds.
-#[track_caller]
-fn pump(
-    session: &mut Session,
-    client: &mut TestClient,
-    mut done: impl FnMut(&mut Session, &TestClient) -> bool,
-) {
-    common::wait_for(session, "what the test asked of the session", |session| {
-        client.exchange();
-        let answer = done(session, client);
-        client.exchange();
-        answer.then_some(())
-    });
-}
 
 /// Let the session run until `done` holds.
 #[track_caller]
@@ -183,33 +58,17 @@ fn docked() -> Session {
     session
 }
 
-fn client(session: &mut Session) -> TestClient {
-    let mut client = TestClient::connect(session.compositor());
-    pump(session, &mut client, |_, client| {
-        client.seen.wm_base.is_some() && client.seen.shm.is_some()
+fn client(session: &mut Session) -> Client {
+    let mut client = Client::connect(session.compositor());
+    client.pump(session, |_, seen| {
+        seen.wm_base.is_some() && seen.shm.is_some()
     });
     client
 }
 
 /// Open a window of `app_id` and wait until it is mapped.
-fn map(session: &mut Session, client: &mut TestClient, app_id: &str) {
-    let index = client.open(app_id);
-    pump(session, client, |_, client| {
-        client.seen.toplevels[index].configured
-    });
-    let (w, h) = client.seen.toplevels[index]
-        .size
-        .filter(|(w, h)| *w > 0 && *h > 0)
-        .unwrap_or((300, 200));
-    client.show(index, w, h);
-    let app = app_id.to_owned();
-    pump(session, client, |session, _| {
-        session
-            .compositor()
-            .windows()
-            .iter()
-            .any(|(info, _)| info.app_id.as_deref() == Some(app.as_str()))
-    });
+fn map(session: &mut Session, client: &mut Client, app_id: &str) {
+    client.map_plain(session, app_id, (300, 200));
 }
 
 /// Which display (0 left, 1 right) the window of `app` opened on; `None`
@@ -314,7 +173,7 @@ fn new_windows_and_sheets_open_on_the_primary_the_person_chose() {
     // open on either of them.
     let power = session.power_menu().expect("power sheet");
     power.presentation().open(false);
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         sheet_place(session) == Some(right())
     });
     assert_eq!(
@@ -327,7 +186,7 @@ fn new_windows_and_sheets_open_on_the_primary_the_person_chose() {
         .expect("power sheet")
         .presentation()
         .close();
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         !session
             .power_menu()
             .expect("power sheet")
@@ -368,7 +227,7 @@ fn the_display_the_person_made_primary_is_theirs_again_after_a_restart() {
     until(&mut session, |session| primary_reached(session));
     let power = session.power_menu().expect("power sheet");
     power.presentation().open(false);
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         sheet_place(session) == Some(right())
     });
     assert_eq!(
@@ -383,86 +242,3 @@ fn the_display_the_person_made_primary_is_theirs_again_after_a_restart() {
         "and so does a window in a new session"
     );
 }
-
-impl Dispatch<WlRegistry, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        registry: &WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            match interface.as_str() {
-                "wl_compositor" => {
-                    seen.compositor = Some(registry.bind(name, version.min(5), qh, ()));
-                }
-                "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
-                "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
-                _ => {}
-            }
-        }
-    }
-}
-
-impl Dispatch<XdgWmBase, ()> for Seen {
-    fn event(
-        _: &mut Self,
-        base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<XdgSurface, usize> for Seen {
-    fn event(
-        seen: &mut Self,
-        surface: &XdgSurface,
-        event: xdg_surface::Event,
-        index: &usize,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            if let Some(toplevel) = seen.toplevels.get_mut(*index) {
-                toplevel.configured = true;
-            }
-        }
-    }
-}
-
-impl Dispatch<XdgToplevel, usize> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &XdgToplevel,
-        event: xdg_toplevel::Event,
-        index: &usize,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_toplevel::Event::Configure { width, height, .. } = event
-            && let Some(toplevel) = seen.toplevels.get_mut(*index)
-        {
-            toplevel.size = Some((width, height));
-        }
-    }
-}
-
-delegate_noop!(Seen: ignore WlCompositor);
-delegate_noop!(Seen: ignore WlShm);
-delegate_noop!(Seen: ignore WlShmPool);
-delegate_noop!(Seen: ignore WlBuffer);
-delegate_noop!(Seen: ignore WlSurface);

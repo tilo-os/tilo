@@ -1,28 +1,21 @@
 //! `Popover`: the one anchored floating Panel.
 //!
-//! A popover opens next to the control that summoned it, on a preferred
-//! side, flipping to the opposite side when it would leave the window and
-//! sliding along the other axis to stay inside it. It is a floating Panel
-//! ([`super::floating_surface`]): panel radius, the blurred material, one
-//! soft shadow. It paints in the window's top layer
-//! ([`Widget::draw_overlay`]), so it is never clipped by, or drawn under,
-//! the pane it was opened from. While open it captures input: Escape or a
-//! click outside closes it, and the click does not reach what is behind.
+//! It opens next to the control that summoned it, on a preferred side, flipping to the opposite
+//! side when it would leave the window and sliding along the other axis to stay inside. It is a
+//! floating Panel ([`super::floating_surface`]): panel radius, the blurred material, one soft
+//! shadow. It paints in the window's top layer ([`Widget::draw_overlay`]), so it is never clipped
+//! by the pane it was opened from, and while open it captures input: Escape or a click outside
+//! closes it, and the click does not reach what is behind.
 //!
-//! Two bodies:
-//!
-//! - An **option menu** ([`Popover::new`]): pick one of a short list of
-//!   options next to the control that owns the value (a refresh cadence, a
-//!   unit). The chosen option carries a check; the keyboard and pointer
-//!   highlight is the lift of the panel ground, never an accent fill. Full
-//!   keyboard navigation, and `Role::Menu` semantics.
-//! - **Any content** ([`Popover::with_content`]): a widget laid out at its
-//!   own size inside the panel's padding.
+//! Two bodies: an **option menu** ([`Popover::new`]) picking one of a short list next to the
+//! control that owns the value, the chosen option checked and the highlight the lift of the panel
+//! ground rather than an accent fill, with full keyboard navigation and `Role::Menu` semantics; or
+//! **any content** ([`Popover::with_content`]) laid out at its own size inside the panel's padding.
 //!
 //! Hosts that draw by hand drive an option menu through [`Popover::open_at`],
-//! [`Popover::item_at`], [`Popover::move_highlight`], [`Popover::select`]
-//! and [`Popover::take_selection`], and reach its paint through their own
-//! `draw_overlay` (or by returning it from `children_mut`).
+//! [`Popover::item_at`], [`Popover::move_highlight`], [`Popover::select`] and
+//! [`Popover::take_selection`], and reach its paint through their own `draw_overlay` (or by
+//! returning it from `children_mut`).
 
 use std::collections::HashMap;
 
@@ -36,6 +29,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::autocomplete::{Suggestion, SuggestionList};
 use crate::widget::floating_surface;
 use crate::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
 
@@ -79,31 +73,6 @@ struct Options {
     pending: Option<usize>,
 }
 
-/// Geometry of an option menu, from the theme.
-struct MenuMetrics {
-    row: f64,
-    pad: f64,
-    text_x: f64,
-    check: f64,
-    min_width: f64,
-}
-
-impl MenuMetrics {
-    fn of(theme: &Theme) -> Self {
-        let t = &theme.tokens;
-        let check = f64::from(t.metrics.icon_sm);
-        Self {
-            // A menu row, the height every menu shares (HIG §9.5).
-            row: f64::from(t.metrics.menu_row_height),
-            pad: crate::widget::floating_surface::menu_inset(theme),
-            // Leading padding, the check column, then the label.
-            text_x: f64::from(t.spacing.s3) + check + f64::from(t.spacing.s2),
-            check,
-            min_width: f64::from(t.metrics.panel_width_utility) / 2.0,
-        }
-    }
-}
-
 /// Narrower than this, a panel that stands as a sheet in a narrow window
 /// ([`Popover::set_sheet_when_narrow`]) does: the width a phone holds a list
 /// on, where a panel under its button has no room to be one.
@@ -120,8 +89,10 @@ pub const SHEET_WIDTH: f64 = 480.0;
 pub struct Popover<C: Widget = NoContent> {
     content: C,
     options: Option<Options>,
-    /// Controls paint their own surfaces; the anchor host adds no panel.
-    transparent: bool,
+    /// The rows of an option menu: the one list every menu of rows is
+    /// ([`SuggestionList`]), standing beside the anchor with its own panel,
+    /// scroll and motion.
+    menu: SuggestionList,
     /// Accessible name of an option menu (e.g. "Refresh interval").
     label: Option<String>,
     open: bool,
@@ -191,7 +162,7 @@ impl<C: Widget> Popover<C> {
             dirty: true,
             content,
             options,
-            transparent: false,
+            menu: SuggestionList::new(),
             label: None,
             open: false,
             anchor: Rect::ZERO,
@@ -279,15 +250,6 @@ impl<C: Widget> Popover<C> {
         } else {
             room.min(self.max_width.unwrap_or(f64::INFINITY))
         }
-    }
-
-    /// Present individually surfaced controls without a surrounding panel.
-    /// Placement, focus, accessibility and dismissal remain the ordinary
-    /// popover contract. Option menus always retain their panel material.
-    #[must_use]
-    pub fn transparent_content(mut self) -> Self {
-        self.transparent = self.options.is_none();
-        self
     }
 
     /// [`Self::aligned`] after construction.
@@ -468,13 +430,7 @@ impl<C: Widget> Popover<C> {
     }
 
     fn padding(&self, theme: &Theme) -> f64 {
-        if self.transparent {
-            0.0
-        } else if self.options.is_some() {
-            MenuMetrics::of(theme).pad
-        } else {
-            f64::from(theme.tokens.spacing.s4)
-        }
+        f64::from(theme.tokens.spacing.s4)
     }
 
     /// Resolve the panel from the anchor, the body's size and the viewport.
@@ -504,22 +460,13 @@ impl<C: Widget> Popover<C> {
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6))
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "the option count of a menu is far below f64's exact-integer range"
-    )]
     fn place_in(&mut self, viewport: Rect, tr: &mut TextRenderer, theme: &Theme) {
+        if self.options.is_some() {
+            self.place_menu(viewport, tr, theme);
+            return;
+        }
         let pad = self.padding(theme);
-        let (body_w, body_h) = if let Some(options) = &self.options {
-            let m = MenuMetrics::of(theme);
-            let style = theme.text(TextRole::Body);
-            let mut w = m.min_width.max(self.anchor.width() - pad * 2.0);
-            for label in &options.items {
-                let tw = f64::from(tr.measure_style(label, None, &style).0);
-                w = w.max(m.text_x + tw + f64::from(theme.tokens.spacing.s4));
-            }
-            (w, options.items.len().max(1) as f64 * m.row)
-        } else if self.host_content.is_some() {
+        let (body_w, body_h) = if self.host_content.is_some() {
             // The host measured the content at its own width.
             self.content_size
         } else {
@@ -541,11 +488,46 @@ impl<C: Widget> Popover<C> {
                 viewport.y1,
             ));
             self.resolved_side = PopoverSide::Below;
-            if self.options.is_none() && self.host_content.is_none() {
+            if self.host_content.is_none() {
                 self.place_content(tr, theme);
             }
             return;
         }
+        self.panel_in(viewport, (w, h), theme);
+        if self.host_content.is_none() {
+            self.place_content(tr, theme);
+        }
+    }
+
+    /// The option menu's panel: the rows' own list measures itself, and this
+    /// places it by the same rules as any other body.
+    fn place_menu(&mut self, viewport: Rect, tr: &mut TextRenderer, theme: &Theme) {
+        self.menu.set_side(self.side);
+        self.menu.set_align(self.align);
+        self.menu
+            .set_min_width(f64::from(theme.tokens.metrics.panel_width_utility) / 2.0);
+        self.menu.set_viewport(viewport);
+        self.menu.set_anchor(self.anchor);
+        self.refresh_menu(theme, tr);
+        let (w, h) = self.menu.wanted_size();
+        if self.is_sheet() {
+            let h = h.min(viewport.height());
+            self.rect = floating_surface::on_device_pixels(Rect::new(
+                viewport.x0,
+                viewport.y1 - h,
+                viewport.x1,
+                viewport.y1,
+            ));
+            self.resolved_side = PopoverSide::Below;
+        } else {
+            self.panel_in(viewport, (w, h), theme);
+        }
+        self.menu.set_rect(self.rect);
+    }
+
+    /// Stand a panel of `size` beside the anchor: its side, the room it keeps
+    /// from `avoid`, the window it stays in, and the display's pixels.
+    fn panel_in(&mut self, viewport: Rect, (w, h): (f64, f64), theme: &Theme) {
         let gap = f64::from(theme.tokens.spacing.s1);
         let place = |side| {
             floating_surface::place_aligned(self.anchor, (w, h), side, self.align, gap, viewport)
@@ -608,9 +590,30 @@ impl<C: Widget> Popover<C> {
         }
         self.rect = floating_surface::on_device_pixels(chosen.0);
         self.resolved_side = chosen.1;
-        if self.options.is_none() && self.host_content.is_none() {
-            self.place_content(tr, theme);
-        }
+    }
+
+    /// Hand the options to the list that paints them: one row each, the one
+    /// the highlight sits on, and the applied one checked.
+    fn refresh_menu(&mut self, theme: &Theme, tr: &mut TextRenderer) {
+        let Some(options) = &self.options else {
+            return;
+        };
+        let rows = options
+            .items
+            .iter()
+            .enumerate()
+            .map(|(idx, label)| {
+                let row = Suggestion::new(label.clone());
+                if options.selected == Some(idx) {
+                    row.with_checked(true)
+                } else {
+                    row
+                }
+            })
+            .collect();
+        self.menu.set_suggestions(rows);
+        self.menu.set_highlight(Some(options.highlighted));
+        self.menu.measure(tr, theme);
     }
 
     /// The content's own size, from its layout at max-content.
@@ -653,6 +656,34 @@ impl<C: Widget> Popover<C> {
         }
     }
 
+    fn options(&self) -> &Options {
+        static EMPTY: Options = Options {
+            items: Vec::new(),
+            highlighted: 0,
+            selected: None,
+            pending: None,
+        };
+        self.options.as_ref().unwrap_or(&EMPTY)
+    }
+
+    fn options_mut(&mut self) -> &mut Options {
+        self.options.get_or_insert_with(Options::default)
+    }
+
+    /// Record `idx` as the chosen option and close; out of range is ignored.
+    fn choose(&mut self, idx: usize) {
+        let Some(options) = self.options.as_mut() else {
+            return;
+        };
+        if idx < options.items.len() {
+            options.selected = Some(idx);
+            options.highlighted = idx;
+            options.pending = Some(idx);
+            self.open = false;
+            self.appear.show(self.open);
+        }
+    }
+
     /// Forward `event` to the content; returns whether it consumed it. A
     /// hosted popover's content is addressed by its node in the host's
     /// tree, so a field's focus request names a node the window knows.
@@ -668,77 +699,6 @@ impl<C: Widget> Popover<C> {
             event,
             ctx,
         )
-    }
-
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "idx is a row of this menu's own short option list"
-    )]
-    fn row_rect_in(&self, idx: usize, theme: &Theme) -> Rect {
-        let m = MenuMetrics::of(theme);
-        let y0 = self.rect.y0 + m.pad + idx as f64 * m.row;
-        Rect::new(self.rect.x0 + m.pad, y0, self.rect.x1 - m.pad, y0 + m.row)
-    }
-
-    fn paint_options(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(options) = &self.options else {
-            return;
-        };
-        let m = MenuMetrics::of(theme);
-        let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
-        let colors = &on_panel.tokens.colors;
-        let style = on_panel.text(TextRole::Body);
-        for (idx, label) in options.items.iter().enumerate() {
-            let row = self.row_rect_in(idx, theme);
-            // The armed row is the panel's strong lift, as in every menu
-            // (HIG §9.3); the applied option carries the check.
-            let ink = if idx == options.highlighted {
-                crate::widget::floating_surface::paint_armed_row(
-                    scene, transform, row, m.pad, theme,
-                )
-            } else {
-                colors.text_primary
-            };
-            if options.selected == Some(idx) {
-                let x = self.rect.x0 + f64::from(theme.tokens.spacing.s3);
-                let cy = row.center().y;
-                Self::check_mark(scene, transform, x, cy, m.check, ink);
-            }
-            let (_, lh) = tr.measure_style(label, None, &style);
-            let ty = crate::text_metrics::centered_text_top(row.y0, row.height(), f64::from(lh));
-            tr.draw_style(
-                scene,
-                label,
-                ink,
-                transform.pre_translate(Vec2::new(self.rect.x0 + m.text_x, ty)),
-                None,
-                &style,
-            );
-        }
-    }
-
-    fn check_mark(
-        scene: &mut Scene,
-        transform: Affine,
-        x: f64,
-        cy: f64,
-        size: f64,
-        color: vello::peniko::Color,
-    ) {
-        crate::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0),
-            crate::icons::Icon::Check,
-            color,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
     }
 }
 
@@ -1029,20 +989,6 @@ impl Popover {
         self
     }
 
-    fn options(&self) -> &Options {
-        static EMPTY: Options = Options {
-            items: Vec::new(),
-            highlighted: 0,
-            selected: None,
-            pending: None,
-        };
-        self.options.as_ref().unwrap_or(&EMPTY)
-    }
-
-    fn options_mut(&mut self) -> &mut Options {
-        self.options.get_or_insert_with(Options::default)
-    }
-
     /// Replace the options. Clamps the highlight into range.
     pub fn set_items<I, S>(&mut self, items: I)
     where
@@ -1103,14 +1049,7 @@ impl Popover {
     /// Record `idx` as selected and pending, and close. Out-of-range
     /// indices are ignored.
     pub fn select(&mut self, idx: usize) {
-        let options = self.options_mut();
-        if idx < options.items.len() {
-            options.selected = Some(idx);
-            options.highlighted = idx;
-            options.pending = Some(idx);
-            self.open = false;
-            self.appear.show(self.open);
-        }
+        self.choose(idx);
     }
 
     /// Choose the highlighted option (Enter, or a click on the row).
@@ -1126,17 +1065,16 @@ impl Popover {
 
     /// The option row under `point`, while open.
     pub fn item_at(&self, point: Point) -> Option<usize> {
-        if !self.open || !self.rect.contains(point) {
+        if !self.open {
             return None;
         }
-        (0..self.items().len()).find(|&i| self.row_rect_in(i, &self.layout_theme).contains(point))
+        self.menu.row_at(point)
     }
 
     /// One option row after [`Self::place`], so a hand-drawn host or a test
     /// can synthesize a click without restating the menu's metrics.
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
-        (self.open && index < self.items().len())
-            .then(|| self.row_rect_in(index, &self.layout_theme))
+        self.menu.row_rect(index).filter(|_| self.open)
     }
 }
 
@@ -1228,7 +1166,9 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         if self.open && self.stale {
             crate::widget::note_layout_moved();
         }
-        super::defaults::update(self.children_mut(), state, path)
+        let content = super::defaults::update(self.children_mut(), state, path);
+        // The rows carry their own scroll spring and scrollbar fade.
+        content | self.menu.advance()
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -1356,17 +1296,11 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         self.drawn = pose;
         let bounds = floating_surface::painted_bounds(self.rect, theme);
         pose.paint(scene, transform, bounds, |scene, transform| {
-            if !self.transparent {
-                floating_surface::paint(scene, transform, self.rect, theme);
-            }
             if self.options.is_some() {
-                self.paint_options(scene, transform, text_renderer, theme);
+                self.menu.paint(scene, transform, text_renderer, theme);
             } else {
-                let on_panel = if self.transparent {
-                    theme.clone()
-                } else {
-                    theme.on_ground(crate::chrome::panel_ground(theme))
-                };
+                floating_surface::paint(scene, transform, self.rect, theme);
+                let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
                 // A hosted content follows the panel on the host's next
                 // layout pass; until then it is drawn where it belongs.
                 let shift = self.content_target(theme) - self.content_origin;
@@ -1416,7 +1350,10 @@ impl<C: Widget + 'static> Widget for Popover<C> {
 
     fn needs_animation_frame(&self) -> bool {
         self.appear.is_moving()
-            || (self.open && (self.stale || self.content.needs_animation_frame()))
+            || (self.open
+                && (self.stale
+                    || self.content.needs_animation_frame()
+                    || self.menu.needs_animation_frame()))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1428,15 +1365,13 @@ impl<C: Widget + 'static> Widget for Popover<C> {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
                 if self.options.is_some() {
-                    let count = self.options.as_ref().map_or(0, |o| o.items.len());
                     // Rows are hit where they are drawn while it arrives.
                     let at = self.drawn.to_local(self.last_cursor);
-                    let hit = (0..count).find(|&i| {
-                        self.rect.contains(at)
-                            && self.row_rect_in(i, &self.layout_theme).contains(at)
-                    });
-                    if let (Some(idx), Some(options)) = (hit, self.options.as_mut()) {
+                    if let Some(idx) = self.menu.row_at(at)
+                        && let Some(options) = self.options.as_mut()
+                    {
                         options.highlighted = idx;
+                        self.menu.set_highlight(Some(idx));
                     }
                 } else {
                     self.forward_to_content(event, ctx);
@@ -1453,25 +1388,21 @@ impl<C: Widget + 'static> Widget for Popover<C> {
             } => {
                 if matches!(key, Key::Named(NamedKey::Escape)) {
                     self.dismiss();
-                } else if let Some(options) = self.options.as_mut() {
+                } else if let Some(options) = self.options.as_ref() {
                     let max = options.items.len().saturating_sub(1);
-                    match key {
-                        Key::Named(NamedKey::ArrowDown) => {
-                            options.highlighted = options.highlighted.saturating_add(1).min(max);
-                        }
-                        Key::Named(NamedKey::ArrowUp) => {
-                            options.highlighted = options.highlighted.saturating_sub(1);
-                        }
-                        Key::Named(NamedKey::Home) => options.highlighted = 0,
-                        Key::Named(NamedKey::End) => options.highlighted = max,
-                        Key::Named(NamedKey::Enter) if !options.items.is_empty() => {
-                            let idx = options.highlighted;
-                            options.selected = Some(idx);
-                            options.pending = Some(idx);
-                            self.open = false;
-                            self.appear.show(self.open);
-                        }
-                        _ => {}
+                    let at = options.highlighted;
+                    if matches!(key, Key::Named(NamedKey::Enter)) {
+                        self.choose(at);
+                    } else {
+                        let next = match key {
+                            Key::Named(NamedKey::ArrowDown) => at.saturating_add(1).min(max),
+                            Key::Named(NamedKey::ArrowUp) => at.saturating_sub(1),
+                            Key::Named(NamedKey::Home) => 0,
+                            Key::Named(NamedKey::End) => max,
+                            _ => at,
+                        };
+                        self.options_mut().highlighted = next;
+                        self.menu.set_highlight(Some(next));
                     }
                 } else {
                     self.forward_to_content(event, ctx);
@@ -1495,22 +1426,9 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                     // A click outside closes; it does not also hit what is
                     // beneath.
                     self.dismiss();
-                } else if let Some(options) = self.options.as_mut() {
-                    let theme = &self.layout_theme;
-                    let m = MenuMetrics::of(theme);
-                    let rel = at.y - self.rect.y0 - m.pad;
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss,
-                        reason = "rel is checked non-negative and bounded by the panel height"
-                    )]
-                    let idx = (rel >= 0.0).then(|| (rel / m.row).floor() as usize);
-                    if let Some(idx) = idx.filter(|&i| i < options.items.len()) {
-                        options.selected = Some(idx);
-                        options.highlighted = idx;
-                        options.pending = Some(idx);
-                        self.open = false;
-                        self.appear.show(self.open);
+                } else if self.options.is_some() {
+                    if let Some(idx) = self.menu.row_at(at) {
+                        self.choose(idx);
                     }
                 } else {
                     self.forward_to_content(event, ctx);

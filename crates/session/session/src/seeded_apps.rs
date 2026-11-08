@@ -14,7 +14,7 @@
 //! and an app that is installed has the manifest the launcher and connector planning read. Its
 //! scenario data is the only fixture here, and a person's session starts its apps empty.
 
-use tilo_installed_apps::InstalledApp;
+use app_catalogue::apps::InstalledApp;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::notices::{Closed, NOTICE_TAGS};
@@ -101,7 +101,7 @@ pub fn seeded_from_env(person: &str) -> Result<RecordService, String> {
 /// # Errors
 /// One of [`APPS`] is not installed, or is installed as a package of another kind.
 fn installed_apps(catalog: &package_store::Catalog) -> Result<Vec<InstalledApp>, String> {
-    let installed = tilo_installed_apps::read(catalog).map_err(|error| error.to_string())?;
+    let installed = app_catalogue::apps::read(catalog).map_err(|error| error.to_string())?;
     let mut apps = Vec::new();
     for app in APPS {
         let found = installed

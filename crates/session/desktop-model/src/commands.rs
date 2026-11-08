@@ -30,8 +30,6 @@ pub use policy::{Refusal, Standing, may_command, may_create_workspace};
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
 pub const ACTION: &str = "command";
-/// Resource prefix of the per-application open action (`desktop:app:<app>`).
-pub const OPEN_APP_RESOURCE_PREFIX: &str = "desktop:app:";
 /// Action id of the per-application open action.
 pub const OPEN_APP_ACTION: &str = "open";
 
@@ -42,11 +40,7 @@ pub mod layout {
     pub const PROVIDER: &str = "tilo.desktop";
     /// Open a resource, content or web address in a new window.
     pub const OPEN: &str = "open";
-    pub const CREATE_STRIP: &str = "create-strip";
-    pub const RENAME_STRIP: &str = "rename-strip";
-    pub const MOVE_GROUP: &str = "move-group";
     pub const ARRANGE: &str = "arrange";
-    pub const LIST_WINDOWS: &str = "list-windows";
     /// Take a run of layout changes back (`{"run": …}`), as every
     /// history's `undo` does.
     pub const UNDO: &str = "undo";
@@ -942,9 +936,14 @@ pub fn apply_command(
         DesktopCommand::FloatGroup { group, float } => float_group(workspace, *group, *float)?,
     }
     free_closed_places(workspace);
+    let Workspace {
+        strips,
+        arrangement,
+        ..
+    } = workspace;
+    arrangement.place_missing(strips);
     Ok(())
 }
-
 /// Open `app` into the workspace as `placement` says, under ids `mint` gives
 /// and a title `create` makes the window with.
 fn open_tab(
@@ -1173,6 +1172,16 @@ pub fn move_tab_to_workspace(
     .ok_or("the window could not be moved")?;
     tree.active_strip.insert(to, strip);
     tree.set_active_group(strip, group);
+    // The window's canvas place went with the strip it left, and the workspace it lands in
+    // draws its windows by their places: it takes one there as any other window does.
+    if let Some(destination) = tree.workspaces.iter_mut().find(|held| held.slot == to) {
+        let Workspace {
+            strips,
+            arrangement,
+            ..
+        } = destination;
+        arrangement.place_missing(strips);
+    }
     Ok(())
 }
 

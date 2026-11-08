@@ -102,6 +102,9 @@ pub enum WorkspaceRefusal {
     Membership(String),
     /// The batch rewrites an effect receipt.
     ReceiptImmutable,
+    /// The batch redeems an invitation the workspace already redeemed, or
+    /// takes a redemption back.
+    RedemptionImmutable,
     /// The batch records an effect receipt, or anchors archived ones,
     /// outside its writer's own slice ([`super::effect_slices_kept`]).
     ReceiptWriter,
@@ -131,6 +134,9 @@ impl std::fmt::Display for WorkspaceRefusal {
             Self::DeclaredWorkspaceMismatch => f.write_str("declared workspace mismatch"),
             Self::GovernanceWriter => f.write_str("governance writer is not the owner's device"),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
+            Self::RedemptionImmutable => {
+                f.write_str("governed invitation has conflicting redemption receipts")
+            }
             Self::ReceiptWriter => f.write_str("effect receipt is not its writer's own"),
             Self::RefusalWriter => f.write_str("write refusal is not its recorder's own"),
             Self::Media(error) => write!(f, "{error}"),
@@ -240,11 +246,13 @@ pub fn admit_workspace_changes(
 /// 4. Effect receipts are immutable ([`super::immutable_receipts`]), and
 ///    one not from the owner's devices records only its writer's own
 ///    ([`super::effect_slices_kept`]).
-/// 5. Coverage and durable receipts never rewind
+/// 5. Every invitation keeps the one redemption the workspace recorded for it
+///    ([`super::redemptions_kept`]).
+/// 6. Coverage and durable receipts never rewind
 ///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
-/// 6. The media policy is well formed and its transition is permitted
+/// 7. The media policy is well formed and its transition is permitted
 ///    ([`media::validate_transition`]).
-/// 7. A shortcut names as who saved it only a proven saver
+/// 8. A shortcut names as who saved it only a proven saver
 ///    ([`super::saved_shortcut`]).
 ///
 /// # Errors
@@ -343,6 +351,11 @@ fn checked(
     saved_shortcuts_proven(before, candidate, workspace, now_ns)?;
     if !super::immutable_receipts(before, candidate) {
         return Err(WorkspaceRefusal::ReceiptImmutable);
+    }
+    // One redemption per invitation for every writer, the owner's devices
+    // included: whichever device answered, it admits one person at a time.
+    if !super::redemptions_kept(before, candidate) {
+        return Err(WorkspaceRefusal::RedemptionImmutable);
     }
     crate::coverage::monotonic(before, candidate).map_err(WorkspaceRefusal::Coverage)?;
     crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)?;

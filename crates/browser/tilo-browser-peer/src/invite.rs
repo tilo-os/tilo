@@ -4,8 +4,8 @@
 //! The joining person is not a user of that host: their page holds its own
 //! user root beside its device key and certifies the device itself
 //! ([`guest_certificate`]). The host admits the device through the workspace's
-//! governed roster once the workspace's owner admits the request, never as one
-//! of the host user's devices.
+//! governed roster as the invitation's own grant admits it, never as one of
+//! the host user's devices.
 
 use tilo_relay_client::DeviceSigner;
 use tilo_relay_protocol::workspaces::{JoinChallengeView, JoinReply, JoinStep, join_proof_digest};
@@ -56,8 +56,8 @@ pub async fn join(client: &dyn HttpClient, step: &JoinStep) -> Result<JoinReply,
 /// Ask to join with `invitation` as the device `cert` signed by `signer`,
 /// named `name` to the workspace's owner: redeem it, check the host's challenge
 /// names exactly this invitation, device and request, and answer it.
-/// Resolves to [`JoinReply::Waiting`] once the request waits for the owner,
-/// or to the host's refusal.
+/// Resolves to [`JoinReply::Admitted`] — an invitation admits by the grant of
+/// whoever issued it — or to the host's refusal.
 pub async fn ask_to_join(
     client: &dyn HttpClient,
     invitation: &[u8],

@@ -193,7 +193,7 @@ pub async fn certify(
             }
             reply
         }
-        #[cfg(feature = "iroh")]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
         Host::Iroh { addr, relay_url } => {
             let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
             let mut addr = addr.clone();

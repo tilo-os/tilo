@@ -142,27 +142,6 @@ impl PeerPublisher {
         })
     }
 
-    /// `None` is a legitimate single-machine session, but worth naming
-    /// in the log since from inside an app it's indistinguishable from
-    /// a peer who never typed.
-    pub fn from_network(net: Option<Arc<impl PeerPublishSink + 'static>>) -> Arc<Self> {
-        if let Some(n) = net {
-            tracing::info!(
-                "collab outbound: peer sync wired; local edits will be \
-                 republished to the workspace"
-            );
-            Self::new(n as Arc<dyn PeerPublishSink>)
-        } else {
-            tracing::warn!(
-                "collab outbound: no peer network — this session is \
-                 LOCAL ONLY. Nothing typed in any app will reach another \
-                 machine. (Peer sync is off, or TILO_PEER_KEY_PATH did not \
-                 point somewhere writable.)"
-            );
-            Self::disabled()
-        }
-    }
-
     /// Whether a network callback is wired. This is not delivery or durability.
     pub fn is_wired(&self) -> bool {
         self.sink.is_some()

@@ -200,9 +200,7 @@ impl VaultStore {
             psk,
         ))
     }
-}
 
-impl VaultStore {
     fn vaulted(&self, uuid: &str, setting: &str) -> Option<SettingSecrets> {
         let _guard = self.lock.lock_recover();
         match self.read() {
@@ -266,27 +264,8 @@ impl SecretStore for VaultStore {
     }
 
     fn load(&self, key: &StoreKey) -> Option<SettingSecrets> {
-        let vaulted = {
-            let _guard = self.lock.lock_recover();
-            match self.read() {
-                Ok(entries) => entries
-                    .get(&key.uuid)
-                    .and_then(|settings| settings.get(&key.setting))
-                    .map(|values| {
-                        let mut secrets = SettingSecrets::default();
-                        for (name, value) in values {
-                            secrets.insert(name.clone(), value.clone());
-                        }
-                        secrets
-                    }),
-                Err(error) => {
-                    tracing::warn!(target: "shell::network_secrets", %error, "vault unreadable");
-                    None
-                }
-            }
-        };
-        if vaulted.is_some() {
-            return vaulted;
+        if let Some(vaulted) = self.vaulted(&key.uuid, &key.setting) {
+            return Some(vaulted);
         }
         let (ssid, security) = key.roaming_wifi.as_ref()?;
         let password = self.roaming.get()?.password(ssid, *security)?;
@@ -309,31 +288,11 @@ impl SecretStore for VaultStore {
                 ),
             }
         }
-        self.modify(|entries| {
-            let values = secrets
-                .0
-                .iter()
-                .map(|(name, value)| (name.clone(), value.to_string()))
-                .collect();
-            entries
-                .entry(key.uuid.clone())
-                .or_default()
-                .insert(key.setting.clone(), values);
-            true
-        })
+        self.put(&key.uuid, &key.setting, secrets)
     }
 
     fn forget(&self, key: &StoreKey) -> Result<(), String> {
-        self.modify(|entries| {
-            let Some(settings) = entries.get_mut(&key.uuid) else {
-                return false;
-            };
-            let removed = settings.remove(&key.setting).is_some();
-            if settings.is_empty() {
-                entries.remove(&key.uuid);
-            }
-            removed
-        })
+        self.remove(&key.uuid, &key.setting)
     }
 
     fn forget_connection(&self, uuid: &str) -> Result<(), String> {

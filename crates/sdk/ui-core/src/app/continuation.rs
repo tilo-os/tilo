@@ -298,16 +298,6 @@ pub fn sanitize_structural_continuation_metadata(
         .filter(|canonical| !canonical.is_empty() && canonical.len() <= 32 * 1024)
 }
 
-/// Validate the toolkit-owned generic wire shape at the shell boundary.
-/// App-provided opaque bytes must not be accepted merely because they use the
-/// generic schema number.
-pub fn validate_generic_continuation_metadata(bytes: &[u8]) -> bool {
-    let Ok(view) = postcard::from_bytes::<PortableContinuationView>(bytes) else {
-        return false;
-    };
-    view.valid()
-}
-
 fn continuation_publication(
     metadata: Option<&crate::collaboration::ContinuationMetadata>,
     had_previous: bool,
@@ -552,23 +542,4 @@ impl App {
         // queued. Protected focus must still be able to clear that position.
         self.continuation.owner_view.last_claim_at = None;
     }
-}
-
-/// Only typed semantics travel as live owner views. Generic viewport/focus and
-/// local record names are deliberately absent from this read-only projection.
-pub fn semantic_continuation_projection(
-    metadata: &crate::collaboration::ContinuationMetadata,
-) -> Option<crate::collaboration::ContinuationMetadata> {
-    if metadata.schema_version != STRUCTURAL_CONTINUATION_SCHEMA {
-        return None;
-    }
-    let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(&metadata.bytes).ok()?;
-    if !valid_structural_envelope(&envelope) {
-        return None;
-    }
-    let semantic = envelope.semantic?;
-    Some(crate::collaboration::ContinuationMetadata {
-        schema_version: semantic.schema_version,
-        bytes: semantic.bytes,
-    })
 }

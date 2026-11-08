@@ -170,10 +170,15 @@ fn walk_nested(
     }
 }
 
-/// The map of a flat item `id` of the record map `root`.
+/// The map of a flat item `id` of the record map `root`: an item of a record that holds two
+/// maps of its items ([`crate::containers`]) is in one of them.
 fn flat(doc: &Doc, root: &ObjId, id: &str) -> Option<ObjId> {
-    let items = map_at(doc, root, ITEMS_KEY)?;
-    map_at(doc, &items, id)
+    // The copy the record keeps answers first, then those it replaced: an item of either is
+    // the item, and a write goes where the record keeps its items.
+    crate::containers::maps(doc, root, ITEMS_KEY)
+        .iter()
+        .rev()
+        .find_map(|items| map_at(doc, items, id))
 }
 
 /// The placement a nested item reads as while it holds none: the collection it is in.
@@ -310,11 +315,15 @@ pub struct Items {
 impl Items {
     /// Every item of the record map `root` (of type `schema`): its flat items, then those
     /// nested in a record written before items were flat. An id held twice is read once, the
-    /// first time it is met; the others are set aside.
+    /// first time it is met; the others are set aside. Of a flat id held in two copies of the
+    /// map of items, the copy the record keeps is read.
     #[must_use]
     pub fn scan(doc: &Doc, root: &ObjId, schema: &TypeSchema, chunk: ChunkNo) -> Self {
         let mut found = BTreeMap::new();
-        if let Some(items) = map_at(doc, root, ITEMS_KEY) {
+        // Every copy of the map the record keeps its items in, the one it keeps last: the
+        // items of a copy it does not keep a replica made before it met the others, and they
+        // are the record's just the same.
+        for items in crate::containers::maps(doc, root, ITEMS_KEY) {
             for id in doc.keys(&items) {
                 let Some(obj) = map_at(doc, &items, &id) else {
                     continue;

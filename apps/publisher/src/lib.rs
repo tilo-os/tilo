@@ -2,19 +2,19 @@
 //! registry lets it publish under.
 //!
 //! The key lives in this app's secrets on this device, where `tilo-app` finds
-//! it too ([`registry_client::key`]). It never enters the resource: the
+//! it too ([`app_registry::publisher::key`]). It never enters the resource: the
 //! resource is synced to collaborators and kept in history, and holds only
 //! what an application for a namespace needs.
 
 /// The application id: also the app whose secrets `tilo-app` reads the
 /// publisher key from.
-pub const APP_ID: &str = registry_client::key::SECRETS_APP;
+pub const APP_ID: &str = app_registry::publisher::key::SECRETS_APP;
 /// The window and launcher title.
 pub const APP_TITLE: &str = "App Publisher";
 
 pub mod locales;
 
-use registry_client::{RegistryClient, key};
+use app_registry::publisher::{RegistryClient, key};
 use registry_types::application::{NamespaceClaim, proof_token};
 use ui::prelude::*;
 use ui::secrets::SecretStore;
@@ -39,7 +39,7 @@ pub struct Publisher {
 impl Default for Publisher {
     fn default() -> Self {
         Self {
-            registry: registry_client::DEFAULT_REGISTRY.to_owned(),
+            registry: app_registry::publisher::DEFAULT_REGISTRY.to_owned(),
             domain: String::new(),
             forge_account: String::new(),
             contact: String::new(),
@@ -179,7 +179,9 @@ fn claims(profile: &Publisher) -> Result<Vec<NamespaceClaim>, String> {
     }
     let account = profile.forge_account.trim();
     if !account.is_empty() {
-        claims.push(registry_client::forge_claim(account).map_err(|error| format!("{error:#}"))?);
+        claims.push(
+            app_registry::publisher::forge_claim(account).map_err(|error| format!("{error:#}"))?,
+        );
     }
     if claims.is_empty() {
         return Err("name a domain or a forge account to claim".to_owned());
@@ -191,7 +193,7 @@ fn apply(profile: &Publisher, secrets: &SecretStore) -> Result<String, String> {
     let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
     let claims = claims(profile)?;
     let client = RegistryClient::new(&profile.registry).map_err(|error| format!("{error:#}"))?;
-    let status = registry_client::apply(
+    let status = app_registry::publisher::apply(
         &client,
         &key,
         claims,
@@ -199,7 +201,7 @@ fn apply(profile: &Publisher, secrets: &SecretStore) -> Result<String, String> {
         String::new(),
     )
     .map_err(|error| format!("{error:#}"))?;
-    Ok(registry_client::status_summary(&status))
+    Ok(app_registry::publisher::status_summary(&status))
 }
 
 fn check_status(registry: &str, secrets: &SecretStore) -> Result<Option<String>, String> {
@@ -208,7 +210,7 @@ fn check_status(registry: &str, secrets: &SecretStore) -> Result<Option<String>,
     let status = client
         .application(&key::public_hex(&key))
         .map_err(|error| format!("{error:#}"))?;
-    Ok(status.as_ref().map(registry_client::status_summary))
+    Ok(status.as_ref().map(app_registry::publisher::status_summary))
 }
 
 /// How long a copied secret key stays on the clipboard: time to paste it into
@@ -404,14 +406,16 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
 fn profile_proof_places(profile: &Publisher) -> Vec<String> {
     let mut places = Vec::new();
     if !profile.domain.trim().is_empty() {
-        places.extend(registry_client::proof_places(&NamespaceClaim::Domain {
-            domain: profile.domain.trim().to_owned(),
-        }));
+        places.extend(app_registry::publisher::proof_places(
+            &NamespaceClaim::Domain {
+                domain: profile.domain.trim().to_owned(),
+            },
+        ));
     }
     if !profile.forge_account.trim().is_empty()
-        && let Ok(claim) = registry_client::forge_claim(profile.forge_account.trim())
+        && let Ok(claim) = app_registry::publisher::forge_claim(profile.forge_account.trim())
     {
-        places.extend(registry_client::proof_places(&claim));
+        places.extend(app_registry::publisher::proof_places(&claim));
     }
     places
 }

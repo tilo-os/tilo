@@ -16,6 +16,9 @@
 /// One action sent to another device of the workspace, signed by its sender.
 pub mod actions;
 pub mod colorimetry;
+/// Content a record references, asked of a workspace by hash and answered in
+/// pieces: what every participant of a workspace speaks, host or page.
+pub mod content;
 pub mod hdr_metadata;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;

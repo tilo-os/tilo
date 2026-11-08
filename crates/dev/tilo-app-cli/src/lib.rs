@@ -5698,10 +5698,12 @@ fn signing_identity(
     path: Option<&Path>,
 ) -> Result<tilo_app_package::SigningIdentity> {
     let Some(path) = path else {
-        if let Some(key) = registry_client::key::discover(&registry_client::key::machine_store())? {
+        if let Some(key) =
+            app_registry::publisher::key::discover(&app_registry::publisher::key::machine_store())?
+        {
             eprintln!(
                 "[tilo-app] signing with publisher key {}",
-                registry_client::key::public_hex(&key)
+                app_registry::publisher::key::public_hex(&key)
             );
             return Ok(tilo_app_package::SigningIdentity::from_seed(
                 &key.to_bytes(),

@@ -14,8 +14,8 @@ path = "src/lib.rs"
 
 [features]
 # Test-only hooks and helpers: the checkpoint-prefix fault marker, the store's
-# test barriers, and the replay and staging entry points the shell replay
-# adapter's selection tests drive the store through.
+# test barriers, and the replay and staging entry points the host's tests
+# drive the store through.
 test-support = ["tilo-room-host/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
@@ -62,9 +62,7 @@ path = "src/home_peer_control/main.rs"
 #   It reads the desktop's peer-sync messages inside co-edit bodies to
 #   decide retention, replay and compaction: document frames, checkpoint
 #   kinds and audiences through the injected `payloads::ShellPayloads`
-#   (`tilo-relay-shell`), and native
-#   shell replay through the selection a bound shell authority hands the
-#   store (`tilo-relay-shell`); it refuses document
+#   (`tilo_room_host::payloads`); it refuses document
 #   changes an app's surface does not allow (`surfaces`). Sealed document
 #   content stays opaque.
 # - Multi-host by construction — several relays bound to the same
@@ -158,7 +156,7 @@ bytes = { workspace = true, optional = true }
 # The pages' live plane: the WebTransport listener beside the HTTPS one, and
 # the relay that copies its sealed bytes (admission preface, moq-lite, and the
 # same relay the native carrier reaches over iroh).
-tilo-live = { path = "../../collab/tilo-live", features = ["native"], optional = true }
+tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"], optional = true }
 # SHA-256 of the live listener's certificate, which a page pins.
 sha2 = { workspace = true, optional = true }
 # Who-is-here lines may be summarised by a model provider the operator
@@ -222,8 +220,7 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The room host every device runs, which the relay embeds.
 tilo-room-host = { path = "../tilo-room-host" }
-# Retained-store primitives the workspace store shares with the shell replay
-# adapter, and the seam it drives shell replay selection through.
+# Retained-store primitives the workspace store keeps its retained data with.
 # Owners pre-admit people by the SHA-256 of a token someone else hands them.
 sha2.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }

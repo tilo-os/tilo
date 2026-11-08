@@ -42,11 +42,6 @@ impl Default for DateFieldProps {
     }
 }
 
-/// A picked day as the moment a bound field holds: its ISO text, empty for none.
-fn moment(day: Option<chrono::NaiveDate>) -> String {
-    day.map_or_else(String::new, |day| day.format("%Y-%m-%d").to_string())
-}
-
 impl Described for DateField {
     type Props = DateFieldProps;
 
@@ -60,6 +55,7 @@ impl Described for DateField {
             ..
         } = props;
         let shown = value.clone();
+        let held = value.state.clone();
         Self::from_state(
             key,
             &value.state,
@@ -68,7 +64,12 @@ impl Described for DateField {
             time,
             label.as_deref(),
         )
-        .on_change(move |day| shown.edited(crate::component::Value::Text(moment(day))))
+        .on_change(move |day| {
+            // The day changes, the time of day it is due at stays: a moment whose day is
+            // picked keeps its time, and a day alone stays a day.
+            let moment = super::with_day(&held.get(), day);
+            shown.edited(crate::component::Value::Text(moment));
+        })
     }
 
     /// A day or time set elsewhere shows in place through the binding; whether it may be

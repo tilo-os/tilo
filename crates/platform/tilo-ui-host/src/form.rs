@@ -90,6 +90,12 @@ impl Shown {
         if let Some(replaced) = reconciler.update_in(pane.content_mut(), &self.tree, &tree) {
             pane.replace(replaced);
         }
+        // What the app read each field as now: a choice or the calendar set a control the
+        // person had not touched, and the fields show it as the app does.
+        for (key, text) in &form.fields {
+            reconciler.set_text(key, text);
+            reconciler.set_flag(key, text == "true");
+        }
         sheet.invalidate_layout();
         self.tree = tree;
         self.ready.set(form.ready);

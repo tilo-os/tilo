@@ -237,6 +237,7 @@ impl Native {
             &scope.id(),
             1,
             serde_json::to_vec(&governed.laptop.cert).unwrap(),
+            Vec::new(),
         )
         .expect("a native grant");
         let carrier = tilo_live::native::Iroh::new(endpoint.clone(), governed.relay.node_addr());

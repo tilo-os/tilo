@@ -88,7 +88,7 @@ fn show(device: &Device, site: &Site) {
 /// workspace it shows, and so a change of the workspace's shared desk, which
 /// the workspace's device admits or refuses. The window stays up while the
 /// value lives.
-fn open(device: &Device, title: &str) -> common::window::Window {
+fn open(device: &Device, title: &str) -> common::window::Client {
     device.window(NOTES, title)
 }
 

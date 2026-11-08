@@ -108,19 +108,6 @@ pub fn leading_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
     Rect::new(row.x0 + inset, y, row.x0 + inset + glyph, y + glyph)
 }
 
-/// A `glyph`-sized box on `row`'s trailing `inset` (a chevron), centred on
-/// its centre line.
-pub fn trailing_glyph(row: Rect, inset: f64, glyph: f64) -> Rect {
-    let y = row.center().y - glyph / 2.0;
-    Rect::new(row.x1 - inset - glyph, y, row.x1 - inset, y + glyph)
-}
-
-/// A `w × h` toggle on `row`'s trailing `inset`, centred on its centre line.
-pub fn trailing_toggle(row: Rect, inset: f64, w: f64, h: f64) -> Rect {
-    let y = row.center().y - h / 2.0;
-    Rect::new(row.x1 - inset - w, y, row.x1 - inset, y + h)
-}
-
 /// Centre of the "connected" dot: a [`STATUS_DOT`] disc on the trailing
 /// `inset`.
 pub fn trailing_dot_center(row: Rect, inset: f64) -> Point {

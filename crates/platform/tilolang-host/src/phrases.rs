@@ -250,6 +250,7 @@ mod tests {
             "tilolang-done",
             "tilolang-no-date",
             "tilolang-all-done",
+            "tilolang-all-caught-up",
             "tilolang-add",
         ] {
             let kind = [("kind".to_owned(), "notes".to_owned())];

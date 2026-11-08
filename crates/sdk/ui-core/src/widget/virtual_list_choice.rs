@@ -101,13 +101,8 @@ impl<M: ListModel + 'static> VirtualList<M> {
         let Some((entry, opens)) = chosen.or(opened) else {
             return Ok(None);
         };
-        let encode = self
-            .semantic_key
-            .as_ref()
-            .ok_or_else(|| "the list names no rows".to_owned())?;
-        let key = (0..self.model.len())
-            .filter_map(|index| self.model.key_at(index))
-            .find(|key| encode(key) == entry)
+        let key = self
+            .key_for_name(&entry)
             .ok_or_else(|| format!("no entry `{entry}`"))?;
         self.selection.select_only(key.clone());
         self.focused_key = Some(key.clone());

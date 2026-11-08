@@ -1,39 +1,27 @@
 //! DMA-BUF → `wgpu` texture import via Vulkan external memory.
 //!
-//! A producer that already has a picture in GPU memory — a hardware video
-//! decoder, or WebKit rendering a page — can hand it over as a dmabuf: a file
-//! descriptor naming the allocation, plus enough layout information to read
-//! it. Importing that as a `wgpu::Texture` aliases the same memory, so nothing
-//! is copied.
+//! A producer that already has its picture in GPU memory (a hardware decoder, WebKit rendering
+//! a page) can hand it over as a dmabuf: a file descriptor naming the allocation plus the layout
+//! to read it. Importing that as a `wgpu::Texture` aliases the memory, so nothing is copied.
 //!
-//! # What is reachable, and what is not
+//! Import needs `VK_KHR_external_memory_fd` + `VK_EXT_external_memory_dma_buf`, which
+//! `wgpu-hal` enables. A **tiled or compressed** layout, or a linear one whose row pitch the
+//! driver would not have chosen, needs `VK_EXT_image_drm_format_modifier`: crates.io `wgpu-hal`
+//! 29 does not enable it, the repository's patched copy (`vendor/wgpu-hal`, see
+//! `vendor/PATCHES.md`) does on Vulkan 1.2 and up.
 //!
-//! Import needs `VK_KHR_external_memory_fd` + `VK_EXT_external_memory_dma_buf`,
-//! which `wgpu-hal` enables. Interpreting a **tiled or compressed** layout, or
-//! a linear one whose row pitch the driver would not have chosen itself,
-//! additionally needs `VK_EXT_image_drm_format_modifier`. The crates.io
-//! `wgpu-hal` 29 does not enable it; the repository's patched copy
-//! (`vendor/wgpu-hal`, see `vendor/PATCHES.md`) does on Vulkan 1.2 and up.
+//! * With the extension ([`explicit_layout_available`]) the image is created with the
+//!   producer's own modifier, plane offset and row pitch, after the driver confirmed it can
+//!   sample that exact combination.
+//! * Without it Vulkan can only be told `VK_IMAGE_TILING_LINEAR`, so a buffer with any other
+//!   modifier cannot be described and must not be imported: doing so would sample the tiling
+//!   pattern as pixels.
 //!
-//! * With the extension ([`explicit_layout_available`]) the image is created
-//!   with the producer's own modifier, plane offset and row pitch
-//!   (`VkImageDrmFormatModifierExplicitCreateInfoEXT`), after the driver
-//!   confirmed it can sample that exact combination. No pitch has to agree.
-//! * Without it Vulkan can only be told `VK_IMAGE_TILING_LINEAR`, so a buffer
-//!   with any other DRM format modifier cannot be described and must not be
-//!   imported: doing so would sample the tiling pattern as pixels.
-//!
-//! Two further limits are enforced rather than hoped for:
-//!
-//! * **Vulkan only.** The import goes through `Device::as_hal::<vulkan::Api>`.
-//!   If `wgpu` fell back to GLES there is no Vulkan device to import into, and
-//!   [`ImportError::NotVulkan`] says so — the caller takes the CPU path
-//!   instead of silently rendering nothing.
-//! * **Row pitch must agree, without the modifier extension.** A `LINEAR`
-//!   `VkImage`'s row pitch is chosen by the driver, and there is no way to
-//!   override it without the extension. If it disagrees with the producer's stride, the picture would
-//!   shear; [`ImportError::StrideMismatch`] reports it and the caller falls
-//!   back.
+//! Two further limits are enforced rather than hoped for: the import goes through
+//! `Device::as_hal::<vulkan::Api>`, so a `wgpu` that fell back to GLES reports
+//! [`ImportError::NotVulkan`] and the caller takes the CPU path; and without the modifier
+//! extension a `LINEAR` image's row pitch is the driver's, so a disagreeing producer stride
+//! would shear the picture and reports [`ImportError::StrideMismatch`].
 //!
 //! Every failure is a typed error, never a silently blank frame.
 //!
