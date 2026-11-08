@@ -15,8 +15,6 @@
 //! challenge ([`join_proof_digest`]); the invitation's own grant admits it,
 //! and the owner's pre-admission token admits it at once too.
 
-pub mod private;
-
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
