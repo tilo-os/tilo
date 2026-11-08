@@ -3516,8 +3516,9 @@ mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
-    RowActionRects, RowGroup, RowRenameField, RowSelection, RowSelectionSink, TREE_DISCLOSURE,
-    TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel, VirtualList, VirtualListProps,
+    RowActionRects, RowBuild, RowGroup, RowRenameField, RowSelection, RowSelectionSink,
+    TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel, VirtualList,
+    VirtualListProps,
 };
 mod activation;
 pub(crate) mod control_verb;

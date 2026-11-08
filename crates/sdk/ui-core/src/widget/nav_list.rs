@@ -853,12 +853,12 @@ impl NavList {
         let list = VirtualList::with_selection_delegate(
             model,
             crate::num::f32_of_f64(nav_row_height(&Theme::dark())),
-            move |model: &NavModel, index, _key, selection| {
+            move |model: &NavModel, index, _key, build| {
                 let row = model.row(index).cloned().unwrap_or(NavRowData {
                     key: String::new(),
                     kind: NavRowKind::Pending { id: String::new() },
                 });
-                Box::new(NavRow::new(row, Rc::clone(&row_paint), selection))
+                Box::new(NavRow::new(row, Rc::clone(&row_paint), build.selection))
             },
         )
         .filling()
