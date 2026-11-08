@@ -1,12 +1,26 @@
 //! The workspace this window is in: taking it from the resource, adopting it with
 //! the presence context, and settling the participant this device is.
 
+use std::collections::HashMap;
+
 use ui::presence::PresenceCtx;
 
 use crate::model::{self, Id};
 use crate::permissions::ChatPermissions;
 
 use super::ChatApp;
+
+/// What the channels show of the workspace and its calls. Kept as one value so
+/// a frame can tell whether showing them again would draw anything else.
+#[derive(Clone, Default, PartialEq)]
+pub(crate) struct ChannelRows {
+    pub(crate) voice: HashMap<Id, Vec<Id>>,
+    pub(crate) names: HashMap<Id, String>,
+    pub(crate) colors: HashMap<Id, (u8, u8, u8)>,
+    pub(crate) in_calls: HashMap<Id, Vec<model::VoiceMember>>,
+    /// Whether this window is in a call, and which.
+    pub(crate) call: (bool, String),
+}
 
 impl ChatApp {
     /// Take the workspace's view of the participants off the presence store.
@@ -23,16 +37,11 @@ impl ChatApp {
     /// on offering a departed participant in the `@` picker and painting their
     /// colour behind a mention.
     /// Take this frame's workspace: who is here and in which call, their names
-    /// and colours, and the authority the window acts under. Whether any of
-    /// it changed, so the channels show it (also while the conversation is
-    /// put away and not drawn). In a call they show who speaks, which moves
-    /// every frame.
+    /// and colours, the rosters of the calls, and the authority the window
+    /// acts under. Whether any of it changed, so the channels show it (also
+    /// while the conversation is put away and not drawn). In a call they show
+    /// who speaks, which moves every frame.
     pub(super) fn take_workspace(&mut self) -> bool {
-        let before = (
-            self.workspace_voice.clone(),
-            self.workspace_names.clone(),
-            self.workspace_colors.clone(),
-        );
         let permissions = ui::presence::frame::frame(PresenceCtx::permission_context).flatten();
         let perms_changed = permissions.is_some_and(|permissions| {
             let changed = self.perms.context() != &permissions;
@@ -47,16 +56,28 @@ impl ChatApp {
             self.workspace_presence_answers = false;
             return perms_changed;
         }
-        let after = (
-            &self.workspace_voice,
-            &self.workspace_names,
-            &self.workspace_colors,
-        );
-        let changed = perms_changed || (&before.0, &before.1, &before.2) != after;
+        // Who is in a call is not presence: it arrives from the host and from
+        // the call's own service while this frame is being built, and a call
+        // this window never joined changes nothing else here — so a channel
+        // names everyone the last build saw, not everyone the record says.
+        let rows = self.channel_rows();
+        let changed = perms_changed || rows != self.shown_rows;
         if changed || self.call.active {
             self.show_sidebar();
+            self.shown_rows = rows;
         }
         changed
+    }
+
+    /// What the channels would show now.
+    fn channel_rows(&self) -> ChannelRows {
+        ChannelRows {
+            voice: self.workspace_voice.clone(),
+            names: self.workspace_names.clone(),
+            colors: self.workspace_colors.clone(),
+            in_calls: self.voice_members.clone(),
+            call: (self.call.active, self.call.channel.clone()),
+        }
     }
 
     pub fn adopt_workspace(&mut self, presence: &PresenceCtx) {
@@ -152,5 +173,68 @@ impl ChatApp {
             self.me.name = name.to_string();
             self.me.initials = crate::identity::initials_for(name);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every row the channels handed the shell, nested rows too.
+    fn rows(app: &ChatApp) -> Vec<String> {
+        fn walk(items: &[ui::widget::NavItem], into: &mut Vec<String>) {
+            for item in items {
+                into.push(item.id.clone());
+                walk(&item.children, into);
+            }
+        }
+        let mut ids = Vec::new();
+        if let Some((sections, _)) = app.places.shown() {
+            for section in &sections {
+                walk(&section.items, &mut ids);
+            }
+        }
+        ids
+    }
+
+    #[test]
+    fn a_call_ending_elsewhere_takes_its_rows_off_the_channels() {
+        let mut doc = automerge::AutoCommit::new();
+        crate::demo::seed(&mut doc).unwrap();
+        let mut app = ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.capture_agent_presence = Some(PresenceCtx::empty());
+        app.take_workspace();
+        let row = "in-call:c_standup/u_dana";
+        let mut dana = crate::model::VoiceMember {
+            user: "u_dana".into(),
+            talking: false,
+            muted: false,
+            deafened: false,
+            audio_only: true,
+            sharing: false,
+            ticket: None,
+            video: None,
+        };
+        app.voice_members
+            .insert("c_standup".into(), vec![dana.clone()]);
+        assert!(app.take_workspace(), "someone in a call is a change");
+        assert!(rows(&app).iter().any(|id| id == row), "{:?}", rows(&app));
+        dana.talking = true;
+        app.voice_members.insert("c_standup".into(), vec![dana]);
+        assert!(app.take_workspace(), "someone speaking is a change");
+        app.voice_members.clear();
+        assert!(app.take_workspace(), "the call ending here is a change");
+        assert!(!rows(&app).iter().any(|id| id == row), "{:?}", rows(&app));
+
+        // This window's own row goes the same way once it has hung up.
+        let mine = format!("in-call:c_standup/{}", app.me.id);
+        app.call.active = true;
+        app.call.channel = "c_standup".into();
+        assert!(app.take_workspace(), "joining here is a change");
+        assert!(rows(&app).iter().any(|id| id == &mine), "{:?}", rows(&app));
+        app.call.active = false;
+        assert!(app.take_workspace(), "the call ending is a change");
+        assert!(!rows(&app).iter().any(|id| id == &mine), "{:?}", rows(&app));
     }
 }

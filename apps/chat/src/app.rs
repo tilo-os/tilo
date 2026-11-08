@@ -315,6 +315,10 @@ pub struct ChatApp {
     /// The shell's sidebar: the channels this window shows in it and what
     /// the person does there ([`crate::sidebar`]).
     pub(crate) places: NavFeed,
+    /// What the channels showed when they were last built, so a frame that
+    /// changes who is in a call builds them again
+    /// ([`crate::app::workspace::ChannelRows`]).
+    pub(crate) shown_rows: ChannelRows,
     /// The shell's own controls in the window bar, and its sidebar's
     /// state; `None` outside a shell (a floated conversation, a test).
     pub(crate) bar: Option<WindowBarLink>,
@@ -742,6 +746,7 @@ impl ChatApp {
             presented_call: None,
             floating_surface_bounds: Rect::ZERO,
             places: NavFeed::new(),
+            shown_rows: ChannelRows::default(),
             bar: None,
             bar_entries: crate::window_bar::BarEntries::new(),
             right_flap: Self::detail_drawer(),
@@ -2791,3 +2796,4 @@ pub(crate) use hits::{Hit, PaintedMessage};
 pub(crate) use menus::{ContextMenu, MenuAction, MenuTarget};
 pub use window::ChatWindow;
 pub(crate) use window::SharedChat;
+pub(crate) use workspace::ChannelRows;

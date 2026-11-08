@@ -164,7 +164,7 @@ pub struct Channel {
 /// One person currently connected to a voice channel, with their live
 /// audio state. Rendered both under the channel in the sidebar and as a
 /// tile/chip in the call overlay.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool mirrors a distinct CRDT voice-membership field (talking/muted/deafened/audio_only/sharing) read straight off the shared state — grouping them would just relocate the boolean soup, not remove it"
