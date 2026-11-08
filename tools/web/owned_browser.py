@@ -3,6 +3,7 @@
 import ctypes
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -160,9 +161,34 @@ def quiesce():
         time.sleep(0.01)
 
 
+def remove_profile(profile):
+    """Drop the throwaway profile once every owned process has stopped writing
+    it. Nothing is kept for a later run, and a host that lends /dev/shm pays
+    for it in memory."""
+    try:
+        shutil.rmtree(profile)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        # The browser's own writers are gone, so what is left is only space;
+        # whoever reads the failure can remove it, and the next launch sweeps it.
+        print(f'owned browser could not remove its profile: {error}', file=sys.stderr, flush=True)
+
+
+def caller_gone():
+    """Whether the process that started this supervisor has already exited.
+
+    Its death normally arrives as the SIGTERM the parent-death signal asks the
+    kernel for; a caller that was already gone when that was requested sends
+    nothing, so ask the kernel who our parent is."""
+    caller = os.environ.get('TILO_OWNED_BROWSER_PARENT')
+    return os.getppid() == 1 if caller is None else os.getppid() != int(caller)
+
+
 def main():
     if len(sys.argv) < 2:
         raise ValueError('supply the owned browser executable and arguments')
+    profile = os.environ.get('TILO_OWNED_BROWSER_PROFILE')
     # Orphaned grandchildren return to this supervisor, including a utility
     # process which outlives Chromium's root or starts a separate session.
     libc = ctypes.CDLL(None, use_errno=True)
@@ -170,19 +196,31 @@ def main():
         raise OSError(ctypes.get_errno(), 'cannot own browser descendants')
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    browser = subprocess.Popen(sys.argv[1:])
-    while not stopping and browser.poll() is None:
-        time.sleep(0.02)
-    status = browser.returncode
-    quiesce()
-    browser.wait()  # Record the root's completion after waitpid reaped it.
+    # A test that is killed (its runner's timeout, Ctrl-C, a crash) never asks
+    # for a close, and a browser left behind renders at full tilt for ever, so
+    # the supervisor takes the caller's death as its own stop request.
+    if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+        raise OSError(ctypes.get_errno(), 'cannot follow the caller')
+    status = None
+    if caller_gone():
+        print('owned browser: the caller exited before the browser started', file=sys.stderr, flush=True)
+    else:
+        browser = subprocess.Popen(sys.argv[1:])
+        while not stopping and browser.poll() is None:
+            time.sleep(0.02)
+        status = browser.returncode
+        quiesce()
+        browser.wait()  # Record the root's completion after waitpid reaped it.
     if status is None or status == 0:
         # `status` is read before any close request is acted on, so a request
         # that lands while the root's own exit is being recorded describes a
         # browser that had already ended on its own: it must not turn that
         # ending into a success its caller would never hear about.
+        if profile:
+            remove_profile(profile)
         return 0
-    # The browser ended on its own and badly; say how for whoever reads why.
+    # The browser ended on its own and badly; say how for whoever reads why,
+    # and keep its profile as the evidence.
     print(f'owned browser exited on its own with status {status}', file=sys.stderr, flush=True)
     return 1
 
