@@ -518,14 +518,13 @@ async fn shared_windows(
 ) -> std::collections::BTreeMap<u64, tilo_desktop_model::window_share::WindowShare> {
     let state = workspaces.workspace(workspace).await.unwrap();
     let held = state.lock().await;
-    let doc = held.peer().admitted_workspace().unwrap();
-    let shared = tilo_desktop_model::window_share::window_shares(
+    let peer = held.peer();
+    let doc = peer.admitted_workspace().unwrap();
+    tilo_desktop_model::window_share::window_shares(
         &tilo_desktop_model::projection::workspace_policy_of(doc, workspace),
         &tilo_desktop_model::window_share::device_salts(doc),
         tilo_clock::unix_now_ms(),
-    );
-    drop(held);
-    shared
+    )
 }
 
 /// How many of `workspace`'s grants are of the share `share`.

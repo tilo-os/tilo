@@ -73,6 +73,7 @@ filesystem = [
     "dep:runtime-collab",
     "dep:runtime-portal",
     "dep:tilo-identity-client",
+    "dep:channel-crypto",
     "dep:tokio-util",
 ]
 
@@ -266,6 +267,8 @@ runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", def
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
 # The bytes a device signs to join a workspace, as every app's identity does.
 tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }
+# The tree's changes seal under the record's content keys, as an app's do.
+channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto", optional = true }
 tokio-util = { workspace = true, features = ["compat"], optional = true }
 fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
 

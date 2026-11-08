@@ -673,7 +673,6 @@ fn row_of(
     let folded = marks.is_folded(&key_owned);
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
         .depth(marks.depth(&key_owned))
-        .tree_row()
         .row_height(TREE_ROW_HEIGHT)
         .with_feel(feel);
     if let Some(props) = &node.row {

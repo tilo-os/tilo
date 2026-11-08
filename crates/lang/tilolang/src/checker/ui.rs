@@ -5,7 +5,7 @@ use super::{Checker, Ctx, Ex, StateRef, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
-use crate::ir::{Conv, Ek, LocalId, Stmt};
+use crate::ir::{self, Conv, Ek, LocalId, Stmt};
 use crate::prims::{self, Prim};
 use crate::resolve::{CKind, Callable, TypeInfo};
 use crate::types::Ty;
@@ -101,6 +101,115 @@ impl Checker<'_> {
         let state = self.st.states.get(name)?;
         let (local, _) = self.lookup(name)?;
         (local == state.local).then(|| state.clone())
+    }
+
+    /// The `on show(x: T): ...` statements of a view's body, and its body without them: what
+    /// the view answers when the window is asked to show an item of `T` — an item one thing
+    /// names, an agent's suggestion, or a capture staging what a scenario made. Everything else
+    /// stays where it is.
+    pub(super) fn view_shows(body: &[UiStmt]) -> (Vec<UiStmt>, Vec<UiStmt>) {
+        let mut shows = Vec::new();
+        let mut rest = Vec::new();
+        for s in body {
+            match &s.kind {
+                UiKind::On { event, .. } if event.name == "show" => shows.push(s.clone()),
+                _ => rest.push(s.clone()),
+            }
+        }
+        (shows, rest)
+    }
+
+    /// The function a view answers `on show(x: T): action` with: run with the item, in the
+    /// view's own state, and what it returns is applied there. `id` is the view's, and `name`
+    /// what it is called.
+    pub(super) fn run_show(&mut self, id: &str, name: &str, show: &UiStmt, body: &[UiStmt]) {
+        let UiKind::On {
+            event,
+            param,
+            at,
+            action,
+        } = &show.kind
+        else {
+            return;
+        };
+        if at.is_some() {
+            self.err(
+                "E063",
+                event.span,
+                "`on show` carries one value: the item to show, as `on show(x: Task): ...`",
+            );
+            return;
+        }
+        let Some(param) = param else {
+            self.err(
+                "E063",
+                event.span,
+                "`on show` names the item it is given and its type: `on show(x: Task): ...`",
+            );
+            return;
+        };
+        let Some(written) = &param.ty else {
+            self.err(
+                "E063",
+                param.name.span,
+                "`on show` names the type of the item it is given: `on show(x: Task): ...`",
+            );
+            return;
+        };
+        let types = self.st.types.clone();
+        let ty = self.type_in(written, &types);
+        // The item's type as the runtime knows a resource's: the declaration's id, which is what
+        // a resource reference carries.
+        let shown = match &ty {
+            Ty::Record(key) => self.env.type_info(key).map(|info| info.id.clone()),
+            _ => None,
+        };
+        if shown.is_none() && !ty.is_error() {
+            let what = self.show(&ty);
+            self.err(
+                "E063",
+                written.span,
+                format!("`on show` takes an item of a declared type, not a {what}"),
+            );
+            return;
+        }
+        let item = crate::resolve::ParamInfo {
+            name: param.name.name.clone(),
+            ty: ty.clone(),
+            default: None,
+            place: false,
+            entry: false,
+        };
+        // The handler runs in a frame of its own, as an argument computed from view state does:
+        // it reads the view's state, and what it applies changes it.
+        let outer = std::mem::take(&mut self.st);
+        self.begin(Ctx::View, std::slice::from_ref(&item), Ty::Action, id);
+        self.st.ns.clone_from(&outer.ns);
+        self.st.types.clone_from(&outer.types);
+        self.at = self.outer_at;
+        // The state the view declares, as its own render reads it.
+        self.view_state(name, body);
+        if !ty.is_error() {
+            let act = self.expr_as(action, &Ty::Action);
+            self.emit(Stmt::Return(Some(act)));
+        }
+        let export = ir::show_export(id);
+        let mut f = self.end(ir::FuncKind::Fn, &format!("{name} shown an item"), &export);
+        f.nparams = 1;
+        self.st = outer;
+        let Some(ty) = shown else {
+            return;
+        };
+        self.shows.push((
+            f,
+            ir::ViewShow {
+                view: id.to_owned(),
+                ty,
+                export,
+                param: item,
+                func: 0,
+            },
+        ));
     }
 
     /// The names of the view state in scope, for messages.

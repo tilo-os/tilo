@@ -116,6 +116,30 @@ impl Instance {
         }
     }
 
+    /// Show `target` where the window's list shows it: what the root view answers for an item of
+    /// its type (`on show`) in its own state, so a list opens the item's row where it stands and
+    /// the window follows the item to the place it belongs to. What the view does not open in
+    /// place — an item of a type it does not list — opens in the detail lane, as it always has.
+    pub(super) fn show_in_window(&mut self, target: &ResourceRef, front: Option<ui::Front>) {
+        let shown = self
+            .root
+            .as_ref()
+            .is_some_and(|root| match root.view.borrow().show(target) {
+                Ok(shown) => shown,
+                Err(error) => {
+                    tracing::warn!(%error, "a view did not show an item");
+                    false
+                }
+            });
+        if shown {
+            if let Some(front) = front {
+                self.out.push(ToUi::Front(front));
+            }
+            return;
+        }
+        self.open_detail(target, None, front);
+    }
+
     /// Close the detail view: Back.
     pub fn close_detail(&mut self) {
         if let Some(shown) = self.detail.take() {

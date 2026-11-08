@@ -437,6 +437,56 @@ impl ViewInstance {
             .set(self.state_key(state), value);
     }
 
+    /// Ask the view to show `target` where it stands: what its `on show(x: T): ...` handler for
+    /// the item's type applies in the view's own state — a list opens the item's row, a place
+    /// follows the item. The view declares what showing one means, so nothing about the shape
+    /// of the window is guessed from the data.
+    ///
+    /// Whether the view answers for an item of the target's type; when it does not, the host
+    /// shows the item as a page of its own, as it shows anything the view does not open.
+    ///
+    /// # Errors
+    ///
+    /// As an invocation.
+    pub fn show(&self, target: &ResourceRef) -> Result<bool, RuntimeError> {
+        let Some(root) = self.live.bound(crate::live::ROOT) else {
+            return Ok(false);
+        };
+        let Some(pkg) = self.core.registry.borrow().package(&root.target.module) else {
+            return Ok(false);
+        };
+        let Some(show) = pkg
+            .view(&root.target.view)
+            .and_then(|view| view.show.clone())
+        else {
+            return Ok(false);
+        };
+        if show.ty != target.ty {
+            return Ok(false);
+        }
+        let item = Value::Ref(crate::value::RefValue {
+            target: Rc::new(target.clone()),
+            author: None,
+        });
+        let made = self.core.call_in_view(
+            &pkg,
+            &show.func.id,
+            &show.func.params,
+            &[item],
+            &self.live.window,
+            &self.live.viewer,
+            &show.func.result,
+        )?;
+        let Value::Action(mut aref) = made else {
+            return Err(RuntimeError::BadArgs(
+                "`on show` must make an action".to_owned(),
+            ));
+        };
+        self.read_states(&mut aref)?;
+        self.run(&aref)?;
+        Ok(true)
+    }
+
     fn state_key(&self, state: &str) -> StateKey {
         StateKey::view(
             self.live.window.clone(),
@@ -629,12 +679,19 @@ impl ViewInstance {
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
-    /// `open(r)`: the host goes to the window of `r`.
+    /// `open(r, view, front)`: the host goes to the window of `r`. The view and whether a narrow
+    /// window brings it in front are left out where a host wires the reference itself (a change
+    /// mark's item), and take what `open` declares for them: the type's default view, in front.
     fn platform_open(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-        let (Some(Value::Ref(r)), Some(view)) = (aref.args.first(), aref.args.get(1)) else {
+        let Some(Value::Ref(r)) = aref.args.first() else {
             return Err(RuntimeError::BadArgs("a malformed `open`".into()));
         };
-        let view = view.as_text().filter(|v| !v.is_empty()).map(str::to_owned);
+        let view = aref
+            .args
+            .get(1)
+            .and_then(Value::as_text)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned);
         let front = !matches!(aref.args.get(2), Some(Value::Bool(false)));
         self.events.borrow_mut().push(ViewEvent::Open {
             target: ResourceRef::clone(&r.target),

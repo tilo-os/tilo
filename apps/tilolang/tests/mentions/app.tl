@@ -27,6 +27,7 @@ row view post_row for Post
 
 /// The board: its posts.
 view board(b: Board) {
+    state opened: Option<Post> = .none
     ui.NavShell(
         content_kind: .document,
         overview_title: .some(meta(Board).title),
@@ -36,7 +37,7 @@ view board(b: Board) {
             if b.posts.is_empty() {
                 ui.EmptyState("No posts yet", icon: .message_circle)
             } else {
-                std.list(b.posts) { (p, at) ->
+                std.list(b.posts, opened) { (p, at) ->
                     ui.ListItem(item: p, presence: at) {
                         post_row(p)
                     }

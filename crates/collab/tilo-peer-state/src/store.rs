@@ -13,7 +13,7 @@
 //! operator asks for ([`Store::compact`]). Nothing is retired because it
 //! looks old.
 
-use crate::frame::{Frame, Lineage, Refusal};
+pub use crate::retained::{Frame, Lineage, Refusal};
 use collab_types::ContentRetention;
 use neighbour_wire::NeighbourMsg;
 use std::collections::BTreeMap;
@@ -411,6 +411,80 @@ impl Store {
     }
 }
 
+/// Where `peer`'s replica stands, one cursor per author line of its sealed
+/// history: what it asks a store to continue from.
+#[must_use]
+pub fn cursors(peer: &crate::StatePeer) -> Vec<Cursor> {
+    let workspace = peer.workspace_id().to_owned();
+    peer.replay_floors()
+        .into_iter()
+        .map(|(app, record, author, seq)| Cursor {
+            lineage: Lineage::of(&app, &workspace, &record, author),
+            after_seq: seq,
+        })
+        .collect()
+}
+
+/// Where `cursors` stand after `frames`: one cursor per lineage they belong
+/// to, at the last sequence number it carried.
+pub fn advance(cursors: &mut Vec<Cursor>, frames: &[NeighbourMsg]) {
+    for frame in frames {
+        let Ok(frame) = Frame::of(frame) else {
+            continue;
+        };
+        match cursors
+            .iter_mut()
+            .find(|cursor| cursor.lineage == frame.lineage)
+        {
+            Some(cursor) => cursor.after_seq = cursor.after_seq.max(frame.seq),
+            None => cursors.push(Cursor {
+                lineage: frame.lineage,
+                after_seq: frame.seq,
+            }),
+        }
+    }
+}
+
+/// The floors of `replay` that a device with `cursors` cannot bridge: the
+/// store has no frame the cursor leads into, so another device of the
+/// workspace has to answer for the gap.
+#[must_use]
+pub fn gaps(cursors: &[Cursor], replay: &Replay) -> Vec<Floor> {
+    replay
+        .floors
+        .iter()
+        .filter(|floor| {
+            let after = cursors
+                .iter()
+                .filter(|cursor| cursor.lineage == floor.lineage)
+                .map(|cursor| cursor.after_seq)
+                .max()
+                .unwrap_or(0);
+            floor.earliest_seq > after.saturating_add(1)
+        })
+        .copied()
+        .collect()
+}
+
+/// Whether `message` is a sealed document frame: the only history a store
+/// keeps, since it never holds a workspace's keys.
+#[must_use]
+pub fn sealed(message: &NeighbourMsg) -> bool {
+    match message {
+        NeighbourMsg::AppDocument { envelope, .. } => envelope.encryption.is_some(),
+        _ => false,
+    }
+}
+
+/// The device that signed `message`, when it is a document frame.
+#[must_use]
+pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
+    match message {
+        NeighbourMsg::AppDocument { envelope, .. } => Some(*envelope.author.as_bytes()),
+        _ => None,
+    }
+}
+
 const WORKSPACES: &str = "workspaces";
 
 fn workspace_dir(root: &Path, workspace: u64) -> PathBuf {
@@ -615,7 +689,6 @@ mod tests {
     )]
 
     use super::*;
-    use crate::client;
     use collab_types::{
         ArtifactId, AttestationId, ChannelId, Ed25519PublicKey, EncryptionMetadata, OpKind,
         SignedOp, sign_op,
@@ -789,9 +862,9 @@ mod tests {
                 earliest_seq: 4
             }]
         );
-        assert_eq!(client::gaps(&[cursor(lineage, 1)], &early).len(), 1);
+        assert_eq!(gaps(&[cursor(lineage, 1)], &early).len(), 1);
         assert!(
-            client::gaps(&[cursor(lineage, 3)], &early).is_empty(),
+            gaps(&[cursor(lineage, 3)], &early).is_empty(),
             "a cursor leading straight into the earliest frame has no gap"
         );
     }
@@ -815,7 +888,7 @@ mod tests {
         let mut rounds = 0;
         loop {
             let replay = store.replay(WORKSPACE, &cursors, budget).unwrap();
-            client::advance(&mut cursors, &replay);
+            advance(&mut cursors, &replay.frames);
             rounds += 1;
             if !replay.more {
                 break;

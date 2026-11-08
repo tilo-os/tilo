@@ -15,8 +15,9 @@ use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::theme::Theme;
 
 /// One step of a tree's nesting ([`VirtualList::with_tree`]): the disclosure gutter a row's
-/// content stands in by, from the leading edge of its own depth, where the chevron that folds
-/// what stands under it hangs.
+/// content stands in by from the depth above it, where the chevron that folds the row in front
+/// of it hangs. A list leads every row's depth's column by one step, so the top level stands
+/// the one step its chevron takes in from the list's own leading edge.
 pub const TREE_INDENT: f64 =
     (crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related) as f64;
 /// The room a tree row's disclosure marker takes at its leading edge.
@@ -25,8 +26,8 @@ pub const TREE_DISCLOSURE: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
 /// a chain that loops still ends.
 const TREE_DEPTH_GUARD: u32 = 64;
 
-/// Where a tree's rows stand: `x0` the list's leading edge, `lead` where its rows stand in
-/// from it, and `step` the disclosure gutter every depth keeps free in front of its content.
+/// Where a tree's rows stand: `x0` the list's leading edge, `lead` where the column of the top
+/// level stands in from it, and `step` the disclosure gutter every depth indents its content by.
 #[derive(Clone, Copy)]
 pub(super) struct Chevrons {
     pub(super) x0: f64,
@@ -46,8 +47,8 @@ impl<M: ListModel> VirtualList<M> {
 }
 
 impl Chevrons {
-    /// The gutter the row `key`'s chevron hangs in, when it has subtasks: the step its own depth
-    /// keeps free in front of its content, saying whether they show.
+    /// The gutter the row `key`'s chevron hangs in, when it has subtasks: the step in front of
+    /// its content, ending where its content starts, saying whether they show.
     pub(super) fn gutter<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
@@ -56,7 +57,8 @@ impl Chevrons {
         if !marks.is_branch(key) {
             return None;
         }
-        let gutter = self.x0 + self.lead + f64::from(marks.depth(key)) * self.step;
+        // The step in front of the row's content, one step back for each depth it stands in.
+        let gutter = self.x0 + self.lead + (f64::from(marks.depth(key)) - 1.0) * self.step;
         Some((gutter, marks.is_folded(key)))
     }
 

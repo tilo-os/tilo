@@ -22,8 +22,6 @@ enum Priority {
 
 /// What the place a task's row stands in already says, and the row therefore leaves out.
 enum RowPlace {
-    /// Nothing: a plain list, a card, a surface of the system's own.
-    full
     /// The day it is grouped under, as a list of a day is.
     day
     /// Its project, as a project's list is of one.
@@ -132,7 +130,7 @@ primary action new_task(
 
 /// Adds a task that is due today: what the entry of the Today place runs, so a task typed
 /// there stands in Today. It is the one create action with the day it is added on, and a person
-/// choosing it from the bar or the palette gets the same task.
+/// choosing it from the palette gets the same task.
 action new_task_today(
     tasks: Tasks,
     p: Option<Project> = .none,
@@ -540,15 +538,10 @@ fn finished_at(t: Task) -> Option<Time> {
     if let v = changed(t, .done) { if t.done { .some(v.at) } else { .none } } else { .none }
 }
 
-/// The day a task was finished on, in the person's zone: the heading Done stands it under.
-fn finished_day(t: Task) -> Option<Date> {
-    if let at = finished_at(t) { .some(at.day()) } else { .none }
-}
-
 /// The day a task stands under in a list of a place: the day it is due on, or the day it was
-/// finished on in Done, or none where the place groups nothing.
+/// finished on in Done (in the person's zone), or none where the place groups nothing.
 fn task_day(t: Task, by_day: Bool, done_place: Bool) -> Option<Date> {
-    if by_day { t.due } else if done_place { finished_day(t) } else { .none }
+    if by_day { t.due } else if done_place { finished_at(t)?.day() } else { .none }
 }
 
 /// The tasks of a project, in order.
@@ -573,23 +566,51 @@ fn waiting(count: Option<Int>) -> Option<Int> {
     if let n = count { if n > 0 { count } else { .none } } else { .none }
 }
 
+/// The places a window offers, in the order it offers them. What is assigned to the person
+/// looking is a place of its own where anyone else may be assigned it too: on their own, it holds
+/// all of it and tells them nothing.
+fn places(shared: Bool) -> List<Filter<Task>> {
+    if shared {
+        [Task.inbox, Task.today, Task.upcoming, Task.done, Task.assigned_to_me]
+    } else {
+        [Task.inbox, Task.today, Task.upcoming, Task.done]
+    }
+}
+
+/// The tasks a list shows, and the one held open where it stands: an action takes a task out of the
+/// place its list shows, and the row it is open in stays while it is open, so what a person just
+/// changed does not vanish from under them.
+fn holding(listed: List<Task>, opened: Option<Task>) -> List<Task> {
+    if let o = opened {
+        if listed.contains(o) {
+            listed
+        } else {
+            tasks.items.filter(x -> x == o or listed.contains(x))
+        }
+    } else { listed }
+}
+
+/// The place a task stands in: its project's, or the first of `side` that holds it, else Inbox.
+fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
+    if let p = x.project {
+        Task.project(p)
+    } else {
+        side.find(f -> tasks.items.matching(f).any(t -> t == x)) ?? Task.inbox
+    }
+}
+
 /// The tasks window: Inbox, Today, Upcoming, Done and what is assigned to the person looking,
 /// each the filter its predicate says of the tasks, and the projects, each showing its tasks
 /// where they are. The place chosen is the window's, and a window's state is its person's own;
 /// what is typed in the entry at its end is their own too until Enter adds it.
 view home(t: Tasks) {
-    state place: Filter<Task> = Task.inbox
-    // The places this window offers, in the order it offers them. What is assigned to the person
-    // looking is a place of its own where anyone else may be assigned it too: on their own, it
-    // holds all of it and tells them nothing.
-    let shared = workspace.members.len() > 1
-    let side: List<Filter<Task>> = if shared {
-        [Task.inbox, Task.today, Task.upcoming, Task.done, Task.assigned_to_me]
-    } else {
-        [Task.inbox, Task.today, Task.upcoming, Task.done]
-    }
+    state place: Filter<Task> = Task.today
+    state opened: Option<Task> = .none
+    on show(x: Task): set(place, place_of(places(workspace.members.len() > 1), x))
+        .then(set(opened, x))
+    let side = places(workspace.members.len() > 1)
     let chosen = side.find(f -> f == place)
-    let found = t.items.matching(place)
+    let found = holding(t.items.matching(place), opened)
     // The project whose place is chosen, when one is.
     let project = t.projects.find(p -> place == Task.project(p))
     // A place of days, and a project's list, stand each task under the day it is due; Done
@@ -634,7 +655,7 @@ view home(t: Tasks) {
         sidebar_title: "Tasks",
         title: .some(title),
         count: header_count,
-        actions: [new_task, new_task_today, clear_done],
+        actions: [clear_done],
     ) {
         // The places this window offers, and the projects of its root under them: what a
         // window offers in its sidebar is what the app declares.
@@ -667,13 +688,12 @@ view home(t: Tasks) {
                     foot: {
                         stack {
                             if all_done {
-                                task_list(shown, kids, by_day, done_place, folds)
+                                task_list(shown, kids, by_day, done_place, folds, opened, .day)
                             }
-                            if in_today {
-                                std.add_entry(entry_placeholder, new_task_today(t, p: project))
-                            } else {
-                                std.add_entry(entry_placeholder, new_task(t, p: project))
-                            }
+                            let add = if in_today {
+                                new_task_today(t, p: project)
+                            } else { new_task(t, p: project) }
+                            std.add_entry(entry_placeholder, add)
                         }
                     }
                     if all_done {
@@ -681,7 +701,7 @@ view home(t: Tasks) {
                     } else if shown.is_empty() {
                         ui.EmptyState("No tasks here", icon: .list_checks)
                     } else {
-                        task_list(shown, kids, by_day, done_place, folds)
+                        task_list(shown, kids, by_day, done_place, folds, opened, .day)
                     }
                 }
             }
@@ -692,9 +712,18 @@ view home(t: Tasks) {
 /// The tasks of a place as a list: under the day they are due on, or the day they were finished
 /// on in Done, each branch nested under the task it is a subtask of, a project's finished work
 /// folded under the list's tail.
-view task_list(items: List<Task>, kids: List<Task>, by_day: Bool, done_place: Bool, folds: Bool) {
+view task_list(
+    items: List<Task>,
+    kids: List<Task>,
+    by_day: Bool,
+    done_place: Bool,
+    folds: Bool,
+    opened: State<Option<Task>>,
+    place: RowPlace,
+) {
     std.list(
         items,
+        opened,
         tree: true,
         ungrouped: if by_day { .some(phrase("tilolang-no-date")) } else { .none },
         tail_title: if folds { .some(phrase("tilolang-done")) } else { .none },
@@ -708,28 +737,49 @@ view task_list(items: List<Task>, kids: List<Task>, by_day: Bool, done_place: Bo
                 .some(p)
             } else { .none }
         } else { .none }
-        ui.ListItem(
-            item: x,
-            presence: at,
-            group: heading,
-            group_done: done_place,
-            tail: tail,
-            above: above,
-            parent: x.parent,
-            parent_title: x.parent?.title,
-            progress: subtask_count(kids, x),
-            actions: [
-                check(primary: true),
-                schedule(group: "Plan"),
-                assign,
-                indent(group: "Move"),
-                outdent(group: "Move"),
-                remove,
-            ],
-        ) {
-            task_row(x, .day, x.parent)
-            detail: {
-                task_body(x)
+        task_item(x, at, place, heading, done_place, tail, above, subtask_count(kids, x))
+    }
+}
+
+/// One task as a row of a list: what the row shows, what it offers, and the document it opens into
+/// where it stands. `place` is what the list already says, `group` the day's heading, `tail` that
+/// it is done with, `above` the task just over it in its group.
+view task_item(
+    t: Task,
+    at: Option<Principal>,
+    place: RowPlace,
+    group: Option<Date>,
+    group_done: Bool,
+    tail: Bool,
+    above: Option<Task>,
+    progress: Option<Text>,
+) {
+    ui.ListItem(
+        item: t,
+        presence: at,
+        group: group,
+        group_done: group_done,
+        tail: tail,
+        above: above,
+        parent: t.parent,
+        parent_title: t.parent?.title,
+        progress: progress,
+        actions: [
+            check(primary: true),
+            schedule(group: "Plan"),
+            assign,
+            indent(group: "Move"),
+            outdent(group: "Move"),
+            remove,
+        ],
+    ) {
+        task_row(t, place, t.parent)
+        detail: {
+            task_body(t)
+        }
+        menu: {
+            ui.MenuItem("Open as page", icon: .arrow_up_right) {
+                on choose: open(t, view: task_page)
             }
         }
     }
@@ -738,9 +788,12 @@ view task_list(items: List<Task>, kids: List<Task>, by_day: Bool, done_place: Bo
 /// A project's window: its tasks, in order, with the entry that adds to it at their foot. The
 /// bar switches it to the project's board, the same tasks as a lane per section.
 view project_list(p: Project) {
+    state opened: Option<Task> = .none
+    on show(x: Task): set(opened, x)
     let shown = tasks_of(p)
     // The project's tasks that name a parent, read once: a row counts its own under them.
     let kids = shown.filter(x -> x.parent != .none)
+    let listed = holding(shown, opened)
     ui.NavShell(content_kind: .list, title: .some(p.name)) {
         content: {
             page(fill) {
@@ -750,32 +803,10 @@ view project_list(p: Project) {
                             std.add_entry("New task in {p.name}", new_task(tasks, p: p))
                         }
                     }
-                    if shown.is_empty() {
+                    if listed.is_empty() {
                         ui.EmptyState("No tasks yet", icon: .folder)
                     } else {
-                        std.list(shown, tree: true) { (x, at) ->
-                            ui.ListItem(
-                                item: x,
-                                presence: at,
-                                above: shown.previous(x),
-                                parent: x.parent,
-                                parent_title: x.parent?.title,
-                                progress: subtask_count(kids, x),
-                                actions: [
-                                    check(primary: true),
-                                    schedule(group: "Plan"),
-                                    assign,
-                                    indent(group: "Move"),
-                                    outdent(group: "Move"),
-                                    remove,
-                                ],
-                            ) {
-                                task_row(x, .project, x.parent)
-                                detail: {
-                                    task_body(x)
-                                }
-                            }
-                        }
+                        task_list(listed, kids, false, false, false, opened, .project)
                     }
                 }
             }
@@ -1059,8 +1090,9 @@ scenario "a busy week" -> Task {
 }
 
 /// The week's log: what was finished on each of its days, newest first, and what still waits.
-/// Its place is Done: `layout-check --state place=Task.done` lays the window out there.
-scenario "what got done this week" {
+/// It answers with one of the week's finished tasks, whose place is Done, so the window stands
+/// in Done with it open where it stands.
+scenario "what got done this week" -> Task {
     let mia = person("Mia")
     let flat = tasks.projects.insert(Project(name: "Move flat"))
     let van = tasks.items.insert(Task(title: "Book the van", project: flat, due: 2026-07-02))
@@ -1075,14 +1107,15 @@ scenario "what got done this week" {
     invoke(check(van, true), by: mia, at: 2026-06-29T12:00Z)
     invoke(check(boxes, true), by: mia, at: 2026-06-29T15:40Z)
     invoke(check(notice, true), by: mia, at: 2026-06-30T07:15Z)
+    passports
 }
 
-/// Today: what is due, what went by, and what is done with it. Its place is Today:
-/// `layout-check --state place=Task.today` lays the window out there.
-scenario "today" {
+/// Today: what is due, what went by, and what is done with it. It answers with the task due
+/// today, whose place is Today, so the window stands in Today with it open where it stands.
+scenario "today" -> Task {
     let flat = tasks.projects.insert(Project(name: "Move flat"))
     tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
-    tasks.items.insert(
+    let call = tasks.items.insert(
         Task(
             title: "Call the landlord about the boiler",
             due: 2026-06-30,
@@ -1095,6 +1128,7 @@ scenario "today" {
     tasks.items.insert(Task(title: "Order boxes and tape", project: flat, due: 2026-07-02))
     // Mine, with no day of its own: it stands in my Today because it is mine.
     tasks.items.insert(Task(title: "Sort the paper mail", assignee: .some(invoker)))
+    call
 }
 
 /// A launch post half written: its window, with the subtasks it was broken into, one of them
@@ -1177,11 +1211,12 @@ scenario "a task being named" {
     tasks.items.insert(Task(title: ""))
 }
 
-/// A week everyone has finished.
-scenario "all done" {
-    tasks.items.insert(Task(title: "Passports", done: true))
+/// A week everyone has finished: it answers with one of them, whose place is Done.
+scenario "all done" -> Task {
+    let passports = tasks.items.insert(Task(title: "Passports", done: true))
     tasks.items.insert(Task(title: "Chargers", done: true))
     tasks.items.insert(Task(title: "Sun cream", done: true))
+    passports
 }
 
 /// A task the day went by on: its page says which day it was due, that it is late, and the
@@ -1344,9 +1379,9 @@ scenario "a discussion on a task" -> Task {
 /// A day away from the week's tasks: the person looking wrote them, and while they were out a
 /// colleague and their agent changed three of them yesterday, so the window's header counts
 /// what it holds unseen and the rows of the two in today's list are marked. The finished task's
-/// mark is read in Done, where it stands now. Its place is Today:
-/// `layout-check --state place=Task.today` lays the window out there.
-scenario "while you were away" {
+/// mark is read in Done, where it stands now. It answers with the survey, which the agent
+/// brought forward to today: the window stands in Today with that row open where it stands.
+scenario "while you were away" -> Task {
     let ada = invoker
     let bo = person("Bo")
     let scout = agent("Scout")
@@ -1364,6 +1399,7 @@ scenario "while you were away" {
     invoke(assign(paper, .some(ada)), by: bo, at: 2026-06-29T16:20Z)
     invoke(schedule(survey, .some(2026-06-30)), by: scout, at: 2026-06-29T17:05Z)
     invoke(check(milk, true), by: scout, at: 2026-06-29T17:12Z)
+    survey
 }
 
 /// A task the person looking wrote, which a colleague was through since: its page says the

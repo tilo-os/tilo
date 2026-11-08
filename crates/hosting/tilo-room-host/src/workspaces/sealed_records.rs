@@ -95,7 +95,7 @@ impl GovernedWorkspace {
         app: &str,
         record: &str,
     ) -> Result<Option<RecordKeys>, String> {
-        if !self.peer.publication().is_sealed_record(app, record) {
+        if !self.peer().publication().is_sealed_record(app, record) {
             return Ok(None);
         }
         let workspace = self.workspace();
@@ -151,10 +151,10 @@ impl GovernedWorkspace {
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
         let Some(keys) = self.record_keys(app, record).await? else {
-            return Ok(self.peer.document(app, record));
+            return Ok(self.peer().document(app, record));
         };
         let Some(opened) =
-            self.peer
+            self.peer()
                 .publication()
                 .opened_document(app, record, &mut keys.open())?
         else {

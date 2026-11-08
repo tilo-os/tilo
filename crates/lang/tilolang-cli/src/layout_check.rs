@@ -707,6 +707,25 @@ fn build(
     crate::compile(dir, search, &mut tilolang::OsEntropy::default()).map_err(|e| e.to_string())
 }
 
+/// The stack a worker lays a window out on: a window's tree is as deep as the documents it
+/// shows, and a rich-text editor inside a row standing open needs more room than a thread's
+/// default two megabytes, sized for a plain thread's work. A window in the app lays out on the
+/// thread running the app, which is the main thread's; a worker gets the room to match.
+pub(crate) const WORKER_STACK: usize = 32 * 1024 * 1024;
+
+/// Start `worker` on a thread of the scope with a window's stack, and say why one could not
+/// start: the work it would have taken then has nobody to run it.
+fn spawn_worker<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    worker: impl FnOnce() + Send + 'scope,
+) -> Result<(), String> {
+    std::thread::Builder::new()
+        .stack_size(WORKER_STACK)
+        .spawn_scoped(scope, worker)
+        .map(drop)
+        .map_err(|error| format!("a worker could not start: {error}"))
+}
+
 /// Run every unit of `units` at the same time, each on a worker of its own, and return what each
 /// found in the order given. A worker reads an app's package itself: the compiled packages a
 /// window loads belong to one window at a time, so no two workers share them.
@@ -726,9 +745,10 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
         units.iter().map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
     let stopped = AtomicBool::new(false);
+    let unstarted: Mutex<Option<String>> = Mutex::new(None);
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| {
+            let started = spawn_worker(scope, || {
                 tilo_ui_host::i18n::ensure();
                 let mut worker = Worker {
                     apps,
@@ -750,8 +770,19 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
                     }
                 }
             });
+            if let Err(failure) = started {
+                stopped.store(true, Ordering::Relaxed);
+                *unstarted.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure);
+                break;
+            }
         }
     });
+    if let Some(failure) = unstarted
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        return Err(failure);
+    }
     let mut out = Vec::with_capacity(units.len());
     for slot in taken {
         let found = slot
@@ -765,6 +796,38 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
 
 /// What opening the views of one scene found, under the index of the scene it was staged on.
 type Opened = Vec<(usize, Found)>;
+
+/// Run `chain` for each app of `busy` at once, each on a worker of its own, and write what it found
+/// in that app's slot. A worker that cannot start is reported, never left to leave its slot empty.
+fn opens_together(
+    busy: &[usize],
+    slots: &[Mutex<Option<Result<Opened, String>>>],
+    chain: &(impl Fn(usize) -> Result<Opened, String> + Sync),
+) -> Result<(), String> {
+    let unstarted: Mutex<Option<String>> = Mutex::new(None);
+    std::thread::scope(|scope| {
+        for &app in busy {
+            let Some(slot) = slots.get(app) else {
+                continue;
+            };
+            let started = spawn_worker(scope, move || {
+                tilo_ui_host::i18n::ensure();
+                *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
+            });
+            if let Err(failure) = started {
+                *unstarted.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure);
+                break;
+            }
+        }
+    });
+    match unstarted
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        Some(failure) => Err(failure),
+        None => Ok(()),
+    }
+}
 
 /// Run the views no layout showed yet, on the scene whose resources they take, for every app:
 /// an app's scenes one after another, each seeing what the ones before it showed, and the apps
@@ -836,17 +899,7 @@ fn run_opens(
             }
         }
     } else {
-        std::thread::scope(|scope| {
-            for app in busy {
-                let Some(slot) = slots.get(app) else {
-                    continue;
-                };
-                scope.spawn(move || {
-                    tilo_ui_host::i18n::ensure();
-                    *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
-                });
-            }
-        });
+        opens_together(&busy, &slots, &chain)?;
     }
     let mut opened: Vec<Found> = (0..scenes.len()).map(|_| Found::default()).collect();
     let mut shown: Vec<Shown> = vec![Shown::new(); apps.len()];
@@ -1001,8 +1054,36 @@ fn on_layer(scenario: &str, root: Option<&str>) -> String {
     )
 }
 
-/// The views of `meta` the system shows on surfaces of its own: each type's row view and each
-/// action's proposal view, once each.
+/// The resources the rows of the window's lists show: a row is keyed by the view that draws it,
+/// which ends in the item it draws.
+fn row_items(
+    rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
+    resources: &[ResourceRef],
+) -> Vec<ResourceRef> {
+    rows.keys()
+        .filter_map(|key| {
+            resources
+                .iter()
+                .find(|resource| key.ends_with(&resource.id))
+                .cloned()
+        })
+        .collect()
+}
+
+/// A resource of type `ty` to lay a page of it out on: one the window's lists hold, so the page is
+/// one a person meets from the list, or else any the window names.
+fn resource_of(listed: &[ResourceRef], named: &[ResourceRef], ty: &str) -> Option<ResourceRef> {
+    listed
+        .iter()
+        .find(|resource| resource.ty == ty)
+        .cloned()
+        .or_else(|| named.iter().find(|resource| resource.ty == ty).cloned())
+}
+
+/// The views of `meta` the system shows on surfaces of its own: each action's proposal view,
+/// once each. A type's row view is not one: the system shows it as a row of a list (a search
+/// result, a row of an agent's answer), so a page of it would be a surface nobody meets, and a
+/// list of rows lays it out already.
 fn surface_views(meta: &tilolang::PackageMeta) -> Vec<&tilolang::meta::ViewMeta> {
     let ids: BTreeSet<&str> = meta
         .row_views
@@ -1280,6 +1361,12 @@ impl AppCheck<'_> {
     /// view (the card asking to run it), on a resource of the type they take. A view another
     /// layout showed already is not opened again.
     fn open_views(&mut self, staged: &mut stage::Staged, title: &str) -> Result<(), String> {
+        // A page a person meets from a list is one of that list's own rows, so a view staged over
+        // the list opens a resource the list holds where it holds one, and a resource of a type
+        // the list does not show where it holds none.
+        let rows = staged.rows();
+        let named = staged.resources();
+        let listed = row_items(&rows, &named);
         for default in &self.meta.default_views {
             let Some(view) = self.meta.views.iter().find(|v| v.id == default.view) else {
                 continue;
@@ -1290,7 +1377,7 @@ impl AppCheck<'_> {
             {
                 continue;
             }
-            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
+            let Some(resource) = resource_of(&listed, &named, &default.ty) else {
                 continue;
             };
             staged.open(resource);
@@ -1307,7 +1394,7 @@ impl AppCheck<'_> {
             let Some(ty) = self.meta.types.iter().find(|t| t.name == param.ty) else {
                 continue;
             };
-            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+            let Some(resource) = resource_of(&listed, &named, &ty.id) else {
                 continue;
             };
             staged.open_with(&resource, &view.id);
@@ -1320,7 +1407,7 @@ impl AppCheck<'_> {
             if shows(&self.shown, &self.meta.app, &view.name) {
                 continue;
             }
-            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+            let Some(resource) = resource_of(&listed, &named, &ty.id) else {
                 continue;
             };
             staged.open_with(&resource, &view.id);
@@ -1408,13 +1495,21 @@ impl AppCheck<'_> {
             )?;
             let mut layer = on_layer(&unit.scene.scenario, unit.scene.root.as_deref());
             staged.lay_out(viewport, first.theme(), first.input(), first.display_scale)?;
-            // What the app opened stands in front of the list it came from: a finger goes back
-            // to that list before it can tap a row of it.
-            let mut tapped = tappable_row(&staged, viewport);
+            // What the app opened stands in front of the list it came from: a scenario that
+            // returns a resource shows that resource's page, and a row of the page is the
+            // page's own, where tapping it chooses what it shows. A finger goes back to the
+            // list first, and taps a row of that.
+            let mut page_in_front = self.scenario_returns_a_resource(&unit.scene.scenario);
+            let mut tapped = if page_in_front {
+                None
+            } else {
+                tappable_row(&staged, viewport)
+            };
             if tapped.is_none() {
                 if !back_chip(&staged.harness().inspection().root, viewport) {
                     continue;
                 }
+                let shown = staged.front_target();
                 staged.press(ui::widget::WINDOW_BACK, true)?;
                 layer = format!("{layer}, then Back pressed");
                 for layout in of_size.iter().copied() {
@@ -1426,7 +1521,11 @@ impl AppCheck<'_> {
                     )?;
                     self.audit(&mut staged, layout, &layer)?;
                 }
-                tapped = tappable_row(&staged, viewport);
+                // A window that kept what it showed has no list behind it to tap.
+                page_in_front = page_in_front && staged.front_target() == shown;
+                if !page_in_front {
+                    tapped = tappable_row(&staged, viewport);
+                }
             }
             // The row the window keeps chosen, or else the first of the list: what a person
             // reaches for, which opens in front of the list as the app declares.
@@ -1455,6 +1554,23 @@ impl AppCheck<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Whether the scenario the window was staged from returned a resource of its own
+    /// (`scenario "a busy week" -> Task`): the window shows that resource's page in front of
+    /// the list the scenario made.
+    fn scenario_returns_a_resource(&self, scenario: &str) -> bool {
+        self.meta
+            .scenarios
+            .iter()
+            .find(|entry| entry.name == scenario)
+            .and_then(|entry| {
+                self.meta
+                    .actions
+                    .iter()
+                    .find(|action| action.id == entry.action)
+            })
+            .is_some_and(|action| action.result.is_some())
     }
 
     /// The view a window opens `target` in: its type's default view, which is what a row of it
@@ -1632,7 +1748,12 @@ impl AppCheck<'_> {
             self.text,
             viewport,
         ));
-        problems.extend(ux::inspect(&inspection.root, viewport, &declared));
+        problems.extend(ux::inspect(
+            &inspection.root,
+            viewport,
+            &declared,
+            ui::chrome::disclosure_gutter(&layout.theme()),
+        ));
         problems.extend(mixed_language());
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row

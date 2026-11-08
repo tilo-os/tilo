@@ -133,10 +133,11 @@ pub enum HostError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a workspace host answers on.
-const HOST_ALPNS: [&[u8]; 3] = [
+const HOST_ALPNS: [&[u8]; 4] = [
     ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
     tilo_peer_state::actions::ACTIONS_ALPN,
+    tilo_peer_state::direct::DIRECT_ALPN,
 ];
 
 /// A host's session stack: its workspaces, the handshake that admits their
@@ -271,6 +272,7 @@ impl HostSessions {
         let workspaces = crate::workspaces::Workspaces::open(
             sessions.room_services(&cfg, &identity, endpoint, revocations, channels),
             cfg.state_root.join("rooms"),
+            cfg.state_root.join("store"),
         )
         .await
         .map_err(HostError::Workspaces)?;
@@ -467,6 +469,12 @@ fn host_handlers(
         (
             tilo_peer_state::actions::ACTIONS_ALPN,
             Arc::new(workspaces.plane()) as Arc<dyn DynProtocolHandler>,
+        ),
+        // A member device of a workspace syncs with the host here, the same
+        // link a device runs for itself: the dial names its workspace first.
+        (
+            tilo_peer_state::direct::DIRECT_ALPN,
+            Arc::new(workspaces.direct()) as Arc<dyn DynProtocolHandler>,
         ),
     ]
 }

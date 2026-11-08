@@ -83,7 +83,11 @@ pub struct BrowserWindow {
     /// Wakes the window when an account's custody answers.
     waker: Option<ui::WakeHandle>,
     rect: Rect,
+    /// What this window shows changed: its children are composed again.
     dirty: bool,
+    /// This window's paint changed since the frame that drew it: it repaints
+    /// once, and rests after the frame draws it.
+    repaint: bool,
     /// A window opened without a page starts in the address field.
     focus_address: bool,
     address_focus_node: Option<NodeId>,
@@ -118,6 +122,7 @@ impl BrowserWindow {
     pub fn new(page: BrowserWidget, focus_address: bool) -> Self {
         Self {
             dirty: true,
+            repaint: true,
             page: Box::new(page),
             store: Rc::default(),
             live: None,
@@ -447,7 +452,7 @@ impl Widget for BrowserWindow {
         changed
     }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.dirty = true;
+        self.repaint = true;
         self.follow_document();
         self.stage_asked();
         if let Some(cancel) = self.exit_choice.get() {
@@ -593,7 +598,7 @@ impl Widget for BrowserWindow {
         self.page.draw(scene, transform, tr, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.dirty = true;
+        self.repaint = true;
         if *ctx.handled {
             return;
         }
@@ -750,10 +755,10 @@ impl Widget for BrowserWindow {
     }
 
     fn needs_redraw(&self) -> bool {
-        ui::widget::redraw_or_children(self.dirty, self)
+        ui::widget::redraw_or_children(self.repaint, self)
     }
     fn mark_drawn(&mut self) {
-        self.dirty = false;
+        self.repaint = false;
         ui::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {

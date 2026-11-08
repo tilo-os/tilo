@@ -574,7 +574,7 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
         .unwrap()
         .lock()
         .await
-        .peer
+        .peer()
         .set_surfaces(collab_types::Surfaces::from_source(std::sync::Arc::new(
             LateSurface(std::sync::Arc::clone(&here)),
         )));

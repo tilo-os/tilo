@@ -241,7 +241,7 @@ impl Workspaces for GovernedWorkspaces {
                 return false;
             };
             let held = held.lock().await;
-            read(held.peer());
+            read(&held.peer());
             true
         })
     }

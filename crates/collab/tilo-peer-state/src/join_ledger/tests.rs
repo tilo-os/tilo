@@ -46,6 +46,7 @@ fn invitation(recipient: Option<[u8; 32]>, now: u64) -> IssueInvitationRequest {
 #[test]
 #[expect(
     clippy::too_many_lines,
+    clippy::significant_drop_tightening,
     reason = "one join read top to bottom, through each step of the ledger"
 )]
 fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
@@ -54,11 +55,11 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let messages = || Ok(vec![b"governance".to_vec()]);
     let host_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
-        peer: &peer,
+        peer: (&peer).into(),
         host: &host_cert,
         workspace_id: 7,
         generation: 1,
-        governance_messages: &messages,
+        governance_messages: Some(&messages),
     };
     let (guest_key, guest_cert) = guest();
     let mut ledger = JoinLedger::default();
@@ -148,11 +149,11 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     );
     let host_cert = candidate.owner_certificates()[0].clone();
     let committed = Governed {
-        peer: &candidate,
+        peer: (&candidate).into(),
         host: &host_cert,
         workspace_id: 7,
         generation: 2,
-        governance_messages: &messages,
+        governance_messages: Some(&messages),
     };
     let delivered = ledger.complete(&committed, &joins, &refusals).unwrap();
     let bootstrap = delivered.into_iter().next().unwrap().unwrap();
@@ -183,9 +184,11 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     assert_eq!(replayed, Some(bootstrap), "a retry hears the same answer");
     let later = || Ok(vec![b"later governance".to_vec()]);
     let moved = Governed {
+        peer: (&candidate).into(),
+        host: &host_cert,
+        workspace_id: 7,
         generation: 3,
-        governance_messages: &later,
-        ..committed
+        governance_messages: Some(&later),
     };
     let refresh = ledger
         .completed(
@@ -211,17 +214,21 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the governed workspace reads the peer through each step of the decision"
+)]
 fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing() {
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
     let messages = || Ok(Vec::<Vec<u8>>::new());
     let host_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
-        peer: &peer,
+        peer: (&peer).into(),
         host: &host_cert,
         workspace_id: 7,
         generation: 1,
-        governance_messages: &messages,
+        governance_messages: Some(&messages),
     };
     let mut ledger = JoinLedger::default();
     let issued = ledger
@@ -275,16 +282,20 @@ fn an_administration_request_is_answered_once_and_refused_for_another_operation(
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the governed workspace reads the peer through each step of the decision"
+)]
 fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unchanged() {
     let (peer, _, _, _, _) = seeded();
     let messages = || Ok(vec![b"governance".to_vec()]);
     let host_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
-        peer: &peer,
+        peer: (&peer).into(),
         host: &host_cert,
         workspace_id: 7,
         generation: 1,
-        governance_messages: &messages,
+        governance_messages: Some(&messages),
     };
     let (_, cert) = guest();
     let delivered = workspace

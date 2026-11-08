@@ -269,6 +269,33 @@ impl Core {
         })
     }
 
+    /// Call a view's own function for an item it answers for (`on show`), in a frame of the
+    /// window the view runs in: the action it makes reads and sets that window's state, as one
+    /// the view's render makes does.
+    pub(crate) fn call_in_view(
+        &self,
+        pkg: &Package,
+        export: &str,
+        params: &[ParamMeta],
+        args: &[Value],
+        window: &str,
+        viewer: &Principal,
+        result: &str,
+    ) -> Result<Value, RuntimeError> {
+        self.frames.borrow_mut().push(
+            pkg.hash.clone(),
+            FrameKind::View(ViewState {
+                space: Space::default(),
+                window: window.to_owned(),
+                viewer: viewer.clone(),
+                ..ViewState::default()
+            }),
+        );
+        let out = self.call_in_frame(pkg, export, params, args, Some(result));
+        self.frames.borrow_mut().pop();
+        out
+    }
+
     /// Render a view as its own boundary. `author` replaces the module as the author of what
     /// the view creates: an embedded block is written by its principal, not by its module.
     /// View calls inside are resolved in place, their reads joining this view's.

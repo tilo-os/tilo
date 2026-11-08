@@ -196,18 +196,35 @@ export async function launch({args = []} = {}) {
   let id = 0;
   const pending = new Map();
   const listeners = new Set();
+  // Nothing a test asks of a page takes longer than this, so a command still
+  // unanswered then is a browser or a page that stopped: the test that is
+  // waiting on it fails and names the command, instead of waiting for ever.
+  const ANSWER_TIMEOUT_MS = 180_000;
+  const stop = error => {
+    for (const waiting of pending.values()) waiting.reject(error);
+    pending.clear();
+  };
   ws.addEventListener('message', ({data}) => {
     const message = JSON.parse(data);
-    if (message.id && pending.has(message.id)) {
-      pending.get(message.id)(message);
+    const waiting = message.id && pending.get(message.id);
+    if (waiting) {
       pending.delete(message.id);
+      waiting.resolve(message);
     } else {
       for (const listener of listeners) listener(message);
     }
   });
-  const send = (method, params = {}, sessionId) => new Promise(resolve => {
+  ws.addEventListener('close', () => stop(new Error('the browser\'s connection closed')));
+  ws.addEventListener('error', () => stop(new Error('the browser\'s connection failed')));
+  const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     const n = ++id;
-    pending.set(n, resolve);
+    const timer = setTimeout(() => {
+      pending.delete(n);
+      reject(new Error(`${method}: the browser stopped answering for ${ANSWER_TIMEOUT_MS / 1000}s`));
+    }, ANSWER_TIMEOUT_MS);
+    timer.unref?.();
+    pending.set(n, {resolve: message => { clearTimeout(timer); resolve(message); },
+      reject: error => { clearTimeout(timer); reject(error); }});
     ws.send(JSON.stringify({id: n, method, params, sessionId}));
   });
 
@@ -295,7 +312,10 @@ export async function launch({args = []} = {}) {
       const stopOwned = supervised ? setTimeout(() => child.kill('SIGTERM'), 2_000) : null;
       let closed;
       try {
-        await Promise.race([send('Browser.close'), exited, deadline]);
+        // A browser that closes as it is asked answers with a closed
+        // connection; what closes the browser is its exit, raced below.
+        const asked = send('Browser.close').catch(() => undefined);
+        await Promise.race([asked, exited, deadline]);
         closed = await Promise.race([exited.then(() => true), deadline]);
       } finally {
         clearTimeout(timer);

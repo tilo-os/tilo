@@ -700,6 +700,21 @@ pub struct ViewMeta {
     /// item, never offered or listed as a view of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_of: Option<String>,
+    /// What the view does when the window is asked to show an item of a type it lists (`on
+    /// show(x: T): ...`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show: Option<ShowMeta>,
+}
+
+/// What a view answers a request to show an item of a type with: the action it applies in its
+/// own state, computed from the item — a list opens the item's row where it stands, a place
+/// follows the item. The view's declaration, so no shape of the window is guessed from the data.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ShowMeta {
+    /// The id of the declared type of item the view answers for.
+    pub ty: String,
+    /// The function that makes the action, run with the item: `func.id` is its export.
+    pub func: FnMeta,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

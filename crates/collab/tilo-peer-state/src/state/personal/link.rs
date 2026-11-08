@@ -214,7 +214,7 @@ impl PersonalSync {
             .await
             .map_err(|error| error.to_string())?;
         let receiving = self.receive_all(remote, connection);
-        let sending = send_all(send, catch_up, live);
+        let sending = send_all(send, remote, catch_up, live);
         tokio::select! {
             result = receiving => result,
             result = sending => result,

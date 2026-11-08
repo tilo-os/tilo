@@ -117,9 +117,6 @@ d-d6avlyc5 = Urgent
 d-3776c5yx = Row place
     .doc = What the place a task's row stands in already says, and the row therefore leaves out.
 
-d-63qticzp = Nothing: a plain list, a card, a surface of the system's own
-    .doc = Nothing: a plain list, a card, a surface of the system's own.
-
 d-u4wzi4k4 = The day it is grouped under, as a list of a day is
     .doc = The day it is grouped under, as a list of a day is.
 
@@ -265,7 +262,18 @@ d-i2mhsb3h = Home
     .w-projects = Projects
     .w-no-tasks-here = No tasks here
 
-d-6a6pf4ok = Task list
+d-doqleehr = Task item
+    .w-what-to-do = What to do
+    .w-anything-worth-remembering-about-it = Anything worth remembering about it.
+    .w-inbox = Inbox
+    .w-remind = Remind
+    .w-reminder-set = Reminder set
+    .w-remind-me = Remind me…
+    .w-no-reminder = No reminder
+    .w-subtasks = Subtasks
+    .w-no-subtasks-yet = No subtasks yet
+    .w-add-a-subtask = Add a subtask
+    .w-open-as-page = Open as page
 
 d-7froalwb = Project list
     .w-new-task-in = New task in { $name }

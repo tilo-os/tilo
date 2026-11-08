@@ -908,11 +908,14 @@ mod tests {
         });
         assert!(applied, "the agent's action shows");
         // The frames the pointer glides in, run out: the capture shows it at rest on the
-        // control rather than mid-glide.
+        // control rather than mid-glide. Settling re-renders the whole window before it can
+        // say the window is still, and that pass takes about a second here and longer on a
+        // loaded machine, so the bound is generous on purpose: it fails an animation that
+        // never ends, not a window that is slow to draw.
         assert!(
             staged
                 .harness_mut()
-                .settle_for_capture(ui::time::Duration::from_secs(2)),
+                .settle_for_capture(ui::time::Duration::from_secs(30)),
             "the marker comes to rest"
         );
         staged.harness_mut().poll_frame().expect("a frame is drawn");
@@ -972,7 +975,7 @@ mod tests {
         // The press and the agent's action take the one path: the app is handed the action,
         // not a view event.
         staged
-            .press(&control_id, false)
+            .press_action(&control_id)
             .expect("the control presses");
         let chosen = staged.instance.take_chosen();
         assert_eq!(
@@ -1187,7 +1190,28 @@ mod tests {
 
     /// The reminder's form, opened from a task's row menu as a finger opens it: the menu's
     /// "Remind me…" row asks when.
-    fn open_reminder_form(staged: &mut Staged) {
+    fn open_reminder_form(staged: &mut Staged, packages: &Rc<Packages>) {
+        // The task stands open as its page: the reminder's menu is part of the document, and a
+        // page takes the presses the controls of a row's document do not (yet) reach.
+        let meta = &packages.0.last().expect("the app's meta").meta;
+        let task_type = &meta
+            .types
+            .iter()
+            .find(|ty| ty.name == "Task")
+            .expect("a task type")
+            .id;
+        let page_view = &meta
+            .views
+            .iter()
+            .find(|view| view.name == "task_page")
+            .expect("a task page")
+            .id;
+        let task = staged
+            .resources()
+            .into_iter()
+            .find(|resource| &resource.ty == task_type)
+            .expect("the scenario holds a task");
+        staged.open_with(&task, page_view);
         let reminder = {
             let root = &staged.harness().inspection().root;
             crate::layout_check::button_named(root, "Remind").expect("the task offers its reminder")
@@ -1250,7 +1274,7 @@ mod tests {
             )
             .expect("the window lies out for a finger");
         let before = reminded(&staged, &app);
-        open_reminder_form(&mut staged);
+        open_reminder_form(&mut staged, &packages);
         let choice = {
             let root = &staged.harness().inspection().root;
             let moment = announced(root, "Tomorrow morning")
@@ -1311,7 +1335,7 @@ mod tests {
             )
             .expect("the window lies out for a finger");
         let before = reminded(&staged, &app);
-        open_reminder_form(&mut staged);
+        open_reminder_form(&mut staged, &packages);
         staged.harness_mut().type_text("tomorrow 9:30");
         staged.freshen().expect("the window comes to rest");
         let confirm = {
@@ -1362,7 +1386,7 @@ mod tests {
                 1.0,
             )
             .expect("the window lies out for a finger");
-        open_reminder_form(&mut staged);
+        open_reminder_form(&mut staged, &packages);
     }
 
     /// Press `bounds` as a person presses them, and let the window and its app answer.
@@ -1430,6 +1454,17 @@ mod tests {
             .expect("a task type")
             .id
             .clone();
+        let page_view = packages
+            .0
+            .last()
+            .expect("the app's meta")
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == "task_page")
+            .expect("a task page")
+            .id
+            .clone();
         let (width, height) = (1280, 800);
         let mut staged = Staged::over(
             &app,
@@ -1448,7 +1483,8 @@ mod tests {
             .into_iter()
             .find(|resource| resource.ty == task_type)
             .expect("the scenario holds a task");
-        staged.open(task);
+        // Asked for as a page, as its row's menu asks: the page holds the menu that files it.
+        staged.open_with(&task, &page_view);
         let descriptors = publish_actions(&mut staged);
         // The facts menu files the task into a project, its own included, so filing it back
         // into the inbox is a row bound to that action.
@@ -1491,12 +1527,9 @@ mod tests {
         );
         let (before, after) = capture_agent(&mut staged, &event, "tasks-menu-tilolang");
         let marked = changed_pixels(before.as_slice(), after.as_slice(), width, pixels(control));
-        assert!(marked.is_some(), "the agent's marker rests on the row");
+        let mark = marked.expect("the agent's marker rests on the row");
         assert!(
-            control.contains(ui::kurbo::Point::new(
-                f64::from(marked.expect("a mark").0),
-                f64::from(marked.expect("a mark").1)
-            )),
+            control.contains(ui::kurbo::Point::new(f64::from(mark.0), f64::from(mark.1))),
             "the marker is drawn inside the row the action lands on"
         );
 
@@ -1621,7 +1654,10 @@ mod tests {
         tilo_ui_host::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
-        let label = "Call the landlord about the boiler";
+        // The task the scenario answers with is the one open; another row of the same list
+        // takes its place when pressed.
+        let answered = "Call the landlord about the boiler";
+        let label = "Book a haircut";
         for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
             let mut staged = Staged::over(
                 &app,
@@ -1630,7 +1666,7 @@ mod tests {
                 (width, height),
                 ui::Theme::light(),
                 None,
-                &["place=Task.today".to_owned()],
+                &[],
             )
             .expect("the scenario stages");
             staged.harness.relayout();
@@ -1644,8 +1680,8 @@ mod tests {
                     "the row stands closed before anyone presses it"
                 );
                 assert!(
-                    !shown_named(root, "Subtasks"),
-                    "the row shows none of its document before anyone presses it"
+                    shows_open(root, answered),
+                    "the task the scenario answers with is the one open"
                 );
             }
 
@@ -1657,9 +1693,20 @@ mod tests {
                 "the row opened where it stands at {width}×{height}"
             );
             assert!(
+                !shows_open(root, answered),
+                "one row is open at a time: the other closed at {width}×{height}"
+            );
+            assert!(
                 shown_named(root, "Subtasks"),
                 "the row holds the task's document where it stands at {width}×{height}"
             );
+            if width <= 390 {
+                assert!(
+                    crate::layout_check::back_chip(root, (width, height)),
+                    "a window too narrow for the list beside the document fills with it, and \
+                     carries the shell's way back at {width}×{height}"
+                );
+            }
 
             staged.key("Escape");
             let root = &staged.harness().inspection().root;
@@ -1669,6 +1716,177 @@ mod tests {
                 "Escape puts the document away again"
             );
         }
+    }
+
+    /// A scenario that answers with a task stages that task's place with its row open where it
+    /// stands: the window a script answers in is the list, not a page laid over it.
+    #[test]
+    fn a_scenario_that_answers_with_a_task_shows_its_row_open_in_its_place() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let label = "Call the landlord about the boiler";
+        for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
+            let staged = Staged::over(
+                &app,
+                &packages,
+                "a busy week",
+                (width, height),
+                ui::Theme::light(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+
+            let root = &staged.harness().inspection().root;
+            assert!(
+                shows_open(root, label),
+                "the task stands open where it stands at {width}×{height}"
+            );
+            assert!(
+                shown_named(root, "Subtasks"),
+                "the row holds the task's document at {width}×{height}"
+            );
+            // The window states the place the task belongs to, not the place it stood on: what
+            // waits in the inbox does not stand in the list, and what is due today does.
+            assert!(
+                !shown_named(root, "Sort the paper mail"),
+                "the inbox's work is not what the window shows at {width}×{height}"
+            );
+            assert!(
+                shown_named(root, "Buy oat milk and eggs"),
+                "today's work is what the window shows at {width}×{height}"
+            );
+            // Where the window shows its places beside the list, they say the same: the task's
+            // place is the chosen one.
+            if width > 390 {
+                assert!(
+                    chosen_named(root, "Today"),
+                    "the sidebar follows the task to its place at {width}×{height}"
+                );
+            }
+        }
+    }
+
+    /// A row opens as a page of its own from its menu, and Back returns to the list with the
+    /// row still open where it stood: the page is a place to read the item whole, not a way out
+    /// of the list.
+    #[test]
+    fn a_row_opens_as_a_page_and_back_returns_to_the_list_with_the_row_open() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let task_type = packages
+            .0
+            .last()
+            .expect("the app's meta")
+            .meta
+            .types
+            .iter()
+            .find(|ty| ty.name == "Task")
+            .expect("a task type")
+            .id
+            .clone();
+        let page_view = packages
+            .0
+            .last()
+            .expect("the app's meta")
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == "task_page")
+            .expect("a task page")
+            .id
+            .clone();
+        let label = "Call the landlord about the boiler";
+        for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                "a busy week",
+                (width, height),
+                ui::Theme::light(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            // The row offers the page in the menu its view places, which a person opens beside
+            // the row: the row's own menu, the same one its actions stand in.
+            let rows = staged.rows();
+            let (key, row) = rows
+                .iter()
+                .find(|(_key, row)| holds_title(row, label))
+                .expect("the list draws the task's row");
+            let offered = menu_labels(row);
+            assert!(
+                offered.iter().any(|row| row == "Open as page"),
+                "opening the task as a page is one of its menu's rows: {offered:?}"
+            );
+            // A row is keyed by the view that draws it, which ends in the item it shows: that is
+            // the task the row's menu opens as a page.
+            let key = key.clone();
+            let task = staged
+                .resources()
+                .into_iter()
+                .find(|resource| resource.ty == task_type && key.ends_with(&resource.id))
+                .unwrap_or_else(|| panic!("the row is the task {key} it shows"));
+            staged.open_with(&task, &page_view);
+
+            assert_eq!(
+                staged.front_target().map(|front| front.ty),
+                Some(task_type.clone()),
+                "the window shows the task as a page at {width}×{height}"
+            );
+            {
+                let root = &staged.harness().inspection().root;
+                assert!(
+                    crate::layout_check::back_chip(root, (width, height)),
+                    "the page carries the shell's way back at {width}×{height}, not one of its own"
+                );
+                assert!(
+                    titled(root, label),
+                    "the page names the task in its heading at {width}×{height}"
+                );
+            }
+
+            staged
+                .press(ui::widget::WINDOW_BACK, true)
+                .expect("the shell's back presses");
+            staged.freshen().expect("the list comes back to rest");
+            assert_ne!(
+                staged.front_target().map(|front| front.ty),
+                Some(task_type.clone()),
+                "Back returns to the list at {width}×{height}"
+            );
+            let root = &staged.harness().inspection().root;
+            assert!(
+                shows_open(root, label),
+                "the task stands open where it stood at {width}×{height}"
+            );
+        }
+    }
+
+    /// Whether the window's place list stands its entry named `label` chosen.
+    fn chosen_named(node: &ui::headless::InspectionNode, label: &str) -> bool {
+        node.semantics
+            .as_ref()
+            .is_some_and(|access| access.name.as_deref() == Some(label) && access.state.selected)
+            || node.children.iter().any(|child| chosen_named(child, label))
+    }
+
+    /// Whether a row of a list says `label` as its own title: a subtask's row names the task it
+    /// stands under beside it, and is not that task's row.
+    fn holds_title(node: &tilo_ui_host::UiNode, label: &str) -> bool {
+        node.props.get("title") == Some(&Value::text(label))
+            || node.children.iter().any(|child| holds_title(child, label))
+    }
+
+    /// Whether what `node` holds names `label` where a document is titled: its heading reads it
+    /// as the title, or the window shows it under that name.
+    fn titled(node: &ui::headless::InspectionNode, label: &str) -> bool {
+        node.semantics.as_ref().is_some_and(|access| {
+            access.value.as_deref() == Some(label) || access.name.as_deref() == Some(label)
+        }) || node.children.iter().any(|child| titled(child, label))
     }
 
     /// Whether the window shows anything named `label` — a heading, a section or a control.
@@ -1696,6 +1914,28 @@ mod tests {
         node.children
             .iter()
             .find_map(|child| row_named(child, label))
+    }
+
+    /// The rows of the menus a row carries: the one its view places on it, and the actions the
+    /// host adds to it.
+    fn menu_labels(row: &tilo_ui_host::UiNode) -> Vec<String> {
+        fn labeled(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+            if node.kind == "ui.MenuItem"
+                && let Some(Value::Text(label)) = node.props.get("label")
+            {
+                out.push(label.clone());
+            }
+            node.children.iter().for_each(|child| labeled(child, out));
+        }
+        fn collect(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+            if node.kind == "slot" && node.props.get("name") == Some(&Value::text("menu")) {
+                labeled(node, out);
+            }
+            node.children.iter().for_each(|child| collect(child, out));
+        }
+        let mut out = Vec::new();
+        collect(row, &mut out);
+        out
     }
 
     /// Whether a list shows `label` as a row standing open into its item: the node the list

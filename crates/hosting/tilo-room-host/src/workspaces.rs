@@ -40,7 +40,9 @@ mod device_plane;
 #[cfg(test)]
 mod device_plane_tests;
 mod door;
+mod follow;
 pub use device_plane::HostJobs;
+use follow::Followed;
 #[cfg(test)]
 mod device_rejoin_tests;
 #[cfg(test)]
@@ -80,6 +82,9 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
+use std::sync::MutexGuard;
+
+use tilo_peer_state::direct::Replica;
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
@@ -170,22 +175,10 @@ enum Change {
     Other,
 }
 
-/// What taking a member's write into the governor's copy did.
-#[derive(Clone, Debug, Default)]
-struct Followed {
-    /// The copy changed.
-    changed: bool,
-    /// A write the copy let go earlier waited for something that has landed
-    /// since: replaying what the relay retains brings it in.
-    replay_wanted: bool,
-    /// Admission refused the write, and why: the author is owed a verdict.
-    refused: Option<String>,
-}
-
 /// A workspace this relay governs.
 struct GovernedWorkspace {
     record: WorkspaceRecord,
-    peer: StatePeer,
+    peer: Replica,
     path: PathBuf,
     /// The files of `record.peer`'s large parts.
     parts: peer_parts::PeerParts,
@@ -351,7 +344,7 @@ impl GovernedWorkspace {
             path,
             device: device.cloned(),
             record,
-            peer,
+            peer: Replica::new(peer),
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
@@ -436,7 +429,7 @@ impl GovernedWorkspace {
             wait_list: wait_list::WaitList::open(&path)?,
             door: door::Door::open(&path)?,
             record,
-            peer,
+            peer: Replica::new(peer),
             parts,
             path,
             device: device.cloned(),
@@ -472,125 +465,8 @@ impl GovernedWorkspace {
         Ok(())
     }
 
-    fn peer(&self) -> &StatePeer {
-        &self.peer
-    }
-
-    /// The governance this workspace published that the relay has not retained,
-    /// in order, each with its place reserved in `records`; `published`
-    /// moves past them. Stops before a change that does not read, with why.
-    fn unpublished(
-        &mut self,
-        records: &crate::workspace_records::WorkspaceRecords,
-    ) -> (Vec<publisher::Publication>, Result<(), String>) {
-        let mut publications = Vec::new();
-        while let Some(entry) = self.record.outgoing.get(self.record.published) {
-            let channel = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&entry.bytes)
-                .map_err(|error| error.to_string())
-                .and_then(|message| {
-                    neighbour_wire::retention(&message, entry.checkpoint)
-                        .map(|(channel, _)| channel)
-                        .ok_or_else(|| {
-                            "workspace governance message has no retention channel".into()
-                        })
-                });
-            let channel = match channel {
-                Ok(channel) => channel,
-                Err(error) => return (publications, Err(error)),
-            };
-            publications.push(publisher::Publication::new(
-                records,
-                self.record.workspace_id,
-                Some(self.record.published),
-                crate::workspace_records::HostCommit {
-                    body: entry.bytes.clone(),
-                    channel,
-                    checkpoint: entry.checkpoint,
-                },
-            ));
-            self.record.published = self.record.published.saturating_add(1);
-        }
-        (publications, Ok(()))
-    }
-
-    /// Take a member's write to a record the governor has into its copy,
-    /// in memory: [`Self::keep_followed`] writes it through. What admission
-    /// refused, it names with why in [`Followed::refused`], for the governor to
-    /// file as its verdict in the workspace document.
-    fn follow(&mut self, author: [u8; 32], message: neighbour_wire::NeighbourMsg) -> Followed {
-        let neighbour_wire::NeighbourMsg::AppDocument {
-            app_id, record_id, ..
-        } = &message
-        else {
-            return Followed::default();
-        };
-        if !self.peer.holds_document(app_id, record_id) {
-            return Followed::default();
-        }
-        match self.peer.receive_from(
-            tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
-            message,
-            SystemTime::now(),
-        ) {
-            Ok(outcome) => Followed {
-                changed: outcome.changed || outcome.metadata_changed,
-                replay_wanted: outcome.replay_wanted,
-                refused: None,
-            },
-            Err(error) => Followed {
-                refused: Some(error),
-                ..Followed::default()
-            },
-        }
-    }
-
-    /// File this device's verdict on the write admission refused because
-    /// `reason`, in the governor's copy, for [`Self::keep_followed`] to write
-    /// through: the write's author reads why it is not here.
-    fn refused(
-        &mut self,
-        caller: &DeviceCert,
-        key: &SigningKey,
-        message: &neighbour_wire::NeighbourMsg,
-        reason: &str,
-    ) -> Followed {
-        let filed =
-            self.peer
-                .workspace_mut()
-                .refuse_write(caller, message, reason, key, SystemTime::now());
-        match filed {
-            Ok(filed) => Followed {
-                changed: filed,
-                ..Followed::default()
-            },
-            Err(error) => {
-                tracing::warn!(
-                    workspace = %self.record.workspace,
-                    %reason,
-                    %error,
-                    "the governor did not file a refusal of a record write"
-                );
-                Followed::default()
-            }
-        }
-    }
-
-    /// Write the governor's copy, as following members' writes changed it,
-    /// through to the workspace file. A start replays what the relay retains,
-    /// but that replay alone does not bring a write back: the app surfaces
-    /// it is decided against are still on their way then, so it holds the
-    /// write and may let it go. A write the governor took in and lost that
-    /// way left its record with a gap, once a later write that builds on it
-    /// was committed, and the workspace no longer opened.
-    fn keep_followed(&mut self) {
-        self.unkept = false;
-        let kept = self.parts.stage(&self.peer).and_then(|parts| {
-            let prior = std::mem::replace(&mut self.record.peer, parts);
-            self.persist().inspect_err(|_| self.record.peer = prior)
-        });
-        if let Err(error) = kept {
-            tracing::warn!(workspace = %self.record.workspace, %error, "the governor's copy of members' writes was not kept");
-        }
+    fn peer(&self) -> MutexGuard<'_, StatePeer> {
+        self.peer.lock()
     }
 
     fn workspace(&self) -> &str {
@@ -693,14 +569,14 @@ impl GovernedWorkspace {
         ) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
         let committing = crate::timing::start();
-        if candidate.workspace_id() != self.peer.workspace_id()
-            || candidate.owner() != self.peer.owner()
+        if candidate.workspace_id() != self.peer().workspace_id()
+            || candidate.owner() != self.peer().owner()
         {
             return Err("a room change cannot replace the room".into());
         }
         // A member admitted from now on is given the workspace as it stands, not
         // what was withdrawn before they joined.
-        let joined = !member_roots(&candidate, now).is_subset(&member_roots(&self.peer, now));
+        let joined = !member_roots(&candidate, now).is_subset(&member_roots(&self.peer(), now));
         let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
         crate::timing::window("room.commit.prepare", preparing);
@@ -729,24 +605,22 @@ impl GovernedWorkspace {
             && self
                 .admissions_since_base
                 .as_ref()
-                .is_some_and(|clean| self.peer.workspace_heads().as_ref() == Some(clean));
+                .is_some_and(|clean| self.peer().workspace_heads().as_ref() == Some(clean));
         let started_over = (tail >= MAX_PUBLICATION_TAIL || joined) && !appended_admission;
         if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
-            let changed_records = candidate
-                .clone()
-                .publication_mut()
-                .durable_mutation_messages(&self.peer, key, now, generation)?
-                .into_iter()
-                .filter_map(|message| match message {
-                    neighbour_wire::NeighbourMsg::AppDocument {
-                        app_id, record_id, ..
-                    } => Some((app_id, record_id)),
-                    _ => None,
-                })
-                .collect::<std::collections::BTreeSet<_>>();
+            let changed_records =
+                durable_messages(&mut candidate.clone(), &self.peer(), (key, now), generation)?
+                    .into_iter()
+                    .filter_map(|message| match message {
+                        neighbour_wire::NeighbourMsg::AppDocument {
+                            app_id, record_id, ..
+                        } => Some((app_id, record_id)),
+                        _ => None,
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
             rebased = joined && candidate.rebase_workspace()?;
             record.outgoing = candidate
                 .publication_mut()
@@ -764,9 +638,7 @@ impl GovernedWorkspace {
             record.published = 0;
         } else {
             let diffing = crate::timing::start();
-            let messages = candidate
-                .publication_mut()
-                .durable_mutation_messages(&self.peer, key, now, generation)?;
+            let messages = durable_messages(&mut candidate, &self.peer(), (key, now), generation)?;
             for message in messages.iter().filter(|message| for_members(message)) {
                 record.outgoing.push(publication(message, false)?);
             }
@@ -787,7 +659,7 @@ impl GovernedWorkspace {
             self.record = prior;
             return Err(error);
         }
-        self.peer = candidate;
+        *self.peer.lock() = candidate;
         self.rebased |= rebased;
         // Clean from a start made at an admission; kept clean only by
         // admissions appended to it; anything else spoils it until the next.
@@ -796,7 +668,7 @@ impl GovernedWorkspace {
         } else {
             appended_admission
         };
-        self.admissions_since_base = clean.then(|| self.peer.workspace_heads()).flatten();
+        self.admissions_since_base = clean.then(|| self.peer().workspace_heads()).flatten();
         crate::timing::event(
             "room.governance_commit",
             committing,
@@ -808,7 +680,7 @@ impl GovernedWorkspace {
     fn summary(&self) -> WorkspaceSummary {
         let now = SystemTime::now();
         let mut members = self
-            .peer
+            .peer()
             .governance()
             .governed_members(now)
             .unwrap_or_default();
@@ -871,6 +743,20 @@ fn prepare_governance(
         .reconcile_administrator_grants(key, now)?;
     peer.media_mut().reconcile_media_governance(key, now)?;
     peer.media().validate_media_governance_for_publication()
+}
+
+/// What `candidate` publishes for the workspace's records, as its changes
+/// since the governor's copy in `peer`: the messages a commit sends on, and
+/// the records one that starts the workspace over must still publish.
+fn durable_messages(
+    candidate: &mut StatePeer,
+    peer: &StatePeer,
+    (key, now): (&SigningKey, SystemTime),
+    generation: u64,
+) -> Result<Vec<neighbour_wire::NeighbourMsg>, String> {
+    candidate
+        .publication_mut()
+        .durable_mutation_messages(peer, key, now, generation)
 }
 
 /// Whether the workspace publishes `message` of a commit to its members. The
@@ -959,6 +845,12 @@ impl WeakWorkspaces {
 
 struct WorkspacesInner {
     host: WorkspaceServices,
+    /// The sealed history of every workspace governed here, which their
+    /// member devices catch up from over the direct link.
+    store: Arc<tilo_peer_state::store::Store>,
+    /// The direct links of the workspaces governed here, one per workspace,
+    /// answering a device's dial by the workspace it names.
+    direct: tilo_peer_state::direct::Serving,
     dir: PathBuf,
     workspaces: Arc<device_plane::WorkspacesMap>,
     /// The plane the workspaces answer their members' devices on, as this
@@ -1163,7 +1055,11 @@ impl Workspaces {
     /// Open every workspace recorded under `dir` and bind each to the relay:
     /// its workspace pinned and admitting only governed members, its
     /// unpublished governance retained, its members' new records created.
-    pub(crate) async fn open(host: WorkspaceServices, dir: PathBuf) -> Result<Self, String> {
+    pub(crate) async fn open(
+        host: WorkspaceServices,
+        dir: PathBuf,
+        store: PathBuf,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         // A workspace a host made keeps the certificate it made it with:
         // everything done for it compares that certificate exactly, so a host
@@ -1175,6 +1071,14 @@ impl Workspaces {
         let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
         let this = Self {
             inner: Arc::new(WorkspacesInner {
+                store: Arc::new(
+                    tilo_peer_state::store::Store::open(
+                        store,
+                        tilo_peer_state::store::Appetite::StoreAll,
+                    )
+                    .map_err(|error| error.to_string())?,
+                ),
+                direct: tilo_peer_state::direct::Serving::new(),
                 dir: dir.clone(),
                 plane,
                 jobs,
@@ -1211,6 +1115,7 @@ impl Workspaces {
             let workspace =
                 GovernedWorkspace::open(path.clone(), &this.inner.host.cert, device.as_ref())
                     .map_err(|error| format!("{}: record: {error}", path.display()))?;
+            this.serve_direct(&workspace)?;
             workspaces.insert(
                 workspace.workspace().to_owned(),
                 Arc::new(AsyncMutex::new(workspace)),
@@ -1350,6 +1255,7 @@ impl Workspaces {
         let mut governed = workspace.lock().await;
         self.settle(&mut governed).await?;
         self.name_own_host(&mut governed).await?;
+        self.serve_direct(&governed)?;
         drop(governed);
         tracing::info!(workspace = %summary.workspace, workspace_id = summary.workspace_id, "governed room created");
         Ok(summary)
@@ -1384,6 +1290,7 @@ impl Workspaces {
                 .map_err(|error| error.to_string())?;
         }
         self.inner.workspaces.lock().await.remove(workspace);
+        self.inner.direct.release(governed.workspace_id());
         self.inner
             .host
             .access
@@ -1419,13 +1326,13 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
         if governed.record.name == name
-            && governed.peer.governance().workspace_name().as_deref() == Some(name)
+            && governed.peer().governance().workspace_name().as_deref() == Some(name)
         {
             return Ok(governed.summary());
         }
         let now = SystemTime::now();
         let key = &self.inner.host.key;
-        let mut candidate = governed.peer.clone();
+        let mut candidate = governed.peer().clone();
         candidate
             .governance_mut()
             .author_workspace_name(name, key, now)?;
@@ -1493,6 +1400,25 @@ impl Workspaces {
     #[must_use]
     pub fn plane(&self) -> tilo_peer_state::actions::ActionPlane {
         self.inner.plane.clone()
+    }
+
+    /// The direct links of the workspaces governed here, as the host's own
+    /// device: a member device of a workspace syncs with it here, and catches
+    /// up from the history the host keeps.
+    #[must_use]
+    pub fn direct(&self) -> tilo_peer_state::direct::Serving {
+        self.inner.direct.clone()
+    }
+
+    /// Serve `workspace`'s replica over the direct link, keeping its history
+    /// at the host's store.
+    fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
+        let link = tilo_peer_state::direct::DirectSync::over(
+            workspace.peer.clone(),
+            self.inner.host.key.clone(),
+        )
+        .with_store(Arc::clone(&self.inner.store));
+        self.inner.direct.serve(link)
     }
 
     /// Run the transform an offloadable action declares for the workspaces
@@ -1710,7 +1636,7 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await.ok()?;
         let workspace = workspace.lock().await;
         member_bootstrap(
-            workspace.peer(),
+            &workspace.peer(),
             &workspace.record.authority,
             workspace.workspace_id(),
             workspace.record.generation,
@@ -2178,7 +2104,7 @@ impl Workspaces {
         // A member removed takes every way in the workspace handed them with
         // them: an invitation issued to them before, still unredeemed,
         // would otherwise admit them again at once.
-        let removed: std::collections::BTreeSet<_> = member_roots(workspace.peer(), now)
+        let removed: std::collections::BTreeSet<_> = member_roots(&workspace.peer(), now)
             .difference(&member_roots(&candidate, now))
             .copied()
             .collect();
@@ -2600,10 +2526,10 @@ impl Workspaces {
     /// device refused is not missing. Answers whether the workspace changed.
     fn landed(
         &self,
-        workspace: &mut GovernedWorkspace,
+        workspace: &GovernedWorkspace,
         message: &neighbour_wire::NeighbourMsg,
     ) -> bool {
-        let cleared = workspace.peer.workspace_mut().clear_landed_write(
+        let cleared = workspace.peer().workspace_mut().clear_landed_write(
             &self.inner.host.cert,
             message,
             &self.inner.host.key,
@@ -2773,15 +2699,12 @@ impl Workspaces {
             .replace(workspace.workspace_id(), true, access)
             .await
             .map_err(|error| error.to_string())?;
+        let standings = workspace
+            .peer()
+            .governance()
+            .governed_standings(SystemTime::now())?;
         host.access
-            .replace_standings(
-                workspace.workspace_id(),
-                true,
-                workspace
-                    .peer()
-                    .governance()
-                    .governed_standings(SystemTime::now())?,
-            )
+            .replace_standings(workspace.workspace_id(), true, standings)
             .await
             .map_err(|error| error.to_string())?;
         let publisher = Arc::clone(&workspace.publisher);

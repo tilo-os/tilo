@@ -504,7 +504,7 @@ pub fn resolve(
 
 /// The toolkit component a view body makes: its one call (after its state and `let`s) when
 /// that is `ui.X(...)`.
-fn view_root_component(body: &[ast::UiStmt]) -> Option<String> {
+pub(crate) fn view_root_component(body: &[ast::UiStmt]) -> Option<String> {
     let mut calls = body
         .iter()
         .filter(|s| !matches!(s.kind, ast::UiKind::State(_) | ast::UiKind::Let { .. }));

@@ -24,6 +24,10 @@ use super::audit::{Kind, Problem};
 /// a pixel, which a person does not see.
 const SLACK: f64 = 1.0;
 
+/// The nesting step the stock theme indents a row by, for the tests that lay rows out by hand.
+#[cfg(test)]
+const TOOLKIT_STEP: f64 = 22.0;
+
 /// The room a screen keeps between its content and the window's edge on the narrowest window it is
 /// made for.
 pub const COMPACT_GUTTER: f64 = 16.0;
@@ -83,10 +87,17 @@ fn destroys(node: &UiNode) -> bool {
 }
 
 /// What this screen holds that a person would see wrong though its geometry is sound, as the
-/// views that drew it declared what their controls do.
-pub fn inspect(root: &InspectionNode, viewport: (u32, u32), declared: &Declared) -> Vec<Problem> {
+/// views that drew it declared what their controls do. `step` is the toolkit's nesting step: how
+/// far one depth indents its content, and so the one step a first level may stand in by.
+pub fn inspect(
+    root: &InspectionNode,
+    viewport: (u32, u32),
+    declared: &Declared,
+    step: f64,
+) -> Vec<Problem> {
     let mut out = Vec::new();
     columns(root, &mut out);
+    first_level(root, None, step, &mut Vec::new(), &mut out);
     selections(root, &mut Vec::new(), false, &mut out);
     adds(root, &mut Vec::new(), false, &mut out);
     names(root, &mut Vec::new(), &mut out);
@@ -275,6 +286,110 @@ fn check_box(rows: &[Site<'_>], out: &mut Vec<Problem>) {
             );
         }
     }
+}
+
+// --- a first level on its section's column ----------------------------------------------------
+
+/// The title a box of rows stands under, as the nearest heading before it: where the title's
+/// words start, and what they say.
+#[derive(Clone, Debug)]
+struct Heading {
+    x: f64,
+    words: String,
+}
+
+/// A list or tree whose first level stands more than one nesting step right of the title its
+/// section goes by. A section's title starts on the column its content does, and a tree's first
+/// level keeps the one step in front of it that its folding chevron hangs in; a second step on
+/// top of that leaves the section's rows adrift from its own words, and a step kept by every
+/// level leaves a deep row with no column left.
+fn first_level(
+    node: &InspectionNode,
+    above: Option<&Heading>,
+    step: f64,
+    keys: &mut Vec<String>,
+    out: &mut Vec<Problem>,
+) -> Option<Heading> {
+    if let Some(heading) = above {
+        level_of_box(node, heading, step, keys.as_slice(), out);
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    // The heading a child stands under: the nearest one before it among its siblings, or the one
+    // its box stood under.
+    let mut running = above.cloned();
+    let mut last = heading_of(node);
+    for child in &node.children {
+        if let Some(found) = first_level(child, running.as_ref(), step, keys, out) {
+            running = Some(found.clone());
+            last = Some(found);
+        }
+    }
+    if pushed {
+        keys.pop();
+    }
+    last
+}
+
+/// The heading `node` says itself with, where it is one.
+fn heading_of(node: &InspectionNode) -> Option<Heading> {
+    if !matches!(role(node), Some(Role::Heading { .. })) {
+        return None;
+    }
+    Some(Heading {
+        x: node.rect[0],
+        words: semantics_name(node)
+            .unwrap_or("its section's title")
+            .to_owned(),
+    })
+}
+
+/// One node's own rows, where it holds them: the first level on the column `heading` stands on,
+/// kept at most one nesting `step` in from it.
+fn level_of_box(
+    node: &InspectionNode,
+    heading: &Heading,
+    step: f64,
+    keys: &[String],
+    out: &mut Vec<Problem>,
+) {
+    let rows: Vec<RowLayout> = node.children.iter().filter_map(grid).collect();
+    let Some(base) = rows.iter().map(|row| row.depth).min() else {
+        return;
+    };
+    // The title has to stand over the box's own column: a title in another column (a page's, a
+    // sidebar's beside it) says nothing of where this box's rows start. One step to the left of
+    // the box is still its column's, where a tree's folding chevron hangs.
+    let boxed = rect(node);
+    if heading.x < boxed.x0 - step - SLACK || heading.x > boxed.x1 + SLACK {
+        return;
+    }
+    let Some(first) = rows
+        .iter()
+        .filter(|row| row.depth == base)
+        .map(|row| f64::from(row.content_left))
+        .fold(None, |least: Option<f64>, x| {
+            Some(least.map_or(x, |y| y.min(x)))
+        })
+    else {
+        return;
+    };
+    if first - heading.x <= step + SLACK {
+        return;
+    }
+    push(
+        out,
+        Kind::FirstLevelIndent,
+        node,
+        keys,
+        format!(
+            "its first level starts at x {first:.0}, {:.0} px right of the words of \"{}\" at x \
+             {:.0}: a list stands at most one nesting step of {step:.0} px in from its section's \
+             column",
+            first - heading.x,
+            heading.words,
+            heading.x
+        ),
+    );
 }
 
 // --- one choice, filled once -------------------------------------------------------------------
@@ -805,7 +920,7 @@ mod tests {
         viewport: (u32, u32),
         declared: &Declared,
     ) -> Vec<Problem> {
-        inspect(root, viewport, declared)
+        inspect(root, viewport, declared, TOOLKIT_STEP)
             .into_iter()
             .filter(|problem| problem.kind == kind)
             .collect()
@@ -870,6 +985,53 @@ mod tests {
         let problems = found(Kind::RaggedColumns, &stepped, (1280, 800));
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].detail.contains("nesting steps"), "{problems:?}");
+    }
+
+    /// A list or tree keeps its first level within one nesting step of the title its section
+    /// goes by: a step for the title's column and no second step for the first level.
+    #[test]
+    fn a_first_level_stands_within_one_step_of_its_sections_title() {
+        let section = |first: f64, nested: f64| {
+            holding(
+                "Section",
+                "section",
+                None,
+                vec![
+                    named(
+                        "Text",
+                        "title",
+                        [24.0, 0.0, 200.0, 20.0],
+                        Role::Heading { level: 2 },
+                        "Subtasks",
+                    ),
+                    holding(
+                        "DescribedTreeView",
+                        "tree",
+                        Some(Role::Tree),
+                        vec![row("a", 0, first, 400.0), row("b", 1, nested, 400.0)],
+                    ),
+                ],
+            )
+        };
+        // The title's column, and the one step a folding chevron hangs in front of the rows.
+        let standing = section(46.0, 68.0);
+        assert!(found(Kind::FirstLevelIndent, &standing, (390, 844)).is_empty());
+        // A plain list stands on the title's own column.
+        let flush = section(24.0, 46.0);
+        assert!(found(Kind::FirstLevelIndent, &flush, (390, 844)).is_empty());
+
+        // A step for the chevron and another for the first level: the section's rows stand
+        // adrift of the words that name them.
+        let adrift = section(68.0, 90.0);
+        let problems = found(Kind::FirstLevelIndent, &adrift, (390, 844));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].detail.contains("Subtasks"), "{problems:?}");
+        assert_eq!(problems[0].widget, "DescribedTreeView", "{problems:?}");
+
+        // A title beside the box, in another column of the page, says nothing of its rows.
+        let mut beside = section(68.0, 90.0);
+        beside.children[1].rect = [200.0, 0.0, 400.0, 300.0];
+        assert!(found(Kind::FirstLevelIndent, &beside, (390, 844)).is_empty());
     }
 
     /// One choice is filled once: a selected row inside a selected box draws the same choice

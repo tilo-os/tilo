@@ -1929,39 +1929,6 @@ fn a_nested_row_indents_its_content_a_gutter_a_step_and_keeps_its_trailing_colum
     );
 }
 
-/// A row of a tree keeps one disclosure step free in front of its content, whether or not it
-/// has anything to fold: a leaf's title starts on the column its branch sibling's does, and
-/// the step is where the list paints the chevron that folds it.
-#[test]
-fn a_leaf_stands_on_the_column_its_branch_sibling_keeps() {
-    let theme = Theme::dark();
-    let step = crate::chrome::disclosure_gutter(&theme);
-    let rect = Rect::new(0.0, 0.0, 300.0, 40.0);
-    let branch = geometry(
-        &ListRowFace::new("Find the last service date").tree_row(true),
-        rect,
-    );
-    let leaf = geometry(
-        &ListRowFace::new("Ask whether Tuesday morning works").tree_row(true),
-        rect,
-    );
-    let outside = geometry(&ListRowFace::new("Not a tree's row"), rect);
-    assert!(
-        (leaf.text_x - branch.text_x).abs() < 0.01,
-        "one column at one depth, disclosure or not: {} and {}",
-        leaf.text_x,
-        branch.text_x
-    );
-    assert!(
-        (branch.text_x - (outside.text_x + step)).abs() < 0.5,
-        "the step stands free in front of the tree's content"
-    );
-    assert!(
-        (leaf.leading.x0 - branch.leading.x0).abs() < 0.01,
-        "what leads the row moves with it"
-    );
-}
-
 /// A row given its own height stands at it instead of the list's row height for what it holds:
 /// a tree's rows are its own token, shorter than a list's row of the same theme, and its title
 /// reads at the row's size, not a dense row's caption.

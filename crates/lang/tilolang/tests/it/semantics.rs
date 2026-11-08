@@ -363,3 +363,30 @@ fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
     assert_eq!(ids, vec![format!("{}:add_entry.typed", row.id)]);
     assert_eq!(row.state[0].name, "typed");
 }
+
+// A view answers a request to show an item of a type it lists (`on show(x: T): ...`): the action
+// it makes in its own state, run with the item. Anything else it answers is not a show, so a
+// staging that asks a window to show a task reads the window's declaration, never a shape guessed
+// from the data.
+#[test]
+fn a_view_answers_a_request_to_show_an_item_of_a_type_it_lists() {
+    let c = compile(
+        "type Note {\n    title: Text\n}\nview v(n: Note) {\n    state opened: Option<Note> = .none\n    \
+         on show(x: Note): set(opened, x)\n    text(\"the list\")\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let show = c.meta.views[0]
+        .show
+        .as_ref()
+        .expect("the view answers `on show`");
+    assert_eq!(show.ty, c.meta.types[0].id);
+    assert_eq!(show.func.params.len(), 1, "it is given the item alone");
+    assert_eq!(show.func.params[0].name, "x");
+    // A type that is no item of the app's, and a show that names none: both are refused.
+    let int = "type Note {\n    title: Text\n}\naction ping(n: Note) {\n    n.title = \"p\"\n}\n\
+               view v(n: Note) {\n    on show(x: Int): ping(n)\n    text(\"the list\")\n}";
+    assert_eq!(codes(int), vec!["E063"]);
+    let unnamed = "type Note {\n    title: Text\n}\naction ping(n: Note) {\n    n.title = \"p\"\n}\n\
+                    view v(n: Note) {\n    on show: ping(n)\n    text(\"the list\")\n}";
+    assert_eq!(codes(unnamed), vec!["E063"]);
+}

@@ -57,7 +57,7 @@ impl GovernedWorkspace {
         reason = "one signature with the build that opens sealed records"
     )]
     async fn held_desktop(&self) -> Result<Option<Vec<u8>>, String> {
-        Ok(self.peer.document(DESKTOP_APP, DESKTOP_RECORD))
+        Ok(self.peer().document(DESKTOP_APP, DESKTOP_RECORD))
     }
 
     /// Take in a change the governor made to `(app, record)` itself, when it
