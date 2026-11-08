@@ -90,6 +90,10 @@ pub(super) struct BoolControl {
     /// The focus came from a click on this control, not from the keyboard:
     /// it is shown as no ring, only the keyboard's is.
     pub pressed_into_focus: bool,
+    /// This control took a press whose release has not come: the release
+    /// over it completes that click, so the row it stands in does not read
+    /// the click as one of its own.
+    pub holds_press: bool,
     pub presence_path: Vec<PathSegment>,
     pub permission_scope: Option<PermissionScope>,
     /// When `false` the control is skipped by focus, rejects input (no flip,
@@ -130,6 +134,7 @@ impl BoolControl {
             is_checked: false,
             is_focused: false,
             pressed_into_focus: false,
+            holds_press: false,
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
@@ -330,9 +335,20 @@ impl BoolControl {
                 ..
             } if self.is_hovered && *element_state == ElementState::Pressed => {
                 *ctx.handled = true;
+                self.holds_press = true;
                 self.pressed_into_focus |= !self.is_focused;
                 *ctx.focus_target = Some(ctx.node_id);
                 self.flip();
+            }
+            // The release of the press this control took is its own: a row
+            // that decides a click on its release would otherwise act on
+            // the row as well as on the control pressed.
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if std::mem::take(&mut self.holds_press) && self.is_hovered => {
+                *ctx.handled = true;
             }
             _ => {}
         }
