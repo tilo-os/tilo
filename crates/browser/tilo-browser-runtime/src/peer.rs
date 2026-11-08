@@ -6,7 +6,7 @@
 //! callback, or — where `WebCrypto` lacks Ed25519 — a seed unsealed from
 //! `IndexedDB` straight into this module, which keeps it only in wasm
 //! memory. Nothing here generates or holds a user root: a page that holds
-//! one (`web/root-identity.mjs`) lends it as a signer, the same shape as
+//! one (`web/identity.mjs`) lends it as a signer, the same shape as
 //! custody, to [`issue_device_cert`] and [`certify_with_root`].
 //!
 //! The peer record (certificates and the commit outbox) and the workspaces it
@@ -445,7 +445,7 @@ fn device_key(text: &str) -> Result<[u8; 32], JsError> {
 }
 
 /// Certify `devicePublicKeyHex` with the user root the page holds (`root`:
-/// `{publicKey, sign}` from `root-identity.mjs`) as `role`: `browser` (a
+/// `{publicKey, sign}` from `identity.mjs`) as `role`: `browser` (a
 /// member, 30 days), `node` (hosts and governs the person's workspaces,
 /// admits no devices) or `session` (the session beside a node that runs
 /// the person's apps and agents: a member, one year). Resolves to the

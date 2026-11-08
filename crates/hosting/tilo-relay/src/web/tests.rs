@@ -94,7 +94,7 @@ fn web_of(relay: &Relay, host: &Host) -> Web {
         workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: Arc::new(envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
+            envelopes::Record::Profile,
             relay.state_root().join("profiles"),
         )),
         here: Arc::new(here::Here::new(None)),

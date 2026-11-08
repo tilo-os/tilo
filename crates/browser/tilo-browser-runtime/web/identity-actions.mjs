@@ -47,7 +47,7 @@
 import {forInvites, openInvites} from './pairing.mjs';
 import {
   fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, publishEnvelope, publishProfile, signInWithPasskey,
-} from './root-identity.mjs';
+} from './identity.mjs';
 
 export const KEEP = Object.freeze({id: 'keep-identity', title: 'Keep your name and work',
   subtitle: 'Add a passkey, so you come back as yourself on any browser', source: 'identity'});

@@ -1,6 +1,6 @@
 //! A company's workspace on its node, end to end. The founder has only a
 //! browser: headless Chrome (a virtual authenticator with PRF) creates their
-//! root behind a passkey with the production `root-identity.mjs`. A node is
+//! root behind a passkey with the production `identity.mjs`. A node is
 //! provisioned with a device key and an install token and no certificate;
 //! the root certifies it and the page installs the certificate through the
 //! node's install route, as `tilo-relay run --web … --install-token-file`
@@ -148,10 +148,11 @@ fn holds(dir: &Path, needle: &[u8]) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_company_node_governs_and_seals_the_workspace_people_join() {
-    let driver = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/node_workspace/driver.mjs");
+    let driver =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/page-driver.mjs");
     let mut browser = tokio::process::Command::new("node")
         .arg(driver)
+        .arg("node")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)

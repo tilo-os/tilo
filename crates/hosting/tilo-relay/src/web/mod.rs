@@ -337,7 +337,7 @@ impl Relay {
             workspaces: self.workspaces().cloned(),
             envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
             profiles: Arc::new(envelopes::Envelopes::of(
-                envelopes::Kind::Profile,
+                envelopes::Record::Profile,
                 self.state_root().join("profiles"),
             )),
             here: Arc::new(here::Here::new(here::from_env())),

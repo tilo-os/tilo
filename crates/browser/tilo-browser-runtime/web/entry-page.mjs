@@ -29,7 +29,7 @@ import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
-import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';
+import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';

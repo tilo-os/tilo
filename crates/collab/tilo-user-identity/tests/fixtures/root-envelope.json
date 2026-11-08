@@ -1,5 +1,5 @@
 {
-  "comment": "A root envelope made by root-identity.mjs (fake authenticator, seed 7); never regenerate: it guards that stored envelopes keep opening.",
+  "comment": "A root envelope a page made with WebCrypto (fake authenticator, seed 7); never regenerate: it guards that stored envelopes keep opening.",
   "envelope": {
     "version": 1,
     "root_public_key": "f67dd74f51a91f9d3c7645084e12beeca9a23f279e5634dc543abf5d6fb401db",

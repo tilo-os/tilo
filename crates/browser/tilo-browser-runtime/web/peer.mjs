@@ -17,7 +17,7 @@
  *
  * The page holds one device key (`device-custody.mjs`): each tab is a
  * device of its own, with its own key, certificate and state. A page that also
- * holds the user root (`root-identity.mjs`, `options.identity`) certifies
+ * holds the user root (`identity.mjs`, `options.identity`) certifies
  * that key itself instead of waiting for an approver.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
@@ -33,13 +33,13 @@ import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
+import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
   installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishEnvelope, publishProfile, signInWithPasskey, storagePersisted, unlockIdentity,
-} from './root-identity.mjs';
+} from './identity.mjs';
 // The workspaces a page can open, for hosts of this module (Tilo Cloud) that
 // import only the peer.
 export {joinViaHost, listedWorkspaces, workspaceAt} from './workspaces.mjs';
@@ -377,7 +377,7 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
  * @param options.live           `false`: join no live plane
  * @param options.onPairingCode  shown while an approver decides
- * @param options.identity       an unlocked root (`root-identity.mjs`): the
+ * @param options.identity       an unlocked root (`identity.mjs`): the
  *                               page certifies its own device with it, no
  *                               approver; `userPublicKey` defaults to its key,
  *                               `profile` to one per identity and `custody` to
