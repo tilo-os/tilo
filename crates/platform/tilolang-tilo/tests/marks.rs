@@ -246,6 +246,7 @@ fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
 fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
     let Tidied { ada, .. } = a_run_in_notes_and_tasks();
     let mut inbox = ada.view(crate::legibility::TASKS_APP);
+    crate::tasks::go_to(&mut inbox, "Inbox");
     inbox.poll_patches().unwrap();
     let removed = removed_rows(inbox.tree());
     assert_eq!(removed.len(), 1, "{removed:?}");
@@ -274,6 +275,7 @@ fn a_list_built_over_the_record_shows_what_left_it() {
         "the indexes are built whole"
     );
     let mut inbox = fresh.open_main(crate::legibility::TASKS_APP).unwrap();
+    crate::tasks::go_to(&mut inbox, "Inbox");
     inbox.poll_patches().unwrap();
     let removed = removed_rows(inbox.tree());
     assert_eq!(removed.len(), 1, "{removed:?}");

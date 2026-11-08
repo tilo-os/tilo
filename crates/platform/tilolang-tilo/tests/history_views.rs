@@ -1183,6 +1183,8 @@ fn a_command_over_many_chosen_tasks_is_one_change_its_undo_takes_back() {
     ada.commit();
     let before = field(&ada, TASKS_APP, &six[0], "Task", "due");
     let mut window = ada.host.open_resource(&root, None).unwrap();
+    // The window opens on Today, where an undated task is not: the six wait in the Inbox.
+    crate::tasks::go_to(&mut window, "Inbox");
     let list = nodes(window.tree())
         .into_iter()
         .find(|node| node.kind == "ui.VirtualList")
