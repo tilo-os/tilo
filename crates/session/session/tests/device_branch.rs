@@ -148,6 +148,7 @@ fn excerpt(device: &Device) -> String {
                 "admit",
                 "enter",
                 "ERROR",
+                "desktop",
             ]
             .iter()
             .any(|word| line.contains(word))
@@ -246,11 +247,6 @@ fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
 /// What either opens on the workspace's sealed desk the other shows, before
 /// and after both restart.
 #[test]
-#[ignore = "the site keeps none of the copy's desk writes yet: after the site admits the \
-            copy as Ada's device, the copy's window stays on its own desk and never \
-            reaches the site within the hang bound; and the laptop's first desk write \
-            after its restart is refused by the site as a duplicate change (`duplicate \
-            seq 1` for its own actor)"]
 fn a_machine_copied_from_a_device_and_its_source_read_each_others_edits() {
     let (site, _ada, mut laptop, mut copy) = laptop_and_its_copy();
     // What the copy opens the source shows, and what the source opens the
@@ -270,4 +266,26 @@ fn a_machine_copied_from_a_device_and_its_source_read_each_others_edits() {
     wait_shown(&site, &[&copy, &laptop], "The copy again");
     let _laptop_again = laptop.window(NOTES, "The laptop again");
     wait_shown(&site, &[&laptop, &copy], "The laptop again");
+}
+
+/// One device, no copy: what it opens on the workspace's desk after a
+/// restart continues what it wrote before, and the site keeps it.
+#[test]
+fn a_device_restarted_keeps_writing_the_workspace_desk() {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
+    let mut laptop = ada.device("Ada's laptop");
+    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    laptop.join(&hers);
+    laptop.wait_holding(&site.workspace);
+    show(&laptop, &site);
+    {
+        let _before = laptop.window(NOTES, "Before the restart");
+        wait_shown(&site, &[&laptop], "Before the restart");
+    }
+    laptop.stop();
+    start(&mut laptop, &site);
+    let _after = laptop.window(NOTES, "After the restart");
+    wait_shown(&site, &[&laptop], "After the restart");
 }

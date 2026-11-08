@@ -109,12 +109,16 @@ impl NativeWorkspaceOwner {
             // An enrollment of another device is the one this machine was
             // copied from: never this device's to act with, so the membership
             // its host answered for this device takes its place.
-            if held.enrollment.is_some()
-                && held.device.device_public_key == device.device_public_key
-            {
+            let this_device = held.device.device_public_key == device.device_public_key;
+            if held.enrollment.is_some() && this_device {
                 return Err("the workspace is held through an enrollment".into());
             }
-            if held.workspace_host == answer.host && held.workspace_id == workspace_id {
+            // The same host keeps what it admitted for this device; a record
+            // another device held is replaced whatever its host.
+            if this_device
+                && held.workspace_host == answer.host
+                && held.workspace_id == workspace_id
+            {
                 return Ok(false);
             }
         }
@@ -190,12 +194,16 @@ impl NativeWorkspaceOwner {
             // An enrollment of another device is the one this machine was
             // copied from: never this device's to act with, so the membership
             // its host answered for this device takes its place.
-            if held.enrollment.is_some()
-                && held.device.device_public_key == device.device_public_key
-            {
+            let this_device = held.device.device_public_key == device.device_public_key;
+            if held.enrollment.is_some() && this_device {
                 return Err("the workspace is held through an enrollment".into());
             }
-            if held.workspace_host == bootstrap.host && held.workspace_id == workspace_id {
+            // The same host keeps what it admitted for this device; a record
+            // another device held is replaced whatever its host.
+            if this_device
+                && held.workspace_host == bootstrap.host
+                && held.workspace_id == workspace_id
+            {
                 return Ok(false);
             }
         }
