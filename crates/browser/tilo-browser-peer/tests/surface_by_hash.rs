@@ -30,7 +30,7 @@ use collab_types::{
     document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{PeerEvent, PeerHandle};
 use tilo_relay::workspaces::WorkspaceContent;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
@@ -237,7 +237,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     // The page joins: it asks for the note's channel though it holds the
     // note's first write, undecided, and the laptop admits it.
     let page = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),

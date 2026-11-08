@@ -59,13 +59,8 @@ impl Pictures {
                 let bytes = blob_bytes(hash);
                 if bytes.is_none() {
                     // A content address this window cannot read is a card that keeps its
-                    // placeholder: say which address failed and whether this process holds a
-                    // content store at all, so the seam is read rather than guessed.
-                    tracing::debug!(
-                        %hash,
-                        holds_a_store = crate::content::device().is_some(),
-                        "a window read a content address it does not hold"
-                    );
+                    // placeholder: say which address failed.
+                    tracing::debug!(%hash, "a window read a content address it does not hold");
                 }
                 return bytes;
             }

@@ -11,7 +11,7 @@
 
 use collab_types::presence::{
     Availability, CallPresence, DESKTOP_APP, Payload, PointerSpace, Presence, PresenceKey,
-    ShellPresence,
+    ShellPresence, ShownWave as Wave,
 };
 
 use super::place::{Placed, Tile, tile};
@@ -57,15 +57,6 @@ pub struct Call {
     pub camera: bool,
     /// This device shares its screen in the call.
     pub screen: bool,
-}
-
-/// A wave: the count it carries, and the member it is for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Wave {
-    /// A new count is a new wave; the same one restated is the same wave.
-    pub seq: u32,
-    /// The member's publisher, as hex.
-    pub target: String,
 }
 
 /// What one device says of itself here.
@@ -318,6 +309,20 @@ impl Board {
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// What this device last said here: what a surface draws for the seat
+    /// the board is driven at, which never comes back from the wire.
+    #[must_use]
+    pub const fn own(&self) -> &Own {
+        &self.own
+    }
+
+    /// Take `own` as already known here, without saying it: a device whose
+    /// identity it keeps itself says it before its first word.
+    pub fn seed(&mut self, own: Own) {
+        self.said = own.clone();
+        self.own = own;
     }
 
     /// Say `own`: what changed since the last word is queued, to leave under
@@ -633,6 +638,13 @@ impl Board {
             self.revision = self.revision.wrapping_add(1);
         }
         changed
+    }
+
+    /// Take one member's frame as the presence track carried it: the body is
+    /// opened here, so a host never keeps a second copy of the wire's shape.
+    /// Whether what is known here changed.
+    pub fn heard(&mut self, from: Device, body: &[u8], now_ms: f64) -> bool {
+        super::decode(body).is_some_and(|frame| self.hear(from, &frame, now_ms))
     }
 
     /// The roster's word on `from`: a certificate this device verified named

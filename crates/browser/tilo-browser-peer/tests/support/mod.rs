@@ -170,6 +170,29 @@ pub async fn start_host_limiting(
             guests,
             limits,
             fetch_proxy: None,
+            ..HostSettings::default()
+        },
+    )
+    .await
+}
+
+/// A host that keeps its iroh address across a restart: it listens for iroh
+/// where `iroh_listen` names.
+pub async fn start_host_at(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    web_listen: SocketAddr,
+    iroh_listen: SocketAddr,
+) -> TestHost {
+    start_host_serving(
+        root,
+        host,
+        state,
+        web_listen,
+        HostSettings {
+            iroh_listen: Some(iroh_listen),
+            ..HostSettings::default()
         },
     )
     .await
@@ -180,6 +203,9 @@ pub async fn start_host_limiting(
 pub struct HostSettings<'a> {
     /// Plain HTTP too, here.
     pub plain_listen: Option<SocketAddr>,
+    /// Where its iroh endpoint listens; ephemeral unless a restarted host
+    /// must keep its address.
+    pub iroh_listen: Option<SocketAddr>,
     /// People (user roots) its operator trust policy lets connect.
     pub guests: &'a [[u8; 32]],
     /// The change and content budgets workspace guests are held to.
@@ -198,6 +224,7 @@ pub async fn start_host_serving(
 ) -> TestHost {
     let HostSettings {
         plain_listen,
+        iroh_listen,
         guests,
         limits,
         fetch_proxy,
@@ -208,6 +235,9 @@ pub async fn start_host_serving(
         member_limits: limits,
         ..Default::default()
     };
+    if let Some(iroh_listen) = iroh_listen {
+        cfg.iroh_listen = iroh_listen;
+    }
     if !guests.is_empty() {
         cfg.trust_policy = tilo_relay::TrustPolicy::AllowList {
             users: guests.iter().map(hex::encode).collect(),
@@ -234,8 +264,6 @@ pub async fn start_host_serving(
             allowed_origins: Vec::new(),
             plain_listen,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
-            country: None,
             fetch_proxy,
         })
         .await
@@ -278,8 +306,6 @@ pub async fn start_workspace_host(
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
-            country: None,
             fetch_proxy: None,
         })
         .await
@@ -293,11 +319,9 @@ impl TestHost {
         https::DevHttps::new(self.web.addr, self.web.certificate_sha256.as_ref().unwrap())
     }
 
+    /// The host as a session reaches it: its iroh endpoint.
     pub fn iroh(&self) -> Host {
-        Host::Iroh {
-            addr: self.relay.node_addr(),
-            relay_url: None,
-        }
+        Host::at(self.relay.node_addr())
     }
 }
 
@@ -396,7 +420,6 @@ pub fn start_peer_with_store(
             cert,
             host_cert,
             revocations: RevocationList::new(),
-            background: false,
         },
         Arc::new(key),
         store,
@@ -434,7 +457,6 @@ pub fn start_page(
             cert,
             host_cert,
             revocations: RevocationList::new(),
-            background: false,
         },
         Arc::new(PageCustody(key)),
         store,
@@ -470,52 +492,6 @@ pub fn route() -> DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: WORKSPACE.into(),
         record: "note-1".into(),
-    }
-}
-
-/// An HTTPS client that counts the `/events` answers the host sent.
-pub struct Recording {
-    pub inner: Arc<https::DevHttps>,
-    /// Largest single answer.
-    pub largest_page: Arc<std::sync::atomic::AtomicUsize>,
-    /// Every answer's bytes together.
-    pub total: Arc<std::sync::atomic::AtomicUsize>,
-    /// Sessions the client opened.
-    pub sessions: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl Recording {
-    pub fn new(inner: Arc<https::DevHttps>) -> Arc<Self> {
-        Arc::new(Self {
-            inner,
-            largest_page: Arc::default(),
-            total: Arc::default(),
-            sessions: Arc::default(),
-        })
-    }
-}
-
-impl tilo_browser_peer::HttpClient for Recording {
-    fn post(
-        &self,
-        path: &str,
-        session: Option<&str>,
-        body: Vec<u8>,
-    ) -> tilo_browser_peer::HttpFuture<'_> {
-        use std::sync::atomic::Ordering;
-        let events = path.ends_with("/events");
-        if path.ends_with("/session/finish") {
-            self.sessions.fetch_add(1, Ordering::Relaxed);
-        }
-        let answer = self.inner.post(path, session, body);
-        Box::pin(async move {
-            let answer = answer.await;
-            if events && let Ok((_, bytes)) = &answer {
-                self.largest_page.fetch_max(bytes.len(), Ordering::Relaxed);
-                self.total.fetch_add(bytes.len(), Ordering::Relaxed);
-            }
-            answer
-        })
     }
 }
 
@@ -617,12 +593,7 @@ pub async fn enter(
     workspace_id: u64,
 ) -> PeerHandle {
     redeem(host, door, cert, key).await;
-    let peer = start_peer(
-        Host::Https(host.https()),
-        cert.clone(),
-        host_cert.clone(),
-        key.clone(),
-    );
+    let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
     peer.join(workspace_id).unwrap();
     in_workspace(&peer, workspace_id).await;
     peer
@@ -641,4 +612,25 @@ fn random_bytes() -> [u8; 32] {
     let mut bytes = [0; 32];
     getrandom::fill(&mut bytes).unwrap();
     bytes
+}
+
+/// [`host_info`] on a runtime of its own, for a test that reads the host's
+/// certificate from outside an async context (a fixture that starts a real
+/// service in `Lounge`'s place).
+pub fn host_info_blocking(client: &dyn tilo_browser_peer::HttpClient) -> DeviceCert {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime to read the host's certificate");
+    runtime
+        .block_on(tilo_browser_peer::host_info(client))
+        .expect("the host's certificate")
+        .host_cert
+}
+
+/// [`ready`], blocking the calling thread, for a step that runs inside a
+/// fixture's synchronous setup: the caller must be on a multi-thread runtime,
+/// where blocking one worker leaves the others driving the sessions.
+pub fn ready_blocking(peers: &[&PeerHandle]) {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(ready(peers)));
 }

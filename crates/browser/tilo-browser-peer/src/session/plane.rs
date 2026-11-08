@@ -21,15 +21,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-#[cfg(feature = "iroh")]
 use tilo_live::plane::Join;
 use tilo_live::plane::Plane;
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-#[cfg(feature = "iroh")]
-use super::Host;
 use super::{Command, PeerEvent, Task, lock};
 use crate::ChannelContentKeys;
 
@@ -266,7 +263,6 @@ impl Planes {
 /// so a page-shaped peer reaches the same plane a browser reaches over
 /// WebTransport: it seals and opens as itself, under the workspace scope's
 /// keys, and the serving device copies bytes it cannot open.
-#[cfg(feature = "iroh")]
 pub(crate) struct NativeJoin {
     /// The endpoint this device dials from.
     pub endpoint: iroh::Endpoint,
@@ -291,7 +287,6 @@ pub(crate) struct NativeJoin {
     pub members: BTreeSet<[u8; 32]>,
 }
 
-#[cfg(feature = "iroh")]
 pub(crate) fn join_native(join: NativeJoin) {
     let NativeJoin {
         endpoint,
@@ -332,7 +327,6 @@ pub(crate) fn join_native(join: NativeJoin) {
 
 /// The join itself: the grant this device presents, then the plane on the
 /// serving device's carrier.
-#[cfg(feature = "iroh")]
 async fn native(
     endpoint: &iroh::Endpoint,
     host: iroh_base::EndpointAddr,
@@ -431,7 +425,6 @@ impl Task {
     /// ([`route`]'s channel keys, the devices its governance admits),
     /// joined again after a reconnect, and dropped when the page leaves the
     /// workspace.
-    #[cfg(feature = "iroh")]
     pub(super) fn settle_planes(&mut self) {
         let Some((endpoint, delegation)) = self.dial.plane() else {
             return;
@@ -494,10 +487,10 @@ impl Task {
             // reached it.
             let (addr, relay_url) = match self.replicas.host_endpoint(workspace_id) {
                 Some(named) => named,
-                None => match &self.config.host {
-                    Host::Iroh { addr, relay_url } => (addr.clone(), relay_url.clone()),
-                    Host::Https(_) => continue,
-                },
+                None => (
+                    self.config.host.addr.clone(),
+                    self.config.host.relay_url.clone(),
+                ),
             };
             let host = match relay_url {
                 Some(url) => addr.with_relay_url(url),
@@ -517,10 +510,6 @@ impl Task {
             });
         }
     }
-
-    /// A build without iroh dials no plane: nothing to settle.
-    #[cfg(not(feature = "iroh"))]
-    pub(super) const fn settle_planes(&self) {}
 
     /// The answer to this page's ask for `workspace_id`'s plane.
     pub(super) fn plane_joined(&mut self, workspace_id: u64, joined: Result<Arc<Plane>, Failed>) {

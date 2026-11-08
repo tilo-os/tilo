@@ -23,7 +23,7 @@ tilo_automerge_isolate::test_worker!();
 use std::time::{Duration, Instant};
 
 use collab_types::DocumentMutation;
-use tilo_browser_peer::{Host, PeerEvent};
+use tilo_browser_peer::PeerEvent;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer, wait_for};
@@ -47,7 +47,7 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
     let _laptop = participant::Participant::start(&host.relay, &root).await;
     let page = |device: &support::Device| {
         start_peer(
-            Host::Https(host.https()),
+            host.iroh(),
             device.cert.clone(),
             host_device.cert.clone(),
             device.key.clone(),

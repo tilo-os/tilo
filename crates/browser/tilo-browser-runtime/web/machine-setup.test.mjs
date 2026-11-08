@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {installSecret, readInstallSecret, setUpFailure, setUpMachine} from './machine-setup.mjs';
-import {hex, unhex} from './root-identity.mjs';
 
 const TOKEN = 'provisioned-install-token-0123';
 const person = {userPublicKey: 'aa'.repeat(32), sign: async () => new Uint8Array(64), locked: false};
@@ -9,22 +8,20 @@ const person = {userPublicKey: 'aa'.repeat(32), sign: async () => new Uint8Array
 const runtime = {
   issueDeviceCert: async (_, key, label, role) => JSON.stringify({key, role}),
   deviceCertCanonical: json => new TextEncoder().encode(json),
+  nodeSessionVouched: () => true,
 };
 
 /** A node waiting for its owner, as `tilo-relay`'s install route answers;
  * once installed it serves as a host, which has no install route. */
 async function waitingNode({owner = person.userPublicKey} = {}) {
-  const keys = await crypto.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']);
-  const nodeKey = hex(new Uint8Array(await crypto.subtle.exportKey('raw', keys.publicKey)));
+  const nodeKey = 'ef'.repeat(32);
   const session = 'cd'.repeat(32);
-  const vouch = new Uint8Array([...new TextEncoder().encode('tilo node session v1\0'), ...unhex(nodeKey), ...unhex(session)]);
-  const signature = hex(new Uint8Array(await crypto.subtle.sign({name: 'Ed25519'}, keys.privateKey, vouch)));
   let installed = false;
   const fetch = async (_url, init) => {
     const answer = (status, body) => ({status, text: async () => (typeof body === 'string' ? body : JSON.stringify(body))});
     if (installed) return answer(405, 'POST only');
     if (init.headers['x-tilo-install-token'] !== TOKEN) return answer(403, 'wrong install token');
-    if (init.method === 'GET') return answer(200, {device_public_key: nodeKey, session: {device_public_key: session, signature}});
+    if (init.method === 'GET') return answer(200, {device_public_key: nodeKey, session: {device_public_key: session, signature: 'ee'}});
     installed = true;
     return answer(200, {device_public_key: nodeKey, user_public_key: owner});
   };

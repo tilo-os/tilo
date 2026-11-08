@@ -454,6 +454,12 @@ impl Widget for EditableLabel {
 
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
+    fn own_page_title(&self) -> Option<String> {
+        (self.role.heading_level() == Some(1))
+            .then(|| self.value.trim().to_owned())
+            .filter(|shown| !shown.is_empty())
+    }
+
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.follow();
     }

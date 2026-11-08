@@ -18,13 +18,11 @@ mod support;
 // Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
-use std::sync::atomic::Ordering;
-
 use collab_types::DocumentMutation;
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle, PeerSnapshot};
+use tilo_browser_peer::{PeerEvent, PeerHandle, PeerSnapshot};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{Recording, enrol, ready, route, start_host, start_peer, wait_for};
+use support::{enrol, ready, route, start_host, start_peer, wait_for};
 
 fn documents(peer: &PeerHandle) -> Vec<DocumentMutation> {
     peer.drain()
@@ -98,15 +96,13 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     let listen = host.web.addr;
 
     let author = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         author.cert,
         host_device.cert.clone(),
         author.key,
     );
-    let recording = Recording::new(host.https());
-    let traffic = recording.total.clone();
     let observer = start_peer(
-        Host::Https(recording),
+        host.iroh(),
         observer.cert,
         host_device.cert.clone(),
         observer.key,
@@ -132,10 +128,8 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     assert_eq!(receive(&observer, HISTORY + 1).await.len(), HISTORY + 1);
 
     // A new session: nothing retained is replayed.
-    let before = traffic.load(Ordering::Relaxed);
     observer.reconnect().unwrap();
     resumed(&observer).await;
-    let resume_bytes = traffic.load(Ordering::Relaxed) - before;
     let replayed = before_marker(&observer, &author, b"after").await;
     assert!(replayed.is_empty(), "replayed {} documents", replayed.len());
 
@@ -167,19 +161,8 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
 
     // A peer without a position (a fresh page) still gets everything.
     let fresh = enrol(&root, "tablet", DeviceCapabilities::member());
-    let recording = Recording::new(host.https());
-    let full_replay = recording.total.clone();
-    let fresh = start_peer(
-        Host::Https(recording),
-        fresh.cert,
-        host_device.cert.clone(),
-        fresh.key,
-    );
+    let fresh = start_peer(host.iroh(), fresh.cert, host_device.cert.clone(), fresh.key);
     fresh.join_placed(support::WORKSPACE, "Workspace").unwrap();
     fresh.open_route(route()).unwrap();
     assert_eq!(receive(&fresh, HISTORY + 4).await.len(), HISTORY + 4);
-    eprintln!(
-        "reconnect: {resume_bytes} bytes of /events resuming, {} bytes replaying the history",
-        full_replay.load(Ordering::Relaxed)
-    );
 }

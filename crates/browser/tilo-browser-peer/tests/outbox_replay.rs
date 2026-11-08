@@ -23,11 +23,13 @@ use std::sync::Arc;
 
 use collab_types::DocumentMutation;
 use tilo_browser_peer::{
-    Host, MemoryPeerStore, PeerConfig, PeerHandle, PeerSnapshot, PeerStore, TransportPhase,
+    MemoryPeerStore, PeerConfig, PeerHandle, PeerSnapshot, PeerStore, TransportPhase,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{admitted, enrol, next_document, ready, route, start_host, start_peer, wait_for};
+use support::{
+    admitted, enrol, next_document, ready, route, start_host, start_host_at, start_peer, wait_for,
+};
 
 /// An edit published before the page holds its route's keys waits for
 /// them; a barrier called meanwhile waits with it until the host has made it
@@ -47,7 +49,7 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     .await;
     let _laptop = participant::Participant::start(&host.relay, &root).await;
     let peer = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),
@@ -83,25 +85,28 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
+    // The restarted host answers at the same web and iroh addresses, as a
+    // host that kept its place does.
+    let iroh_listen = "127.0.0.1:0".parse().unwrap();
+    let host = start_host_at(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        iroh_listen,
     )
     .await;
     let mut laptop = participant::Participant::start(&host.relay, &root).await;
     let listen = host.web.addr;
-    let https = host.https();
+    let iroh_listen = *host.relay.node_addr().ip_addrs().next().unwrap();
 
     let store = Arc::new(MemoryPeerStore::default());
     let peer = PeerHandle::start(
         PeerConfig {
-            host: Host::Https(https),
+            host: host.iroh(),
             cert: browser.cert.clone(),
             host_cert: host_device.cert.clone(),
             revocations: RevocationList::new(),
-            background: false,
         },
         Arc::new(browser.key.clone()),
         store.clone(),
@@ -134,7 +139,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         "pending"
     );
 
-    let host = start_host(&root, &host_device, state.path(), listen).await;
+    let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
     laptop.reconnect(&host.relay, &root).await;
     peer.reconnect().unwrap();
     let receipt = peer.barrier().unwrap();

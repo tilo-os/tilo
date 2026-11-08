@@ -282,6 +282,7 @@ pub(super) fn collect_inspection(
             focusable: false,
             rect: [0.0; 4],
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: None,
             children: vec![],
@@ -303,6 +304,7 @@ pub(super) fn collect_inspection(
         child_clip: widget
             .child_clip_rect()
             .map(|r| [r.x0, r.y0, r.width(), r.height()]),
+        page_title: widget.own_page_title(),
         layout: widget.layout_info(),
         semantics: widget
             .accessibility()

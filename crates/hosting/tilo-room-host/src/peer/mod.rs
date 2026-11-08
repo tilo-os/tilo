@@ -19,6 +19,7 @@ mod compaction;
 mod delivery;
 mod dispatch;
 mod fanout;
+mod fetch;
 mod hello;
 mod here;
 mod live;
@@ -73,6 +74,7 @@ use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
+pub use fetch::FetchGrants;
 use hello::handle_host_hello;
 pub use here::HereBoard;
 use here::handle_here;
@@ -208,6 +210,9 @@ pub struct PeerContext {
     /// What a device's session answers when it asks who is here; `None`
     /// keeps no such account.
     pub here: Option<Arc<dyn HereBoard>>,
+    /// The token a session takes for the host's fetch proxy, and gives back
+    /// when its connection ends; `None` serves no proxy.
+    pub fetch: Option<Arc<dyn FetchGrants>>,
 }
 
 /// Agent devices by device key: their verified delegation, or `None` once
@@ -259,6 +264,9 @@ struct SessionCtx<'a> {
     admin: Option<&'a crate::workspaces::Workspaces>,
     /// Who is here, as the host accounts for it; `None` keeps no such account.
     here: Option<&'a dyn HereBoard>,
+    /// The host's fetch proxy, which this session takes a token from; `None`
+    /// serves no proxy.
+    fetch: Option<&'a dyn FetchGrants>,
 }
 
 impl SessionCtx<'_> {

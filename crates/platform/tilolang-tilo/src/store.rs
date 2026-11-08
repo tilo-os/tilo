@@ -1565,45 +1565,31 @@ fn stamps_after(chunks: &Chunks, from: &Stamps) -> Stamps {
     now
 }
 
-/// The versions the changes of the chunks `moved` since their stamps `from` made: what an
-/// index stamped with those heads takes in. A change that wrote nothing but where the record
-/// places its resources (`$chunks`) made no version of one, and its message is not read.
+/// The versions the changes of the chunks `moved` since their stamps `from` made, and where they
+/// placed the items they placed: what an index stamped with those heads takes in, and what the
+/// items that left a collection are written from when the index never held them. A change that
+/// wrote nothing but where the record places its resources (`$chunks`) made no version of one
+/// and placed no item, and its message is not read. Each chunk's changes are walked once for
+/// both.
 fn ends_of_chunks(
     chunks: &Chunks,
     from: &Stamps,
     moved: &[ChunkNo],
     docs: &BTreeMap<DocId, (AppId, TypeId)>,
-) -> Ends {
+) -> (Ends, idx::reflect::Placed) {
     let mut ends = Ends::new();
-    for chunk in moved {
-        if let Some(doc) = chunks.mirror(*chunk) {
-            let since = doc
-                .committed_document()
-                .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
-            ends.extend(idx::reflect::ends_of(
-                crate::reads::naming(&since, doc),
-                doc,
-                docs,
-            ));
-        }
-    }
-    ends
-}
-
-/// Where the changes of the chunks `moved` since their stamps `from` placed the items they
-/// placed: what the items that left a collection are written from when the index never held
-/// them.
-fn placed_of_chunks(chunks: &Chunks, from: &Stamps, moved: &[ChunkNo]) -> idx::reflect::Placed {
     let mut placed = idx::reflect::Placed::new();
     for chunk in moved {
         if let Some(doc) = chunks.mirror(*chunk) {
             let since = doc
                 .committed_document()
                 .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
-            placed.extend(idx::reflect::placed_by(crate::reads::naming(&since, doc)));
+            let naming = crate::reads::naming(&since, doc);
+            ends.extend(idx::reflect::ends_of(naming.iter().copied(), doc, docs));
+            placed.extend(idx::reflect::placed_by(naming));
         }
     }
-    placed
+    (ends, placed)
 }
 
 impl Inner {
@@ -1732,8 +1718,7 @@ impl Inner {
                         })
                         .map(|(chunk, _)| chunk)
                         .collect();
-                    own = ends_of_chunks(&self.chunks, &held.heads, &moved, docs);
-                    own_placed = placed_of_chunks(&self.chunks, &held.heads, &moved);
+                    (own, own_placed) = ends_of_chunks(&self.chunks, &held.heads, &moved, docs);
                     (&own, &own_placed)
                 }
             };

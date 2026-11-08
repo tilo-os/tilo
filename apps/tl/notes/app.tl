@@ -103,7 +103,7 @@ view note_row(n: Note) {
 /// body, and what happened to it.
 view note_editor(n: Note) {
     std.document(n) {
-        ui.TextInput(value: n.title, placeholder: "Untitled")
+        ui.TextInput(value: n.title, placeholder: "Untitled", title: true)
         if not n.tags.is_empty() {
             row(gap: .related, wrap: true) {
                 for t in n.tags {

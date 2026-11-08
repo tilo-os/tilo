@@ -1,27 +1,16 @@
-//! The HTTPS carrier to a host: the durable plane and certification for a
-//! browser page (through its `fetch`), and for a native device reaching a
-//! host that publishes no iroh address (`tilo_relay_session::RelayClient`
-//! over this link).
+//! What a page asks a host before it holds a session, over HTTPS through its
+//! `fetch`: the host's certificate and address, a member's approval of their
+//! own device, and joining a workspace.
 //!
-//! A [`HttpsLink`] is the same session an iroh peer has: the
-//! [`auth`] challenge (the device signs only the
-//! host's challenge digest), then [`Envelope`]s out through batched `/send`
-//! and in through the long-polled `/events`, acknowledged by host cursor.
+//! Everything after that is the session, over iroh
+//! (`tilo_relay_session::RelayClient`).
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
-use crate::DeviceSigner;
-use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::auth::{self, AuthError, Hello, HelloAck2};
-use tilo_relay_protocol::certify::CertifyReply;
-use tilo_relay_protocol::web::{
-    API_PREFIX, EventsPage, EventsRequest, FEATURE_RESUME, MAX_POLL_MS, MAX_REQUEST_BYTES,
-    SessionChallenge, SessionFinish, SessionRefusal, decode_grant,
-};
-use tilo_user_identity::{CertificationRequest, DeviceCert, RevocationList};
-use tokio::sync::{mpsc, watch};
+use tilo_relay_protocol::web::API_PREFIX;
+
+use crate::LinkError;
 
 /// A pending HTTP answer: status and body.
 #[cfg(not(target_family = "wasm"))]
@@ -33,46 +22,8 @@ pub type HttpFuture<'a> = Pin<Box<dyn Future<Output = Result<(u16, Vec<u8>), Str
 /// `POST` to the host origin. The page implements it with `fetch`; native
 /// peers and tests with a Rust client. `Err` means the host was not reached.
 pub trait HttpClient: crate::MaybeSendSync {
-    /// Post `body` to `path` (below the host origin), with the session token
-    /// header when `session` is set.
-    fn post(&self, path: &str, session: Option<&str>, body: Vec<u8>) -> HttpFuture<'_>;
-}
-
-/// Why a link or request failed.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum LinkError {
-    /// The host was not reached, or answered with a server error.
-    #[error("host unavailable: {0}")]
-    Unavailable(String),
-    /// The host refused this device, giving no reason the device can act
-    /// on (a route's `401`/`403` text).
-    #[error("host refused: {0}")]
-    Refused(String),
-    /// The host turned the session handshake away, for this reason.
-    #[error("host refused the session: {0:?}")]
-    Denied(SessionRefusal),
-    /// Another host answers here than the one this device pinned: the
-    /// host was set up again.
-    #[error("host is not the pinned device")]
-    HostChanged,
-    /// A body did not decode: something between here and the host (a
-    /// proxy's error page), or a host speaking another version, answered.
-    #[error("malformed answer: {0}")]
-    Malformed(String),
-    /// The signer failed.
-    #[error("signer: {0}")]
-    Sign(String),
-    /// The host speaks peer protocol `theirs`, not this device's: they do
-    /// not sync until the one behind has updated
-    /// (docs/architecture/compatibility.md).
-    #[error(
-        "the host speaks peer protocol {theirs}, this device {}",
-        tilo_relay_protocol::auth::PEER_PROTOCOL_VERSION
-    )]
-    PeerVersion {
-        /// The host's version.
-        theirs: u32,
-    },
+    /// Post `body` to `path` (below the host origin).
+    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_>;
 }
 
 fn path(route: &str) -> String {
@@ -82,21 +33,19 @@ fn path(route: &str) -> String {
 async fn call<T: serde::de::DeserializeOwned>(
     client: &dyn HttpClient,
     route: &str,
-    session: Option<&str>,
     body: Vec<u8>,
 ) -> Result<T, LinkError> {
-    let bytes = call_raw(client, route, session, body).await?;
+    let bytes = call_raw(client, route, body).await?;
     postcard::from_bytes(&bytes).map_err(|error| LinkError::Malformed(error.to_string()))
 }
 
 async fn call_raw(
     client: &dyn HttpClient,
     route: &str,
-    session: Option<&str>,
     body: Vec<u8>,
 ) -> Result<Vec<u8>, LinkError> {
     let (status, bytes) = client
-        .post(&path(route), session, body)
+        .post(&path(route), body)
         .await
         .map_err(LinkError::Unavailable)?;
     match status {
@@ -104,45 +53,6 @@ async fn call_raw(
         401 | 403 => Err(LinkError::Refused(
             String::from_utf8_lossy(&bytes).into_owned(),
         )),
-        _ => Err(LinkError::Unavailable(format!("status {status}"))),
-    }
-}
-
-/// The handshake route a session starts on, with this device's hello.
-const HELLO_ROUTE: &str = "/session";
-
-/// A handshake route: its `403` carries the host's [`SessionRefusal`]. Any
-/// other refusal, or one whose body is no refusal, came from something in
-/// front of the host (a proxy, a captive portal), which says nothing about
-/// this device: that is reachability.
-async fn handshake_raw(
-    client: &dyn HttpClient,
-    route: &str,
-    body: Vec<u8>,
-) -> Result<Vec<u8>, LinkError> {
-    let (status, bytes) = client
-        .post(&path(route), None, body)
-        .await
-        .map_err(LinkError::Unavailable)?;
-    match status {
-        200 => Ok(bytes),
-        403 => match postcard::from_bytes::<SessionRefusal>(&bytes) {
-            Ok(refusal) => Err(LinkError::Denied(refusal)),
-            Err(_) => Err(LinkError::Unavailable(
-                "status 403 with no reason from the host".into(),
-            )),
-        },
-        // The host's answer to a hello at another version: its own.
-        409 => match postcard::take_from_bytes::<u32>(&bytes) {
-            Ok((theirs, _)) => Err(LinkError::PeerVersion { theirs }),
-            Err(_) => Err(LinkError::Unavailable("status 409".into())),
-        },
-        // A host at any version reads a hello's leading version, so one that
-        // cannot read this device's hello at all predates versioned
-        // handshakes: it is behind, and has to update before they sync.
-        400 if route == HELLO_ROUTE => Err(LinkError::PeerVersion {
-            theirs: tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL,
-        }),
         _ => Err(LinkError::Unavailable(format!("status {status}"))),
     }
 }
@@ -155,16 +65,7 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, LinkError> {
 pub async fn host_info(
     client: &dyn HttpClient,
 ) -> Result<tilo_relay_protocol::web::HostInfo, LinkError> {
-    call(client, "/host", None, Vec::new()).await
-}
-
-/// Ask the host to queue `request` for its root holder. Returns the pairing
-/// code, or the final answer when the host refused at once.
-pub async fn certify_request(
-    client: &dyn HttpClient,
-    request: &CertificationRequest,
-) -> Result<CertifyReply, LinkError> {
-    call(client, "/certify", None, encode(request)?).await
+    call(client, "/host", Vec::new()).await
 }
 
 /// Send a member's root-signed approver command (their pending device
@@ -173,396 +74,13 @@ pub async fn certify_approve(
     client: &dyn HttpClient,
     approval: &tilo_relay_protocol::certify::MemberApproval,
 ) -> Result<tilo_relay_protocol::certify::ApproverReply, LinkError> {
-    call(client, "/certify/approve", None, encode(approval)?).await
+    call(client, "/certify/approve", encode(approval)?).await
 }
 
-/// Long-poll the answer to a queued request. `Pending` means poll again.
-pub async fn certify_wait(
-    client: &dyn HttpClient,
-    digest: [u8; 32],
-) -> Result<CertifyReply, LinkError> {
-    call(client, "/certify/wait", None, encode(&digest)?).await
-}
-
-/// Post this person's own recent semantic actions in `request.workspace_id`
-/// and get everyone's "who is here and what are they doing" line back.
-///
-/// # Errors
-///
-/// Returns [`LinkError::Refused`] when this device is not admitted there.
-pub async fn here(
-    client: &dyn HttpClient,
-    session: &str,
-    request: &tilo_relay_protocol::web::HereRequest,
-) -> Result<tilo_relay_protocol::web::HereReply, LinkError> {
-    call(
-        client,
-        tilo_relay_protocol::web::HERE_PATH,
-        Some(session),
-        encode(request)?,
-    )
-    .await
-}
-
-/// Administer the host's workspaces as this session's device (`/rooms`).
-pub async fn workspaces(
-    client: &dyn HttpClient,
-    session: &str,
-    request: &tilo_relay_protocol::workspaces::WorkspacesRequest,
-) -> Result<tilo_relay_protocol::workspaces::WorkspacesReply, LinkError> {
-    call(client, "/rooms", Some(session), encode(request)?).await
-}
-
-/// What the node runs beside the host (`/node`).
-pub async fn node(
-    client: &dyn HttpClient,
-    session: &str,
-) -> Result<tilo_relay_protocol::web::NodeInfo, LinkError> {
-    call(client, "/node", Some(session), Vec::new()).await
-}
-
-/// One step of joining a room with no session (`/join`).
+/// One step of joining a workspace with no session (`/join`).
 pub async fn join(
     client: &dyn HttpClient,
     step: &tilo_relay_protocol::workspaces::JoinStep,
 ) -> Result<tilo_relay_protocol::workspaces::JoinReply, LinkError> {
-    call(client, "/join", None, encode(step)?).await
-}
-
-/// An authenticated HTTPS session with the host.
-pub struct HttpsLink {
-    outbound: mpsc::UnboundedSender<Envelope>,
-    inbound: mpsc::Receiver<Envelope>,
-    session: String,
-    client: Arc<dyn HttpClient>,
-    end: watch::Sender<bool>,
-    features: u64,
-    host: auth::AuthenticatedPeer,
-    expires_at_ns: u64,
-}
-
-impl HttpsLink {
-    /// Run the handshake as the device behind `signer` and start the send
-    /// and poll pumps. The host must present `host_device`, certified under
-    /// any person's root.
-    pub async fn connect(
-        client: Arc<dyn HttpClient>,
-        cert: &DeviceCert,
-        host_device: [u8; 32],
-        revocations: &RevocationList,
-        signer: &dyn DeviceSigner,
-    ) -> Result<Self, LinkError> {
-        Self::connect_as(client, cert, host_device, revocations, signer, false).await
-    }
-
-    /// [`Self::connect`], as a background session when `background`: one a
-    /// page keeps beside the room it is in, which counts nobody online
-    /// ([`SessionFinish::background`]).
-    pub async fn connect_as(
-        client: Arc<dyn HttpClient>,
-        cert: &DeviceCert,
-        host_device: [u8; 32],
-        revocations: &RevocationList,
-        signer: &dyn DeviceSigner,
-        background: bool,
-    ) -> Result<Self, LinkError> {
-        let client_nonce: [u8; 32] = rand::random();
-        let challenge: SessionChallenge = postcard::from_bytes(
-            &handshake_raw(
-                client.as_ref(),
-                HELLO_ROUTE,
-                encode(&Hello::new(cert.clone(), client_nonce))?,
-            )
-            .await?,
-        )
-        .map_err(|error| LinkError::Malformed(error.to_string()))?;
-        // The host device is pinned, so it may be another person's: the
-        // host of a room this device was invited to.
-        let host = auth::verify_pinned_host_ack(
-            &challenge.ack,
-            revocations,
-            tilo_clock::unix_now_ns(),
-            &client_nonce,
-        )
-        .map_err(|error: AuthError| LinkError::Refused(error.to_string()))?;
-        if challenge.ack.cert.device_public_key != host_device {
-            return Err(LinkError::HostChanged);
-        }
-        let sig_over_server_nonce = signer
-            .sign(auth::client_challenge_digest(&challenge.ack.server_nonce).to_vec())
-            .await
-            .map_err(|error| LinkError::Sign(error.0))?;
-        let (grant, features) = decode_grant(
-            &handshake_raw(
-                client.as_ref(),
-                "/session/finish",
-                encode(&SessionFinish {
-                    handshake: challenge.handshake,
-                    ack2: HelloAck2 {
-                        sig_over_server_nonce,
-                    },
-                    background,
-                })?,
-            )
-            .await?,
-        )
-        .map_err(|error| LinkError::Malformed(error.to_string()))?;
-        let session = hex::encode(grant.token);
-        let expires_at_ns = grant.expires_at_ns;
-        let (outbound, outgoing) = mpsc::unbounded_channel();
-        let (incoming, inbound) = mpsc::channel(1024);
-        let (end, ended) = watch::channel(false);
-        n0_future::task::spawn(send_pump(
-            client.clone(),
-            session.clone(),
-            outgoing,
-            end.clone(),
-        ));
-        n0_future::task::spawn(poll_pump(
-            client.clone(),
-            session.clone(),
-            incoming,
-            ended,
-            end.clone(),
-        ));
-        Ok(Self {
-            outbound,
-            inbound,
-            session,
-            client,
-            end,
-            features,
-            host,
-            expires_at_ns,
-        })
-    }
-
-    /// When the host ends this session however active it is (Unix
-    /// nanoseconds): a device that starts its next session before then never
-    /// learns of the end from a refused poll.
-    pub fn expires_at_ns(&self) -> u64 {
-        self.expires_at_ns
-    }
-
-    /// Whether the host resumes subscriptions from positions
-    /// (`Envelope::SubscribeFrom`).
-    pub fn resumable(&self) -> bool {
-        self.features & FEATURE_RESUME != 0
-    }
-
-    /// Whether the host asks members to compact sealed routes
-    /// (`Envelope::CompactVolunteer`).
-    pub fn compacts(&self) -> bool {
-        self.features & tilo_relay_protocol::web::FEATURE_COMPACTION != 0
-    }
-
-    /// Whether the host governs calls in its rooms
-    /// (`Envelope::VoiceJoin`, see [`tilo_relay_protocol::voice`]).
-    pub fn voice(&self) -> bool {
-        self.features & tilo_relay_protocol::web::FEATURE_VOICE != 0
-    }
-
-    /// Whether the host administers rooms and redeems invitations for pages
-    /// (`/rooms`, `/join`).
-    pub fn workspaces(&self) -> bool {
-        self.features & tilo_relay_protocol::web::FEATURE_ROOMS != 0
-    }
-
-    /// Whether the host serves its members' pages a fetch proxy
-    /// ([`FETCH_PATH`](tilo_relay_protocol::web::FETCH_PATH)), which takes
-    /// this link's [`session`](Self::session).
-    pub fn fetch_proxy(&self) -> bool {
-        self.features & tilo_relay_protocol::web::FEATURE_FETCH_PROXY != 0
-    }
-
-    /// Queue one envelope for the host, in order.
-    pub fn send(&self, envelope: Envelope) -> Result<(), Box<Envelope>> {
-        if *self.end.borrow() {
-            return Err(Box::new(envelope));
-        }
-        self.outbound
-            .send(envelope)
-            .map_err(|error| Box::new(error.0))
-    }
-
-    /// The next envelope from the host; `None` once the link ended.
-    pub async fn recv(&mut self) -> Option<Envelope> {
-        self.inbound.recv().await
-    }
-
-    /// The host as the handshake verified it: the pinned device, and the
-    /// person whose root certified it.
-    pub fn host(&self) -> &auth::AuthenticatedPeer {
-        &self.host
-    }
-
-    /// The session token the routes after the handshake carry.
-    pub fn session(&self) -> &str {
-        &self.session
-    }
-
-    pub fn client(&self) -> &Arc<dyn HttpClient> {
-        &self.client
-    }
-
-    /// End the link. The host ends the session when polls stop.
-    pub fn close(&self) {
-        self.end.send_replace(true);
-    }
-}
-
-impl Drop for HttpsLink {
-    fn drop(&mut self) {
-        self.close();
-    }
-}
-
-/// Encoded envelopes one `/send` carries: the host refuses a body past
-/// [`MAX_REQUEST_BYTES`], and the batch's length prefix needs a few bytes.
-const SEND_BATCH_BYTES: usize = MAX_REQUEST_BYTES.saturating_sub(64 * 1024);
-
-fn encoded_len(envelope: &Envelope) -> usize {
-    postcard::serialize_with_flavor(envelope, postcard::ser_flavors::Size::default())
-        .unwrap_or(usize::MAX)
-}
-
-async fn send_pump(
-    client: Arc<dyn HttpClient>,
-    session: String,
-    mut outgoing: mpsc::UnboundedReceiver<Envelope>,
-    end: watch::Sender<bool>,
-) {
-    let mut ended = end.subscribe();
-    // An envelope that did not fit the previous batch opens the next.
-    let mut carried = None;
-    loop {
-        let first = if let Some(envelope) = carried.take() {
-            Some(envelope)
-        } else {
-            tokio::select! {
-                envelope = outgoing.recv() => envelope,
-                _ = ended.wait_for(|ended| *ended) => None,
-            }
-        };
-        let Some(first) = first else {
-            return;
-        };
-        let mut bytes = encoded_len(&first);
-        let mut batch = vec![first];
-        while let Ok(next) = outgoing.try_recv() {
-            let len = encoded_len(&next);
-            if bytes.saturating_add(len) > SEND_BATCH_BYTES {
-                carried = Some(next);
-                break;
-            }
-            bytes = bytes.saturating_add(len);
-            batch.push(next);
-        }
-        let Ok(body) = postcard::to_allocvec(&batch) else {
-            end.send_replace(true);
-            return;
-        };
-        if !matches!(
-            client.post(&path("/send"), Some(&session), body).await,
-            Ok((204 | 200, _))
-        ) {
-            end.send_replace(true);
-            return;
-        }
-    }
-}
-
-async fn poll_pump(
-    client: Arc<dyn HttpClient>,
-    session: String,
-    incoming: mpsc::Sender<Envelope>,
-    mut ended: watch::Receiver<bool>,
-    end: watch::Sender<bool>,
-) {
-    let mut ack = None;
-    loop {
-        if *ended.borrow() {
-            return;
-        }
-        let Ok(body) = postcard::to_allocvec(&EventsRequest {
-            ack,
-            wait_ms: MAX_POLL_MS - 5_000,
-        }) else {
-            break;
-        };
-        let answer = tokio::select! {
-            answer = client.post(&path("/events"), Some(&session), body) => answer,
-            _ = ended.wait_for(|ended| *ended) => return,
-        };
-        let page: EventsPage = match answer {
-            Ok((200, bytes)) => match postcard::from_bytes(&bytes) {
-                Ok(page) => page,
-                Err(_) => break,
-            },
-            _ => break,
-        };
-        for envelope in page.envelopes {
-            if incoming.send(envelope).await.is_err() {
-                end.send_replace(true);
-                return;
-            }
-        }
-        ack = page.cursor.or(ack);
-    }
-    end.send_replace(true);
-}
-
-#[cfg(test)]
-mod handshake_tests {
-    use super::*;
-
-    /// A host that answers every request with `status` and `body`.
-    struct Answers(u16, Vec<u8>);
-
-    impl HttpClient for Answers {
-        fn post(&self, _: &str, _: Option<&str>, _: Vec<u8>) -> HttpFuture<'_> {
-            let answer = (self.0, self.1.clone());
-            Box::pin(async move { Ok(answer) })
-        }
-    }
-
-    #[tokio::test]
-    async fn a_host_that_cannot_read_this_devices_hello_is_behind_not_unreachable() {
-        // What a relay from before versioned handshakes answered a v6 hello
-        // with (eu1.tilo.coffee at 8fca8fe781, 2026-10-19).
-        let unversioned = Answers(400, b"malformed body".to_vec());
-        let refused = handshake_raw(&unversioned, HELLO_ROUTE, Vec::new())
-            .await
-            .unwrap_err();
-        assert_eq!(
-            refused,
-            LinkError::PeerVersion {
-                theirs: tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL
-            }
-        );
-        assert!(!tilo_relay_protocol::auth::this_device_is_behind(
-            tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL
-        ));
-        let versioned = Answers(409, postcard::to_allocvec(&5_u32).unwrap());
-        assert_eq!(
-            handshake_raw(&versioned, HELLO_ROUTE, Vec::new())
-                .await
-                .unwrap_err(),
-            LinkError::PeerVersion { theirs: 5 }
-        );
-        // A host that read the hello is at this version: a later malformed
-        // step, or a failing host, is no version mismatch.
-        assert!(matches!(
-            handshake_raw(&unversioned, "/session/finish", Vec::new())
-                .await
-                .unwrap_err(),
-            LinkError::Unavailable(_)
-        ));
-        assert!(matches!(
-            handshake_raw(&Answers(503, Vec::new()), HELLO_ROUTE, Vec::new())
-                .await
-                .unwrap_err(),
-            LinkError::Unavailable(_)
-        ));
-    }
+    call(client, "/join", encode(step)?).await
 }

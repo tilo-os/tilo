@@ -24,15 +24,20 @@ use crate::plane::{Plane, PlaneError};
 mod board;
 pub mod place;
 mod publish;
+mod shown;
 mod smooth;
 
 #[cfg(test)]
 mod tests;
 
-pub use board::{Board, Call, Device, LiveCall, LiveCaller, Member, Own, Point, Wave};
+pub use board::{Board, Call, Device, LiveCall, LiveCaller, Member, Own, Point};
 pub use place::{Placed, Tile, anchor, tile};
 pub use publish::{KEEPALIVE_MS, MIN_INTERVAL_MS, REPEATS_MS};
+pub use shown::{own_shown, shown};
 pub use smooth::Smoother;
+
+/// A wave as a member's word and a surface both carry it.
+pub use collab_types::presence::ShownWave as Wave;
 
 /// Say `presence` as object `sequence` of the plane's presence track.
 ///

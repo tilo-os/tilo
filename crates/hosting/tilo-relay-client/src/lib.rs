@@ -11,9 +11,11 @@
 //!   as a root-holding device;
 //! - [`signer`] — the device key as a signer, so a browser's
 //!   non-extractable key can authenticate;
-//! - [`https`] — the session with a host over its HTTPS routes
-//!   ([`https::HttpsLink`]), for a page through its `fetch` and for a native
-//!   device reaching a host that publishes no iroh address.
+//! - [`error`] — why a call to a host failed, and why a host turned a device
+//!   away;
+//! - [`https`] — what a page asks a host before it holds a session, over
+//!   HTTPS through its `fetch`: the host's certificate and address, a
+//!   member's approval of their own device, and joining a workspace.
 //!
 //! The messages themselves are defined in [`tilo_relay_protocol`]. Without
 //! the default `iroh` feature certification is left out and the signer seam,
@@ -32,6 +34,7 @@
 #[cfg(feature = "iroh")]
 pub mod certify;
 pub mod coedit;
+pub mod error;
 pub mod frame;
 pub mod https;
 pub mod signer;
@@ -39,6 +42,7 @@ pub mod signer;
 #[cfg(feature = "iroh")]
 pub use certify::{Approver, CertificationOutcome, CertifyError, request_certification};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
-pub use https::{HttpClient, HttpFuture, HttpsLink, LinkError};
+pub use error::LinkError;
+pub use https::{HttpClient, HttpFuture};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};

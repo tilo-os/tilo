@@ -1347,14 +1347,10 @@ impl LoungeHost {
             let _entered = runtime.enter();
             let page = PeerHandle::start(
                 PeerConfig {
-                    host: Host::Iroh {
-                        addr: self.relay.node_addr(),
-                        relay_url: None,
-                    },
+                    host: Host::at(self.relay.node_addr()),
                     cert: self.page_device.clone(),
                     host_cert: self.host_cert.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
-                    background: false,
                 },
                 Arc::new(self.page_key.clone()) as Arc<dyn tilo_browser_peer::DeviceSigner>,
                 Arc::new(MemoryPeerStore::default()),

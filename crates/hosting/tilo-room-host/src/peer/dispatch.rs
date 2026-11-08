@@ -170,7 +170,8 @@ pub(super) async fn handle_envelope(
         | Envelope::RecordOpened { .. }
         | Envelope::WorkspaceBootstrap { .. }
         | Envelope::WorkspacesReply { .. }
-        | Envelope::HereReply { .. } => Ok(None),
+        | Envelope::HereReply { .. }
+        | Envelope::FetchGrant { .. } => Ok(None),
     }
 }
 

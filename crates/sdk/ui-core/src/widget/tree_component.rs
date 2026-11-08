@@ -673,6 +673,7 @@ fn row_of(
     let folded = marks.is_folded(&key_owned);
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
         .depth(marks.depth(&key_owned))
+        .tree_row()
         .row_height(TREE_ROW_HEIGHT)
         .with_feel(feel);
     if let Some(props) = &node.row {
@@ -794,12 +795,6 @@ impl DescribedTreeView {
         }
         if single_click {
             list = list.open_on_press();
-        }
-        // A view that reports no choice of its nodes is no picker: a press moves the keyboard to
-        // the row and nothing shows as chosen, so a tree shown with nothing chosen stands with
-        // nothing chosen, whatever its rows are pressed for.
-        if select.is_none() && activate.is_none() {
-            list = list.choosing_on_press(false);
         }
         // Each event carries the resource its row shows.
         if !select.is_none() || !activate.is_none() {
@@ -961,11 +956,6 @@ pub(crate) fn items_tree(id: &str, name: Option<&str>, open: bool) -> DescribedT
             } else {
                 Vec::new()
             }),
-            select: Event::View(crate::component::Intent::new(
-                &crate::Intents::default(),
-                id,
-                "select",
-            )),
             ..TreeViewProps::default()
         },
     )
@@ -1238,64 +1228,39 @@ mod tests {
         );
     }
 
-    /// A tree that reports no choice of its nodes is no picker: pressing a row moves the
-    /// keyboard to it and leaves it unchosen, so a tree shown with nothing chosen stands with
-    /// nothing chosen.
+    /// A press on a tree's row chooses it whether or not the view names a choice event: the
+    /// tree keeps the row under the keyboard and the pointer alike, as every list does.
     #[test]
-    fn a_tree_that_reports_no_choice_shows_nothing_chosen() {
+    fn a_press_chooses_a_trees_row_whatever_the_view_reports() {
         use crate::headless::FrameHarness;
         use crate::theme::Theme;
 
         let queue = crate::Intents::default();
-        let plain = tree_of(
-            vec![
-                node("a", None, true, &queue),
-                node("b", Some("a"), false, &queue),
-            ],
-            true,
+        for select in [
             Event::None,
-        );
-        let mut harness =
-            FrameHarness::for_root(crate::State::new(), plain, (400, 240), Theme::dark());
-        let row = harness
-            .root::<DescribedTreeView>()
-            .list
-            .row_rect(&"b".to_owned())
-            .expect("the leaf row stands somewhere");
-        harness.click_at(row.center().x, row.center().y);
-        assert!(
-            harness.root::<DescribedTreeView>().selected().is_empty(),
-            "a press on a tree's row chooses nothing where the view reports no choice"
-        );
-
-        // A tree that does report its choice is a picker: the same press chooses the row.
-        let mut harness = FrameHarness::for_root(
-            crate::State::new(),
-            DescribedTreeView::from_props(
-                "tree",
-                TreeViewProps {
-                    hide_root: true,
-                    nodes: vec![
-                        node("a", None, true, &queue),
-                        node("b", Some("a"), false, &queue),
-                    ],
-                    select: Event::View(Intent::new(&crate::Intents::default(), "tree", "select")),
-                    ..TreeViewProps::default()
-                },
-            ),
-            (400, 240),
-            Theme::dark(),
-        );
-        let row = harness
-            .root::<DescribedTreeView>()
-            .list
-            .row_rect(&"b".to_owned())
-            .expect("the leaf row stands somewhere");
-        harness.click_at(row.center().x, row.center().y);
-        assert_eq!(
-            harness.root::<DescribedTreeView>().selected(),
-            ["b".to_owned()],
-            "a press chooses the row where the view reports its choice"
-        );
+            Event::View(Intent::new(&crate::Intents::default(), "tree", "select")),
+        ] {
+            let tree = tree_of(
+                vec![
+                    node("a", None, true, &queue),
+                    node("b", Some("a"), false, &queue),
+                ],
+                true,
+                select,
+            );
+            let mut harness =
+                FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+            let row = harness
+                .root::<DescribedTreeView>()
+                .list
+                .row_rect(&"b".to_owned())
+                .expect("the leaf row stands somewhere");
+            harness.click_at(row.center().x, row.center().y);
+            assert_eq!(
+                harness.root::<DescribedTreeView>().selected(),
+                ["b".to_owned()],
+                "a press chooses the row"
+            );
+        }
     }
 }

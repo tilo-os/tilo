@@ -279,6 +279,7 @@ fn inspection_own_eq(a: &InspectionNode, b: &InspectionNode) -> bool {
         focusable,
         rect,
         child_clip,
+        page_title,
         layout,
         semantics: _,
         children: _,
@@ -289,6 +290,7 @@ fn inspection_own_eq(a: &InspectionNode, b: &InspectionNode) -> bool {
         && *focusable == b.focusable
         && *rect == b.rect
         && *child_clip == b.child_clip
+        && *page_title == b.page_title
         && *layout == b.layout
 }
 
@@ -317,6 +319,7 @@ mod tests {
             focusable: false,
             rect: [0.0, 0.0, 100.0, 100.0],
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics,
             children,

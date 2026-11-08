@@ -5,22 +5,24 @@
 //! A page reads a site that sends no CORS headers (a feed, a video
 //! directory's API, a calendar subscription) through the workspace host it
 //! is admitted to. Only a member's or guest's device with an open session
-//! may: the session token arrives in [`SESSION_HEADER`], as on every other
-//! route, and its person must be admitted to a workspace here. The proxy
+//! may: the host minted its token for that connection as the session started
+//! ([`Grants`]), and its person must be admitted to a workspace here. The proxy
 //! itself enforces destinations, bounds, rates and budgets (see
 //! `tilo_net::proxy::host`);
 //! this module adds who may call it, which workspaces' budgets a request counts
 //! against (every workspace here its person is admitted to), and the CORS
 //! headers a page on the web entry's origin needs to read the answer.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use hyper::{Method, Request, Response, header};
 use tilo_net::proxy::ProxyFailure;
 use tilo_net::proxy::host::{Caller, Config, FetchProxy, Room};
 
-use super::{Body, Web, protocol, reply, token};
+use super::{Body, Web, protocol, reply};
 
 /// The fetch proxy a listener serves.
 #[derive(Clone, Debug, Default)]
@@ -64,15 +66,6 @@ impl Serving {
             metrics,
         })
     }
-
-    /// The session grant's feature bit for it.
-    pub(super) fn features(&self) -> u64 {
-        if self.proxy.is_some() {
-            protocol::FEATURE_FETCH_PROXY
-        } else {
-            0
-        }
-    }
 }
 
 /// Write `proxy`'s counters to `path` until the listener stops.
@@ -91,6 +84,45 @@ async fn write_metrics(proxy: FetchProxy, path: PathBuf) {
         .await;
         if let Ok(Err(error)) = written {
             tracing::debug!(target: "fetch_proxy", %error, "could not write the fetch proxy's counters");
+        }
+    }
+}
+
+/// The tokens this listener's fetch proxy takes: one per open page session,
+/// minted as the session starts over its own carrier and taken back when its
+/// connection ends.
+#[derive(Default)]
+pub struct Grants {
+    open: Mutex<HashMap<[u8; 32], Holder>>,
+}
+
+/// The device a token was minted for, and the person it is.
+#[derive(Clone, Copy)]
+struct Holder {
+    user: [u8; 32],
+    device: [u8; 32],
+}
+
+impl Grants {
+    /// What `token` names, while its connection holds it.
+    fn holder(&self, token: &[u8; 32]) -> Option<Holder> {
+        self.open.lock().ok()?.get(token).copied()
+    }
+}
+
+impl crate::peer::FetchGrants for Grants {
+    fn grant(&self, user: [u8; 32], device: [u8; 32]) -> Option<[u8; 32]> {
+        let token: [u8; 32] = rand::random();
+        self.open
+            .lock()
+            .ok()?
+            .insert(token, Holder { user, device });
+        Some(token)
+    }
+
+    fn revoke(&self, token: [u8; 32]) {
+        if let Ok(mut open) = self.open.lock() {
+            open.remove(&token);
         }
     }
 }
@@ -131,6 +163,16 @@ pub(super) async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -
     response
 }
 
+/// The session token a request names in [`SESSION_HEADER`](protocol::SESSION_HEADER).
+fn session_token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
+    let value = request
+        .headers()
+        .get(protocol::SESSION_HEADER)?
+        .to_str()
+        .ok()?;
+    hex::decode(value).ok()?.try_into().ok()
+}
+
 /// The device a request is made for, and the workspaces its person is admitted
 /// to here, when its session belongs to a person admitted here.
 async fn caller(
@@ -139,32 +181,30 @@ async fn caller(
 ) -> Result<(Caller, Vec<Room>), &'static str> {
     // A media element cannot send the session header; its GET carries the
     // session in the query (`tilo_net::proxy::media_url`).
-    let token = token(request)
+    let token = session_token(request)
         .or_else(|| {
             let session = tilo_net::proxy::host::query_session(request.method(), request.uri())?;
             hex::decode(session).ok()?.try_into().ok()
         })
         .ok_or("the fetch proxy is for pages signed in to this host")?;
-    let session = web
-        .sessions
-        .get(&token)
-        .map_err(|_| "the session ended; sign in again")?;
-    let user = session.peer.user_public_key;
+    let Holder { user, device } = web
+        .grants
+        .holder(&token)
+        .ok_or("the session ended; sign in again")?;
     let workspaces = member_of(web, user).await;
     // The person this host runs for may use it before any of their workspaces is
     // bound here: their fetches count against their device's budget alone.
-    if workspaces.is_empty() && user != web.sessions.context().relay.identity.user_public_key {
+    if workspaces.is_empty() && user != web.context.relay.identity.user_public_key {
         return Err("the fetch proxy is for members of a workspace on this host");
     }
-    Ok((Caller(session.peer.device_public_key), workspaces))
+    Ok((Caller(device), workspaces))
 }
 
 /// The workspaces here `user` is admitted to as a person of its own: a
 /// member or a guest.
 async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
     let workspaces: Vec<_> = web
-        .sessions
-        .context()
+        .context
         .relay
         .workspaces
         .lock()
@@ -173,7 +213,7 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
         .map(|(id, workspace)| (*id, workspace.clone()))
         .collect();
     let mut admitted = Vec::new();
-    let own_user = web.sessions.context().relay.identity.user_public_key;
+    let own_user = web.context.relay.identity.user_public_key;
     for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
         if workspace.admits_person(&user, &own_user) {

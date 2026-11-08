@@ -156,6 +156,26 @@ pub enum Decision {
     Deny(DenyReason),
 }
 
+/// Whether `user` is the person this host runs for, or is admitted by a
+/// workspace it serves: who the host queues a device certificate for, beside
+/// the owner's own devices.
+pub async fn admits_person(
+    workspaces: &crate::peer::WorkspaceRegistry,
+    own_user: [u8; 32],
+    user: [u8; 32],
+) -> bool {
+    if user == own_user {
+        return true;
+    }
+    let served: Vec<_> = workspaces.lock().await.values().cloned().collect();
+    for workspace in served {
+        if workspace.lock().await.admits_person(&user, &own_user) {
+            return true;
+        }
+    }
+    false
+}
+
 impl Decision {
     /// Admitted without any further step.
     pub fn admitted(self) -> bool {

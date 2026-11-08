@@ -120,7 +120,6 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             allowed_origins: options.allowed_origins,
             plain_listen: None,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
         })

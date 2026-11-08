@@ -31,7 +31,7 @@ use collab_types::{
     Surfaces, document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
-use tilo_browser_peer::{Host, PeerEvent};
+use tilo_browser_peer::PeerEvent;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
@@ -158,7 +158,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
     // The page joins and opens nothing on its own: the app finds no record to
     // open, and its only write for the note is the one the host replays.
     let page = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         browser.cert.clone(),
         host_device.cert.clone(),
         browser.key.clone(),

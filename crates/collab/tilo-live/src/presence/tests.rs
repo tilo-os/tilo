@@ -309,3 +309,69 @@ fn a_member_who_comes_back_is_a_stay_of_its_own() {
         "coming back begins a new stay, never the one before"
     );
 }
+
+#[test]
+fn a_member_is_drawn_from_the_word_the_board_merged() {
+    let mut board = board();
+    board.hear([1; 32], &said(Payload::Person { name: "Ada".into() }), 0.0);
+    board.hear(
+        [1; 32],
+        &said(Payload::Status {
+            text: "Reading".into(),
+            automatic: false,
+        }),
+        0.0,
+    );
+    board.hear([1; 32], &pointed(WORKSPACE, 7, 12.0, 24.0), 1_000.0);
+    board.certify([1; 32], "aa".repeat(32), "Framework");
+    let member = board.member([1; 32]).expect("they are here");
+    let shown = shown(member, 1_500.0);
+    assert_eq!(shown.publisher, hex::encode([1; 32]));
+    assert_eq!(shown.label, "Ada");
+    assert_eq!(shown.activity.as_deref(), Some("Reading"));
+    assert_eq!(shown.device, "Framework");
+    assert_eq!(shown.user, Some("aa".repeat(32)));
+    assert!(!shown.agent, "a person is not an agent");
+    let pointer = shown.pointer.as_ref().expect("their pointer");
+    assert_eq!(pointer.tab, "7");
+    assert!((pointer.at[0] - 12.0).abs() < 1.0 && (pointer.at[1] - 24.0).abs() < 1.0);
+    assert!(
+        (pointer.age_ms - 500.0).abs() < f64::EPSILON,
+        "how long ago they said it: {}",
+        pointer.age_ms
+    );
+    // A page hands this record to its JavaScript whole: the names it reads
+    // are the ones here.
+    let json = serde_json::to_value(&shown).expect("a member is JSON");
+    assert_eq!(json["pointer"]["ageMs"], 500.0);
+    assert_eq!(json["pointer"]["tab"], "7");
+    assert_eq!(json["activity"], "Reading");
+}
+
+#[test]
+fn this_seats_own_row_is_what_this_device_said_here() {
+    let mut board = board();
+    let own = Own {
+        label: "Quinten".into(),
+        device: "Framework".into(),
+        user: Some("bb".repeat(32)),
+        availability: Availability::Focusing,
+        ..Own::default()
+    };
+    board.seed(own.clone());
+    assert_eq!(
+        board.own(),
+        &own,
+        "a page says who it is before its first word"
+    );
+    assert!(
+        board.due(0.0).is_none(),
+        "knowing who it is says nothing itself"
+    );
+    let shown = own_shown(board.own(), [0xf0; 32]);
+    assert_eq!(shown.publisher, hex::encode([0xf0; 32]));
+    assert_eq!(shown.label, "Quinten");
+    assert_eq!(shown.device, "Framework");
+    assert_eq!(shown.availability, "focusing");
+    assert!(shown.pointer.is_none());
+}

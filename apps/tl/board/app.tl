@@ -123,7 +123,7 @@ view card_row(card: Card) {
 /// A card's page: its title and its notes.
 view card_page(card: Card) {
     std.document(card) {
-        ui.TextInput(value: card.title, placeholder: "Title")
+        ui.TextInput(value: card.title, placeholder: "Title", title: true)
         ui.BlockEditor(bind: card.notes, placeholder: "Notes")
     }
 }

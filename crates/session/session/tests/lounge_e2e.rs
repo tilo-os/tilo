@@ -73,6 +73,8 @@ struct Room {
     /// The owner root the room serves: its person.
     owner: ed25519_dalek::SigningKey,
     host_cert: DeviceCert,
+    /// The room's iroh endpoint: how its pages reach its session.
+    host: Host,
     /// The runtime the page and the room's routes run on: the host's own session and its HTTP
     /// clients belong to a runtime, and the test drives them from here.
     runtime: tokio::runtime::Runtime,
@@ -183,14 +185,19 @@ impl Room {
             .enable_all()
             .build()
             .expect("a runtime for the room's page");
-        let host_cert = host_info(&runtime, &plain).expect("the host's certificate");
+        let info = host_info(&runtime, &plain).expect("the host's certificate");
         Self {
             child,
             stdin,
             plain,
             workspace,
             owner,
-            host_cert,
+            host_cert: info.host_cert,
+            host: Host::at(
+                info.address
+                    .expect("the room publishes its iroh endpoint")
+                    .endpoint_addr,
+            ),
             runtime,
             _state: state,
         }
@@ -275,24 +282,17 @@ fn random_key() -> [u8; 32] {
 struct Plain(String);
 
 impl tilo_browser_peer::HttpClient for Plain {
-    fn post(
-        &self,
-        path: &str,
-        session: Option<&str>,
-        body: Vec<u8>,
-    ) -> tilo_browser_peer::HttpFuture<'_> {
+    fn post(&self, path: &str, body: Vec<u8>) -> tilo_browser_peer::HttpFuture<'_> {
         let url = format!("{}{path}", self.0);
-        let session = session.map(str::to_owned);
         Box::pin(async move {
             let client = client()?;
-            let mut request = client
+            let response = client
                 .post(&url)
                 .header("content-type", "application/octet-stream")
-                .body(body);
-            if let Some(session) = session {
-                request = request.header(tilo_relay_protocol::web::SESSION_HEADER, session);
-            }
-            let response = request.send().await.map_err(|error| error.to_string())?;
+                .body(body)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
             let status = response.status().as_u16();
             let body = response
                 .bytes()
@@ -312,25 +312,27 @@ fn client() -> Result<tilo_net::Client, String> {
         .map_err(|error| error.to_string())
 }
 
-/// The host's certificate, as a page certified by it pinned.
-fn host_info(runtime: &tokio::runtime::Runtime, plain: &str) -> Result<DeviceCert, String> {
+/// What the host publishes for a page: its certificate, and the iroh endpoint its session and
+/// planes are reached at.
+fn host_info(
+    runtime: &tokio::runtime::Runtime,
+    plain: &str,
+) -> Result<tilo_relay_protocol::web::HostInfo, String> {
     runtime
         .block_on(tilo_browser_peer::host_info(&Plain(plain.to_owned())))
-        .map(|info| info.host_cert)
         .map_err(|error| error.to_string())
 }
 
-/// A page of `member` 's device on the room's plain listener, in the room's workspace: the same
+/// A page of `member` 's device on the room's iroh endpoint, in the room's workspace: the same
 /// session a member's browser runs.
 fn page(room: &Room, member: &Member) -> PeerHandle {
     let _entered = room.runtime.enter();
     let page = PeerHandle::start(
         PeerConfig {
-            host: Host::Https(Arc::new(Plain(room.plain.clone()))),
+            host: room.host.clone(),
             cert: member.cert.clone(),
             host_cert: room.host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
-            background: false,
         },
         Arc::new(member.key.clone()) as Arc<dyn tilo_browser_peer::DeviceSigner>,
         Arc::new(MemoryPeerStore::default()),

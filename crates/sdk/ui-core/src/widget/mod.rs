@@ -1687,6 +1687,14 @@ pub trait Widget {
         None
     }
 
+    /// The words this widget shows as the heading of the page it belongs to,
+    /// when it is the page's own title: a large-title text the content edits
+    /// or sets at the top of a document. A shell that also names the page in
+    /// its bar reads this to keep one title on screen at a time.
+    fn own_page_title(&self) -> Option<String> {
+        None
+    }
+
     /// Offsets along `axis` that this widget, as a scroll view's content,
     /// offers it to settle on, measured from its own leading edge: a board's
     /// lanes ([`crate::widget::Board`]). None leaves a scroller stopping

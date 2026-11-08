@@ -1,6 +1,6 @@
 //! A company's workspace on its node, end to end. The founder has only a
 //! browser: headless Chrome (a virtual authenticator with PRF) creates their
-//! root behind a passkey with the production `root-identity.mjs`. A node is
+//! root behind a passkey with the production `identity.mjs`. A node is
 //! provisioned with a device key and an install token and no certificate;
 //! the root certifies it and the page installs the certificate through the
 //! node's install route, as `tilo-relay run --web … --install-token-file`
@@ -148,10 +148,11 @@ fn holds(dir: &Path, needle: &[u8]) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_company_node_governs_and_seals_the_workspace_people_join() {
-    let driver = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/node_workspace/driver.mjs");
+    let driver =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/page-driver.mjs");
     let mut browser = tokio::process::Command::new("node")
         .arg(driver)
+        .arg("node")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -190,8 +191,6 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             allowed_origins: vec![page_origin],
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
-            country: None,
             fetch_proxy: None,
         },
         paths.clone(),
@@ -279,13 +278,12 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
-            country: None,
             fetch_proxy: None,
         })
         .await
         .unwrap();
     let https = DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
+    let host = Host::at(relay.node_addr());
 
     // The page's own device, certified by the root against the node.
     let page_key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -293,12 +291,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .await
         .unwrap();
     assert_eq!(host_cert, node_cert);
-    let ada = start_peer(
-        Host::Https(https.clone()),
-        page_cert,
-        host_cert.clone(),
-        page_key,
-    );
+    let ada = start_peer(host.clone(), page_cert, host_cert.clone(), page_key);
     ready(&[&ada]).await;
 
     // The company workspace, governed by the node, with Ada as its owner.
@@ -458,9 +451,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     assert!(matches!(status, JoinReply::Admitted { .. }), "{status:?}");
 
     // Bo joins after everything was written and reads all of it.
-    let bo_https = support::Recording::new(https.clone());
-    let bo_sessions = bo_https.sessions.clone();
-    let bo = start_peer(Host::Https(bo_https), bo_cert, host_cert.clone(), bo_key);
+    let bo = start_peer(host.clone(), bo_cert, host_cert.clone(), bo_key);
     bo.join(acme.workspace_id).unwrap();
     let mut events = Vec::new();
     assert_eq!(
@@ -470,11 +461,6 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     assert_eq!(
         next_document(&bo, &mut events).await,
         DocumentMutation::Incremental(change)
-    );
-    assert_eq!(
-        bo_sessions.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "Bo read the workspace on the first session after he was let in"
     );
 
     // Cy is pre-admitted: Ada's root signs a grant for the digest of a
@@ -559,19 +545,12 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         "{notices:?}"
     );
     let cy_device = cy_cert.device_public_key;
-    let cy_https = support::Recording::new(https.clone());
-    let cy_sessions = cy_https.sessions.clone();
-    let cy = start_peer(Host::Https(cy_https), cy_cert, host_cert.clone(), cy_key);
+    let cy = start_peer(host.clone(), cy_cert, host_cert.clone(), cy_key);
     cy.join(acme.workspace_id).unwrap();
     let mut events = Vec::new();
     assert_eq!(
         next_document(&cy, &mut events).await,
         DocumentMutation::Snapshot(snapshot.clone())
-    );
-    assert_eq!(
-        cy_sessions.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "Cy read the workspace on the first session after she redeemed the invitation"
     );
     let removed = workspaces(
         &ada,

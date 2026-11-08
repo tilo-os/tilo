@@ -452,8 +452,13 @@ fn reply_only(id: &str, reply: &str) -> serde_json::Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, _) =
-        Box::pin(coordinated(&url, &sent, &[CHAT], "In Chat, post Alpha ready")).await;
+    let (mut workspace, ours, task, _) = Box::pin(coordinated(
+        &url,
+        &sent,
+        &[CHAT],
+        "In Chat, post Alpha ready",
+    ))
+    .await;
     answer
         .send(plan_call(
             "c1",

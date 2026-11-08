@@ -35,7 +35,10 @@
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
 # `--wasm-only` builds only what Cargo compiles (pkg/ with the compute module,
 # data/ and apps.json) and records how in wasm.json; it reads no git
-# metadata, so a build cache can key it by its sources alone. `--wasm-from`
+# metadata, so a build cache can key it by its sources alone. `--module-only`
+# builds pkg/ and nothing else: a test that drives the runtime's exports from
+# a page serves it beside the page's modules, with no fonts, data or compute
+# module a browser test does not mount. `--wasm-from`
 # assembles the bundle around such a directory instead of compiling: the
 # pages, locales and fonts from this tree, and build.json for this tree's
 # revision. A change to the pages alone then compiles nothing.
@@ -45,7 +48,7 @@ set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only]'
 out=${1:?$usage}
 shift
 profile=release
@@ -54,6 +57,7 @@ bundle=runtime
 split=1
 update=0
 wasm_only=0
+module_only=0
 wasm_from=
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --no-split) split=0; shift ;;
     --update) update=1; shift ;;
     --wasm-only) wasm_only=1; shift ;;
+    --module-only) module_only=1; shift ;;
     --wasm-from) wasm_from=${2:?--wasm-from needs a directory}; shift 2 ;;
     *) echo "unknown argument: $1" >&2; echo "$usage" >&2; exit 2 ;;
   esac
@@ -81,6 +86,9 @@ esac
   echo '--no-split and --update are for dev and quick bundles' >&2; exit 2;
 }
 [[ $wasm_only == 0 || -z $wasm_from ]] || { echo '--wasm-only and --wasm-from exclude each other' >&2; exit 2; }
+[[ $module_only == 0 || ( $wasm_only == 0 && -z $wasm_from && $update == 0 ) ]] || {
+  echo '--module-only builds nothing but pkg/; not with --wasm-only, --wasm-from or --update' >&2; exit 2;
+}
 [[ $update == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
   echo '--update builds whole bundles; not with --wasm-only or --wasm-from' >&2; exit 2;
 }
@@ -216,7 +224,7 @@ compute_opt=--no-wasm-opt
 [[ $optimize == 1 ]] && compute_opt=--wasm-opt
 compute_profile=$profile
 [[ $profile == quick ]] && compute_profile=dev
-if ! kept pkg/compute; then
+if [[ $module_only == 0 ]] && ! kept pkg/compute; then
   bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$compute_profile" "$compute_opt" --module-only
 fi
 rustc_version=$(rustc --version)
@@ -247,6 +255,12 @@ PY
   cp -R "$wasm_from/pkg" "$out/pkg"
   [[ ! -d $wasm_from/data ]] || cp -R "$wasm_from/data" "$out/data"
   [[ ! -f $wasm_from/apps.json ]] || cp "$wasm_from/apps.json" "$out/apps.json"
+fi
+if [[ $module_only == 1 ]]; then
+  # Only what Cargo compiles and wasm-bindgen writes: what a test that drives
+  # the runtime's exports serves beside the page's modules.
+  echo "module: $out/pkg"
+  exit 0
 fi
 if [[ $wasm_only == 1 ]]; then
   python3 - "$out/wasm.json" "$bundle" "$profile" "$cargo_profile" "$rustc_version" "$bindgen_version" "$optimize" \

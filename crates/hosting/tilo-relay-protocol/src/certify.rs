@@ -36,9 +36,9 @@
 //! expires as a refusal.
 //!
 //! A member of a workspace the host serves pairs a new device the same way,
-//! through any host they share: the new device posts its request to the
-//! host's HTTPS `/certify` and shows its pairing code, and a page holding
-//! the member's root reads and answers that member's pending requests with
+//! through any host they share: the new device asks on the certification
+//! ALPN and shows its pairing code, and a page holding the member's root
+//! reads and answers that member's pending requests with
 //! [`MemberApproval`]s (`/certify/approve`), each signed by the root. The
 //! host lists a member only their own requests and accepts a certificate
 //! only for the exact request it answers.
@@ -111,10 +111,6 @@ pub struct PendingCertification {
     pub pairing_code: String,
     /// When the host received the request, Unix-epoch nanoseconds.
     pub requested_at_ns: u64,
-    /// The country the request came from (ISO 3166-1 alpha-2), when a
-    /// proxy in front of the host that it trusts says so; the host looks
-    /// nothing up itself.
-    pub country: Option<String>,
 }
 
 /// An approver's answer to one request.

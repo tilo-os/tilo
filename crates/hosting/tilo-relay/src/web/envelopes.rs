@@ -8,7 +8,7 @@
 //! the person again: the passkey names the root, any of their hosts answers
 //! with the envelope, the passkey opens it.
 //!
-//! The person's profile ([`Kind::Profile`]: `{version: 1, user_public_key,
+//! The person's profile ([`Record::Profile`]: `{version: 1, user_public_key,
 //! display_name, photo?}`, JSON) is kept the same way, so each of their
 //! devices, paired or signed in, shows the name and picture they chose, and
 //! everyone here sees that picture beside their name. The picture is a small
@@ -17,27 +17,24 @@
 //!
 //! `POST /peer/v1/envelope` keeps one: `{envelope, issued_at_ms, signature}`
 //! where `envelope` is the envelope's JSON text and `signature` (hex) the
-//! root's Ed25519 signature over [`LABEL`], `issued_at_ms` (u64 little
-//! endian) and that text. Only a root admitted to a workspace here may keep one,
+//! root's Ed25519 signature over the record (`root_statement::statement`).
+//! Only a root admitted to a workspace here may keep one,
 //! and only a newer statement replaces the kept one, so an old envelope
 //! (with a passkey since dropped) cannot be replayed over it.
 //! `POST /peer/v1/envelope/fetch` with the root public key (hex) as its body
 //! answers `{"envelope": <the kept envelope>}`, or `{"envelope": null}` when
 //! none is kept (a new person: the usual case, not an error).
 //! `/peer/v1/profile` and `/peer/v1/profile/fetch` do the same for a
-//! profile (`{profile, issued_at_ms, signature}`, signed under
-//! [`PROFILE_LABEL`]; `{"profile": null}` when none is kept).
+//! profile (`{profile, issued_at_ms, signature}`, signed under the profile
+//! record's label; `{"profile": null}` when none is kept).
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use tilo_user_identity::root_envelope::RootEnvelope;
+use tilo_user_identity::root_statement;
+pub(super) use tilo_user_identity::root_statement::Record;
 
-/// What a root signs to have its envelope kept.
-pub(super) const LABEL: &[u8] = b"tilo root envelope v1\0";
 /// An envelope with a handful of passkeys is about 2 KB.
 pub(super) const MAX_ENVELOPE_BYTES: usize = 16 * 1024;
-/// What a root signs to have its profile kept.
-pub(super) const PROFILE_LABEL: &[u8] = b"tilo person profile v1\0";
 /// A profile's picture, as its `data:` URL: a 96 px square encodes in a few
 /// kilobytes, so this bounds a profile without cramping one.
 pub(super) const MAX_PHOTO_CHARS: usize = 48 * 1024;
@@ -51,15 +48,6 @@ const PHOTO_PREFIXES: [&str; 3] = [
 ];
 /// How far ahead of this host's clock a statement may be dated.
 const MAX_SKEW_MS: u64 = 10 * 60 * 1000;
-
-/// Which of a member's records a store keeps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Kind {
-    /// The root envelope.
-    Envelope,
-    /// The person's profile: the name they chose.
-    Profile,
-}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,66 +130,49 @@ fn valid_photo(photo: &str) -> bool {
         })
 }
 
-impl Kind {
-    const fn label(self) -> &'static [u8] {
-        match self {
-            Self::Envelope => LABEL,
-            Self::Profile => PROFILE_LABEL,
-        }
-    }
-
-    /// The root `record` (JSON text) belongs to, once it reads as this kind.
-    fn root(self, record: &str) -> Result<[u8; 32], Refusal> {
-        match self {
-            Self::Envelope => {
-                if record.len() > MAX_ENVELOPE_BYTES {
-                    return Err(Refusal::Malformed("envelope too large"));
-                }
-                let envelope: RootEnvelope = serde_json::from_str(record)
-                    .map_err(|_| Refusal::Malformed("not a root envelope"))?;
-                if envelope.version != tilo_user_identity::root_envelope::ROOT_ENVELOPE_VERSION
-                    || envelope.wraps.is_empty()
-                {
-                    return Err(Refusal::Malformed("not a root envelope"));
-                }
-                root_of(&envelope.root_public_key)
-                    .ok_or(Refusal::Malformed("malformed root public key"))
+/// The root the record `text` (JSON) belongs to, once it reads as `kind`.
+fn root_of_record(kind: Record, text: &str) -> Result<[u8; 32], Refusal> {
+    match kind {
+        Record::Envelope => {
+            if text.len() > MAX_ENVELOPE_BYTES {
+                return Err(Refusal::Malformed("envelope too large"));
             }
-            Self::Profile => {
-                if record.len() > MAX_PROFILE_BYTES {
-                    return Err(Refusal::Malformed("profile too large"));
-                }
-                let profile: Profile = serde_json::from_str(record)
-                    .map_err(|_| Refusal::Malformed("not a profile"))?;
-                let name = profile.display_name.as_str();
-                if profile.version != 1
-                    || tilo_user_identity::display_name(name) != Ok(name)
-                    || profile
-                        .photo
-                        .as_deref()
-                        .is_some_and(|photo| !valid_photo(photo))
-                    || profile
-                        .status
-                        .as_deref()
-                        .is_some_and(|status| !valid_status(status))
-                    || profile
-                        .sharing
-                        .as_deref()
-                        .is_some_and(|sharing| !matches!(sharing, "automatic" | "manual" | "off"))
-                    || !valid_links(&profile)
-                {
-                    return Err(Refusal::Malformed("not a profile"));
-                }
-                root_of(&profile.user_public_key)
-                    .ok_or(Refusal::Malformed("malformed root public key"))
+            let envelope: RootEnvelope = serde_json::from_str(text)
+                .map_err(|_| Refusal::Malformed("not a root envelope"))?;
+            if envelope.version != tilo_user_identity::root_envelope::ROOT_ENVELOPE_VERSION
+                || envelope.wraps.is_empty()
+            {
+                return Err(Refusal::Malformed("not a root envelope"));
             }
+            root_of(&envelope.root_public_key)
+                .ok_or(Refusal::Malformed("malformed root public key"))
         }
-    }
-
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Envelope => "envelope",
-            Self::Profile => "profile",
+        Record::Profile => {
+            if text.len() > MAX_PROFILE_BYTES {
+                return Err(Refusal::Malformed("profile too large"));
+            }
+            let profile: Profile =
+                serde_json::from_str(text).map_err(|_| Refusal::Malformed("not a profile"))?;
+            let name = profile.display_name.as_str();
+            if profile.version != 1
+                || tilo_user_identity::display_name(name) != Ok(name)
+                || profile
+                    .photo
+                    .as_deref()
+                    .is_some_and(|photo| !valid_photo(photo))
+                || profile
+                    .status
+                    .as_deref()
+                    .is_some_and(|status| !valid_status(status))
+                || profile
+                    .sharing
+                    .as_deref()
+                    .is_some_and(|sharing| !matches!(sharing, "automatic" | "manual" | "off"))
+                || !valid_links(&profile)
+            {
+                return Err(Refusal::Malformed("not a profile"));
+            }
+            root_of(&profile.user_public_key).ok_or(Refusal::Malformed("malformed root public key"))
         }
     }
 }
@@ -244,7 +215,7 @@ impl Refusal {
 
 pub(super) struct Envelopes {
     dir: PathBuf,
-    kind: Kind,
+    kind: Record,
     /// One write at a time, so "newer than kept" holds across requests.
     write: tokio::sync::Mutex<()>,
 }
@@ -262,11 +233,11 @@ fn root_of(text: &str) -> Option<[u8; 32]> {
 
 impl Envelopes {
     pub(super) fn new(dir: PathBuf) -> Self {
-        Self::of(Kind::Envelope, dir)
+        Self::of(Record::Envelope, dir)
     }
 
     /// A store of the members' records of `kind`, under `dir`.
-    pub(super) fn of(kind: Kind, dir: PathBuf) -> Self {
+    pub(super) fn of(kind: Record, dir: PathBuf) -> Self {
         Self {
             dir,
             kind,
@@ -319,7 +290,7 @@ impl Envelopes {
     {
         let publish: Publish =
             serde_json::from_slice(body).map_err(|_| Refusal::Malformed("malformed body"))?;
-        let root = self.kind.root(&publish.envelope)?;
+        let root = root_of_record(self.kind, &publish.envelope)?;
         if publish.issued_at_ms > now_ms.saturating_add(MAX_SKEW_MS) {
             return Err(Refusal::Malformed("dated in the future"));
         }
@@ -327,20 +298,14 @@ impl Envelopes {
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or(Refusal::Malformed("malformed signature"))?;
-        let label = self.kind.label();
-        let mut statement = Vec::with_capacity(
-            label
-                .len()
-                .saturating_add(8)
-                .saturating_add(publish.envelope.len()),
-        );
-        statement.extend_from_slice(label);
-        statement.extend_from_slice(&publish.issued_at_ms.to_le_bytes());
-        statement.extend_from_slice(publish.envelope.as_bytes());
-        VerifyingKey::from_bytes(&root)
-            .map_err(|_| Refusal::Malformed("malformed root public key"))?
-            .verify(&statement, &Signature::from_bytes(&signature))
-            .map_err(|_| Refusal::BadSignature)?;
+        root_statement::verify(
+            &root,
+            self.kind,
+            publish.issued_at_ms,
+            &publish.envelope,
+            &signature,
+        )
+        .map_err(|_| Refusal::BadSignature)?;
         if !member(root).await {
             return Err(Refusal::NotMember);
         }
@@ -381,13 +346,15 @@ mod tests {
     }
 
     fn statement(root: &SigningKey, envelope: &str, at: u64) -> Vec<u8> {
-        let mut signed = LABEL.to_vec();
-        signed.extend_from_slice(&at.to_le_bytes());
-        signed.extend_from_slice(envelope.as_bytes());
+        signed(Record::Envelope, root, "envelope", envelope, at)
+    }
+
+    /// A publish body of `kind`'s record `text`, signed by `root`.
+    fn signed(kind: Record, root: &SigningKey, field: &str, text: &str, at: u64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "envelope": envelope,
+            field: text,
             "issued_at_ms": at,
-            "signature": hex::encode(root.sign(&signed).to_bytes()),
+            "signature": hex::encode(root_statement::sign(root, kind, at, text)),
         }))
         .unwrap_or_default()
     }
@@ -452,29 +419,22 @@ mod tests {
     #[tokio::test]
     async fn a_member_keeps_a_profile_with_a_name_a_picture_and_nothing_else() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let profiles = Envelopes::of(Record::Profile, dir.path().join("profiles"));
         let root = SigningKey::from_bytes(&[7; 32]);
         let hex_root = hex::encode(root.verifying_key().to_bytes());
         let profile = |name: &str| {
             serde_json::json!({"version": 1, "user_public_key": hex_root, "display_name": name})
                 .to_string()
         };
-        let signed = |label: &[u8], text: &str, at: u64| {
-            let mut statement = label.to_vec();
-            statement.extend_from_slice(&at.to_le_bytes());
-            statement.extend_from_slice(text.as_bytes());
-            serde_json::to_vec(&serde_json::json!({
-                "profile": text,
-                "issued_at_ms": at,
-                "signature": hex::encode(root.sign(&statement).to_bytes()),
-            }))
-            .unwrap_or_default()
-        };
+        let profile_body =
+            |kind: Record, text: &str, at: u64| signed(kind, &root, "profile", text, at);
         let ada = profile("Ada Lovelace");
         profiles
-            .publish(&signed(PROFILE_LABEL, &ada, 1_000), 1_000, |_| async {
-                true
-            })
+            .publish(
+                &profile_body(Record::Profile, &ada, 1_000),
+                1_000,
+                |_| async { true },
+            )
             .await
             .expect("kept");
         assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(ada.clone()));
@@ -494,9 +454,11 @@ mod tests {
         for bad in [profile(""), profile(" Ada"), profile("A\u{7}da")] {
             assert!(matches!(
                 profiles
-                    .publish(&signed(PROFILE_LABEL, &bad, 2_000), 2_000, |_| async {
-                        true
-                    })
+                    .publish(
+                        &profile_body(Record::Profile, &bad, 2_000),
+                        2_000,
+                        |_| async { true }
+                    )
                     .await,
                 Err(Refusal::Malformed(_))
             ));
@@ -504,9 +466,11 @@ mod tests {
         // A signature over an envelope's label does not keep a profile.
         assert_eq!(
             profiles
-                .publish(&signed(LABEL, &profile("Grace"), 3_000), 3_000, |_| async {
-                    true
-                })
+                .publish(
+                    &profile_body(Record::Envelope, &profile("Grace"), 3_000),
+                    3_000,
+                    |_| async { true }
+                )
                 .await,
             Err(Refusal::BadSignature)
         );
@@ -515,9 +479,11 @@ mod tests {
             "display_name": "Ada Lovelace", "photo": "data:image/webp;base64,UklGRg=="})
         .to_string();
         profiles
-            .publish(&signed(PROFILE_LABEL, &pictured, 4_000), 4_000, |_| async {
-                true
-            })
+            .publish(
+                &profile_body(Record::Profile, &pictured, 4_000),
+                4_000,
+                |_| async { true },
+            )
             .await
             .expect("kept with a picture");
         assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(pictured));
@@ -541,9 +507,11 @@ mod tests {
             assert!(
                 matches!(
                     profiles
-                        .publish(&signed(PROFILE_LABEL, &text, 5_000), 5_000, |_| async {
-                            true
-                        })
+                        .publish(
+                            &profile_body(Record::Profile, &text, 5_000),
+                            5_000,
+                            |_| async { true }
+                        )
                         .await,
                     Err(Refusal::Malformed(_))
                 ),
@@ -556,29 +524,22 @@ mod tests {
     #[tokio::test]
     async fn a_profile_keeps_what_they_say_they_are_doing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let profiles = Envelopes::of(Record::Profile, dir.path().join("profiles"));
         let root = SigningKey::from_bytes(&[8; 32]);
         let hex_root = hex::encode(root.verifying_key().to_bytes());
-        let signed = |label: &[u8], text: &str, at: u64| {
-            let mut statement = label.to_vec();
-            statement.extend_from_slice(&at.to_le_bytes());
-            statement.extend_from_slice(text.as_bytes());
-            serde_json::to_vec(&serde_json::json!({
-                "profile": text,
-                "issued_at_ms": at,
-                "signature": hex::encode(root.sign(&statement).to_bytes()),
-            }))
-            .unwrap_or_default()
-        };
+        let profile_body =
+            |kind: Record, text: &str, at: u64| signed(kind, &root, "profile", text, at);
         // What they say they are doing, and how they share it, ride along
         // too; a second line or a way of sharing nobody knows does not.
         let said = serde_json::json!({"version": 1, "user_public_key": hex_root,
             "display_name": "Ada", "status": "Sketching the tour", "sharing": "manual"})
         .to_string();
         profiles
-            .publish(&signed(PROFILE_LABEL, &said, 4_500), 4_500, |_| async {
-                true
-            })
+            .publish(
+                &profile_body(Record::Profile, &said, 4_500),
+                4_500,
+                |_| async { true },
+            )
             .await
             .expect("kept with a status");
         for (status, sharing) in [("Two\nlines", "manual"), ("Fine", "sometimes")] {
@@ -587,9 +548,11 @@ mod tests {
             .to_string();
             assert!(matches!(
                 profiles
-                    .publish(&signed(PROFILE_LABEL, &text, 4_600), 4_600, |_| async {
-                        true
-                    })
+                    .publish(
+                        &profile_body(Record::Profile, &text, 4_600),
+                        4_600,
+                        |_| async { true }
+                    )
                     .await,
                 Err(Refusal::Malformed(_))
             ));
@@ -600,19 +563,11 @@ mod tests {
     #[tokio::test]
     async fn a_profile_names_its_linked_accounts_and_where_its_picture_is_from() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let profiles = Envelopes::of(Record::Profile, dir.path().join("profiles"));
         let root = SigningKey::from_bytes(&[9; 32]);
         let hex_root = hex::encode(root.verifying_key().to_bytes());
         let publish = |text: String, at: u64| {
-            let mut statement = PROFILE_LABEL.to_vec();
-            statement.extend_from_slice(&at.to_le_bytes());
-            statement.extend_from_slice(text.as_bytes());
-            let body = serde_json::to_vec(&serde_json::json!({
-                "profile": text,
-                "issued_at_ms": at,
-                "signature": hex::encode(root.sign(&statement).to_bytes()),
-            }))
-            .unwrap_or_default();
+            let body = signed(Record::Profile, &root, "profile", &text, at);
             let profiles = &profiles;
             async move { profiles.publish(&body, at, |_| async { true }).await }
         };

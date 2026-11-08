@@ -87,6 +87,7 @@ pub mod persist;
 pub mod projection;
 pub mod revocation;
 pub mod root_envelope;
+pub mod root_statement;
 #[cfg(unix)]
 pub mod update_lock;
 

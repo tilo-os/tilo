@@ -24,13 +24,16 @@ pub(super) struct HeaderTitle {
     /// The window's sidebar stands beside the content drawing this same count for the place
     /// chosen in it: the header leaves the number to the place.
     pub(super) repeated_by_sidebar: bool,
+    /// The content shows this same title in a heading of its own, on screen right now: the
+    /// header keeps its place in the row but draws nothing, so one title is never twice.
+    pub(super) covered: bool,
     theme: Theme,
     rect: Rect,
-    /// The title and count the last measure saw; a change needs another.
-    measured: Option<(Option<String>, Option<usize>)>,
-    /// The title, count and place the last draw painted; a change needs
+    /// The title, count and cover the last measure saw; a change needs another.
+    measured: Option<(Option<String>, Option<usize>, bool)>,
+    /// The title, count, place and cover the last draw painted; a change needs
     /// another. `None` until drawn in the current theme.
-    painted: Option<(Option<String>, Option<usize>, Rect)>,
+    painted: Option<(Option<String>, Option<usize>, Rect, bool)>,
 }
 
 impl HeaderTitle {
@@ -39,6 +42,7 @@ impl HeaderTitle {
             title: None,
             count: None,
             repeated_by_sidebar: false,
+            covered: false,
             theme: Theme::dark(),
             rect: Rect::ZERO,
             measured: None,
@@ -48,6 +52,17 @@ impl HeaderTitle {
 
     pub(super) fn is_shown(&self) -> bool {
         self.title.is_some()
+    }
+
+    /// Whether the row's title is hidden behind the content's own heading.
+    pub(super) fn is_covered(&self) -> bool {
+        self.covered
+    }
+
+    /// Take the row's title away while `covered`, or give it back. The row keeps its height
+    /// either way: it is the shell's, not the title's.
+    pub(super) fn set_covered(&mut self, covered: bool) {
+        self.covered = covered;
     }
 
     /// The count the header draws: none while the place beside it already shows it, and none
@@ -83,10 +98,13 @@ impl Widget for HeaderTitle {
         text: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let count = self.shown_count();
-        self.measured = Some((self.title.clone(), count));
+        self.measured = Some((self.title.clone(), count, self.covered));
         let Some(title) = self.title.as_deref() else {
             return taffy::Size::ZERO;
         };
+        if self.covered {
+            return taffy::Size::ZERO;
+        }
         let (w, h) = header_row::measure_title(text, &self.theme, title, count);
         taffy::Size {
             width: known.width.unwrap_or(f32_of_f64(w.ceil())),
@@ -104,6 +122,11 @@ impl Widget for HeaderTitle {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // Covered now, or given no room before the next measure takes it out of the row: the
+        // title neither paints over the actions nor flashes for one frame.
+        if self.covered || self.rect.width() <= 0.0 {
+            return;
+        }
         if let Some(title) = self.title.as_deref() {
             let count = self.shown_count();
             header_row::paint_title_in(scene, transform, text, theme, self.rect, title, count);
@@ -118,24 +141,39 @@ impl Widget for HeaderTitle {
     /// over the window repaints nothing here.
     fn needs_redraw(&self) -> bool {
         let count = self.shown_count();
-        self.painted.as_ref().is_none_or(|(title, painted, rect)| {
-            *title != self.title || *painted != count || *rect != self.rect
-        })
+        self.painted
+            .as_ref()
+            .is_none_or(|(title, painted, rect, covered)| {
+                *title != self.title
+                    || *painted != count
+                    || *rect != self.rect
+                    || *covered != self.covered
+            })
     }
 
     fn mark_drawn(&mut self) {
-        self.painted = Some((self.title.clone(), self.shown_count(), self.rect));
+        self.painted = Some((
+            self.title.clone(),
+            self.shown_count(),
+            self.rect,
+            self.covered,
+        ));
     }
 
     fn is_layout_dirty(&self) -> bool {
         let count = self.shown_count();
         self.measured
             .as_ref()
-            .is_none_or(|(title, measured)| *title != self.title || *measured != count)
+            .is_none_or(|(title, measured, covered)| {
+                *title != self.title || *measured != count || *covered != self.covered
+            })
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
+        if self.covered {
+            return None;
+        }
         let title = self.title.clone()?;
         let mut node = AccessNode::new(Role::Heading { level: 2 }).with_name(title);
         if let Some(count) = self.shown_count() {

@@ -24,7 +24,7 @@ use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_browser_peer::{ChannelContentKeys, Host, PeerEvent, PeerHandle, certify};
+use tilo_browser_peer::{ChannelContentKeys, PeerEvent, PeerHandle, certify};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
@@ -102,7 +102,7 @@ async fn a_page_dials_its_host_from_an_endpoint_its_device_delegated() {
     let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
     let certifying = tokio::spawn({
-        let https = Host::Https(host.https());
+        let https = host.iroh();
         let key = browser_key.clone();
         async move {
             certify(

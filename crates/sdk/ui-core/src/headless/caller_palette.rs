@@ -241,6 +241,7 @@ impl FrameHarness {
             focusable: false,
             rect: [rect.x0, rect.y0, rect.width(), rect.height()],
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: None,
             children: vec![

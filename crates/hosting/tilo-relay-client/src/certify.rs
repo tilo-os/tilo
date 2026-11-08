@@ -124,12 +124,12 @@ pub async fn request_certification(
                 now,
             )
             .map_err(|error| codec(&format!("issued certificate refused: {error}")))?;
+            // A member pairs through any host they share, so the host may be
+            // another person's: it must be a host, not necessarily this root's.
             verify_device_cert_at(&host_cert, now)
                 .map_err(|error| codec(&format!("host certificate refused: {error}")))?;
-            if host_cert.user_public_key != request.user_public_key
-                || !host_cert.capabilities.can_act_as_host
-            {
-                return Err(codec(&"host certificate is not a host of this user"));
+            if !host_cert.capabilities.can_act_as_host {
+                return Err(codec(&"host certificate is not a host's"));
             }
             Ok(CertificationOutcome::Issued { cert, host_cert })
         }

@@ -47,7 +47,7 @@ impl PeerHandle {
 }
 
 impl Task {
-    pub(super) fn voice_calls(&self, workspace_id: u64, client: Option<&Link>) -> bool {
+    pub(super) fn voice_calls(&self, workspace_id: u64, client: Option<&RelayClient>) -> bool {
         if let Some(client) = client {
             client.send(Envelope::VoiceCalls { workspace_id }).is_ok()
         } else {
@@ -64,7 +64,7 @@ impl Task {
         workspace_id: u64,
         request: [u8; 16],
         operation: tilo_relay_protocol::voice::CallOperation,
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) -> bool {
         if let Some(client) = client {
             client
@@ -89,7 +89,7 @@ impl Task {
         &mut self,
         workspace_id: u64,
         call: [u8; 32],
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) -> bool {
         let out = self.voice.join(workspace_id, call);
         client.is_none_or(|client| {
@@ -103,7 +103,7 @@ impl Task {
         &mut self,
         workspace_id: u64,
         showing: tilo_relay_protocol::voice::Showing,
-        client: Option<&Link>,
+        client: Option<&RelayClient>,
     ) -> bool {
         match (client, self.voice.show(workspace_id, showing)) {
             (Some(client), Some(show)) => client.send(show).is_ok(),
@@ -111,7 +111,7 @@ impl Task {
         }
     }
 
-    pub(super) fn voice_leave(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
+    pub(super) fn voice_leave(&mut self, workspace_id: u64, client: Option<&RelayClient>) -> bool {
         let out = self.voice.leave(workspace_id);
         match (client, out) {
             (Some(client), Some(leave)) => client.send(leave).is_ok(),

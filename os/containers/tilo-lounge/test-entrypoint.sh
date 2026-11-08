@@ -95,8 +95,8 @@ so.tilo.chat
 EXPECTED
 lounge >"$work/args" || fail "the plain deployment did not start"
 subsequence "$work/want" "$work/args" || fail "the plain deployment maps other arguments"
-# The state is the workspace's own directory under the state root, the layout
-# the old wrapper left on the volume.
+# The state is the workspace's own directory under the state root, the volume
+# the old wrapper left.
 grep -Fqx -- "--state" "$work/args" || fail "no state flag"
 grep -Fqx -- "$work/state/lounge/relay" "$work/args" || fail "the relay state is not under the workspace"
 grep -Fqx -- "$work/state/lounge/room-id" "$work/args" || fail "the workspace id is not kept with the workspace"
@@ -167,6 +167,11 @@ pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the D
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
 pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
+# Every workspace's arrangement is its shared desktop record: the host has no
+# layout flag, so a deployment that still names one (eu1 does) starts without
+# it rather than handing the host an argument it refuses.
+grep -Fqx -- --layout "$work/args" && fail "the entrypoint still passes a layout the host has no flag for"
+grep -Fqx -- personal "$work/args" && fail "a layout setting reached the host"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
 grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
 
@@ -214,4 +219,53 @@ for required in TILO_ROOMS_PERSISTENT TILO_ROOMS_ROOT_FILE TILO_ROOMS_RELAY_ORIG
   grep -Fq "$required" "$work/err" || fail "the refusal does not name $required"
 done
 
-echo "ok: the Lounge entrypoint maps the deployment and refuses the rest"
+
+# The flags the stub accepts are the flags the host has. A removed flag that the
+# entrypoint still passes starts nothing in production, and the stub cannot see
+# that; where a built `tilo-relay` is here (a developer's checkout, the builder),
+# the real one takes the entrypoint's arguments and says whether it would start.
+# `TILO_RELAY_BIN` names one; without either, this part says it was skipped.
+relay=${TILO_RELAY_BIN:-}
+if [[ -z $relay ]]; then
+  for candidate in "${CARGO_TARGET_DIR:-$here/../../../target}/debug/tilo-relay" \
+    "${CARGO_TARGET_DIR:-$here/../../../target}/release/tilo-relay"; do
+    [[ -x $candidate ]] && relay=$candidate && break
+  done
+fi
+if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
+  # `room --help` names every flag the persistent room reads; the entrypoint's
+  # arguments must be among them. `--help` answers without starting anything.
+  "$relay" room --help >"$work/room-help" 2>&1
+  # The arguments the entrypoint hands the host for eu1's environment.
+  lounge \
+    TILO_ROOMS_NAME=Lounge \
+    TILO_ROOMS_SITE_ORIGINS='https://tilo.coffee,https://tilo.so' \
+    TILO_ROOMS_CHAT_CHANNELS='general,feedback' \
+    TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
+    TILO_ROOMS_SEED_APPS='so.tilo.chat' \
+    TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
+    TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop' \
+    TILO_ROOMS_LAYOUT=shared \
+    TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
+    TILO_ROOMS_LIVE=0.0.0.0:9881 \
+    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.coffee/ \
+    TILO_ROOMS_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
+    TILO_ROOMS_DISCORD_CLIENT_ID=1559266815148953650 \
+    TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
+    >"$work/real-args" || fail "the deployment did not start against the real relay"
+  # Every argument that is a flag (starts with `--`) must be one `room --help`
+  # lists.
+  while IFS= read -r argument; do
+    case $argument in
+      --*)
+        name=${argument%%=*}
+        grep -Eq -- "(^|[[:space:]])${name}([[:space:]]|=|$)" "$work/room-help" \
+          || fail "the entrypoint passes $name, which tilo-relay room has no flag for"
+        ;;
+    esac
+  done <"$work/real-args"
+  [[ $(grep -c -- '^--' "$work/real-args") -gt 0 ]] || fail "the entrypoint passed no flags to the real relay"
+  echo "ok: every flag the entrypoint passes is one tilo-relay room reads ($relay)"
+else
+  echo "skipped: no built tilo-relay (TILO_RELAY_BIN) to check the entrypoint's flags against"
+fi

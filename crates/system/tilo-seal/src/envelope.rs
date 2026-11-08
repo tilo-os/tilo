@@ -63,7 +63,14 @@ impl<'a> Context<'a> {
         self.label
     }
 
-    pub(crate) fn aad(&self, header: &[u8]) -> Result<Vec<u8>> {
+    /// The associated data the AEAD authenticates: `header` (empty for a
+    /// wrap that carries none, as a browser's `WebCrypto` `wrapKey` does),
+    /// then the label and the record, each length-prefixed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] for a label or record too long to prefix.
+    pub fn aad(&self, header: &[u8]) -> Result<Vec<u8>> {
         let label = self.label.as_bytes();
         let label_len = u16::try_from(label.len()).map_err(|_| Error::Malformed("label"))?;
         let record_len =

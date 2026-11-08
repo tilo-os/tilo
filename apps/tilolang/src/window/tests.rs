@@ -671,8 +671,8 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
         .collect();
     assert_eq!(selected, std::slice::from_ref(&key), "the row is selected");
     assert!(
-        !workspace.composed().props.contains_key("title"),
-        "the note shows its title as its own, which the header does not repeat"
+        workspace.composed().props.contains_key("title"),
+        "the shell keeps the title for when the note's own heading scrolls away"
     );
     // Editing the title changes the row.
     let input = first_input(&workspace.composed())
@@ -1743,7 +1743,7 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
 }
 
 #[test]
-fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_repeat_it() {
+fn a_document_edits_its_title_as_its_large_title_and_the_shell_leaves_it_to_the_page() {
     let workspace = Workspace::seeded("notes");
     assert!(
         workspace.window.detail_target().is_some(),
@@ -1751,14 +1751,17 @@ fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_r
     );
     let shell = workspace.composed();
     assert!(
-        !shell.props.contains_key("title"),
-        "the note's title is its own, not the header's"
+        shell.props.contains_key("title"),
+        "the shell holds the title, and shows it only once the page's heading scrolls away"
     );
     let title = first_input(&shell).expect("the editor");
-    assert_eq!(
-        title.props.get("title"),
-        Some(&Value::Int(1)),
-        "the editor binds the title as its large title"
+    assert!(
+        matches!(
+            title.props.get("title"),
+            Some(&Value::Int(1) | &Value::Bool(true))
+        ),
+        "the editor binds the title as its large title: {:?}",
+        title.props.get("title")
     );
 }
 

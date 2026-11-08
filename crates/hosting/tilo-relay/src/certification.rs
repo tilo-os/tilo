@@ -45,8 +45,9 @@ use tilo_relay_protocol::delegation::{DelegateProposal, Delegation};
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 
 /// One request, and its answer once an approver gave it. A decided request
-/// stays until its requester collected the answer or it expired, so an HTTPS
-/// requester that polls later still receives it.
+/// stays until its requester collected the answer or it expired, so an
+/// approver that answers just before the request expires still reaches the
+/// device waiting for it.
 struct Pending {
     entry: PendingCertification,
     answer: watch::Sender<Option<CertifyReply>>,
@@ -90,6 +91,9 @@ pub struct CertificationProtocol {
     /// The pairing invites an approver answered, by person: an invite is
     /// for one device, so a second request naming it is refused.
     answered_invites: Arc<Mutex<AnsweredInvites>>,
+    /// The workspaces this host serves, whose members may queue their own
+    /// devices' requests; absent in a host that governs none.
+    workspaces: Option<crate::peer::WorkspaceRegistry>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -107,13 +111,17 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, AcceptError> {
 }
 
 impl CertificationProtocol {
-    pub(crate) fn new(identity: LiveIdentity) -> Self {
+    pub(crate) fn new(
+        identity: LiveIdentity,
+        workspaces: Option<crate::peer::WorkspaceRegistry>,
+    ) -> Self {
         Self {
             identity,
             policy: CertificationPolicy::browser(),
             pending: Arc::new(Mutex::new(HashMap::new())),
             confirmations: Arc::new(Mutex::new(HashMap::new())),
             answered_invites: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            workspaces,
         }
     }
 
@@ -168,21 +176,19 @@ impl CertificationProtocol {
     /// Admit a request into the pending set, or say why not. Returns its
     /// digest, pairing code and a receiver that sees the answer.
     pub fn enqueue(&self, request: CertificationRequest, now_ns: u64) -> Result<Queued, String> {
-        self.enqueue_with(request, None, now_ns, false, None)
+        self.enqueue_with(request, None, now_ns, false)
     }
 
     /// [`Self::enqueue`], also for a member of a workspace this host serves
     /// (`member`: the request names such a member's root), whose own devices
-    /// answer it through [`Self::member_approve`]. `country` is where a
-    /// trusted proxy says the request came from, shown to the approver.
+    /// answer it through [`Self::member_approve`].
     pub fn enqueue_member(
         &self,
         request: CertificationRequest,
         now_ns: u64,
         member: bool,
-        country: Option<String>,
     ) -> Result<Queued, String> {
-        self.enqueue_with(request, None, now_ns, member, country)
+        self.enqueue_with(request, None, now_ns, member)
     }
 
     /// Answer a member's root-signed approver command: their own pending
@@ -240,7 +246,7 @@ impl CertificationProtocol {
         {
             return Err("a delegate proposal names its delegate and workspaces".into());
         }
-        self.enqueue_with(request, Some(proposal), now_ns, false, None)
+        self.enqueue_with(request, Some(proposal), now_ns, false)
             .map(|(digest, code, _)| (digest, code))
     }
 
@@ -277,7 +283,6 @@ impl CertificationProtocol {
         agent: Option<DelegateProposal>,
         now_ns: u64,
         member: bool,
-        country: Option<String>,
     ) -> Result<Queued, String> {
         request
             .verify_at(now_ns)
@@ -315,7 +320,6 @@ impl CertificationProtocol {
                     request_digest: digest,
                     pairing_code: pairing_code.clone(),
                     requested_at_ns: now_ns,
-                    country,
                 },
                 answer,
                 agent,
@@ -334,7 +338,22 @@ impl CertificationProtocol {
     ) -> Result<(), AcceptError> {
         let expires_at_ns = request.expires_at_ns;
         let now = unix_now_ns();
-        let (digest, pairing_code, answer) = match self.enqueue(request, now) {
+        // A member of a workspace this host serves queues their own devices
+        // beside the host's own, answered by their root rather than the
+        // owner's.
+        let member = match &self.workspaces {
+            Some(workspaces) => {
+                crate::workspace_access::admits_person(
+                    workspaces,
+                    self.identity.user_public_key,
+                    request.user_public_key,
+                )
+                .await
+            }
+            None => request.user_public_key == self.identity.user_public_key,
+        };
+        let queued = self.enqueue_member(request, now, member);
+        let (digest, pairing_code, answer) = match queued {
             Ok(queued) => queued,
             Err(reason) => {
                 write_frame(&mut send, &encode(&CertifyReply::Denied { reason })?)
@@ -359,35 +378,6 @@ impl CertificationProtocol {
             .await
             .map_err(|error| io(&error))?;
         finish(connection, send).await
-    }
-
-    /// Wait up to `wait` for the answer to request `digest`, for requesters
-    /// that poll (HTTPS). `Pending` means not decided yet: poll again. A
-    /// delivered answer is removed. A request that expires within `wait`
-    /// is answered `Expired` when it expires, not a whole poll later.
-    pub async fn wait(&self, digest: &[u8; 32], wait: Duration) -> CertifyReply {
-        let Some((receiver, expires_at_ns)) = self
-            .lock()
-            .get(digest)
-            .map(|entry| (entry.answer.subscribe(), entry.entry.request.expires_at_ns))
-        else {
-            return CertifyReply::Expired;
-        };
-        let wait = wait.min(Duration::from_nanos(
-            expires_at_ns.saturating_sub(unix_now_ns()),
-        ));
-        let reply = answered(receiver, wait).await;
-        if matches!(reply, CertifyReply::Expired) {
-            let pairing_code = self.lock().get(digest).map(|entry| {
-                (entry.entry.request.expires_at_ns > unix_now_ns())
-                    .then(|| entry.entry.pairing_code.clone())
-            });
-            if let Some(Some(pairing_code)) = pairing_code {
-                return CertifyReply::Pending { pairing_code };
-            }
-        }
-        self.lock().remove(digest);
-        reply
     }
 
     async fn serve_approver(
@@ -586,6 +576,10 @@ async fn answered(
 
 #[cfg(test)]
 mod confirmation_tests {
+    #![allow(
+        clippy::significant_drop_tightening,
+        reason = "the protocol is the fixture each test drives to its end"
+    )]
 
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, UserIdentity, sign_device_cert};
@@ -603,12 +597,15 @@ mod confirmation_tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut cert, &root).unwrap();
-        CertificationProtocol::new(LiveIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            cert,
-            signing_key: key,
-            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
-        })
+        CertificationProtocol::new(
+            LiveIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                cert,
+                signing_key: key,
+                revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+            },
+            None,
+        )
     }
 
     fn question(id: u8, wait: Duration) -> PendingConfirmation {
@@ -723,7 +720,7 @@ mod confirmation_tests {
     }
 
     #[tokio::test]
-    async fn a_polling_requester_hears_of_expiry_when_its_request_expires() {
+    async fn a_requester_hears_of_expiry_when_its_request_expires() {
         let protocol = protocol();
         let device = ed25519_dalek::SigningKey::from_bytes(&[14; 32]);
         let now = unix_now_ns();
@@ -741,14 +738,20 @@ mod confirmation_tests {
         }
         .sign(&device)
         .unwrap();
-        let (digest, _, _) = protocol.enqueue(request, now).unwrap();
-        let reply = tokio::time::timeout(
-            Duration::from_secs(20),
-            protocol.wait(&digest, Duration::from_secs(60)),
-        )
-        .await
-        .expect("the poll ends when the request expires");
+        let expires_at_ns = request.expires_at_ns;
+        let (_, _, answer) = protocol.enqueue(request, now).unwrap();
+        // The requester waits the request's own lifetime, as `serve_requester`
+        // does, and no longer.
+        let life = Duration::from_nanos(expires_at_ns.saturating_sub(unix_now_ns()));
+        let started = tokio::time::Instant::now();
+        let reply = tokio::time::timeout(Duration::from_secs(20), answered(answer, life))
+            .await
+            .expect("the wait ends when the request expires");
         assert_eq!(reply, CertifyReply::Expired);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the request's lifetime bounds the wait, not the caller's patience"
+        );
     }
 
     #[tokio::test]
@@ -762,7 +765,7 @@ mod confirmation_tests {
             "a stranger's request is refused"
         );
         let (digest, code, _) = protocol
-            .enqueue_member(request.clone(), unix_now_ns(), true, None)
+            .enqueue_member(request.clone(), unix_now_ns(), true)
             .unwrap();
         let owner = protocol.identity.user_public_key;
         let ApproverReply::Pending(listed) =
@@ -816,9 +819,13 @@ mod confirmation_tests {
             protocol.member_approve(signed(&member, issue), unix_now_ns()),
             ApproverReply::Decided
         );
-        let CertifyReply::Issued {
+        let reply = protocol
+            .lock()
+            .get(&digest)
+            .and_then(|entry| entry.answer.borrow().clone());
+        let Some(CertifyReply::Issued {
             cert: delivered, ..
-        } = protocol.wait(&digest, Duration::from_secs(1)).await
+        }) = reply
         else {
             panic!("issued");
         };

@@ -27,9 +27,9 @@ import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
+import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
-import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';
+import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
@@ -342,9 +342,6 @@ function pairingAsk(request, decide) {
   };
   detail('Device', request.label || 'A browser');
   const when = detail('Asked', '');
-  // In the card's own language, which is English for now.
-  const country = countryName(request.country, {locale: 'en'});
-  if (country) detail('From', country);
   const tick = () => { when.textContent = whenRequested(request.requestedAtMs, {locale: 'en'}); };
   tick();
   const timer = setInterval(tick, 15_000);
@@ -967,10 +964,9 @@ export async function startEntryPage({mode}) {
     // a person the home already let in, as themselves (a paired device's
     // person approves new devices elsewhere): nobody joins the home just to
     // report. It connects with this tab's device key for the home's host (a
-    // second one where the workspace's peer holds the first), as a background
-    // session (the home counts nobody online by it: no seat, face or count),
-    // without calls or a live plane, gives up rather than waiting at the
-    // door, and is kept while the page is.
+    // second one where the workspace's peer holds the first), without calls
+    // or a live plane, gives up rather than waiting at the door, and is kept
+    // while the page is.
     homePeer: async home => {
       const kept = remembering(() => keptMembership(home));
       if (!kept || kept.paired) return null;
@@ -978,7 +974,7 @@ export async function startEntryPage({mode}) {
       if (!identity || identity.userPublicKey !== kept.userPublicKey) return null;
       runtime ??= await loadRuntime();
       const name = chosenDisplayName(identity.userPublicKey) ?? defaultDisplayName(identity.userPublicKey);
-      return joinViaHost({workspace: home, identity, displayName: name, runtime, live: false, voice: false, background: true,
+      return joinViaHost({workspace: home, identity, displayName: name, runtime, live: false, voice: false,
         wait: () => Promise.reject(new Error('the home workspace did not let this device in'))});
     },
     inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),

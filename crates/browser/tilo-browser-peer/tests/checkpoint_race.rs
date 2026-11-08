@@ -25,7 +25,7 @@ tilo_automerge_isolate::test_worker!();
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer, wait_for};
@@ -63,7 +63,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     )
     .await;
     let _laptop = participant::Participant::start(&host.relay, &root).await;
-    let https = || Host::Https(host.https());
+    let https = || host.iroh();
     let a = start_peer(https(), a.cert, host_device.cert.clone(), a.key);
     let b = start_peer(https(), b.cert, host_device.cert.clone(), b.key);
     a.join_placed(support::WORKSPACE, "Workspace").unwrap();

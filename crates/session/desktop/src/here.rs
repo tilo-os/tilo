@@ -1,8 +1,9 @@
 //! Who is here in a hosted workspace and what they are doing.
 //! Two sources meet here. A workspace's live layer names the members present now (people and
 //! agents), their colour, the record they focus and an agent's own activity line. The host answers
-//! `/here` with each person's one-line status and a summary of their last minutes, built from the
-//! titles of the actions they took (`tilo_relay_protocol::web::HERE_PATH`). Neither is written to
+//! the `HereRequest` the page posts over its session with each person's one-line status and a
+//! summary of their last minutes, built from the titles of the actions they took
+//! (`tilo_relay_protocol::web::HereRequest`). Neither is written to
 //! the workspace's desktop document: the bar, the People popover and the windows read them as
 //! ambient presence.
 //! A person may be here from several devices at once (each browser tab is a device of its own).
@@ -12,6 +13,7 @@
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
+use collab_types::presence::Shown;
 use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
@@ -19,7 +21,10 @@ use ui::presence::{PresenceCtx, PresenceKey};
 mod following;
 mod screen;
 mod waves;
-pub use screen::{MemberLayout, MemberWindow, Screen, ScreenWindow};
+pub use collab_types::presence::{
+    ShownFocus as Focus, ShownLayout as MemberLayout, ShownWindow as MemberWindow,
+};
+pub use screen::{Screen, ScreenWindow};
 pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 
 /// The most bytes of a person's own words, as their live presence carries them (a participant's
@@ -35,15 +40,6 @@ const HOST_ONLY_FRESH_MS: u64 = 90_000;
 /// member and adds them again, and a carrier re-announces a member as withdrawn and back; none of
 /// that is someone arriving.
 const REJOIN_QUIET_MS: u64 = 90_000;
-
-/// A record a member focuses, as their live presence names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct Focus {
-    #[serde(default)]
-    pub app: String,
-    #[serde(default)]
-    pub record: String,
-}
 
 /// One member of the workspace's live layer, as the page reports it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -90,6 +86,30 @@ pub struct LiveMember {
     /// `None` when they are in none.
     #[serde(default)]
     pub call: Option<String>,
+}
+
+impl LiveMember {
+    /// `shown` as the desktop's roster reads them: the same record a page reads from its own
+    /// board.
+    #[must_use]
+    pub fn of(shown: &Shown) -> Self {
+        Self {
+            publisher: shown.publisher.clone(),
+            kind: if shown.agent { "agent" } else { "person" }.into(),
+            label: shown.label.clone(),
+            device: shown.device.clone(),
+            focus: shown.focus.clone(),
+            activity: shown.activity.clone(),
+            place: shown.place.clone(),
+            user: shown.user.clone(),
+            wave: shown.wave.clone(),
+            layout: shown.layout.clone(),
+            following: shown.following.clone(),
+            // An agent has no availability of its own: it is always at work.
+            availability: (!shown.agent).then(|| shown.availability.clone()),
+            call: shown.call.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]

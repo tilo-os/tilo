@@ -8,7 +8,7 @@ import {spawn} from 'node:child_process';
 import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync, statfsSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {homedir, tmpdir} from 'node:os';
-import {extname, join, normalize} from 'node:path';
+import {extname, join, normalize, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {brotliCompressSync, constants as zlibConstants} from 'node:zlib';
 
@@ -61,14 +61,23 @@ function warm(root) {
   }
 }
 
-/** Serve `root` on 127.0.0.1; resolves to `{url, close}`. */
-export function serve(root) {
-  warm(root);
+/** Serve `root` on 127.0.0.1, or the first of `roots` that has the file: a
+ * built `pkg/` beside the page's sources serves one origin, so a module that
+ * imports `./pkg/…` finds it though it lives in another directory. Resolves
+ * to `{url, close}`. */
+export function serve(root, {also = []} = {}) {
+  const roots = [root, ...also].map(dir => resolve(dir));
+  for (const dir of roots) warm(dir);
   const server = createServer((request, response) => {
     const path = normalize(decodeURIComponent(new URL(request.url, 'http://x').pathname));
-    let file = join(root, path);
-    if (!file.startsWith(root)) { response.writeHead(403).end(); return; }
-    if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
+    const candidates = roots.map(dir => join(dir, path));
+    if (!candidates.every(candidate => roots.some(dir => candidate.startsWith(dir)))) {
+      response.writeHead(403).end();
+      return;
+    }
+    let file = candidates.find(candidate => existsSync(candidate));
+    if (!file) { response.writeHead(404).end(); return; }
+    if (statSync(file).isDirectory()) file = join(file, 'index.html');
     if (!existsSync(file)) { response.writeHead(404).end(); return; }
     const {body: bytes, encoding} = body(file, request.headers['accept-encoding'] ?? '');
     response.writeHead(200, {

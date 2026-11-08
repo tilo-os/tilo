@@ -215,7 +215,7 @@ pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
         if root.events.contains_key(BACK) {
             moved.events.insert(BACK.to_owned(), Event::default());
         }
-        return header_rules(moved, true);
+        return header_rules(moved);
     }
     for name in HEADER_PROPS {
         match detail.props.get(*name) {
@@ -237,21 +237,17 @@ pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     with_slot(shell, "content", content)
 }
 
-/// Apply the header rules to the composed shell: its bar repeats neither an action its content
-/// offers nor a title its content edits, whichever slot the bar's controls stand in. A page in
-/// front of another keeps its title even when its content edits it: the bar names the screen
-/// beside the way back, which is what every window shows of the page it opened.
+/// Apply the header rules to the composed shell: its bar repeats no action its content offers,
+/// whichever slot the bar's controls stand in. A title the content shows as its own heading is
+/// the shell's business, not the host's: the shell leaves it to the heading and takes it back
+/// once that scrolls away.
 #[must_use]
-pub fn header_rules(mut shell: UiNode, in_front: bool) -> UiNode {
+pub fn header_rules(mut shell: UiNode) -> UiNode {
     let content = slot_children(&shell, "content").to_vec();
     let mut shown: Vec<String> = Vec::new();
     let mut bound: Vec<(String, String)> = Vec::new();
-    let mut titled = false;
     for node in &content {
-        offered(node, &mut shown, &mut bound, &mut titled);
-    }
-    if titled && !in_front {
-        shell.props.remove("title");
+        offered(node, &mut shown, &mut bound);
     }
     let repeated = |node: &UiNode, event: &str| -> bool {
         let label = match node.props.get("label") {
@@ -296,14 +292,9 @@ pub fn header_rules(mut shell: UiNode, in_front: bool) -> UiNode {
     shell
 }
 
-/// What `node`'s content offers: the labels of the actions it draws itself, the fields its
-/// controls are bound to, and whether it edits a title as its large title.
-fn offered(
-    node: &UiNode,
-    shown: &mut Vec<String>,
-    bound: &mut Vec<(String, String)>,
-    titled: &mut bool,
-) {
+/// What `node`'s content offers: the labels of the actions it draws itself and the fields its
+/// controls are bound to.
+fn offered(node: &UiNode, shown: &mut Vec<String>, bound: &mut Vec<(String, String)>) {
     if node.kind == kind("Button")
         && node.events.contains_key("press")
         && let Some(Value::Text(label)) = node.props.get("label")
@@ -320,16 +311,8 @@ fn offered(
     if let Some((target, field)) = node.binding.as_ref().and_then(|binding| binding.field()) {
         bound.push((target.to_owned(), field.to_owned()));
     }
-    if node.kind == kind("TextInput")
-        && matches!(
-            node.props.get("title"),
-            Some(Value::Bool(true) | Value::Int(1))
-        )
-    {
-        *titled = true;
-    }
     for child in &node.children {
-        offered(child, shown, bound, titled);
+        offered(child, shown, bound);
     }
 }
 
@@ -524,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn a_header_repeats_neither_a_button_nor_a_title_its_content_has() {
+    fn a_header_repeats_no_button_its_content_has() {
         let build = || {
             let mut title = node("TextInput", "t", &[("title", Value::Int(1))]);
             title.binding = None;
@@ -559,20 +542,16 @@ mod tests {
                 &[("title", Value::text("Counter"))],
             )
         };
-        let ruled = header_rules(build(), false);
+        let ruled = header_rules(build());
         let actions: Vec<&str> = slot_children(&ruled, "actions")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
         assert_eq!(actions, ["s", "share"], "an emptied More menu goes too");
-        assert!(
-            !ruled.props.contains_key("title"),
-            "the content edits its title"
-        );
         assert_eq!(
-            header_rules(build(), true).props.get("title"),
+            ruled.props.get("title"),
             Some(&Value::text("Counter")),
-            "a page in front of another keeps its title in the bar that names it"
+            "the bar keeps the title: the shell hides it while the page's heading shows it"
         );
     }
 
@@ -589,7 +568,7 @@ mod tests {
             ],
             &[],
         );
-        let ruled = header_rules(bare, false);
+        let ruled = header_rules(bare);
         assert!(
             slot_children(&ruled, "actions").is_empty(),
             "the empty state's own action is the only one"
@@ -607,7 +586,7 @@ mod tests {
             ],
             &[],
         );
-        let ruled = header_rules(over, false);
+        let ruled = header_rules(over);
         let actions: Vec<&str> = slot_children(&ruled, "overview_actions")
             .iter()
             .map(|node| node.key.as_str())
@@ -626,7 +605,7 @@ mod tests {
             ],
             &[],
         );
-        let ruled = header_rules(filled, false);
+        let ruled = header_rules(filled);
         assert_eq!(
             slot_children(&ruled, "actions").len(),
             1,

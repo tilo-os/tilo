@@ -617,6 +617,18 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
+
+    /// The host's fetch proxy grant for this connection: the bearer token a
+    /// page sends with every request it makes through its host
+    /// ([`FETCH_PATH`], as `tilo_net::proxy` names it). Sent once, as the
+    /// session starts, and dead when the connection ends; a host that serves
+    /// no proxy sends none.
+    ///
+    /// [`FETCH_PATH`]: crate::web::FETCH_PATH
+    FetchGrant {
+        /// What names this connection to the host.
+        token: [u8; 32],
+    },
 }
 
 impl Envelope {
@@ -671,6 +683,7 @@ impl Envelope {
             Self::WorkspacesReply { .. } => "WorkspacesReply",
             Self::HereRequest { .. } => "HereRequest",
             Self::HereReply { .. } => "HereReply",
+            Self::FetchGrant { .. } => "FetchGrant",
         }
     }
 
@@ -725,7 +738,8 @@ impl Envelope {
             | Self::WorkspacesRequest { .. }
             | Self::WorkspacesReply { .. }
             | Self::HereRequest { .. }
-            | Self::HereReply { .. } => None,
+            | Self::HereReply { .. }
+            | Self::FetchGrant { .. } => None,
         }
     }
 }
