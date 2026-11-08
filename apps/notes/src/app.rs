@@ -1426,7 +1426,7 @@ impl NotesApp {
             }
         }
         if self.bound_page == Some(sel) && self.naming_page.take_if(|page| *page == sel).is_some() {
-            self.main.begin_new_title_edit();
+            self.main.begin_title_edit(true);
         }
     }
 
@@ -3725,7 +3725,7 @@ impl NotesApp {
     fn apply_note_action_on(&mut self, row: usize, page: PageId) {
         match row {
             crate::sidebar::menu_row::NEW_CHILD => self.sidebar.new_note(Some(page), false),
-            crate::sidebar::menu_row::RENAME => self.main.begin_title_edit(),
+            crate::sidebar::menu_row::RENAME => self.main.begin_title_edit(false),
             crate::sidebar::menu_row::DUPLICATE => self.sidebar.duplicate(page),
             crate::sidebar::menu_row::COPY_LINK => {
                 self.sidebar.request(&NotesEffect::CopyLink { page });

@@ -1084,17 +1084,6 @@ impl CompositionFocus {
                 })
             };
         }
-        if let Some(node) = target {
-            // Restore the selected control last: its setter may focus a child.
-            let _ = unsafe {
-                mutate_bound_node(bindings, nodes, node, |widget| {
-                    widget.set_focus(true);
-                    if let Some(state) = &self.state {
-                        crate::undo::set_state(widget, state);
-                    }
-                })
-            };
-        }
     }
 }
 

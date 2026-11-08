@@ -683,6 +683,13 @@ impl Widget for EditableLabel {
         }
     }
 
+    /// A label being edited owns the keyboard, so an edit the app opened (a note's
+    /// title as the note is made) takes it in the build it began in.
+    fn take_focus_request(&mut self) -> Option<String> {
+        self.is_focused()
+            .then(|| self.test_id().unwrap_or_default().to_owned())
+    }
+
     fn is_focused(&self) -> bool {
         self.editing
     }
