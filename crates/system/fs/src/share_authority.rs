@@ -9,11 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use collab_types::{Ed25519PublicKey, canonical_bytes};
-use fs_protocol::projection::{MAX_SHARES_PER_RECORD, SHARE_PROJECTION_VERSION};
 use fs_protocol::{
-    FileActor, FileInviteError, FileInviteSubject, FileInviteV1, FilePermission,
-    ShareGrantProjectionV1, ShareGrantStatus, ShareProjectionV1, ShareSubjectProjection,
-    bearer_secret_hash,
+    FileActor, FileInviteError, FileInviteSubject, FileInviteV1, FilePermission, bearer_secret_hash,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -21,6 +18,9 @@ use tilo_lock::MutexRecover as _;
 use uuid::Uuid;
 
 const AUTHORITY_VERSION: u16 = 1;
+/// Grants one record may hold: the bound a record's share state had when the
+/// signed grants were also projected into an extended attribute.
+const MAX_GRANTS_PER_RECORD: usize = 32;
 pub const MAX_SHARE_AUTHORITY_GRANTS: usize = 4_096;
 pub const MAX_SHARE_AUTHORITY_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -36,7 +36,7 @@ struct AuthorityState {
 struct GrantState {
     token_hash: [u8; 32],
     /// The signed grant is the authority's source of record/recipient truth.
-    /// `None` reads authority files written before share projection existed;
+    /// `None` reads authority files written before it was retained;
     /// re-registering that token upgrades the row without changing its id.
     #[serde(default)]
     token: Option<FileInviteV1>,
@@ -150,7 +150,7 @@ impl ShareAuthority {
                             .is_some_and(|registered| registered.record_id == token.record_id)
                     })
                     .count();
-                if record_grants >= MAX_SHARES_PER_RECORD {
+                if record_grants >= MAX_GRANTS_PER_RECORD {
                     return Err(ShareAuthorityError::TooManyRecordGrants);
                 }
                 let mut next = current.clone();
@@ -177,7 +177,7 @@ impl ShareAuthority {
                     .is_some_and(|registered| registered.record_id == token.record_id)
             })
             .count();
-        if record_grants >= MAX_SHARES_PER_RECORD {
+        if record_grants >= MAX_GRANTS_PER_RECORD {
             return Err(ShareAuthorityError::TooManyRecordGrants);
         }
         let mut next = current.clone();
@@ -374,61 +374,6 @@ impl ShareAuthority {
         }
         drop(current);
         Ok(())
-    }
-
-    /// Return the complete bounded, redacted share state for one stable
-    /// record. The signed tokens retained by the authority are the source of
-    /// truth; bearer secrets and secret hashes are never projected.
-    pub fn projection(
-        &self,
-        record_id: fs_protocol::FileRecordId,
-        now_ms: u64,
-    ) -> ShareProjectionV1 {
-        let current = self.state.lock_recover();
-        let grants = current
-            .grants
-            .iter()
-            .filter_map(|(id, state)| {
-                let token = state.token.as_ref()?;
-                if token.record_id != record_id {
-                    return None;
-                }
-                let subject = match &token.subject {
-                    FileInviteSubject::Person(person) => {
-                        ShareSubjectProjection::Person { person: *person }
-                    }
-                    FileInviteSubject::Bearer { .. } => ShareSubjectProjection::BearerLink,
-                };
-                let expired = token
-                    .expires_at_ms
-                    .is_some_and(|deadline| now_ms >= deadline);
-                let exhausted = state
-                    .max_redemptions
-                    .is_some_and(|max| state.redemptions >= max);
-                let status = ShareGrantStatus::derive(state.revoked, expired, exhausted);
-                Some(ShareGrantProjectionV1 {
-                    grant_id: *id,
-                    subject,
-                    permission: token.permission,
-                    expires_at_ms: token.expires_at_ms,
-                    revoked: state.revoked,
-                    expired,
-                    used: state.redemptions > 0,
-                    exhausted,
-                    status,
-                    redemptions: state.redemptions,
-                    max_redemptions: state.max_redemptions,
-                })
-            })
-            .collect();
-        let projection = ShareProjectionV1 {
-            schema_version: SHARE_PROJECTION_VERSION,
-            record_id,
-            observed_at_ms: now_ms,
-            grants,
-        };
-        drop(current);
-        projection
     }
 }
 
@@ -677,9 +622,6 @@ mod tests {
                 authority.redeem(&invite.token, &invite.secret, actor(10), 10_000),
                 Err(ShareAuthorityError::Invite(_))
             ));
-            let projection = authority.projection(invite.token.record_id, 10_000);
-            assert_eq!(projection.grants.len(), 1);
-            assert_eq!(projection.grants[0].status, ShareGrantStatus::Expired);
         }
         {
             let (dir, issuer, invite) = limited_invite();
@@ -698,113 +640,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn authority_projection_is_redacted_bounded_and_validated_on_restart() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("shares.json");
-            let (issuer_sk, issuer) = collab_types::generate_keypair();
-            let (_, person) = collab_types::generate_keypair();
-            let workspace_id = Uuid::new_v4();
-            let record_id = FileRecordId::new();
-            let named = mint_file_invite(
-                FileInviteSpec {
-                    workspace_id,
-                    record_id,
-                    subject: FileInviteSubject::Person(person),
-                    permission: FilePermission::Edit,
-                    expires_at_ms: Some(500),
-                    max_redemptions: None,
-                },
-                &issuer_sk,
-            )
-            .unwrap();
-            let mut rng = UnwrapErr(SysRng);
-            let bearer = mint_bearer_file_invite(
-                FileInviteSpec {
-                    workspace_id,
-                    record_id,
-                    subject: FileInviteSubject::Bearer {
-                        secret_hash: [0; 32],
-                    },
-                    permission: FilePermission::View,
-                    expires_at_ms: Some(300),
-                    max_redemptions: Some(1),
-                },
-                &issuer_sk,
-                &mut rng,
-            )
-            .unwrap();
-
-            let authority = ShareAuthority::open(&path).unwrap();
-            authority.register(&named, &[issuer], 1).unwrap();
-            authority.register(&bearer.token, &[issuer], 1).unwrap();
-            let initial = authority.projection(record_id, 10);
-            assert_eq!(initial.grants.len(), 2);
-            let named_projection = initial
-                .grants
-                .iter()
-                .find(|grant| grant.grant_id == named.id)
-                .unwrap();
-            assert_eq!(
-                named_projection.subject,
-                ShareSubjectProjection::Person { person }
-            );
-            assert_eq!(named_projection.permission, FilePermission::Edit);
-            assert_eq!(named_projection.status, ShareGrantStatus::Active);
-            assert!(!named_projection.revoked);
-            assert!(!named_projection.expired);
-            assert!(!named_projection.used);
-
-            let bytes = initial.to_xattr_bytes().unwrap();
-            let json = String::from_utf8(bytes.clone()).unwrap();
-            assert!(!json.contains("secret"));
-            assert!(!json.contains(&hex::encode(bearer.secret)));
-            assert_eq!(ShareProjectionV1::parse_xattr(&bytes).unwrap(), initial);
-
-            authority
-                .redeem(&bearer.token, &bearer.secret, actor(60), 20)
-                .unwrap();
-            authority.revoke(named.id).unwrap();
-            drop(authority);
-
-            let reopened = ShareAuthority::open(path).unwrap();
-            let live = reopened.projection(record_id, 25);
-            assert_eq!(live.grants.len(), 2);
-            assert_eq!(
-                live.grants
-                    .iter()
-                    .find(|grant| grant.grant_id == named.id)
-                    .unwrap()
-                    .status,
-                ShareGrantStatus::Revoked
-            );
-            let link = live
-                .grants
-                .iter()
-                .find(|grant| grant.grant_id == bearer.token.id)
-                .unwrap();
-            assert_eq!(link.subject, ShareSubjectProjection::BearerLink);
-            assert_eq!(link.redemptions, 1);
-            assert_eq!(link.max_redemptions, Some(1));
-            assert!(link.used);
-            assert!(link.exhausted);
-            assert_eq!(link.status, ShareGrantStatus::Exhausted);
-
-            let expired = reopened.projection(record_id, 300);
-            assert_eq!(
-                expired
-                    .grants
-                    .iter()
-                    .find(|grant| grant.grant_id == bearer.token.id)
-                    .unwrap()
-                    .status,
-                ShareGrantStatus::Expired
-            );
-        }
+    fn grants_are_capped_per_record_and_a_tampered_authority_fails_closed() {
         {
             let dir = tempfile::tempdir().unwrap();
             let (issuer_sk, issuer) = collab_types::generate_keypair();
@@ -812,8 +648,8 @@ mod tests {
             let workspace_id = Uuid::new_v4();
             let record_id = FileRecordId::new();
             let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
-            for _ in 0..MAX_SHARES_PER_RECORD {
-                let token = mint_file_invite(
+            let grant = || {
+                mint_file_invite(
                     FileInviteSpec {
                         workspace_id,
                         record_id,
@@ -824,31 +660,15 @@ mod tests {
                     },
                     &issuer_sk,
                 )
-                .unwrap();
-                authority.register(&token, &[issuer], 1).unwrap();
+                .unwrap()
+            };
+            for _ in 0..MAX_GRANTS_PER_RECORD {
+                authority.register(&grant(), &[issuer], 1).unwrap();
             }
-            let overflow = mint_file_invite(
-                FileInviteSpec {
-                    workspace_id,
-                    record_id,
-                    subject: FileInviteSubject::Person(person),
-                    permission: FilePermission::View,
-                    expires_at_ms: None,
-                    max_redemptions: None,
-                },
-                &issuer_sk,
-            )
-            .unwrap();
             assert!(matches!(
-                authority.register(&overflow, &[issuer], 1),
+                authority.register(&grant(), &[issuer], 1),
                 Err(ShareAuthorityError::TooManyRecordGrants)
             ));
-            let projection = authority.projection(record_id, 2);
-            assert_eq!(projection.grants.len(), MAX_SHARES_PER_RECORD);
-            assert!(
-                projection.to_xattr_bytes().unwrap().len()
-                    <= fs_protocol::projection::MAX_SHARE_PROJECTION_BYTES
-            );
         }
         {
             let (dir, issuer, invite) = limited_invite();

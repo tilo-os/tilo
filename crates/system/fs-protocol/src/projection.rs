@@ -7,14 +7,9 @@
 //! self-validating: a value a reader accepts is one the daemon could have
 //! written.
 
-use std::collections::BTreeSet;
-
-use collab_types::Ed25519PublicKey;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
-use uuid::Uuid;
 
-use crate::file_invite::FilePermission;
 use crate::files::{
     ConflictStatus, FileConflictV1, FilePropertiesV1, FileRecordError, FileRecordId, FileVersionId,
     FileVersionV1, MAX_CONFLICT_VERSIONS,
@@ -58,11 +53,6 @@ pub const PIN_XATTR: &str = "user.tilo.pin";
 /// schedules a bounded background hydration of the current content. No
 /// bearer, peer address, or path is carried in this control.
 pub const AVAILABILITY_CONTROL_XATTR: &str = "user.tilo.availability-control";
-/// Versioned, redacted record-sharing state.
-pub const SHARE_XATTR: &str = "user.tilo.share";
-/// Absolute owner-only Unix socket used for response-bearing share
-/// creation/revocation. This is only a locator, never a bearer credential.
-pub const SHARE_CONTROL_XATTR: &str = "user.tilo.share-control";
 /// Bounded recent history and open conflicts of one record.
 pub const HISTORY_XATTR: &str = "user.tilo.history";
 /// Write-only history control (restore, conflict resolution).
@@ -85,9 +75,6 @@ pub const MAX_AVAILABILITY_XATTR_BYTES: usize = 2_048;
 /// registry may retain a longer error; the projection indicates when it
 /// truncated.
 pub const MAX_PROJECTED_ERROR_BYTES: usize = 512;
-pub const SHARE_PROJECTION_VERSION: u16 = 1;
-pub const MAX_SHARES_PER_RECORD: usize = 32;
-pub const MAX_SHARE_PROJECTION_BYTES: usize = 16 * 1024;
 pub const HISTORY_PROJECTION_VERSION: u16 = 1;
 pub const MAX_HISTORY_PROJECTION_BYTES: usize = 16 * 1024;
 pub const MAX_PROJECTED_VERSIONS: usize = 12;
@@ -564,124 +551,6 @@ impl AvailabilityProjectionV1 {
     }
 }
 
-/// Redacted, versioned value of [`SHARE_XATTR`]. Bearer secrets and secret
-/// hashes are never projected.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShareProjectionV1 {
-    pub schema_version: u16,
-    pub record_id: FileRecordId,
-    pub observed_at_ms: u64,
-    pub grants: Vec<ShareGrantProjectionV1>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "these booleans are explicit redundant fields in the versioned projection schema and are cross-validated on decode"
-)]
-pub struct ShareGrantProjectionV1 {
-    pub grant_id: Uuid,
-    pub subject: ShareSubjectProjection,
-    pub permission: FilePermission,
-    pub expires_at_ms: Option<u64>,
-    pub revoked: bool,
-    pub expired: bool,
-    pub used: bool,
-    pub exhausted: bool,
-    pub status: ShareGrantStatus,
-    pub redemptions: u32,
-    pub max_redemptions: Option<u32>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum ShareSubjectProjection {
-    Person { person: Ed25519PublicKey },
-    BearerLink,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ShareGrantStatus {
-    Active,
-    Expired,
-    Revoked,
-    Exhausted,
-}
-
-impl ShareGrantStatus {
-    /// The one status a grant reports; revocation outranks expiry, which
-    /// outranks exhaustion.
-    pub fn derive(revoked: bool, expired: bool, exhausted: bool) -> Self {
-        if revoked {
-            Self::Revoked
-        } else if expired {
-            Self::Expired
-        } else if exhausted {
-            Self::Exhausted
-        } else {
-            Self::Active
-        }
-    }
-}
-
-impl ShareProjectionV1 {
-    pub fn to_xattr_bytes(&self) -> Result<Vec<u8>, ProjectionError> {
-        self.validate()?;
-        encode(self, MAX_SHARE_PROJECTION_BYTES)
-    }
-
-    pub fn parse_xattr(bytes: &[u8]) -> Result<Self, ProjectionError> {
-        let projection: Self = decode(bytes, MAX_SHARE_PROJECTION_BYTES)?;
-        projection.validate()?;
-        Ok(projection)
-    }
-
-    fn validate(&self) -> Result<(), ProjectionError> {
-        if self.schema_version != SHARE_PROJECTION_VERSION {
-            return Err(ProjectionError::UnsupportedVersion(self.schema_version));
-        }
-        if self.grants.len() > MAX_SHARES_PER_RECORD {
-            return Err(ProjectionError::TooManyEntries);
-        }
-        let mut ids = BTreeSet::new();
-        for grant in &self.grants {
-            if !ids.insert(grant.grant_id) {
-                return Err(ProjectionError::InvalidGrantState);
-            }
-            let expired = grant
-                .expires_at_ms
-                .is_some_and(|deadline| self.observed_at_ms >= deadline);
-            let used = grant.redemptions > 0;
-            let exhausted = grant
-                .max_redemptions
-                .is_some_and(|max| grant.redemptions >= max);
-            if grant.expired != expired
-                || grant.used != used
-                || grant.exhausted != exhausted
-                || grant.status != ShareGrantStatus::derive(grant.revoked, expired, exhausted)
-                || grant
-                    .max_redemptions
-                    .is_some_and(|max| max == 0 || grant.redemptions > max)
-                || matches!(grant.subject, ShareSubjectProjection::Person { .. })
-                    && grant.redemptions != 0
-            {
-                return Err(ProjectionError::InvalidGrantState);
-            }
-        }
-        Ok(())
-    }
-
-    pub fn active_grants(&self) -> usize {
-        self.grants
-            .iter()
-            .filter(|grant| grant.status == ShareGrantStatus::Active)
-            .count()
-    }
-}
-
 /// Bounded value of [`HISTORY_XATTR`]: the newest versions and conflicts of
 /// one record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -739,6 +608,7 @@ impl HistoryProjectionV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn shared_record_index_decoders_keep_the_wire_schema() {
@@ -906,28 +776,6 @@ mod tests {
             );
         }
         {
-            let share = serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "observed_at_ms": 10,
-                "grants": [{
-                    "grant_id": "c0d4e23f-c7cb-4ded-a427-b32cf9da9343",
-                    "subject": {"kind": "person", "person": vec![1; 32]},
-                    "permission": "View",
-                    "expires_at_ms": null,
-                    "revoked": false,
-                    "expired": false,
-                    "used": false,
-                    "exhausted": false,
-                    "status": "active",
-                    "redemptions": 0,
-                    "max_redemptions": null
-                }]
-            }))
-            .unwrap();
-            let share = ShareProjectionV1::parse_xattr(&share).unwrap();
-            assert_eq!(share.active_grants(), 1);
-
             let history = serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -952,10 +800,6 @@ mod tests {
             assert_eq!(
                 history.versions[0].provenance,
                 crate::files::FileProvenance::Create
-            );
-            assert!(
-                ShareProjectionV1::parse_xattr(&vec![b' '; MAX_SHARE_PROJECTION_BYTES + 1])
-                    .is_err()
             );
             assert!(
                 HistoryProjectionV1::parse_xattr(&vec![b' '; MAX_HISTORY_PROJECTION_BYTES + 1])

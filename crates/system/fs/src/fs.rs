@@ -721,9 +721,7 @@ pub struct QuickFS {
     /// later descendants and later immutable versions inherit the promise.
     pinned_hydration: Option<PinnedHydrationTask>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
-    /// Durable signed-grant authority used for the bounded read-only share
-    /// projection. The FUSE callback never holds or reconstructs link secrets.
-    share_authority: Option<Arc<crate::share_authority::ShareAuthority>>,
+
     /// The certified local actor attributed to the versions this mount
     /// appends; the versions themselves live in the namespace document.
     history: Option<fs_protocol::FileActor>,
@@ -751,7 +749,7 @@ pub struct QuickFS {
     /// this so unsigned legacy namespace bytes are never automatically
     /// blessed into their certified actor's signed history.
     allow_legacy_record_migration: bool,
-    share_control_path: Option<std::path::PathBuf>,
+
     /// Tells inotify of the changes the kernel did not make
     /// ([`crate::change_signal`]); `None` leaves watchers to poll.
     change_signal: Option<Arc<crate::change_signal::ChangeSignal>>,
@@ -802,7 +800,7 @@ impl QuickFS {
             stored_writes: Arc::default(),
             pinned_hydration: None,
             eviction_queue: None,
-            share_authority: None,
+
             history: None,
             record_publisher: None,
             write_attributions: None,
@@ -814,7 +812,7 @@ impl QuickFS {
             changeset_open: AtomicBool::new(false),
             announce_held: AtomicBool::new(false),
             allow_legacy_record_migration: true,
-            share_control_path: None,
+
             change_signal: None,
             #[cfg(test)]
             commit_fault: Mutex::new(None),
@@ -2371,22 +2369,6 @@ impl QuickFS {
         self
     }
 
-    #[must_use]
-    pub fn with_share_authority(
-        mut self,
-        authority: Arc<crate::share_authority::ShareAuthority>,
-    ) -> Self {
-        self.share_authority = Some(authority);
-        self
-    }
-
-    /// Advertise the owner-only response-bearing share service on the mount
-    /// root. The path is not secret; socket permissions enforce local access.
-    #[must_use]
-    pub fn with_share_control_path(mut self, path: std::path::PathBuf) -> Self {
-        self.share_control_path = Some(path);
-        self
-    }
 
     /// Answer and accept `signal`'s attribute, and tell it which directories
     /// the kernel lists; its worker raises the signals once the mount is up
@@ -2915,14 +2897,6 @@ impl QuickFS {
         }
     }
 
-    fn share_projection_for(&self, ino: u64, now_ms: u64) -> Option<Vec<u8>> {
-        let authority = self.share_authority.as_ref()?;
-        let record_id = self.ns().record_id_for(ino)?;
-        authority
-            .projection(record_id, now_ms)
-            .to_xattr_bytes()
-            .ok()
-    }
 
     fn history_projection_for(&self, ino: u64) -> Option<Vec<u8>> {
         self.history.as_ref()?;
@@ -7158,18 +7132,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(fs_protocol::SHARE_CONTROL_XATTR) {
-            match (
-                ino.0 == crate::namespace::ROOT_INO,
-                &self.share_control_path,
-            ) {
-                (true, Some(path)) => {
-                    reply_xattr_bytes(reply, path.as_os_str().as_encoded_bytes(), size);
-                }
-                _ => reply.error(to_errno(libc::ENODATA)),
-            }
-            return;
-        }
+
         if name.to_str() == Some(fs_protocol::THUMB_XATTR) {
             match self.thumbnail_for(ino.0) {
                 // The kernel caps a single xattr value at 64 KiB — report an
@@ -7296,13 +7259,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(fs_protocol::SHARE_XATTR) {
-            match self.share_projection_for(ino.0, now_ms()) {
-                Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                None => reply.error(to_errno(libc::ENODATA)),
-            }
-            return;
-        }
+
         if name.to_str() == Some(fs_protocol::HISTORY_XATTR) {
             match self.history_projection_for(ino.0) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
@@ -7403,10 +7360,7 @@ impl Filesystem for QuickFS {
             buf.extend_from_slice(fs_protocol::AVAILABILITY_CONTROL_XATTR.as_bytes());
             buf.push(0);
         }
-        if self.share_authority.is_some() && self.ns().record_id_for(ino.0).is_some() {
-            buf.extend_from_slice(fs_protocol::SHARE_XATTR.as_bytes());
-            buf.push(0);
-        }
+
         if self.history.is_some() && self.ns().record_id_for(ino.0).is_some() {
             buf.extend_from_slice(fs_protocol::HISTORY_XATTR.as_bytes());
             buf.push(0);
@@ -7419,10 +7373,7 @@ impl Filesystem for QuickFS {
                 buf.push(0);
             }
         }
-        if ino.0 == crate::namespace::ROOT_INO && self.share_control_path.is_some() {
-            buf.extend_from_slice(fs_protocol::SHARE_CONTROL_XATTR.as_bytes());
-            buf.push(0);
-        }
+
         if size == 0 {
             reply.size(u32::try_from(buf.len()).unwrap_or(u32::MAX));
         } else if (size as usize) < buf.len() {

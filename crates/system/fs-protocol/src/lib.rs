@@ -10,12 +10,9 @@
 //!   the signed [`FileMutationTransaction`].
 //! - [`projection`] — the per-entry projections the mount answers through
 //!   extended attributes (sync state, metadata, record index, availability,
-//!   sharing, history) and their xattr names.
+//!   history) and their xattr names.
 //! - [`file_invite`] — signed, record-scoped file invitations
 //!   ([`FileInviteV1`], [`BearerFileInvite`]).
-//! - [`share_control`] — the bounded local share-control socket protocol.
-//! - [`recipient_control`] — the local protocol for admitting and observing
-//!   received shares.
 //! - [`tree`] — a workspace's files as the record that carries them
 //!   ([`tree::FilesTree`]): the namespace document's resource type, which
 //!   the Files app keeps and the daemon writes.
@@ -40,8 +37,6 @@
 pub mod file_invite;
 pub mod files;
 pub mod projection;
-pub mod recipient_control;
-pub mod share_control;
 pub mod tree;
 
 /// The `collab-types` vocabulary these wire types are expressed in: the key
@@ -75,21 +70,6 @@ pub use projection::{
     CONTENT_HASH_XATTR, HISTORY_CONTROL_XATTR, HISTORY_XATTR, HistoryProjectionV1, METADATA_XATTR,
     MetadataProjectionV1, NO_PEER_DELIVERED_ERROR, PIN_XATTR, ProjectedFreshness,
     ProjectedReplicaEvidence, ProjectedTransfer, ProjectionError, RECORD_ID_XATTR, Residency,
-    SHARE_CONTROL_XATTR, SHARE_XATTR, SYNC_XATTR, ShareGrantProjectionV1, ShareGrantStatus,
-    ShareProjectionV1, ShareSubjectProjection, SyncState, THUMB_XATTR, TransferPhase,
-    TransferProgress,
-};
-pub use recipient_control::{
-    MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
-    MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,
-    RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlErrorCode,
-    RecipientControlOperationV1, RecipientControlRequestV1, RecipientControlResponseV1,
-    RecipientControlResultV1, RecipientFailureCodeV1, RecipientFailureV1, RecipientMountStatusV1,
-    RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
-};
-pub use share_control::{
-    MAX_SHARE_CONTROL_FRAME_BYTES, NamedGrantMetadataV1, NamedShareDeliveryStateV1,
-    SHARE_CONTROL_FRAMING, SHARE_CONTROL_VERSION, ShareControlErrorCode, ShareControlOperationV1,
-    ShareControlRequestV1, ShareControlResponseV1, ShareControlResultV1,
+    SYNC_XATTR, SyncState, THUMB_XATTR, TransferPhase, TransferProgress,
 };
 pub use tree::{FilesTree, Tree, TreeEntry};

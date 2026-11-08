@@ -1,9 +1,9 @@
 //! Frames whose payload is one value in the collab canonical encoding.
 //!
-//! The share, recipient, replica-acknowledgement, named-share delivery and
-//! record protocols all send canonical values behind a `u32` length. Each
-//! names its own [`Framing`]; this module does the encoding on top, and the
-//! protocols map [`CanonicalFrameError`] into the errors their callers see.
+//! The replica-acknowledgement and record protocols send canonical values
+//! behind a `u32` length. Each names its own [`Framing`]; this module does the
+//! encoding on top, and the protocols map [`CanonicalFrameError`] into the
+//! errors their callers see.
 //!
 //! The canonical decode requires the payload to be exactly one value, so a
 //! frame with trailing bytes is rejected, unlike a plain postcard frame.
@@ -13,22 +13,27 @@ use std::io;
 use collab_types::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use wire_frame::{FrameError, Framing};
 
 /// Why a canonical frame could not be written or read.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum CanonicalFrameError {
     /// The stream failed, or ended inside the payload.
+    #[error("frame stream: {0}")]
     Io(io::Error),
     /// A zero-length frame where the protocol forbids one.
+    #[error("empty frame")]
     Empty,
     /// A frame of this many bytes, over the protocol's limit: announced by
     /// the peer, or encoded locally and therefore not sent.
+    #[error("frame of {0} bytes exceeds its bound")]
     TooLarge(usize),
     /// The value did not encode.
+    #[error("frame did not encode: {0}")]
     Encode(CanonicalError),
     /// The payload is not exactly one canonical value of the expected type.
+    #[error("frame did not decode: {0}")]
     Decode(CanonicalError),
 }
 
@@ -62,62 +67,6 @@ where
 {
     let bytes = canonical_bytes(value).map_err(CanonicalFrameError::Encode)?;
     Ok(framing.write_async(writer, &bytes).await?)
-}
-
-/// [`write`] for a local control socket whose callers see `io::Error`, then
-/// flush. `what` names the protocol in the error for a frame over its bound.
-pub(crate) async fn write_flushed<W, T>(
-    framing: Framing,
-    writer: &mut W,
-    value: &T,
-    what: &str,
-) -> io::Result<()>
-where
-    W: AsyncWrite + Unpin + ?Sized,
-    T: Serialize + Sync,
-{
-    write(framing, writer, value)
-        .await
-        .map_err(|error| match error {
-            CanonicalFrameError::Io(error) => error,
-            CanonicalFrameError::Encode(error) => io::Error::other(error),
-            CanonicalFrameError::TooLarge(len) => {
-                io::Error::other(format!("{what} frame of {len} bytes exceeds its bound"))
-            }
-            CanonicalFrameError::Empty | CanonicalFrameError::Decode(_) => {
-                io::Error::other(format!("{what} frame exceeds its bound"))
-            }
-        })?;
-    writer.flush().await
-}
-
-/// The response to a local control request, for callers that see
-/// `io::Error`: a stream that ends before it is `UnexpectedEof`. `what`
-/// names the protocol in the error.
-pub(crate) async fn read_response<R, T>(
-    framing: Framing,
-    reader: &mut R,
-    what: &str,
-) -> io::Result<T>
-where
-    R: AsyncRead + Unpin + ?Sized,
-    T: DeserializeOwned,
-{
-    read(framing, reader)
-        .await
-        .map_err(|error| match error {
-            CanonicalFrameError::Io(error) => error,
-            CanonicalFrameError::TooLarge(len) => {
-                io::Error::other(format!("{what} response of {len} bytes is over its bound"))
-            }
-            CanonicalFrameError::Empty => {
-                io::Error::other(format!("invalid {what} response: zero-length frame"))
-            }
-            CanonicalFrameError::Decode(error) | CanonicalFrameError::Encode(error) => {
-                io::Error::other(format!("invalid {what} response: {error}"))
-            }
-        })?
-        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
 }
 
 /// Read and decode the next frame, or `None` if the stream ended before a
@@ -163,6 +112,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
 
     const FRAMING: Framing = Framing::big_endian(8).reject_empty();
 

@@ -1268,7 +1268,6 @@ inputs = [
 ]
 readers = [
   "crates/system/fs/src/main.rs",
-  "crates/system/fs/tests/exact_share_process_fuse.rs",
   "crates/system/fs/tests/cloud_mount.rs",
   "crates/system/fs/tests/cloud_mount/import.rs",
 ]

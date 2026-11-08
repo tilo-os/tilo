@@ -1327,9 +1327,6 @@ where
 }
 
 #[cfg(test)]
-mod await_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

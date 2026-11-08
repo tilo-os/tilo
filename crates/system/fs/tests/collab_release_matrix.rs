@@ -1266,9 +1266,8 @@ fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
     };
     use fs::{
         AuthenticatedFsPeer, AvailabilityRegistry, ReplicaAckError, ReplicaAckRequestV1,
-        ReplicaAckV1, ShareAuthority,
+        ReplicaAckV1, ShareAuthority, ShareAuthorityError,
     };
-    use fs_protocol::ShareGrantStatus;
     use fs_protocol::{
         ContentHash, ContentRevisionV1, FileActor, FileInviteSpec, FileInviteSubject,
         FilePermission, FileRecordId, FileVersionId,
@@ -1399,13 +1398,8 @@ fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
     authority
         .authorize_named(&invite, person, FilePermission::View, 9_998)
         .expect("grants have an absolute expiry and no invented registration-time not-before");
-    assert!(
-        authority
-            .authorize_named(&invite, person, FilePermission::View, 10_000)
-            .is_err()
-    );
-    assert_eq!(
-        authority.projection(invite.record_id, 10_000).grants[0].status,
-        ShareGrantStatus::Expired
-    );
+    assert!(matches!(
+        authority.authorize_named(&invite, person, FilePermission::View, 10_000),
+        Err(ShareAuthorityError::Invite(_))
+    ));
 }
