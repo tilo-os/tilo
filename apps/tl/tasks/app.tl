@@ -630,10 +630,10 @@ view home(t: Tasks) {
         "New task in {p.name}"
     } else if place == Task.today { "New task for today" } else { "New task" }
     ui.NavShell(
-        content_kind: .document,
+        content_kind: .list,
         sidebar_title: "Tasks",
-        overview_title: title,
-        overview_count: header_count,
+        title: .some(title),
+        count: header_count,
         actions: [new_task, new_task_today, clear_done],
     ) {
         // The places this window offers, and the projects of its root under them: what a
@@ -657,33 +657,34 @@ view home(t: Tasks) {
                 }
             }
         }
-        overview: {
-            // The entry at the list's end adds where the place says; the tasks done with fold
-            // under it.
-            ui.Docked {
-                foot: {
-                    stack {
-                        if all_done {
-                            task_list(shown, kids, by_day, done_place, folds)
-                        }
-                        if in_today {
-                            std.add_entry(entry_placeholder, new_task_today(t, p: project))
-                        } else {
-                            std.add_entry(entry_placeholder, new_task(t, p: project))
+        // The place's tasks at the readable measure: a task opens where it stands in the list,
+        // under the row the window shows, rather than in a window of its own.
+        content: {
+            page(fill) {
+                // The entry at the list's end adds where the place says; the tasks done with
+                // fold under it.
+                ui.Docked {
+                    foot: {
+                        stack {
+                            if all_done {
+                                task_list(shown, kids, by_day, done_place, folds)
+                            }
+                            if in_today {
+                                std.add_entry(entry_placeholder, new_task_today(t, p: project))
+                            } else {
+                                std.add_entry(entry_placeholder, new_task(t, p: project))
+                            }
                         }
                     }
-                }
-                if all_done {
-                    ui.EmptyState(phrase("tilolang-all-done"), icon: .list_checks, inline: true)
-                } else if shown.is_empty() {
-                    ui.EmptyState("No tasks here", icon: .list_checks)
-                } else {
-                    task_list(shown, kids, by_day, done_place, folds)
+                    if all_done {
+                        ui.EmptyState(phrase("tilolang-all-done"), icon: .list_checks, inline: true)
+                    } else if shown.is_empty() {
+                        ui.EmptyState("No tasks here", icon: .list_checks)
+                    } else {
+                        task_list(shown, kids, by_day, done_place, folds)
+                    }
                 }
             }
-        }
-        content: {
-            ui.EmptyState("No task selected", icon: .list_checks)
         }
     }
 }
@@ -727,6 +728,9 @@ view task_list(items: List<Task>, kids: List<Task>, by_day: Bool, done_place: Bo
             ],
         ) {
             task_row(x, .day, x.parent)
+            detail: {
+                task_body(x)
+            }
         }
     }
 }
@@ -737,42 +741,44 @@ view project_list(p: Project) {
     let shown = tasks_of(p)
     // The project's tasks that name a parent, read once: a row counts its own under them.
     let kids = shown.filter(x -> x.parent != .none)
-    ui.NavShell(content_kind: .document, overview_title: p.name) {
-        overview: {
-            ui.Docked {
-                foot: {
-                    stack {
-                        std.add_entry("New task in {p.name}", new_task(tasks, p: p))
+    ui.NavShell(content_kind: .list, title: .some(p.name)) {
+        content: {
+            page(fill) {
+                ui.Docked {
+                    foot: {
+                        stack {
+                            std.add_entry("New task in {p.name}", new_task(tasks, p: p))
+                        }
                     }
-                }
-                if shown.is_empty() {
-                    ui.EmptyState("No tasks yet", icon: .folder)
-                } else {
-                    std.list(shown, tree: true) { (x, at) ->
-                        ui.ListItem(
-                            item: x,
-                            presence: at,
-                            above: shown.previous(x),
-                            parent: x.parent,
-                            parent_title: x.parent?.title,
-                            progress: subtask_count(kids, x),
-                            actions: [
-                                check(primary: true),
-                                schedule(group: "Plan"),
-                                assign,
-                                indent(group: "Move"),
-                                outdent(group: "Move"),
-                                remove,
-                            ],
-                        ) {
-                            task_row(x, .project, x.parent)
+                    if shown.is_empty() {
+                        ui.EmptyState("No tasks yet", icon: .folder)
+                    } else {
+                        std.list(shown, tree: true) { (x, at) ->
+                            ui.ListItem(
+                                item: x,
+                                presence: at,
+                                above: shown.previous(x),
+                                parent: x.parent,
+                                parent_title: x.parent?.title,
+                                progress: subtask_count(kids, x),
+                                actions: [
+                                    check(primary: true),
+                                    schedule(group: "Plan"),
+                                    assign,
+                                    indent(group: "Move"),
+                                    outdent(group: "Move"),
+                                    remove,
+                                ],
+                            ) {
+                                task_row(x, .project, x.parent)
+                                detail: {
+                                    task_body(x)
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
-        content: {
-            ui.EmptyState("No task selected", icon: .list_checks)
         }
     }
 }
@@ -889,85 +895,90 @@ view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
 /// about it, its facts — when it is due, its project, how much it matters, who is doing it — as
 /// chips under them, then its subtasks, what was made from it, and what happened to it.
 view task_page(t: Task) {
-    state step: Text
     std.document(t) {
-        // What the page opens with: whether the task is done and what it is, where it came from,
-        // and what is written about it, one row lead in under the text the title leads to.
-        stack(gap: .related) {
-            row(gap: .related, align: .start) {
-                ui.Checkbox(bind: t.done) {
-                    on check: check(t)
-                }
-                ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
+        task_body(t)
+    }
+}
+
+/// A task where it stands: opened in the list it is an item of, or as the page of its own. What
+/// the page opens with is whether the task is done and what it is, where it came from, and what
+/// is written about it, one row lead in under the text the title leads to; what follows stands
+/// in its body.
+template view task_body(t: Task) {
+    state step: Text
+    // What the page opens with: whether the task is done and what it is, where it came from,
+    // and what is written about it, one row lead in under the text the title leads to.
+    stack(gap: .related) {
+        row(gap: .related, align: .start) {
+            ui.Checkbox(bind: t.done) {
+                on check: check(t)
             }
-            std.origin(t)
-            stack(lead: 1) {
-                ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
+            ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
+        }
+        std.origin(t)
+        stack(lead: 1) {
+            ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
+        }
+    }
+    // What follows the heading stands in its body, under the text its title leads to.
+    std.body() {
+        // What an agent proposed about the task: nothing shows while nothing waits.
+        std.suggestions(t)
+        // Its facts stand under what it is and says, over the steps it was broken into: the
+        // page reads what it is, its facts, its steps, and its conversation.
+        facts(t) {
+            ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
+                ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
+                    on choose: unfile(t)
+                }
+                for p in tasks.projects {
+                    ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
+                        on choose: file(t, p)
+                    }
+                }
+            }
+            // When the person is told of it, or nothing while it is not: the menu runs
+            // the action, and its form asks when.
+            ui.MenuButton(if t.remind == .none { "Remind" } else { "Reminder set" }, icon: .bell) {
+                ui.MenuItem("Remind me…", icon: .bell) {
+                    on choose: remind_at(t)
+                }
+                ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
+                    on choose: remind_clear(t)
+                }
             }
         }
-        // What follows the heading stands in its body, under the text its title leads to.
-        std.body() {
-            // What an agent proposed about the task: nothing shows while nothing waits.
-            std.suggestions(t)
-            // Its facts stand under what it is and says, over the steps it was broken into: the
-            // page reads what it is, its facts, its steps, and its conversation.
-            facts(t) {
-                ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
-                    ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
-                        on choose: unfile(t)
-                    }
-                    for p in tasks.projects {
-                        ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
-                            on choose: file(t, p)
-                        }
-                    }
-                }
-                // When the person is told of it, or nothing while it is not: the menu runs
-                // the action, and its form asks when.
-                ui.MenuButton(
-                    if t.remind == .none { "Remind" } else { "Reminder set" },
-                    icon: .bell,
-                ) {
-                    ui.MenuItem("Remind me…", icon: .bell) {
-                        on choose: remind_at(t)
-                    }
-                    ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
-                        on choose: remind_clear(t)
-                    }
+        section("Subtasks") {
+            // A task with no subtasks puts no tree up, and the walk over the tasks under
+            // this one is made only once there is one.
+            if not tasks.items.filter(x -> x.parent == .some(t)).is_empty() {
+                let kids = tasks.items.descendants(t, .parent)
+                std.outline(
+                    "Subtasks",
+                    kids,
+                    x -> x.parent,
+                    x -> x.title,
+                    "No subtasks yet",
+                    (moved, parent, before) -> move_to(
+                        tasks,
+                        moved,
+                        parent,
+                        before,
+                    ),
+                    x -> check(x),
+                    progress: x -> subtask_count(kids, x),
+                    fill: false,
+                ) { (x, under) ->
+                    task_outline_row(x, t.project, under)
                 }
             }
-            section("Subtasks") {
-                // A task with no subtasks puts no tree up, and the walk over the tasks under
-                // this one is made only once there is one.
-                if not tasks.items.filter(x -> x.parent == .some(t)).is_empty() {
-                    let kids = tasks.items.descendants(t, .parent)
-                    std.outline(
-                        "Subtasks",
-                        kids,
-                        x -> x.parent,
-                        x -> x.title,
-                        "No subtasks yet",
-                        (moved, parent, before) -> move_to(
-                            tasks,
-                            moved,
-                            parent,
-                            before,
-                        ),
-                        x -> check(x),
-                        progress: x -> subtask_count(kids, x),
-                        fill: false,
-                    ) { (x, under) ->
-                        task_outline_row(x, t.project, under)
-                    }
-                }
-                ui.TextInput(value: step, placeholder: "Add a subtask") {
-                    on submit: add_subtask(tasks, t, step).then(set(step, ""))
-                }
+            ui.TextInput(value: step, placeholder: "Add a subtask") {
+                on submit: add_subtask(tasks, t, step).then(set(step, ""))
             }
-            std.linked(t, without: discussion.said_about(t))
-            discussion.thread(t)
-            std.history(t)
         }
+        std.linked(t, without: discussion.said_about(t))
+        discussion.thread(t)
+        std.history(t)
     }
 }
 
