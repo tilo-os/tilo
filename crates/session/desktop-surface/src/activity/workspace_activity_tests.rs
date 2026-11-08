@@ -12,6 +12,7 @@ mod workspace_activity {
         transaction::{CommitOptions, Transactable},
     };
     use tilo_desktop_model::{DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    use ui::record::RecordStore;
 
     fn causal_workspace() -> ActivitySnapshot {
         let mut desktop = DesktopTree {
@@ -195,7 +196,7 @@ mod workspace_activity {
         pane.timeline.set_selection(Some((0, 0)));
         assert!(!pane.timeline.begin_naming_selection());
         let heads = tree.doc.get_heads();
-        assert!(!pane.revert_to_with_records(&mut tree, None, &pane.entries()[0].id.clone()));
+        assert!(!pane.revert_to(&mut tree, &pane.entries()[0].id.clone()));
         assert_eq!(tree.doc.get_heads(), heads);
         pane.set_host(Rc::new(Enabled));
         assert!(pane.timeline.begin_naming_selection());

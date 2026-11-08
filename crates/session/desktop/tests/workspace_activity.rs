@@ -212,7 +212,6 @@ fn workspace_activity_detached_record_origins_do_not_collide() {
                 compare: true,
             },
             &mut tree,
-            None,
         );
         if let Some(app) = detail
             .resources

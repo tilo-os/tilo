@@ -72,7 +72,6 @@ fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_workspace_alone()
             wire::MARK_VIEWED,
             &serde_json::from_value(serde_json::json!({ "entries": shown(&before) })).unwrap(),
             &mut tree,
-            None,
         )
         .expect("marking what was shown viewed");
     assert!(outcome.handled);
@@ -107,7 +106,6 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
             wire::MARK_VIEWED,
             &serde_json::from_value(serde_json::json!({ "entries": shown_to_me })).unwrap(),
             &mut mine,
-            None,
         )
         .expect("marking what was shown viewed");
     assert!(my_pane.serve_summary().briefs.is_empty());
@@ -134,7 +132,6 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
             &serde_json::from_value(serde_json::json!({ "entries": shown(&theirs_before) }))
                 .unwrap(),
             &mut theirs,
-            None,
         )
         .expect("they mark what they were shown viewed");
     assert!(their_pane.serve_summary().briefs.is_empty());
@@ -190,7 +187,6 @@ fn the_feed_lists_newest_first_and_a_range_selects_by_id() {
             compare: false,
         },
         &mut tree,
-        None,
     );
     assert!(!detail.gone);
     assert!(!detail.title.is_empty());
@@ -200,7 +196,6 @@ fn the_feed_lists_newest_first_and_a_range_selects_by_id() {
             compare: false,
         },
         &mut tree,
-        None,
     );
     assert!(gone.gone, "a change not in the history has no detail");
 
@@ -259,7 +254,6 @@ fn a_deep_link_is_offered_until_an_app_shows_it() {
             .cloned()
             .unwrap(),
         &mut tree,
-        None,
     )
     .unwrap();
     assert_eq!(

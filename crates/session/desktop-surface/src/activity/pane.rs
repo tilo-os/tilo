@@ -39,8 +39,7 @@ use ui::widget::{
 use ui::{
     ActivityDigest, ActivityTimeline, AgentRun, AuthorDirectory, BandUndoRequest, ChangeRun,
     GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail, HistorySource,
-    NamedRange, NarrativeRequest, RecordId, RecordStore, StepState, format_relative_time,
-    participant_display_label,
+    NamedRange, NarrativeRequest, RecordId, format_relative_time, participant_display_label,
 };
 
 use super::index::{
@@ -995,6 +994,8 @@ impl WorkspaceActivityPane {
         match self.host.undo_task_run(undo) {
             Ok(()) => {
                 self.undo_pending = Some((invocation, run));
+                // Quiet until it lands.
+                self.agent_undo_notice = None;
                 true
             }
             Err(error) => {
@@ -1079,11 +1080,15 @@ impl WorkspaceActivityPane {
         let Some(indexed) = self.selected_agent_run() else {
             return false;
         };
-        indexed
-            .run
-            .steps
-            .iter()
-            .all(|step| self.record_is_open(step))
+        // A run is undone in the documents it changed, which the host does
+        // for the task that recorded it; a run no task names has no one to
+        // carry that out here.
+        indexed.run.task.is_some()
+            && indexed
+                .run
+                .steps
+                .iter()
+                .all(|step| self.record_is_open(step))
     }
 
     /// Whether the document behind a run's step is open here, which undoing just that step needs.
@@ -1289,11 +1294,7 @@ impl WorkspaceActivityPane {
     /// Materialize the exact before/after document for the current selection. Mixed-document
     /// selections deliberately have no synthetic diff: callers can split them by provenance and
     /// compare each resource honestly.
-    pub fn compare_selection(
-        &self,
-        tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
-    ) -> Option<HistoryComparison> {
+    pub fn compare_selection(&self, tree: &mut impl ActivityTree) -> Option<HistoryComparison> {
         if tree.document().pending_ops() > 0 {
             return None;
         }
@@ -1324,13 +1325,6 @@ impl WorkspaceActivityPane {
                 ui::compare_entries(tree.document_mut(), &ids).ok()
             }
             super::index::HistoryOrigin::AppRecord { .. } => {
-                if let Some(compared) = records.and_then(|records| {
-                    records.with(first.origin.record()?, |doc| {
-                        ui::compare_entries(doc, &ids).ok()
-                    })
-                }) {
-                    return compared;
-                }
                 let mut doc = self
                     .detached_records
                     .iter()
@@ -1342,9 +1336,6 @@ impl WorkspaceActivityPane {
                 }
                 ui::compare_entries(&mut doc, &ids).ok()
             }
-            super::index::HistoryOrigin::Record { id, .. } => records?
-                .with(id, |doc| ui::compare_entries(doc, &ids).ok())
-                .flatten(),
         }
     }
 
@@ -1998,7 +1989,6 @@ impl WorkspaceActivityPane {
         &mut self,
         action: DetailAction,
         tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
     ) -> WorkspaceActivityOutcome {
         let mut outcome = handled_outcome();
         match action {
@@ -2010,7 +2000,7 @@ impl WorkspaceActivityPane {
             }
             DetailAction::Compare => {
                 self.comparison_attempted = true;
-                self.comparison = self.compare_selection(tree, records);
+                self.comparison = self.compare_selection(tree);
                 self.comparison_selection = self.selected_ids();
                 // Reading an `AutoCommit` comparison closes any pending transaction. That changes
                 // the observed heads without changing content; keep refresh from treating the next
@@ -2020,20 +2010,20 @@ impl WorkspaceActivityPane {
             }
             DetailAction::Restore => {
                 if let Some(id) = self.selected_ids().last().copied()
-                    && self.revert_to_with_records(tree, records, &id)
+                    && self.revert_to(tree, &id)
                 {
                     outcome.reverted = true;
                 }
             }
             DetailAction::Undo => {
                 if let Some(request) = self.selection_undo_request() {
-                    let applied = self.undo_band(tree, records, &request);
+                    let applied = self.undo_band(tree, &request);
                     outcome.reverted = applied.wrote;
                     outcome.undo_partial = applied.partial;
                 }
             }
             DetailAction::UndoTask => {
-                let applied = self.undo_selected_agent_run(records);
+                let applied = self.undo_selected_agent_run();
                 outcome.reverted = applied.wrote;
                 outcome.undo_partial = applied.partial;
             }
@@ -2043,7 +2033,7 @@ impl WorkspaceActivityPane {
         outcome
     }
 
-    fn undo_selected_agent_run(&mut self, records: Option<&RecordStore>) -> UndoApply {
+    fn undo_selected_agent_run(&mut self) -> UndoApply {
         if !self.host.mutations_available() {
             return UndoApply::default();
         }
@@ -2053,58 +2043,11 @@ impl WorkspaceActivityPane {
         // An agent's run of a task is undone by each document's own history, which also takes back
         // what a change queued outside the document (a file renamed on disk); reverting the
         // document alone would leave that behind.
-        if let Some(task) = &indexed.run.task
-            && self.undo_task_run(task)
-        {
-            // Quiet until the undo lands or is refused.
-            self.agent_undo_notice = None;
-            return UndoApply::default();
-        }
-        let Some(records) = records else {
+        let Some(task) = &indexed.run.task else {
             return UndoApply::default();
         };
-        // This is the all-or-nothing reachability check from `undo_run`,
-        // adapted to RecordStore's one-document-at-a-time borrow API. Nothing
-        // is touched unless every referenced document is live here.
-        if !indexed.run.steps.iter().all(|step| {
-            RecordId::parse(&step.record).is_some_and(|id| records.read(&id, |_| ()).is_some())
-        }) {
-            self.agent_undo_notice =
-                Some((indexed.run.id, t("activity-undo-task-needs-documents")));
-            return UndoApply::default();
-        }
-
-        let authors = self.source.authors().clone();
-        let mut wrote = false;
-        let mut partial = false;
-        for step in &indexed.run.steps {
-            let Some(id) = RecordId::parse(&step.record) else {
-                return UndoApply::default();
-            };
-            let state = records
-                .with(&id, |doc| {
-                    let outcome = ui::undo_step(doc, step, None, &authors);
-                    if matches!(
-                        outcome.state,
-                        StepState::Undone { .. } | StepState::KeptSome { .. }
-                    ) {
-                        let _ = tilo_resource::history::commit_stamped(doc);
-                    }
-                    outcome.state
-                })
-                .unwrap_or(StepState::Unreachable);
-            wrote |= matches!(state, StepState::Undone { .. } | StepState::KeptSome { .. });
-            partial |= !state.is_clean();
-        }
-        let notice = t(if wrote && partial {
-            "activity-undo-task-partial"
-        } else if wrote {
-            "activity-undo-task-done"
-        } else {
-            "activity-undo-task-gone"
-        });
-        self.agent_undo_notice = Some((indexed.run.id, notice));
-        UndoApply { wrote, partial }
+        self.undo_task_run(task);
+        UndoApply::default()
     }
 
     fn selection_undo_request(&self) -> Option<BandUndoRequest> {
@@ -2138,34 +2081,18 @@ impl WorkspaceActivityPane {
         true
     }
 
-    fn revert_to_with_records(
-        &mut self,
-        tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
-        id: &HistoryEntryId,
-    ) -> bool {
+    /// Write the workspace document back to the state `id` names. A record's
+    /// history belongs to its app, so a row of one reverts nothing here.
+    fn revert_to(&mut self, tree: &mut impl ActivityTree, id: &HistoryEntryId) -> bool {
         if !self.host.mutations_available() {
             return false;
         }
         let origin = self.projected_origins.get(id).cloned();
-        if let Some(WorkspaceHistoryId { origin, change }) = &origin
-            && let Some(record) = origin.record()
+        if origin
+            .as_ref()
+            .is_some_and(|address| address.origin.record().is_some())
         {
-            return records.is_some_and(|records| {
-                records
-                    .with(record, |doc| {
-                        let Some(target) = ui::heads_for_entry(doc, change) else {
-                            return false;
-                        };
-                        let current = doc.get_heads();
-                        if current == target {
-                            return false;
-                        }
-                        ui::state::write_revert_patches(doc, &current, &target);
-                        tilo_resource::history::commit_stamped(doc).is_some()
-                    })
-                    .unwrap_or(false)
-            });
+            return false;
         }
         let native = origin.map_or(*id, |address| address.change);
         let Some(target) = ui::heads_for_entry(tree.document_mut(), &native) else {
@@ -2188,12 +2115,7 @@ impl WorkspaceActivityPane {
         true
     }
 
-    fn undo_band(
-        &mut self,
-        tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
-        request: &BandUndoRequest,
-    ) -> UndoApply {
+    fn undo_band(&mut self, tree: &mut impl ActivityTree, request: &BandUndoRequest) -> UndoApply {
         if !self.host.mutations_available() {
             return UndoApply::default();
         }
@@ -2250,26 +2172,8 @@ impl WorkspaceActivityPane {
                             partial: !outcome.is_complete(),
                         }
                     }
-                    super::index::HistoryOrigin::Record { id, .. }
-                    | super::index::HistoryOrigin::AppRecord { id, .. } => {
-                        records.map_or_else(UndoApply::default, |records| {
-                            records
-                                .with(&id, |doc| {
-                                    let Ok(outcome) =
-                                        ui::revert_run(doc, &run, None, self.source.authors())
-                                    else {
-                                        return UndoApply::default();
-                                    };
-                                    let committed = outcome.wrote
-                                        && tilo_resource::history::commit_stamped(doc).is_some();
-                                    UndoApply {
-                                        wrote: committed,
-                                        partial: committed && !outcome.is_complete(),
-                                    }
-                                })
-                                .unwrap_or_default()
-                        })
-                    }
+                    // A record's history is its app's to write.
+                    super::index::HistoryOrigin::AppRecord { .. } => UndoApply::default(),
                 }
             }
             // Tree-only callers and pre-index tests retain native addressing.

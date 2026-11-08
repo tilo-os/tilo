@@ -18,6 +18,7 @@ mod tests {
     use super::*;
     use crate::activity::testing::TestTree as WorkspaceTree;
     use tilo_desktop_model::WorkspaceSlot;
+    use ui::record::RecordStore;
 
     /// The pane with a device that may mutate the workspace.
     fn native_pane() -> WorkspaceActivityPane {
@@ -378,7 +379,7 @@ mod tests {
                 );
             }
             let change = ui::latest_run_by(doc, &agent_hex).expect("agent change");
-            ui::record_run_with_details(
+            let key = ui::record_run_with_details(
                 doc,
                 "Rewrite the opening and preserve the pricing table",
                 Some(&agent_hex),
@@ -393,6 +394,7 @@ mod tests {
                 }],
             )
             .expect("task receipt");
+            assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
             tilo_resource::history::commit_stamped_at(doc, 23);
         });
         tree.desktop
@@ -474,25 +476,22 @@ mod tests {
 
     #[test]
     fn agent_task_undo_is_one_keyboard_reachable_safe_action() {
-        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        let (mut tree, _records, mut pane, _record) = agent_task_fixture();
+        let host = Rc::new(super::tasks_link_tests::UndoHost::default());
+        pane.set_host(host.clone());
         show_summary(&mut pane);
         assert!(pane.can_undo_agent_run());
-        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree, Some(&records));
-        assert!(outcome.reverted);
-        assert!(!outcome.undo_partial);
-        assert_eq!(
-            records.read(&record, |doc| doc
-                .get(automerge::ROOT, "body")
-                .ok()
-                .flatten()
-                .is_some()),
-            Some(false)
-        );
-        assert!(
-            pane.agent_undo_notice
-                .as_ref()
-                .is_some_and(|(_, notice)| notice.contains("Whole task undone"))
-        );
+        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree);
+        assert!(outcome.handled);
+        let undo = host
+            .undos
+            .borrow()
+            .last()
+            .cloned()
+            .expect("the pane asks the host to undo the run in the documents it changed");
+        assert_eq!(undo.task_id, pane.agent_runs[0].run.task.clone().unwrap());
+        assert_eq!(undo.steps.len(), 1);
+        assert!(pane.undo_pending.is_some(), "one undo at a time");
     }
 
     /// The same record, admitted the way the shell admits it: as an app record read from a detached
@@ -523,34 +522,11 @@ mod tests {
             .expect("the app record's row")
     }
 
+    /// A record's history is its app's to write: the row is selectable and
+    /// its change is readable, but restoring or undoing it here writes
+    /// nothing.
     #[test]
-    fn a_detached_record_row_restores_through_the_record_store() {
-        let (mut tree, records, mut pane, record) = agent_task_fixture();
-        pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
-        let oldest = pane.agent_runs[0].run.steps[0].run.start;
-        let row = detached_row(&pane, oldest);
-        pane.timeline.set_selection(Some((row, row)));
-        assert!(
-            pane.selection_detail()
-                .is_some_and(|detail| detail.can_undo),
-            "an app record's row offers undo instead of hiding it"
-        );
-        let before = records
-            .with(&record, automerge::AutoCommit::get_heads)
-            .unwrap();
-        let outcome = pane.apply_detail_action(DetailAction::Restore, &mut tree, Some(&records));
-        assert!(
-            outcome.reverted,
-            "restore writes the record it came from, not the workspace"
-        );
-        let after = records
-            .with(&record, automerge::AutoCommit::get_heads)
-            .unwrap();
-        assert_ne!(before, after);
-    }
-
-    #[test]
-    fn a_detached_record_row_undoes_its_own_change() {
+    fn an_app_records_rows_are_restored_and_undone_by_its_app() {
         let (mut tree, records, mut pane, record) = agent_task_fixture();
         pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
         let newest = pane.agent_runs[0].run.steps[0].run.end;
@@ -559,12 +535,16 @@ mod tests {
         let before = records
             .with(&record, automerge::AutoCommit::get_heads)
             .unwrap();
-        let outcome = pane.apply_detail_action(DetailAction::Undo, &mut tree, Some(&records));
-        assert!(outcome.reverted, "undo writes the record's own document");
-        let after = records
-            .with(&record, automerge::AutoCommit::get_heads)
-            .unwrap();
-        assert_ne!(before, after);
+        let undone = pane.apply_detail_action(DetailAction::Undo, &mut tree);
+        let restored = pane.apply_detail_action(DetailAction::Restore, &mut tree);
+        assert!(!undone.reverted && !restored.reverted);
+        assert_eq!(
+            records
+                .with(&record, automerge::AutoCommit::get_heads)
+                .unwrap(),
+            before,
+            "the record's document is untouched"
+        );
     }
 
     #[test]
@@ -584,8 +564,15 @@ mod tests {
             .expect("the run's receipt");
         assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
         assert!(pane.can_undo_agent_run());
-        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree, Some(&records));
-        assert!(outcome.reverted, "the task is undone through its record");
+        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree);
+        assert!(
+            !outcome.reverted,
+            "the pane asks the host, it writes no record"
+        );
+        assert!(
+            pane.agent_undo_notice.is_some(),
+            "a host with no writer for the record says so"
+        );
     }
 
     /// A record the history could not read is counted as missing, never silently left out: the feed
@@ -1092,7 +1079,6 @@ mod tests {
                     compare: false,
                 },
                 &mut tree,
-                None,
             )
             .offers;
         let ids: Vec<wire::DetailAction> = offers.iter().map(|offer| offer.action).collect();
@@ -1114,7 +1100,6 @@ mod tests {
                 compare: true,
             },
             &mut tree,
-            None,
         );
         assert!(
             matches!(compared.comparison, Some(wire::Comparison::Changes { .. })),
@@ -1518,7 +1503,7 @@ mod tests {
 
         let target = pane.entries()[versions_before - 1].id;
         assert!(
-            pane.revert_to_with_records(&mut tree, None, &target),
+            pane.revert_to(&mut tree, &target),
             "the revert wrote something"
         );
 
@@ -1548,7 +1533,7 @@ mod tests {
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let before = tree.doc.get_heads();
-        assert!(!pane.revert_to_with_records(&mut tree, None, &HistoryEntryId([0x5a; 16])));
+        assert!(!pane.revert_to(&mut tree, &HistoryEntryId([0x5a; 16])));
         assert_eq!(tree.doc.get_heads(), before, "nothing was written");
     }
 
@@ -2019,7 +2004,7 @@ mod tests {
         );
 
         assert!(
-            pane.revert_to_with_records(&mut tree, None, &boundary),
+            pane.revert_to(&mut tree, &boundary),
             "the restore wrote something"
         );
         assert_eq!(
@@ -2537,9 +2522,10 @@ mod tasks_link_tests {
     use super::*;
     use crate::activity::TaskRunDocument;
     use crate::activity::testing::TestTree as WorkspaceTree;
+    use ui::record::RecordStore;
     #[derive(Default)]
-    struct UndoHost {
-        undos: RefCell<Vec<TaskRunUndo>>,
+    pub(super) struct UndoHost {
+        pub(super) undos: RefCell<Vec<TaskRunUndo>>,
         ended: RefCell<Option<Result<Vec<TaskRunDocument>, String>>>,
     }
     impl ActivityHost for UndoHost {
@@ -2734,7 +2720,6 @@ mod tasks_link_tests {
                 wire::UNDO_RECORD,
                 &query("tasks.tracker/issues/release"),
                 &mut tree,
-                None,
             )
             .unwrap();
         assert!(outcome.handled);
@@ -2749,8 +2734,7 @@ mod tasks_link_tests {
             pane.serve_action(
                 wire::UNDO_RECORD,
                 &query("tasks.tracker/issues/other"),
-                &mut tree,
-                None
+                &mut tree
             )
             .is_err()
         );
@@ -2923,7 +2907,6 @@ mod morning_source_tests {
                 compare: false,
             },
             tree,
-            None,
         )
         .offers
         .iter()
@@ -2946,7 +2929,7 @@ mod morning_source_tests {
             .as_object()
             .cloned()
             .expect("a range is an object");
-        pane.serve_action(wire::CHOOSE_SOURCE, &arguments, tree, None)
+        pane.serve_action(wire::CHOOSE_SOURCE, &arguments, tree)
             .expect("the selected change names a source")
     }
 
@@ -2962,7 +2945,6 @@ mod morning_source_tests {
                     compare: false,
                 },
                 &mut tree,
-                None,
             )
             .offers;
         assert!(
@@ -3148,7 +3130,6 @@ mod morning_source_tests {
             tilo_actions::remote::workspace_activity::SOURCE,
             &arguments,
             tree,
-            None,
         )
         .expect("a chosen source runs its command")
     }

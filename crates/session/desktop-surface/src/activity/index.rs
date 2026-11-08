@@ -28,10 +28,6 @@ pub const MAX_INDEXED_RECORDS: usize = 512;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HistoryOrigin {
     DesktopTree,
-    Record {
-        id: RecordId,
-        kind: RecordKind,
-    },
     AppRecord {
         app: String,
         id: RecordId,
@@ -43,7 +39,6 @@ impl HistoryOrigin {
     pub fn key(&self) -> String {
         match self {
             Self::DesktopTree => "workspace-tree".to_string(),
-            Self::Record { id, .. } => format!("record:{id}"),
             // A tuple of strings always encodes; the empty fallback is unreachable.
             Self::AppRecord { app, id, kind } => format!(
                 "app-record:{}",
@@ -56,7 +51,7 @@ impl HistoryOrigin {
     pub fn record(&self) -> Option<&RecordId> {
         match self {
             Self::DesktopTree => None,
-            Self::Record { id, .. } | Self::AppRecord { id, .. } => Some(id),
+            Self::AppRecord { id, .. } => Some(id),
         }
     }
 
@@ -64,15 +59,6 @@ impl HistoryOrigin {
         match self {
             Self::DesktopTree => crate::i18n::t("activity-source-workspace"),
             Self::AppRecord { app, id, .. } => format!("{app}: {id}"),
-            Self::Record { id, .. } => id.file_path().map_or_else(
-                || id.as_str().to_string(),
-                |path| {
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or_else(|| id.as_str())
-                        .to_string()
-                },
-            ),
         }
     }
 }

@@ -9,10 +9,10 @@ use tilo_actions::remote::workspace_activity as wire;
 
 use super::{
     ActivityDeepLink, ActivityTree, ActivityView, BoundaryDirection, DetailAction,
-    GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, RecordId, RecordStore,
-    SystemTime, WorkSessionBoundary, WorkspaceActivityOutcome, WorkspaceActivityPane,
-    WorkspaceHistoryId, WorkspaceScope, comparison_change_labels, comparison_field_changes,
-    detail_provenance, handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
+    GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, RecordId, SystemTime,
+    WorkSessionBoundary, WorkspaceActivityOutcome, WorkspaceActivityPane, WorkspaceHistoryId,
+    WorkspaceScope, comparison_change_labels, comparison_field_changes, detail_provenance,
+    handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
 };
 
 fn millis(at: SystemTime) -> i64 {
@@ -289,7 +289,6 @@ impl WorkspaceActivityPane {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
         tree: &mut impl ServedTree,
-        records: Option<&RecordStore>,
     ) -> Result<serde_json::Value, String> {
         let value = match action {
             wire::FEED => {
@@ -301,7 +300,7 @@ impl WorkspaceActivityPane {
             wire::FOCUS => serde_json::to_value(self.serve_focus()),
             wire::DETAIL => {
                 let query: wire::DetailQuery = read(arguments)?;
-                serde_json::to_value(tree.write(|tree| self.serve_detail(&query, tree, records)))
+                serde_json::to_value(tree.write(|tree| self.serve_detail(&query, tree)))
             }
             other => return Err(format!("`{other}` is not a read")),
         };
@@ -560,7 +559,6 @@ impl WorkspaceActivityPane {
         &mut self,
         query: &wire::DetailQuery,
         tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
     ) -> wire::Detail {
         if !self.select_range(&query.range) {
             return wire::Detail {
@@ -576,7 +574,7 @@ impl WorkspaceActivityPane {
         };
         let comparison = if query.compare && detail.can_compare {
             if self.comparison_selection != self.selected_ids() || !self.comparison_attempted {
-                self.apply_detail_action(DetailAction::Compare, tree, records);
+                self.apply_detail_action(DetailAction::Compare, tree);
             }
             Some(
                 self.comparison
@@ -843,13 +841,12 @@ impl WorkspaceActivityPane {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
         tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
     ) -> Result<WorkspaceActivityOutcome, String> {
         let detail = |pane: &mut Self, range: &wire::Range, action, tree: &mut _| {
             if !pane.select_range(range) {
                 return Err(t("activity-history-gone"));
             }
-            Ok(pane.apply_detail_action(action, tree, records))
+            Ok(pane.apply_detail_action(action, tree))
         };
         // The host decides what its history may take: a desktop that only shows one refuses every
         // change of it here, where it knows.
@@ -909,7 +906,7 @@ impl WorkspaceActivityPane {
                 } else {
                     DetailAction::Restore
                 };
-                Ok(self.apply_detail_action(action, tree, records))
+                Ok(self.apply_detail_action(action, tree))
             }
             wire::UNDO_RUN => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
             wire::UNDO_RECORD => {

@@ -147,7 +147,7 @@ mod native_history {
                 .cloned()
                 .expect("a range");
         let outcome = pane
-            .serve_action(wire::RESTORE, &arguments, &mut snapshot, None)
+            .serve_action(wire::RESTORE, &arguments, &mut snapshot)
             .expect("the history takes the restore");
         assert!(outcome.reverted, "the restore wrote");
         let restored: DesktopTree = written

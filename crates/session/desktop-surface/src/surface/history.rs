@@ -186,7 +186,7 @@ impl ActivityReads for WorkspaceActivity {
 
     fn read(&mut self, action: &str, arguments: &Map<String, Value>) -> Result<Value, String> {
         self.pane
-            .serve_read(action, arguments, &mut &mut self.snapshot, None)
+            .serve_read(action, arguments, &mut &mut self.snapshot)
     }
 }
 
@@ -213,7 +213,7 @@ impl Served for WorkspaceActivity {
         arguments: &Map<String, Value>,
     ) -> Result<Option<ui::HistoryResourceTarget>, String> {
         self.pane
-            .serve_action(action, arguments, &mut self.snapshot, None)
+            .serve_action(action, arguments, &mut self.snapshot)
             .map(|outcome| outcome.open_target)
     }
 
