@@ -21,7 +21,7 @@ async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_room()
             fixture.revoke(device);
         }
         let (state_tx, _state_rx) = mpsc::channel(32);
-        let session = fixture.recipient_session(&state_tx);
+        let session = fixture.ctx(Side::Recipient, Some(&state_tx), None, None);
         let error = audit_subscriber_access(
             &fixture.recipient,
             &session,
@@ -200,7 +200,7 @@ async fn a_reconnected_device_replaces_its_stale_session_that_registered_first()
         let stale_tx = stale_tx.clone();
         tokio::spawn(async move {
             let (state_tx, _state_rx) = mpsc::channel(32);
-            let mut session = fixture.recipient_session(&state_tx);
+            let mut session = fixture.ctx(Side::Recipient, Some(&state_tx), None, None);
             session.outbound = &stale_tx;
             let mut replay = None;
             handle_subscribe(

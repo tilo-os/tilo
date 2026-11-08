@@ -38,6 +38,61 @@ pub(super) fn certified_device(
     (peer, key)
 }
 
+/// The trust doors one test's connection answers at, kept alive beside the
+/// context that borrows them.
+struct Doors {
+    trust: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    metrics: Arc<crate::metrics::Metrics>,
+}
+
+impl Doors {
+    /// Doors that admit this relay's own person's devices and revoke nobody.
+    fn open() -> Self {
+        Self {
+            trust: Arc::new(std::sync::RwLock::new(
+                crate::policy::TrustPolicy::AllowMatchingUser,
+            )),
+            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+        }
+    }
+
+    /// What `who`'s connection is handled in, with every door a test does not
+    /// vary left closed.
+    fn ctx<'a>(
+        &'a self,
+        workspaces: &'a WorkspaceRegistry,
+        outbound: &'a mpsc::Sender<Envelope>,
+        disconnect: &'a mpsc::Sender<()>,
+        who: (&'a [u8; 32], &'a DeviceCert),
+    ) -> SessionCtx<'a> {
+        SessionCtx {
+            workspaces,
+            autobind: None,
+            outbound,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: who.0,
+            own_device_cert: who.1,
+            own_device_public_key: &who.1.device_public_key,
+            app_serving: None,
+            metrics: &self.metrics,
+            trust_policy: &self.trust,
+            disconnect,
+            presence: None,
+            revocations: &self.revocations,
+            carried_calls: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            member_limits: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
+        }
+    }
+}
+
 #[tokio::test]
 async fn shared_retained_metrics_count_only_newly_written_payload_bytes() {
     let tmp = tempfile::tempdir().unwrap();
@@ -530,36 +585,15 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
     std::fs::write(lineage.join(active.trim()).join("opaque.delta"), opaque).unwrap();
     let shared = Arc::new(AsyncMutex::new(runtime));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(7, shared.clone())])));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-    let metrics = Arc::new(crate::metrics::Metrics::default());
     let (outbound, _rx) = mpsc::channel(8);
     let (disconnect, _) = mpsc::channel(1);
-    let session = SessionCtx {
-        workspaces: &registry,
-        autobind: None,
-        outbound: &outbound,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &user.public_key,
-        own_device_cert: &peer.cert,
-        own_device_public_key: &peer.cert.device_public_key,
-        app_serving: None,
-        metrics: &metrics,
-        trust_policy: &trust,
-        disconnect: &disconnect,
-        presence: None,
-        revocations: &revocations,
-        carried_calls: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
+    let doors = Doors::open();
+    let session = doors.ctx(
+        &registry,
+        &outbound,
+        &disconnect,
+        (&user.public_key, &peer.cert),
+    );
     let (mut broken, reader) = tokio::io::duplex(1);
     drop(reader);
     assert!(
@@ -737,34 +771,8 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
     }
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-    let metrics = Arc::new(crate::metrics::Metrics::default());
-    let session = SessionCtx {
-        workspaces: &registry,
-        autobind: None,
-        outbound: &atx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &user.public_key,
-        own_device_cert: &a.cert,
-        own_device_public_key: &a.cert.device_public_key,
-        app_serving: None,
-        metrics: &metrics,
-        trust_policy: &trust,
-        disconnect: &disconnect,
-        presence: None,
-        revocations: &revocations,
-        carried_calls: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
+    let doors = Doors::open();
+    let session = doors.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
     let frame = tilo_actions::remote::RemoteActionFrame::new(
         tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
             correlation: 1,
@@ -853,34 +861,8 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     }
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-    let metrics = Arc::new(crate::metrics::Metrics::default());
-    let session = SessionCtx {
-        workspaces: &registry,
-        autobind: None,
-        outbound: &atx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &user.public_key,
-        own_device_cert: &a.cert,
-        own_device_public_key: &a.cert.device_public_key,
-        app_serving: None,
-        metrics: &metrics,
-        trust_policy: &trust,
-        disconnect: &disconnect,
-        presence: None,
-        revocations: &revocations,
-        carried_calls: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
+    let doors = Doors::open();
+    let session = doors.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
     let frame = || {
         tilo_actions::remote::RemoteActionFrame::new(
             tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
@@ -917,9 +899,9 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     // Each end is rechecked after its membership read: the sender's
     // certificate, then the target's.
     for device in [a.device_public_key, b.device_public_key] {
-        *revocations.write().unwrap() = RevocationList::new();
+        *doors.revocations.write().unwrap() = RevocationList::new();
         let (release, reached) = crate::store::test_barrier::install(&root_path, "membership-read");
-        let list = revocations.clone();
+        let list = doors.revocations.clone();
         let entry = revocation(device);
         let handle = tokio::runtime::Handle::current();
         let revoke = std::thread::spawn(move || {
@@ -1019,34 +1001,8 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
 
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-    let metrics = Arc::new(crate::metrics::Metrics::default());
-    let session = SessionCtx {
-        workspaces: &registry,
-        autobind: None,
-        outbound: &btx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &user.public_key,
-        own_device_cert: &browser.cert,
-        own_device_public_key: &browser.cert.device_public_key,
-        app_serving: None,
-        metrics: &metrics,
-        trust_policy: &trust,
-        disconnect: &bdis,
-        presence: None,
-        revocations: &revocations,
-        carried_calls: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
+    let doors = Doors::open();
+    let session = doors.ctx(&registry, &btx, &bdis, (&user.public_key, &browser.cert));
     // The browser sends a SyncReq as presence.
     handle_presence(
         &browser,
