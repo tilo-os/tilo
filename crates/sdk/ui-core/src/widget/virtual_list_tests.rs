@@ -2057,6 +2057,20 @@ fn a_list_fitting_its_rows_is_as_tall_as_they_are() {
     );
 }
 
+/// A list as tall as its rows settles on the height they come to even when the layout reads it
+/// a fraction of a pixel higher: the box it is given is that reading, not a height of its own to
+/// ask for again, or the window would lay itself out for ever.
+#[test]
+fn a_list_as_tall_as_its_rows_asks_for_the_height_its_rows_come_to_once() {
+    // The rows come to 580.35; the layout gave a box of 581 and the viewport already stands at
+    // the rows' height: nothing to ask for.
+    assert!(!fit_needs_layout(581.0, 580.35, 580.35));
+    // Rows that measured taller than the box the list stands in: the list grows to them.
+    assert!(fit_needs_layout(506.0, 580.35, 506.0));
+    // Rows that shrank under a box the viewport still stands at: the list shrinks to them.
+    assert!(fit_needs_layout(680.0, 673.0, 680.0));
+}
+
 /// A transcript shows the way back it owes its reader: to the first unread row while that is
 /// above the view, and to what is being said now while it has nothing unread but is not at its
 /// end. Taking it moves the reader, and where it moved them to changes what it offers next.

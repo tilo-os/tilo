@@ -77,6 +77,14 @@ const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 /// How near its end a list that follows its end still counts as at it, in logical pixels.
 const END_SLACK: f64 = 0.5;
 
+/// Whether a list as tall as its rows (`VirtualList::fitting_rows`) asks the layout for another
+/// pass: its box stands at a height other than the one its rows come to, and that height is not
+/// the one its viewport already stands at. A box a fraction of a pixel off is the layout's own
+/// reading of the same height, and asking for it again would never settle.
+fn fit_needs_layout(box_height: f64, rows: f64, viewport: f64) -> bool {
+    (box_height - rows).abs() > 0.5 && (viewport - rows).abs() > 0.5
+}
+
 fn px(value: f64) -> f32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -2006,9 +2014,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // rows shorter than its box stand at its foot again.
         remeasured |= self.keep_end();
         remeasured |= (self.end_slack() - slack).abs() > 0.5;
-        // A list as tall as its rows grows or shrinks with what they measured.
-        if self.fit_rows && (self.rect.height() - self.viewport.content_extent()).abs() > 0.5 {
-            self.viewport.set_viewport(self.viewport.content_extent());
+        // A list as tall as its rows grows or shrinks with what they measured, once for each
+        // height they come to: the box a layout gives it is the layout's own reading of that
+        // height, so a fraction of a pixel is the same height and no reason to lay out again.
+        let extent = self.viewport.content_extent();
+        if self.fit_rows && fit_needs_layout(self.rect.height(), extent, self.viewport.viewport()) {
+            self.viewport.set_viewport(extent);
             self.box_dirty = true;
             remeasured = true;
         }
