@@ -232,6 +232,7 @@ pub type Ask = Rc<dyn Fn(&str) -> Option<String>>;
 
 /// What a text typed on the canvas found, and where it stands: the inputs of
 /// [`Arrangement::place_found`] besides the arrangement itself.
+#[derive(Clone, Copy)]
 pub struct Found<'a> {
     /// The person the place is made as.
     pub asked: &'a str,
