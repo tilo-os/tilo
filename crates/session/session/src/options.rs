@@ -259,11 +259,18 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 ///
 /// `documents` is where what admission takes in from another device goes, so
 /// the apps this session runs show what everyone wrote.
+///
+/// `remote` is the agent door toward the person's other devices: answered on
+/// the endpoint over the devices the person's own store holds, and dialing
+/// theirs from it ([`crate::remote_door`]).
 pub(crate) fn start_collaboration(
     options: &Options,
     continuity: fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
-    beside: tilo_network_actor::local_host::Protocols,
+    (beside, remote): (
+        tilo_network_actor::local_host::Protocols,
+        &std::sync::Arc<crate::remote_door::Remote>,
+    ),
     documents: Option<sync::PeerDocuments>,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
@@ -285,8 +292,18 @@ pub(crate) fn start_collaboration(
         }
     });
     let mut beside = beside;
+    // Which devices are the person's is their own store's to say, for the
+    // agents that connect from one of them and for those this one dials.
+    let devices = personal.as_ref().map(|personal| {
+        std::sync::Arc::new(tilo_runtime::remote_door::PersonalDevices::new(
+            personal.sync().clone(),
+        )) as std::sync::Arc<dyn tilo_runtime::remote_door::PersonsDevices>
+    });
     if let Some(personal) = &personal {
         beside.push(personal.protocol());
+    }
+    if let Some(devices) = &devices {
+        beside.push(remote.protocol(std::sync::Arc::clone(devices)));
     }
     let own = sync::OwnPresence {
         label: options.person.clone(),
@@ -311,6 +328,13 @@ pub(crate) fn start_collaboration(
         Ok(sync) => {
             if let Some(personal) = personal {
                 sync.attach_personal(personal);
+            }
+            if let (Some(devices), Some(endpoint)) = (devices, sync.endpoint()) {
+                remote.attach(tilo_runtime::remote_door::Doors::new(
+                    endpoint,
+                    devices,
+                    tilo_rt::app().handle().clone(),
+                ));
             }
             Some(Rc::new(sync))
         }
