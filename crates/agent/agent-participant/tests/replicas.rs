@@ -12,24 +12,15 @@ mod common;
 
 use collab_types::DocumentMutation;
 use common::catalogue;
-use tilo_agent_participant::{Replica, Seed};
+use tilo_agent_participant::{Replica, ReplicaActor, Seed};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 #[test]
 fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
-    let catalogue = catalogue();
     let app = "so.tilo.chat";
-    let mut page = Replica::open(
-        &catalogue,
-        app,
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
     };
@@ -46,12 +37,10 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
 
     // A host, a bot or an agent opens what the workspace kept: it is brought up
     // to the app's version as a window brings it up.
-    let mut held = Replica::open(
-        &catalogue,
+    let mut held = common::open(
         app,
-        WORKSPACE,
         "host",
-        tilo_agent_participant::ReplicaActor::Owner,
+        ReplicaActor::Owner,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![kept.save()],
@@ -77,17 +66,8 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
 #[test]
 fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     use ui::permissions::{PermissionContext, Role};
-    let catalogue = catalogue();
     let app = "so.tilo.chat";
-    let mut page = Replica::open(
-        &catalogue,
-        app,
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
     chat::demo::apply_as(
         &mut doc,
@@ -157,27 +137,16 @@ fn bytes(mutation: DocumentMutation) -> Vec<u8> {
 
 #[test]
 fn an_agent_mount_and_a_person_mount_converge() {
-    let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
-    let mut page = Replica::open(
-        &catalogue,
-        app,
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let snapshot = page
         .take_mutation()
         .expect("a new record is published whole");
     assert!(matches!(snapshot, DocumentMutation::Snapshot(_)));
-    let mut agent = Replica::open(
-        &catalogue,
+    let mut agent = common::open(
         app,
-        WORKSPACE,
         "writer",
-        tilo_agent_participant::ReplicaActor::Agent,
+        ReplicaActor::Agent,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![bytes(snapshot)],
@@ -255,7 +224,7 @@ fn joined(
         page.app_id(),
         WORKSPACE,
         "writer",
-        tilo_agent_participant::ReplicaActor::Agent,
+        ReplicaActor::Agent,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![changes],
@@ -284,15 +253,7 @@ fn only_the_creator_seeds_a_record() {
         .filter(|definition| !definition.keeps_workspace_record())
     {
         let app = definition.app_id();
-        let mut page = Replica::open(
-            &catalogue,
-            app,
-            WORKSPACE,
-            "ada",
-            tilo_agent_participant::ReplicaActor::Owner,
-            Seed::New,
-        )
-        .unwrap();
+        let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
         let snapshot = page.take_mutation().expect("a new record is published");
         let created = content(&page);
 
@@ -338,17 +299,8 @@ fn only_the_creator_seeds_a_record() {
 
 #[test]
 fn an_agents_presence_is_where_its_last_operation_left_it() {
-    let catalogue = catalogue();
     let app = "so.tilo.word-processor";
-    let mut agent = Replica::open(
-        &catalogue,
-        app,
-        WORKSPACE,
-        "writer",
-        tilo_agent_participant::ReplicaActor::Agent,
-        Seed::New,
-    )
-    .unwrap();
+    let mut agent = common::open(app, "writer", ReplicaActor::Agent, Seed::New).unwrap();
     assert!(
         agent.presence().is_none(),
         "nothing done, nowhere in particular"
@@ -394,12 +346,10 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
 /// runs at once, so it can take back a clip it placed by mistake.
 #[test]
 fn an_agent_removes_a_clip_it_placed_without_being_asked() {
-    let mut agent = Replica::open(
-        &catalogue(),
+    let mut agent = common::open(
         "so.tilo.video-editor",
-        WORKSPACE,
         "editor",
-        tilo_agent_participant::ReplicaActor::Agent,
+        ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap();
@@ -444,22 +394,13 @@ fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::pol
 /// Ada's new scratchpad, and the same record held by her bot `b1` granted
 /// `kinds` in the workspace.
 fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica) {
-    let mut page = Replica::open(
-        &catalogue(),
-        "so.tilo.scratchpad",
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page =
+        common::open("so.tilo.scratchpad", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let snapshot = page.take_mutation().unwrap();
-    let bot = Replica::open(
-        &catalogue(),
+    let bot = common::open(
         page.app_id(),
-        WORKSPACE,
         "bot:b1",
-        tilo_agent_participant::ReplicaActor::Bot {
+        ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
             standing: bot_standing(kinds),
@@ -543,16 +484,7 @@ fn a_bot_without_a_write_grant_is_offered_only_reads() {
 
 #[test]
 fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
-    let catalogue = catalogue();
-    let mut page = Replica::open(
-        &catalogue,
-        "so.tilo.chat",
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
     chat::demo::apply_as(
         &mut doc,
@@ -568,12 +500,10 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     let projection = chat::projection::read(&doc);
     let channel = projection.channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
-    let mut bot = Replica::open(
-        &catalogue,
+    let mut bot = common::open(
         page.app_id(),
-        WORKSPACE,
         "bot:b1",
-        tilo_agent_participant::ReplicaActor::Bot {
+        ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
             standing: {
@@ -652,16 +582,7 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
 
 #[test]
 fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
-    let catalogue = catalogue();
-    let mut page = Replica::open(
-        &catalogue,
-        "so.tilo.chat",
-        WORKSPACE,
-        "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
-        Seed::New,
-    )
-    .unwrap();
+    let mut page = common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
     chat::demo::apply_as(
         &mut doc,
@@ -698,12 +619,10 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         );
         Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada").bounded_by(bot, vec![post])
     };
-    let mut bot = Replica::open(
-        &catalogue,
+    let mut bot = common::open(
         page.app_id(),
-        WORKSPACE,
         "bot:b1",
-        tilo_agent_participant::ReplicaActor::Bot {
+        ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
             standing,

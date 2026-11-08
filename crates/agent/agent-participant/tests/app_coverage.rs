@@ -18,9 +18,7 @@ use std::fmt::Write as _;
 
 use common::{Driveable, LOCAL_STATE, catalogue, find_edit};
 use tilo_actions::door::ActionDescriptor;
-use tilo_agent_participant::{Replica, Seed, StepAction};
-
-const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+use tilo_agent_participant::{Replica, ReplicaActor, Seed, StepAction};
 
 /// How many attempts an app gets before it is a gap.
 const ATTEMPTS: usize = 40;
@@ -54,12 +52,10 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
     let mut table = String::from("| App | Operations | Edit |\n|---|---|---|\n");
     let mut gaps = Vec::new();
     for definition in catalogue.iter() {
-        let app = Replica::open(
-            &catalogue,
+        let app = common::open(
             definition.app_id(),
-            WORKSPACE,
             "coverage-agent",
-            tilo_agent_participant::ReplicaActor::Agent,
+            ReplicaActor::Agent,
             Seed::New,
         )
         .unwrap_or_else(|error| panic!("{} did not open: {error}", definition.app_id()));

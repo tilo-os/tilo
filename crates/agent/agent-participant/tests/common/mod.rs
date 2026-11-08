@@ -13,7 +13,10 @@ use tilo_actions::door::{ActionDescriptor, InputSpec};
 use tilo_actions::{Availability, ConfirmationPolicy, OperationKind, PROMPTED_PARAM, ParamType};
 use tilo_agent::surface::Catalogue;
 use tilo_agent::tools::{self, Answer, Revealed};
-use tilo_agent_participant::{AppCatalogue, PlanModel, StepAction, component_apps};
+use tilo_agent_participant::{
+    AppCatalogue, AppError, ConfinedReplica, PlanModel, Replica, ReplicaActor, Seed, StepAction,
+    component_apps,
+};
 
 /// Apps whose state is device-local by design, so no operation changes the
 /// shared record: there is nothing for an agent to edit there.
@@ -45,6 +48,45 @@ pub const WRITTEN: &str = "Written by an agent";
 /// Every web app.
 pub fn catalogue() -> AppCatalogue {
     AppCatalogue::new(component_apps())
+}
+
+/// The record of `app` in the workspace, opened by `who` as `actor`, from
+/// `seed`.
+///
+/// # Errors
+///
+/// As [`Replica::open`].
+pub fn open(app: &str, who: &str, actor: ReplicaActor, seed: Seed) -> Result<Replica, AppError> {
+    open_in(WORKSPACE, app, who, actor, seed)
+}
+
+/// [`open`], of `app` in `workspace`.
+///
+/// # Errors
+///
+/// As [`Replica::open`].
+pub fn open_in(
+    workspace: &str,
+    app: &str,
+    who: &str,
+    actor: ReplicaActor,
+    seed: Seed,
+) -> Result<Replica, AppError> {
+    Replica::open(&catalogue(), app, workspace, who, actor, seed)
+}
+
+/// [`open`], in a confined worker the host runs.
+///
+/// # Errors
+///
+/// As [`ConfinedReplica::open`].
+pub fn confined(
+    app: &str,
+    who: &str,
+    actor: &ReplicaActor,
+    seed: Seed,
+) -> Result<ConfinedReplica, AppError> {
+    ConfinedReplica::open(&catalogue(), app, WORKSPACE, who, actor, seed)
 }
 
 /// A record's document as JSON: a page's replica, or the copy an agent's

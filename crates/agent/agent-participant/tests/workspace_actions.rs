@@ -75,7 +75,7 @@ use tilo_actions::{
     ConfirmationPolicy,
     remote::{ActionHostError, Confirmation, ReceiptStatus, RemoteActionMessage},
 };
-use tilo_agent_participant::{ModelChoice, Replica, Seed, record_provider};
+use tilo_agent_participant::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
 use tilo_browser_peer::Host;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -114,12 +114,11 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .unwrap();
     let mut browser =
         Browser::open_workspace(&hosted, &browser_device, &host, &workspace.workspace).await;
-    let mut source = Replica::open(
-        &common::catalogue(),
-        "so.tilo.chat",
+    let mut source = common::open_in(
         &workspace.workspace,
+        "so.tilo.chat",
         "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
+        ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
@@ -564,15 +563,8 @@ impl Page {
         app: &str,
         before_publish: impl FnOnce(&DocumentRoute),
     ) -> DocumentRoute {
-        let mut page = Replica::open(
-            &common::catalogue(),
-            app,
-            &self.cluster_id,
-            "ada",
-            tilo_agent_participant::ReplicaActor::Owner,
-            Seed::New,
-        )
-        .unwrap();
+        let mut page =
+            common::open_in(&self.cluster_id, app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: self.cluster_id.clone(),
@@ -597,12 +589,11 @@ impl Page {
     fn mount(&mut self, route: &DocumentRoute) -> Replica {
         self.pump();
         let changes = self.documents.get(route).cloned().unwrap_or_default();
-        Replica::open(
-            &common::catalogue(),
-            &route.app_id,
+        common::open_in(
             &self.cluster_id,
+            &route.app_id,
             "ada",
-            tilo_agent_participant::ReplicaActor::Owner,
+            ReplicaActor::Owner,
             Seed::Existing {
                 record: route_record(&route.record),
                 changes: changes.into_iter().map(|(_, bytes)| bytes).collect(),

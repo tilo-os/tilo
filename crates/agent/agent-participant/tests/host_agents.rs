@@ -48,7 +48,7 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::InvokeArgument;
-use tilo_agent_participant::{ModelChoice, Replica, Seed};
+use tilo_agent_participant::{ModelChoice, Replica, ReplicaActor, Seed};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::Relay;
@@ -115,7 +115,6 @@ impl Browser {
     /// from the changes `author` made.
     fn bodies(&mut self, app: &str, author: [u8; 32]) -> Vec<String> {
         self.pump();
-        let catalogue = common::catalogue();
         self.documents
             .iter()
             .filter(|(route, _)| route.app_id == app)
@@ -126,12 +125,10 @@ impl Browser {
                 );
                 // Until the change that sets the record up arrives, the app
                 // refuses to open what came before it.
-                let page = match Replica::open(
-                    &catalogue,
+                let page = match common::open(
                     app,
-                    WORKSPACE,
                     "ada",
-                    tilo_agent_participant::ReplicaActor::Owner,
+                    ReplicaActor::Owner,
                     Seed::Existing {
                         record: route_record(&route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
@@ -472,15 +469,7 @@ struct Page {
 
 impl Page {
     fn create(browser: &Browser, app: &str) -> Self {
-        let mut page = Replica::open(
-            &common::catalogue(),
-            app,
-            WORKSPACE,
-            "ada",
-            tilo_agent_participant::ReplicaActor::Owner,
-            Seed::New,
-        )
-        .unwrap();
+        let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
@@ -509,12 +498,10 @@ impl Page {
                 .get(&creator.route)
                 .filter(|c| !c.is_empty())
             {
-                let mut app = Replica::open(
-                    &common::catalogue(),
+                let mut app = common::open(
                     SHEETS,
-                    WORKSPACE,
                     "bea",
-                    tilo_agent_participant::ReplicaActor::Owner,
+                    ReplicaActor::Owner,
                     Seed::Existing {
                         record: route_record(&creator.route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
@@ -677,12 +664,10 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             .get(&page.route)
             .filter(|c| !c.is_empty())
         {
-            let replayed = Replica::open(
-                &common::catalogue(),
+            let replayed = common::open(
                 SHEETS,
-                WORKSPACE,
                 "ada",
-                tilo_agent_participant::ReplicaActor::Owner,
+                ReplicaActor::Owner,
                 Seed::Existing {
                     record: route_record(&page.route.record),
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),

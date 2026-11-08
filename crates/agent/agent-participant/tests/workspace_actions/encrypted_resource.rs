@@ -2,10 +2,10 @@ use super::resource_support::{
     admit_person, on_messages, open_admitted_peer, part_route, published_message,
 };
 use super::{
-    CatalogueQuery, DeviceCapabilities, DocumentRoute, Replica, Seed, common, enrol,
-    record_provider, start,
+    CatalogueQuery, DeviceCapabilities, DocumentRoute, Seed, common, enrol, record_provider, start,
 };
 use tilo_actions::remote::ViewResourceQuery;
+use tilo_agent_participant::ReplicaActor;
 use tilo_peer_state::join::MemberRole;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -46,12 +46,11 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     )
     .await;
     let publisher = open_admitted_peer(&hosted, &writer_device, &host, &workspace.workspace).await;
-    let mut source = Replica::open(
-        &common::catalogue(),
-        "so.tilo.chat",
+    let mut source = common::open_in(
         &workspace.workspace,
+        "so.tilo.chat",
         &hex::encode(writer_device.cert.user_public_key),
-        tilo_agent_participant::ReplicaActor::Owner,
+        ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();

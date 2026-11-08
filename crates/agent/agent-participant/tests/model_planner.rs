@@ -15,7 +15,7 @@ use serde_json::json;
 use tilo_agent::surface::Catalogue;
 use tilo_agent::tools::Answer;
 use tilo_agent_participant::{
-    ModelPlanner, PlanContext, PlanModel, Planner, Replica, Seed, StepAction,
+    ModelPlanner, PlanContext, PlanModel, Planner, Replica, ReplicaActor, Seed, StepAction,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -33,16 +33,7 @@ impl PlanModel for Canned {
 }
 
 fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
-    let catalogue = common::catalogue();
-    let app = Replica::open(
-        &catalogue,
-        app_id,
-        WORKSPACE,
-        "agent",
-        tilo_agent_participant::ReplicaActor::Agent,
-        Seed::New,
-    )
-    .unwrap();
+    let app = common::open(app_id, "agent", ReplicaActor::Agent, Seed::New).unwrap();
     let route = DocumentRoute {
         app_id: app_id.into(),
         cluster_id: WORKSPACE.into(),
