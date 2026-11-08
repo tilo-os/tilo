@@ -6,6 +6,8 @@
         reason = "a page's store and neighbour handles reach JavaScript and stay on the page's one thread"
     )
 )]
+#[cfg(not(target_arch = "wasm32"))]
+mod frames;
 pub mod governance;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;
