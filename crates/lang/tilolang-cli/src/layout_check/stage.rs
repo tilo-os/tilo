@@ -975,7 +975,7 @@ mod tests {
         // The press and the agent's action take the one path: the app is handed the action,
         // not a view event.
         staged
-            .press(&control_id, false)
+            .press_action(&control_id)
             .expect("the control presses");
         let chosen = staged.instance.take_chosen();
         assert_eq!(
