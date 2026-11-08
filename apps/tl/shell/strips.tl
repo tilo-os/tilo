@@ -105,6 +105,11 @@ view preset_menu(v: Viewing) {
 /// when one is, else each row of the workspace in front with its strips side by side. The rows
 /// stand in a desk that fills the room it is given, so a window is as tall as the desk and its
 /// app is the whole of it under the window's one bar.
+///
+/// A desk holds every workspace the person is in and shows one: the one in front (the session's
+/// `current`). The others are a switch away in the bar, not a second desk under this one, so the
+/// view draws the front workspace's rows and no other's — two workspaces side by side would halve
+/// the room every window has, and an empty one would take a desk's half for nothing.
 view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
     let maximizing = maximized_strips(a)
     if not maximizing.is_empty() {
@@ -113,15 +118,31 @@ view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
                 strip_window(a, v, s, lists, fill(1))
             }
         }
+    } else if let workspace = shown_workspace(a) {
+        scroll(axis: .both) {
+            workspace_rows(a, v, workspace.key, lists, fill(1))
+        }
     } else {
+        // A desk the session has published no workspace of yet: it holds nothing to draw.
         scroll(axis: .both) {
             stack(gap: .group, fill) {
-                for workspace in a.workspaces {
-                    workspace_rows(a, v, workspace.key, lists, fill(1))
-                }
+                ui.EmptyState(
+                    "No window here yet",
+                    message: "Open something into this strip.",
+                    inline: true,
+                )
             }
         }
     }
+}
+
+/// The workspace the desk shows: the one in front, else the first it holds — a desk that has not
+/// said which is in front still shows its first rather than nothing.
+fn shown_workspace(a: Arrangement) -> Option<ArrangementWorkspace> {
+    if let current = a.workspaces.find(w -> w.current) {
+        return current
+    }
+    a.workspaces.first()
 }
 
 /// The rows of one workspace, filling the room the desk gives them: a workspace's rows stand
@@ -134,20 +155,19 @@ view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
     }
 }
 
-/// One row of the desk: the band across it, named while the desk holds more than one so a person
-/// can tell them apart, with its strips side by side along it, each the share of the desk its
-/// width names, so two windows the desk holds stand side by side and its app keeps its room
-/// (`row_window`). A row holding more windows than the desk shows scrolls along it, as the
+/// One row of the desk: the band across it, with its strips side by side along it, each the share
+/// of the desk its width names, so two windows the desk holds stand side by side and its app keeps
+/// its room (`row_window`). A row holding more windows than the desk shows scrolls along it, as the
 /// chrome's own row does. A phone's output is too narrow for two
 /// windows side by side, so there it shows the strip in front alone, filling the desk, as the
 /// chrome's desk does.
+///
+/// A row is not named here: the strip a person is in is what the bar's strip pill says, and the
+/// desk itself carries no label of its own (docs/design-language.md, `BarChip`).
 view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
     let strips = strips_of(a, held.key)
     let front = strips.find(s -> s.key == strip_in_front(a, v)) ?? strips.last()
     stack(gap: .related, fill) {
-        if a.rows.len() > 1 {
-            ui.Text(held.name, role: .subheading)
-        }
         if space.compact {
             if let s = front {
                 strip_window(a, v, s, lists, fill(1))
@@ -294,9 +314,12 @@ view window_controls(
                 // tab strip. Moving a place into another strip's tab strip, or its own
                 // beside another place, is the menu's way to make tabs without a drag
                 // (shell.md §2). A strip of one place offers its own place as where to join.
+                // Only this workspace's strips are offered: a row is one workspace's, and a
+                // place moves within its workspace (shell.md §2, `move`).
+                let here = strip_workspace(a, s.key)
                 if a.strips.len() > 1 {
                     for other in a.strips {
-                        if other.key != s.key {
+                        if other.key != s.key and other.workspace == here {
                             ui.MenuItem(
                                 "Move into {window_name(strip_place(a, other))} as a tab",
                                 icon: .columns_2,
@@ -313,7 +336,7 @@ view window_controls(
                 }
                 if a.rows.len() > 1 {
                     for r in a.rows {
-                        if r.key != strip_row(a, p.strip) {
+                        if r.workspace == here and r.key != strip_row(a, p.strip) {
                             ui.MenuItem("Move to {r.name}", icon: .navigation) {
                                 on choose: session.move(
                                     place: the_place(p.key),
@@ -414,6 +437,15 @@ view place_view(p: ArrangementPlace) {
 fn strip_row(a: Arrangement, strip: Text) -> Text {
     match a.strips.find(s -> s.key == strip) {
         .some(s) => s.row,
+        .none => "",
+    }
+}
+
+/// The workspace the strip `strip` stands in: a row is one workspace's, so what a place moves
+/// within is that workspace's strips and rows.
+fn strip_workspace(a: Arrangement, strip: Text) -> Text {
+    match a.strips.find(s -> s.key == strip) {
+        .some(s) => s.workspace,
         .none => "",
     }
 }

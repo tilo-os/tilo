@@ -459,6 +459,9 @@ pub struct DeskReading {
 pub struct ArrangementWorkspaceReading {
     pub key: String,
     pub name: String,
+    /// Whether it is the workspace in front: a desk holds several and shows one, so a shell draws
+    /// the rows of this one and no other.
+    pub current: bool,
 }
 
 /// A row of the desk, as the person's arrangement names it.
@@ -1238,7 +1241,11 @@ fn text(s: &str) -> Value {
 
 /// The fields of an arrangement workspace, as it is written into the shell's record.
 fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
-    vec![("key", text(&w.key)), ("name", text(&w.name))]
+    vec![
+        ("key", text(&w.key)),
+        ("name", text(&w.name)),
+        ("current", Value::Bool(w.current)),
+    ]
 }
 
 /// The fields of a row, as it is written into the shell's record.
@@ -2163,6 +2170,14 @@ impl ShellPart {
     /// Where the first node that says `text` (its name, description or value holds it) stands,
     /// in the desktop's logical layout `(x, y, width, height)`.
     pub fn text_bounds(&mut self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.text_bounds_all(text).into_iter().next()
+    }
+
+    /// Where every node that says `text` (its name, description or value holds it) stands, in the
+    /// desktop's logical layout `(x, y, width, height)`. A name more than one thing on the desk
+    /// carries — a strip's name, which the bar's pill and nothing on the desk says — is read by all
+    /// of them, so what a test asks of a name is what the whole desk says of it.
+    pub fn text_bounds_all(&mut self, text: &str) -> Vec<(f64, f64, f64, f64)> {
         let (ox, oy) = self.widgets.placement().origin;
         self.widgets
             .host_mut()
@@ -2174,7 +2189,7 @@ impl ShellPart {
                     .flatten()
                     .any(|said| said.contains(text))
             })
-            .find_map(|(_, node)| node.bounds())
+            .filter_map(|(_, node)| node.bounds())
             .map(|rect| {
                 (
                     f64::from(ox) + rect.x0,
@@ -2183,6 +2198,7 @@ impl ShellPart {
                     rect.height(),
                 )
             })
+            .collect()
     }
 
     /// The apps whose packages the part's runtime holds loaded, because a place shows them.

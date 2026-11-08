@@ -134,6 +134,7 @@ fn arrangement(record: &str, shows: &str, shown_as: &str) -> ArrangementReading 
         workspaces: vec![ArrangementWorkspaceReading {
             key: "w1".to_owned(),
             name: "Desk".to_owned(),
+            current: true,
         }],
         rows: vec![ArrangementRowReading {
             key: "r1".to_owned(),

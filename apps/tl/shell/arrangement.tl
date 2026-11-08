@@ -26,6 +26,8 @@ type Arrangement (origin: session.arrangement) {
 type ArrangementWorkspace (origin: session.arrangement_workspace) {
     key: Text merge register
     name: Text merge register
+    /// Whether it is the workspace in front, which the desk shows.
+    current: Bool
 }
 
 /// A row of the desk: a strip across a workspace's width, holding columns.
