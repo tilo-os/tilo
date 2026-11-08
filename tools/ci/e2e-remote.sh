@@ -28,6 +28,8 @@ phase() { echo "e2e-remote: $1 at ${SECONDS}s"; }
 bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt tools/ci/packages/e2e-remote.txt
 command -v virsh qemu-system-x86_64 qemu-img passt ssh sudo ip >/dev/null
 phase 'tools ready'
+# Three boxes of run.py's MEMORY_MB each run here: what this micro-VM has for them, for the log.
+echo "e2e-remote: $(nproc) CPUs, $(awk '/MemTotal|MemAvailable/ {printf "%s %d MiB ", $1, $2/1024}' /proc/meminfo)"
 
 ./os/dev/assert-native-arch.sh "$arch"
 python3 os/dev/probe-kvm.py "$arch" || {
