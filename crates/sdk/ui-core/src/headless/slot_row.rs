@@ -314,6 +314,7 @@ impl FrameHarness {
             focusable: false,
             rect: [window.x0, window.y0, window.width(), window.height()],
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)

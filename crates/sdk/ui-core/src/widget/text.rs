@@ -952,6 +952,12 @@ impl Widget for Text {
         dyn crate::presence::capability::PublishesPresence
     );
 
+    fn own_page_title(&self) -> Option<String> {
+        (self.accessible_heading_level() == Some(1))
+            .then(|| self.resolved_label().trim().to_owned())
+            .filter(|shown| !shown.is_empty())
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document_ref(state, path);
         self.observe_i18n_revision();
@@ -1298,6 +1304,25 @@ impl crate::permissions::capability::PermissionGated for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_title_text_shows_its_pages_title_and_a_paragraph_does_not() {
+        let text = |role: TextRole| Text::new("Q3 plan").with_role(role);
+        assert_eq!(
+            Widget::own_page_title(&text(TextRole::LargeTitle)).as_deref(),
+            Some("Q3 plan")
+        );
+        assert_eq!(
+            Widget::own_page_title(&text(TextRole::Title)).as_deref(),
+            Some("Q3 plan"),
+            "the old large title role names the page too"
+        );
+        assert_eq!(
+            Widget::own_page_title(&text(TextRole::Body)),
+            None,
+            "a paragraph that repeats the words is no heading"
+        );
+    }
 
     /// Lay `w` out on its own in `width`, as a card gives a title the width of its column.
     fn lay_out_at(w: &mut dyn Widget, width: f32) -> TextRenderer {

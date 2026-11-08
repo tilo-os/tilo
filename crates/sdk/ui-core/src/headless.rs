@@ -103,6 +103,10 @@ pub struct InspectionNode {
     pub rect: [f64; 4],
     /// Absolute logical clip applied to children, if the widget clips them.
     pub child_clip: Option<[f64; 4]>,
+    /// The words this widget shows as its page's own title, when it is the page's heading: the
+    /// same words a shell's bar must not show beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_title: Option<String>,
     /// Effective policy and authoring origins, when supplied by the widget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<crate::widget::LayoutInfo>,
@@ -5148,6 +5152,7 @@ impl FrameHarness {
             focusable: false,
             rect: [chip.x0, chip.y0, chip.width(), chip.height()],
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Tooltip).with_name(text.to_owned()),

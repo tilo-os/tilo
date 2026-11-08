@@ -913,7 +913,7 @@ impl AppWindow {
             )
         });
         let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
-        let composed = crate::shell::header_rules(composed, self.detail.is_some());
+        let composed = crate::shell::header_rules(composed);
         let composed = match self.front {
             // A shell built anew opens on the screen a new window opens on: the window hands it
             // the one it shows, so the person stays where they are.

@@ -13,6 +13,7 @@ mod hosted;
 mod inspector_sheet;
 mod listed_actions;
 mod nothing_listed;
+mod page_title;
 mod replan;
 mod sidebar_button;
 mod touch;

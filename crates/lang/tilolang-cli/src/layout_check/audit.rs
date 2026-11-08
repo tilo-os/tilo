@@ -74,10 +74,13 @@ pub enum Kind {
     /// A surface with nothing in it: a filled block standing where a person reads it as a card,
     /// a page or a band, and holding no words and nothing laid out of its own.
     EmptySurface,
+    /// A column's header naming the page while the page shows the same words as its own
+    /// heading, or in the field it edits its title in: one title on screen, and the page's.
+    RepeatedPageTitle,
 }
 
 impl Kind {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -102,6 +105,7 @@ impl Kind {
         Self::MixedLanguage,
         Self::OpenOutsideList,
         Self::EmptySurface,
+        Self::RepeatedPageTitle,
     ];
 
     pub fn name(self) -> &'static str {
@@ -130,6 +134,7 @@ impl Kind {
             Self::MixedLanguage => "mixed-language",
             Self::OpenOutsideList => "open-outside-list",
             Self::EmptySurface => "empty-surface",
+            Self::RepeatedPageTitle => "repeated-page-title",
         }
     }
 }
@@ -184,6 +189,11 @@ fn has_words(node: &InspectionNode) -> bool {
 
 fn size(r: Rect) -> String {
     format!("{:.0}×{:.0}", r.width(), r.height())
+}
+
+/// `text` as one line of words: whitespace collapsed, ends trimmed.
+fn words(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Which ways a box lets its content go on past it.
@@ -416,7 +426,21 @@ struct Walk<'a> {
     header_counts: Vec<Count>,
     /// The counts a window's places draw beside the place chosen in them.
     place_counts: Vec<Count>,
+    /// The titles the window's column headers draw.
+    header_titles: Vec<Title>,
+    /// The titles the window's content shows as its own.
+    page_titles: Vec<Title>,
     out: &'a mut Vec<Problem>,
+}
+
+/// Words a window shows as a title: a column header's, or one its content shows as the page's.
+struct Title {
+    words: String,
+    at: Rect,
+    /// The keys of the widgets at and above it, innermost first.
+    keys: Vec<String>,
+    widget: String,
+    id: Option<String>,
 }
 
 /// One number a window draws: a column header's count, or a place's.
@@ -451,6 +475,8 @@ pub fn inspect(
         off_pixel: false,
         header_counts: Vec::new(),
         place_counts: Vec::new(),
+        header_titles: Vec::new(),
+        page_titles: Vec::new(),
         out: &mut out,
     };
     walk.node(
@@ -463,6 +489,7 @@ pub fn inspect(
         "",
     );
     walk.repeated_counts();
+    walk.repeated_titles();
     out
 }
 
@@ -565,6 +592,7 @@ impl Walk<'_> {
         if geometric {
             self.overlaps(node, keys, inner_clip);
             self.counts(node, keys, own, inner_clip);
+            self.titles(node, keys, own);
             self.header_rows(node, keys);
         }
         for child in &node.children {
@@ -884,6 +912,20 @@ impl Walk<'_> {
         let number = |value: Option<&str>| value.and_then(|value| value.trim().parse::<u32>().ok());
         match node.widget.as_str() {
             "NavShellTitle" => {
+                if let Some(name) = access
+                    .name
+                    .as_deref()
+                    .map(words)
+                    .filter(|name| !name.is_empty())
+                {
+                    self.header_titles.push(Title {
+                        words: name,
+                        at: own,
+                        keys: keys.iter().rev().cloned().collect(),
+                        widget: node.widget.clone(),
+                        id: node.test_id.clone(),
+                    });
+                }
                 let Some(count) = number(access.value.as_deref()) else {
                     return;
                 };
@@ -980,6 +1022,55 @@ impl Walk<'_> {
                     header.number,
                     size(place.at),
                     (header.at.x0 - place.at.x1).round()
+                ),
+            });
+        }
+    }
+
+    /// The words `node` shows as a title of its own: the page's own heading, as the toolkit
+    /// names it. What the person reads as the page's name, beside the bar's.
+    fn titles(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        let Some(shown) = node
+            .page_title
+            .as_deref()
+            .map(words)
+            .filter(|shown| !shown.is_empty())
+        else {
+            return;
+        };
+        self.page_titles.push(Title {
+            words: shown,
+            at: own,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: node.test_id.clone(),
+        });
+    }
+
+    /// A bar naming a page while the page shows those same words as its own title: the bar
+    /// keeps only the way back and the page's actions until the title scrolls out of the page.
+    fn repeated_titles(&mut self) {
+        let (headers, pages) = (
+            std::mem::take(&mut self.header_titles),
+            std::mem::take(&mut self.page_titles),
+        );
+        for header in headers {
+            let Some(page) = pages.iter().find(|page| {
+                page.words.eq_ignore_ascii_case(&header.words)
+                    && page.at.y0 >= header.at.y1 - EPSILON
+            }) else {
+                continue;
+            };
+            self.out.push(Problem {
+                kind: Kind::RepeatedPageTitle,
+                keys: header.keys.clone(),
+                widget: header.widget.clone(),
+                id: header.id.clone(),
+                detail: format!(
+                    "the bar names the page {:?} while the page shows it {} below, {} wide",
+                    page.words,
+                    (page.at.y0 - header.at.y1).round(),
+                    size(page.at)
                 ),
             });
         }
@@ -1227,6 +1318,7 @@ mod tests {
             focusable: role.is_some(),
             rect,
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: role.map(AccessNode::new),
             children: Vec::new(),
@@ -1553,6 +1645,60 @@ mod tests {
         access.name = Some(name.to_owned());
         access.value = Some(value.to_owned());
         header
+    }
+
+    /// A bar naming the page while the page shows those words as its own title: the same title
+    /// twice on one screen. A bar whose title is already covered, or a page whose heading says
+    /// other words, is no repeat.
+    #[test]
+    fn a_bar_naming_a_page_beside_the_pages_own_heading_is_caught_once() {
+        let repeated = |bar_title: Option<&str>, page: Option<&str>| {
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 390.0, 844.0], None);
+            let mut bar = node(
+                "NavShellTitle",
+                "bar",
+                [68.0, 18.0, 314.0, 39.0],
+                Some(Role::Heading { level: 2 }),
+            );
+            if let Some(title) = bar_title {
+                bar.semantics.as_mut().expect("the bar's semantics").name = Some(title.to_owned());
+            } else {
+                bar.semantics = None;
+            }
+            let mut heading = node("TextInput", "title", [80.0, 80.0, 294.0, 161.0], None);
+            heading.page_title = page.map(str::to_owned);
+            shell.children = vec![bar, heading];
+            inspect(&shell, (390, 844), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::RepeatedPageTitle)
+                .count()
+        };
+        assert_eq!(
+            repeated(
+                Some("Call the landlord about the boiler"),
+                Some("Call the landlord about the boiler")
+            ),
+            1,
+            "the page's heading says what the bar says"
+        );
+        assert_eq!(
+            repeated(Some("Call the landlord about the boiler"), None),
+            0,
+            "the page shows no title of its own, so the bar names it"
+        );
+        assert_eq!(
+            repeated(None, Some("Call the landlord about the boiler")),
+            0,
+            "the bar left the title to the page"
+        );
+        assert_eq!(
+            repeated(
+                Some("Call the landlord about the boiler"),
+                Some("Call the plumber")
+            ),
+            0,
+            "the page shows other words"
+        );
     }
 
     fn place(name: &str, rect: [f64; 4], count: u32, selected: bool) -> AccessNode {
@@ -2089,6 +2235,7 @@ mod tests {
             focusable: false,
             rect,
             child_clip: None,
+            page_title: None,
             layout: None,
             semantics: None,
             children,
