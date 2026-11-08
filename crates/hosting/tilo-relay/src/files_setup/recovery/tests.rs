@@ -95,10 +95,6 @@ fn fixture_state(governor: &ed25519_dalek::SigningKey) -> JoinedNamespace {
         governor,
     )
     .unwrap();
-    let mut namespace = fs::Namespace::new("existing-history").unwrap();
-    namespace
-        .create_file(fs::namespace::ROOT_INO, "retained.txt", None, 0, 0)
-        .unwrap();
     JoinedNamespace {
         registration: tilo_relay::transport::ContentPeerRegistration {
             endpoint,
@@ -106,12 +102,11 @@ fn fixture_state(governor: &ed25519_dalek::SigningKey) -> JoinedNamespace {
             relay_service_id: [77; 32],
         },
         authority,
-        namespace: namespace.save(),
     }
 }
 
 #[test]
-fn private_recovery_preserves_replica_binding_and_existing_crdt_history() {
+fn private_recovery_preserves_replica_binding_and_signed_authority() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
     let governor = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
@@ -119,26 +114,12 @@ fn private_recovery_preserves_replica_binding_and_existing_crdt_history() {
     let joined = fixture_state(&governor);
     let workspace = joined.authority.workspace;
     let cache = temp.path().join("recovered");
-    let mut original = fs::Namespace::from_bytes("comparison", &joined.namespace).unwrap();
-    let heads = original.heads();
     prepare_join(&cache, workspace, person, joined).unwrap();
-    let mut restored = fs::Namespace::from_bytes(
-        "restart",
-        &std::fs::read(cache.join("namespace.bin")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(restored.heads(), heads);
-    assert!(
-        restored
-            .lookup(fs::namespace::ROOT_INO, "retained.txt")
-            .is_some()
-    );
     assert_eq!(
         cache.metadata().unwrap().permissions().mode() & 0o777,
         0o700
     );
     for file in [
-        "namespace.bin",
         "content-peers.json",
         "workspace-ticket",
         "workspace-authority.bin",
@@ -148,6 +129,8 @@ fn private_recovery_preserves_replica_binding_and_existing_crdt_history() {
             0o600
         );
     }
+    // The tree is the workspace's Files record, not a file recovery wrote.
+    assert!(!cache.join("namespace.bin").exists());
     let peers = fs::workspace_authority::load_persisted_content_peers(&cache).unwrap();
     assert_ne!(
         peers[0].endpoint.id,
@@ -157,13 +140,16 @@ fn private_recovery_preserves_replica_binding_and_existing_crdt_history() {
         peers[0].decoded_ticket().unwrap().unwrap().workspace_id(),
         workspace
     );
-    let before = std::fs::read(cache.join("namespace.bin")).unwrap();
+    let before = std::fs::read(cache.join("workspace-authority.bin")).unwrap();
     assert!(prepare_join(&cache, workspace, person, fixture_state(&governor)).is_err());
-    assert_eq!(std::fs::read(cache.join("namespace.bin")).unwrap(), before);
+    assert_eq!(
+        std::fs::read(cache.join("workspace-authority.bin")).unwrap(),
+        before
+    );
 }
 
 #[test]
-fn recovery_refusals_leave_no_cache_or_replacement_namespace() {
+fn recovery_refusals_leave_no_cache() {
     let temp = tempfile::tempdir().unwrap();
     let governor = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
     let person = governor.verifying_key().to_bytes();
@@ -171,12 +157,8 @@ fn recovery_refusals_leave_no_cache_or_replacement_namespace() {
     let joined = fixture_state(&governor);
     assert!(prepare_join(&cache, uuid::Uuid::nil(), person, joined).is_err());
     assert!(!cache.exists());
-    let mut joined = fixture_state(&governor);
-    let workspace = joined.authority.workspace;
-    joined.namespace = b"not an Automerge namespace".to_vec();
-    assert!(prepare_join(&cache, workspace, person, joined).is_err());
-    assert!(!cache.exists());
     let joined = fixture_state(&governor);
+    let workspace = joined.authority.workspace;
     assert!(prepare_join(&cache, workspace, [72; 32], joined).is_err());
     assert!(!cache.exists());
     let mut joined = fixture_state(&governor);
@@ -213,12 +195,13 @@ fn recovery_identity_loader_never_creates_missing_credentials() {
 }
 
 struct NativeHost {
-    hosted: fs::Workspace,
+    /// Kept for the test's lifetime: it serves the authority this host signed.
+    _hosted: fs::Workspace,
     registration: tilo_relay::transport::ContentPeerRegistration,
     authority: Arc<WorkspaceAuthority>,
 }
 
-async fn serve_host(
+fn serve_host(
     host: &SyntheticPeer,
     root: &Path,
     governor: &ed25519_dalek::SigningKey,
@@ -241,23 +224,9 @@ async fn serve_host(
     authority.apply(signed).unwrap();
     let store = Arc::new(fs::ContentStore::memory());
     let hydrator = Arc::new(fs::Hydrator::new(host.endpoint.clone(), Arc::clone(&store)));
-    let payload_bytes = b"source-only file payload remains remote";
-    let payload = store
-        .write_content(payload_bytes)
-        .await
-        .unwrap()
-        .expect("nonempty remote payload has a content hash");
-    let mut namespace = fs::Namespace::new("native-host-history").unwrap();
-    namespace
-        .create_file(
-            fs::namespace::ROOT_INO,
-            "native.txt",
-            Some(&payload),
-            u64::try_from(payload_bytes.len()).unwrap(),
-            0,
-        )
-        .unwrap();
-    let namespace = Arc::new(Mutex::new(namespace));
+    let namespace = Arc::new(Mutex::new(
+        fs::Namespace::new("native-host-history").unwrap(),
+    ));
     let services = records(root, Arc::clone(&authority));
     let (hosted, ticket) = fs::Workspace::host_with_records(
         host.endpoint.clone(),
@@ -276,23 +245,22 @@ async fn serve_host(
         relay_service_id: [84; 32],
     };
     NativeHost {
-        hosted,
+        _hosted: hosted,
         registration,
         authority,
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_native_peers_restore_signed_namespace_without_fetching_payloads() {
+async fn two_native_peers_restore_signed_authority_without_fetching_the_tree() {
     let temp = tempfile::tempdir().unwrap();
     let governor = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
     let person = governor.verifying_key().to_bytes();
     let host = peer(temp.path().join("host"), &governor, 82).await;
     let client = peer(temp.path().join("client"), &governor, 83).await;
-    let hosted = serve_host(&host, temp.path(), &governor).await;
+    let hosted = serve_host(&host, temp.path(), &governor);
     let workspace = hosted.authority.workspace();
     let registration = hosted.registration.clone();
-    let heads = hosted.hosted.namespace.lock().unwrap().heads();
     let joined = fetch_joined_namespace(
         &client.endpoint,
         &client.identity,
@@ -301,20 +269,12 @@ async fn two_native_peers_restore_signed_namespace_without_fetching_payloads() {
     )
     .await
     .unwrap();
+    assert_eq!(joined.authority, hosted.authority.current().unwrap());
     let cache = temp.path().join("restored");
     prepare_join(&cache, workspace, person, joined).unwrap();
     super::super::check(&client.root, &cache).expect("existing joined authority is ready");
-    let mut restored = fs::Namespace::from_bytes(
-        "after-restart",
-        &std::fs::read(cache.join("namespace.bin")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(restored.heads(), heads);
-    assert!(
-        restored
-            .lookup(fs::namespace::ROOT_INO, "native.txt")
-            .is_some()
-    );
+    // Nothing of the tree was fetched: the workspace's Files record publishes it.
+    assert!(!cache.join("namespace.bin").exists());
     assert!(!cache.join("blobs.db").exists());
     assert!(!cache.join("data").exists());
     hosted

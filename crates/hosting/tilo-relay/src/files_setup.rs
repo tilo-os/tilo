@@ -82,9 +82,10 @@ fn require_files_access(person: [u8; 32], policy: &[collab_types::CapOverride]) 
 pub(super) fn check(root: &Path, cache: &Path) -> Result<()> {
     let paths = IdentityPaths::under(root);
     let person = existing_person(&paths)?;
+    let authority_path = cache.join("workspace-authority.bin");
     anyhow::ensure!(
-        cache.join("namespace.bin").is_file(),
-        "no saved Files namespace; recovery or explicit initialization is required"
+        authority_path.is_file(),
+        "no saved Files authority; recovery or explicit initialization is required"
     );
     let key = persist::load_device_key(&paths)?;
     let ticket = cache.join("workspace-ticket");
@@ -94,7 +95,7 @@ pub(super) fn check(root: &Path, cache: &Path) -> Result<()> {
         fs::Ticket::workspace_id_for_topic(key.verifying_key().to_bytes())
     };
     let envelope: WorkspaceAuthorityEnvelope =
-        postcard::from_bytes(&std::fs::read(cache.join("workspace-authority.bin"))?)?;
+        postcard::from_bytes(&std::fs::read(&authority_path)?)?;
     envelope.verify(workspace, person)?;
     anyhow::ensure!(!envelope.tombstoned, "saved Files authority is revoked");
     require_files_access(person, &envelope.capabilities)?;
@@ -129,8 +130,6 @@ fn new_cache(cache: &Path) -> Result<()> {
 fn prepare_new(cache: &Path, device: [u8; 32], envelope: WorkspaceAuthorityEnvelope) -> Result<()> {
     let workspace = fs::Ticket::workspace_id_for_topic(device);
     envelope.verify(workspace, envelope.governor)?;
-    let mut namespace = fs::Namespace::new(hex::encode(device))?;
-    let bytes = namespace.save();
     new_cache(cache)?;
     let authority = WorkspaceAuthority::open(
         cache.join("workspace-authority.bin"),
@@ -140,8 +139,6 @@ fn prepare_new(cache: &Path, device: [u8; 32], envelope: WorkspaceAuthorityEnvel
         Vec::new(),
     )?;
     authority.apply(envelope)?;
-    // Namespace last: the service cannot resume an incomplete preparation.
-    tilo_files::native::atomic::write_with_mode(&cache.join("namespace.bin"), &bytes, 0o600)?;
     Ok(())
 }
 
@@ -188,7 +185,7 @@ pub(super) fn initialize(options: &InitializeOptions) -> Result<()> {
     )?;
     prepare_new(&options.cache_dir, device, envelope)?;
     println!(
-        "Prepared NEW empty Files namespace for existing device workspace {}. Existing host files and recovery candidates were not imported or replaced.",
+        "Prepared NEW empty Files workspace in existing device workspace {}. Existing host files and recovery candidates were not imported or replaced.",
         fs::Ticket::workspace_id_for_topic(device)
     );
     Ok(())
@@ -311,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_namespace_resumes_existing_signed_policy_without_root_export() {
+    fn prepared_workspace_resumes_existing_signed_policy_without_root_export() {
         let temp = tempfile::tempdir().expect("isolated fixture");
         let cache = temp.path().join("files");
         let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
@@ -320,10 +317,7 @@ mod tests {
         let envelope = WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root)
             .expect("signed existing policy");
         prepare_new(&cache, device, envelope.clone()).expect("explicit new fixture");
-        let bytes = std::fs::read(cache.join("namespace.bin")).expect("durable namespace");
-        let mut restored =
-            fs::Namespace::from_bytes("restart", &bytes).expect("real CRDT namespace");
-        assert!(!restored.save().is_empty());
+        assert!(!cache.join("namespace.bin").exists());
         let authority = WorkspaceAuthority::open(
             cache.join("workspace-authority.bin"),
             workspace,
@@ -334,10 +328,11 @@ mod tests {
         .expect("verified authority");
         assert_eq!(authority.current(), Some(envelope.clone()));
         assert!(!cache.join("user-identity").exists());
+        let written = std::fs::read(cache.join("workspace-authority.bin")).unwrap();
         assert!(prepare_new(&cache, device, envelope).is_err());
         assert_eq!(
-            std::fs::read(cache.join("namespace.bin")).expect("retained namespace"),
-            bytes
+            std::fs::read(cache.join("workspace-authority.bin")).unwrap(),
+            written
         );
     }
 
@@ -379,7 +374,6 @@ mod tests {
         let cache = temp.path().join("files");
         prepare_new(&cache, device.verifying_key().to_bytes(), envelope.clone()).unwrap();
         check(&temp.path().join("identity"), &cache).expect("existing certified Files primary");
-        let bytes = std::fs::read(cache.join("namespace.bin")).unwrap();
         assert!(!paths.user_privkey.exists(), "no root export is required");
         let mut revoked = envelope.capabilities;
         revoked[0].effect = Effect::Restrict;
@@ -394,7 +388,7 @@ mod tests {
         .unwrap();
         authority.apply(denied).unwrap();
         assert!(check(&temp.path().join("identity"), &cache).is_err());
-        assert_eq!(std::fs::read(cache.join("namespace.bin")).unwrap(), bytes);
+        assert!(!cache.join("namespace.bin").exists());
         assert!(!cache.join("mount").exists());
         assert!(!cache.join("workspace-ticket").exists());
         cert.signature[0] ^= 1;
