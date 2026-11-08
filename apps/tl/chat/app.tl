@@ -367,7 +367,7 @@ view channel(c: TextChannel) {
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
     std.transcript(c, c.messages, unread: first_unseen(c)) { m ->
-        channel_message(c, m, replying, editing, revised)
+        channel_message(c, m, c.messages, replying, editing, revised)
         composer: {
             typing_here(c)
             composer(c, draft, replying, "Message #{c.name}")
@@ -383,7 +383,7 @@ view direct(d: Direct) {
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
-        direct_message(d, m, replying, editing, revised)
+        direct_message(d, m, d.messages, replying, editing, revised)
         composer: {
             direct_typing_here(d)
             composer(d, draft, replying, "Message {d.name}")
@@ -420,11 +420,12 @@ view category_summary(c: Category) {
 view direct_message(
     d: Direct,
     m: Message,
+    shown: List<Message>,
     replying: State<Option<Message>>,
     editing: State<Option<Message>>,
     revised: State<RichText>,
 ) {
-    message(m, editing, revised)
+    message(m, shown, editing, revised)
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
             on press: set(replying, m)
@@ -444,11 +445,12 @@ view direct_message(
 view channel_message(
     c: TextChannel,
     m: Message,
+    shown: List<Message>,
     replying: State<Option<Message>>,
     editing: State<Option<Message>>,
     revised: State<RichText>,
 ) {
-    message(m, editing, revised)
+    message(m, shown, editing, revised)
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
             on press: set(replying, m)
@@ -471,7 +473,7 @@ view thread(t: Thread) {
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
     std.transcript(t, t.messages) { m ->
-        thread_message(m, replying, editing, revised)
+        thread_message(m, t.messages, replying, editing, revised)
         composer: {
             thread_typing_here(t)
             composer(t, draft, replying, "Message {t.name}")
@@ -482,11 +484,12 @@ view thread(t: Thread) {
 /// A message of a thread, with what can be done to it on hover.
 view thread_message(
     m: Message,
+    shown: List<Message>,
     replying: State<Option<Message>>,
     editing: State<Option<Message>>,
     revised: State<RichText>,
 ) {
-    message(m, editing, revised)
+    message(m, shown, editing, revised)
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
             on press: set(replying, m)
@@ -569,11 +572,19 @@ view edit_button(m: Message, editing: State<Option<Message>>, revised: State<Ric
 }
 
 /// What one message says: the message it answers, its text (or, while it is being edited, the
-/// editor in its place), and the thread it started.
-view message(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
+/// editor in its place), and the thread it started. `shown` is the transcript's own messages:
+/// the list draws them where they stand, so what a message was made from reads once, as the
+/// reference above it, and is left out of the links under it.
+view message(
+    m: Message,
+    shown: List<Message>,
+    editing: State<Option<Message>>,
+    revised: State<RichText>,
+) {
     if let r = m.reply_to {
         std.quote(r)
     }
+    std.origin(m)
     if m.pinned {
         ui.Text("Pinned", role: .caption, secondary: true)
     }
@@ -594,7 +605,8 @@ view message(m: Message, editing: State<Option<Message>>, revised: State<RichTex
     if let t = m.thread {
         std.thread_chip(t, count: t.messages.len())
     }
-    std.linked(m, compact: true)
+    let listed = linked(m).filter(l -> shown.any(x -> l.of == x)).map(l -> l.of)
+    std.linked(m, compact: true, without: listed)
 }
 
 /// What a message says, and that it was edited when its history holds an edit.

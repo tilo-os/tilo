@@ -88,7 +88,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // The fixture's windows ship one language: nothing reads from another catalogue.
             | Kind::MixedLanguage
             // No window in this fixture opens an item under its row.
-            | Kind::OpenOutsideList => "(no view)",
+            | Kind::OpenOutsideList
+            // The fixture's cards each hold what they are given, so none stands empty.
+            | Kind::EmptySurface => "(no view)",
         };
         assert_eq!(
             finding.view,

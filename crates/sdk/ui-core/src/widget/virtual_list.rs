@@ -65,6 +65,8 @@ mod jump;
 #[path = "virtual_list_reorder.rs"]
 mod reordering;
 use edit::{RenameCallback, RenameField};
+#[path = "virtual_list_lift.rs"]
+mod lift;
 #[path = "virtual_list_press.rs"]
 mod press;
 #[path = "virtual_list_row_group.rs"]
@@ -1285,65 +1287,6 @@ impl<M: ListModel> VirtualList<M> {
         (track.y1 > track.y0).then_some(track)
     }
 
-    /// The rect a row's lift takes: the list's width, less the bar's gutter
-    /// while the rows stand beside the bar.
-    pub(super) fn lift_rect(&self, top: f64, height: f64) -> Rect {
-        let x1 = if self.rows_beside_bar {
-            self.rect.x1 - self.gutter
-        } else {
-            self.rect.x1
-        };
-        Rect::new(
-            self.rect.x0,
-            self.rect.y0 + top,
-            x1,
-            self.rect.y0 + top + height,
-        )
-    }
-
-    fn row_selection(&self, index: usize) -> RowSelection {
-        let selected = |i: Option<usize>| {
-            i.and_then(|i| self.model.key_at(i))
-                .is_some_and(|key| self.selection.is_selected(&key))
-        };
-        RowSelection {
-            selected: selected(Some(index)),
-            above: selected(index.checked_sub(1)),
-            below: selected(index.checked_add(1)),
-        }
-    }
-
-    /// Hand every mounted row its current selection: a `ListRow` takes it
-    /// in place, any other selection-aware delegate is rebuilt.
-    fn push_row_selection(&mut self) {
-        if !self.delegate_selection && !self.selection_aware {
-            return;
-        }
-        let selections: Vec<RowSelection> = self
-            .mounted
-            .iter()
-            .map(|row| self.row_selection(row.index))
-            .collect();
-        let delegate = self.delegate_selection;
-        let mut rebuild = false;
-        for (row, selection) in self.mounted.iter_mut().zip(selections) {
-            let sink = if delegate {
-                selection_sink(&mut *row.widget)
-            } else {
-                None
-            };
-            if let Some(sink) = sink {
-                sink.take_selection(selection);
-                row.selection = selection;
-            } else if row.selection != selection {
-                rebuild = true;
-            }
-        }
-        if rebuild {
-            self.reconcile_mounted();
-        }
-    }
-
     #[must_use]
     pub fn scrollbar_thumb(&self) -> Option<Rect> {
         self.vbar
@@ -1386,7 +1329,8 @@ impl<M: ListModel> VirtualList<M> {
         if self.model.is_empty() || self.rect.height() <= 0.0 {
             return None;
         }
-        let local_y = (cursor.y - self.rect.y0).clamp(0.0, self.rect.height() - f64::EPSILON);
+        let local_y =
+            (cursor.y - self.shown_top(0.0)).clamp(0.0, self.rect.height() - f64::EPSILON);
         let index = self.viewport.hit_test(local_y)?;
         if !matches!(self.model.row_state(index), Arrival::Ready(())) {
             return None;
@@ -1401,7 +1345,7 @@ impl<M: ListModel> VirtualList<M> {
         let top = self.viewport.item_view_top(index)?;
         let height = self.viewport.item_height(index)?.max(1.0);
         let before = local_y < top + height / 2.0;
-        let y = self.rect.y0 + if before { top } else { top + height };
+        let y = self.shown_top(if before { top } else { top + height });
         Some(DropCandidate {
             target: DropTarget::new(
                 key,
