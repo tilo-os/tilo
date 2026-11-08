@@ -713,8 +713,8 @@ mod tests {
             launches
                 .authenticated_launch(child.id(), app, "another-workspace", None)
                 .unwrap()
-                .is_none(),
-            "another workspace"
+                .is_some(),
+            "the endpoint serves every workspace the session holds"
         );
         let admitted = launches
             .authenticated_launch(child.id(), app, workspace, None)
