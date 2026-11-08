@@ -3,15 +3,13 @@
 //! task is about, and a lookup brings in another's, with the same prefix.
 //! An agent told every app's keeps describing an app once it described it.
 
+use super::{
+    CANVAS, CHAT, MESSAGES, SHEETS, endpoint_planner, message_text, model_endpoint, offers,
+    planning_agent, run_task, session, set_cells_plan, tool_call,
+};
 use tilo_agent_participant::ModelPlanner;
 use tilo_agent_participant::profile::Catalog;
 use tilo_relay_protocol::agents::TaskState;
-use tilo_user_identity::{DeviceCapabilities, UserIdentity};
-
-use super::{
-    CANVAS, CHAT, MESSAGES, SHEETS, endpoint_planner, enrol, message_text, model_endpoint, offers,
-    participant, planning_agent, run_task, set_cells_plan, start_host, tool_call,
-};
 
 const NOTES: &str = "so.tilo.notes";
 
@@ -45,17 +43,7 @@ fn tools(request: &serde_json::Value) -> Vec<String> {
 /// same conversation, whose second request starts with the same bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_task_is_told_its_apps_in_full_and_looks_up_another() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let set_cells = "sheets.workbook#set-cells";
     let (url, sent) = model_endpoint(vec![
         tool_call(
@@ -146,17 +134,7 @@ async fn a_task_is_told_its_apps_in_full_and_looks_up_another() {
 /// provider reads from its cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reference_keeps_the_apps_it_described() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let (url, sent) = model_endpoint(
         ["A1", "A2", "A3"]
             .map(|cell| set_cells_plan(&[], &[("Sheet1", cell, "x")]))

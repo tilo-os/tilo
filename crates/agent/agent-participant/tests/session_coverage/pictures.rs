@@ -2,13 +2,9 @@
 //! sees, is shown the picture where the agent may show the workspace's pictures,
 //! and is told plainly why not where it may not.
 
+use super::{first_turn, model_endpoint, planning_agent, run_task, session, tool_call};
 use tilo_agent_participant::{ModelPlanner, OpenAiModel};
 use tilo_relay_protocol::agents::TaskState;
-use tilo_user_identity::{DeviceCapabilities, UserIdentity};
-
-use super::{
-    enrol, first_turn, model_endpoint, participant, planning_agent, run_task, start_host, tool_call,
-};
 
 const WRITER: &str = "so.tilo.word-processor";
 
@@ -50,17 +46,7 @@ async fn on_the_scan(
     action: &str,
     allowed: bool,
 ) -> (tilo_relay_protocol::agents::AgentTask, Vec<String>) {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let store = tilo_content::ContentStore::memory();
     let scan = format!("tilo.content:{}", store.put(&png(1600, 1200)).unwrap());
     let done = tool_call(
