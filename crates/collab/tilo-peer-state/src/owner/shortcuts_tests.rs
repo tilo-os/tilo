@@ -1,21 +1,7 @@
 use super::*;
 use crate::owner::application_record::tests::{Fixture, fixture};
+use crate::owner::testing::shortcut;
 use tilo_automation::{Shortcut, ShortcutChange};
-
-fn shortcut(id: &str) -> Shortcut {
-    Shortcut {
-        id: id.into(),
-        name: id.into(),
-        inputs: Vec::new(),
-        steps: Vec::new(),
-        step_timeout_secs: None,
-        output: None,
-        grant: Vec::new(),
-        triggers: Vec::new(),
-        saved_by: None,
-        saved_proof: None,
-    }
-}
 
 fn request(fixture: &Fixture, change: &ShortcutChange) -> OwnerCommitRequest {
     OwnerCommitRequest {

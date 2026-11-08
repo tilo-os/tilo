@@ -1,3 +1,4 @@
+use super::super::sealed_tests::held;
 use super::*;
 use crate::{InputDisposition, TransportOrigin};
 use automerge::transaction::Transactable as _;
@@ -104,15 +105,6 @@ fn identical(op: &SignedOp) -> Result<(EncryptionMetadata, Vec<u8>), String> {
 
 fn expired(now: SystemTime) -> SystemTime {
     now.checked_add(Duration::from_secs(301)).unwrap()
-}
-
-fn held(peer: &StatePeer) -> Vec<SignedOp> {
-    peer.core.documents[&Route {
-        app: APP.into(),
-        record: RECORD.into(),
-    }]
-        .sealed
-        .to_vec()
 }
 
 /// The governor admits `message` and records, in governance `member`

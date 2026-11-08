@@ -10,11 +10,14 @@ use crate::owner::{
     VerifiedNativeEnrollmentIntent, WorkspaceId, publication,
 };
 use crate::owner_commit::OwnerCommitRequest;
-use crate::{SeedDocument, SeedState, StatePeer, join, seed_workspace, workspace::media};
+use crate::{
+    SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace, workspace::media,
+};
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{collections::BTreeMap, time::SystemTime};
+use tilo_automation::Shortcut;
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -474,4 +477,44 @@ pub fn stored(storage: &NativeAuthorityStorage, workspace: WorkspaceId) -> Optio
             .map(|entry| entry.bytes.clone())
             .collect(),
     })
+}
+
+/// The instant these fixtures write at, so every message two peers exchange
+/// carries the same clock.
+#[must_use]
+pub fn now() -> SystemTime {
+    SystemTime::UNIX_EPOCH
+        .checked_add(std::time::Duration::from_secs(2000))
+        .unwrap()
+}
+
+/// `message` arriving from `guest` as a relay delta at [`now`].
+pub fn receive(
+    peer: &mut StatePeer,
+    guest: &DeviceCert,
+    message: NeighbourMsg,
+) -> Result<(), String> {
+    peer.receive_from(
+        TransportOrigin::RelayDelta(guest.device_public_key),
+        message,
+        now(),
+    )
+    .map(|_| ())
+}
+
+/// A shortcut named after its id, with nothing else set.
+#[must_use]
+pub fn shortcut(id: &str) -> Shortcut {
+    Shortcut {
+        id: id.into(),
+        name: id.into(),
+        inputs: Vec::new(),
+        steps: Vec::new(),
+        step_timeout_secs: None,
+        output: None,
+        grant: Vec::new(),
+        triggers: Vec::new(),
+        saved_by: None,
+        saved_proof: None,
+    }
 }
