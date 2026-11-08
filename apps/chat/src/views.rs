@@ -23,12 +23,12 @@ type Id = sdk::tilo_resource::Id;
 /// One conversation of a workspace, as the place that shows it names it: a channel everyone in
 /// the workspace talks in, or a conversation some of them do.
 ///
-/// A channel is a resource: a place names it by its id (`chat.channel:c_general`), the session
+/// A channel is a resource: a place names it by its id (`chat.workspace/channels/c_general`), the session
 /// publishes its reading — its name and topic, and the messages it holds, oldest first — and
 /// this view draws it. Its messages come with it, so the page needs nothing else.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Channel {
-    /// Its id, after `chat.channel:`.
+    /// Its id, after `chat.workspace/channels/`.
     #[serde(default)]
     pub id: String,
     /// What the conversation is called: a channel's name (`general`), or the people it is with.
@@ -144,11 +144,15 @@ pub struct Attachment {
 }
 
 impl Channel {
-    /// The resource a place names for this channel: `chat.channel:<id>`.
+    /// The resource a place names for this channel, by the id it is published under:
+    /// `chat.workspace.channels:<id>` as a development session publishes it, and
+    /// `chat.workspace/channels/<id>` as the chat's own record publishes the item — the very
+    /// conversation Chat's own window shows and the one the canvas places when a person asks
+    /// there (shell.md §8.1).
     #[must_use]
     pub fn resource(&self) -> ResourceRef {
         ResourceRef {
-            id: format!("chat.channel:{}", self.id),
+            id: format!("{}:{}", <Self as ViewResource>::KIND, self.id),
             ty: <Self as ViewResource>::KIND.to_owned(),
         }
     }
@@ -325,7 +329,10 @@ impl Attachment {
 }
 
 impl ViewResource for Channel {
-    const KIND: &'static str = "chat.channel";
+    // The item of Chat's `channels` collection, as its record publishes it
+    // (`chat.workspace/channels/<id>`): the conversation a place shows, and the one the canvas
+    // places when a person asks there.
+    const KIND: &'static str = "chat.workspace.channels";
     const APP: &'static str = "chat";
 }
 
@@ -706,8 +713,8 @@ mod tests {
         let batch = vec![tilo_view::patch::ToUi::Open {
             lane: tilo_view::patch::Lane::Root,
             target: ResourceRef {
-                id: "chat.channel:c_crit".to_owned(),
-                ty: "chat.channel".to_owned(),
+                id: "chat.workspace/channels/c_crit".to_owned(),
+                ty: "chat.workspace.channels".to_owned(),
             },
             tree: tree.clone(),
             front: None,

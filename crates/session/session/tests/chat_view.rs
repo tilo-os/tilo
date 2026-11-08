@@ -27,7 +27,7 @@ use tilo_session::{ActionPlane, Options, Session};
 
 /// The channel the test places: the demo workspace's `#design-crit`, as Chat's demo publishes
 /// it.
-const CHANNEL: &str = "chat.channel:c_crit";
+const CHANNEL: &str = "chat.workspace.channels:c_crit";
 /// A message the demo channel holds, as its page shows it.
 const MESSAGE: &str = "Morning! Pushed the new call overlay mock";
 /// What the person types into the composer, and what the channel says once it is posted.
@@ -102,6 +102,16 @@ fn place(session: &mut Session, resource: &str) -> u64 {
     place
 }
 
+/// Choose the appearance `option` (`light`, `dark`), as Settings does: the shell follows it at
+/// once, the same page in another theme.
+fn choose_appearance(session: &mut Session, option: &str) {
+    let _ = session.invoke(
+        &format!("setting:appearance.style={option}"),
+        "choose",
+        &Map::new(),
+    );
+}
+
 /// The screenshot the shots directory names: how a person sees the page, taken over the
 /// test-control socket `tilo-control snapshot` uses, never from a private path.
 fn shot(session: &mut Session, root: &std::path::Path, name: &str) {
@@ -150,7 +160,14 @@ fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
         "the page offers its composer: {:?}",
         session.accessible_labels()
     );
-    shot(&mut session, root.path(), "channel-page.png");
+    shot(&mut session, root.path(), "channel-page-default.png");
+    // The same page in the light theme: only shared components and theme roles, so every theme
+    // reaches it.
+    choose_appearance(&mut session, "light");
+    common::until(&mut session, "the page in the light theme", |session| {
+        session.shell_says(MESSAGE)
+    });
+    shot(&mut session, root.path(), "channel-page-light.png");
 }
 
 #[test]
@@ -218,7 +235,7 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
     // The small demo channel holds one message and a message sharing a sample video, whose
     // row is what the page draws for the attachment: both stand within a place's view.
     const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
-    place(&mut session, "chat.channel:c_general");
+    place(&mut session, "chat.workspace.channels:c_general");
     common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)
     });

@@ -141,7 +141,7 @@ impl Service for RustApps {
             .map(|conversation| {
                 let mut chat = ResourceSpec::new(
                     conversation.resource().id,
-                    "chat.channel",
+                    "chat.workspace.channels",
                     format!("#{}", conversation.name),
                 )
                 .with_view(tilo_actions::ResourceViewSpec::new(
@@ -177,8 +177,11 @@ impl Service for RustApps {
                 .find(|video| video.id == id)
                 .and_then(|video| serde_json::to_value(video).ok());
         }
-        if let Some(id) = resource.strip_prefix("chat.channel:") {
-            let id = id.to_owned();
+        if let Some(rest) = resource
+            .strip_prefix("chat.workspace/channels/")
+            .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
+        {
+            let id = rest.to_owned();
             let conversation = [self.chat_channel(), self.chat_short_channel()]
                 .into_iter()
                 .find(|channel| channel.id == id)?;
@@ -195,7 +198,10 @@ impl Service for RustApps {
     ) -> Result<Started, DoorError> {
         // The composer's send, as the chat's own verb writes it: a message from the person
         // typing, in the channel it names.
-        if action == "post" && resource.starts_with("chat.channel:") {
+        if action == "post"
+            && (resource.starts_with("chat.workspace/channels/")
+                || resource.starts_with("chat.workspace.channels:"))
+        {
             let channel = arguments
                 .get("channel")
                 .and_then(Json::as_str)
@@ -243,16 +249,19 @@ mod tests {
         let published: Vec<String> = apps
             .resources()
             .into_iter()
-            .filter(|spec| spec.kind == "chat.channel")
+            .filter(|spec| spec.kind == "chat.workspace.channels")
             .map(|spec| spec.id.as_str().to_owned())
             .collect();
         assert_eq!(
             published,
-            ["chat.channel:c_crit", "chat.channel:c_general"],
+            [
+                "chat.workspace.channels:c_crit",
+                "chat.workspace.channels:c_general"
+            ],
             "the demo's conversation and its short channel are published"
         );
         let reading = apps
-            .read("chat.channel:c_crit")
+            .read("chat.workspace.channels:c_crit")
             .expect("the channel's reading");
         let channel: chat::views::Channel =
             serde_json::from_value(reading).expect("the reading is a channel");
