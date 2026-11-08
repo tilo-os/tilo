@@ -14,7 +14,7 @@ use std::ops::Range;
 use taffy::style_helpers::percent;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -22,7 +22,6 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::arriving::Arrival;
-use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::selection::KeySelection;
@@ -45,11 +44,10 @@ pub use vec_model::VecListModel;
 #[path = "virtual_list_remount.rs"]
 mod remount;
 
-#[path = "virtual_list_reconcile.rs"]
-mod reconcile;
-use remount::row_kept;
 #[path = "virtual_list_choice.rs"]
 mod choice;
+#[path = "virtual_list_reconcile.rs"]
+mod reconcile;
 #[path = "virtual_list_shown.rs"]
 mod shown;
 use shown::ListShown;
@@ -2041,253 +2039,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
-        self.reduce_motion = theme.reduce_motion;
-        if self.reduce_motion {
-            self.scroll.momentum.stop();
-        }
-        let now = crate::motion::frame_now();
-        self.arrivals.mark_drawn(now);
-        self.start_row_motion(self.feel.over(theme.motion()));
-        self.motion = self.feel.over(theme.motion());
-        self.scroll.momentum.set_view(
-            self.viewport.viewport(),
-            self.scroll_metrics().overflows(),
-            self.motion,
-        );
-        // After a long reveal the rows fade in where they landed.
-        let opacity = self.scroll.to.opacity(crate::motion::frame_now());
-        // How far the rows the last presented frame showed moved on screen:
-        // the frame stands that much further along than that one did.
-        let moved = self.moved_since_presented();
-        let presented = self.shown.presented().map(|shown| shown.position);
-        self.shown.note(ListShown {
-            offset: self.viewport.offset(),
-            position: presented
-                .zip(moved)
-                .map_or(self.viewport.offset(), |(position, moved)| position - moved),
-            moved_known: moved.is_some(),
-            rect: self.rect,
-            transform: crate::scroll_copy::on_screen(transform),
-            beside_bar: self.rows_beside_bar,
-            chrome: self.chrome_fingerprint(),
-            in_motion: !self.row_motion.is_empty() || opacity < 1.0,
-            first_shown: self.first_shown_row(),
-            overlay: self.scrollbar_track(),
-        });
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            opacity,
-            transform,
-            &self.rect,
-        );
-        let accent = theme.tokens.colors.intent.accent_ink;
-        // Past an end, fingers pull the rows through the rubber band.
-        let frame_transform = transform;
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "kurbo Affine composition is floating-point matrix math"
-        )]
-        let transform = transform * Affine::translate((0.0, -self.give()));
-        self.push_row_selection();
-        // Only the rows near the box: the list clips the others away.
-        let near = self.placed_near();
-        let boxes: Vec<(Option<Rect>, bool)> = self
-            .mounted
-            .iter()
-            .enumerate()
-            .map(|(at, row)| {
-                if !near.contains(&at) {
-                    return (None, false);
-                }
-                let growing = self.growth.iter().any(|(key, _)| key == &row.key);
-                (self.row_box(row.index), growing)
-            })
-            .collect();
-        let selections: Vec<RowSelection> = self
-            .mounted
-            .iter()
-            .map(|row| self.row_selection(row.index))
-            .collect();
-        // A row moving after a change is drawn where it is on its way, and
-        // an arriving one at its opacity (`motion::ListChange`).
-        let now = crate::time::now();
-        let poses: Vec<(f64, f32)> = self
-            .mounted
-            .iter()
-            .map(|row| self.row_motion.pose(&row.key, now))
-            .collect();
-        let pending_shape = self.pending_shape();
-        // The tree's chevrons are the list's own, over the rows of any view: one place folds.
-        let tree = self.tree.clone();
-        let chevrons = self.chevrons();
-        let guide_color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
-        let _kept = crate::draw_cull::keep_scope(scene, self.draw_keep(opacity, now));
-        let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
-        for (((row, (row_rect, growing)), selection), (dy, alpha)) in self
-            .mounted
-            .iter_mut()
-            .zip(boxes)
-            .zip(selections)
-            .zip(poses)
-        {
-            let Some(row_rect) = row_rect else {
-                continue;
-            };
-            // A row the frame keeps on screen, unchanged, is not drawn
-            // again: its selection, its ring and its widget are as they were.
-            let lift = (selection.selected && !self.delegate_selection).then_some(row_rect);
-            if focused != Some(&row.key)
-                && !growing
-                && row_kept(scene, transform, row.widget.as_ref(), lift)
-            {
-                continue;
-            }
-            let row_rect = row_rect + vello::kurbo::Vec2::new(0.0, dy);
-            let row_transform = transform * Affine::translate((0.0, dy));
-            let faded = alpha < 1.0;
-            if faded {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    alpha,
-                    transform,
-                    &row_rect.inflate(4.0, 4.0),
-                );
-            }
-            // The same selection a ListRow paints, so a list of ListRows
-            // reads identically to a painted one; a run of selected rows is
-            // one lift. A delegate that owns its selection paints its own.
-            if !self.delegate_selection {
-                crate::chrome::paint_row_selection_joined(
-                    scene,
-                    transform,
-                    row_rect,
-                    crate::chrome::SelectionState::active(selection.selected),
-                    theme.tokens.colors.surfaces.content,
-                    theme,
-                    if selection.selected {
-                        selection.join()
-                    } else {
-                        crate::chrome::RowJoin::NONE
-                    },
-                );
-            }
-            if self.is_focused && self.focused_key.as_ref() == Some(&row.key) {
-                let radius = f64::from(theme.tokens.radii.item);
-                crate::widget::paint_focus_ring(
-                    scene,
-                    transform,
-                    row_rect.inset(-2.0),
-                    (radius - 2.0).max(0.0),
-                    theme,
-                );
-            }
-            if let Some(place) = self
-                .row_presence
-                .as_ref()
-                .and_then(|place| place(&self.model, row.index, &row.key))
-            {
-                // Mist is painted in device space.
-                let device = transform.transform_rect_bbox(row_rect);
-                for user in presence.peers_on(&place) {
-                    presence.draw_peer_mist(scene, theme, user, device);
-                }
-            }
-            let slot = row.widget.get_rect() + vello::kurbo::Vec2::new(0.0, dy);
-            // A row arriving at a height of its own is drawn as far as it
-            // stands there: the rest of its item shows as the row reaches it.
-            let clipped = growing.then(|| {
-                let shown = self
-                    .viewport
-                    .item_height(row.index)
-                    .unwrap_or(slot.height());
-                Rect::from_points(
-                    slot.origin(),
-                    vello::kurbo::Point::new(slot.x1, slot.y0 + shown.min(slot.height())),
-                )
-            });
-            if let Some(clip) = clipped {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    transform,
-                    &clip,
-                );
-            }
-            self.arrivals.paint(
-                &row.key,
-                pending_shape,
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                slot,
-                now,
-                &mut |ctx| {
-                    row.widget
-                        .draw(ctx.scene, row_transform, ctx.text, theme, presence);
-                },
-            );
-            if let Some(marks) = tree.as_ref() {
-                if self.indent_guides {
-                    chevrons.paint_guides(
-                        marks,
-                        scene,
-                        transform,
-                        &row.key,
-                        row_rect,
-                        crate::ColorCompat::with_alpha_factor(guide_color, alpha),
-                    );
-                }
-                chevrons.paint(marks, scene, transform, theme, &row.key, row_rect);
-            }
-            if clipped.is_some() {
-                scene.pop_layer();
-            }
-            if faded {
-                scene.pop_layer();
-            }
-        }
-        // The headings over the groups, over the rows they hold.
-        self.draw_bands(scene, transform, text_renderer, theme);
-        // A row renamed in place: the field over its label, kept on the row as it moves.
-        self.place_rename();
-        if let Some(field) = self.rename.as_mut() {
-            field
-                .input
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
-        if let Some(preview) = self.reorder.preview() {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &preview,
-            );
-        }
-        scene.pop_layer();
-        let transform = frame_transform;
-
-        if let Some(bar) = &self.overlay_bar {
-            bar.note_offset(self.viewport.offset());
-            bar.paint(scene, transform, self.rect, self.scroll_metrics(), theme);
-        } else if let Some(track) = self.scrollbar_track() {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                crate::widget::scrollbar::track_color(theme),
-                None,
-                &RoundedRect::from_rect(track, track.width() / 2.0),
-            );
-            self.vbar
-                .draw(scene, transform, track, self.scroll_metrics(), theme, false);
-        }
-        // The way back, over the foot of a transcript the reader has moved away from: to the
-        // first unread row, or to what is being said now.
-        if let Some(pill) = self.jump_face() {
-            pill.paint(&mut PaintCtx::new(scene, transform, text_renderer, theme));
-        }
+        self.paint(scene, transform, text_renderer, theme, presence);
     }
 
     #[allow(
@@ -3003,6 +2755,8 @@ mod choosing;
 
 #[path = "virtual_list_open.rs"]
 mod open;
+#[path = "virtual_list_paint.rs"]
+mod paint;
 
 #[path = "virtual_list_component.rs"]
 mod component;
