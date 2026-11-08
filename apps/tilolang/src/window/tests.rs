@@ -460,7 +460,24 @@ impl Workspace {
 
     /// Press the header's button labelled `label`.
     fn header_action(&mut self, label: &str) {
-        let key = self.key_of("ui.Button", "label", label);
+        // The bar's own button for the action, not a control of the page that happens to be
+        // named the same (a change mark's item is titled like the note it names).
+        let composed = self.composed();
+        let key = ["overview_actions", "actions"]
+            .into_iter()
+            .flat_map(|slot| slot_of(&composed, slot))
+            .find(|node| {
+                node.kind == "ui.Button"
+                    && node
+                        .props
+                        .get("label")
+                        .map(tilo_ui_host::reconcile::display)
+                        .as_deref()
+                        == Some(label)
+            })
+            .unwrap_or_else(|| panic!("the bar offers {label}"))
+            .key
+            .clone();
         self.fire(&key, "press", None);
     }
 
