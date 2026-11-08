@@ -797,6 +797,38 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
 /// What opening the views of one scene found, under the index of the scene it was staged on.
 type Opened = Vec<(usize, Found)>;
 
+/// Run `chain` for each app of `busy` at once, each on a worker of its own, and write what it found
+/// in that app's slot. A worker that cannot start is reported, never left to leave its slot empty.
+fn opens_together(
+    busy: &[usize],
+    slots: &[Mutex<Option<Result<Opened, String>>>],
+    chain: &(impl Fn(usize) -> Result<Opened, String> + Sync),
+) -> Result<(), String> {
+    let unstarted: Mutex<Option<String>> = Mutex::new(None);
+    std::thread::scope(|scope| {
+        for &app in busy {
+            let Some(slot) = slots.get(app) else {
+                continue;
+            };
+            let started = spawn_worker(scope, move || {
+                tilo_ui_host::i18n::ensure();
+                *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
+            });
+            if let Err(failure) = started {
+                *unstarted.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure);
+                break;
+            }
+        }
+    });
+    match unstarted
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        Some(failure) => Err(failure),
+        None => Ok(()),
+    }
+}
+
 /// Run the views no layout showed yet, on the scene whose resources they take, for every app:
 /// an app's scenes one after another, each seeing what the ones before it showed, and the apps
 /// at the same time. Returns what each scene opened and the views every layout of each app
@@ -867,28 +899,7 @@ fn run_opens(
             }
         }
     } else {
-        let unstarted: Mutex<Option<String>> = Mutex::new(None);
-        std::thread::scope(|scope| {
-            for app in busy {
-                let Some(slot) = slots.get(app) else {
-                    continue;
-                };
-                let started = spawn_worker(scope, move || {
-                    tilo_ui_host::i18n::ensure();
-                    *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
-                });
-                if let Err(failure) = started {
-                    *unstarted.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure);
-                    break;
-                }
-            }
-        });
-        if let Some(failure) = unstarted
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner)
-        {
-            return Err(failure);
-        }
+        opens_together(&busy, &slots, &chain)?;
     }
     let mut opened: Vec<Found> = (0..scenes.len()).map(|_| Found::default()).collect();
     let mut shown: Vec<Shown> = vec![Shown::new(); apps.len()];

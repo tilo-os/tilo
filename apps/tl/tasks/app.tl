@@ -577,9 +577,9 @@ fn places(shared: Bool) -> List<Filter<Task>> {
     }
 }
 
-/// The tasks a list shows, and the one held open where it stands: an action takes a task out of
-/// the place its list shows — checked off under the press that finished it — and the row it is
-/// open in stays while it is open, so what a person changed does not vanish from under them.
+/// The tasks a list shows, and the one held open where it stands: an action takes a task out of the
+/// place its list shows, and the row it is open in stays while it is open, so what a person just
+/// changed does not vanish from under them.
 fn holding(listed: List<Task>, opened: Option<Task>) -> List<Task> {
     if let o = opened {
         if listed.contains(o) {
@@ -605,8 +605,6 @@ fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
 /// what is typed in the entry at its end is their own too until Enter adds it.
 view home(t: Tasks) {
     state place: Filter<Task> = Task.today
-    // The task the list shows opened where it stands: pressed there, or asked for (`on show`),
-    // which also takes the window to the place the task belongs to.
     state opened: Option<Task> = .none
     on show(x: Task): set(place, place_of(places(workspace.members.len() > 1), x))
         .then(set(opened, x))
@@ -743,9 +741,9 @@ view task_list(
     }
 }
 
-/// One task as a row of a list: what the row shows, what it offers, and the document it opens
-/// into where it stands. `place` is what the list around it already says, `group` the day's
-/// heading, `tail` that it is done with, and `above` the task just over it in its group.
+/// One task as a row of a list: what the row shows, what it offers, and the document it opens into
+/// where it stands. `place` is what the list already says, `group` the day's heading, `tail` that
+/// it is done with, `above` the task just over it in its group.
 view task_item(
     t: Task,
     at: Option<Principal>,
@@ -790,7 +788,6 @@ view task_item(
 /// A project's window: its tasks, in order, with the entry that adds to it at their foot. The
 /// bar switches it to the project's board, the same tasks as a lane per section.
 view project_list(p: Project) {
-    // The task this project's list shows opened where it stands.
     state opened: Option<Task> = .none
     on show(x: Task): set(opened, x)
     let shown = tasks_of(p)
