@@ -103,7 +103,6 @@ tilo_agent_participant::app_worker!();
 // session clients (relay, co-edit, anti-entropy, workspace administration and
 // workspace join) in `tilo-relay-session`, so clients need not link the
 // daemon. The daemon keeps addressing them here.
-#[cfg(feature = "web")]
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_room_host::{
     app_serving, compaction, host, member_limits, metrics, payloads, peer, presence_mailbox, store,
