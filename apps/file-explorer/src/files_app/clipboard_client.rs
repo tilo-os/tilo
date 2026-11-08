@@ -1026,7 +1026,7 @@ mod tests {
             },
             HostedFileServices {
                 thumbnails: None,
-                local_clipboard: false,
+                local_clipboard: true,
             },
         );
         files.state().navigate(path.into());
