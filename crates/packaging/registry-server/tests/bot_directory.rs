@@ -334,23 +334,17 @@ async fn an_update_may_not_change_the_entry_kind() {
     approve(&bots, &pending);
     let mut as_app = bot_entry(&bots, &program, "1.0.0", 200, echo_requires());
     as_app.kind = registry_types::EntryKind::App;
-    as_app.versions = vec![registry_types::RegistryVersion {
-        version: "2.0.0".into(),
-        released_at_unix: 200,
-        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-            tapp_url: format!("https://apps.tilo.so/artifacts/{}.tapp", "ef".repeat(32)),
-            tapp_root_hash_hex: "cd".repeat(32),
-            tapp_size_bytes: 1,
-            tapp_blake3_hex: "ef".repeat(32),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-                interfaces: Vec::new(),
-            },
-        }),
-    }];
+    as_app.versions = vec![crate::support::version(
+        "2.0.0",
+        200,
+        crate::support::tapp(
+            format!("https://apps.tilo.so/artifacts/{}.tapp", "ef".repeat(32)),
+            "cd".repeat(32),
+            1,
+            "ef".repeat(32),
+            None,
+        ),
+    )];
     let refused = submit(&bots, registry_types::EntryAction::Update, as_app);
     assert!(
         matches!(

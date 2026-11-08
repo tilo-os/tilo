@@ -16,7 +16,7 @@ use ed25519_dalek::SigningKey;
 use registry_server::Storage;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
 use registry_types::retention::RetentionPolicy;
-use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
+use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
@@ -85,23 +85,17 @@ fn stage(storage: &Storage, scratch: &Path, version: &str) -> (RegistryVersion, 
     let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
     let digest = blake3::hash(&bytes).to_hex().to_string();
     storage.save_staged_artifact(&digest, &bytes).unwrap();
-    let version = RegistryVersion {
-        version: version.into(),
-        released_at_unix: 1,
-        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-            tapp_url: format!("https://apps.tilo.so/artifacts/{digest}.tapp"),
-            tapp_root_hash_hex: packed.meta.id.to_hex(),
-            tapp_size_bytes: bytes.len() as u64,
-            tapp_blake3_hex: digest,
-            target: RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-                interfaces: Vec::new(),
-            },
-        }),
-    };
+    let version = crate::support::version(
+        version,
+        1,
+        crate::support::tapp(
+            format!("https://apps.tilo.so/artifacts/{digest}.tapp"),
+            packed.meta.id.to_hex(),
+            bytes.len() as u64,
+            digest,
+            None,
+        ),
+    );
     let blob = tilo_app_package::BlobHash::of(unique.as_bytes()).to_hex();
     (version, blob)
 }
