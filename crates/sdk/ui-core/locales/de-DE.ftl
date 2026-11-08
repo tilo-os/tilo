@@ -404,6 +404,8 @@ secret-prompt-attempts-left = { $count ->
 secret-prompt-pins-differ = Die neuen PINs stimmen nicht überein
 secret-prompt-keypad-delete = Löschen
 secret-prompt-keypad-enter = Fertig
+secret-prompt-keypad-shift = Umschalt
+secret-prompt-keypad-space = Leertaste
 
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Willkommen zurück
