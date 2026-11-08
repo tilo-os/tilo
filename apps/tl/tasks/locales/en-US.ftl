@@ -117,9 +117,6 @@ d-d6avlyc5 = Urgent
 d-3776c5yx = Row place
     .doc = What the place a task's row stands in already says, and the row therefore leaves out.
 
-d-63qticzp = Nothing: a plain list, a card, a surface of the system's own
-    .doc = Nothing: a plain list, a card, a surface of the system's own.
-
 d-u4wzi4k4 = The day it is grouped under, as a list of a day is
     .doc = The day it is grouped under, as a list of a day is.
 
@@ -276,6 +273,7 @@ d-doqleehr = Task item
     .w-subtasks = Subtasks
     .w-no-subtasks-yet = No subtasks yet
     .w-add-a-subtask = Add a subtask
+    .w-open-as-page = Open as page
 
 d-7froalwb = Project list
     .w-new-task-in = New task in { $name }

@@ -22,8 +22,6 @@ enum Priority {
 
 /// What the place a task's row stands in already says, and the row therefore leaves out.
 enum RowPlace {
-    /// Nothing: a plain list, a card, a surface of the system's own.
-    full
     /// The day it is grouped under, as a list of a day is.
     day
     /// Its project, as a project's list is of one.
@@ -579,9 +577,14 @@ fn places(shared: Bool) -> List<Filter<Task>> {
     }
 }
 
-/// The first of `side` that holds `x`, or Inbox where none does.
+/// The place a task stands in: its project's, or the first of `side` that holds it, or Inbox
+/// where none does.
 fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
-    side.find(f -> tasks.items.matching(f).any(t -> t == x)) ?? Task.inbox
+    if let p = x.project {
+        Task.project(p)
+    } else {
+        side.find(f -> tasks.items.matching(f).any(t -> t == x)) ?? Task.inbox
+    }
 }
 
 /// The tasks window: Inbox, Today, Upcoming, Done and what is assigned to the person looking,
@@ -593,15 +596,8 @@ view home(t: Tasks) {
     // The task the list shows opened where it stands: pressed there, or asked for (`on show`).
     state opened: Option<Task> = .none
     // What showing a task means here: its row opens where it stands, and the window follows it
-    // to its place — its project's, or the first place beside it that holds it.
-    on show(x: Task): set(
-            place,
-            if let p = x.project {
-                Task.project(p)
-            } else {
-                place_of(places(workspace.members.len() > 1), x)
-            },
-        )
+    // to its place.
+    on show(x: Task): set(place, place_of(places(workspace.members.len() > 1), x))
         .then(set(opened, x))
     let side = places(workspace.members.len() > 1)
     let chosen = side.find(f -> f == place)
@@ -685,11 +681,10 @@ view home(t: Tasks) {
                             if all_done {
                                 task_list(shown, kids, by_day, done_place, folds, opened)
                             }
-                            if in_today {
-                                std.add_entry(entry_placeholder, new_task_today(t, p: project))
-                            } else {
-                                std.add_entry(entry_placeholder, new_task(t, p: project))
-                            }
+                            let add = if in_today {
+                                new_task_today(t, p: project)
+                            } else { new_task(t, p: project) }
+                            std.add_entry(entry_placeholder, add)
                         }
                     }
                     if all_done {
@@ -773,7 +768,9 @@ view task_item(
             task_body(t)
         }
         menu: {
-            std.open_as_page(t)
+            ui.MenuItem("Open as page", icon: .arrow_up_right) {
+                on choose: open(t, view: task_page)
+            }
         }
     }
 }
@@ -783,6 +780,7 @@ view task_item(
 view project_list(p: Project) {
     // The task this project's list shows opened where it stands.
     state opened: Option<Task> = .none
+    on show(x: Task): set(opened, x)
     let shown = tasks_of(p)
     // The project's tasks that name a parent, read once: a row counts its own under them.
     let kids = shown.filter(x -> x.parent != .none)

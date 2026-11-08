@@ -1001,6 +1001,32 @@ fn on_layer(scenario: &str, root: Option<&str>) -> String {
     )
 }
 
+/// The resources the rows of the window's lists show: a row is keyed by the view that draws it,
+/// which ends in the item it draws.
+fn row_items(
+    rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
+    resources: &[ResourceRef],
+) -> Vec<ResourceRef> {
+    rows.keys()
+        .filter_map(|key| {
+            resources
+                .iter()
+                .find(|resource| key.ends_with(&resource.id))
+                .cloned()
+        })
+        .collect()
+}
+
+/// A resource of type `ty` to lay a page of it out on: one the window's lists hold, so the page is
+/// one a person meets from the list, or else any the window names.
+fn resource_of(listed: &[ResourceRef], named: &[ResourceRef], ty: &str) -> Option<ResourceRef> {
+    listed
+        .iter()
+        .find(|resource| resource.ty == ty)
+        .cloned()
+        .or_else(|| named.iter().find(|resource| resource.ty == ty).cloned())
+}
+
 /// The views of `meta` the system shows on surfaces of its own: each action's proposal view,
 /// once each. A type's row view is not one: the system shows it as a row of a list (a search
 /// result, a row of an agent's answer), so a page of it would be a surface nobody meets, and a
@@ -1277,6 +1303,12 @@ impl AppCheck<'_> {
     /// view (the card asking to run it), on a resource of the type they take. A view another
     /// layout showed already is not opened again.
     fn open_views(&mut self, staged: &mut stage::Staged, title: &str) -> Result<(), String> {
+        // A page a person meets from a list is one of that list's own rows, so a view staged over
+        // the list opens a resource the list holds where it holds one, and a resource of a type
+        // the list does not show where it holds none.
+        let rows = staged.rows();
+        let named = staged.resources();
+        let listed = row_items(&rows, &named);
         for default in &self.meta.default_views {
             let Some(view) = self.meta.views.iter().find(|v| v.id == default.view) else {
                 continue;
@@ -1287,7 +1319,7 @@ impl AppCheck<'_> {
             {
                 continue;
             }
-            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
+            let Some(resource) = resource_of(&listed, &named, &default.ty) else {
                 continue;
             };
             staged.open(resource);
@@ -1304,7 +1336,7 @@ impl AppCheck<'_> {
             let Some(ty) = self.meta.types.iter().find(|t| t.name == param.ty) else {
                 continue;
             };
-            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+            let Some(resource) = resource_of(&listed, &named, &ty.id) else {
                 continue;
             };
             staged.open_with(&resource, &view.id);
@@ -1317,7 +1349,7 @@ impl AppCheck<'_> {
             if shows(&self.shown, &self.meta.app, &view.name) {
                 continue;
             }
-            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+            let Some(resource) = resource_of(&listed, &named, &ty.id) else {
                 continue;
             };
             staged.open_with(&resource, &view.id);

@@ -64,15 +64,6 @@ template view list<T>(
     }
 }
 
-/// The row menu entry that opens the item as a page of its own, in the window's next pane, for a
-/// row a list opens where it stands: a whole document to read, and Back to the list with the
-/// row still open. The row's view places it among what it offers on the row.
-template view open_as_page<T>(x: T) {
-    ui.MenuItem(phrase("tilolang-open-page"), icon: .arrow_up_right) {
-        on choose: open(x)
-    }
-}
-
 /// The places a window offers in its sidebar: all of the items (`everything`, with `icon`), then
 /// each of the filters the app names as one, the place chosen naming the window's `chosen` query
 /// as people type it in search (`is:done`), and every one of them naming itself the same way.
