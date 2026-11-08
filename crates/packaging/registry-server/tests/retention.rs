@@ -12,16 +12,13 @@
     reason = "integration-test setup and assertions"
 )]
 
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
-
 use ed25519_dalek::SigningKey;
 use registry_server::Storage;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
 use registry_types::retention::RetentionPolicy;
 use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
 
 const SHARED: &[u8] = b"#!/bin/true\n";
 
@@ -134,18 +131,8 @@ impl Registry {
         self.storage.save_entry(&entry).unwrap();
     }
 
-    fn run(&self, args: &[&str]) -> String {
-        let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-            .arg("--data-dir")
-            .arg(self.dir.path())
-            .args(args)
-            .output_locked()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    fn run(&self, arguments: &[&str]) -> String {
+        let output = crate::support::server_ok(self.dir.path(), arguments);
         String::from_utf8(output.stdout).unwrap()
     }
 

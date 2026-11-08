@@ -7,8 +7,34 @@
 )]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
+use std::process::{Command, Output};
 
 use registry_server::{AppState, Storage};
+use tilo_test_env::SpawnUnderEnvLock as _;
+
+/// The registry CLI prepared for `arguments` against `data_dir`.
+pub fn server_command(data_dir: &Path, arguments: &[&str]) -> Command {
+    let mut command = Command::new(tilo_test_env::package_binary!("tilo-registry-server"));
+    command.arg("--data-dir").arg(data_dir).args(arguments);
+    command
+}
+
+/// The registry CLI's output for `arguments` against `data_dir`.
+pub fn server(data_dir: &Path, arguments: &[&str]) -> std::io::Result<Output> {
+    server_command(data_dir, arguments).output_locked()
+}
+
+/// [`server`] for a command that has to succeed, quoting what it reported.
+pub fn server_ok(data_dir: &Path, arguments: &[&str]) -> Output {
+    let output = server(data_dir, arguments).unwrap();
+    assert!(
+        output.status.success(),
+        "{arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
 
 /// The test server identity owned by `owner_pubkey_hex` and served from
 /// `base_url`.

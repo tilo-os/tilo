@@ -1,19 +1,13 @@
 #![allow(clippy::unwrap_used, reason = "integration-test setup and assertions")]
 
-use std::process::{Command, Output};
-use tilo_test_env::SpawnUnderEnvLock as _;
+use std::process::Output;
 
 use ed25519_dalek::SigningKey;
 use registry_server::{PublisherAllowlist, PublisherRow, Storage};
 
 fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
-    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(data_dir)
-        .arg("collect-first-party")
-        .args(arguments)
-        .output_locked()
-        .unwrap()
+    let arguments = [&["collect-first-party"][..], arguments].concat();
+    crate::support::server(data_dir, &arguments).unwrap()
 }
 
 #[test]

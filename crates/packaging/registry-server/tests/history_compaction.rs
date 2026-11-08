@@ -12,17 +12,14 @@
     reason = "integration-test setup and assertions"
 )]
 
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
-
 use app_cli::client::RegistryError;
 use app_cli::config::RegistryConfig;
 use ed25519_dalek::SigningKey;
 use registry_server::Storage;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
 use registry_types::{SignedRegistrySnapshot, sign_entry};
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
 
 struct Registry {
     dir: tempfile::TempDir,
@@ -92,16 +89,18 @@ fn registry(entries: usize) -> Registry {
 }
 
 impl Registry {
-    fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-            .arg("--data-dir")
-            .arg(self.dir.path())
-            .args(args)
-            .arg("--owner-key-file")
-            .arg(&self.key_path)
-            .args(["--valid-for-seconds", "86400"])
-            .output_locked()
-            .unwrap()
+    fn run(&self, arguments: &[&str]) -> std::process::Output {
+        let arguments = [
+            arguments,
+            &[
+                "--owner-key-file",
+                self.key_path.to_str().unwrap(),
+                "--valid-for-seconds",
+                "86400",
+            ],
+        ]
+        .concat();
+        crate::support::server(self.dir.path(), &arguments).unwrap()
     }
 
     fn sign(&self) -> SignedRegistrySnapshot {

@@ -12,11 +12,6 @@
     reason = "integration-test setup and assertions"
 )]
 
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
-
 use app_cli::client::RegistryError;
 use app_cli::config::RegistryConfig;
 use ed25519_dalek::SigningKey;
@@ -25,6 +20,8 @@ use registry_types::{
     CompactRegistrySnapshot, RegistryEntry, RegistryTarget, RegistryVersion,
     SignedRegistrySnapshot, sign_entry,
 };
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
 
 const NOTES: &str = "so.tilo.notes";
 
@@ -107,18 +104,15 @@ impl Registry {
     }
 
     fn sign(&self) -> (SignedRegistrySnapshot, CompactRegistrySnapshot) {
-        let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-            .arg("--data-dir")
-            .arg(self.dir.path())
-            .args(["sign-snapshot", "--owner-key-file"])
-            .arg(&self.key_path)
-            .args(["--valid-for-seconds", "86400"])
-            .output_locked()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+        crate::support::server_ok(
+            self.dir.path(),
+            &[
+                "sign-snapshot",
+                "--owner-key-file",
+                self.key_path.to_str().unwrap(),
+                "--valid-for-seconds",
+                "86400",
+            ],
         );
         (
             self.storage.load_snapshot().unwrap().unwrap(),

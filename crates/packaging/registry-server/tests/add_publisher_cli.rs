@@ -4,20 +4,14 @@
 #![allow(clippy::unwrap_used, reason = "integration-test setup and assertions")]
 
 use std::path::Path;
-use std::process::{Command, Output};
-use tilo_test_env::SpawnUnderEnvLock as _;
+use std::process::Output;
 
 use ed25519_dalek::SigningKey;
 use registry_server::{PublisherRow, Storage};
 
 fn add_publisher(data_dir: &Path, arguments: &[&str]) -> Output {
-    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(data_dir)
-        .arg("add-publisher")
-        .args(arguments)
-        .output_locked()
-        .unwrap()
+    let arguments = [&["add-publisher"][..], arguments].concat();
+    crate::support::server(data_dir, &arguments).unwrap()
 }
 
 fn pubkey_hex(seed: u8) -> String {

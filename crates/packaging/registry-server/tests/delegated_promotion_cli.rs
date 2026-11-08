@@ -8,9 +8,9 @@
 )]
 
 use std::os::unix::fs::PermissionsExt as _;
-use std::process::{Command, Output};
-use tilo_test_env::SpawnUnderEnvLock as _;
+use std::process::Output;
 
+use crate::support::server_ok as ok;
 use ed25519_dalek::SigningKey;
 use registry_server::{
     PendingSubmission, PromotionJournal, StagedArtifact, StagedPromotion, Storage,
@@ -22,28 +22,12 @@ use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
 fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
-    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(data_dir)
-        .args(arguments)
-        .output_locked()
-        .unwrap()
+    crate::support::server(data_dir, arguments).unwrap()
 }
 
 fn secret(path: &std::path::Path, key: &SigningKey) {
     std::fs::write(path, hex::encode(key.to_bytes())).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-}
-
-/// The CLI's output for `arguments`, asserting that it reported success.
-fn ok(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
-    let output = run(data_dir, arguments);
-    assert!(
-        output.status.success(),
-        "{arguments:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output
 }
 
 /// The arguments authorizing `channel_hex` to serve `publisher_hex` under

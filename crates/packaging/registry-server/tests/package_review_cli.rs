@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::process::{Command, Output};
-use tilo_test_env::SpawnUnderEnvLock as _;
+
+use crate::support::server as run;
 
 use anyhow::{Context as _, Result, ensure};
 use ed25519_dalek::SigningKey;
@@ -46,14 +46,6 @@ fn fixture() -> Result<(tempfile::TempDir, Storage, PendingSubmission)> {
     let pending = ModerationService::new(storage.clone())
         .submit(sign_change_request(EntryAction::Delete, entry, &key), 100)?;
     Ok((directory, storage, pending))
-}
-
-fn run(directory: &Path, arguments: &[&str]) -> std::io::Result<Output> {
-    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(directory)
-        .args(arguments)
-        .output_locked()
 }
 
 fn show(directory: &Path, package: &str) -> Result<serde_json::Value> {
