@@ -89,12 +89,13 @@ impl Checker<'_> {
             return None;
         }
         let filters = &info.search.filters;
-        let Some(f) = filters.iter().find(|f| f.key == name.name).cloned() else {
+        let Some(f) = info.search.filter(&name.name).cloned() else {
             let keys: Vec<String> = filters
                 .iter()
                 .map(|f| format!("`{}.{}`", key.name, f.key))
                 .collect();
-            let hint = crate::diag::suggestion(&name.name, filters.iter().map(|f| f.key.as_str()));
+            let words = filters.iter().map(|f| (f.key.as_str(), f.doc.as_str()));
+            let hint = crate::diag::suggestion_about(&name.name, words);
             self.err(
                 "E105",
                 name.span,
@@ -275,13 +276,13 @@ impl Checker<'_> {
                         } else {
                             format!("its filters: {}", keys.join(", "))
                         };
-                        let hint = crate::diag::suggestion(
+                        let hint = crate::diag::suggestion_about(
                             filter,
                             info.search
                                 .filters
                                 .iter()
-                                .map(|f| f.key.as_str())
-                                .chain(["in", "sort"]),
+                                .map(|f| (f.key.as_str(), f.doc.as_str()))
+                                .chain([("in", ""), ("sort", "")]),
                         );
                         self.err(
                             "E105",

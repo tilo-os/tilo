@@ -424,9 +424,7 @@ impl Checker<'_> {
 
     /// `; did you mean `check`?` for a name that is not an action.
     fn near_action(&self, name: &str, item: Option<&Ty>) -> String {
-        crate::diag::did_you_mean(name, self.applicable(item).map(|c| c.name.as_str()))
-            .map(|near| format!("; did you mean `{near}`?"))
-            .unwrap_or_default()
+        crate::diag::suggestion(name, self.applicable(item).map(|c| c.name.as_str()))
     }
 
     /// The placement as the node holds it: each action's id, the group the view puts it in (none

@@ -46,18 +46,6 @@ const MAX_STRUCTURAL_CONFLICT_ROUNDS: usize = 64;
 const STRUCTURAL_CONFLICT_MARKER: &[u8] = b".sync-conflict-";
 
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
-/// Most peer devices a namespace remembers sync progress with. An exchange
-/// with a device beyond it starts from a full sync, as a first one does.
-const MAX_PEER_SYNC_STATES: usize = 1024;
-/// The persisted form of the sync progress ([`Namespace::encode_peer_sync_states`]):
-/// this tag, which names its version, then the entry count (`u32` LE), then
-/// per entry the device key (32 bytes), the encoded state's length (`u32`
-/// LE) and the state; then a BLAKE3 hash of everything before it.
-const PEER_SYNC_STATES_TAG: &[u8; 8] = b"TFPSYNC1";
-/// The longest encoded sync state one entry may hold: a state is the agreed
-/// heads, 32 bytes each, and a document rarely has more than a few heads.
-const MAX_PEER_SYNC_STATE_BYTES: usize = 64 * 1024;
-
 mod changes;
 mod changesets;
 #[cfg(test)]
@@ -437,9 +425,6 @@ pub struct Namespace {
     /// only a document import can clear this (and each import re-runs the
     /// migration), which keeps `save_incremental` from rescanning all nodes.
     record_ids_complete: bool,
-    /// Heads after the last post-sync resolution: a sync that brought
-    /// nothing new needs none.
-    resolved_heads: Option<Vec<automerge::ChangeHash>>,
     /// Nodes a delta placed since the last resolution: the only nodes a
     /// cycle can newly run through, so only they are searched. The next
     /// resolution clears it, and it never holds more than the tree.
@@ -453,17 +438,6 @@ pub struct Namespace {
     /// regenerates its changes from the op set (a pass over the document),
     /// so one per changed file is quadratic in a changeset.
     incremental_batch: Option<(Vec<automerge::ChangeHash>, Vec<u8>)>,
-    /// Per peer device (its certified key): the heads the last completed
-    /// sync exchange with it agreed both sides hold, as an encoded
-    /// [`automerge::sync::State`]. Without them every exchange would start
-    /// by summarising the document's whole history.
-    peer_sync_states: HashMap<[u8; 32], Vec<u8>>,
-    /// Moves on whenever `peer_sync_states` changes, so a persister writes
-    /// them only then ([`Self::encode_peer_sync_states`]).
-    peer_sync_generation: u64,
-    /// Bytes of every sync message this namespace generated.
-    #[cfg(test)]
-    sync_bytes_generated: usize,
     #[cfg(test)]
     record_index_rebuilds: u64,
     /// Changes whenever the verified (signed) content projection changes:
@@ -506,53 +480,6 @@ fn next_verified_generation() -> u64 {
 pub struct NamespaceChangeToken {
     heads: Vec<automerge::ChangeHash>,
     verified_generation: u64,
-}
-
-/// The entries of a [`Namespace::encode_peer_sync_states`] encoding, or why
-/// `bytes` is not exactly one.
-fn decode_peer_sync_states(bytes: &[u8]) -> anyhow::Result<HashMap<[u8; 32], Vec<u8>>> {
-    use anyhow::{Context, bail, ensure};
-    let (body, checksum) = bytes
-        .split_last_chunk::<32>()
-        .context("truncated sync progress")?;
-    ensure!(
-        blake3::hash(body).as_bytes() == checksum,
-        "damaged sync progress: checksum mismatch"
-    );
-    let rest = body
-        .strip_prefix(PEER_SYNC_STATES_TAG)
-        .context("not sync progress of this version")?;
-    let (count, mut rest) = rest
-        .split_first_chunk::<4>()
-        .context("truncated sync progress")?;
-    let count = usize::try_from(u32::from_le_bytes(*count))?;
-    ensure!(
-        count <= MAX_PEER_SYNC_STATES,
-        "sync progress names {count} peers"
-    );
-    let mut entries = HashMap::with_capacity(count);
-    for _ in 0..count {
-        let (peer, after) = rest
-            .split_first_chunk::<32>()
-            .context("truncated sync progress")?;
-        let (len, after) = after
-            .split_first_chunk::<4>()
-            .context("truncated sync progress")?;
-        let len = usize::try_from(u32::from_le_bytes(*len))?;
-        ensure!(
-            len <= MAX_PEER_SYNC_STATE_BYTES,
-            "a sync state of {len} bytes"
-        );
-        ensure!(after.len() >= len, "truncated sync progress");
-        let (state, after) = after.split_at(len);
-        automerge::sync::State::decode(state).context("undecodable sync state")?;
-        if entries.insert(*peer, state.to_vec()).is_some() {
-            bail!("sync progress names a peer twice");
-        }
-        rest = after;
-    }
-    ensure!(rest.is_empty(), "trailing bytes after sync progress");
-    Ok(entries)
 }
 
 fn hash_to_hex(h: &Hash) -> String {
@@ -652,14 +579,9 @@ impl Namespace {
             record_index_digest: RecordIndexDigest::default(),
             tree: TreeIndex::default(),
             record_ids_complete: false,
-            resolved_heads: None,
             placed_since_resolve: HashSet::new(),
             cycle_scan_pending: true,
             incremental_batch: None,
-            peer_sync_states: HashMap::new(),
-            peer_sync_generation: 0,
-            #[cfg(test)]
-            sync_bytes_generated: 0,
             #[cfg(test)]
             record_index_rebuilds: 0,
             verified_generation: next_verified_generation(),
@@ -1006,7 +928,6 @@ impl Namespace {
         self.merge_generation = next_verified_generation();
         self.cycle_scan_pending = true;
         self.placed_since_resolve.clear();
-        self.resolved_heads = None;
         self.ensure_record_ids();
         self.rebuild_record_index();
         Ok(Vec::new())
@@ -1047,199 +968,6 @@ impl Namespace {
     pub(crate) fn conflict_scans(&self) -> u64 {
         self.conflict_scans
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// The sync state an exchange with the device `peer` begins at: where
-    /// the last exchange completed with it ([`Self::finish_sync_with`])
-    /// left off, so an idle exchange summarises only the changes since
-    /// rather than the document's whole history. A device this namespace
-    /// has completed no exchange with, or whose agreed heads this document
-    /// does not hold, gets a fresh state and so a full sync. A peer that
-    /// lost what it agreed to is caught by Automerge itself: it answers
-    /// with a reset, and the exchange falls back to a full sync.
-    pub fn begin_sync_with(&mut self, peer: &[u8; 32]) -> automerge::sync::State {
-        let resumed = self
-            .peer_sync_states
-            .get(peer)
-            .and_then(|encoded| automerge::sync::State::decode(encoded).ok());
-        match resumed {
-            Some(state)
-                if state
-                    .shared_heads
-                    .iter()
-                    .all(|hash| self.doc.has_change(hash)) =>
-            {
-                state
-            }
-            Some(_) => {
-                self.peer_sync_states.remove(peer);
-                automerge::sync::State::new()
-            }
-            None => automerge::sync::State::new(),
-        }
-    }
-
-    /// Remembers where a completed exchange with the device `peer` left
-    /// off, for [`Self::begin_sync_with`]. Only the heads both sides hold
-    /// persist ([`automerge::sync::State::encode`]); everything else in
-    /// `state` belongs to that one exchange.
-    pub fn finish_sync_with(&mut self, peer: [u8; 32], state: &automerge::sync::State) {
-        if !self.peer_sync_states.contains_key(&peer)
-            && self.peer_sync_states.len() >= MAX_PEER_SYNC_STATES
-            && let Some(evicted) = self.peer_sync_states.keys().next().copied()
-        {
-            self.peer_sync_states.remove(&evicted);
-        }
-        let encoded = state.encode();
-        if self.peer_sync_states.get(&peer) != Some(&encoded) {
-            self.peer_sync_states.insert(peer, encoded);
-            self.peer_sync_generation = self.peer_sync_generation.wrapping_add(1);
-            self.doc.announce();
-        }
-    }
-
-    /// Whether this namespace has completed a sync exchange with any other
-    /// device (restored progress included): someone has dialled it, or been
-    /// dialled, before (#4224, [`crate::reachability`]).
-    #[must_use]
-    pub fn has_synced_with_peers(&self) -> bool {
-        !self.peer_sync_states.is_empty()
-    }
-
-    /// Whether the last exchange completed with the device `peer` left both
-    /// sides holding exactly this document's current heads: nothing here is
-    /// new to that peer since. Says nothing about what the peer has that
-    /// this document lacks.
-    pub fn in_sync_with(&mut self, peer: &[u8; 32]) -> bool {
-        let Some(state) = self
-            .peer_sync_states
-            .get(peer)
-            .and_then(|encoded| automerge::sync::State::decode(encoded).ok())
-        else {
-            return false;
-        };
-        let mut agreed = state.shared_heads;
-        let mut heads = self.doc.get_heads();
-        agreed.sort_unstable();
-        heads.sort_unstable();
-        agreed == heads
-    }
-
-    /// Moves on whenever the remembered sync progress changes.
-    #[must_use]
-    pub const fn peer_sync_generation(&self) -> u64 {
-        self.peer_sync_generation
-    }
-
-    /// The sync progress with every peer device, to persist beside the
-    /// document so a restart resumes rather than starting each exchange
-    /// over ([`Self::restore_peer_sync_states`]).
-    #[must_use]
-    pub fn encode_peer_sync_states(&self) -> Vec<u8> {
-        let mut entries: Vec<_> = self.peer_sync_states.iter().collect();
-        entries.sort_unstable_by_key(|(peer, _)| **peer);
-        let mut out = Vec::new();
-        out.extend_from_slice(PEER_SYNC_STATES_TAG);
-        out.extend_from_slice(
-            &u32::try_from(entries.len())
-                .unwrap_or(u32::MAX)
-                .to_le_bytes(),
-        );
-        for (peer, state) in entries {
-            out.extend_from_slice(peer);
-            out.extend_from_slice(&u32::try_from(state.len()).unwrap_or(u32::MAX).to_le_bytes());
-            out.extend_from_slice(state);
-        }
-        let checksum = blake3::hash(&out);
-        out.extend_from_slice(checksum.as_bytes());
-        out
-    }
-
-    /// Takes back sync progress [`Self::encode_peer_sync_states`] wrote,
-    /// replacing any held, and returns how many peers it resumes with.
-    /// Persisted progress is a hint, never trusted: bytes that are not
-    /// exactly such an encoding are refused whole and nothing changes, and
-    /// a peer whose agreed heads this document does not hold (a document
-    /// restored from an older copy, or another workspace's) is dropped, so
-    /// its next exchange is a full sync. A peer that lost what it agreed to
-    /// is caught by Automerge itself, as in [`Self::begin_sync_with`].
-    pub fn restore_peer_sync_states(&mut self, bytes: &[u8]) -> anyhow::Result<usize> {
-        let decoded = decode_peer_sync_states(bytes)?;
-        self.peer_sync_states = decoded
-            .into_iter()
-            .filter(|(_, encoded)| {
-                automerge::sync::State::decode(encoded).is_ok_and(|state| {
-                    state
-                        .shared_heads
-                        .iter()
-                        .all(|hash| self.doc.has_change(hash))
-                })
-            })
-            .collect();
-        self.peer_sync_generation = self.peer_sync_generation.wrapping_add(1);
-        self.doc.announce();
-        Ok(self.peer_sync_states.len())
-    }
-
-    pub fn sync_generate(&mut self, state: &mut automerge::sync::State) -> Option<Vec<u8>> {
-        let message = self
-            .doc
-            .generate_sync_message(state)
-            .map(automerge::sync::Message::encode);
-        #[cfg(test)]
-        {
-            self.sync_bytes_generated = self
-                .sync_bytes_generated
-                .saturating_add(message.as_ref().map_or(0, Vec::len));
-        }
-        message
-    }
-
-    /// Bytes of every sync message this namespace has generated.
-    #[cfg(test)]
-    pub(crate) fn sync_bytes_generated(&self) -> usize {
-        self.sync_bytes_generated
-    }
-
-    pub fn sync_receive(
-        &mut self,
-        state: &mut automerge::sync::State,
-        data: &[u8],
-    ) -> anyhow::Result<()> {
-        let msg = automerge::sync::Message::decode(data)?;
-        // Most sync rounds carry heads and bloom filters, not changes; the
-        // indexes are updated, and the change announced, only when the
-        // document actually changed.
-        self.doc.arm_patches();
-        let changed = match self.doc.receive_sync_message(state, msg) {
-            Ok(changed) => changed,
-            Err(error) => {
-                self.doc.disarm_patches();
-                return Err(error.into());
-            }
-        };
-        if changed {
-            self.merge_generation = next_verified_generation();
-            self.index_after_apply();
-        } else {
-            self.doc.disarm_patches();
-        }
-        Ok(())
-    }
-
-    /// Discard the pulled changes from the watermark (peers already have them), resolve, and return only the resolution delta.
-    pub fn post_sync_resolve(&mut self) -> Vec<u8> {
-        let _ = self.doc.save_incremental();
-        let heads = self.doc.get_heads();
-        if self.resolved_heads.as_ref() == Some(&heads) {
-            // Resolution depends only on the document, which has not
-            // changed since it last ran.
-            return Vec::new();
-        }
-        self.resolve_pending();
-        let delta = self.doc.save_incremental();
-        self.resolved_heads = Some(self.doc.get_heads());
-        delta
     }
 
     fn node(&self, id: &str) -> Option<ObjId> {
@@ -3592,10 +3320,9 @@ impl Namespace {
     }
 
     /// A receiver that sees, after this call, every change to the
-    /// document and to the sync progress beside it
-    /// ([`Self::peer_sync_generation`]). It says that something may have
-    /// changed, never what; compare [`Self::heads`] to know. Persisting
-    /// and repairing on it replaces polling.
+    /// document. It says that something may have changed, never what;
+    /// compare [`Self::heads`] to know. Persisting and repairing on it
+    /// replaces polling.
     #[must_use]
     pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.doc.subscribe()

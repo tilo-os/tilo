@@ -68,17 +68,6 @@ const MEDIA_TAIL_READ_SLO: Duration = Duration::from_millis(40); // first run 17
 /// both operations are fast, without replacing the absolute release limit.
 const MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD: f64 = 1.0 / 8.0;
 
-/// Namespace changes behind the two writers of the idle anti-entropy pass.
-const IDLE_SYNC_HISTORY: u64 = 50_000;
-/// One idle pass between two writers in sync, both directions together.
-/// Independent of history: a pass resumes where the last one left off.
-/// Twice the 148 B every one of 41 CI runs sent: the byte count does not
-/// depend on the runner, so this is the idle pass's tight gate.
-const IDLE_SYNC_BYTES: usize = 296;
-/// The pass takes 0.015 ms (p99 0.052 ms over 41 runs). A ceiling under one
-/// scheduler time slice would fail whenever the runner preempts the pass, so
-/// time only bounds a stall here; `IDLE_SYNC_BYTES` catches a regression.
-const IDLE_SYNC_SLO: Duration = Duration::from_millis(5);
 /// The workspace behind the conflict-watch scenario: 50,000
 /// files in 500 directories.
 const CONFLICT_DIRECTORIES: usize = 500;
@@ -99,13 +88,6 @@ const IDLE_CONFLICT_SLO: Duration = Duration::from_millis(5);
 /// Both are provisional until CI runs give a p99 (#3956's rule).
 const CONFLICT_SCAN_MEAN_HOLD_SLO: Duration = Duration::from_millis(10);
 const CONFLICT_SCAN_LONGEST_HOLD_SLO: Duration = Duration::from_millis(200);
-/// Files in the namespace behind the restart-resync scenario.
-const RESTART_RESYNC_FILES: u64 = 50_000;
-/// A device's first exchange with a peer after a restart, from the sync
-/// progress it persisted: heads only, as an idle pass, so
-/// `IDLE_SYNC_BYTES` is its tight gate and, as for `IDLE_SYNC_SLO`, time
-/// only bounds a stall. Provisional until CI runs give a p99.
-const RESTART_RESYNC_SLO: Duration = Duration::from_millis(5);
 /// Times each single-shot wall-clock scenario runs; the gate takes the
 /// fastest. The nightly lane shares its node with other jobs, and one
 /// preemption or page-cache eviction there turned an 85 ms cold metadata open
@@ -114,10 +96,6 @@ const RESTART_RESYNC_SLO: Duration = Duration::from_millis(5);
 /// fastest of a few still fails it; a neighbour's burst rarely covers them
 /// all. Each ceiling still bounds a single attempt.
 const ATTEMPTS: usize = 3;
-/// The device keys the two writers know each other by.
-const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
-const IDLE_SYNC_DEVICE: [u8; 32] = [2; 32];
-
 fn require_enabled() -> bool {
     if std::env::var(ENABLE_ENV).as_deref() == Ok("1") {
         true
@@ -194,158 +172,6 @@ fn thumbnail_fixture() -> Vec<u8> {
         "encode deterministic image fixture"
     );
     encoded
-}
-
-/// One exchange of sync messages as a session runs it (the client writes,
-/// the server answers, until neither has anything to send) between two
-/// namespaces in sync. Returns the bytes both sent and the time both spent
-/// generating and applying them, or `None` if the exchange failed.
-fn idle_namespace_pass(
-    (client, client_state): (&mut Namespace, &mut automerge::sync::State),
-    (server, server_state): (&mut Namespace, &mut automerge::sync::State),
-) -> Option<(usize, Duration)> {
-    let started = Instant::now();
-    let mut bytes = 0_usize;
-    for _ in 0..64 {
-        let message = client.sync_generate(client_state);
-        if let Some(message) = &message {
-            bytes = bytes.saturating_add(message.len());
-            server.sync_receive(server_state, message).ok()?;
-        }
-        let reply = server.sync_generate(server_state);
-        if let Some(reply) = &reply {
-            bytes = bytes.saturating_add(reply.len());
-            client.sync_receive(client_state, reply).ok()?;
-        }
-        if message.is_none() && reply.is_none() {
-            return Some((bytes, started.elapsed()));
-        }
-    }
-    None
-}
-
-/// #3858: the anti-entropy pass every writer runs with every peer every
-/// few seconds, with nothing changed. Starting each pass from a fresh sync
-/// state sent a Bloom filter over the namespace's whole history; resuming
-/// from the last completed pass sends heads, at any history length.
-#[test]
-fn idle_namespace_anti_entropy_performance_gate() {
-    if !require_enabled() {
-        return;
-    }
-    let mut host = Namespace::new("perf-idle-host").unwrap();
-    let mut file = ROOT_INO;
-    for change in 0..IDLE_SYNC_HISTORY {
-        if change.is_multiple_of(100) {
-            file = host
-                .create_file(ROOT_INO, format!("file-{change}"), None, 0, change)
-                .expect("create history fixture entry");
-        } else {
-            let content = iroh_blobs::Hash::new(change.to_le_bytes());
-            assert!(host.set_content(file, Some(&content), change, change));
-        }
-        host.heads();
-    }
-    let mut device =
-        Namespace::from_bytes("perf-idle-device", &host.save()).expect("open in-sync device");
-
-    let (fresh_bytes, fresh_time) = idle_namespace_pass(
-        (&mut device, &mut automerge::sync::State::new()),
-        (&mut host, &mut automerge::sync::State::new()),
-    )
-    .expect("fresh idle pass");
-    eprintln!(
-        "PERF idle-namespace-pass-fresh-state-50k: {fresh_bytes} B, {:.3} ms (before #3858)",
-        fresh_time.as_secs_f64() * 1_000.0
-    );
-
-    // The production path: each side begins where its last completed
-    // exchange with the other left off. The first is a full exchange.
-    let mut resumed = None;
-    for _ in 0..3 {
-        let mut device_state = device.begin_sync_with(&IDLE_SYNC_HOST);
-        let mut host_state = host.begin_sync_with(&IDLE_SYNC_DEVICE);
-        let pass = idle_namespace_pass(
-            (&mut device, &mut device_state),
-            (&mut host, &mut host_state),
-        )
-        .expect("resumed idle pass");
-        device.finish_sync_with(IDLE_SYNC_HOST, &device_state);
-        host.finish_sync_with(IDLE_SYNC_DEVICE, &host_state);
-        resumed = Some(pass);
-    }
-    let (bytes, time) = resumed.expect("a resumed pass ran");
-    eprintln!("PERF idle-namespace-pass-resumed-50k: {bytes} B (budget {IDLE_SYNC_BYTES} B)");
-    assert!(
-        bytes <= IDLE_SYNC_BYTES,
-        "an idle pass sent {bytes} B over {IDLE_SYNC_HISTORY} changes"
-    );
-    report("idle-namespace-pass-resumed-50k", time, IDLE_SYNC_SLO);
-}
-
-/// #4113: a device restarts (an update, a reboot) with 50,000 files in
-/// its workspace and resumes its exchange with a peer. Without the sync
-/// progress persisted beside the document, the restarted side started from
-/// a fresh sync state and summarised the whole history again; with it, the
-/// exchange carries heads only.
-#[test]
-fn restart_resync_performance_gate() {
-    if !require_enabled() {
-        return;
-    }
-    let mut host = Namespace::new("perf-restart-host").unwrap();
-    for file in 0..RESTART_RESYNC_FILES {
-        let content = iroh_blobs::Hash::new(file.to_le_bytes());
-        host.create_file(ROOT_INO, format!("file-{file}"), Some(&content), 1, file)
-            .expect("create restart fixture file");
-        host.heads();
-    }
-    let mut device =
-        Namespace::from_bytes("perf-restart-device", &host.save()).expect("open in-sync device");
-    let mut device_state = device.begin_sync_with(&IDLE_SYNC_HOST);
-    let mut host_state = host.begin_sync_with(&IDLE_SYNC_DEVICE);
-    idle_namespace_pass(
-        (&mut device, &mut device_state),
-        (&mut host, &mut host_state),
-    )
-    .expect("first contact");
-    device.finish_sync_with(IDLE_SYNC_HOST, &device_state);
-    host.finish_sync_with(IDLE_SYNC_DEVICE, &host_state);
-    let saved = device.save();
-    let progress = device.encode_peer_sync_states();
-
-    // The restart as it was: the device remembers nothing, the host does.
-    let mut forgetful = Namespace::from_bytes("perf-restart-device", &saved).unwrap();
-    let mut host_state = host.begin_sync_with(&IDLE_SYNC_DEVICE);
-    let (full_bytes, full_time) = idle_namespace_pass(
-        (&mut forgetful, &mut automerge::sync::State::new()),
-        (&mut host, &mut host_state),
-    )
-    .expect("restart without progress");
-    eprintln!(
-        "PERF restart-resync-without-progress-50k-files: {full_bytes} B, {:.3} ms (before #4113)",
-        full_time.as_secs_f64() * 1_000.0
-    );
-
-    let mut restarted = Namespace::from_bytes("perf-restart-device", &saved).unwrap();
-    let started = Instant::now();
-    assert_eq!(restarted.restore_peer_sync_states(&progress).ok(), Some(1));
-    let mut device_state = restarted.begin_sync_with(&IDLE_SYNC_HOST);
-    let mut host_state = host.begin_sync_with(&IDLE_SYNC_DEVICE);
-    let (bytes, _) = idle_namespace_pass(
-        (&mut restarted, &mut device_state),
-        (&mut host, &mut host_state),
-    )
-    .expect("restart with progress");
-    let time = started.elapsed();
-    eprintln!(
-        "PERF restart-resync-with-progress-50k-files: {bytes} B (budget {IDLE_SYNC_BYTES} B)"
-    );
-    assert!(
-        bytes <= IDLE_SYNC_BYTES,
-        "a restarted device sent {bytes} B over {RESTART_RESYNC_FILES} files ({full_bytes} B without its progress)"
-    );
-    report("restart-resync-50k-files", time, RESTART_RESYNC_SLO);
 }
 
 /// #3985: the conflict step every writer's reconciliation loop runs every

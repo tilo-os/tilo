@@ -908,6 +908,63 @@ mod tests {
     use winit::event::{ElementState, MouseButton, WindowEvent};
 
     #[test]
+    fn the_release_of_the_press_a_box_took_is_the_boxs_too() {
+        // A box that took a click's press takes the release that completes it: a list row it
+        // stands in decides a click on its release, and a release left to the row would act on
+        // the row as well as the box.
+        let mut checkbox = Checkbox::new("ack", "acknowledged").with_label("I understand.");
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = checkbox.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+        let mut text = TextRenderer::new();
+        tree.compute_layout_with_measure(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(360.0),
+                height: taffy::AvailableSpace::Definite(100.0),
+            },
+            |known, available, node_id, _, _| {
+                node_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
+                    (*ptr).measure(known, available, &mut text)
+                })
+            },
+        )
+        .expect("the box lays out");
+        checkbox.apply_layout(&tree, node, Point::ZERO);
+        let middle = checkbox.control.rect.center();
+        let device = winit::event::DeviceId::dummy();
+        let mut sender = Dispatch::new().layout(&tree, node);
+        sender.send(
+            &mut checkbox,
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: (middle.x, middle.y).into(),
+            },
+        );
+        let pressed = sender.send(
+            &mut checkbox,
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert!(pressed.handled, "the box takes the press");
+        let released = sender.send(
+            &mut checkbox,
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert!(
+            released.handled,
+            "the release of the click it took is the box's, not the row's around it"
+        );
+    }
+
+    #[test]
     fn mixed_checkbox_announces_and_paints_without_remeasuring() {
         use crate::headless::FrameHarness;
         let selected = crate::LocalState::new(false);

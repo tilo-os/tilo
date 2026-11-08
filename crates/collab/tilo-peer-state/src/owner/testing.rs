@@ -444,17 +444,6 @@ pub fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, String> {
 pub fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), String> {
     publication::metadata(message)
 }
-pub fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
-    publication::append_local(view, bytes)
-}
-/// Record the live peer as the view's durable peer.
-pub fn seal(view: &mut NativeCommittedView) -> Result<(), String> {
-    view.record.peer = view.peer.durable()?;
-    Ok(())
-}
-pub fn bump_generation(view: &mut NativeCommittedView) {
-    view.record.generation = view.record.generation.saturating_add(1);
-}
 /// What a record keeps of one workspace.
 pub struct Stored {
     pub peer: Vec<u8>,

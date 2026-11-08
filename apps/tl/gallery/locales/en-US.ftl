@@ -500,6 +500,7 @@ d-wxq3apea = Data
     .w-tree = Tree
     .w-project = Project
     .w-conversation = Conversation
+    .w-jun-30 = Jun 30
     .w-conversation-with-ada = Conversation with Ada
     .w-cards = Cards
     .w-collections = Collections

@@ -568,7 +568,7 @@ impl QuickFS {
             .unwrap_or_default();
         deltas.push(batch);
         if durable {
-            self.broadcast_deltas(deltas);
+            self.broadcast_deltas(&deltas);
         } else {
             // Not durable yet: the next changeset broadcasts these with its
             // own, once both are on disk.
@@ -578,16 +578,14 @@ impl QuickFS {
         value
     }
 
-    fn broadcast_deltas(&self, deltas: Vec<Vec<u8>>) {
+    fn broadcast_deltas(&self, deltas: &[Vec<u8>]) {
         let held = std::mem::take(&mut *self.held_deltas.lock_recover());
         let any = !held.is_empty() || !deltas.is_empty();
         if any && self.enforcement.is_some() {
             self.refresh_acl_visible_record_index();
         }
-        if let Some(sync) = &self.sync {
-            for delta in held.into_iter().chain(deltas) {
-                sync.announce_delta(&delta);
-            }
+        if any && let Some(sync) = &self.sync {
+            sync.announce_change();
         }
         if any {
             self.wake_pinned_hydration();

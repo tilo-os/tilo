@@ -729,26 +729,16 @@ search.md, "What a type declares" and "Types, references and paths".
   the view bound. `bind:` takes the binding whose type the bound place has, since a component
   may declare several. So a body is `ui.BlockEditor(bind: doc.body, placeholder: "…")` where
   the document's window draws it; neither the host nor the compiler places an editor.
-- **`std.Repeat` and `std.Reminder` are built-in value types, held as their RFC 5545 text.** A
-  repeat is its RRULE (`FREQ=WEEKLY;INTERVAL=2`), with `X-FROM=DONE` appended when the next
-  occurrence counts from the day it was completed rather than from the day it was due; a
-  reminder is its TRIGGER duration (`-PT15M`, `PT9H`). Both are written from a string literal,
-  canonicalized as they are held (so what is stored expands unchanged), and normalized again on
-  read, like `Date` and `Time`. They join `Text`, `Date`, `Time` and `std.Identifier` as types
-  that are their own text: a field of one is a text column, an action parameter is text, and code
-  reads a repeat in words only through `.label()` (E020 otherwise), which is the reader's
-  catalogue's phrase and count (`tilolang-repeat-every-weeks` with `count = 2`), never a phrase
-  the compiler bakes in. Expansion is `tilo-recurrence`'s, so a rule Tasks repeats by and one
-  Calendar draws are one reading. `.next(from, done_on)` steps from the due day or, with
-  `X-FROM=DONE`, from the completion day, which is what makes two people completing the same
-  item on the same day write the same next day; completion days on different days are last
-  writer wins on the due field itself. `.next_at(at, day)` keeps a wall time of day across a
-  change of clocks, so it needs the person's zone as its IANA name (`Platform::zone_name`,
-  `Core.zone_name`), falling back to the clock's offset when a host names none
-  (`Europe/Berlin` 09:30 is `08:30Z` before the spring change and `07:30Z` after).
-  `.at(due, at)` places a reminder: from the instant of a timed item, or from the start of the
-  due day for one without a time, so `PT9H` is 09:00 and `-PT15M` a quarter of an hour before
-  midnight, both in the person's zone.
+- **A repeat and a reminder are an app's fields, not the language's types.** The language holds
+  general mechanisms only: a recurrence rule is `Text` the app stores as RFC 5545 writes one
+  (`FREQ=WEEKLY;INTERVAL=2`), a reminder is the `Duration` before the due moment, and the words
+  a row says them in are the app's `phrase(...)` with the count it computed, in the reader's
+  catalogue as every phrase is. `std.Repeat`, `std.Reminder`, their `.next`, `.next_at`, `.at`
+  and `.label` methods and the five host imports behind them are gone: a calendar or a task list
+  that expands a rule does it over `Date`, `Time`, `Duration` and the shared `tilo-recurrence`
+  crate, whoever needs the next occurrence. The zone a wall time of day is read in stays the
+  language's (`wall_clock`, `t.day()`, `today`), since every app reads a moment by the person's
+  clock.
 - **A place the view supplies, and the commands only a view can offer.** An action parameter
   written `above: Option<T> (above)` is a *place*: the view offering the action fills it with
   what it shows there — the list passes the item just over this one in its group, under the

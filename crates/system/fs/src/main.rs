@@ -179,68 +179,6 @@ mod share_mount_tests {
         );
     }
 
-    /// #4113. The persister writes the sync progress with each peer
-    /// beside the namespace document, and a restart resumes it; damaged
-    /// progress, or progress beside a document recovered from an older
-    /// generation, is ignored, so every exchange starts with a full sync.
-    #[tokio::test(start_paused = true)]
-    async fn sync_progress_persists_beside_the_namespace_and_is_never_trusted() {
-        const PEER: [u8; 32] = [9; 32];
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("namespace.bin");
-        let progress = peer_sync_path(&path);
-        let namespace = Arc::new(Mutex::new(Namespace::new("persisted").unwrap()));
-        let agree_on_heads = |namespace: &Arc<Mutex<Namespace>>| {
-            let mut namespace = namespace.lock().unwrap();
-            let mut state = automerge::sync::State::new();
-            state.shared_heads = namespace.heads();
-            namespace.finish_sync_with(PEER, &state);
-        };
-        agree_on_heads(&namespace);
-        let persister = spawn_persist(Arc::clone(&namespace), path.clone());
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        persister.abort();
-        assert!(progress.exists(), "the persister wrote the sync progress");
-        assert_eq!(
-            std::fs::metadata(&progress).unwrap().permissions(),
-            std::fs::metadata(&path).unwrap().permissions(),
-            "the progress has the document's permissions"
-        );
-        let mut reopened = load_namespace(&path, "persisted".into()).unwrap();
-        assert!(
-            reopened.in_sync_with(&PEER),
-            "a restart resumes the progress"
-        );
-
-        let mut damaged = std::fs::read(&progress).unwrap();
-        let last = damaged.len() - 1;
-        damaged[last] ^= 1;
-        std::fs::write(&progress, &damaged).unwrap();
-        let mut reopened = load_namespace(&path, "persisted".into()).unwrap();
-        assert!(
-            !reopened.in_sync_with(&PEER),
-            "damaged progress was resumed"
-        );
-
-        persist_peer_sync_states(&namespace, &progress);
-        namespace
-            .lock()
-            .unwrap()
-            .create_dir(fs::ROOT_INO, "newer", 1)
-            .unwrap();
-        persist_namespace_generation(&namespace, &path).unwrap();
-        std::fs::write(&path, b"damaged primary").unwrap();
-        let mut recovered = load_namespace(&path, "persisted".into()).unwrap();
-        assert!(
-            recovered.lookup(fs::ROOT_INO, "newer").is_none(),
-            "the older generation was recovered"
-        );
-        assert!(
-            !recovered.in_sync_with(&PEER),
-            "a recovered document resumed progress"
-        );
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn recipient_service_replaces_only_a_verified_stale_socket() {
@@ -471,6 +409,9 @@ enum Command {
     WorkspaceStatus {
         #[arg(long)]
         cache_dir: PathBuf,
+        /// Exit with an error unless the cache holds a resumable saved workspace.
+        #[arg(long)]
+        require_existing: bool,
     },
     /// Start `serve` for the saved primary Files workspace of a host desktop
     /// session, after its identity and permission check; exits 78 when not ready.
@@ -708,11 +649,15 @@ async fn run_command(cli: Cli) -> Result<()> {
         fs::clock::install_test_clock_file(path).context("configuring deterministic test clock")?;
     }
     match cli.command {
-        Command::WorkspaceStatus { cache_dir } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&workspace_startup::inspect(&cache_dir)?)?
-            );
+        Command::WorkspaceStatus {
+            cache_dir,
+            require_existing,
+        } => {
+            let status = workspace_startup::inspect(&cache_dir)?;
+            if require_existing {
+                status.require_existing()?;
+            }
+            println!("{}", serde_json::to_string_pretty(&status)?);
             Ok(())
         }
         Command::ServePrimary(_) => bail!("serve-primary runs before the runtime starts"),
@@ -1512,17 +1457,10 @@ async fn replica_workspace(
     for peer in &bootstrap {
         hydrator.add_peer(peer.clone());
     }
-    let namespace = Arc::new(Mutex::new(
-        open_namespace_mount(
-            endpoint.id().to_string(),
-            namespace_path.as_deref(),
-            &endpoint,
-            &bootstrap,
-            &transport_identity,
-            (ticket.workspace_id(), &Some(acl.clone())),
-        )
-        .await?,
-    ));
+    let namespace = Arc::new(Mutex::new(open_namespace(
+        endpoint.id().to_string(),
+        namespace_path.as_deref(),
+    )?));
     // A home peer is a real record replica, not merely a namespace/blob
     // cache. Keep the signed record repository and its materialized projection
     // exactly as a normal mounted collaborator does, so replacements,
@@ -1845,36 +1783,8 @@ async fn serve(
             hydrator.add_peer(peer.endpoint);
         }
     }
-    let (ns_value, fresh) = match &remote_ticket {
-        Some(ticket) => {
-            let bootstrap = bootstrap_peers(ticket, cache_dir.as_deref())?;
-            (
-                open_namespace_mount(
-                    author.clone(),
-                    np.as_deref(),
-                    &endpoint,
-                    &bootstrap,
-                    &transport_identity,
-                    (
-                        ticket.workspace_id(),
-                        &acl.as_ref().map(|(handle, _)| handle.clone()),
-                    ),
-                )
-                .await?,
-                !np.as_ref().is_some_and(|path| path.exists()),
-            )
-        }
-        None => match np.as_ref().filter(|p| p.exists()) {
-            Some(p) => (load_namespace(p, author.clone())?, false),
-            None => (Namespace::new(author.clone())?, true),
-        },
-    };
-    if ns_value.has_synced_with_peers() {
-        reachability::wake(
-            &reachability,
-            "this workspace has synced with a peer before",
-        );
-    }
+    let fresh = !np.as_ref().is_some_and(|path| path.exists());
+    let ns_value = open_namespace(author.clone(), np.as_deref())?;
     let namespace = Arc::new(Mutex::new(ns_value));
     // This mount's tree, as the Files app's person record of the workspace
     // that holds it: this daemon is the app's windowless endpoint, so what
@@ -2437,19 +2347,17 @@ async fn mount(
         hydrator.add_peer(peer.clone());
     }
 
-    let ns_value = open_namespace_mount(
-        author,
-        np.as_deref(),
-        &endpoint,
-        &bootstrap,
-        &transport_identity,
-        (
-            ticket.workspace_id(),
-            &acl.as_ref().map(|(handle, _)| handle.clone()),
-        ),
-    )
-    .await?;
-    let namespace = Arc::new(Mutex::new(ns_value));
+    let namespace = Arc::new(Mutex::new(open_namespace(author, np.as_deref())?));
+    // The shared workspace's Files record holds this tree for every member: a
+    // mount that has none yet is given it whole, and every change here is
+    // published as the Files app's.
+    let _tree_record = fs::tree_record::spawn(
+        Arc::clone(&namespace),
+        ticket.workspace_id().to_string(),
+        credentials.clone(),
+        tilo_paths::xdg::service_socket("collab"),
+        tilo_paths::xdg::service_socket("identity"),
+    );
 
     let workspace_id = ticket.workspace_id();
     let record_materializer = if let Some(records) = record_services.as_mut() {
@@ -3463,53 +3371,7 @@ fn load_namespace(path: &Path, author: String) -> Result<Namespace> {
     })?
     .with_context(|| format!("namespace disappeared while opening {}", path.display()))?;
     report_namespace_recovery(path, outcome.recovery.as_ref());
-    let mut namespace = Namespace::from_bytes(author, &outcome.bytes)?;
-    // A document recovered from an older generation resumes no exchange:
-    // what peers agreed with it may be beyond what it now holds.
-    if outcome.recovery.is_none() {
-        restore_peer_sync_states(&mut namespace, &peer_sync_path(path));
-    }
-    Ok(namespace)
-}
-
-/// Where the sync progress with each peer is kept, beside the namespace
-/// document at `namespace_path` and with the same permissions.
-fn peer_sync_path(namespace_path: &Path) -> PathBuf {
-    namespace_path.with_file_name("peer-sync.bin")
-}
-
-/// Resumes the sync progress persisted at `path`, if any. Progress that
-/// cannot be read or decoded is discarded whole: every exchange then
-/// starts with a full sync, as after a first contact.
-fn restore_peer_sync_states(namespace: &mut Namespace, path: &Path) {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-        Err(error) => {
-            eprintln!("ignoring sync progress at {}: {error}", path.display());
-            return;
-        }
-    };
-    if let Err(error) = namespace.restore_peer_sync_states(&bytes) {
-        eprintln!(
-            "ignoring sync progress at {}: {error:#}; peers sync in full",
-            path.display()
-        );
-    }
-}
-
-/// Writes the sync progress beside the namespace document, returning
-/// whether it did. Encoded under the namespace lock, written outside it.
-fn persist_peer_sync_states(namespace: &Arc<Mutex<Namespace>>, path: &Path) -> bool {
-    let bytes = namespace.lock_recover().encode_peer_sync_states();
-    if let Err(error) = tilo_files::native::atomic::write(path, &bytes) {
-        eprintln!(
-            "sync progress persist to {} failed: {error}",
-            path.display()
-        );
-        return false;
-    }
-    true
+    Ok(Namespace::from_bytes(author, &outcome.bytes)?)
 }
 
 fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::RecoveryEvidence>) {
@@ -3525,28 +3387,13 @@ fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::
 }
 
 /// Persists the namespace whenever it changes and settles
-/// ([`fs::namespace_persist`]): the document when its heads moved, the sync
-/// progress beside it when that moved, in that order. Nothing runs while
-/// the namespace is idle. Progress is skipped while the document's write
-/// fails, so it never runs ahead of the document on disk (progress naming
-/// heads the document lacks is dropped at load anyway; this only saves the
-/// write).
+/// ([`fs::namespace_persist`]). Nothing runs while the namespace is idle.
 fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task::JoinHandle<()> {
-    let progress_path = peer_sync_path(&path);
-    fs::namespace_persist::spawn_persister(namespace, move |namespace, pending| {
-        let mut failed = fs::namespace_persist::Pending::default();
+    fs::namespace_persist::spawn_persister(namespace, move |namespace| {
         // A `fsync` may have written this document already.
-        if pending.document
-            && let Err(error) = persist_namespace_changes(namespace, &path)
-        {
+        persist_namespace_changes(namespace, &path).inspect_err(|error| {
             eprintln!("namespace persist to {} failed: {error}", path.display());
-            failed.document = true;
-        }
-        if pending.progress {
-            failed.progress =
-                failed.document || !persist_peer_sync_states(namespace, &progress_path);
-        }
-        failed
+        })
     })
 }
 
@@ -3560,8 +3407,8 @@ const NAMED_MOUNT_REPAIR: Duration = Duration::from_secs(2);
 const NAMED_MOUNT_REPAIR_MAX: Duration = Duration::from_secs(60);
 
 /// The last write of a mount, on shutdown and unmount: stops its persister
-/// (waiting, so the two never write at once), then writes the document and
-/// the sync progress as they are now.
+/// (waiting, so the two never write at once), then writes the document as it
+/// is now.
 async fn final_flush(
     persister: Option<tokio::task::JoinHandle<()>>,
     namespace: &Arc<Mutex<Namespace>>,
@@ -3573,52 +3420,15 @@ async fn final_flush(
     }
     if let Some(path) = path {
         persist_now(namespace, path);
-        persist_peer_sync_states(namespace, &peer_sync_path(path));
     }
 }
 
-/// Open a joiner's namespace: load any persisted copy, then merge the
-/// host's doc if reachable. Only a document bound to `workspace_id` by a
-/// peer `policy` lets read the whole workspace is merged
-/// ([`sync::fetch_remote_doc`]).
-async fn open_namespace_mount(
-    author: String,
-    np: Option<&Path>,
-    endpoint: &iroh::endpoint::Endpoint,
-    bootstrap: &[iroh_base::EndpointAddr],
-    identity: &FsTransportIdentity,
-    (workspace_id, policy): (uuid::Uuid, &sync::PeerPolicy),
-) -> Result<Namespace> {
-    let persisted = match np.as_ref().filter(|p| p.exists()) {
-        Some(path) => Some(load_namespace(path, author.clone())?),
-        None => None,
-    };
-
-    let mut last_error = None;
-    for host in bootstrap {
-        match sync::fetch_remote_doc(endpoint, host.clone(), identity, workspace_id, policy).await {
-            Ok(doc) => {
-                return match persisted {
-                    Some(mut ns) => {
-                        ns.merge_remote_and_resolve(&doc)?;
-                        Ok(ns)
-                    }
-                    None => Ok(Namespace::from_bytes(author, &doc)?),
-                };
-            }
-            Err(error) => last_error = Some(error),
-        }
-    }
-    match persisted {
-        Some(ns) => {
-            if let Some(error) = last_error {
-                eprintln!(
-                    "bootstrap peers unreachable ({error}); starting from persisted workspace"
-                );
-            }
-            Ok(ns)
-        }
-        None => Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no bootstrap peers configured"))),
+/// A mount's namespace: the persisted copy at `np`, or an empty tree the
+/// workspace's Files record fills.
+fn open_namespace(author: String, np: Option<&Path>) -> Result<Namespace> {
+    match np.filter(|path| path.exists()) {
+        Some(path) => load_namespace(path, author),
+        None => Ok(Namespace::new(author)?),
     }
 }
 
@@ -4331,6 +4141,25 @@ mod tests {
         assert!(
             matches!(cli.command, Command::ServePrimary(_)),
             "the host unit must pass the saved-state and authority check before serving"
+        );
+        // The unit starts only for a cache the person already prepared.
+        let condition: Vec<&str> = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ExecCondition="))
+            .expect("ExecCondition=")
+            .split_whitespace()
+            .collect();
+        let cli = Cli::try_parse_from(std::iter::once("fs").chain(condition[1..].iter().copied()))
+            .expect("the host Files unit condition must parse");
+        assert!(
+            matches!(
+                cli.command,
+                Command::WorkspaceStatus {
+                    require_existing: true,
+                    ..
+                }
+            ),
+            "the host unit must not start for an unprepared cache"
         );
     }
 

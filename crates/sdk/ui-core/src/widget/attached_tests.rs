@@ -339,3 +339,20 @@ fn a_run_of_grouped_commands_folds_into_one_row_that_opens_them() {
         "a group of one command stays the command"
     );
 }
+
+#[test]
+fn a_command_the_view_runs_itself_is_not_added_again_by_its_name() {
+    let queue = crate::Intents::default();
+    let (_, offered) = message(&queue);
+    // A `.tl` view places its commands as its own events, which name no action address: the
+    // action offered under the same name is the one the view placed.
+    let own = |label: &str| {
+        MenuPart::Item(MenuItemProps {
+            label: label.into(),
+            choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
+            ..MenuItemProps::default()
+        })
+    };
+    let menu = item_menu(vec![own("Pin")], offered);
+    assert_eq!(labels(&menu), ["Pin", "—", "Delete"], "Pin stands once");
+}

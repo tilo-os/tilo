@@ -1641,6 +1641,21 @@ timeout_secs = 10800
 on = ["dispatch"]
 dispatch_inputs = { only = "", outputs = "1920x1080@1,1280x800@1.25", gl = "auto" }
 
+# A box set up once, branched into two that start configured and work on their own
+# (scripts/vm-e2e/branch.py): this tree's dev disk and tilo-vm, on libvirt in the micro-VM.
+[[check]]
+name = "e2e-branch"
+run = "bash tools/ci/vm-e2e-branch.sh"
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/e2e-branch/**"]
+cache = false
+git = true
+timeout_secs = 7200
+on = ["dispatch"]
+dispatch_inputs = { hold = "0" }
+
 [[check]]
 name = "e2e-agents"
 # Several coding agents on one booted tilo box, each in an environment of its own workspace:

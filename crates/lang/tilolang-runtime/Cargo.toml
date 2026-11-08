@@ -16,14 +16,12 @@ blake3.workspace = true
 tilolang = { path = "../tilolang" }
 # `RichText` values and fields are tilo-doc's rich text: one rich-text model for every app.
 tilo-doc = { path = "../../doc/tilo-doc" }
-# A repeating item's rule and the day it was completed expand through the same crate Calendar
-# does, so one reading of RFC 5545 serves every app.
+# The zone a wall-clock time is read in, and how a wall time that falls in a change of clocks
+# resolves, so a time of day survives one on every device.
 tilo-recurrence = { path = "../../sdk/tilo-recurrence" }
-# Days and moments: the arithmetic behind `Repeat.next`, and the zone a series keeps its wall
-# time in.
+# Days and moments.
 chrono = { workspace = true, features = ["std"] }
-# The zone database, for the other direction (`next_at` reads an occurrence's wall time of day
-# back out of the moment it was stored as). Resolution itself is `tilo-recurrence`'s.
+# The zone database, for the person's zone as a named zone.
 chrono-tz = "0.10.4"
 # A reference inside rich text is the catalogue's resource reference, in the one form every app writes.
 tilo-reference = { path = "../../collab/reference" }

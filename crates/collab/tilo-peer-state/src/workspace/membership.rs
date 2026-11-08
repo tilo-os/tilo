@@ -104,23 +104,51 @@ fn stages(at: &AutoCommit, changes: &[Vec<u8>]) -> Result<Vec<AutoCommit>, Membe
 /// The workspace as `changes`' writer saw it: `before` at the dependencies the
 /// batch names outside itself.
 ///
+/// A batch may carry changes `before` already holds — a delta that reaches a
+/// device again, or one written on another's — and those describe where the
+/// history stood before, not where the writer stood: where the writer made the
+/// changes it adds is what their dependencies name, followed through the
+/// batch's own changes back to the ones `before` holds. A batch that adds
+/// nothing is judged where `before` stands.
+///
 /// # Errors
 /// A dependency is not in `before`, or the changes do not decode.
 pub fn dependency_state(
     before: &AutoCommit,
     changes: &[Vec<u8>],
 ) -> Result<AutoCommit, MembershipRefusal> {
+    use automerge::ReadDoc as _;
     let decoded = changes
         .iter()
         .map(|bytes| automerge::Change::from_bytes(bytes.clone()))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| MembershipRefusal::Position(error.to_string()))?;
-    let own: std::collections::BTreeSet<_> = decoded.iter().map(automerge::Change::hash).collect();
-    let mut heads: Vec<_> = decoded
+    let own: BTreeMap<_, _> = decoded
         .iter()
-        .flat_map(|change| change.deps().iter().copied())
-        .filter(|dep| !own.contains(dep))
+        .map(|change| (change.hash(), change))
         .collect();
+    let mut heads: Vec<_> = Vec::new();
+    let mut walked: std::collections::BTreeSet<_> = std::collections::BTreeSet::new();
+    let mut pending: Vec<&automerge::Change> = decoded
+        .iter()
+        .filter(|change| before.get_change_by_hash(&change.hash()).is_none())
+        .collect();
+    if pending.is_empty() {
+        return Ok(before.clone());
+    }
+    while let Some(change) = pending.pop() {
+        for dep in change.deps() {
+            if before.get_change_by_hash(dep).is_some() {
+                heads.push(*dep);
+            } else if let Some(parent) = own.get(dep) {
+                if walked.insert(*dep) {
+                    pending.push(parent);
+                }
+            } else {
+                heads.push(*dep);
+            }
+        }
+    }
     heads.sort();
     heads.dedup();
     let mut before = before.clone();
@@ -825,4 +853,70 @@ fn identities(
         return Err(MembershipRefusal::Refused("the owner's role".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::transaction::Transactable as _;
+    use automerge::{ROOT, ReadDoc as _};
+
+    /// What `run` writes on top of `doc`, as the batch sends it.
+    fn written(doc: &mut AutoCommit, run: impl FnOnce(&mut AutoCommit)) -> Vec<Vec<u8>> {
+        let heads = doc.get_heads();
+        run(doc);
+        doc.commit();
+        doc.get_changes(&heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect()
+    }
+
+    /// A batch may carry a change its receiver already holds beside the one it
+    /// adds: where the writer made the change it adds is what that names, not
+    /// the older dependency of the change it re-sends. Read from there, the
+    /// receiver's own newer state would read as the writer's change.
+    #[test]
+    fn a_batch_that_carries_what_the_receiver_holds_is_judged_where_it_adds_a_change() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "one", 1_u64).unwrap();
+        doc.commit();
+        let resent = written(&mut doc, |doc| {
+            doc.put(ROOT, "two", 2_u64).unwrap();
+        });
+        let mut holder = doc.clone();
+        let added = written(&mut doc, |doc| {
+            doc.put(ROOT, "three", 3_u64).unwrap();
+        });
+        let mut batch = resent.clone();
+        batch.extend(added);
+
+        let mut at = dependency_state(&holder, &batch).unwrap();
+        assert_eq!(
+            at.get_heads(),
+            holder.get_heads(),
+            "the writer stood where the change it adds was made"
+        );
+        assert_eq!(
+            at.get(ROOT, "two").unwrap().unwrap().0.as_u64(),
+            Some(2),
+            "what it re-sent is no part of where it stood"
+        );
+
+        // Two changes the batch adds on the one it re-sends are one position:
+        // what each of them builds on is walked once.
+        let mut theirs = holder.clone().with_actor(automerge::ActorId::random());
+        let mut mine = holder.clone().with_actor(automerge::ActorId::random());
+        let left = written(&mut theirs, |doc| {
+            doc.put(ROOT, "left", 4_u64).unwrap();
+        });
+        let right = written(&mut mine, |doc| {
+            doc.put(ROOT, "right", 5_u64).unwrap();
+        });
+        let mut forked = resent;
+        forked.extend(left);
+        forked.extend(right);
+        let mut fork = dependency_state(&holder, &forked).unwrap();
+        assert_eq!(fork.get_heads(), holder.get_heads());
+    }
 }

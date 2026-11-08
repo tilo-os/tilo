@@ -22,6 +22,7 @@
 
 use crate::actions::now_ns;
 use crate::frames::LinkFrame;
+pub use crate::replica::Replica;
 use crate::store::{self, Budget, Cursor, Frame, Store};
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
 use ed25519_dalek::SigningKey;
@@ -30,8 +31,8 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::peer_handle;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
-use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use std::sync::{Arc, RwLock};
+use tilo_lock::RwLockRecover as _;
 use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
 
@@ -48,71 +49,6 @@ pub(crate) const OUTGOING: usize = 1024;
 /// Application close code of a refused connection.
 pub(crate) const REFUSED: u32 = 1;
 
-/// One workspace's replica, held by the device whose key signs its changes.
-///
-/// Every part of the engine that decides something about the workspace reads
-/// the same replica: the direct link admits frames into it, and the action
-/// plane authorizes the devices asking for its actions against its roster.
-#[derive(Clone)]
-pub struct Replica(Arc<Mutex<StatePeer>>);
-
-impl Replica {
-    /// Hold `peer` as a replica.
-    #[must_use]
-    pub fn new(peer: StatePeer) -> Self {
-        Self(Arc::new(Mutex::new(peer)))
-    }
-
-    /// Hold a replica other parts of the engine keep already.
-    #[must_use]
-    pub fn over(peer: Arc<Mutex<StatePeer>>) -> Self {
-        Self(peer)
-    }
-
-    /// The replica, for another part of the engine to share.
-    #[must_use]
-    pub fn shared(&self) -> Arc<Mutex<StatePeer>> {
-        Arc::clone(&self.0)
-    }
-
-    /// Read the replica.
-    pub fn read<R>(&self, read: impl FnOnce(&StatePeer) -> R) -> R {
-        read(&self.0.lock_recover())
-    }
-
-    /// Change the replica: a governance change, or anything else the plane's
-    /// authorization has to see at once.
-    pub fn write<R>(&self, write: impl FnOnce(&mut StatePeer) -> R) -> R {
-        write(&mut self.0.lock_recover())
-    }
-
-    /// The replica, held: a caller that reads and changes it as one step.
-    /// Never hold it across an await.
-    pub fn lock(&self) -> MutexGuard<'_, StatePeer> {
-        self.0.lock_recover()
-    }
-
-    /// The workspace this replica is, as its id.
-    #[must_use]
-    pub fn workspace(&self) -> String {
-        self.read(|peer| peer.workspace_id().to_owned())
-    }
-
-    /// The workspace this replica is, as the number a store names it by.
-    ///
-    /// # Errors
-    ///
-    /// The replica's workspace id is not a workspace id.
-    pub fn number(&self) -> Result<u64, String> {
-        self.read(|peer| workspace_number(peer.workspace_id()))
-    }
-}
-
-fn workspace_number(workspace: &str) -> Result<u64, String> {
-    tilo_relay_protocol::room_workspace_id(workspace)
-        .map_err(|_| format!("{workspace} is not a workspace id"))
-}
-
 /// A device's replica, shared by the device's engine and its direct links.
 ///
 /// Clone it to hand it to an [`iroh::protocol::Router`] under [`DIRECT_ALPN`]
@@ -121,8 +57,17 @@ fn workspace_number(workspace: &str) -> Result<u64, String> {
 #[derive(Clone)]
 pub struct DirectSync(Arc<Inner>);
 
+#[derive(Clone)]
+struct Admission {
+    owner: crate::owner::NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+}
+
 struct Inner {
     replica: Replica,
+    /// Where this device's engine owns the workspace: frames are admitted into
+    /// its live replica and published as they land.
+    admission: Option<Admission>,
     key: SigningKey,
     /// The sealed history this device keeps for the workspace, when it is a
     /// store device.
@@ -156,6 +101,7 @@ impl DirectSync {
     pub fn over(replica: Replica, key: SigningKey) -> Self {
         Self(Arc::new(Inner {
             replica,
+            admission: None,
             key,
             store: None,
             outgoing: broadcast::channel(OUTGOING).0,
@@ -170,11 +116,32 @@ impl DirectSync {
     pub fn with_store(self, store: Arc<Store>) -> Self {
         Self(Arc::new(Inner {
             replica: self.0.replica.clone(),
+            admission: self.0.admission.clone(),
             key: self.0.key.clone(),
             store: Some(store),
             outgoing: self.0.outgoing.clone(),
             changed: self.0.changed.clone(),
         }))
+    }
+
+    /// Admit every frame this link brings into `owner`'s live replica of
+    /// `workspace` and publish it, instead of into this device's copy alone:
+    /// what a link brings is durable as it lands, and the device's own engine
+    /// decides it. The link then syncs that replica.
+    pub fn owning(
+        self,
+        owner: crate::owner::NativeWorkspaceOwner,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> Result<Self, String> {
+        let replica = owner.replica(workspace)?;
+        Ok(Self(Arc::new(Inner {
+            replica,
+            admission: Some(Admission { owner, workspace }),
+            key: self.0.key.clone(),
+            store: self.0.store.clone(),
+            outgoing: self.0.outgoing.clone(),
+            changed: self.0.changed.clone(),
+        })))
     }
 
     /// The replica this link syncs.
@@ -202,11 +169,7 @@ impl DirectSync {
         &self,
         write: impl FnOnce(&mut StatePeer, &SigningKey, SystemTime) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
-        let message = write(
-            &mut self.0.replica.0.lock_recover(),
-            &self.0.key,
-            SystemTime::now(),
-        )?;
+        let message = write(&mut self.0.replica.lock(), &self.0.key, SystemTime::now())?;
         self.0.changed.send_modify(bump);
         self.keep(&message);
         // No open link is no error: the next one catches up from the replica.
@@ -217,7 +180,7 @@ impl DirectSync {
     /// Admit a frame a store replayed, as the retained history of its
     /// author: the same admission a live frame from that device takes.
     pub fn admit_retained(&self, author: [u8; 32], message: NeighbourMsg) -> Result<(), String> {
-        let outcome = self.0.replica.0.lock_recover().receive_from(
+        let outcome = self.0.replica.lock().receive_from(
             TransportOrigin::RetainedRelayDelta(author),
             message,
             SystemTime::now(),
@@ -365,7 +328,7 @@ impl DirectSync {
     /// Whether `device` may sync with this replica: a certified device of
     /// its roster, unrevoked and unexpired.
     fn admits(&self, device: [u8; 32]) -> Result<(), String> {
-        let replica = self.0.replica.0.lock_recover();
+        let replica = self.0.replica.lock();
         if replica
             .revocations()
             .iter()
@@ -396,7 +359,7 @@ impl DirectSync {
     /// depend on; its own writes reach the other device live.
     fn catch_up(&self) -> Result<Vec<NeighbourMsg>, String> {
         let device = self.0.key.verifying_key().to_bytes();
-        let mut replica = self.0.replica.0.lock_recover();
+        let mut replica = self.0.replica.lock();
         let cert = replica
             .certificates()
             .into_iter()
@@ -439,8 +402,31 @@ impl DirectSync {
             .await
             .map_err(|error| error.to_string())?;
         while let Some(message) = read_frame(&mut recv).await? {
+            if let Some(admission) = &self.0.admission {
+                let report = admission.owner.receive(
+                    admission.workspace,
+                    TransportOrigin::RelayDelta(remote),
+                    message.clone(),
+                    Some(&self.0.key),
+                    SystemTime::now(),
+                );
+                match report {
+                    Ok(report) => {
+                        let landed = report.changed || report.metadata_changed;
+                        self.keep(&message);
+                        if landed {
+                            self.0.changed.send_modify(bump);
+                            let _ = self.0.outgoing.send(message);
+                        }
+                    }
+                    Err(reason) => {
+                        tracing::warn!(%reason, "a direct link dropped a frame the workspace refused");
+                    }
+                }
+                continue;
+            }
             let (landed, filed, accepted) = {
-                let mut replica = self.0.replica.0.lock_recover();
+                let mut replica = self.0.replica.lock();
                 let now = SystemTime::now();
                 match replica.receive_from(
                     TransportOrigin::RelayDelta(remote),
@@ -523,8 +509,7 @@ impl DirectSync {
         let device = self.0.key.verifying_key().to_bytes();
         self.0
             .replica
-            .0
-            .lock_recover()
+            .lock()
             .certificates()
             .into_iter()
             .find(|certificate| certificate.device_public_key == device)

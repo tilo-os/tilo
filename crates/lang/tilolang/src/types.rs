@@ -83,16 +83,6 @@ pub enum Ty {
     /// `std.Identifier`: an account of some service, held as its URI `scheme:value`
     /// (`mailto:jane@x.com`, `tel:+4930123456`); not a `Text` (see [`crate::identifier`]).
     Identifier,
-    /// `std.Repeat`: how a repeating item comes round again, held as its RFC 5545 rule text
-    /// (`FREQ=WEEKLY;INTERVAL=2`), which carries `X-FROM=DONE` when the next occurrence counts
-    /// from the day it was completed (see [`crate::repeat`]), and its field is marked
-    /// ``, naming the day it counts from; not a `Text`.
-    Repeat,
-    /// `std.Reminder`: how long before a due moment to remind, held as its RFC 5545 `TRIGGER`
-    /// duration (`-PT15M`), read against the person's zone (see [`crate::repeat`]), and its
-    /// field is marked ``, naming the day, time of day and
-    /// person it reads; not a `Text`.
-    Reminder,
     /// `RichText`: formatted text in which resources are referenced (a person, a channel, a
     /// task), held as tilo-doc's rich text, the one rich-text model of the platform. A field of
     /// it merges by splices and marks.
@@ -266,8 +256,6 @@ impl Ty {
             | Self::Date
             | Self::Time
             | Self::Identifier
-            | Self::Repeat
-            | Self::Reminder
             | Self::Unit
             | Self::Enum(_)
             | Self::Record(_) => true,
@@ -295,8 +283,6 @@ impl Ty {
             Self::Time => "Time".into(),
             Self::Duration => "Duration".into(),
             Self::Identifier => "std.Identifier".into(),
-            Self::Repeat => "std.Repeat".into(),
-            Self::Reminder => "std.Reminder".into(),
             Self::RichText => "RichText".into(),
             Self::Bytes => "Bytes".into(),
             Self::Response => "Response".into(),
@@ -378,8 +364,6 @@ impl Ty {
 pub fn named(dotted: &[&str]) -> Option<Ty> {
     match dotted {
         ["std", "Identifier"] => Some(Ty::Identifier),
-        ["std", "Repeat"] => Some(Ty::Repeat),
-        ["std", "Reminder"] => Some(Ty::Reminder),
         ["std", "RichText"] => Some(Ty::RichText),
         ["json", "Value"] => Some(Ty::Json),
         _ => None,
@@ -614,8 +598,6 @@ impl MetaTy<'_> {
             "Time" => Some(Ty::Time),
             "Duration" => Some(Ty::Duration),
             "std.Identifier" => Some(Ty::Identifier),
-            "std.Repeat" => Some(Ty::Repeat),
-            "std.Reminder" => Some(Ty::Reminder),
             "RichText" | "std.RichText" => Some(Ty::RichText),
             "Bytes" => Some(Ty::Bytes),
             "Response" => Some(Ty::Response),
@@ -691,8 +673,6 @@ mod tests {
             assert!(parsed.asked_by_form(), "a form asks for {ty}");
         }
         let unasked = [
-            "std.Repeat",
-            "std.Reminder",
             "Bytes",
             "Response",
             "json.Value",

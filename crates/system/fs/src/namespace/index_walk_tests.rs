@@ -286,33 +286,17 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
     let harvest_file = ns.lookup(harvest_dir, "f-0005").unwrap().ino.0;
     assert_eq!(indexed_path(ns, harvest_file), "/dir-006/harvest/f-0005");
 
-    // Both sides rename one file at once: the delta arrives by sync, and the
+    // Both sides rename one file at once: the peer's change arrives, and the
     // row names the winner.
     let contested_dir = peer.lookup(ROOT_INO, "dir-007").unwrap().ino.0;
     assert!(peer.rename(contested_dir, "f-0003", contested_dir, "peer-name", 6));
     let ours = ns.lookup(ROOT_INO, "dir-007").unwrap().ino.0;
     let contested = ns.lookup(ours, "f-0003").unwrap().ino.0;
     assert!(ns.rename(ours, "f-0003", ours, "local-name", 7));
-    let mut our_state = ns.begin_sync_with(&PEER);
-    let mut their_state = peer.begin_sync_with(&DEVICE);
-    measure(
-        "sync-conflicting-rename",
-        ns,
-        64,
-        quarter,
-        rebuild_ms,
-        |ns| {
-            exchange(ns, &mut our_state, &mut peer, &mut their_state);
-        },
-    );
-    measure(
-        "post-sync-resolution",
-        ns,
-        64,
-        quarter,
-        rebuild_ms,
-        Namespace::post_sync_resolve,
-    );
+    let delta = peer.save_incremental();
+    measure("conflicting-rename", ns, 64, quarter, rebuild_ms, |ns| {
+        ns.apply_remote_and_resolve(&delta).unwrap()
+    });
     let winner = ns
         .name_of(ns.id_for_ino(contested).unwrap())
         .unwrap_or_default();
@@ -320,31 +304,4 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
         indexed_path(ns, contested),
         format!("/dir-007/{}", String::from_utf8_lossy(&winner))
     );
-}
-
-const PEER: [u8; 32] = [7; 32];
-const DEVICE: [u8; 32] = [9; 32];
-
-/// One sync exchange between `ns` and `peer` until both have nothing left to
-/// send.
-fn exchange(
-    ns: &mut Namespace,
-    our_state: &mut automerge::sync::State,
-    peer: &mut Namespace,
-    their_state: &mut automerge::sync::State,
-) {
-    for _ in 0..16 {
-        let mut quiet = true;
-        if let Some(message) = peer.sync_generate(their_state) {
-            ns.sync_receive(our_state, &message).unwrap();
-            quiet = false;
-        }
-        if let Some(message) = ns.sync_generate(our_state) {
-            peer.sync_receive(their_state, &message).unwrap();
-            quiet = false;
-        }
-        if quiet {
-            break;
-        }
-    }
 }

@@ -79,10 +79,7 @@ pub(crate) fn restore(
     if !peer.admission_v5_selected() {
         return Err("native committed workspace requires durable admission v5".into());
     }
-    let view = NativeCommittedView {
-        peer,
-        record: record.clone(),
-    };
+    let view = NativeCommittedView::new(peer, record.clone());
     publication::validate(&view)?;
     crate::owner::effect_receipt::validate(&view)?;
     Ok(view)
@@ -458,7 +455,7 @@ impl NativeWorkspaceOwner {
         };
         self.publish_workspace(
             workspace,
-            NativeCommittedView { peer, record },
+            NativeCommittedView::new(peer, record),
             Some(&pending),
         )
     }
@@ -495,7 +492,7 @@ impl NativeWorkspaceOwner {
     ) -> Result<crate::owner_commit::OwnerCommitReceipt, String> {
         use crate::owner_commit::{CommitOperation, OwnerCommitReceipt};
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        let candidate = self.view(workspace)?;
         let request = prepare(&candidate)?;
         if WorkspaceId::parse(&request.workspace) != Some(workspace) {
             return Err(
@@ -506,7 +503,7 @@ impl NativeWorkspaceOwner {
         let binding = request.binding()?;
         let CommitOperation::Document {
             app,
-            record,
+            record: document,
             envelope,
         } = request.operation
         else {
@@ -516,15 +513,20 @@ impl NativeWorkspaceOwner {
         if envelope.author.as_bytes() != &device {
             return Err("native local publication signer differs from selected device".into());
         }
-        if candidate
-            .peer
-            .lookup_exact_local_document(&app, &record, &envelope, now)
+        let live = candidate.replica().lock();
+        let admitted = live
+            .lookup_exact_local_document(&app, &document, &envelope, now)
             .map_err(|e| e.to_string())?
-            .is_some()
-        {
-            if !candidate.hosted_here()
-                && !publication::has_exact(&candidate, &outgoing)?
-                && !publication::retry_covered(&candidate, &outgoing)?
+            .is_some();
+        drop(live);
+        if admitted {
+            if candidate.record.device != candidate.record.workspace_host
+                && !publication::has_exact(&candidate.record, &outgoing)?
+                && !publication::retry_covered(
+                    &candidate.replica().lock(),
+                    &candidate.record,
+                    &outgoing,
+                )?
             {
                 return Err("exact local admission has no retained publication custody".into());
             }
@@ -534,22 +536,20 @@ impl NativeWorkspaceOwner {
                 aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
             });
         }
-        candidate
-            .peer
-            .admit_new_local_document(&app, &record, *envelope, now)?;
-        publication::append_local(&mut candidate, outgoing)?;
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = candidate
-            .record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        let receipt = OwnerCommitReceipt {
-            binding,
-            generation: candidate.generation(),
-            aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
-        };
-        self.publish_workspace(workspace, candidate, None)?;
+        let (receipt, stored) = candidate.change(|live, stored| {
+            live.admit_new_local_document(&app, &document, *envelope, now)?;
+            publication::append_local(stored, outgoing)?;
+            stored.generation = stored
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            Ok(OwnerCommitReceipt {
+                binding: binding.clone(),
+                generation: stored.generation,
+                aggregate_hash: *blake3::hash(&live.durable()?).as_bytes(),
+            })
+        })?;
+        self.publish_record(workspace, &candidate, stored, None)?;
         Ok(receipt)
     }
 }

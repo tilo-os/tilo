@@ -17,6 +17,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use anyhow::Result;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
@@ -34,25 +35,9 @@ pub const SETTLE_STEP: Duration = Duration::from_millis(100);
 /// The longest wait before retrying a write that failed.
 const MAX_RETRY: Duration = Duration::from_secs(60);
 
-/// What a flush has to write: the document when its heads moved since the
-/// last write, the sync progress beside it when its generation moved.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Pending {
-    pub document: bool,
-    pub progress: bool,
-}
-
-impl Pending {
-    #[must_use]
-    pub const fn any(self) -> bool {
-        self.document || self.progress
-    }
-}
-
 /// Persists `namespace` whenever it changes, through `flush`, which writes
-/// what [`Pending`] names and returns what it could not write (empty when
-/// everything was written). The namespace is unlocked when `flush` is
-/// called; it takes the lock itself, as long as writing needs it.
+/// it and fails while it could not. The namespace is unlocked when `flush`
+/// is called; it takes the lock itself, as long as writing needs it.
 ///
 /// Whatever the namespace holds when this starts is written once it
 /// settles: a document merged or recovered at load was changed before
@@ -61,7 +46,7 @@ impl Pending {
 #[must_use = "the handle is how a mount stops its persister before the final flush"]
 pub fn spawn_persister<F>(namespace: Arc<Mutex<Namespace>>, flush: F) -> tokio::task::JoinHandle<()>
 where
-    F: FnMut(&Arc<Mutex<Namespace>>, Pending) -> Pending + Send + 'static,
+    F: FnMut(&Arc<Mutex<Namespace>>) -> Result<()> + Send + 'static,
 {
     let changes = namespace.lock_recover().subscribe_changes();
     tokio::spawn(persist(namespace, changes, flush))
@@ -72,12 +57,10 @@ async fn persist<F>(
     mut changes: watch::Receiver<()>,
     mut flush: F,
 ) where
-    F: FnMut(&Arc<Mutex<Namespace>>, Pending) -> Pending,
+    F: FnMut(&Arc<Mutex<Namespace>>) -> Result<()>,
 {
-    // What the last successful writes wrote: the document's heads and the
-    // sync progress's generation.
-    let mut written_heads: Option<Vec<automerge::ChangeHash>> = None;
-    let mut written_progress: Option<u64> = None;
+    // The heads the last successful write wrote.
+    let mut written: Option<Vec<automerge::ChangeHash>> = None;
     let mut retry = MAX_DELAY;
     // Start dirty: what loading changed was announced before this
     // subscribed.
@@ -88,31 +71,17 @@ async fn persist<F>(
             return;
         }
         settle(&mut changes).await;
-        let (heads, progress) = {
-            let mut namespace = namespace.lock_recover();
-            (namespace.heads(), namespace.peer_sync_generation())
-        };
-        let pending = Pending {
-            document: written_heads.as_ref() != Some(&heads),
-            progress: written_progress != Some(progress),
-        };
-        let failed = if pending.any() {
-            flush(&namespace, pending)
-        } else {
-            Pending::default()
-        };
-        // What failed stays pending: its mark keeps what was last written.
-        if pending.document && !failed.document {
-            written_heads = Some(heads);
+        let heads = namespace.lock_recover().heads();
+        if written.as_ref() == Some(&heads) {
+            dirty = false;
+            continue;
         }
-        if pending.progress && !failed.progress {
-            written_progress = Some(progress);
-        }
-        dirty = failed.any();
+        dirty = flush(&namespace).is_err();
         if dirty {
             tokio::time::sleep(retry).await;
             retry = retry.saturating_mul(2).min(MAX_RETRY);
         } else {
+            written = Some(heads);
             retry = MAX_DELAY;
         }
     }
@@ -153,23 +122,22 @@ mod tests {
     use super::*;
     use crate::namespace::ROOT_INO;
 
-    type Flushes = Arc<Mutex<Vec<(Instant, Pending)>>>;
+    type Flushes = Arc<Mutex<Vec<Instant>>>;
 
     fn recording(
         failing: Arc<std::sync::atomic::AtomicBool>,
     ) -> (
         Flushes,
-        impl FnMut(&Arc<Mutex<Namespace>>, Pending) -> Pending + Send + 'static,
+        impl FnMut(&Arc<Mutex<Namespace>>) -> Result<()> + Send + 'static,
     ) {
         let flushes: Flushes = Arc::default();
         let log = Arc::clone(&flushes);
-        let flush = move |_: &Arc<Mutex<Namespace>>, pending: Pending| {
-            log.lock().unwrap().push((Instant::now(), pending));
+        let flush = move |_: &Arc<Mutex<Namespace>>| {
+            log.lock().unwrap().push(Instant::now());
             if failing.load(std::sync::atomic::Ordering::SeqCst) {
-                pending
-            } else {
-                Pending::default()
+                anyhow::bail!("write failed");
             }
+            Ok(())
         };
         (flushes, flush)
     }
@@ -196,14 +164,7 @@ mod tests {
         {
             let flushes = flushes.lock().unwrap().clone();
             assert_eq!(flushes.len(), 1, "the loaded namespace was written once");
-            assert!(flushes[0].0.duration_since(started) <= QUIET.saturating_add(SETTLE_STEP));
-            assert_eq!(
-                flushes[0].1,
-                Pending {
-                    document: true,
-                    progress: true
-                }
-            );
+            assert!(flushes[0].duration_since(started) <= QUIET.saturating_add(SETTLE_STEP));
         }
 
         // Idle: an hour passes and nothing is written.
@@ -221,7 +182,7 @@ mod tests {
         {
             let flushes = flushes.lock().unwrap().clone();
             assert_eq!(flushes.len(), 2);
-            let (at, pending) = flushes[1];
+            let at = flushes[1];
             assert!(
                 at.duration_since(changed_at) >= QUIET,
                 "written before it settled"
@@ -230,13 +191,6 @@ mod tests {
                 at.duration_since(changed_at) <= QUIET.saturating_add(SETTLE_STEP),
                 "written {:?} after the change",
                 at.duration_since(changed_at)
-            );
-            assert_eq!(
-                pending,
-                Pending {
-                    document: true,
-                    progress: false
-                }
             );
         }
 
@@ -250,10 +204,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let run: Vec<Instant> = flushes.lock().unwrap()[2..]
-            .iter()
-            .map(|(at, _)| *at)
-            .collect();
+        let run: Vec<Instant> = flushes.lock().unwrap()[2..].to_vec();
         assert!(run.len() >= 3, "a 10 s run was written {} times", run.len());
         assert!(run.len() <= 6, "a 10 s run was written {} times", run.len());
         for at in &changed {
@@ -272,34 +223,6 @@ mod tests {
             run.last().unwrap().duration_since(*last) <= QUIET.saturating_add(SETTLE_STEP),
             "the run's last change was written late"
         );
-        persister.abort();
-    }
-
-    /// Sync progress lives beside the document; a change to it alone is
-    /// written without rewriting the document.
-    #[tokio::test(start_paused = true)]
-    async fn sync_progress_alone_is_written_alone() {
-        let namespace = Arc::new(Mutex::new(Namespace::new("persist").unwrap()));
-        let (flushes, flush) = recording(Arc::default());
-        let persister = spawn_persister(Arc::clone(&namespace), flush);
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        {
-            let mut namespace = namespace.lock().unwrap();
-            let mut state = automerge::sync::State::new();
-            state.shared_heads = namespace.heads();
-            namespace.finish_sync_with([7; 32], &state);
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let flushes = flushes.lock().unwrap();
-        assert_eq!(flushes.len(), 2);
-        assert_eq!(
-            flushes[1].1,
-            Pending {
-                document: false,
-                progress: true
-            }
-        );
-        drop(flushes);
         persister.abort();
     }
 
@@ -324,10 +247,6 @@ mod tests {
         assert!(
             succeeded > attempts,
             "the write was not retried after failing"
-        );
-        assert!(
-            flushes.lock().unwrap().last().unwrap().1.document,
-            "the retry did not write the document"
         );
         tokio::time::sleep(Duration::from_secs(3600)).await;
         assert_eq!(

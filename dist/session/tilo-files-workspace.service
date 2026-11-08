@@ -1,8 +1,10 @@
 [Unit]
 Description=Tilo primary Files workspace on a host desktop
 PartOf=tilo-graphical-session.target
-# Never create an empty namespace merely because the desktop was installed.
-ConditionPathExists=%S/tilo/files/namespace.bin
+# Never create an empty workspace merely because the desktop was installed:
+# only a cache the person already prepared (a signed authority, a saved tree
+# or a discovered workspace) runs.
+ExecCondition=/usr/bin/fs workspace-status --cache-dir %S/tilo/files --require-existing
 
 [Service]
 Type=simple

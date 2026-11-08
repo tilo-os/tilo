@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilolang_runtime::store::{
-    FieldKey, FieldRead, FieldValue, Listing, Lit, Pred, Splice, StoreError, Version,
+    FieldKey, FieldRead, FieldValue, Listing, Lit, Place, Pred, Splice, Stayed, StoreError, Version,
 };
 
 use super::derive::{column_field, in_of, item_path, member_list};
@@ -521,7 +521,9 @@ fn held(entries: Vec<Entry>) -> Base {
 
 /// How the listing of the collection `coll` went from `before` to `after`, for the items
 /// `ids` (those added, removed or moved): removals from the end first, then insertions in
-/// order, each index the one the steps before it left.
+/// order, each index the one the steps before it left. An item the change leaves in the place
+/// it was takes no step: only one that came to stand among others than it did is taken out and
+/// put back.
 pub fn splices(
     before: &View<'_>,
     after: &View<'_>,
@@ -529,9 +531,11 @@ pub fn splices(
     ids: &BTreeSet<String>,
 ) -> Result<Vec<Splice>, IndexError> {
     let (resource, field) = (coll.resource.as_str(), coll.field.as_str());
-    let mut leaving: Vec<(usize, String)> = Vec::new();
-    let mut arriving: Vec<Entry> = Vec::new();
     let mut old: Option<Merged> = None;
+    let mut new: Option<Merged> = None;
+    let mut gone: Vec<Place<'_>> = Vec::new();
+    let mut come: Vec<Place<'_>> = Vec::new();
+    let mut both: Vec<Stayed<'_>> = Vec::new();
     for id in ids {
         let path = child(resource, id);
         let was = before.key_in(&path, (resource, field))?;
@@ -539,48 +543,46 @@ pub fn splices(
         if was == now {
             continue;
         }
-        if let Some(key) = was {
-            if old.is_none() {
-                old = Some(before.list(resource, field)?);
+        let was = match was {
+            Some(key) => {
+                if old.is_none() {
+                    old = Some(before.list(resource, field)?);
+                }
+                old.as_ref().and_then(|list| list.place(&key, id))
             }
-            if let Some(list) = old.as_ref()
-                && let (at, true) = list.rank(&key, id)
-            {
-                leaving.push((at, id.clone()));
+            None => None,
+        };
+        let now = match now {
+            Some(key) => {
+                if new.is_none() {
+                    new = Some(after.list(resource, field)?);
+                }
+                new.as_ref().and_then(|list| list.place(&key, id))
+            }
+            None => None,
+        };
+        match (was, now) {
+            (Some(was), Some(now)) => both.push((was, now, id.as_str())),
+            (was, now) => {
+                gone.extend(was.map(|at| (at, id.as_str())));
+                come.extend(now.map(|at| (at, id.as_str())));
             }
         }
-        if let Some(key) = now {
-            arriving.push((key, id.clone()));
-        }
     }
-    let mut out = Vec::with_capacity(leaving.len().saturating_add(arriving.len()));
-    if leaving.is_empty() && arriving.is_empty() {
-        return Ok(out);
+    if gone.is_empty() && come.is_empty() && both.is_empty() {
+        return Ok(Vec::new());
     }
-    leaving.sort_unstable_by_key(|(at, _)| std::cmp::Reverse(*at));
-    for (at, item) in leaving {
-        out.push(Splice::Remove { at, item });
-    }
-    arriving.sort_unstable();
-    let new = after.list(resource, field)?;
-    for (key, item) in arriving {
-        let (at, _) = new.rank(&key, &item);
-        out.push(Splice::Insert { at, item });
-    }
-    // An item that left and came back to the same place did not move.
-    if let [
-        Splice::Remove {
-            at: from,
-            item: gone,
-        },
-        Splice::Insert { at: to, item: back },
-    ] = out.as_slice()
-        && from == to
-        && gone == back
-    {
-        out.clear();
-    }
-    Ok(out)
+    let was = match &old {
+        Some(list) => list.len(),
+        None => before.list(resource, field)?.len(),
+    };
+    let now = match &new {
+        Some(list) => list.len(),
+        None => after.list(resource, field)?.len(),
+    };
+    Ok(tilolang_runtime::moved_splices(
+        was, now, &gone, &come, &both,
+    ))
 }
 
 /// Every resource of the index (records and items) with text, by path: what search lists.

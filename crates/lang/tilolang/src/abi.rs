@@ -265,11 +265,6 @@ imports! {
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);
     EntryParts = "entry_parts" ([H, H] -> [H]);
-    RepeatNext = "repeat_next" ([H, H, H] -> [H]);
-    RepeatNextAt = "repeat_next_at" ([H, H, H] -> [H]);
-    RepeatLabel = "repeat_label" ([H] -> [H]);
-    ReminderAt = "reminder_at" ([H, H, H] -> [H]);
-    ReminderLabel = "reminder_label" ([H] -> [H]);
     Today = "today" ([] -> [H]);
     // The day a moment falls on and the time of day it is, both for the person; a day moved by
     // days; how far two days or two moments are apart; a part of a day, its weekday and the

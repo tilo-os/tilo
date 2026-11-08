@@ -29,11 +29,9 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use automerge::sync::SyncDoc;
 use automerge::transaction::CommitOptions;
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::FrameworkChange;
-use tilo_automerge::ApplyIncoming;
 use tokio::sync::watch;
 
 /// An [`AutoCommit`] whose every mutable access is announced to
@@ -153,31 +151,6 @@ impl ChangeTrackedDoc {
         self.commit_named();
         self.doc.get_change_meta_by_hash(hash).is_some()
     }
-
-    pub(super) fn generate_sync_message(
-        &mut self,
-        state: &mut automerge::sync::State,
-    ) -> Option<automerge::sync::Message> {
-        self.commit_named();
-        self.doc.sync().generate_sync_message(state)
-    }
-
-    /// Applies a sync message, announcing only if it moved the heads.
-    /// Returns whether it did.
-    pub(super) fn receive_sync_message(
-        &mut self,
-        state: &mut automerge::sync::State,
-        message: automerge::sync::Message,
-    ) -> Result<bool, automerge::AutomergeError> {
-        self.commit_named();
-        let before = self.doc.get_heads();
-        let received = self.doc.receive_incoming_sync(state, message);
-        let changed = self.doc.get_heads() != before;
-        if changed {
-            self.announce();
-        }
-        received.map(|()| changed)
-    }
 }
 
 impl Clone for ChangeTrackedDoc {
@@ -229,10 +202,9 @@ mod tests {
         let _ = doc.save_incremental();
         let heads = doc.get_heads();
         let _ = doc.save_after(&heads);
-        let _ = doc.generate_sync_message(&mut automerge::sync::State::new());
         assert!(
             !changes.has_changed().unwrap(),
-            "a read, a save or a sync message announced a change"
+            "a read or a save announced a change"
         );
 
         doc.put(&ROOT, "name", "value").unwrap();
@@ -259,50 +231,6 @@ mod tests {
         assert!(
             changes.has_changed().unwrap(),
             "an edit after the replacement was not announced"
-        );
-    }
-
-    #[test]
-    fn a_sync_message_announces_only_what_it_brings() {
-        let mut ours = ChangeTrackedDoc::new(AutoCommit::new());
-        let mut theirs = AutoCommit::new();
-        theirs.put(&ROOT, "name", "value").unwrap();
-        let mut changes = ours.subscribe();
-        let (mut our_state, mut their_state) =
-            (automerge::sync::State::new(), automerge::sync::State::new());
-        let mut brought = false;
-        for _ in 0..8 {
-            let ours_out = ours.generate_sync_message(&mut our_state);
-            let ours_sent = ours_out.is_some();
-            if let Some(message) = ours_out {
-                theirs
-                    .receive_incoming_sync(&mut their_state, message)
-                    .unwrap();
-            }
-            let theirs_out = theirs.sync().generate_sync_message(&mut their_state);
-            let theirs_sent = theirs_out.is_some();
-            if let Some(message) = theirs_out {
-                brought |= ours.receive_sync_message(&mut our_state, message).unwrap();
-            }
-            if !ours_sent && !theirs_sent {
-                break;
-            }
-        }
-        assert!(brought, "the exchange brought the peer's change");
-        assert!(
-            changes.has_changed().unwrap(),
-            "that change was not announced"
-        );
-        changes.borrow_and_update();
-
-        // In sync now: a further exchange carries heads only.
-        let message = theirs.sync().generate_sync_message(&mut their_state);
-        if let Some(message) = message {
-            assert!(!ours.receive_sync_message(&mut our_state, message).unwrap());
-        }
-        assert!(
-            !changes.has_changed().unwrap(),
-            "an exchange that brought nothing announced a change"
         );
     }
 }

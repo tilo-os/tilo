@@ -644,43 +644,41 @@ impl NativeWorkspaceOwner {
             generation,
         });
         retain_result(&mut index, request, &ack)?;
-        self.publish_checkpoint_index(workspace, candidate, &index, key, now)?;
+        self.publish_checkpoint_index(workspace, &candidate, &index, key, now)?;
         Ok(ack)
     }
     fn publish_checkpoint_index(
         &self,
         workspace: WorkspaceId,
-        mut candidate: NativeCommittedView,
+        candidate: &NativeCommittedView,
         index: &Index,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
         let address = put_metadata(self.0.store.as_ref(), index)?;
-        candidate
-            .peer
-            .workspace_mut()
-            .set_workspace_checkpoint_root(address, key, now)?;
-        let generation = candidate
-            .generation()
-            .checked_add(1)
-            .ok_or("checkpoint generation exhausted")?;
-        self.with_current(workspace, |previous| {
-            candidate.peer.publication_mut().durable_mutation_messages(
-                &previous.peer,
+        let ((), record) = candidate.change(|live, record| {
+            live.workspace_mut()
+                .set_workspace_checkpoint_root(address, key, now)?;
+            let generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("checkpoint generation exhausted")?;
+            live.publication_mut().durable_mutation_messages(
+                candidate.peer(),
                 key,
                 now,
                 generation,
             )?;
+            record.generation = generation;
+            crate::owner::publication::replace_governance_checkpoint(
+                live,
+                record,
+                binding(workspace, address),
+                now,
+            )?;
             Ok(())
         })?;
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = generation;
-        crate::owner::publication::replace_governance_checkpoint(
-            &mut candidate,
-            binding(workspace, address),
-            now,
-        )?;
-        self.publish_workspace(workspace, candidate, None)
+        self.publish_record(workspace, candidate, record, None)
     }
     /// Move a human name to an existing immutable checkpoint. No content/grants copy.
     #[cfg(test)]
@@ -754,7 +752,7 @@ impl NativeWorkspaceOwner {
         });
         index.names.insert(name.into(), id);
         retain_result(&mut index, request, &ack)?;
-        self.publish_checkpoint_index(workspace, candidate, &index, key, now)?;
+        self.publish_checkpoint_index(workspace, &candidate, &index, key, now)?;
         Ok(ack)
     }
     /// Every move of the movable `name`, oldest first, so a person can see who

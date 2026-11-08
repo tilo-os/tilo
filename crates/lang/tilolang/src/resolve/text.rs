@@ -1,6 +1,6 @@
 //! The values the language makes from a literal: a `Date` or a `Time` written as its ISO text,
-//! and the standard library's text-held types (`std.Identifier`, `std.Repeat`, `std.Reminder`),
-//! whose value is the text it is written with.
+//! and the standard library's text-held type (`std.Identifier`), whose value is the text it is
+//! written with.
 
 use crate::ast::{self, Expr, ExprKind};
 use crate::types::Ty;
@@ -31,15 +31,9 @@ pub fn date_value(kind: &str, args: &[ast::Arg]) -> Result<(Ty, String), String>
     Ok((ty, text))
 }
 
-/// The standard library's types whose value is the text it is made from, by the path source
-/// writes: `std.Identifier`, `std.Repeat` and `std.Reminder`.
-pub fn std_text_ty(dotted: &[&str]) -> Option<Ty> {
-    crate::types::named(dotted).filter(|ty| !matches!(ty, Ty::RichText | Ty::Json))
-}
-
-/// The std type and the arguments of a call that makes one of those values, when `e` is one:
-/// `std.Repeat("FREQ=DAILY")`, `std.Identifier("mailto:jane@x.com")`.
-pub fn std_text_call(e: &Expr) -> Option<(Ty, &[ast::Arg])> {
+/// The arguments of a `std.Identifier(...)` call, when `e` is one: an identifier's value is the
+/// text it is written with.
+pub fn std_identifier_call(e: &Expr) -> Option<&[ast::Arg]> {
     let ExprKind::Call { callee, args, .. } = &e.kind else {
         return None;
     };
@@ -49,37 +43,24 @@ pub fn std_text_call(e: &Expr) -> Option<(Ty, &[ast::Arg])> {
     let ExprKind::Ident(ns) = &base.kind else {
         return None;
     };
-    if ns != crate::stdlib::NS {
-        return None;
-    }
-    std_text_ty(&[ns, name.name.as_str()]).map(|ty| (ty, args.as_slice()))
+    (ns == crate::stdlib::NS && name.name == "Identifier").then_some(args.as_slice())
 }
 
-/// The text a value of a text-held std type is made from, checked at compile time: the value
-/// is its text, so a value computed at run time would be one no reader knows.
-pub fn std_text_value(ty: &Ty, args: &[ast::Arg]) -> Result<String, String> {
-    let (what, example) = match ty {
-        Ty::Repeat => ("std.Repeat", "std.Repeat(\"FREQ=WEEKLY\")"),
-        Ty::Reminder => ("std.Reminder", "std.Reminder(\"-PT15M\")"),
-        _ => (
-            "std.Identifier",
-            "std.Identifier(\"mailto:jane@example.com\")",
-        ),
-    };
+/// The text a `std.Identifier(...)` is made from, checked at compile time: the value is its
+/// text, so a value computed at run time would be one no reader knows.
+pub fn std_identifier_value(args: &[ast::Arg]) -> Result<String, String> {
+    const WHAT: &str = "std.Identifier";
+    const EXAMPLE: &str = "std.Identifier(\"mailto:jane@example.com\")";
     let text = match args {
         [ast::Arg { name: None, value }] => plain_text(value),
         _ => None,
     };
     let Some(text) = text else {
         return Err(format!(
-            "`{what}(...)` takes one string literal, such as `{example}`; a {what} cannot be made from computed text"
+            "`{WHAT}(...)` takes one string literal, such as `{EXAMPLE}`; a {WHAT} cannot be made from computed text"
         ));
     };
-    match ty {
-        Ty::Repeat => crate::repeat::Repeat::parse(&text).map(|repeat| repeat.text()),
-        Ty::Reminder => crate::repeat::Reminder::parse(&text).map(|reminder| reminder.text()),
-        _ => crate::identifier::normalize(&text),
-    }
+    crate::identifier::normalize(&text)
 }
 
 /// The text of a string literal without interpolation.

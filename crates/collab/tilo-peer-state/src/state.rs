@@ -912,22 +912,17 @@ impl StatePeer {
             }
             return Ok(());
         }
-        let held = old.map(|old| members::replay(old, &workspace));
-        if held.as_ref() == Some(&target) {
+        // What the log already gives this document, its rows and receipts
+        // included, is what the change is written on top of: an invitation's
+        // receipt admits its joiner and a removal takes that admission back
+        // without an operation, so where the log already says what the document
+        // says, nothing is written.
+        let held = members::replay(doc, &workspace);
+        if held == target {
             return Ok(());
         }
-        // The rows may already say what the log says: an invitation's receipt
-        // admits its joiner without an operation, and every device folds it in
-        // the same way.
-        if members::replay(doc, &workspace) == target {
-            return Ok(());
-        }
-        let steps = match &held {
-            Some(held) => members::steps(held, &target).map_err(|error| {
-                format!("the membership change is not a step to write: {error}")
-            })?,
-            None => Vec::new(),
-        };
+        let steps = members::steps(&held, &target)
+            .map_err(|error| format!("the membership change is not a step to write: {error}"))?;
         if steps.is_empty() {
             return Err("the membership change is not this device's to make".into());
         }
