@@ -861,9 +861,6 @@ fn declared_shortcuts(
     out
 }
 
-/// The item's document standing in its row's place, `indent` in from the row's leading edge:
-/// the column the row's content stood in, so an opened item keeps the column of the rows
-/// around it.
 /// The row of an item: its list row with the item's presence, or its view; under the swipe
 /// and beside the hover toolbar the item has.
 fn row_of(
@@ -1003,12 +1000,10 @@ fn bare_row(
             }
             ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
         };
-        // A row standing open into its item: the item's document takes the row's place, in the
-        // row's own column, so the leading control and the title the document opens with are
-        // the row's own, written once, and what the item holds follows under them.
-        // The document takes the row's place in the very column the row stands in: a view
-        // takes the same step a tree gives a row's view, a list row the same one a tree gives a
-        // row's content, so the item's leading control and title stand where the row's did.
+        // A row standing open into its item: the item's document takes the row's place in the
+        // very column the row stands in, so the leading control and the title it opens with are
+        // the row's own, written once, and what the item holds follows under them. A view takes
+        // the step a tree gives a row's view, a list row the one it gives a row's content.
         let row = match (expanded, detail) {
             (true, ItemRow::View(document)) => match tree {
                 Some(marks) => indent_view(document, marks.depth(&key.to_owned()), None),
@@ -1856,11 +1851,40 @@ mod tests {
             "the item the host holds open is the row standing open"
         );
         lay_out(inner, 400.0);
-        let closed = inner.viewport.item_height(0).unwrap_or_default();
-        let open = inner.viewport.item_height(2).unwrap_or_default();
-        assert!(
-            open > closed,
-            "the row grows into its document: {open} over a closed row's {closed}"
+        // The item's document stands in the row's place: the rows over it keep their slots,
+        // and the rows under it follow where the document ends, never standing one row above
+        // it. What the row writes there is the layout check's to read (`repeated_row_title`),
+        // which watches a title written in a row and again in the item it opened into.
+        let standing = inner.viewport.item_top(2).unwrap_or_default();
+        let above = inner.viewport.item_top(1).unwrap_or_default()
+            + inner.viewport.item_height(1).unwrap_or_default();
+        assert_eq!(
+            standing, above,
+            "the document stands where the row stood: {standing} over the row's {above}"
+        );
+        assert_eq!(
+            inner.row_box(2).map(|row| row.y0),
+            Some(standing),
+            "the row drawn for the item starts where its slot does"
+        );
+        let below = standing + inner.viewport.item_height(2).unwrap_or_default();
+        assert_eq!(
+            inner.viewport.item_top(3),
+            Some(below),
+            "the rows under the item follow where its document ends"
+        );
+        // The item standing open is still the row to a reader: it keeps the row's own name,
+        // the title the model reads, not the name of the field its document begins with.
+        let semantics = Widget::accessibility(&list).expect("the list says what it holds");
+        let open = semantics
+            .children
+            .iter()
+            .find(|node| node.state.expanded == Some(true))
+            .expect("the item stands open in the list");
+        assert_eq!(
+            open.name.as_deref(),
+            Some("row 2"),
+            "the open item is named by its row, not by the document it opened into"
         );
 
         // The same list given the item again keeps it open, and given none closes it.

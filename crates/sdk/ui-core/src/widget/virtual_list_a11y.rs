@@ -115,9 +115,13 @@ impl<M: ListModel> VirtualList<M> {
     ) -> crate::a11y::AccessNode {
         let count = self.model.len();
         let child = row.widget.accessibility();
-        let name = child
-            .as_ref()
-            .and_then(|node| node.name.clone())
+        // The item a row opened into stands in the row's place, so its document is the row:
+        // the row keeps the name it had standing closed — the item's title, which the model
+        // reads — rather than the name of the field its document happens to begin with.
+        let name = (self.open.as_ref() == Some(&row.key))
+            .then(|| self.model.label(row.index))
+            .flatten()
+            .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
             .or_else(|| first_descendant_accessible_name(row.widget.as_ref()));
         let mut item = AccessNode::new(if self.tree.is_some() {
             Role::TreeItem
