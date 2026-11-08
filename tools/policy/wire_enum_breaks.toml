@@ -167,3 +167,8 @@ reason = "one JSON line per event on the same one-image operator pipe, tagged by
 file = "crates/lang/tilolang-runtime/src/value.rs"
 enum = "Value"
 reason = "`Picture` is a picture in a component's prop, made while a view is built and never stored or sent (like `Node` and `Rec` beside it); it was added in the middle of the enum, which moved `AtEvent` and every variant after it. Moving it back to the end restores the places every journal value and every stored value had before it existed: no release carries it, so no kept byte names a place it wrote (the enums it moved read as they always did)"
+
+[[break]]
+file = "crates/system/fs/src/workspace_authority.rs"
+enum = "ContentPeerControlRequest"
+reason = "one JSON frame over the daemon's local control socket, written and read by the same executable: nothing keeps it, nothing at another version sends it"
