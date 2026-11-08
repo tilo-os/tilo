@@ -502,7 +502,7 @@ fn fill_registers(record: &mut DynRecord, registers: &[(String, Ty)]) -> Result<
         }
         let seeded = match ty {
             Ty::Time => json!(BENCH_TIME),
-            Ty::Date => json!("2026-06-29"),
+            Ty::Date => json!(BENCH_DAY),
             Ty::Identifier => json!("mailto:bench@example.org"),
             Ty::Int => json!(0),
             Ty::Float => json!(0.0),
@@ -604,9 +604,22 @@ fn seeded_collection(list: &List, n: usize) -> Result<Collection<DynRecord>, Str
     with_holders(list, seeded_items(list, n)?)
 }
 
+/// The item's optional dates (its `Option<Date>` fields).
+fn optional_dates(ty: &str) -> Result<Vec<String>, String> {
+    let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
+    Ok(schema
+        .fields
+        .iter()
+        .filter(|f| f.kind == MergeKind::Register)
+        .filter(|f| matches!(&f.ty, Some(Ty::Option(inner)) if matches!(**inner, Ty::Date)))
+        .map(|f| f.id.clone())
+        .collect())
+}
+
 /// `n` items of [`List`], as its collection holds them, outside any holder.
 fn seeded_items(list: &List, n: usize) -> Result<Collection<DynRecord>, String> {
     let n = if list.places { n.min(PLACES) } else { n };
+    let dates = optional_dates(&list.item_ty)?;
     let mut items = Collection::default();
     for i in 0..n {
         let mut item = unwritten(&list.item_ty)?;
@@ -627,6 +640,16 @@ fn seeded_items(list: &List, n: usize) -> Result<Collection<DynRecord>, String> 
         for field in &list.sets {
             if let Some(DynValue::Set(slot)) = item.get_mut(field) {
                 slot.insert(json!("inbox"));
+            }
+        }
+        // Every second item is dated the day the bench's clock reads, as a workspace a person adds
+        // work to day by day holds it: a filter on the day holds of some items and not of others,
+        // and a window opening on a place that filters by it shows rows of the workspace.
+        if i % 2 == 0 {
+            for field in &dates {
+                if let Some(DynValue::Register(date)) = item.get_mut(field) {
+                    *date = json!({ "some": BENCH_DAY });
+                }
             }
         }
         items.push(Id::from_raw(item_id(i)), item);
@@ -1084,6 +1107,10 @@ impl Phases {
 
 /// The time every change the bench makes is recorded at.
 const BENCH_TIME: &str = "2026-06-29T09:00:00Z";
+
+/// The day the bench's clock reads, and the day it dates the items it seeds: the day every change
+/// it makes is recorded at.
+const BENCH_DAY: &str = "2026-06-29";
 
 impl Workspace {
     fn open(

@@ -380,6 +380,7 @@ fn page_box(app: &mut TestApp<TlApp>) -> ([f64; 4], bool) {
 fn checking_a_task_off_fills_its_box_over_frames() {
     let mut app = staged("a busy week");
     // A task nothing sorts into a project or a day: the inbox keeps it open in the list.
+    open_place(&mut app, "Inbox");
     let title = "Sort the paper mail";
     assert!(!marked(&mut app, title), "the task starts open");
     open_task(&mut app, title);
@@ -433,6 +434,9 @@ fn a_task_a_person_adds_lands_in_the_list() {
     // A key's result lands (`motion::MotionSource::lands_at_once`), so a title typed into the
     // entry arrives by the next frame, and the list has nothing left to play afterwards.
     let mut app = staged("a busy week");
+    // The inbox's entry adds without a day, so the row it adds stands in the list the window
+    // shows.
+    open_place(&mut app, "Inbox");
     let before_rows = rows(&mut app).len();
     let band = list_band(&mut app);
     let start = ui::time::Instant::now();

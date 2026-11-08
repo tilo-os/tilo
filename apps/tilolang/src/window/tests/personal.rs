@@ -8,14 +8,15 @@ use tilolang_tilo::runtime::seen::SeenMark;
 use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value as AmValue};
 use ui::prelude::TestApp;
 
-/// The value of the place the person picked, as the runtime holds a filter: Today. A filter is
-/// its key, label, icon, what choosing it asks and whether it is a toggle.
-fn today_filter() -> RtValue {
+/// The value of the place the person picked, as the runtime holds a filter: the inbox, which a
+/// window on today does not open on. A filter is its key, label, icon, what choosing it asks and
+/// whether it is a toggle.
+fn inbox_filter() -> RtValue {
     RtValue::Tuple(vec![
-        RtValue::text("today"),
-        RtValue::text("Today"),
-        RtValue::Opt(Some(Box::new(RtValue::text("star")))),
-        RtValue::text("is:today"),
+        RtValue::text("inbox"),
+        RtValue::text("Inbox"),
+        RtValue::Opt(Some(Box::new(RtValue::text("inbox")))),
+        RtValue::text("is:inbox"),
         RtValue::Bool(true),
     ])
 }
@@ -75,16 +76,16 @@ fn the_place_a_person_picks_in_a_window_is_theirs_after_a_restart_and_no_one_els
     let mut first = Workspace::personal("tasks", &ada(), mine.clone());
     assert_eq!(
         first.composed().props.get("title"),
-        Some(&Value::text("Inbox")),
-        "the window starts on the inbox"
+        Some(&Value::text("Today")),
+        "the window starts on today"
     );
 
-    // The person picks Today in the sidebar.
-    let today = first.key_of("ui.NavItem", "label", "Today");
-    first.fire(&today, "select", None);
+    // The person picks the inbox in the sidebar.
+    let inbox = first.key_of("ui.NavItem", "label", "Inbox");
+    first.fire(&inbox, "select", None);
     assert_eq!(
         first.composed().props.get("title"),
-        Some(&Value::text("Today"))
+        Some(&Value::text("Inbox"))
     );
 
     // Their entries of the workspace's record keep the place their window shows, under their
@@ -95,7 +96,7 @@ fn the_place_a_person_picks_in_a_window_is_theirs_after_a_restart_and_no_one_els
     assert!(!picked.is_empty(), "the place is kept as view state");
     let kept = mine.get().of(&ada());
     assert!(
-        kept.slots.iter().any(|slot| slot.value == today_filter()),
+        kept.slots.iter().any(|slot| slot.value == inbox_filter()),
         "{kept:?}"
     );
 
@@ -103,7 +104,7 @@ fn the_place_a_person_picks_in_a_window_is_theirs_after_a_restart_and_no_one_els
     let again = Workspace::personal("tasks", &ada(), mine);
     assert_eq!(
         again.composed().props.get("title"),
-        Some(&Value::text("Today")),
+        Some(&Value::text("Inbox")),
         "the place they picked is theirs again"
     );
 }
@@ -111,32 +112,32 @@ fn the_place_a_person_picks_in_a_window_is_theirs_after_a_restart_and_no_one_els
 #[test]
 fn a_window_shows_the_place_the_record_gives_it_after_it_drew() {
     let (_app, mine) = record("tasks", &ada());
-    // A window opened while the record holds nothing yet shows the inbox.
+    // A window opened while the record holds nothing yet shows today.
     let mut later = Workspace::personal("tasks", &ada(), mine.clone());
     assert_eq!(
         later.composed().props.get("title"),
-        Some(&Value::text("Inbox"))
+        Some(&Value::text("Today"))
     );
 
     // The record gains the place while that window is open: the person picked it in another
     // window of the record, or on another device of theirs.
     let mut first = Workspace::personal("tasks", &ada(), mine.clone());
-    let today = first.key_of("ui.NavItem", "label", "Today");
-    first.fire(&today, "select", None);
+    let inbox = first.key_of("ui.NavItem", "label", "Inbox");
+    first.fire(&inbox, "select", None);
     assert!(
         mine.get()
             .of(&ada())
             .slots
             .iter()
-            .any(|slot| slot.value == today_filter()),
+            .any(|slot| slot.value == inbox_filter()),
         "the record keeps the place the person picked"
     );
 
-    // The window that had drawn the inbox shows it, without anything else happening.
+    // The window that had drawn today shows the place, without anything else happening.
     later.frame();
     assert_eq!(
         later.composed().props.get("title"),
-        Some(&Value::text("Today")),
+        Some(&Value::text("Inbox")),
         "the place the record gives back reaches a window already drawn"
     );
 }

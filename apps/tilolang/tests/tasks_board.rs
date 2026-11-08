@@ -317,6 +317,8 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     let mut app =
         ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
     settle(&mut app);
+    // What a person adds in the list's entry waits in the inbox, and the window shows it there.
+    change_marks::choose(&mut app, "Inbox");
     let root = app
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
@@ -420,12 +422,14 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
 /// open.
 #[test]
 fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
-    use change_marks::{action_id, named, published_with, run, settle};
+    use change_marks::{action_id, choose, named, published_with, run, settle};
     use history_window::{after, shoot, times};
     let _settled = ui::motion::testing::settled();
     let mut app =
         ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
     settle(&mut app);
+    // The task a person adds waits in the inbox, which the window shows it in.
+    choose(&mut app, "Inbox");
     let root = app
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
@@ -573,6 +577,7 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
         let mut app = TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP)
             .expect("the scenario stages");
         settle(&mut app);
+        click_item(&mut app, "Inbox");
         let names: Vec<Option<String>> = accessible(&mut app)
             .into_iter()
             .map(|node| node.name)

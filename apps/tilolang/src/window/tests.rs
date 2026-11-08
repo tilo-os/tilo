@@ -363,6 +363,24 @@ impl Workspace {
             .expect("the window composed its shell")
     }
 
+    /// The tree of the row the window shows first: a task opens where it stands, so what a
+    /// person sees of it is drawn in the list itself.
+    fn first_row_tree(&mut self) -> Option<UiNode> {
+        self.show_rows(0..self.root_rows().borrow().len());
+        let list = self
+            .window
+            .view()
+            .lists()
+            .into_iter()
+            .find(|key| !key.starts_with(DETAIL))?;
+        let view = self
+            .window
+            .instance()
+            .view(tilo_render_protocol::patch::Lane::Root)?;
+        let row = view.borrow_mut().row(&list, 0).ok().flatten().cloned();
+        row
+    }
+
     /// The rows of the root's list, as its list reads them.
     fn root_rows(&self) -> Rc<RefCell<RemoteRows>> {
         self.window
@@ -2461,8 +2479,8 @@ fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
     // A task opens where it stands: the scenario's task is the row the window shows, and its
     // title is that row's field.
     let mut workspace = Workspace::seeded("tasks");
-    let detail = workspace.window.detail_tree().expect("the item is shown");
-    let input = first_input(&detail).expect("the item's title").key.clone();
+    let row = workspace.first_row_tree().expect("the item's row renders");
+    let input = first_input(&row).expect("the item's title").key.clone();
     // The list mounts the rows its laid-out height shows, measures them as they are laid out,
     // then holds them.
     workspace.lay_out();
@@ -2491,13 +2509,13 @@ fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
 
 #[test]
 fn a_keystroke_repaints_its_field_not_the_window() {
-    // The item's column slides in: what a keystroke repaints is asked of the
+    // The item opens where it stands: what a keystroke repaints is asked of the
     // window at rest.
     let _settled = ui::motion::testing::settled();
     // The scenario's task is the row the window shows.
     let mut workspace = Workspace::seeded("tasks");
-    let detail = workspace.window.detail_tree().expect("the item is shown");
-    let input = first_input(&detail).expect("the item's title").key.clone();
+    let row = workspace.first_row_tree().expect("the item's row renders");
+    let input = first_input(&row).expect("the item's title").key.clone();
     workspace.lay_out();
     workspace.settle();
     workspace.lay_out();
