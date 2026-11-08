@@ -207,15 +207,22 @@ impl NavShell {
     /// sidebar, Back while it goes anywhere (leading), and the inspector's
     /// toggle while there is an inspector (the last action). The app adds
     /// its location, views and actions; the inspector's toggle stays last.
+    /// On a phone, where the sidebar is no docked column but a drawer, the
+    /// toggle stands aside for Back on a screen that went somewhere deeper:
+    /// that screen has one way back, at the leading edge, and the toggle comes
+    /// back with the first screen.
     #[must_use]
     pub fn window_toolbar(&self) -> WindowToolbar {
         use crate::window_toolbar::ToolbarAction;
         let lookup = crate::i18n::I18nManager::lookup_plain;
+        let back = self.can_go_back();
+        let toggle_yields =
+            back && self.geometry.sidebar != SidebarPlacement::Docked && !self.is_sidebar_open();
         let mut toolbar = WindowToolbar {
-            sidebar: self.has_sidebar().then(|| self.is_sidebar_open()),
+            sidebar: (self.has_sidebar() && !toggle_yields).then(|| self.is_sidebar_open()),
             ..WindowToolbar::default()
         };
-        if self.can_go_back() {
+        if back {
             toolbar.leading.push(ToolbarAction::new(
                 WINDOW_BACK,
                 "arrow-left",

@@ -138,3 +138,91 @@ fn actions_handed_over_on_a_touchscreen_are_bar_controls() {
         "the new action draws {side}×{side}: {rect:?}"
     );
 }
+
+/// A screen that went somewhere deeper has one navigation affordance: its way back, at the
+/// leading edge. On a phone, where the sidebar floats over the page as a drawer, its toggle
+/// stands aside for Back and comes back with the first screen.
+#[test]
+fn a_pushed_phone_screen_shows_only_its_way_back() {
+    let theme = Theme::light();
+    let gutter = crate::chrome::column_gutter(&theme);
+    let page = || {
+        let can = SharedRc::new(Cell::new(false));
+        let read = SharedRc::clone(&can);
+        let write = SharedRc::clone(&can);
+        let shell = NavShell::new()
+            .content_kind(ContentKind::Document)
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .content_header("Call the landlord", Vec::new())
+            .on_back(move || read.get(), move || write.set(false));
+        (shell, can)
+    };
+    let (shell, can) = page();
+    let mut harness = harness(shell, 390, 844, theme.clone());
+    settle(&mut harness, 390, 844);
+    let first = harness.inspection();
+    let toggle = rect_of(&first.root, "nav-shell-sidebar")
+        .expect("the first screen offers the sidebar's toggle");
+    assert!(
+        toggle.x0 < gutter,
+        "the toggle leads the first screen, in the bar's corner: {toggle:?}"
+    );
+    assert!(
+        rect_of(&first.root, "nav-shell-back").is_none(),
+        "there is nowhere to go back to"
+    );
+
+    can.set(true);
+    settle(&mut harness, 390, 844);
+    let pushed = harness.inspection();
+    let back = rect_of(&pushed.root, "nav-shell-back").expect("the pushed screen's way back");
+    assert!(
+        (back.x0 - toggle.x0).abs() < 0.5 && (back.y0 - toggle.y0).abs() < 0.5,
+        "back takes the leading corner the toggle held on the first screen: {back:?} \
+         against {toggle:?}"
+    );
+    assert!(
+        rect_of(&pushed.root, "nav-shell-sidebar").is_none(),
+        "the pushed screen shows no second way to navigate"
+    );
+}
+
+/// The same rule where the app keeps the shell's toggle among its window bar's slots: the
+/// pushed screen's bar keeps Back alone.
+#[test]
+fn a_pushed_phone_screen_in_the_window_bar_shows_only_its_way_back() {
+    let theme = Theme::light();
+    let can = SharedRc::new(Cell::new(false));
+    let read = SharedRc::clone(&can);
+    let write = SharedRc::clone(&can);
+    let shell = NavShell::new()
+        .content_kind(ContentKind::Document)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .with_window_toolbar()
+        .on_back(move || read.get(), move || write.set(false));
+    let mut harness = harness(shell, 390, 844, theme);
+    settle(&mut harness, 390, 844);
+    assert!(
+        harness
+            .root::<NavShell>()
+            .window_toolbar()
+            .sidebar
+            .is_some(),
+        "the first screen offers the sidebar's toggle"
+    );
+
+    can.set(true);
+    settle(&mut harness, 390, 844);
+    let toolbar = harness.root::<NavShell>().window_toolbar();
+    assert!(
+        toolbar.sidebar.is_none(),
+        "the pushed screen's bar keeps no toggle: {toolbar:?}"
+    );
+    assert_eq!(
+        toolbar.leading.len(),
+        1,
+        "and one leading control, its way back: {toolbar:?}"
+    );
+}

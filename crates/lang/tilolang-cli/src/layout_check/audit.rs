@@ -77,10 +77,14 @@ pub enum Kind {
     /// A column's header naming the page while the page shows the same words as its own
     /// heading, or in the field it edits its title in: one title on screen, and the page's.
     RepeatedPageTitle,
+    /// A back control standing beside the sidebar toggle in the same bar row: one corner
+    /// offering two ways to navigate, where a screen that went somewhere deeper has one, its
+    /// way back at the leading edge.
+    DoubleNavigation,
 }
 
 impl Kind {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -106,6 +110,7 @@ impl Kind {
         Self::OpenOutsideList,
         Self::EmptySurface,
         Self::RepeatedPageTitle,
+        Self::DoubleNavigation,
     ];
 
     pub fn name(self) -> &'static str {
@@ -135,6 +140,7 @@ impl Kind {
             Self::OpenOutsideList => "open-outside-list",
             Self::EmptySurface => "empty-surface",
             Self::RepeatedPageTitle => "repeated-page-title",
+            Self::DoubleNavigation => "double-navigation",
         }
     }
 }
@@ -169,6 +175,10 @@ const LINE: &str = "Row";
 
 /// A heading's widget: the band a section goes by, over what the section holds.
 const HEADING: &str = "SectionHeader";
+
+/// The shell's way back, and its sidebar toggle: the two controls a bar navigates with.
+const BACK: &str = "nav-shell-back";
+const SIDEBAR_TOGGLE: &str = "nav-shell-sidebar";
 
 fn rect(r: [f64; 4]) -> Rect {
     Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3])
@@ -430,6 +440,8 @@ struct Walk<'a> {
     header_titles: Vec<Title>,
     /// The titles the window's content shows as its own.
     page_titles: Vec<Title>,
+    /// The shell's own navigation controls, where the window shows them.
+    navigations: Vec<Navigation>,
     out: &'a mut Vec<Problem>,
 }
 
@@ -446,6 +458,17 @@ struct Title {
 /// One number a window draws: a column header's count, or a place's.
 struct Count {
     number: u32,
+    at: Rect,
+    /// The keys of the widgets at and above it, innermost first.
+    keys: Vec<String>,
+    widget: String,
+    id: Option<String>,
+}
+
+/// A navigation control the window's bar shows: the way back, or the sidebar's toggle.
+struct Navigation {
+    /// Whether it is the way back rather than the sidebar's toggle.
+    back: bool,
     at: Rect,
     /// The keys of the widgets at and above it, innermost first.
     keys: Vec<String>,
@@ -477,6 +500,7 @@ pub fn inspect(
         place_counts: Vec::new(),
         header_titles: Vec::new(),
         page_titles: Vec::new(),
+        navigations: Vec::new(),
         out: &mut out,
     };
     walk.node(
@@ -490,6 +514,7 @@ pub fn inspect(
     );
     walk.repeated_counts();
     walk.repeated_titles();
+    walk.double_navigation();
     out
 }
 
@@ -594,6 +619,7 @@ impl Walk<'_> {
             self.counts(node, keys, own, inner_clip);
             self.titles(node, keys, own);
             self.header_rows(node, keys);
+            self.navigation(node, keys, own.intersect(inner_clip));
         }
         for child in &node.children {
             if floats(&child.widget) {
@@ -1072,6 +1098,57 @@ impl Walk<'_> {
                     (page.at.y0 - header.at.y1).round(),
                     size(page.at)
                 ),
+            });
+        }
+    }
+
+    /// The shell's own navigation controls, where the window shows them: its way back, and its
+    /// sidebar toggle.
+    fn navigation(&mut self, node: &InspectionNode, keys: &[String], shown: Rect) {
+        let Some(id) = node.test_id.as_deref() else {
+            return;
+        };
+        let back = match id {
+            BACK => true,
+            SIDEBAR_TOGGLE => false,
+            _ => return,
+        };
+        if !has_area(shown) {
+            return;
+        }
+        self.navigations.push(Navigation {
+            back,
+            at: shown,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: Some(id.to_owned()),
+        });
+    }
+
+    /// A back control standing beside the sidebar toggle, in the same bar row: the window's
+    /// leading corner offers two ways to navigate, where a screen that went somewhere deeper
+    /// has one, its way back at the leading edge.
+    fn double_navigation(&mut self) {
+        let controls = std::mem::take(&mut self.navigations);
+        for back in controls.iter().filter(|control| control.back) {
+            let beside = controls.iter().any(|toggle| {
+                !toggle.back
+                    && back.at.y0 < toggle.at.y1 - EPSILON
+                    && toggle.at.y0 < back.at.y1 - EPSILON
+                    && back.at.x0 - toggle.at.x1 >= -EPSILON
+                    && back.at.x0 - toggle.at.x1 <= toggle.at.height()
+            });
+            if !beside {
+                continue;
+            }
+            self.out.push(Problem {
+                kind: Kind::DoubleNavigation,
+                keys: back.keys.clone(),
+                widget: back.widget.clone(),
+                id: back.id.clone(),
+                detail: "the back control stands beside the sidebar toggle, where a screen \
+                         that went somewhere deeper has one way back, at the leading edge"
+                    .to_owned(),
             });
         }
     }
@@ -1698,6 +1775,50 @@ mod tests {
             ),
             0,
             "the page shows other words"
+        );
+    }
+
+    /// A bar with one way back has that way at its leading edge. A back control standing beside
+    /// the sidebar toggle is two ways from one corner: caught.
+    #[test]
+    fn a_back_control_beside_the_sidebar_toggle_is_caught() {
+        let beside = |toggle: Option<[f64; 4]>, back: Option<[f64; 4]>| {
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 390.0, 844.0], None);
+            let control = |id: &str, rect: [f64; 4]| node("Button", id, rect, Some(Role::Button));
+            shell.children = [
+                toggle.map(|rect| control(SIDEBAR_TOGGLE, rect)),
+                back.map(|rect| control(BACK, rect)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            inspect(&shell, (390, 844), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::DoubleNavigation)
+                .count()
+        };
+        // A toggle named for the window's corner, and back after it.
+        let toggle = Some([8.0, 18.0, 44.0, 44.0]);
+        let beside_toggle = Some([60.0, 18.0, 44.0, 44.0]);
+        assert_eq!(
+            beside(toggle, beside_toggle),
+            1,
+            "the phone's pushed screen shows the toggle and back side by side"
+        );
+        assert_eq!(
+            beside(toggle, Some([8.0, 18.0, 44.0, 44.0])),
+            0,
+            "back at the leading edge is the one way back"
+        );
+        assert_eq!(
+            beside(None, beside_toggle),
+            0,
+            "a screen without a sidebar toggle has only its way back"
+        );
+        assert_eq!(
+            beside(toggle, Some([300.0, 18.0, 44.0, 44.0])),
+            0,
+            "a docked sidebar's toggle stands in the window's corner, back in its column"
         );
     }
 

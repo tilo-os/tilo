@@ -88,9 +88,11 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // The fixture's windows ship one language: nothing reads from another catalogue.
             | Kind::MixedLanguage
             // No window in this fixture opens an item under its row, and no page names itself
-            // in a bar beside a heading of its own.
+            // in a bar beside a heading of its own. Its bars stand wide enough to keep the
+            // sidebar's toggle in its corner, clear of the way back.
             | Kind::OpenOutsideList
             | Kind::RepeatedPageTitle
+            | Kind::DoubleNavigation
             // The fixture's cards each hold what they are given, so none stands empty.
             | Kind::EmptySurface => "(no view)",
         };
