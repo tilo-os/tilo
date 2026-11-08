@@ -245,23 +245,25 @@ pub(super) fn refound(
     match keys {
         None => {
             let snapshot = collab_types::DocumentMutation::Snapshot(document);
-            let message = candidate
-                .publication_mut()
-                .publish_document(app, record, snapshot.data().to_vec(), key, now)?;
+            let message = candidate.publication_mut().publish_document(
+                app,
+                record,
+                snapshot.data().to_vec(),
+                key,
+                now,
+            )?;
             Ok(message)
         }
         // The record is sealed: the checkpoint is the whole record, sealed as
         // the workspace's own, and the sealed writer's history keeps it.
-        Some(keys) => {
-            candidate.publication_mut().publish_sealed_checkpoint(
-                app,
-                record,
-                document,
-                &mut keys.seal(collab_types::ContentRetention::Checkpoint),
-                key,
-                now,
-            )
-        }
+        Some(keys) => candidate.publication_mut().publish_sealed_checkpoint(
+            app,
+            record,
+            document,
+            &mut keys.seal(collab_types::ContentRetention::Checkpoint),
+            key,
+            now,
+        ),
     }
 }
 

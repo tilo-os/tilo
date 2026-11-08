@@ -959,7 +959,10 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
 }
 
 /// Every retained file of `channel` in `root`, as (path, bytes).
-fn retained_files(root: &std::path::Path, channel: &[u8; 32]) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+fn retained_files(
+    root: &std::path::Path,
+    channel: &[u8; 32],
+) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     let v2 = root.join(crate::store::RETAINED_DIR).join("v2");
     let Ok(lineages) = std::fs::read_dir(&v2) else {
         return Vec::new();
@@ -1019,7 +1022,8 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         })
         .await
         .unwrap();
-    let first = SealingMember::join(&workspaces, &workspace, (APP, RECORD), first_key.clone()).await;
+    let first =
+        SealingMember::join(&workspaces, &workspace, (APP, RECORD), first_key.clone()).await;
     let first_client = subscribed_member(&relay, &first_key, first_cert, workspace_id).await;
     // The second author writes through the same subscribed device: two
     // authors in the record, one transport, which is the shape that matters
@@ -1028,10 +1032,24 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
     // Several authors write the record over time: the shape a compaction
     // folds, and the shape whose base can go missing.
     for index in 0..5 {
-        seal_and_send_title(&first, &first_client, &workspace, workspace_id, &first_key, &format!("first {index}"));
+        seal_and_send_title(
+            &first,
+            &first_client,
+            &workspace,
+            workspace_id,
+            &first_key,
+            &format!("first {index}"),
+        );
     }
     for index in 0..5 {
-        seal_and_send_title(&first, &first_client, &workspace, workspace_id, &first_key, &format!("second {index}"));
+        seal_and_send_title(
+            &first,
+            &first_client,
+            &workspace,
+            workspace_id,
+            &first_key,
+            &format!("second {index}"),
+        );
     }
     let newest = "second 4";
     tilo_test_env::within("the node follows the members' writes", async {
@@ -1070,7 +1088,11 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         .join("workspaces")
         .join(workspace_id.to_string());
     let files = retained_files(&root, &channel);
-    assert!(files.len() >= 3, "the record's history is on disk: {}", files.len());
+    assert!(
+        files.len() >= 3,
+        "the record's history is on disk: {}",
+        files.len()
+    );
     // The record's base is the frame the governor founded it with: the one in
     // a lineage of its own. One change of the member's goes with it, as eu1's
     // history lost both.
@@ -1080,12 +1102,10 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
             // v2/<author>-<channel>/<generation>/<frame>.delta
             let generation = path.parent().expect("the frame's generation");
             let lineage = generation.parent().expect("the generation's lineage");
-            lineage
-                .file_name()
-                .is_some_and(|name| {
-                    name.to_string_lossy()
-                        .starts_with(&hex::encode(cert.device_public_key))
-                })
+            lineage.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with(&hex::encode(cert.device_public_key))
+            })
         })
         .map(|(path, _)| path.clone())
         .expect("the record has the governor's base on disk");
@@ -1121,8 +1141,14 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         .refound_record(&workspace, APP, RECORD)
         .await
         .expect("the governor founds the record again");
-    assert_eq!((refounded.app.as_str(), refounded.record.as_str()), (APP, RECORD));
-    assert!(refounded.archived > 0, "the old history went to the archive");
+    assert_eq!(
+        (refounded.app.as_str(), refounded.record.as_str()),
+        (APP, RECORD)
+    );
+    assert!(
+        refounded.archived > 0,
+        "the old history went to the archive"
+    );
 
     // Nothing was deleted: every entry the channel retained before the repair
     // is still on disk, in the archive beside the replay.
@@ -1138,10 +1164,17 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         })
         .unwrap_or(0);
     assert!(archived > 0, "the archive holds the old entries");
-    let mut archived_bodies: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+    let mut archived_bodies: std::collections::BTreeSet<Vec<u8>> =
+        std::collections::BTreeSet::new();
     for entry in std::fs::read_dir(&archive).unwrap().filter_map(Result::ok) {
-        for lineage in std::fs::read_dir(entry.path()).unwrap().filter_map(Result::ok) {
-            for frame in std::fs::read_dir(lineage.path()).unwrap().filter_map(Result::ok) {
+        for lineage in std::fs::read_dir(entry.path())
+            .unwrap()
+            .filter_map(Result::ok)
+        {
+            for frame in std::fs::read_dir(lineage.path())
+                .unwrap()
+                .filter_map(Result::ok)
+            {
                 archived_bodies.insert(std::fs::read(frame.path()).unwrap());
             }
         }
@@ -1168,11 +1201,28 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         Some(newest),
         "a joiner reads the record whole again"
     );
-    assert_eq!(readable(&workspaces, &workspace).await.as_deref(), Some(newest));
+    assert_eq!(
+        readable(&workspaces, &workspace).await.as_deref(),
+        Some(newest)
+    );
 
     // Two members writing after the repair converge on each other's writes.
-    seal_and_send_title(&first, &first_client, &workspace, workspace_id, &first_key, "after, first");
-    seal_and_send_title(&first, &first_client, &workspace, workspace_id, &first_key, "after, second");
+    seal_and_send_title(
+        &first,
+        &first_client,
+        &workspace,
+        workspace_id,
+        &first_key,
+        "after, first",
+    );
+    seal_and_send_title(
+        &first,
+        &first_client,
+        &workspace,
+        workspace_id,
+        &first_key,
+        "after, second",
+    );
     tilo_test_env::within("the node follows the writes after the repair", async {
         while readable(&workspaces, &workspace).await.as_deref() != Some("after, second") {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1190,11 +1240,181 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
         "the retained record is what the record's author wrote"
     );
 
+    // A device that still holds the old changes writes one the refound's
+    // checkpoint cannot contain: written before the repair, delivered after
+    // it, as a device that was away while the record was founded again.
+    let (_, held_back) = first.seal(&workspace, |doc| {
+        doc.put(ROOT, "title", "written before the repair, sent after it")
+            .unwrap();
+        doc.commit_edit("fixture", "title");
+    });
+    let (held_channel, _) = neighbour_wire::retention(&held_back, false).unwrap();
+    send_members_delta(
+        &first_client,
+        workspace_id,
+        &first_key,
+        &crate::CoeditPayload::RetainedDelta {
+            channel: held_channel,
+            body: postcard::to_stdvec(&held_back).unwrap(),
+        },
+    );
+    tilo_test_env::within("the late change to land", async {
+        while readable(&workspaces, &workspace).await.as_deref()
+            != Some("written before the repair, sent after it")
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    let late = retained_writes(&relay, workspace_id, RECORD).await;
+    let mut joined_late = automerge::AutoCommit::new();
+    for op in &late {
+        first.open_into(op, &mut joined_late);
+    }
+    assert_eq!(
+        title(&joined_late.save()).as_deref(),
+        Some("written before the repair, sent after it"),
+        "a change written before the repair and sent after it still reaches a joiner"
+    );
+
     // A second start with the same flag founds nothing again: the
     // operator's flag is kept in the host's state (`refounded.json`, beside
     // the workspace), so a record already refounded is not founded twice.
     // What the host would do if asked again is found again from the record
     // as it reads, which is not this test's subject.
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
+/// A device that still holds changes the refound's checkpoint does not writes
+/// after the repair: does a device joining later still read the record?
+///
+/// This is the case a repair cannot answer for itself. The governor founds the
+/// record from what it can read; a device that was away holds more, including
+/// changes the governor never got. Its next write is a change over a history
+/// the new checkpoint does not carry, and a joiner reaches the record only if
+/// that write is decided against — or held until — what the checkpoint holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("Lounge").await.unwrap();
+    let (workspace, workspace_id) = (created.workspace, created.workspace_id);
+    let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    workspaces
+        .author_room_record(&workspace, &cert, (APP, RECORD), |doc| {
+            doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let member =
+        SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
+    let client = subscribed_member(&relay, &member_key, member_cert, workspace_id).await;
+    for index in 0..4 {
+        seal_and_send_title(
+            &member,
+            &client,
+            &workspace,
+            workspace_id,
+            &member_key,
+            &format!("line {index}"),
+        );
+    }
+    tilo_test_env::within("the node follows the member's writes", async {
+        while readable(&workspaces, &workspace).await.as_deref() != Some("line 3") {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+
+    // The member keeps writing while its connection is down: its page holds
+    // these changes, the host has never seen them.
+    let (_, offline_one) = member.seal(&workspace, |doc| {
+        doc.put(ROOT, "offline", "one").unwrap();
+    });
+    let (_, offline_two) = member.seal(&workspace, |doc| {
+        doc.put(ROOT, "offline", "two").unwrap();
+    });
+
+    // The damage, and the repair, while that device is away.
+    let channel = neighbour_wire::app_document_channel(APP, RECORD);
+    let root = workspaces
+        .workspace(&workspace)
+        .await
+        .expect("the workspace is governed")
+        .lock()
+        .await
+        .path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the workspace's state root")
+        .join("workspaces")
+        .join(workspace_id.to_string());
+    let files = retained_files(&root, &channel);
+    let base = files
+        .iter()
+        .find(|(path, _)| {
+            let generation = path.parent().expect("the frame's generation");
+            let lineage = generation.parent().expect("the generation's lineage");
+            lineage.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with(&hex::encode(cert.device_public_key))
+            })
+        })
+        .map(|(path, _)| path.clone())
+        .expect("the governor's base is on disk");
+    std::fs::remove_file(&base).unwrap();
+    let change = files
+        .iter()
+        .find(|(path, _)| *path != base)
+        .map(|(path, _)| path.clone())
+        .expect("the record has changes on disk");
+    std::fs::remove_file(&change).unwrap();
+    workspaces
+        .refound_record(&workspace, APP, RECORD)
+        .await
+        .expect("the governor founds the record again");
+
+    // The away device comes back and sends what it held.
+    for message in [offline_one, offline_two] {
+        let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+        send_members_delta(
+            &client,
+            workspace_id,
+            &member_key,
+            &crate::CoeditPayload::RetainedDelta {
+                channel,
+                body: postcard::to_stdvec(&message).unwrap(),
+            },
+        );
+    }
+    tilo_test_env::within("the away device's changes to land", async {
+        while readable(&workspaces, &workspace).await.as_deref() != Some("line 3") {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+
+    // What a device joining now is replayed: it reads the record the governor
+    // reads, with the away device's changes in it.
+    let replay = retained_writes(&relay, workspace_id, RECORD).await;
+    let mut joined = automerge::AutoCommit::new();
+    for op in &replay {
+        member.open_into(op, &mut joined);
+    }
+    let governor = workspaces
+        .record_document(&workspace, APP, RECORD)
+        .await
+        .unwrap()
+        .expect("the governor holds the record");
+    let mut governor_doc = automerge::AutoCommit::load(&governor).unwrap();
+    assert_eq!(
+        joined.get_heads(),
+        governor_doc.get_heads(),
+        "a joiner reads the record whole, the away device's changes included"
+    );
     drop(workspaces);
     relay.shutdown().await;
 }

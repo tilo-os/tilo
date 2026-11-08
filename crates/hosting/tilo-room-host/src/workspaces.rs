@@ -2381,11 +2381,11 @@ impl Workspaces {
             .cloned()
             .ok_or_else(|| CollaborationError::new("the workspace is not hosted here"))?;
         let channel = neighbour_wire::app_document_channel(app, record);
-        let mut state = self.workspace(workspace).await?;
+        let state = self.workspace(workspace).await?;
         let now = SystemTime::now();
         let host = &self.inner.host;
         let (readable, keys) = {
-            let mut workspace = state.lock().await;
+            let workspace = state.lock().await;
             if !workspace.peer().holds_document(app, record) {
                 return Err(CollaborationError::new("the record is not held here"));
             }
@@ -2399,11 +2399,10 @@ impl Workspaces {
         };
         // Keep what the channel retained until now beside the replay: never
         // deleted, never read by a device joining after this.
-        let archived = crate::compaction::owner_run(&hosted, move |store| {
-            store.archive_channel(&channel)
-        })
-        .await
-        .map_err(CollaborationError::new)?;
+        let archived =
+            crate::compaction::owner_run(&hosted, move |store| store.archive_channel(&channel))
+                .await
+                .map_err(CollaborationError::new)?;
         let mut workspace = state.lock().await;
         let mut candidate = workspace.peer().clone();
         let sealed = match keys {
