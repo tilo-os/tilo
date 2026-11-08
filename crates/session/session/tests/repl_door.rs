@@ -293,26 +293,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
     repl.opened(&mut session);
 
     // Every page of the session's listing, as its cursors read on.
-    let mut listed = String::new();
-    let mut cursor = String::new();
-    for _ in 0..20 {
-        let (page, failed) = repl.call(
-            &mut session,
-            "tilo_ls",
-            &json!({"path": "session", "cursor": cursor}),
-        );
-        assert!(!failed, "{page}");
-        listed.push_str(&page);
-        listed.push('\n');
-        let Some(next) = page
-            .rsplit_once("cursor \"")
-            .and_then(|(_, rest)| rest.split_once('"'))
-            .map(|(next, _)| next.to_owned())
-        else {
-            break;
-        };
-        cursor = next;
-    }
+    let listed = every_page(&mut repl, &mut session, "session");
     // The session's records are listed, each row naming its type the way a program types it
     // (`tasks.Tasks`, `chat.Conversations` ): the name this listing is for, and the name a path
     // walks back by. Never the kind the app publishes it under (`tl.<app>.<Type>`), which no
@@ -393,6 +374,28 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         found.lines().any(|line| line.contains(NOTE_TITLE)),
         "the note is found by its title: {found}"
     );
+}
+
+/// Every page of the listing at `path`, as its cursors read on.
+fn every_page(repl: &mut Repl, session: &mut Session, path: &str) -> String {
+    let mut listed = String::new();
+    let mut cursor = String::new();
+    for _ in 0..20 {
+        let (page, failed) =
+            repl.call(session, "tilo_ls", &json!({"path": path, "cursor": cursor}));
+        assert!(!failed, "{page}");
+        listed.push_str(&page);
+        listed.push('\n');
+        let Some(next) = page
+            .rsplit_once("cursor \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(next, _)| next.to_owned())
+        else {
+            break;
+        };
+        cursor = next;
+    }
+    listed
 }
 
 /// The resources `session` publishes, at any depth, as its action model holds them.

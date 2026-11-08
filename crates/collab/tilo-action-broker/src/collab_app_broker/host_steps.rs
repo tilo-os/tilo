@@ -199,10 +199,6 @@ impl AppBrokerState {
     /// As [`Self::invoke_host_step`], taken in a task's run `run` when it is
     /// one of a run's steps; the step is handed the run
     /// ([`HostStepRequest::task_run`]).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered admission of a host step: workspace confinement, policy, confirmation and the host's own decision"
-    )]
     pub(super) fn invoke_host_step_in_run(
         self: &Arc<Self>,
         caller: &Caller,
@@ -229,6 +225,10 @@ impl AppBrokerState {
     }
 
     /// [`Self::invoke_host_step_in_run`]'s body, with the caller's turn beside the run.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered admission of a host step: workspace confinement, the turn's policy, confirmation and the host's own decision"
+    )]
     fn invoke_host_step_within(
         self: &Arc<Self>,
         caller: &Caller,

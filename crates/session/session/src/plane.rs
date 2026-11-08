@@ -1298,14 +1298,7 @@ mod tests {
             lists,
             tools: None,
             task_programs: None,
-            session_actions: Some(std::sync::Arc::new(
-                crate::session_actions::SessionActions::new(std::sync::Arc::new(
-                    crate::agent_door::SessionDoors::new(
-                        tilo_service::LoopWake::default().handle(),
-                        "Pat",
-                    ),
-                )),
-            )),
+            session_actions: Some(test_session_actions()),
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),
@@ -1611,42 +1604,32 @@ mod tests {
             .iter()
             .map(|steps| steps.provider())
             .collect();
-        assert!(
-            providers.contains(&tilo_actions::remote::device_pairing::PROVIDER),
-            "Settings pairs a device through this session: {providers:?}"
-        );
-        assert!(
-            providers.contains(&tilo_actions::remote::identity_admin::PROVIDER),
-            "Settings administers the person's devices through this session: {providers:?}"
-        );
-        assert!(
-            providers.contains(&tilo_actions::remote::SESSION_ACTIONS_PROVIDER),
-            "a turn's agent arranges the screen through this session: {providers:?}"
-        );
+        for (provider, why) in [
+            (
+                tilo_actions::remote::device_pairing::PROVIDER,
+                "Settings pairs a device",
+            ),
+            (
+                tilo_actions::remote::identity_admin::PROVIDER,
+                "Settings administers the person's devices",
+            ),
+            (
+                tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+                "a turn's agent arranges the screen",
+            ),
+        ] {
+            assert!(
+                providers.contains(&provider),
+                "{why} through this session: {providers:?}"
+            );
+        }
         assert_eq!(
             services.display_control.is_some(),
             services.settings.is_some(),
             "a display change is written where this person's settings are kept"
         );
-        let keys = services
-            .keyboard_shortcuts
-            .expect("apps on this machine ask the door for the shortcut catalogue");
-        let listed = keys
-            .apply(
-                &settings_store::hardware::ShortcutConfig::default(),
-                &tilo_actions::ActionAddress::new(
-                    tilo_sheets::keyboard_shortcuts::RESOURCE,
-                    tilo_sheets::keyboard_shortcuts::LIST_ACTION,
-                ),
-                None,
-            )
-            .expect("the catalogue is answered")
-            .value
-            .expect("the catalogue is the answer");
         assert!(
-            listed["shortcuts"]
-                .as_array()
-                .is_some_and(|rows| !rows.is_empty()),
+            shortcut_catalogue(&services),
             "every shortcut of this desktop is listed"
         );
         assert!(
@@ -1751,4 +1734,39 @@ mod tests {
             "an app this device did not read declared nothing"
         );
     }
+}
+
+/// Whether the shortcut catalogue the services hand an app on this machine names every
+/// shortcut of the desktop.
+#[cfg(test)]
+fn shortcut_catalogue(services: &tilo_action_broker::services::HostServices) -> bool {
+    let Some(keys) = services.keyboard_shortcuts.as_ref() else {
+        return false;
+    };
+    let listed = keys
+        .apply(
+            &settings_store::hardware::ShortcutConfig::default(),
+            &tilo_actions::ActionAddress::new(
+                tilo_sheets::keyboard_shortcuts::RESOURCE,
+                tilo_sheets::keyboard_shortcuts::LIST_ACTION,
+            ),
+            None,
+        )
+        .expect("the catalogue is answered")
+        .value
+        .expect("the catalogue is the answer");
+    listed["shortcuts"]
+        .as_array()
+        .is_some_and(|rows| !rows.is_empty())
+}
+
+/// The session's own actions as the broker's steps, for a fixture: a door that is never asked
+/// anything.
+#[cfg(test)]
+fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActions> {
+    let doors =
+        crate::agent_door::SessionDoors::new(tilo_service::LoopWake::default().handle(), "Pat");
+    std::sync::Arc::new(crate::session_actions::SessionActions::new(
+        std::sync::Arc::new(doors),
+    ))
 }

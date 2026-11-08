@@ -449,6 +449,20 @@ name = "action"
 required = true
 type = "text"
 
+[[resources.verbs]]
+id = "float"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "group"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+type = "bool"
+
 [[resources]]
 id = "desktop:desk"
 kind = "desktop"
@@ -575,6 +589,21 @@ type = "int"
 
 [[resources.verbs.params]]
 name = "height"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "float"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "dx"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "dy"
 required = false
 type = "int"
 

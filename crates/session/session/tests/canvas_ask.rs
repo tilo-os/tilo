@@ -135,7 +135,7 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
     // ask conversation. The arrangement is read from the session's own desk,
     // which is never a store read, so this wait never touches the store the
     // session is writing through.
-    let placed = until(
+    until(
         &mut session,
         "the ask conversation on the canvas",
         |session| {
@@ -145,7 +145,6 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
                 .any(|place| place.record.contains("/channels/"))
         },
     );
-    let _ = placed;
     let placed = arrangement(&session)
         .places
         .into_iter()

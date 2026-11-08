@@ -46,7 +46,7 @@ impl SessionActions {
     /// rows again changes nothing, and no catalogue is rebuilt for it.
     pub(crate) fn offer(&self, rows: Vec<tilo_actions::door::PlacedAction>) -> bool {
         match self.rows.write() {
-            Ok(mut held) if *held == rows => false,
+            Ok(held) if *held == rows => false,
             Ok(mut held) => {
                 *held = rows;
                 true
@@ -159,7 +159,9 @@ mod tests {
                 return answer.expect("the broker answers");
             }
         }
-        panic!("the session did not answer");
+        Err(ActionHostError::Refused {
+            reason: "the session did not answer".to_owned(),
+        })
     }
 
     /// The session's own actions are its broker's: the person at this seat is offered the
@@ -200,7 +202,7 @@ mod tests {
             )
         })
         .expect("the person sees the catalogue");
-        let place = page
+        let placing = page
             .rows
             .iter()
             .filter_map(|row| row.action.as_ref())
@@ -208,7 +210,7 @@ mod tests {
             .expect("the arrangement's place is offered on the broker")
             .clone();
         assert_eq!(
-            place.address.resource,
+            placing.address.resource,
             crate::arrangement::RESOURCE,
             "offered on the arrangement the session publishes"
         );

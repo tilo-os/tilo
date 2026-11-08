@@ -1734,7 +1734,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             let agent = Caller::agent_turn(
                 "scribe",
                 hex::encode(f.native.certificate.user_public_key),
-                turn.clone(),
+                turn,
             )
             .in_workspace(workspace_id().to_string());
             stray_invoke(&f.state, &agent, 92).expect("the turn takes the session's step");

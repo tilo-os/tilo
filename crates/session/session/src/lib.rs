@@ -135,8 +135,8 @@ mod questions;
 pub mod quick_settings;
 mod record_index;
 mod records;
-mod remote_door;
 pub mod recovery;
+mod remote_door;
 mod rotation;
 pub mod run;
 mod seams;
@@ -572,7 +572,7 @@ pub struct Session {
     /// switch to time.
     active_workspace: Option<u64>,
     /// The session's own actions, as the broker's steps: what each pass hands the rows it read.
-    session_actions: Option<std::sync::Arc<session_actions::SessionActions>>,
+    published_steps: Option<std::sync::Arc<session_actions::SessionActions>>,
     /// When the desk's own bookkeeping last read it.
     kept_at: Instant,
     /// What the desk's input a tool handed the loop cost this pass, read with
@@ -2095,7 +2095,7 @@ impl Session {
             ended: false,
             first_frame: false,
             active_workspace: None,
-            session_actions: Some(std::sync::Arc::clone(&session_actions)),
+            published_steps: Some(std::sync::Arc::clone(&session_actions)),
             kept_at: Instant::now(),
             tool_input: std::time::Duration::ZERO,
             magnifier: (
@@ -2488,8 +2488,9 @@ impl Session {
     /// What the windows ask of the workspace's activity and follow, as this
     /// session serves it: the same door the desk's own pane reads through.
     #[must_use]
-    pub fn conversation_runs(&self) -> std::sync::Arc<dyn tilo_action_broker::services::TrackerRuns>
-    {
+    pub fn conversation_runs(
+        &self,
+    ) -> std::sync::Arc<dyn tilo_action_broker::services::TrackerRuns> {
         self.shared.conversations.runs()
     }
 
@@ -2815,7 +2816,7 @@ impl Session {
     /// are the same the REPL lists, so an agent arranging the screen sees what the person's own
     /// door publishes (shell.md §8.1, "Any action").
     fn follow_session_actions(&self) {
-        let Some(actions) = &self.session_actions else {
+        let Some(actions) = &self.published_steps else {
             return;
         };
         // The rows read here, on the loop that holds the arrangement: nothing off this thread
@@ -2823,10 +2824,10 @@ impl Session {
         // surface's revision moves every pass, and a catalogue rebuilt for it would cost the
         // loop every frame — so the broker is told only when the rows themselves moved.
         let rows = tilo_actions::door::survey_placed(&self.shared.doors.resources());
-        if actions.offer(rows) {
-            if let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker) {
-                broker.host_steps_changed();
-            }
+        if actions.offer(rows)
+            && let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker)
+        {
+            broker.host_steps_changed();
         }
     }
 
