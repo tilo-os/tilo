@@ -23,9 +23,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use app_registry::publisher::RegistryClient;
 use ed25519_dalek::SigningKey;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
-use registry_server::{
-    AppState, PublisherAllowlist, PublisherRow, ServerIdentity, Storage, bind_and_run,
-};
+use registry_server::{AppState, PublisherAllowlist, PublisherRow, Storage, bind_and_run};
 use registry_types::entry::MAX_ENTRY_VERSIONS;
 use registry_types::retention::{DEFAULT_RETAINED_PER_CHANNEL, RetentionPolicy};
 
@@ -127,12 +125,10 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
     let channel = SigningKey::from_bytes(&[62; 32]);
     let publisher = SigningKey::from_bytes(&[63; 32]);
     let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-    let identity = ServerIdentity {
-        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-        name: "test".into(),
-        description: "test".into(),
-        base_url: "https://apps.tilo.so".into(),
-    };
+    let identity = crate::support::identity(
+        hex::encode(owner.verifying_key().to_bytes()),
+        "https://apps.tilo.so",
+    );
     storage.save_identity(&identity).unwrap();
     storage
         .save_allowlist(&PublisherAllowlist {

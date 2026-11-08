@@ -39,12 +39,10 @@ fn write_secret(path: &std::path::Path, key: &SigningKey) {
 }
 
 fn identity(owner: &SigningKey) -> ServerIdentity {
-    ServerIdentity {
-        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-        name: "test".into(),
-        description: "test".into(),
-        base_url: "https://registry.test".into(),
-    }
+    crate::support::identity(
+        hex::encode(owner.verifying_key().to_bytes()),
+        "https://registry.test",
+    )
 }
 
 #[test]
@@ -57,12 +55,10 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     let owner_hex = hex::encode(owner.verifying_key().to_bytes());
     let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
     storage
-        .save_identity(&ServerIdentity {
-            owner_pubkey_hex: owner_hex.clone(),
-            name: "test".into(),
-            description: "test".into(),
-            base_url: "https://registry.test".into(),
-        })
+        .save_identity(&crate::support::identity(
+            owner_hex.clone(),
+            "https://registry.test",
+        ))
         .unwrap();
     storage
         .save_allowlist(&crate::support::allowlist(vec![PublisherRow {

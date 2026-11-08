@@ -10,6 +10,20 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use registry_server::{AppState, Storage};
 
+/// The test server identity owned by `owner_pubkey_hex` and served from
+/// `base_url`.
+pub fn identity(
+    owner_pubkey_hex: impl Into<String>,
+    base_url: &str,
+) -> registry_server::ServerIdentity {
+    registry_server::ServerIdentity {
+        owner_pubkey_hex: owner_pubkey_hex.into(),
+        name: "test".into(),
+        description: "test".into(),
+        base_url: base_url.into(),
+    }
+}
+
 /// Run the HTTP server on its own runtime for the rest of the test process.
 pub fn serve(storage: &Storage) -> SocketAddr {
     let storage = storage.clone();

@@ -20,8 +20,8 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use app_cli::client::RegistryError;
 use app_cli::config::RegistryConfig;
 use ed25519_dalek::SigningKey;
+use registry_server::Storage;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
-use registry_server::{ServerIdentity, Storage};
 use registry_types::{SignedRegistrySnapshot, sign_entry};
 
 struct Registry {
@@ -42,12 +42,10 @@ fn registry(entries: usize) -> Registry {
     let owner_hex = hex::encode(owner.verifying_key().to_bytes());
     let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
     storage
-        .save_identity(&ServerIdentity {
-            owner_pubkey_hex: owner_hex.clone(),
-            name: "test".into(),
-            description: "test".into(),
-            base_url: "http://127.0.0.1".into(),
-        })
+        .save_identity(&crate::support::identity(
+            owner_hex.clone(),
+            "http://127.0.0.1",
+        ))
         .unwrap();
     storage
         .save_allowlist(&crate::support::allowlist(vec![crate::support::publisher(

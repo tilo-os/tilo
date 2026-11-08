@@ -14,9 +14,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 
-use registry_server::{
-    AppState, BundleReviewError, InspectionPolicy, ServerIdentity, Storage, bind_and_run,
-};
+use registry_server::{AppState, BundleReviewError, InspectionPolicy, Storage, bind_and_run};
 
 use registry_types::RegistryEntry;
 use tilo_app_package::chunks::{self, ChunkList};
@@ -296,12 +294,7 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
         storage
             .save_payload_blobs(&std::fs::read(published.objects.join("package.tapp")).unwrap())
             .unwrap();
-        let identity_record = ServerIdentity {
-            owner_pubkey_hex: "00".repeat(32),
-            name: "test".into(),
-            description: "test".into(),
-            base_url: "http://127.0.0.1".into(),
-        };
+        let identity_record = crate::support::identity("00".repeat(32), "http://127.0.0.1");
         let addr = bind_and_run(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             AppState::new(storage.clone(), identity_record),
