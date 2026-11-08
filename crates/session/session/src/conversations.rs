@@ -32,6 +32,9 @@ use ui::record::{RecordId, RecordOwners};
 const CHAT_OWNER: &str = "so.tilo.chat";
 /// How the run source names Chat where a record is opened.
 const CHAT_APP: (&str, &str) = ("chat", "Chat");
+/// Chat's verb that records a turn's work on the reply to its message: the one Chat's window
+/// publishes on each message, run here on the same record from the same declaration.
+const RECORD_WORK: &str = "record-work";
 
 /// One workspace's conversations as the pass read them, and the runs they give.
 #[derive(Clone, Default)]
@@ -324,6 +327,17 @@ impl Conversations {
         Some(opened.chat.as_ref()?.get().as_ref().clone())
     }
 
+    /// The person seated here: whose changes what the service records are theirs, and the author
+    /// a message or a record of work is written by when the caller names nobody else.
+    #[must_use]
+    pub fn person(&self) -> String {
+        let open = self.open.borrow();
+        open.values()
+            .next()
+            .map(|opened| opened.records.author().0.clone())
+            .unwrap_or_default()
+    }
+
     /// The page of the conversation `channel` (a channel id, after
     /// `chat.workspace/channels/`), as Chat's own `#[view(default)]` draws it, read from the
     /// workspace this session holds open that has it: the very channel Chat's window shows and
@@ -392,6 +406,74 @@ impl Conversations {
                 .map_err(|error| error.to_string());
         }
         Err(format!("no open workspace holds the channel {channel}"))
+    }
+
+    /// Record a turn's work through Chat's own `record-work` on the workspace's open Chat record,
+    /// as `invoker` (the agent that answered, or the person here): `arguments` are the verb's,
+    /// exactly as Chat's window's item takes them, including the `message` whose work it records —
+    /// the summons, named as the item Chat's window publishes it names it
+    /// (`chat.workspace.messages:message:<id>`) or by the bare id its item carries. Chat's own verb
+    /// derives the reply from the summons and the author, so what it records lands on the very
+    /// reply the turn's answer is — the address the agent works from, before the reply exists. The
+    /// record is the one Chat's window writes and the pass reads turns from: no second writer, and
+    /// no second verb.
+    ///
+    /// # Errors
+    /// No open workspace holds the message `arguments` names, or Chat refused the record.
+    fn record_work(
+        &self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let unknown = || {
+            tilo_actions::DoorError::Unknown(tilo_actions::ActionAddress::new(
+                resource,
+                RECORD_WORK,
+            ))
+        };
+        // The message is the agent's argument, as Chat's window's item takes it; the item's own
+        // id names it too, for a caller that names nothing.
+        let named = arguments
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .and_then(message_of)
+            .or_else(|| message_of(resource));
+        let Some(message) = named else {
+            return Err(unknown());
+        };
+        let work = arguments.get("work").cloned().ok_or_else(|| {
+            tilo_actions::DoorError::InvalidArguments(
+                "a record of work says how the work is going".to_owned(),
+            )
+        })?;
+        let work: chat::record::WorkUpdate = serde_json::from_value(work).map_err(|error| {
+            tilo_actions::DoorError::InvalidArguments(format!("the work does not read: {error}"))
+        })?;
+        let say = arguments
+            .get("say")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let summons = Id::from_raw(message);
+        let invoke =
+            chat::parts::ChatPart::RECORD_WORK.with(chat::messages::chat_part::RecordWork {
+                message: summons.clone(),
+                work,
+                say,
+            });
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let Some((_, part)) = &opened.part else {
+                continue;
+            };
+            if opened.chat.is_none() || part.get().messages.get(&summons).is_none() {
+                continue;
+            }
+            return part
+                .invoke_as(invoker, &invoke)
+                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()));
+        }
+        Err(unknown())
     }
 
     /// What the canvas asks of the session, made as `person`'s in
@@ -669,13 +751,24 @@ impl Conversations {
 /// `chat.workspace/channels/<id>`, and the shell reads that reading here.
 pub(crate) struct ChatViewService {
     conversations: Rc<Conversations>,
+    /// The summonses it published last, keyed by each open chat's revision and messages' part:
+    /// rebuilt only when a part moved or a workspace opened, so a pass that changed nothing
+    /// writes no item again — and reads no part, which would cost the loop every frame.
+    summonses: std::cell::RefCell<Option<(SummonsKey, Vec<tilo_actions::ResourceSpec>)>>,
 }
+
+/// What the summonses a [session's Chat service](ChatViewService) publishes depend on: each open
+/// chat's revision, its messages' head part's revision, and the part's number.
+type SummonsKey = (u64, u64, u64);
 
 impl ChatViewService {
     /// The service over `conversations`, the session's one open of the workspaces' chats.
     #[must_use]
     pub(crate) fn new(conversations: Rc<Conversations>) -> Self {
-        Self { conversations }
+        Self {
+            conversations,
+            summonses: std::cell::RefCell::new(None),
+        }
     }
 }
 
@@ -768,6 +861,33 @@ impl tilo_service::Service for ChatViewService {
                     channel_resource(id.as_str(), &conversation.name, conversation.is_channel());
                 specs.push(spec);
             }
+            // Each turn's summons, as Chat publishes a message's item: the message a person
+            // asked the agent in, which Chat's own `record-work` writes the answer to. The
+            // agent's address *is* that answer's — derived from the summons and the agent
+            // (`chat::record::reply_id`) before either exists — so the summons's item carries
+            // the verb from the moment the turn does, never only once Chat's window publishes
+            // the message. The item is Chat's own, published through `ChatPart`'s declaration,
+            // and the verb runs on Chat's record: a verb reimplemented here would be a second
+            // chat. It is unbound, as Chat's window's item is: the agent names the message whose
+            // work it records, exactly as it does on a message's own item the window publishes.
+            let Some((index, part)) = &opened.part else {
+                continue;
+            };
+            let revision = (chat_record.revision(), part.revision(), *index);
+            let kept = self
+                .summonses
+                .borrow()
+                .as_ref()
+                .and_then(|(at, items)| (*at == revision).then(|| items.clone()));
+            let items = kept.unwrap_or_else(|| {
+                let built: Vec<tilo_actions::ResourceSpec> = summonses(&chat, &part.get())
+                    .into_iter()
+                    .map(|summons| summons_item(&summons))
+                    .collect();
+                *self.summonses.borrow_mut() = Some((revision, built.clone()));
+                built
+            });
+            specs.extend(items);
         }
         specs
     }
@@ -812,6 +932,15 @@ impl tilo_service::Service for ChatViewService {
                 tilo_actions::ActionOutput::default(),
             ));
         }
+        // A turn's reply records its work in Chat's own words: the item is Chat's own, and the
+        // verb is run by Chat on Chat's record, attributed as the person here.
+        if action == RECORD_WORK {
+            let invoker = tilo_actions::ActionInvoker::actor(self.conversations.person());
+            return self
+                .conversations
+                .record_work(&invoker, resource, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
         // The page's other verbs (react, pin, edit) are Chat's own on the messages it shows;
         // the service publishes the composer's `post` that a place reaches. A verb it does not
         // publish is refused, as the door refuses any address no service offers.
@@ -819,6 +948,144 @@ impl tilo_service::Service for ChatViewService {
             tilo_actions::ActionAddress::new(resource, action),
         ))
     }
+
+    /// [`Self::invoke`] as `invoker` (the agent answering the turn, a script): a record of work
+    /// is Chat's own verb, not a message's, and is written as the agent that sent it, exactly as
+    /// Chat's window writes its reply as the agent (`chat`'s `author(cx)` names the invoker, and
+    /// the reply is derived from it). Every other verb is the person's, as before.
+    fn invoke_as(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        if action == RECORD_WORK {
+            return self
+                .conversations
+                .record_work(invoker, resource, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        self.invoke(resource, action, arguments)
+    }
+}
+
+/// The message `resource` names when it is a message's item or its id: `chat.workspace/messages/
+/// <id>`, the item's bound form `chat.workspace.messages:message:<id>`, the kind-prefixed spelling
+/// Chat's window publishes (`chat.messages/messages/<id>`), or the bare `<id>` an agent names it
+/// by. Every spelling names the same message.
+fn message_of(resource: &str) -> Option<String> {
+    for prefix in [
+        "chat.workspace/messages/",
+        "chat.messages/messages/",
+        "chat.workspace.messages:messages:",
+        "chat.workspace.messages:message:",
+    ] {
+        if let Some(id) = resource.strip_prefix(prefix)
+            && !id.is_empty()
+            && !id.contains('/')
+        {
+            return Some(id.to_owned());
+        }
+    }
+    // A bare message id, as an agent names the summons in its `message` argument.
+    let bare = !resource.is_empty()
+        && resource.len() <= 256
+        && !resource.contains(['/', ':', '#'])
+        && !resource.chars().any(char::is_whitespace);
+    bare.then(|| resource.to_owned())
+}
+
+/// Every summons whose reply has no item Chat's window publishes yet: the person's messages an
+/// agent in the conversation has not answered, and that no held message of the part answers. The
+/// reply each names is the one its id and the agent's derive (`chat::record::reply_id`), so this
+/// returns the summonses — the item the agent's verb is offered on — never the reply.
+/// The summonses whose turn has no reply yet: the person's messages in a conversation an agent
+/// takes part in, which no held message answers. The item each is published as carries Chat's
+/// `record-work`, its message bound, so the agent's verb is offered on the address it answers from
+/// before the reply the verb makes exists — the reply's own item is Chat's window's once it does.
+/// The summons whose turn is going: the person's messages in a conversation an agent takes part
+/// in, whose reply the agent has not finished — absent yet, or still working (no state that ends
+/// it). The same rule the pass reads turns by, so the item that records the work is offered
+/// exactly while the agent answers there: from the moment the turn exists, through every record it
+/// makes on the reply it is writing, and not after the answer ended it.
+fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
+    let mut out: Vec<Id> = Vec::new();
+    for (id, message) in part.messages.iter() {
+        if message.text.trim().is_empty() || person_of(&message.author.0).is_none() {
+            continue;
+        }
+        if chat
+            .channels
+            .get(&message.channel)
+            .is_some_and(|conversation| conversation.archived)
+        {
+            continue;
+        }
+        let agents: Vec<String> = chat
+            .conversation_participants(&message.channel)
+            .into_iter()
+            .filter_map(|participant| match &participant {
+                // The reply an agent's answer is derives from the participant key it writes as,
+                // which spells the agent `agent:<id>` (`chat::record::reply_id`).
+                chat::record::Participant::Agent(_) => Some(participant.key()),
+                chat::record::Participant::Person(_) => None,
+            })
+            .collect();
+        for agent in agents {
+            let going = part
+                .messages
+                .get(&chat::record::reply_id(id, &agent))
+                // A reply without work is a plain answer; one that keeps work is going until its
+                // work ends. The same rule `turns` reads the turn by.
+                .is_none_or(|reply| {
+                    reply.work.as_ref().is_some_and(|work| {
+                        let streamed = work
+                            .stream
+                            .as_ref()
+                            .is_some_and(|stream| stream.finish.is_some());
+                        !streamed
+                            && work
+                                .state
+                                .as_ref()
+                                .is_none_or(|transition| !transition.state.finished())
+                    })
+                });
+            if going && !out.contains(id) {
+                out.push(id.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The summons `id`, as Chat publishes a message's item: its id, its kind, its label, and Chat's
+/// own `record-work` — the declaration `ChatPart::RECORD_WORK` publishes, whose action type is
+/// Chat's, unbound so the agent names the message it records the work of as it does on Chat's
+/// window's item. Built by [`tilo_resource::declaration_spec`], so the action an agent invokes is
+/// Chat's verb, not a copy of it.
+fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
+    let kind = chat::parts::ChatPart::KIND;
+    let mut spec = tilo_actions::ResourceSpec::new(
+        format!("{kind}/messages/{id}"),
+        "chat.messages",
+        id.as_str(),
+    )
+    .with_type(tilo_actions::ResourceType {
+        noun: tilo_actions::Noun::new("message", "messages"),
+        app: tilo_actions::Noun::new("Chat", "Chat"),
+        root: false,
+    });
+    spec.app_id = Some("chat".to_owned());
+    let declaration = tilo_resource::vocabulary::<chat::parts::ChatPart>()
+        .declarations()
+        .iter()
+        .find(|declaration| declaration.id == RECORD_WORK)
+        .cloned();
+    if let Some(declaration) = declaration {
+        spec = spec.with_action(tilo_resource::declaration_spec(&declaration));
+    }
+    spec
 }
 
 /// The person a message's author names, when it names one: the participant key (`person:<root>`,
@@ -945,6 +1212,42 @@ fn turns(
         }
     }
     (turns, agents)
+}
+
+/// The session's Chat service, as a test drives it: what it publishes, and one of its actions
+/// invoked as an agent. Kept beside the service it is about rather than in `lib.rs`, which holds
+/// the session's own API.
+impl crate::Session {
+    /// Every resource the session's services publish now, each with its actions: what a test
+    /// reads to prove a service offers a verb at an address before anything has made its resource
+    /// exist.
+    #[must_use]
+    pub fn service_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.shared.services.borrow().resources()
+    }
+
+    /// A step an address no surface door publishes, as the session's own `DoorAsk::Step` runs it:
+    /// a service's action, invoked through [`crate::agent_door::invoke_service_step`], on the
+    /// record the service keeps. This is the exact call an agent's `record-work` on a turn's
+    /// summons goes through at its broker step; a test drives it here rather than through the
+    /// broker so it proves the seam without the agent.
+    ///
+    /// # Errors
+    /// The service's refusal, or that no service publishes the address.
+    pub fn invoke_service_step_as(
+        &self,
+        actor: &str,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        crate::agent_door::invoke_service_step(
+            &self.shared.services,
+            actor,
+            &tilo_actions::ActionAddress::new(resource, action),
+            arguments,
+        )
+    }
 }
 
 #[cfg(test)]
