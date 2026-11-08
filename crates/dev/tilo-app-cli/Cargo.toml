@@ -75,6 +75,8 @@ tokio = { workspace = true, features = ["rt"] }
 serde_yaml = "0.9"
 tempfile.workspace = true
 tilo-test-env = { path = "../test-env" }
+# The journey's checkout-external directory is held under an advisory lock.
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # The outside-repository journey publishes into a real registry on loopback.
 registry-server = { path = "../../packaging/registry-server" }
 # A framework app's surface, reported in process as its binary's `--surface`.
