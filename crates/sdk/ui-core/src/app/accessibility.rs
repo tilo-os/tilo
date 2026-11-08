@@ -432,12 +432,14 @@ impl App {
             tree.focus_order_under(root, &tree.focus_restrictions())
         };
         self.focusable_order = order;
+        let entry = self.keyboard_entry(&self.focusable_order);
         if let Some(next) = crate::focus_navigation::reconcile_trap(
             &mut self.accessibility.focus_trap_active,
             &mut self.accessibility.focus_before_trap,
             self.focused_node,
             &self.focusable_order,
             trap_active,
+            entry,
         ) {
             self.set_focused_node(next);
         }

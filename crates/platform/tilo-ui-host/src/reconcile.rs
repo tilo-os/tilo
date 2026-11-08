@@ -1527,22 +1527,25 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let names: Vec<String> = cases.iter().map(|case| case.name.clone()).collect();
-        // A form's quick choices stand one under the next, each the width of the field: a
-        // label is never squeezed or elided, and every choice is one press.
+        // A form's quick choices stand one under the next, each the width of the field and read
+        // as a row: the label at its leading edge, and what the choice stands for at its
+        // trailing edge where the choice says its cases hold one ("Tomorrow morning …
+        // Sat 09:00"). A label is never squeezed or elided, and every choice is one press.
         if flag(node, "list") {
             let mut list = Stack::stack().fill_width().gap(Rhythm::Tight);
             for (index, case) in cases.iter().enumerate() {
                 let sink = Rc::clone(&self.sink);
                 let key = node.key.clone();
                 let name = case.name.clone();
-                list = list.push(Box::new(
-                    Button::new(&format!("{}~{index}", node.key), &case.label)
-                        .fill_width()
-                        .toggled(at == Some(index))
-                        .on_click(move || {
-                            sink.push(UiEvent::Fire(key.clone(), format!("pick.{name}"), None));
-                        }),
-                ));
+                let mut button = Button::new(&format!("{}~{index}", node.key), &case.label)
+                    .fill_width()
+                    .toggled(at == Some(index));
+                if let Some(detail) = crate::date::shown_case(node, &case.name) {
+                    button = button.with_detail(detail);
+                }
+                list = list.push(Box::new(button.on_click(move || {
+                    sink.push(UiEvent::Fire(key.clone(), format!("pick.{name}"), None));
+                })));
             }
             return Box::new(list);
         }

@@ -521,6 +521,32 @@ fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
     );
 }
 
+/// A moment told beside words that name its day reads as the time of day, the short weekday
+/// before it when the day is not today, and the date further out: the fact a choice shows at its
+/// trailing edge.
+#[test]
+fn the_moment_fact_tells_the_time_beside_the_words_that_name_its_day() {
+    let today = day(2026, 6, 30); // a Tuesday
+    speak("en-US");
+    for (when, english, german) in [
+        (at(2026, 6, 30, 15, 0), "15:00", "15:00"),
+        (at(2026, 7, 1, 9, 0), "Wed 09:00", "Mi. 09:00"),
+        (at(2026, 7, 6, 9, 0), "Mon 09:00", "Mo. 09:00"),
+        (at(2026, 7, 7, 9, 0), "Jul 7 09:00", "7. Juli 09:00"),
+        (at(2026, 12, 31, 9, 0), "Dec 31 09:00", "31. Dez. 09:00"),
+        (
+            at(2027, 1, 2, 9, 0),
+            "Jan 2, 2027 09:00",
+            "2. Jan. 2027 09:00",
+        ),
+    ] {
+        assert_eq!(H24.moment_fact(when, today), english, "{when:?}");
+        speak("de-DE");
+        assert_eq!(H24.moment_fact(when, today), german, "{when:?}");
+        speak("en-US");
+    }
+}
+
 /// A day something was done on reads as the day it happened: today, yesterday, the weekday
 /// within the week gone by, the month and day of this year and the date of another. It is
 /// history, so no day of it reads as overdue.

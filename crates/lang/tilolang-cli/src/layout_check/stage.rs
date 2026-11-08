@@ -1206,6 +1206,23 @@ mod tests {
         );
     }
 
+    /// The control of the window announcing `label`, as a reader meets it.
+    fn announced<'a>(
+        node: &'a ui::headless::InspectionNode,
+        label: &str,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        if node
+            .semantics
+            .as_ref()
+            .is_some_and(|access| access.name.as_deref() == Some(label))
+        {
+            return node.semantics.as_ref();
+        }
+        node.children
+            .iter()
+            .find_map(|child| announced(child, label))
+    }
+
     /// A form of one question is answered by the choice a person picks: the pick submits it, so
     /// it closes with the task reminded, with nothing else to press.
     #[test]
@@ -1236,6 +1253,21 @@ mod tests {
         open_reminder_form(&mut staged);
         let choice = {
             let root = &staged.harness().inspection().root;
+            let moment = announced(root, "Tomorrow morning")
+                .expect("the form offers the moments a person names");
+            let when = moment.description.clone().unwrap_or_default();
+            assert!(
+                when.contains(':') && when.len() > 4,
+                "each moment says when it is, in the person's own format: {when:?}"
+            );
+            assert!(
+                crate::layout_check::button_named(root, "Remind me").is_none(),
+                "one pick answers the form: its footer needs no confirm button"
+            );
+            assert!(
+                crate::layout_check::button_named(root, "Cancel").is_some(),
+                "Cancel stands there with nothing left to confirm"
+            );
             crate::layout_check::button_named(root, "Tomorrow morning")
                 .expect("the form offers the moments a person names")
         };
@@ -1249,6 +1281,58 @@ mod tests {
             reminded(&staged, &app),
             before + 1,
             "and the task is reminded"
+        );
+    }
+
+    /// The person types the moment instead: the entry the form opens on takes what they type,
+    /// the confirm button stands beside Cancel for the moment typed, and pressing it reminds.
+    #[test]
+    fn a_moment_typed_into_the_form_is_confirmed_by_its_button() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390, 844);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the window lies out for a finger");
+        let before = reminded(&staged, &app);
+        open_reminder_form(&mut staged);
+        staged.harness_mut().type_text("tomorrow 9:30");
+        staged.freshen().expect("the window comes to rest");
+        let confirm = {
+            let root = &staged.harness().inspection().root;
+            assert!(
+                shows_dialog(root, "Remind me…"),
+                "typing leaves the form open to confirm"
+            );
+            crate::layout_check::button_named(root, "Remind me")
+                .expect("a moment typed by hand is confirmed by the form's button")
+        };
+        staged.press(&confirm, true).expect("the button presses");
+        staged.freshen().expect("the window comes to rest");
+        assert!(
+            !shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "the form closes once the moment typed is confirmed"
+        );
+        assert_eq!(
+            reminded(&staged, &app),
+            before + 1,
+            "the task is reminded at the moment the person typed"
         );
     }
 

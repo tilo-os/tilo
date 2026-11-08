@@ -2543,13 +2543,9 @@ fn a_task_typed_into_the_palettes_form(host: &mut TilolangHost, window: &mut Win
         .expect("the task it made")
 }
 
-/// "Remind me…" asks when, the moments a person names offered to pick from: the person picks
-/// one, and the pick answers the form by itself.
-fn a_reminder_picked_from_the_forms_choices(
-    host: &mut TilolangHost,
-    window: &mut Window,
-    task: &Value,
-) {
+/// "Remind me…" asks when, the moments a person names offered to pick from, and one way into the
+/// rest: the entry they type a moment into with the calendar at its end.
+fn a_reminder_asks_when(host: &mut TilolangHost, window: &mut Window) {
     let remind = host
         .instances()
         .next()
@@ -2591,10 +2587,39 @@ fn a_reminder_picked_from_the_forms_choices(
         choices.iter().all(|(_, label)| label != "None"),
         "a required moment offers no way to leave it unanswered: {choices:?}"
     );
-    let (moment, _) = choices
-        .iter()
-        .find(|(_, label)| label == "Tomorrow morning")
-        .unwrap_or_else(|| panic!("tomorrow morning is offered: {choices:?}"));
+    assert_eq!(
+        form_node(window, "form~when~quick")
+            .expect("the moments offered")
+            .props
+            .get("case:as"),
+        Some(&patch::Value::Text("time".to_owned())),
+        "every moment says when it is, at the choice's trailing edge"
+    );
+    let picker = form_node(window, "form~when~pick").expect("one way into the rest");
+    assert_eq!(
+        picker
+            .children
+            .iter()
+            .map(|child| (child.kind.as_str(), child.key.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("ui.TextInput", "form~when~text"),
+            ("ui.DateField", "form~when"),
+        ],
+        "a moment is typed into the entry, or picked from the calendar at its end"
+    );
+    assert_eq!(
+        form_node(window, "form~when")
+            .expect("the calendar")
+            .props
+            .get("compact"),
+        Some(&patch::Value::Bool(true)),
+        "the calendar is a chip beside the entry, not a field of its own"
+    );
+    assert!(
+        !window.form.as_ref().expect("the form").confirm,
+        "the moments answer the form on one pick: its footer stands as Cancel alone"
+    );
     assert_eq!(
         window.form.as_ref().expect("the form").answers,
         [form_node(window, "form~when~quick")
@@ -2603,6 +2628,20 @@ fn a_reminder_picked_from_the_forms_choices(
             .clone()],
         "picking a moment answers the form by itself"
     );
+}
+
+/// The person picks a moment from the ones the form offers, and that pick answers the form: the
+/// reminder is set without a second press.
+fn the_moment_picked_answers_the_reminder(
+    host: &mut TilolangHost,
+    window: &mut Window,
+    task: &Value,
+) {
+    let choices = choices_of(form_node(window, "form~when~quick").expect("the moments offered"));
+    let (moment, _) = choices
+        .iter()
+        .find(|(_, label)| label == "Tomorrow morning")
+        .unwrap_or_else(|| panic!("tomorrow morning is offered: {choices:?}"));
     type_into(window, "form~when~quick", moment);
     settle(host, window);
     assert_eq!(
@@ -2635,5 +2674,6 @@ fn the_palette_asks_the_form_for_a_title_and_a_moment() {
     let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
     settle(&mut host, &mut window);
     let task = a_task_typed_into_the_palettes_form(&mut host, &mut window);
-    a_reminder_picked_from_the_forms_choices(&mut host, &mut window, &task);
+    a_reminder_asks_when(&mut host, &mut window);
+    the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
 }

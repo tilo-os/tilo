@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::{self as wire, ToApp};
+use ui::widget::modal_dialog::DialogAction;
 use ui::widget::{ModalDialog, Widget};
 
 use crate::pane::Pane;
@@ -46,6 +47,11 @@ pub struct Shown {
     /// Whether such a choice was made and the form is not read whole yet.
     picked: Cell<bool>,
     answers: Rc<Answers>,
+    /// The submit button's label, as the app named it.
+    submit: String,
+    /// Whether the footer offers the submit button: a form its quick choices answer shows
+    /// Cancel alone until the person is on the way in by hand.
+    confirm: bool,
 }
 
 /// The dialog the window mounts: the fields, in a pane the reconciler reaches again.
@@ -65,7 +71,7 @@ impl Shown {
         let gate = Rc::clone(&ready);
         let submit = Rc::clone(&answers);
         let cancel = Rc::clone(&answers);
-        let sheet = ModalDialog::new(form.title.clone(), Pane::new(fields))
+        let mut sheet = ModalDialog::new(form.title.clone(), Pane::new(fields))
             .with_test_id(format!("{KEY}sheet"))
             .with_destructive(form.destructive)
             .primary_action(form.submit.clone(), move || submit.submit.set(true))
@@ -75,17 +81,32 @@ impl Shown {
             .primary_enabled_if(move |_| gate.get())
             .with_foot_sheet()
             .open(true);
-        (
-            Self {
-                id: form.id,
-                tree,
-                ready,
-                completes: form.answers.clone(),
-                picked: Cell::new(false),
-                answers,
-            },
-            sheet,
-        )
+        let mut shown = Self {
+            id: form.id,
+            tree,
+            ready,
+            completes: form.answers.clone(),
+            picked: Cell::new(false),
+            answers,
+            submit: form.submit.clone(),
+            confirm: true,
+        };
+        shown.show_confirm(&mut sheet, form.confirm);
+        (shown, sheet)
+    }
+
+    /// Show or take away the submit button as the app asks: a form a moment answers on one
+    /// pick keeps it for when the person picks a day or types a moment instead.
+    fn show_confirm(&mut self, sheet: &mut Sheet, confirm: bool) {
+        if self.confirm == confirm {
+            return;
+        }
+        self.confirm = confirm;
+        let action = confirm.then(|| {
+            let submit = Rc::clone(&self.answers);
+            DialogAction::new(self.submit.clone(), move || submit.submit.set(true))
+        });
+        sheet.set_primary_action(action);
     }
 
     /// The form as the app sends it now, shown in `sheet`: its fields reconciled in place, so
@@ -106,6 +127,11 @@ impl Shown {
         self.tree = tree;
         self.ready.set(form.ready);
         self.completes.clone_from(&form.answers);
+        if self.submit != form.submit {
+            self.submit.clone_from(&form.submit);
+            self.confirm = !form.confirm;
+        }
+        self.show_confirm(sheet, form.confirm);
     }
 
     /// What the person answered since this was last asked: submit, or cancel (Escape, or the
@@ -227,6 +253,7 @@ mod tests {
             )],
             short: false,
             answers: vec!["form~when~quick".to_owned()],
+            confirm: false,
             tree: UiNode {
                 kind: "form".to_owned(),
                 key: KEY.to_owned(),
@@ -312,6 +339,51 @@ mod tests {
             shown.take_answer(),
             None,
             "a form with a field left to fill waits for its submit"
+        );
+    }
+
+    /// The footer's buttons, as a reader reaches them: the dialog's own actions, in the order
+    /// they stand.
+    fn footer_buttons(sheet: &Sheet) -> Vec<String> {
+        let dialog = sheet
+            .accessibility()
+            .expect("the open sheet is in the tree");
+        dialog
+            .children
+            .iter()
+            .filter(|child| child.role == ui::a11y::Role::Button)
+            .filter_map(|child| child.name.clone())
+            .collect()
+    }
+
+    /// A form its moments answer on one pick offers Cancel alone: the submit button stands
+    /// there only once the person is on the way in by hand, typing a moment or picking a day.
+    #[test]
+    fn the_confirm_button_stands_only_on_the_way_in_by_hand() {
+        let mut reconciler = Reconciler::new(Rc::default());
+        let (mut shown, mut sheet) = Shown::build(&moment_form(false), &mut reconciler);
+        assert_eq!(
+            footer_buttons(&sheet),
+            vec!["Cancel".to_owned()],
+            "one pick answers the form: nothing is left to confirm"
+        );
+
+        let typed = wire::Form {
+            confirm: true,
+            ..moment_form(true)
+        };
+        shown.update(&typed, &mut sheet, &mut reconciler);
+        assert_eq!(
+            footer_buttons(&sheet),
+            vec!["Remind me".to_owned(), "Cancel".to_owned()],
+            "a moment typed or picked by hand is confirmed"
+        );
+
+        shown.update(&moment_form(true), &mut sheet, &mut reconciler);
+        assert_eq!(
+            footer_buttons(&sheet),
+            vec!["Cancel".to_owned()],
+            "clearing the entry takes the confirm button away"
         );
     }
 }

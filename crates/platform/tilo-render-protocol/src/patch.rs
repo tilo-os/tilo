@@ -464,6 +464,10 @@ pub enum Answer {
 /// control it came from, a sheet from the foot of a narrow window) with the title, submit and
 /// cancel, and reports edits by field.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent facet the app decides about its form"
+)]
 pub struct Form {
     /// Which form: edits and answers name it, so ones for a form that closed are dropped.
     pub id: u64,
@@ -487,6 +491,9 @@ pub struct Form {
     /// The controls whose choice answers the form by itself, by key: a form's quick choices,
     /// where a pick says everything the form asks, so one tap is one answer.
     pub answers: Vec<String>,
+    /// Offer the submit button: a form whose quick choices answer it needs none until the
+    /// person is on the way in by hand, so its footer stands as Cancel alone.
+    pub confirm: bool,
     /// The fields, laid out: a tree of the same components and content nodes views send.
     pub tree: Node,
 }
