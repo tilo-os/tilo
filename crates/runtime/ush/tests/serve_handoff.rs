@@ -377,7 +377,7 @@ fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
     let key = "k3y0fth1ss3ss10n";
     let (_stream, master) = open_marked_session(&socket, Some(key));
     let fd = master.as_raw_fd();
-    let prompt = format!("\x1b]133;A;k={key}\x07");
+    let prompt = format!("\x1b]133;A;k={key};in=1\x07");
     let seen = read_until(fd, &prompt, tilo_test_env::hang_bound());
     assert!(seen.contains(&prompt), "no prompt mark:\n{seen:?}");
 
@@ -424,7 +424,7 @@ fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
     let key = "k3y0fth1ss3ss10n";
     let (_stream, master) = open_marked_session(&socket, Some(key));
     let fd = master.as_raw_fd();
-    let prompt = format!("\x1b]133;A;k={key}\x07");
+    let prompt = format!("\x1b]133;A;k={key};in=1\x07");
     let seen = read_until(fd, &prompt, tilo_test_env::hang_bound());
     assert!(seen.contains(&prompt), "no prompt mark:\n{seen:?}");
 
