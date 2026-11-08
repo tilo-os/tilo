@@ -27,12 +27,9 @@ pub fn seal(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
 }
 
 /// Seal authentication and wait for the backend's durable acknowledgement.
-#[cfg_attr(
-    all(target_arch = "wasm32", target_os = "unknown"),
-    allow(
-        clippy::future_not_send,
-        reason = "the browser's secret store awaits JavaScript promises, which run on the page's single thread"
-    )
+#[allow(
+    clippy::future_not_send,
+    reason = "the secret store's future is not Send on the web, where its promises run on the page's single thread"
 )]
 pub async fn seal_async(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
     let Some(value) = credential_bytes(auth) else {
@@ -112,12 +109,9 @@ impl Migration {
         Ok(reference)
     }
 
-    #[cfg_attr(
-        all(target_arch = "wasm32", target_os = "unknown"),
-        allow(
-            clippy::future_not_send,
-            reason = "the browser's secret store awaits JavaScript promises, which run on the page's single thread"
-        )
+    #[allow(
+        clippy::future_not_send,
+        reason = "the secret store's future is not Send on the web, where its promises run on the page's single thread"
     )]
     pub(super) async fn seal_async(
         &mut self,

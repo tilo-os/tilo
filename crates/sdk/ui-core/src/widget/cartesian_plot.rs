@@ -1246,7 +1246,9 @@ impl CartesianMarks {
 
     fn zoom_at_pointer(&mut self, delta: f64) {
         let plot = self.plot_rect();
-        if !plot.contains(self.frame.inspection.pointer) || self.style.zoom == CartesianZoom::Disabled {
+        if !plot.contains(self.frame.inspection.pointer)
+            || self.style.zoom == CartesianZoom::Disabled
+        {
             return;
         }
         let factor = (-delta * 0.12).exp().clamp(0.5, 2.0);
@@ -1325,7 +1327,13 @@ impl CartesianMarks {
         )
     }
 
-    fn project(value: f64, domain: Domain, scale: AxisScale, origin: f64, span: f64) -> Option<f64> {
+    fn project(
+        value: f64,
+        domain: Domain,
+        scale: AxisScale,
+        origin: f64,
+        span: f64,
+    ) -> Option<f64> {
         let value = Self::transform(value, scale)?;
         let min = Self::transform(domain.min, scale)?;
         let max = Self::transform(domain.max, scale)?;
@@ -1543,9 +1551,10 @@ impl CartesianMarks {
                 }
             }
         }
-        nearest
-            .map(|(_, hover)| hover)
-            .or_else(|| self.annotation_at(pointer, plot, xd, yd).map(CartesianHover::Annotation))
+        nearest.map(|(_, hover)| hover).or_else(|| {
+            self.annotation_at(pointer, plot, xd, yd)
+                .map(CartesianHover::Annotation)
+        })
     }
 
     fn hover_range(
@@ -1784,7 +1793,10 @@ impl CartesianMarks {
                 &title,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((self.frame.rect.x0, plot.center().y + f64::from(width) / 2.0))
+                    * Affine::translate((
+                        self.frame.rect.x0,
+                        plot.center().y + f64::from(width) / 2.0,
+                    ))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
                 None,
                 &title_style.clone().with_weight(TextWeight::Semibold),
@@ -2924,7 +2936,13 @@ impl PlotMarks for CartesianMarks {
         }
         *ctx.handled
     }
-    fn paint(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn paint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
         self.bands = self.measure_bands(tr, theme);
@@ -3084,7 +3102,10 @@ mod tests {
                 CartesianMarks::fitted_axis_title("Requests / second", 42.0),
                 "Reque…"
             );
-            assert_eq!(CartesianMarks::fitted_axis_title("Διακύμανση", 28.0), "Δια…");
+            assert_eq!(
+                CartesianMarks::fitted_axis_title("Διακύμανση", 28.0),
+                "Δια…"
+            );
         }
 
         fn built_in_axis_formats_cover_units() {
@@ -3141,7 +3162,8 @@ mod tests {
     fn viewport_navigation_zooms_pans_and_survives_invalid_input() {
         fn cursor_anchored_zoom_keeps_anchor_stable() {
             let base = Domain::normalized(0.0, 100.0);
-            let zoomed = CartesianMarks::zoom_domain(base, base, 25.0, 0.5, 0.01, AxisScale::Linear);
+            let zoomed =
+                CartesianMarks::zoom_domain(base, base, 25.0, 0.5, 0.01, AxisScale::Linear);
             assert_eq!(zoomed.min, 12.5);
             assert_eq!(zoomed.max, 62.5);
             assert_eq!((25.0 - zoomed.min) / (zoomed.max - zoomed.min), 0.25);
@@ -3202,7 +3224,10 @@ mod tests {
                     max: 15.0
                 }),
             ));
-            assert!(plot.marks.pan_view_pixels(100.0, 50.0, Rect::new(0.0, 0.0, 400.0, 200.0)));
+            assert!(
+                plot.marks
+                    .pan_view_pixels(100.0, 50.0, Rect::new(0.0, 0.0, 400.0, 200.0))
+            );
             assert_eq!(
                 plot.viewport(),
                 (
@@ -3225,7 +3250,10 @@ mod tests {
                 }),
                 None
             ));
-            assert!(plot.marks.pan_view_pixels(100.0, 0.0, Rect::new(0.0, 0.0, 300.0, 100.0)));
+            assert!(
+                plot.marks
+                    .pan_view_pixels(100.0, 0.0, Rect::new(0.0, 0.0, 300.0, 100.0))
+            );
             let Some(AxisRange::Fixed { min, max }) = plot.viewport().0 else {
                 panic!()
             };
@@ -3236,7 +3264,11 @@ mod tests {
         fn pixel_pan_rejects_invalid_geometry_and_captures_active_drags() {
             let mut plot = CartesianPlot::new(Vec::new());
             plot.marks.style.pan = CartesianPan::XY;
-            assert!(!plot.marks.pan_view_pixels(f64::NAN, 0.0, Rect::new(0.0, 0.0, 100.0, 100.0)));
+            assert!(
+                !plot
+                    .marks
+                    .pan_view_pixels(f64::NAN, 0.0, Rect::new(0.0, 0.0, 100.0, 100.0))
+            );
             assert!(!plot.marks.pan_view_pixels(1.0, 0.0, Rect::ZERO));
             assert!(!plot.marks.wants_pointer_capture());
             plot.marks.pan_last = Some(Point::ZERO);
@@ -3383,7 +3415,9 @@ mod tests {
             data[7_331].y = -700.0;
             let line = PlotSeries::new("dense", "Dense", Color::WHITE, data);
             let plot = CartesianPlot::new(vec![line.clone()]);
-            let sampled = plot.marks.render_indices(&line, Rect::new(0.0, 0.0, 100.0, 100.0));
+            let sampled = plot
+                .marks
+                .render_indices(&line, Rect::new(0.0, 0.0, 100.0, 100.0));
             assert!(sampled.len() <= 202, "{} sampled points", sampled.len());
             assert_eq!(sampled.first(), Some(&0));
             assert_eq!(sampled.last(), Some(&9_999));
@@ -3393,7 +3427,8 @@ mod tests {
 
             let scatter = line.kind(SeriesKind::Scatter);
             assert_eq!(
-                plot.marks.render_indices(&scatter, Rect::new(0.0, 0.0, 100.0, 100.0))
+                plot.marks
+                    .render_indices(&scatter, Rect::new(0.0, 0.0, 100.0, 100.0))
                     .len(),
                 10_000
             );
@@ -3432,7 +3467,8 @@ mod tests {
             );
             let plot = CartesianPlot::new(vec![series.clone()]);
             assert!(
-                plot.marks.render_indices(&series, Rect::new(0.0, 0.0, 40.0, 100.0))
+                plot.marks
+                    .render_indices(&series, Rect::new(0.0, 0.0, 40.0, 100.0))
                     .contains(&501)
             );
         }
@@ -3480,11 +3516,13 @@ mod tests {
             let area = Rect::new(0.0, 0.0, 100.0, 100.0);
             let domain = Domain::normalized(0.0, 10.0);
             assert_eq!(
-                plot.marks.annotation_at(Point::new(50.0, 40.0), area, domain, domain),
+                plot.marks
+                    .annotation_at(Point::new(50.0, 40.0), area, domain, domain),
                 Some(0)
             );
             assert_eq!(
-                plot.marks.annotation_at(Point::new(80.0, 40.0), area, domain, domain),
+                plot.marks
+                    .annotation_at(Point::new(80.0, 40.0), area, domain, domain),
                 Some(1)
             );
             assert!(plot.inspect_annotation("marker"));

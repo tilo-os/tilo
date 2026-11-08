@@ -171,12 +171,9 @@ fn project(
 /// Import a deliberately supplied old snapshot without copying its plaintext
 /// CRDT history into the destination. The caller retains the original bytes
 /// until this succeeds and the destination is saved.
-#[cfg_attr(
-    all(target_arch = "wasm32", target_os = "unknown"),
-    allow(
-        clippy::future_not_send,
-        reason = "the browser's secret store awaits JavaScript promises, which run on the page's single thread"
-    )
+#[allow(
+    clippy::future_not_send,
+    reason = "the secret store's future is not Send on the web, where its promises run on the page's single thread"
 )]
 pub(super) async fn snapshot(bytes: &[u8], store: &SecretStore) -> Result<Workspace, String> {
     let doc =
