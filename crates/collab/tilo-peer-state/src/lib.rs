@@ -10,6 +10,8 @@ pub mod governance;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;
 pub mod join_ledger;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod join_transport;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.

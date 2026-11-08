@@ -21,9 +21,10 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use tilo_desktop_model::WorkspaceId;
+use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::session::Reach;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use tilo_relay_session::{CoeditPayload, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
+use tilo_relay_session::{CoeditPayload, RelayCoeditSession};
 use tilo_room_host::host::WorkspaceHost;
 
 /// How long a write waits for the workspace's session and for its host to keep it.

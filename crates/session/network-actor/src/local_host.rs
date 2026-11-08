@@ -74,14 +74,12 @@ impl LocalHost {
     pub fn join_client(
         &self,
         caller: [u8; 32],
-    ) -> Option<tilo_relay_session::workspace_join::WorkspaceJoinClient> {
+    ) -> Option<tilo_peer_state::join_transport::WorkspaceJoinClient> {
         let host = self.get()?;
-        Some(
-            tilo_relay_session::workspace_join::WorkspaceJoinClient::local(
-                host.join_service(),
-                caller,
-            ),
-        )
+        Some(tilo_peer_state::join_transport::WorkspaceJoinClient::local(
+            host.join_service(),
+            caller,
+        ))
     }
 
     /// Serve `host` from now on: its protocols answer on the router, and

@@ -456,11 +456,9 @@ fn host_handlers(
         ),
         (
             tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
-            Arc::new(
-                tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(
-                    workspaces.join_service(),
-                ),
-            ),
+            Arc::new(tilo_peer_state::join_transport::WorkspaceJoinProtocol::new(
+                workspaces.join_service(),
+            )),
         ),
         // The host's own device answers a workspace's member devices here, as
         // the members answer each other: an offer is answered by the host as
@@ -605,9 +603,9 @@ impl WorkspaceHost {
 
     /// The workspace join service of the workspaces hosted here, for a joining
     /// device in the same process
-    /// ([`WorkspaceJoinClient::local`](tilo_relay_session::workspace_join::WorkspaceJoinClient::local)).
+    /// ([`WorkspaceJoinClient::local`](tilo_peer_state::join_transport::WorkspaceJoinClient::local)).
     #[must_use]
-    pub fn join_service(&self) -> Arc<dyn tilo_relay_session::workspace_join::LocalJoinService> {
+    pub fn join_service(&self) -> Arc<dyn tilo_peer_state::join_transport::LocalJoinService> {
         Arc::new(self.workspaces.join_service())
     }
 
@@ -1162,7 +1160,7 @@ where
 
 /// The device's own host, as its native owner joins the workspaces placed on it.
 impl tilo_peer_state::owner::session::OwnHost for WorkspaceHost {
-    fn join_service(&self) -> Arc<dyn tilo_relay_session::workspace_join::LocalJoinService> {
+    fn join_service(&self) -> Arc<dyn tilo_peer_state::join_transport::LocalJoinService> {
         Self::join_service(self)
     }
 

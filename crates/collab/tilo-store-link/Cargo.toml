@@ -43,7 +43,6 @@ tilo-automerge-isolate.workspace = true
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid.workspace = true
 web-time = "1"

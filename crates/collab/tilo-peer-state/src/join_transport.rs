@@ -2,10 +2,14 @@
 //! The client half reaches a governor over its iroh endpoint. The server half,
 //! [`WorkspaceJoinProtocol`], is how every governor answers on its iroh
 //! endpoint: a relay for the workspaces it governs and a device for its own.
-//! The messages are `tilo_workspace_join`'s.
+//! The messages are `tilo_workspace_join`'s and the decisions are
+//! [`crate::join_answer`]'s, so a device answers and asks with what it already
+//! holds.
 
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
+use wire_frame::Framing;
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, MAX_WORKSPACE_JOIN_RESPONSE_BYTES,
     WORKSPACE_JOIN_ALPN, WorkspaceJoinAdmission, WorkspaceJoinError, WorkspaceJoinService,
@@ -18,6 +22,31 @@ use tilo_workspace_join::{
 
 /// How long one join exchange may take, on either side.
 pub const WORKSPACE_JOIN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// One record of a join exchange: its byte count, little-endian, then the
+/// bytes. A record is never empty, and a reader bounds it before allocating.
+async fn write_record<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    bytes: &[u8],
+) -> Result<(), WorkspaceJoinError> {
+    Framing::little_endian(u32::MAX as usize)
+        .write_async(writer, bytes)
+        .await
+        .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))
+}
+
+/// The next record, at most `max` bytes.
+async fn read_record<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> Result<Vec<u8>, WorkspaceJoinError> {
+    Framing::little_endian(max)
+        .reject_empty()
+        .read_async(reader)
+        .await
+        .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?
+        .ok_or_else(|| WorkspaceJoinError::Transport("the join exchange closed early".into()))
+}
 
 /// Typed client for the shared invitation and membership exchange.
 #[derive(Clone, Debug)]
@@ -105,7 +134,7 @@ impl WorkspaceJoinClient {
         address: iroh::EndpointAddr,
         request: JoinTransportRequest,
     ) -> Result<JoinTransportResponse, WorkspaceJoinError> {
-        n0_future::time::timeout(
+        tokio::time::timeout(
             WORKSPACE_JOIN_EXCHANGE_TIMEOUT,
             self.request_inner(address, request),
         )
@@ -152,15 +181,10 @@ impl WorkspaceJoinClient {
             .open_bi()
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-        tilo_relay_client::frame::write_frame(&mut send, &bytes)
-            .await
-            .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
+        write_record(&mut send, &bytes).await?;
         send.finish()
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-        let response =
-            tilo_relay_client::frame::read_frame(&mut recv, MAX_WORKSPACE_JOIN_RESPONSE_BYTES)
-                .await
-                .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
+        let response = read_record(&mut recv, MAX_WORKSPACE_JOIN_RESPONSE_BYTES).await?;
         postcard::from_bytes(&response)
             .map_err(|error| WorkspaceJoinError::Decode(error.to_string()))
     }
@@ -296,7 +320,7 @@ mod server {
         WorkspaceJoinService,
     };
 
-    use super::WORKSPACE_JOIN_EXCHANGE_TIMEOUT;
+    use super::{WORKSPACE_JOIN_EXCHANGE_TIMEOUT, read_record, write_record};
 
     const MAX_CONCURRENT_EXCHANGES: usize = 64;
 
@@ -343,7 +367,7 @@ mod server {
                 "{what} concurrency limit reached"
             )))
         })?;
-        n0_future::time::timeout(timeout, exchange)
+        tokio::time::timeout(timeout, exchange)
             .await
             .map_err(|_| {
                 AcceptError::from_err(std::io::Error::new(
@@ -364,10 +388,7 @@ mod server {
                 .accept_bi()
                 .await
                 .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
-            let bytes =
-                tilo_relay_client::frame::read_frame(&mut recv, MAX_WORKSPACE_JOIN_REQUEST_BYTES)
-                    .await
-                    .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
+            let bytes = read_record(&mut recv, MAX_WORKSPACE_JOIN_REQUEST_BYTES).await?;
             let request = postcard::from_bytes(&bytes)
                 .map_err(|error| WorkspaceJoinError::Decode(error.to_string()))?;
             let response = self.service.handle(remote_endpoint, request).await;
@@ -378,9 +399,7 @@ mod server {
                     "workspace join response exceeds the wire limit".into(),
                 ));
             }
-            tilo_relay_client::frame::write_frame(&mut send, &bytes)
-                .await
-                .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
+            write_record(&mut send, &bytes).await?;
             send.finish()
                 .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
             connection.closed().await;

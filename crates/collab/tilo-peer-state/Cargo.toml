@@ -76,6 +76,8 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # session a joined workspace syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# One length-prefixed record per join exchange, the same framing its peers read.
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 [dev-dependencies]
 # The closure-built action host a test dispatcher is.

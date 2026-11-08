@@ -342,7 +342,7 @@ async fn listening(
         served.push((
             tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN.to_vec(),
             Box::<dyn iroh::protocol::DynProtocolHandler>::from(
-                tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(
+                tilo_peer_state::join_transport::WorkspaceJoinProtocol::new(
                     tilo_peer_state::join_answer::JoinAnswer(
                         tilo_peer_state::owner::OwnerJoinWorkspaces::new(
                             engine.owner().clone(),

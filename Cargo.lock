@@ -20319,6 +20319,7 @@ dependencies = [
  "tracing",
  "uuid",
  "web-time",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -21332,7 +21333,6 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
- "tilo-relay-session",
  "tilo-render-protocol",
  "tilo-render-service",
  "tilo-resource",
@@ -21624,7 +21624,6 @@ dependencies = [
  "tilo-identity-host",
  "tilo-peer-state",
  "tilo-relay-protocol",
- "tilo-relay-session",
  "tilo-store-node",
  "tilo-user-identity",
  "tokio",
