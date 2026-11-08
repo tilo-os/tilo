@@ -15,15 +15,11 @@
 )]
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-fn install_bin() -> PathBuf {
-    // Cargo compiles the binary before running integration tests and
-    // exposes its path via CARGO_BIN_EXE_<name>.
-    tilo_test_env::package_binary!("tilo-install")
-}
+use crate::support::install_bin;
 
 /// The CLI's output for `args`, against a bundle store of its own under
 /// `xdg`.

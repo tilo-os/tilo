@@ -25,7 +25,6 @@ use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::{Signer, SigningKey};
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::manifest::TrustAttestation;
 use tilo_app_package::trust::{
     AttestorScope, RevocationList, RevokedKey, TrustFile, TrustedAttestor, TrustedAttestors,
@@ -33,11 +32,7 @@ use tilo_app_package::trust::{
 };
 use tilo_app_package::{Manifest, SigningIdentity, pack};
 
-/// Path to the compiled `tilo-install` binary. Cargo sets
-/// CARGO_BIN_EXE_tilo-install when the [[bin]] block is `tilo-install`.
-fn install_bin() -> PathBuf {
-    tilo_test_env::package_binary!("tilo-install")
-}
+use crate::support::{build_tapp, fresh_key, install_bin};
 
 const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
@@ -79,13 +74,6 @@ fn write_payload(dir: &Path) {
     std::fs::write(dir.join("share/splash.png"), b"PNG\x00\x00\x00").unwrap();
 }
 
-fn fresh_key() -> (SigningKey, String) {
-    let mut rng = UnwrapErr(SysRng);
-    let sk = SigningKey::generate(&mut rng);
-    let pub_hex = hex::encode(sk.verifying_key().to_bytes());
-    (sk, pub_hex)
-}
-
 fn manifest(pub_hex: &str) -> Manifest {
     let src = SAMPLE_APP_MANIFEST_TEMPLATE.replace("<HEX>", pub_hex);
     Manifest::from_toml_str(&src).expect("decode")
@@ -119,20 +107,6 @@ fn attest_and_inject(
         claim_hex: String::new(),
         signature_hex: hex::encode(sig),
     });
-}
-
-/// Build a .tapp file with the same layout that tilo-tilo-app-package-cli writes.
-fn build_tapp(
-    tapp_path: &Path,
-    manifest: &Manifest,
-    publisher_sk: &SigningKey,
-    payload_dir: &Path,
-) -> tilo_app_package::PackageId {
-    let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
-    let packed = pack(payload_dir, manifest, &identity).expect("pack");
-    let file = std::fs::File::create(tapp_path).unwrap();
-    tilo_app_package::tapp::write(file, &packed.meta, Some(&packed)).unwrap();
-    packed.id()
 }
 
 /// Environment for one test — isolated data + config dirs.
