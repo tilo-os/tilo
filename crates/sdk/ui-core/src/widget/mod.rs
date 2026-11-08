@@ -3023,7 +3023,9 @@ pub use layout::{
 mod cached_paint;
 pub use cached_paint::CachedPaint;
 mod button;
-pub use button::{Button, ButtonFace, ButtonProps, ButtonRole, face_colors, focus_ring_reach};
+pub use button::{
+    Button, ButtonFace, ButtonProps, ButtonRole, REST_BORDER_WIDTH, face_colors, focus_ring_reach,
+};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;

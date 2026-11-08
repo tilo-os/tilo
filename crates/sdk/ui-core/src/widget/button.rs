@@ -2048,7 +2048,7 @@ impl<'a> ButtonFace<'a> {
 /// Focus ring and rest border, stroked centred on the face outline like
 /// every other control (checkbox, toggle, segmented strip).
 const FOCUS_RING_WIDTH: f64 = 2.0;
-const REST_BORDER_WIDTH: f64 = 1.0;
+pub const REST_BORDER_WIDTH: f64 = 1.0;
 
 /// How far past a control's face its ink may reach under `theme`: the focus
 /// ring, the ground-coloured line that parts it from a fill of your colour,

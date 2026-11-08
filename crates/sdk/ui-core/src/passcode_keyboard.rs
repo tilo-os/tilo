@@ -13,14 +13,15 @@
 //! letters at all.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 
 use crate::icons::Icon;
+use crate::surface::{control_face, edge_outline};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::{ButtonRole, Interaction, face_colors};
+use crate::widget::{ButtonRole, Interaction, REST_BORDER_WIDTH, face_colors, paint_disabled};
 
 /// What a key shows: its character, or the icon of what it does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,7 +234,8 @@ impl PasscodeKeyboard {
 
     /// Paint the keys at `place` (the keyboard's rectangle, key height and
     /// gap) as the theme's controls: a key's filled face and its label, the
-    /// active modifiers lit.
+    /// active modifiers lit. Enter takes the disabled face while
+    /// `enter_enabled` is false, as the action it stands for would.
     pub fn paint(
         self,
         scene: &mut Scene,
@@ -241,10 +243,19 @@ impl PasscodeKeyboard {
         text: &mut TextRenderer,
         theme: &Theme,
         place: (Rect, f64, f64),
+        enter_enabled: bool,
     ) {
         let (rect, key_height, gap) = place;
         let radius = f64::from(theme.tokens.radii.control);
-        let (ground, _, ink) = face_colors(theme, ButtonRole::Key, Interaction::default());
+        let (ground, _, key_ink) = face_colors(theme, ButtonRole::Key, Interaction::default());
+        let (disabled_fill, disabled_edge, disabled_ink) = face_colors(
+            theme,
+            ButtonRole::Primary,
+            Interaction {
+                disabled: true,
+                ..Interaction::default()
+            },
+        );
         // A key's label is its face's: the key role sets it in the title
         // line, and its icon to that line.
         let style = theme.text(TextRole::Title);
@@ -252,18 +263,38 @@ impl PasscodeKeyboard {
         for (key, key_rect) in self.layout(rect, key_height, gap) {
             let lit = matches!(key, PasscodeKey::Shift) && self.shift
                 || matches!(key, PasscodeKey::Symbols) && self.symbols;
-            let fill = if lit { theme.border_focus } else { ground };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &RoundedRect::from_rect(key_rect, radius),
-            );
+            let disabled = matches!(key, PasscodeKey::Enter) && !enter_enabled;
+            let (fill, ink) = if disabled {
+                (disabled_fill, disabled_ink)
+            } else if lit {
+                (theme.border_focus, key_ink)
+            } else {
+                (ground, key_ink)
+            };
+            let shape = RoundedRect::from_rect(key_rect, radius);
+            if disabled {
+                paint_disabled(scene, transform, &shape);
+                control_face(scene, transform, &shape, fill, theme);
+            } else {
+                scene.fill(Fill::NonZero, transform, fill, None, &shape);
+            }
             let center = key_rect.center();
-            let label = match self.face(key) {
-                KeyFace::Text(label) if label.is_empty() => continue,
-                KeyFace::Text(label) => label,
+            match self.face(key) {
+                KeyFace::Text(label) if label.is_empty() => {}
+                KeyFace::Text(label) => {
+                    let (w, h) = text.measure_style(&label, None, &style);
+                    text.draw_style(
+                        scene,
+                        &label,
+                        ink,
+                        transform.pre_translate(Vec2::new(
+                            center.x - f64::from(w) / 2.0,
+                            center.y - f64::from(h) / 2.0,
+                        )),
+                        None,
+                        &style,
+                    );
+                }
                 KeyFace::Icon(icon) => {
                     icon.draw(
                         scene,
@@ -271,21 +302,20 @@ impl PasscodeKeyboard {
                         Rect::from_center_size(center, (icon_side, icon_side)),
                         ink,
                     );
-                    continue;
                 }
-            };
-            let (w, h) = text.measure_style(&label, None, &style);
-            text.draw_style(
-                scene,
-                &label,
-                ink,
-                transform.pre_translate(Vec2::new(
-                    center.x - f64::from(w) / 2.0,
-                    center.y - f64::from(h) / 2.0,
-                )),
-                None,
-                &style,
-            );
+            }
+            if disabled {
+                scene.pop_layer();
+                if let Some(edge) = disabled_edge {
+                    scene.stroke(
+                        &Stroke::new(REST_BORDER_WIDTH),
+                        transform,
+                        edge,
+                        None,
+                        &edge_outline(key_rect, radius),
+                    );
+                }
+            }
         }
     }
 }

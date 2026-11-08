@@ -14,6 +14,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action, Role};
@@ -26,6 +27,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use zeroize::Zeroizing;
+
+use tilo_lock::MutexRecover as _;
 
 use super::AuthPhase;
 use super::recovery::RECOVERY_FIELDS;
@@ -61,6 +64,7 @@ impl super::GreeterApp {
         // A recovery key is letters and digits, and the new secret may be
         // either: the recovery form opens the letters.
         let pin = self.recovery.is_none() && self.secret_is_pin();
+        self.touch_keyboard.recovery.set(self.recovery.is_some());
         if self.touch_keyboard.keyboard.get().is_for_pin() != pin {
             self.touch_keyboard
                 .keyboard
@@ -136,6 +140,16 @@ fn widget_with_id<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut dy
 pub(super) struct Shared {
     pub keyboard: Rc<Cell<PasscodeKeyboard>>,
     pub typed: Rc<RefCell<Vec<PasscodeInput>>>,
+    /// The passcode being typed: enter submits only what is in it.
+    pub passcode: Arc<Mutex<String>>,
+    /// On the recovery form, whose own action submits what is typed there.
+    pub recovery: Rc<Cell<bool>>,
+}
+
+/// Whether the pad's enter can submit: the passcode has something in it, or
+/// the keys are going into the recovery form, which submits itself.
+fn enter_submits(shared: &Shared) -> bool {
+    shared.recovery.get() || !shared.passcode.lock_recover().is_empty()
 }
 
 /// The size of a key and the gap between keys, as the lock screen's
@@ -280,6 +294,7 @@ impl Widget for TouchKeyboard {
             text_renderer,
             theme,
             (self.rect, self.metrics.0, self.metrics.1),
+            enter_submits(&self.shared),
         );
         self.dirty.set(false);
     }
@@ -435,6 +450,21 @@ mod tests {
                 PasscodeInput::Enter,
             ]
         );
+    }
+
+    #[test]
+    fn the_pads_enter_submits_only_once_the_passcode_has_something_in_it() {
+        let theme = Theme::dark();
+        let keyboard = laid_out(&theme);
+        let shared = &keyboard.shared;
+        assert!(!enter_submits(shared));
+        *shared.passcode.lock_recover() = "1".into();
+        assert!(enter_submits(shared));
+        *shared.passcode.lock_recover() = String::new();
+        // A recovery key goes into the recovery form, whose own action
+        // submits it whatever the passcode holds.
+        shared.recovery.set(true);
+        assert!(enter_submits(shared));
     }
 
     /// What the screen reader says for each key, in the order the keyboard

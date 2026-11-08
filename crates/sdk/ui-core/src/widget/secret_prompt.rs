@@ -2208,6 +2208,7 @@ impl SecretPrompt {
                 Self::keypad_key_height(theme),
                 Self::gap(theme),
             ),
+            self.can_submit(),
         );
         if self.presentation == Presentation::Inline {
             let [cancel, primary] = self.modal_actions();

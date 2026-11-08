@@ -946,6 +946,7 @@ impl GreeterApp {
                 .map(|session| session.name.clone())
                 .unwrap_or_default(),
         );
+        let password_buffer = Arc::new(Mutex::new(String::new()));
         Self {
             sessions,
             selected_session: 0,
@@ -961,7 +962,7 @@ impl GreeterApp {
             fingerprint,
             fingerprint_probe: fingerprint_offered,
             secret_kinds: std::collections::HashMap::new(),
-            password_buffer: Arc::new(Mutex::new(String::new())),
+            password_buffer: Arc::clone(&password_buffer),
             auth_session: None,
             challenge_sequence: Arc::new(AtomicU64::new(1)),
             notice: Notice::None,
@@ -995,7 +996,10 @@ impl GreeterApp {
             keyboard_focus: false,
             boot_sign_in: BootSignIn::None,
             boot: None,
-            touch_keyboard: touch_keyboard::Shared::default(),
+            touch_keyboard: touch_keyboard::Shared {
+                passcode: Arc::clone(&password_buffer),
+                ..touch_keyboard::Shared::default()
+            },
             environment: ui::InteractionEnvironment::default(),
             keyboards: None,
             recovery: None,
