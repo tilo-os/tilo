@@ -2377,6 +2377,11 @@ fn ask(
     }
 }
 
+/// The provider the session's own actions are published under.
+fn wire_provider() -> &'static str {
+    tilo_actions::remote::SESSION_ACTIONS_PROVIDER
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2478,9 +2483,4 @@ mod tests {
             "a program inside a sandbox"
         );
     }
-}
-
-/// The provider the session's own actions are published under.
-fn wire_provider() -> &'static str {
-    tilo_actions::remote::SESSION_ACTIONS_PROVIDER
 }
