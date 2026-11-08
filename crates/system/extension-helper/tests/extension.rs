@@ -932,6 +932,14 @@ fn a_kept_bare_signature_does_not_activate_on_an_image_with_the_root() {
     assert!(!machine.codecs().exists());
 }
 
+/// A machine that has the verified parts installed: the prologue most of the
+/// status, remove and path tests start from.
+fn installed() -> Machine {
+    let machine = Machine::new();
+    install(&machine, true);
+    machine
+}
+
 fn install(machine: &Machine, mesa: bool) {
     let codecs = vec![machine.artifact(rpm("libavcodec-freeworld", "1.0"))];
     let mesa = mesa.then(|| vec![machine.artifact(rpm("mesa-va-drivers-freeworld", "25.2.4"))]);
@@ -941,8 +949,7 @@ fn install(machine: &Machine, mesa: bool) {
 
 #[test]
 fn remove_deletes_everything_and_unmerges() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     assert_eq!(machine.run("remove"), 0);
     assert!(!machine.codecs().exists());
     assert!(!machine.part("tilo-codecs-mesa").exists());
@@ -961,8 +968,7 @@ fn remove_deletes_everything_and_unmerges() {
 
 #[test]
 fn activation_rebuilds_parts_from_verified_bytes() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     let library = machine.codecs().join("usr/lib64/libavcodec-freeworld.so");
     fs::write(&library, "replaced behind the helper's back").unwrap();
     fs::write(
@@ -980,8 +986,7 @@ fn activation_rebuilds_parts_from_verified_bytes() {
 
 #[test]
 fn rebuilding_keeps_the_times_media_processes_compare() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     let release = machine
         .codecs()
         .join("usr/lib/extension-release.d/extension-release.tilo-codecs");
@@ -1006,8 +1011,7 @@ fn activation_refuses_a_tampered_object() {
 
 #[test]
 fn activation_refuses_a_tampered_kept_manifest() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     let kept = fs::read_dir(machine.layout.bases("media-codecs"))
         .unwrap()
         .next()
@@ -1028,8 +1032,7 @@ fn activation_refuses_a_tampered_kept_manifest() {
 
 #[test]
 fn activation_merges_nothing_beside_a_foreign_extension() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     let foreign = machine.layout.extensions().join("evil");
     fs::create_dir_all(foreign.join("usr/lib/extension-release.d")).unwrap();
     let merges = machine.host.merges.get();
@@ -1090,8 +1093,7 @@ fn verified_downloads_move_across_mounts() {
 
 #[test]
 fn development_image_merges_its_own_layers_too() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     fs::create_dir_all(machine.layout.extensions().join("tilo-vm-layer/usr")).unwrap();
     machine.host.masked.set(false);
     assert_eq!(machine.run("activate"), 0);
@@ -1100,8 +1102,7 @@ fn development_image_merges_its_own_layers_too() {
 
 #[test]
 fn parts_stay_across_an_update_that_keeps_their_base_packages() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     machine
         .host
         .packages
@@ -1190,8 +1191,7 @@ fn plugin_with_signed_codec_library_can_be_installed() {
 
 #[test]
 fn a_part_whose_base_package_changed_waits_and_returns_on_rollback() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     let booted = machine.host.packages.borrow().clone();
     *machine.host.packages.borrow_mut() = booted
         .iter()
@@ -1223,8 +1223,7 @@ fn a_part_whose_package_the_base_now_ships_waits() {
 
 #[test]
 fn nothing_is_merged_on_another_os_release() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     fs::write(
         machine.root.join("usr/lib/os-release"),
         "ID=fedora\nVERSION_ID=45\n",
@@ -1237,8 +1236,7 @@ fn nothing_is_merged_on_another_os_release() {
 
 #[test]
 fn an_unreadable_base_merges_nothing() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     fs::write(machine.root.join("usr/lib/os-release"), "ID=Fedora Linux\n").unwrap();
     let unmerges = machine.host.unmerges.get();
     assert_eq!(machine.run("activate"), 1);
@@ -1257,8 +1255,7 @@ fn parts_nothing_vouches_for_are_removed() {
 
 #[test]
 fn refresh_after_an_update_rebuilds_for_the_new_base() {
-    let machine = Machine::new();
-    install(&machine, true);
+    let machine = installed();
     let updated: Vec<String> = machine
         .host
         .packages

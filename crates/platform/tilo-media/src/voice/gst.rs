@@ -1067,10 +1067,7 @@ mod tests {
         let (fd, peer) = std::os::unix::net::UnixStream::pair().unwrap();
         let (sink, gate) = delayed_element(true);
         let pipeline = gst::Pipeline::new();
-        let source = gst_app::AppSrc::builder()
-            .is_live(true)
-            .format(gst::Format::Time)
-            .build();
+        let source = app_source();
         pipeline.add_many([source.upcast_ref(), &sink]).unwrap();
         source.link(&sink).unwrap();
         let audio = VoiceAudio::from_output_bound(pipeline, source, Some(fd.into())).unwrap();
@@ -1081,8 +1078,7 @@ mod tests {
     #[test]
     fn delayed_device_start_does_not_block_control_or_publish_late_capture() {
         use std::io::Read;
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
+        let (_device_test, mut audio) = device_audio();
         let (source, gate) = delayed_source();
         let observed = source.clone();
         let (fd, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -1227,10 +1223,7 @@ mod tests {
         let _device_test = device_test_lock();
         wait_for_device_workers();
         let mut audio = software_output();
-        let source = gst::ElementFactory::make("audiotestsrc")
-            .property("is-live", true)
-            .build()
-            .unwrap();
+        let source = audio_test_source();
         audio
             .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
@@ -1241,10 +1234,7 @@ mod tests {
             let (other, gate, _peer) = pending_output();
             pending.push((other, gate));
         }
-        let source = gst::ElementFactory::make("audiotestsrc")
-            .property("is-live", true)
-            .build()
-            .unwrap();
+        let source = audio_test_source();
         assert_eq!(
             audio.start_capture_element(&source, Arc::new(|| true)),
             Err(AudioError::Capacity)
@@ -1255,6 +1245,28 @@ mod tests {
             other.close();
             gate.release();
         }
+    }
+
+    /// The one device-testing lock and a software output that has started.
+    fn device_audio() -> (std::sync::MutexGuard<'static, ()>, VoiceAudio) {
+        let guard = device_test_lock();
+        (guard, software_output())
+    }
+
+    /// A live time-stamped source the capture is handed.
+    fn app_source() -> gst_app::AppSrc {
+        gst_app::AppSrc::builder()
+            .is_live(true)
+            .format(gst::Format::Time)
+            .build()
+    }
+
+    /// A live source that produces audio without a device.
+    fn audio_test_source() -> gst::Element {
+        gst::ElementFactory::make("audiotestsrc")
+            .property("is-live", true)
+            .build()
+            .unwrap()
     }
 
     fn software_output() -> VoiceAudio {
@@ -1328,12 +1340,8 @@ mod tests {
 
     #[test]
     fn exact_audio_source_startup_waits_for_a_real_frame_and_times_out_to_null() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
-        let source = gst_app::AppSrc::builder()
-            .is_live(true)
-            .format(gst::Format::Time)
-            .build();
+        let (_device_test, mut audio) = device_audio();
+        let source = app_source();
         source.set_caps(Some(&raw_caps()));
         let observed = source.clone();
         let (fd, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -1365,12 +1373,8 @@ mod tests {
 
     #[test]
     fn exact_audio_source_pending_without_clock_can_be_revoked_synchronously() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
-        let source = gst_app::AppSrc::builder()
-            .is_live(true)
-            .format(gst::Format::Time)
-            .build();
+        let (_device_test, mut audio) = device_audio();
+        let source = app_source();
         source.set_caps(Some(&raw_caps()));
         let observed = source.clone();
         audio
@@ -1394,12 +1398,8 @@ mod tests {
 
     #[test]
     fn exact_audio_source_reports_active_only_after_valid_sample() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
-        let source = gst::ElementFactory::make("audiotestsrc")
-            .property("is-live", true)
-            .build()
-            .unwrap();
+        let (_device_test, mut audio) = device_audio();
+        let source = audio_test_source();
         audio
             .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
@@ -1430,8 +1430,7 @@ mod tests {
                 }
             }
         }
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
+        let (_device_test, mut audio) = device_audio();
         let now = Instant::now();
         let id = PublicationId {
             namespace: "stalled".into(),
@@ -1484,14 +1483,10 @@ mod tests {
 
     #[test]
     fn real_capture_poll_is_bounded_and_timestamps_survive_restart() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
+        let (_device_test, mut audio) = device_audio();
         let mut previous = None;
         for _ in 0..2 {
-            let source = gst::ElementFactory::make("audiotestsrc")
-                .property("is-live", true)
-                .build()
-                .unwrap();
+            let source = audio_test_source();
             audio
                 .start_capture_element(&source, Arc::new(|| true))
                 .unwrap();
@@ -1522,12 +1517,8 @@ mod tests {
 
     #[test]
     fn encoded_device_pts_jitter_keeps_fresh_frames_on_the_wire_sample_clock() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
-        let source = gst::ElementFactory::make("audiotestsrc")
-            .property("is-live", true)
-            .build()
-            .unwrap();
+        let (_device_test, mut audio) = device_audio();
+        let source = audio_test_source();
         audio
             .start_capture_element(&source, Arc::new(|| true))
             .unwrap();
@@ -1586,8 +1577,7 @@ mod tests {
 
     #[test]
     fn future_encoded_capture_waits_for_its_original_presentation_clock() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
+        let (_device_test, mut audio) = device_audio();
         let source = gst_app::AppSrc::builder()
             .is_live(true)
             .format(gst::Format::Time)
@@ -1707,8 +1697,7 @@ mod tests {
 
     #[test]
     fn real_playout_resamples_bounded_pcm_backlog_and_drops_expired_samples() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
+        let (_device_test, mut audio) = device_audio();
         let now = Instant::now();
         let id = PublicationId {
             namespace: "drift".into(),
@@ -1902,8 +1891,7 @@ mod tests {
 
     #[test]
     fn revoked_capture_refuses_source_and_worker_finishes_real_pipeline_cleanup() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
+        let (_device_test, mut audio) = device_audio();
         let (fd, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         assert_eq!(
             audio.start_capture(
@@ -1918,10 +1906,7 @@ mod tests {
         );
         let valid = Arc::new(AtomicBool::new(true));
         let fence = valid.clone();
-        let source = gst::ElementFactory::make("audiotestsrc")
-            .property("is-live", true)
-            .build()
-            .unwrap();
+        let source = audio_test_source();
         let observed_source = source.clone();
         audio
             .start_capture_element(&source, Arc::new(move || fence.load(Ordering::Acquire)))
@@ -1942,13 +1927,9 @@ mod tests {
 
     #[test]
     fn close_stops_all_devices_and_cannot_be_reopened() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
+        let (_device_test, mut audio) = device_audio();
         let (fd, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
-        let source = gst::ElementFactory::make("audiotestsrc")
-            .property("is-live", true)
-            .build()
-            .unwrap();
+        let source = audio_test_source();
         let observed_source = source.clone();
         audio
             .start_capture_element(&source, Arc::new(|| true))
@@ -1973,8 +1954,7 @@ mod tests {
 
     #[test]
     fn independent_stop_handle_stops_capture_without_outer_lock_and_fences_old_generation() {
-        let _device_test = device_test_lock();
-        let mut audio = software_output();
+        let (_device_test, mut audio) = device_audio();
         let first = gst::ElementFactory::make("audiotestsrc")
             .property("is-live", true)
             .build()
