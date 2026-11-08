@@ -31,14 +31,8 @@ pub trait OwnerCustody: Send + Sync + 'static {
     fn projects_room(&self, workspace: WorkspaceId) -> bool;
     /// The owner if it is open, never waiting: `unavailable` when there is
     /// none.
-    ///
-    /// # Errors
-    /// The owner is still opening, or there is none.
     fn opened_owner(&self, unavailable: &str) -> Result<NativeWorkspaceOwner, String>;
     /// The owner, waiting for its open: for a commit's blocking thread.
-    ///
-    /// # Errors
-    /// The owner cannot be opened.
     fn resolve_owner(&self) -> Result<NativeWorkspaceOwner, String>;
     /// Whether this device still holds custody of `workspace` in `owner`, as
     /// its current identity for the workspace says.
@@ -67,11 +61,6 @@ pub trait OwnerCustody: Send + Sync + 'static {
     /// package carries. The owner is then the record's creator at its first
     /// revision, and the app's own change is admitted on top of it like every
     /// later one.
-    ///
-    /// # Errors
-    /// The app is not installed here, declares no such kind, the workspace
-    /// does not let its app author records or this person change this one, or
-    /// the owner could not publish it.
     fn prepare_record(
         &self,
         owner: &NativeWorkspaceOwner,

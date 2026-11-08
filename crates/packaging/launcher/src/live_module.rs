@@ -93,9 +93,6 @@ impl LiveModule {
 
     /// The bind and the variable that show the app its later builds; `ro_paths` gains the mount
     /// for the sandbox's Landlock plan.
-    ///
-    /// # Errors
-    /// The argv has no entrypoint token.
     pub fn splice(
         &self,
         argv: &mut Vec<String>,

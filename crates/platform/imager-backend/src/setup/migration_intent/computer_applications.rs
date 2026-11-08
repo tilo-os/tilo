@@ -12,9 +12,6 @@ impl MigrationIntent {
         Self::capture_computer_applications_selected(source, directory, categories, selected, &[])
     }
     /// Capture shared Files and selected applications with nested exclusions.
-    ///
-    /// # Errors
-    /// Refuses missing consent, unsafe grants and malformed exclusions.
     pub fn capture_computer_applications_selected(
         source: &Path,
         directory: &Path,

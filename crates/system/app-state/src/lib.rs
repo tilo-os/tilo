@@ -175,9 +175,6 @@ fn validate_record_key(key: &str) -> Result<(), StoreError> {
 
 /// Validate the identifiers of a workspace-scoped record without resolving
 /// any path, so a caller can refuse a bad namespace before choosing a store.
-///
-/// # Errors
-/// Rejects any identifier that is not a single, non-traversing name.
 pub fn validate_record_identity(
     package: &str,
     workspace: &str,
@@ -190,9 +187,6 @@ pub fn validate_record_identity(
 
 /// Validate the identifiers of a workspace's index document, as
 /// [`validate_record_identity`] does a record's.
-///
-/// # Errors
-/// Rejects any identifier that is not a single, non-traversing name.
 pub fn validate_workspace_identity(package: &str, workspace: &str) -> Result<(), StoreError> {
     validate_package_id(package)?;
     validate_record_key(workspace)
@@ -246,11 +240,6 @@ impl DocStore {
 
     /// Open the store for an explicit package id — for tests and migration
     /// tools; rejects any id that is not a single, non-traversing directory name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `package_id` fails `validate_package_id`, or if
-    /// the package's state directory can't be created, inspected or locked.
     pub fn open_for(package_id: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         Self::shared(Self::native_store(), StorageKey::package(package_id))
@@ -279,12 +268,6 @@ impl DocStore {
     /// Open the index of **one workspace** — the list of which records that
     /// workspace holds. A sibling of the workspace's records, so a workspace
     /// id can never resolve to a record's document and merge the two.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `package_id` fails `validate_package_id` or
-    /// `workspace_key` fails `validate_record_key`, or if the workspace's
-    /// state directory can't be created, inspected or locked.
     pub fn open_workspace(package_id: &str, workspace_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(workspace_key)?;
@@ -344,10 +327,6 @@ impl DocStore {
     /// Never adopts stale files. The ownership gate is cooperative: older
     /// binaries that do not acquire it can still write, so concurrent use of
     /// one profile with those binaries is unsupported.
-    ///
-    /// # Errors
-    /// Rejects invalid paths, contested gates and every filesystem
-    /// durability failure.
     pub fn open_canonical_at(package_id: &str, directory: &Path) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         let (store, key) = directory_key(directory)?;
@@ -358,9 +337,6 @@ impl DocStore {
 
     /// The existing workspace-scoped package-primary directory, with explicit
     /// custody.
-    ///
-    /// # Errors
-    /// Rejects relative roots and invalid package or workspace identifiers.
     pub fn workspace_primary_dir_at(
         profile_root: &Path,
         package: &str,
@@ -375,9 +351,6 @@ impl DocStore {
     }
 
     /// Resolve one record under an explicit profile root without consulting the environment.
-    ///
-    /// # Errors
-    /// Rejects relative roots and invalid package, workspace or record identifiers.
     pub fn workspace_record_dir_at(
         profile_root: &Path,
         package: &str,
@@ -426,11 +399,6 @@ impl DocStore {
     /// Load the persisted document, or `Ok(None)` on a first launch. A trailing
     /// partially-written chunk (crash during append) is dropped rather than
     /// failing the load, losing only the last unflushed edit.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the document exists but can't be read, or if its
-    /// bytes aren't a loadable Automerge document.
     pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
         self.load_with_completeness(false)
     }
@@ -712,9 +680,6 @@ fn decode_canonical_with(
 }
 
 /// Validate a canonical package/workspace identity independently of its storage adapter.
-///
-/// # Errors
-/// Rejects an invalid package id or workspace key.
 pub fn validate_record_namespace(package: &str, workspace: &str) -> Result<(), StoreError> {
     validate_package_id(package)?;
     validate_record_key(workspace)

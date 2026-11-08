@@ -1344,9 +1344,6 @@ impl Conversation {
     }
 
     /// Validate the complete response before any tools may execute.
-    ///
-    /// # Errors
-    /// Rejects malformed, truncated, empty or replayed tool batches.
     pub fn calls(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
         #[cfg(test)]
         if let Some(legacy) = &self.legacy {
@@ -1369,9 +1366,6 @@ impl Conversation {
     }
 
     /// Append a validated response and its ordered results atomically.
-    ///
-    /// # Errors
-    /// Rejects malformed responses, mismatched results and consumed call IDs.
     pub fn push(&mut self, assistant: Value, results: Vec<(String, String)>) -> Result<(), String> {
         #[cfg(test)]
         if let Some(legacy) = &mut self.legacy {

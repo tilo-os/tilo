@@ -145,11 +145,6 @@ pub fn load_signed_predictions(dir: &Path, generation: u64) -> Result<Vec<Predic
 }
 
 /// Write a signed prediction where [`load_signed_predictions`] will find it.
-///
-/// # Errors
-///
-/// Returns an error if `dir` cannot be created, or if the prediction file cannot be
-/// serialised or written.
 pub fn write_signed_prediction(
     dir: &Path,
     generation: u64,
@@ -196,10 +191,6 @@ impl Workspace {
         self.dir.join(name)
     }
     /// Write bytes to a scratch file and return the path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be written.
     pub fn put(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
         let p = self.path(name);
         std::fs::write(&p, bytes).with_context(|| format!("writing {}", p.display()))?;
@@ -501,10 +492,6 @@ fn seal_policy_spec(
 
 /// Sign a prediction. Needs the *private* key, so this runs on the build or update
 /// authority, never on the device.
-///
-/// # Errors
-///
-/// Returns an error if the private key cannot be read or parsed, or signing fails.
 pub fn sign_prediction(
     _runner: &dyn Runner,
     _ws: &Workspace,
@@ -560,11 +547,6 @@ pub fn satisfy(
 ///
 /// Returns `Ok(None)` when the prediction does not match this machine's live
 /// state. It never silently falls back to another matcher.
-///
-/// # Errors
-///
-/// Returns an error if the mechanism fails: loading the prediction key,
-/// minting its ticket, starting the session, or reading live PCRs.
 pub fn satisfy_boot(
     runner: &dyn Runner,
     ws: &Workspace,

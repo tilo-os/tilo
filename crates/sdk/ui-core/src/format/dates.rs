@@ -77,6 +77,33 @@ impl Formats {
         }
     }
 
+    /// The **moment fact** style: a moment told beside words that already name its day, as a
+    /// choice's trailing fact reads it. It is always the time of day (`15:00`), with the short
+    /// weekday before it when it is not today (`Sat 09:00`), the month and day past the week
+    /// ahead (`Jun 29 09:00`), and the year with another year's day (`Jan 2, 2027 09:00`).
+    ///
+    /// The day is the person's own: `today` is [`crate::clock::today`].
+    #[must_use]
+    pub fn moment_fact(&self, at: NaiveDateTime, today: NaiveDate) -> String {
+        let day = at.date();
+        let days = day.signed_duration_since(today).num_days();
+        let named = match days {
+            0 => None,
+            -6..=6 => Some(self.weekday_short(day.weekday())),
+            _ if day.year() == today.year() => Some(self.month_day(day)),
+            _ => Some(self.month_day_year(day)),
+        };
+        named.map_or_else(
+            || self.time(&at),
+            |day| {
+                widget_format(
+                    "day-at-time",
+                    &[("day", day.into()), ("time", self.time(&at).into())],
+                )
+            },
+        )
+    }
+
     /// The **day it happened** style: a day something was done on, as the heading over what
     /// was done that day reads it. It is the day fact's words without its judgement of the
     /// day's direction: `Today`, `Yesterday`, the weekday within the past week (`Sunday`),

@@ -155,7 +155,6 @@ impl Harness {
 
 #[test]
 fn resize_reflows_and_reshapes_only_when_width_changes() {
-    // Case `narrowing_window_reflows_content_downward`.
     // Narrowing the window wraps the paragraph and pushes the button row
     // down: content reflows to the new width instead of clipping.
     {
@@ -174,7 +173,6 @@ fn resize_reflows_and_reshapes_only_when_width_changes() {
         );
     }
 
-    // Case `settled_size_redraws_do_not_reshape`.
     // Redraws at an unchanged size (a held / settled resize, and every
     // static frame) must not reshape a single label — the property that
     // makes a settled resize and idle content cost ~zero text work.
@@ -200,7 +198,6 @@ fn resize_reflows_and_reshapes_only_when_width_changes() {
         }
     }
 
-    // Case `width_change_reshapes_wrapped_text`.
     // When the width actually changes, wrapped text re-shapes so the user
     // never sees stale glyph positions — the cache adapts, it does not
     // pin old geometry.

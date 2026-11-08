@@ -18,7 +18,7 @@ const UPDATE_PROGRAM: &str = "/usr/bin/dbus-update-activation-environment";
 /// What a Tilo session exports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionEnvironment {
-    /// The compositor's socket in `XDG_RUNTIME_DIR`, e.g. `wayland-1`.
+    /// The compositor's socket in `XDG_RUNTIME_DIR` , e.g. `wayland-1` .
     pub wayland_display: String,
 }
 
@@ -34,8 +34,7 @@ impl SessionEnvironment {
         assignments
     }
 
-    /// The command that publishes [`Self::assignments`] to both
-    /// environments.
+    /// The command that publishes [`Self::assignments`] to both environments.
     #[must_use]
     pub fn command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(UPDATE_PROGRAM);

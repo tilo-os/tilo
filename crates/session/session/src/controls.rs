@@ -1,14 +1,10 @@
-//! The session's own resources: what only the session can change, because
-//! it runs the compositor (the touchpad, locking the screen) or holds the
-//! questions about the person's apps.
-//!
-//! They are served as a service beside every other the session runs, so an
-//! app reaches them the way it reaches each service's resources: reads what
-//! they are now and invokes what changes them through one door. What only the
-//! session holds is published here as its reading — whether the screens are
-//! locked, the touchpad is on, the night light is on and how far the
-//! magnifier zooms — so a resource that only acted would be the one kind of
-//! resource a panel could not open.
+//! The session's own resources: what only the session can change, because it runs the compositor
+//! (the touchpad, locking the screen) or holds the questions about the person's apps.
+//! They are served as a service beside every other the session runs, so an app reaches them the way
+//! it reaches each service's resources: reads what they are now and invokes what changes them
+//! through one door. What only the session holds is published here as its reading — whether the
+//! screens are locked, the touchpad is on, the night light is on and how far the magnifier zooms —
+//! so a resource that only acted would be the one kind of resource a panel could not open.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -30,9 +26,8 @@ use tilo_sheets::Seat as _;
 use crate::i18n::t;
 use crate::{displays, input_sources};
 
-/// Type with `keyboard`: the compositor's keymap, and the words printed on
-/// the keys of what the session draws (the shortcut guide, the desk's
-/// chords), both follow it.
+/// Type with `keyboard` : the compositor's keymap, and the words printed on the keys of what the
+/// session draws (the shortcut guide, the desk's chords), both follow it.
 pub(crate) fn apply_keyboard(
     compositor: &mut tilo_compositor::Compositor,
     keyboard: &tilo_compositor::KeyboardLayout,
@@ -54,16 +49,15 @@ pub const MAGNIFIER_RESOURCE: &str = "session:magnifier";
 pub const SESSION_RESOURCE: &str = "session:screen";
 /// The resource of the night light.
 pub const NIGHT_LIGHT_RESOURCE: &str = "session:night-light";
-/// The resource of this device's clipboard, which the clipboard publishes
-/// itself: [`crate::mount::clipboard`].
+/// The resource of this device's clipboard, which the clipboard publishes itself:
+/// [`crate::mount::clipboard`].
 pub const CLIPBOARD_RESOURCE: &str = "session:clipboard";
 
 /// What the session's resources ask of the compositor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "do", rename_all = "kebab-case")]
 pub enum SessionCommand {
-    /// Turn the touchpads on (`Some(true)`), off, or (`None`) the other
-    /// way from how they are.
+    /// Turn the touchpads on (`Some(true)`), off, or (`None`) the other way from how they are.
     SetTouchpad { on: Option<bool> },
     /// Lock the screen.
     Lock,
@@ -72,38 +66,34 @@ pub enum SessionCommand {
     OpenPowerMenu,
     /// End the session: the person logs out.
     LogOut,
-    /// End this session and nothing else: what shutting down is to a
-    /// session in a window of another desktop, which owns no machine.
+    /// End this session and nothing else: what shutting down is to a session in a window of another
+    /// desktop, which owns no machine.
     End,
     /// Step the magnifier: on or off, stronger or weaker.
     Magnifier(Magnify),
     /// Use the displays together this way.
     Displays { mode: DisplayMode },
-    /// Put the display sheet up, where the layouts and the wireless
-    /// displays are chosen.
+    /// Put the display sheet up, where the layouts and the wireless displays are chosen.
     OpenDisplaySheet,
     /// Take the display sheet down.
     CloseDisplaySheet,
-    /// Turn the night light on (`Some(true)`), off, or (`None`) the other
-    /// way from how it is.
+    /// Turn the night light on (`Some(true)`), off, or (`None`) the other way from how it is.
     NightLight { on: Option<bool> },
-    /// Paste the files copied to the clipboard into this folder, as a copy
-    /// or (after a cut) a move. The clipboard's own `paste-files` action is
-    /// how it is asked now; this is what a command recorded before that
-    /// carries.
+    /// Paste the files copied to the clipboard into this folder, as a copy or (after a cut) a move.
+    /// The clipboard's own `paste-files` action is how it is asked now; this is what a command
+    /// recorded before that carries.
     PasteFiles { destination: String },
     /// Type in the next of the person's keyboard input sources.
     NextInputSource,
-    /// Ask the person whether to uninstall `app`, by its entry's id or the
-    /// name they know it by: the question stands on the uninstall sheet
-    /// until they answer it, as it does when the app list asks.
+    /// Ask the person whether to uninstall `app` , by its entry's id or the name they know it by:
+    /// the question stands on the uninstall sheet until they answer it, as it does when the app
+    /// list asks.
     AskUninstall { app: String },
-    /// Switch the machine to virtual terminal `vt`, numbered from 1, as
-    /// `Ctrl+Alt+F1..F12` asks: the way out to a text console when the
-    /// desktop cannot give the machine back.
+    /// Switch the machine to virtual terminal `vt` , numbered from 1, as `Ctrl+Alt+F1..F12` asks:
+    /// the way out to a text console when the desktop cannot give the machine back.
     SwitchVt { vt: i32 },
-    /// Stop a remote person driving this machine's seat, as `Super+Escape`
-    /// asks: everything stays as it is, and their input stops.
+    /// Stop a remote person driving this machine's seat, as `Super+Escape` asks: everything stays
+    /// as it is, and their input stops.
     CutRemoteInput,
 }
 
@@ -248,8 +238,8 @@ fn magnifier_resource() -> ResourceSpec {
         ))
 }
 
-/// The questions about the person's apps: whether to uninstall one. The
-/// answer is the downloaded apps registry's own action, as from anywhere.
+/// The questions about the person's apps: whether to uninstall one. The answer is the downloaded
+/// apps registry's own action, as from anywhere.
 fn apps_resource() -> ResourceSpec {
     ResourceSpec::new(APPS_RESOURCE, "session", t("session-apps")).with_action(action(
         ASK_UNINSTALL,
@@ -265,8 +255,7 @@ fn apps_resource() -> ResourceSpec {
     ))
 }
 
-/// The [`SessionCommand`] `arguments` make of `address`, checked against what
-/// `published` offers.
+/// The [`SessionCommand`] `arguments` make of `address` , checked against what `published` offers.
 pub(crate) fn command_of(
     published: &[ResourceSpec],
     address: &ActionAddress,
@@ -279,8 +268,8 @@ pub(crate) fn command_of(
         .ok_or_else(|| DoorError::Failed("not a session command".into()))
 }
 
-/// What the session's own resources read: the state of what only the session
-/// keeps, told to them by the loop every pass.
+/// What the session's own resources read: the state of what only the session keeps, told to them by
+/// the loop every pass.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlsReading {
     /// The screens are locked.
@@ -293,14 +282,13 @@ pub struct ControlsReading {
     pub zoom: u8,
 }
 
-/// The session's own resources and the commands they raise: what only the
-/// session can carry out, served beside its services.
+/// The session's own resources and the commands they raise: what only the session can carry out,
+/// served beside its services.
 pub(crate) struct SessionControls {
     commands: Rc<RefCell<Vec<SessionCommand>>>,
     /// The state the resources read, written by the loop.
     reading: Rc<RefCell<ControlsReading>>,
-    /// The reading last reported, so a pass that changed nothing is no
-    /// revision.
+    /// The reading last reported, so a pass that changed nothing is no revision.
     published: RefCell<Option<ControlsReading>>,
 }
 
@@ -316,8 +304,8 @@ impl SessionControls {
         }
     }
 
-    /// What `resource` reads: the part of the session's own state that
-    /// resource changes, or nothing for the questions about apps.
+    /// What `resource` reads: the part of the session's own state that resource changes, or nothing
+    /// for the questions about apps.
     fn reading_of(reading: &ControlsReading, resource: &str) -> Option<Value> {
         match resource {
             SESSION_RESOURCE => Some(json!({ "locked": reading.locked })),
@@ -335,8 +323,8 @@ impl SessionControls {
 
 impl Service for SessionControls {
     fn resources(&self) -> Vec<ResourceSpec> {
-        // What the controls change is this device's own state, not anyone's
-        // content: a grant to read the session's resources reads it.
+        // What the controls change is this device's own state, not anyone's content: a grant to
+        // read the session's resources reads it.
         resources()
             .into_iter()
             .map(ResourceSpec::with_granted_reading)
@@ -373,8 +361,8 @@ impl Service for SessionControls {
 }
 
 impl crate::Session {
-    /// Carry out what the session's own resources asked of it: the
-    /// compositor, the sheets and the settings it alone holds.
+    /// Carry out what the session's own resources asked of it: the compositor, the sheets and the
+    /// settings it alone holds.
     pub(crate) fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
         match command {
             SessionCommand::Lock => self.lock_by_person(),
@@ -418,17 +406,15 @@ impl crate::Session {
                 Ok(())
             }
             SessionCommand::LogOut => {
-                // The login wrapper tears the session down once this
-                // process ends; without one, ending is the whole of it. A
-                // session in a window of another desktop has no wrapper of
-                // its own: ending is all logging out is there.
+                // The login wrapper tears the session down once this process ends; without one,
+                // ending is the whole of it. A session in a window of another desktop has no
+                // wrapper of its own: ending is all logging out is there.
                 if !self.shared.hosted
                     && let Err(error) = os_actions::request_logout()
                 {
                     tracing::info!(%error, "no login wrapper to tell of the logout");
                 }
-                // Apps are told the session ends before the loop stops
-                // answering them.
+                // Apps are told the session ends before the loop stops answering them.
                 if let Some(desktop) = &self.desktop {
                     desktop.end();
                 }
@@ -472,10 +458,9 @@ impl crate::Session {
         }
     }
 
-    /// What the session's own resources read of this device, as this pass
-    /// left it: a key that toggled the touchpad and a command that lit the
-    /// night light are both read here, and the controls' service publishes
-    /// them to the apps that asked.
+    /// What the session's own resources read of this device, as this pass left it: a key that
+    /// toggled the touchpad and a command that lit the night light are both read here, and the
+    /// controls' service publishes them to the apps that asked.
     pub(crate) fn read_controls(&self) {
         let (zoom, _) = self.magnifier;
         self.shared

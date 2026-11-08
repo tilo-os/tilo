@@ -189,6 +189,27 @@ fn a_vertical_drag_is_the_lists_scroll_and_moves_nothing() {
 }
 
 #[test]
+fn a_tap_is_the_lists_click_and_not_the_rows() {
+    let runs = Runs::new();
+    let mut row = row(None, Some(counted("Reply", &runs)));
+    let at = now();
+    let spot = Point::new(f64::from(WIDTH) / 2.0, 24.0);
+    with_monotonic_time(at, || {
+        row.send(&touch(TouchPhase::Started, spot));
+        // A finger that lifts where it came down is a click here: the row holds the press for
+        // its swipe and lets the tap go to its list.
+        row.send(&crate::synthetic_input::cursor_moved(spot.x, spot.y));
+        row.send(&crate::synthetic_input::mouse_press());
+        assert!(
+            !row.send(&crate::synthetic_input::mouse_release()),
+            "the tap is not the swipe's"
+        );
+        assert!(row.offset().abs() < 0.5, "and the row did not move");
+    });
+    assert_eq!(runs.get(), 0);
+}
+
+#[test]
 fn a_touch_during_the_settle_catches_the_row_where_it_is_drawn() {
     let runs = Runs::new();
     let mut row = row(None, Some(counted("Reply", &runs)));

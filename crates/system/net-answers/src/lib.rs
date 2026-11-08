@@ -45,10 +45,6 @@ impl Source {
     }
 
     /// The answer in a fetched `body`.
-    ///
-    /// # Errors
-    ///
-    /// The body does not hold what the source publishes.
     pub fn parse(self, body: &str) -> Result<Answer, String> {
         match self {
             Self::Rates => parse_ecb_rates(body).map(Answer::Rates),

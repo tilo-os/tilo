@@ -610,12 +610,6 @@ pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
 /// [`install_app`], reporting download progress. Reporting stops at
 /// the download — `tilo-install` verifies+extracts as one opaque step,
 /// and inventing a fraction for it would be a bar that lies.
-///
-/// # Errors
-///
-/// Returns an error if there's nowhere writable to stage the
-/// download, the download itself fails, `tilo-install` can't be run,
-/// or it runs and refuses the package.
 pub fn install_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -785,10 +779,6 @@ pub struct StagingFile {
 
 impl StagingFile {
     /// A new file in `staging` named after `stem`, locked by this process.
-    ///
-    /// # Errors
-    ///
-    /// When the staging directory cannot be written.
     pub fn claim(staging: &Path, stem: &str) -> std::io::Result<Self> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         loop {
@@ -962,11 +952,6 @@ pub fn stage_each(
 }
 
 /// Update `app` from the package [`stage`] downloaded for it.
-///
-/// # Errors
-///
-/// Returns an error if the runtime it needs cannot be made available, or
-/// `tilo-install` cannot run or refuses the update.
 pub fn update_staged_reporting(
     app: &CatalogueApp,
     staged: StagedPackage,
@@ -1099,12 +1084,6 @@ fn install_required_runtimes(
 }
 
 /// Download and atomically update an installed app from a verified offer.
-///
-/// # Errors
-///
-/// Returns an error if the package cannot be staged or downloaded, its signed
-/// metadata does not match the downloaded bytes, or `tilo-install` cannot run
-/// or refuses the update.
 pub fn update_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),

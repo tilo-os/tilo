@@ -308,10 +308,6 @@ impl SshSession {
     /// Start connecting. Returns immediately with a handle whose status is
     /// `Connecting`; a task on the app runtime advances it to `Connected` or
     /// `Failed(reason)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the app runtime cannot be started.
     pub fn connect(cfg: SshConfig) -> anyhow::Result<SshSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let (output_tx, output_rx) = channel::<Vec<u8>>(SSH_OUTPUT_QUEUE_CAPACITY);

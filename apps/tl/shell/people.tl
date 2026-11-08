@@ -45,17 +45,3 @@ view agent_chip(d: Desk, a: Agent) {
         }
     }
 }
-
-/// An agent here with what it is doing and what it last changed: its face, its activity line
-/// and the mark of what it did, which opens the run's log.
-view agent_line(d: Desk, a: Agent) {
-    ui.ListRow(
-        a.name,
-        secondary: .some(if a.doing != "" { a.doing } else { a.state }),
-        icon: .bot,
-    ) {
-        trailing: {
-            ui.Badge(count: a.unseen)
-        }
-    }
-}

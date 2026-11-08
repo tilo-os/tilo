@@ -258,9 +258,6 @@ impl InstanceRecord {
     /// `documents`: as a native launch opens its workspace's document. In a workspace this device governs,
     /// the record is its on-disk copy. In a workspace another host governs, the broker's committed
     /// read of the workspace comes first and is merged into that copy, which keeps it from then on.
-    ///
-    /// # Errors
-    /// The manager joined no route, the copy cannot be opened, or the committed read failed.
     pub fn open(
         manager: CollaborationManager,
         documents: &Rc<dyn DurableStore>,
@@ -719,9 +716,6 @@ impl InstanceRecord {
     /// Carry out what the person asked of their history at the window (`asked`) through the
     /// history verb `undo` or `redo` on `resource` (a resource `kind`), as a step of their own;
     /// the instance is brought up to date. Whether anything was taken back or brought back.
-    ///
-    /// # Errors
-    /// The verb was refused, said in the record's words.
     pub fn asked(
         &mut self,
         instance: &mut Instance,
@@ -805,9 +799,6 @@ impl InstanceRecord {
     /// `ambient`, to the record as one step of its own, as a native app applies it; send it on
     /// the record's route and bring the instance up to date. What the verb did, as its caller
     /// is answered ([`verbs::result`]).
-    ///
-    /// # Errors
-    /// The verb was refused, said in the record's words.
     pub fn history(
         &mut self,
         instance: &mut Instance,
@@ -843,9 +834,6 @@ impl InstanceRecord {
 
     /// [`Self::history`] with no instance: the record's origin applying an agent task's history
     /// verb (its `undo`).
-    ///
-    /// # Errors
-    /// The verb was refused, or the workspace refuses its change for good.
     pub fn history_at_origin(
         &mut self,
         edit: &HistoryEdit,
@@ -920,9 +908,6 @@ impl InstanceRecord {
     ///
     /// The view is the record's own chunk: a step written in another chunk is listed there. The
     /// action that made it is in the workspace's log, which names every unit the action wrote.
-    ///
-    /// # Errors
-    /// The payload is no history view, or names a version the record has none of.
     pub fn view_history(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
         verbs::answer(self.doc(), payload, &self.words)
     }
@@ -1242,9 +1227,6 @@ impl InstanceRecord {
     /// Apply `action`, which the door built for `invoker` (a person or an agent task the broker
     /// admitted), to the workspace record as one step of its own, and send it on the record's route.
     /// `ambient` is the task or run it was invoked in. The instance is brought up to date.
-    ///
-    /// # Errors
-    /// The action could not be applied.
     pub fn apply_invoked(
         &mut self,
         instance: &mut Instance,
@@ -1524,9 +1506,6 @@ impl InstanceRecord {
     /// Apply `action`, which the door built for `invoker` (an agent task the broker admitted),
     /// to the workspace record as one step of its own in `ambient`, and send it on the record's
     /// route, with no instance: the record's origin applying a change.
-    ///
-    /// # Errors
-    /// The action could not be applied, or the workspace refuses its change for good.
     pub fn apply_change(
         &mut self,
         action: &DynAction,

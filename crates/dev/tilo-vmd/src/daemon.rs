@@ -327,10 +327,6 @@ fn prepare_slot_session(
 /// transition cut short, a link lost or left behind) they are put right and
 /// `/usr` is refreshed, so the device slot always comes up on its current
 /// generation. A set that is already linked is left merged as it is.
-///
-/// # Errors
-/// A layer the generations name that is missing, and I/O failures; the
-/// links stay as they were.
 pub fn merge_system_layers(
     slots: &SlotStore,
     layers: &LayerStore,
@@ -740,9 +736,6 @@ impl Daemon {
 
     /// Record `booted` as the image the slots run on; see [`crate::image`].
     /// Never changes a slot or deletes a layer.
-    ///
-    /// # Errors
-    /// A held VM lock, and I/O failures.
     pub fn reconcile_image(&mut self, booted: &str) -> Result<Option<ImageChange>, DaemonError> {
         image::ensure_root(&self.root)?;
         let _vm = self.locks.vm_exclusive()?;
@@ -1056,9 +1049,6 @@ impl Daemon {
 
     /// Install a `.tapp` into the slot user's app store. Not a generation:
     /// the user store shadows the image's apps, live at their next launch.
-    ///
-    /// # Errors
-    /// Unknown slots, the `vm` slot, missing uploads and tilo-install failures.
     pub fn install_app(
         &mut self,
         slot: &str,
@@ -1376,10 +1366,6 @@ impl Daemon {
 
     /// Run `args` as slot `name` sees the system (see [`crate::exec`]),
     /// streaming to this process's stdout and stderr.
-    ///
-    /// # Errors
-    /// Unknown slots, the `vm` slot, a stopped session, or a command that
-    /// cannot start.
     pub fn exec(
         &mut self,
         name: &str,

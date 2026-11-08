@@ -40,11 +40,6 @@ struct Running {
 
 /// Connect to the broker for `workspace`, publish, and serve until the
 /// broker is gone.
-///
-/// # Errors
-///
-/// When the launcher handed down no broker connection, the runtime cannot
-/// start, or a request cannot be queued.
 pub fn run(workspace: uuid::Uuid) -> Result<()> {
     let (tx, rx) = channel();
     let mut scope = ui::wake::WakeScope::new();

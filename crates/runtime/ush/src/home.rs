@@ -1,6 +1,7 @@
-//! `~`: the workspace's folder, which every environment of the workspace
+//! `~`: the workspace's own files, which every environment of the workspace
 //! sees as its home, on the Tilo side and in its guest (docs/app-model/ush.md,
-//! "Home").
+//! "Home"): the device's files folder for the primary workspace, the
+//! workspace's own tree in it for any other ([`tilo_paths::workspace_tree`]).
 
 use std::path::{Path, PathBuf};
 
@@ -13,10 +14,6 @@ use crate::supervisor::{Resolved, Session};
 
 impl Session {
     /// The record this session names ([`Records::resolve`]), with its home.
-    ///
-    /// # Errors
-    ///
-    /// The record could not be resolved or given its home.
     pub fn resolve_record(&self) -> anyhow::Result<(String, Environment)> {
         let records = self.records();
         let (key, environment) =
@@ -26,17 +23,14 @@ impl Session {
     }
 }
 
-/// `environment` (the record `key`) with its home: the workspace's folder,
-/// which every environment of the workspace sees at `~`. The first time a
-/// device with the workspace opens an environment that has no home, the
-/// folder becomes its home and is granted to it ([`Environment::SET_HOME`]);
+/// `environment` (the record `key`) with its home: the workspace's own files
+/// ([`Store::workspace`]), which every environment of the workspace sees at
+/// `~`. The first time a device with the files opens an environment that
+/// has no home, the folder (made, for a workspace's tree that is not yet)
+/// becomes its home and is granted to it ([`Environment::SET_HOME`]);
 /// a grant the person revokes later stays revoked. Nothing an environment
 /// held is moved or deleted: what its home in the store held before stays
 /// where it is, granted read-only so the shell still reads it at that path.
-///
-/// # Errors
-///
-/// The record refused the change or could not be written.
 pub fn with_home(
     records: &Records,
     store: &Store,
@@ -49,6 +43,18 @@ pub fn with_home(
     let Some(workspace) = store.workspace() else {
         return Ok(environment);
     };
+    if !workspace.is_dir()
+        && let Err(error) = std::fs::create_dir_all(workspace)
+    {
+        // Without its files the environment keeps a home of its own in the
+        // store, as on a device without them, and gets this one next time.
+        tracing::warn!(
+            home = %workspace.display(),
+            %error,
+            "ush: the workspace's files could not be made the environment's home"
+        );
+        return Ok(environment);
+    }
     let mut environment = records.apply(
         key,
         Environment::SET_HOME.with(workspace.to_string_lossy().into_owned()),

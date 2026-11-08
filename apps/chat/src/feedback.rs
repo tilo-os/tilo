@@ -138,9 +138,6 @@ fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, 
 }
 
 /// The report `id` filed in the chat `doc` holds.
-///
-/// # Errors
-/// Refuses a report whose submission is corrupt or filed under another id.
 pub fn report(doc: &Doc, id: &str) -> Result<Option<Report>, ActionError> {
     let chat = crate::projection::read(doc);
     let id = Id::from_raw(id);
@@ -151,9 +148,6 @@ pub fn report(doc: &Doc, id: &str) -> Result<Option<Report>, ActionError> {
 }
 
 /// Every report filed in the chat `doc` holds.
-///
-/// # Errors
-/// Refuses corrupt report metadata.
 pub fn reports(doc: &Doc) -> Result<Vec<Report>, ActionError> {
     let chat = crate::projection::read(doc);
     chat.feedback
@@ -164,9 +158,6 @@ pub fn reports(doc: &Doc) -> Result<Vec<Report>, ActionError> {
 
 /// Called by the authenticated host's receipt reader after its canonical
 /// record reports `Saved`; the source is retained transport identity, not input.
-///
-/// # Errors
-/// Refuses a non-durable record or a report filed to a different destination.
 pub fn durable_receipt(
     doc: &Doc,
     id: &str,
@@ -206,8 +197,6 @@ fn receipt_content(
 /// Pure canonical report projection for the system's feedback receipt service.
 /// The owner service must check its exact `RecordStore`'s current durability;
 /// this projection itself grants neither delivery confirmation nor authorship.
-/// # Errors
-/// Refuses missing reports, conflicting payloads or invalid attributed messages.
 pub fn canonical_feedback_projection(
     doc: &Doc,
     submission: &ui::feedback::Submission,
@@ -230,9 +219,6 @@ pub fn canonical_feedback_projection(
 ///
 /// Hosts retain the admitted workspace/provider identity; neither the report nor an
 /// external URL selects this store or record.
-///
-/// # Errors
-/// Refuses a missing/busy record, undurable edits or a destination mismatch.
 pub fn receipt_from_record(
     store: &ui::record::RecordStore,
     record: &ui::record::RecordId,

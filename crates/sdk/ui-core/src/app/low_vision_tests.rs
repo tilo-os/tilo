@@ -19,7 +19,6 @@ fn own_settings() -> settings_store::SourceScope {
 #[test]
 fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
     let _settings = own_settings();
-    // Case `defaults_are_off`.
     {
         let a = app();
         assert!(!a.high_contrast());
@@ -29,7 +28,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         assert_eq!(a.theme.text_scale, 1.0);
     }
 
-    // Case `toggle_high_contrast_swaps_the_theme`.
     {
         let mut a = app();
         let plain_ratio =
@@ -55,7 +53,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         );
     }
 
-    // Case `text_scale_setter_scales_the_theme_type_size`.
     {
         let mut a = app();
         let base = a.theme.tokens.typography.size(TextRole::Body);
@@ -66,7 +63,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         assert!(a.layout.layout_dirty);
     }
 
-    // Case `text_scale_survives_a_high_contrast_toggle`.
     {
         let mut a = app();
         a.set_text_scale(1.5);
@@ -84,7 +80,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         assert_eq!(a.theme.name, "High contrast");
     }
 
-    // Case `reduce_motion_setter_threads_onto_the_theme`.
     {
         let mut a = app();
         assert!(!a.theme.reduce_motion);
@@ -98,7 +93,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         assert!(!a.theme.reduce_motion);
     }
 
-    // Case `set_theme_keeps_low_vision_preferences`.
     {
         let mut a = app();
         a.set_text_scale(1.25);
@@ -111,7 +105,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         assert_eq!(a.theme.name, "High contrast light");
     }
 
-    // Case `ui_scale_setter_grows_spacing_radii_and_type_together`.
     {
         let mut a = app();
         let base_gap = a.theme.tokens.spacing.s3;
@@ -135,7 +128,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         assert!(a.layout.layout_dirty);
     }
 
-    // Case `ui_scale_and_text_scale_compose_on_the_live_theme`.
     {
         let mut a = app();
         let base_type = a.theme.tokens.typography.size(TextRole::Body);
@@ -151,7 +143,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
     }
 
-    // Case `ui_scale_survives_a_high_contrast_toggle`.
     {
         let mut a = app();
         a.set_ui_scale(1.5);
@@ -206,7 +197,6 @@ fn intent(
 #[test]
 fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
     let _settings = own_settings();
-    // Case `appearance_reconcile_off_is_a_noop`.
     {
         let root = AppearanceRoot {
             intent: intent(Theme::light(), 1.5, 1.3, true),
@@ -217,7 +207,6 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
         assert_eq!(a.ui_scale(), 1.0);
     }
 
-    // Case `appearance_reconcile_applies_scale_theme_and_contrast_live`.
     {
         let base_gap = Theme::high_contrast().tokens.spacing.s3;
         let base_type = Theme::high_contrast()

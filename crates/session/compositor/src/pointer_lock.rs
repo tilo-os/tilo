@@ -1,17 +1,13 @@
-//! Pointer lock and confinement (`zwp_pointer_constraints_v1`) plus
-//! relative motion (`zwp_relative_pointer_v1`), which games and remote
-//! desktop clients need.
-//!
-//! The compositor, not the client, decides when a constraint takes effect:
-//! only for the surface that holds keyboard focus *and* sits under the local
-//! pointer, and never while the session is locked or a hosted surface owns
-//! input. Losing either focus releases it. Ctrl+Alt+Escape always releases it
-//! too, and the surface is not granted again until focus moves on, so a
-//! misbehaving game cannot trap the pointer.
-//!
+//! Pointer lock and confinement (`zwp_pointer_constraints_v1`) plus relative motion
+//! (`zwp_relative_pointer_v1`), which games and remote desktop clients need.
+//! The compositor, not the client, decides when a constraint takes effect: only for the surface
+//! that holds keyboard focus *and* sits under the local pointer, and never while the session is
+//! locked or a hosted surface owns input. Losing either focus releases it. Ctrl+Alt+Escape always
+//! releases it too, and the surface is not granted again until focus moves on, so a misbehaving
+//! game cannot trap the pointer.
 //! A locked pointer stays where it is: its client reads the deltas through
-//! `zwp_relative_pointer_v1` and sees no `wl_pointer.motion`. A confined one
-//! moves, but never past the edge of its region.
+//! `zwp_relative_pointer_v1` and sees no `wl_pointer.motion` . A confined one moves, but never past
+//! the edge of its region.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -40,8 +36,8 @@ enum Region {
 }
 
 impl Region {
-    /// Where motion from `current` towards `requested` ends up, or `None`
-    /// when the pointer must not move at all.
+    /// Where motion from `current` towards `requested` ends up, or `None` when the pointer must not
+    /// move at all.
     fn constrain(&self, current: (f64, f64), requested: (f64, f64)) -> Option<(f64, f64)> {
         match self {
             Self::Free => Some(requested),
@@ -53,8 +49,8 @@ impl Region {
                 if rects.iter().any(|rect| inside(requested, rect)) {
                     return Some(requested);
                 }
-                // Slide along the edge of the rect the pointer is in (or the
-                // first one, if the region changed under it).
+                // Slide along the edge of the rect the pointer is in (or the first one, if the
+                // region changed under it).
                 let &(x0, y0, x1, y1) = rects
                     .iter()
                     .find(|rect| inside(current, rect))
@@ -75,15 +71,14 @@ struct Active {
     origin: Point<f64, Logical>,
 }
 
-/// The constraint the compositor granted: whose it is, and how far the
-/// pointer may move.
+/// The constraint the compositor granted: whose it is, and how far the pointer may move.
 #[derive(Debug, Default)]
 pub(crate) struct PointerLock {
     active: Option<Active>,
     /// What the pointer may do while [`PointerLock::active`] holds.
     region: Region,
-    /// The surface the person released with the chord; not granted again
-    /// until the pointer-and-focus target moves elsewhere.
+    /// The surface the person released with the chord; not granted again until the
+    /// pointer-and-focus target moves elsewhere.
     released: Option<WlSurface>,
 }
 
@@ -93,8 +88,8 @@ impl PointerLock {
         self.active.is_some()
     }
 
-    /// Where motion from `current` towards `requested` ends up, or `None`
-    /// when the pointer stays put.
+    /// Where motion from `current` towards `requested` ends up, or `None` when the pointer stays
+    /// put.
     pub(crate) fn constrain(
         &self,
         current: (f64, f64),
@@ -104,8 +99,8 @@ impl PointerLock {
     }
 }
 
-/// The only surface that may hold the pointer this moment, and where it sits
-/// in the layout (`x0, y0, x1, y1`, global).
+/// The only surface that may hold the pointer this moment, and where it sits in the layout (`x0,
+/// y0, x1, y1`, global).
 struct GrantTarget {
     surface: WlSurface,
     origin: Point<f64, Logical>,
@@ -113,9 +108,8 @@ struct GrantTarget {
 }
 
 impl State {
-    /// The surface that may hold the pointer now: the one with keyboard
-    /// focus that is also under the pointer, while the session is unlocked
-    /// and no hosted surface is taking input.
+    /// The surface that may hold the pointer now: the one with keyboard focus that is also under
+    /// the pointer, while the session is unlocked and no hosted surface is taking input.
     fn constraint_target(&self) -> Option<GrantTarget> {
         if self.locked() || self.hosts.iter().any(|host| host.wants_keyboard()) {
             return None;
@@ -146,10 +140,9 @@ impl State {
         })
     }
 
-    /// Grant, adjust or withdraw the pointer constraint for this moment.
-    /// Called every turn, after the clients' requests were handled, so a
-    /// constraint a client asked for takes effect once it is focused and
-    /// under the pointer, and goes away the moment either changes.
+    /// Grant, adjust or withdraw the pointer constraint for this moment. Called every turn, after
+    /// the clients' requests were handled, so a constraint a client asked for takes effect once it
+    /// is focused and under the pointer, and goes away the moment either changes.
     pub(crate) fn sync_pointer_constraint(&mut self) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
@@ -203,9 +196,8 @@ impl State {
         });
     }
 
-    /// The release chord: end the constraint now, and keep it off until the
-    /// pointer-and-focus target moves elsewhere. `false` when nothing was
-    /// engaged.
+    /// The release chord: end the constraint now, and keep it off until the pointer-and-focus
+    /// target moves elsewhere. `false` when nothing was engaged.
     pub(crate) fn release_pointer_lock(&mut self) -> bool {
         let Some(active) = self.pointer_lock.active.clone() else {
             return false;
@@ -237,9 +229,9 @@ impl State {
         pointer.frame(self);
     }
 
-    /// End an active constraint, putting the pointer where a lock's cursor
-    /// position hint asks for. A surface that is gone takes its constraint
-    /// with it, so there is nothing left to read from it.
+    /// End an active constraint, putting the pointer where a lock's cursor position hint asks for.
+    /// A surface that is gone takes its constraint with it, so there is nothing left to read from
+    /// it.
     fn withdraw(&mut self, pointer: &PointerHandle<Self>, active: &Active) {
         if !active.surface.alive() {
             self.forget(None);
@@ -269,10 +261,9 @@ impl State {
     }
 }
 
-/// The global rects a confined pointer may reach: the client's region
-/// clipped to its surface, or the whole surface without one. Subtracted
-/// rectangles are not carved out; the pointer may still enter them, which
-/// only ever gives it more room, never less.
+/// The global rects a confined pointer may reach: the client's region clipped to its surface, or
+/// the whole surface without one. Subtracted rectangles are not carved out; the pointer may still
+/// enter them, which only ever gives it more room, never less.
 fn confinement(
     region: Option<&smithay::wayland::compositor::RegionAttributes>,
     surface: (f64, f64, f64, f64),

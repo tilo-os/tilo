@@ -77,9 +77,6 @@ impl Signaller for PidfdSignaller {
 }
 
 /// End the process `pid` of the lifetime `started_at`, if `policy` allows.
-///
-/// # Errors
-/// Why it was not ended.
 pub fn end_process(
     probe: &mut dyn Probe,
     policy: &EndPolicy,

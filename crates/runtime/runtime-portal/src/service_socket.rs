@@ -41,9 +41,6 @@ impl InheritedControlSocket {
 
     /// Exchange one serialized request, retaining only the control connection.
     ///
-    /// # Errors
-    /// Returns inherited ownership or poisoned connection errors.
-    ///
     /// # Safety
     /// This instance alone must own the inherited fd. The request must negotiate
     /// a protocol using independent session lifetime descriptors; this connection

@@ -32,20 +32,19 @@ pub enum Follow {
     Unlock,
 }
 
-/// This device's side of [`OwnerSession`]: what it publishes and what it has
-/// already followed.
+/// This device's side of [`OwnerSession`]: what it publishes and what it has already followed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionFollow {
     /// When the person last locked or unlocked this device themselves.
     changed_unix_ms: u64,
-    /// The latest change on another device this device has acted on, so an
-    /// old lock elsewhere is not followed twice.
+    /// The latest change on another device this device has acted on, so an old lock elsewhere is
+    /// not followed twice.
     acted_unix_ms: u64,
-    /// Locked because another device was locked at this time, and whether
-    /// this device was in use then.
+    /// Locked because another device was locked at this time, and whether this device was in use
+    /// then.
     followed: Option<Followed>,
-    /// Whether the lock this device has, if any, is the person's own here
-    /// and not the idle timer's or another device's.
+    /// Whether the lock this device has, if any, is the person's own here and not the idle timer's
+    /// or another device's.
     locked_by_person: bool,
 }
 
@@ -70,17 +69,15 @@ impl SessionFollow {
         self.locked_by_person = false;
     }
 
-    /// Whether the lock this device has is one it followed from another of
-    /// the person's devices: that lock is not the person's own here, and the
-    /// session raises it without counting it again.
+    /// Whether the lock this device has is one it followed from another of the person's devices:
+    /// that lock is not the person's own here, and the session raises it without counting it again.
     #[must_use]
     pub fn followed_lock(&self) -> bool {
         self.followed.is_some()
     }
 
-    /// What this device publishes, given its lock and the person's last input.
-    /// A lock that is not the person's own here publishes no change for the
-    /// others to follow.
+    /// What this device publishes, given its lock and the person's last input. A lock that is not
+    /// the person's own here publishes no change for the others to follow.
     #[must_use]
     pub fn presence(&self, locked: bool, input_unix_ms: u64) -> OwnerSession {
         OwnerSession {
@@ -98,10 +95,9 @@ impl SessionFollow {
         }
     }
 
-    /// Follow the person's other devices' sessions, each with whether it
-    /// shares a network with this one: lock after a newer lock elsewhere this
-    /// device was not used since, unlock when a device nearby is unlocked
-    /// after the lock it followed and this one was in use when it locked.
+    /// Follow the person's other devices' sessions, each with whether it shares a network with this
+    /// one: lock after a newer lock elsewhere this device was not used since, unlock when a device
+    /// nearby is unlocked after the lock it followed and this one was in use when it locked.
     pub fn decide(
         &mut self,
         locked: bool,
@@ -148,8 +144,8 @@ impl SessionFollow {
     }
 }
 
-/// The person's latest input on another of their devices that shares a
-/// network with this one and is unlocked; idle time here counts from it.
+/// The person's latest input on another of their devices that shares a network with this one and is
+/// unlocked; idle time here counts from it.
 #[must_use]
 pub fn latest_use_nearby<'a>(
     own: &DevicePresence,
@@ -177,10 +173,9 @@ pub fn shares_network(own: &DevicePresence, other: &DevicePresence) -> bool {
 }
 
 impl Session {
-    /// Follow the person's session on their other devices, every pass: idle
-    /// time here counts from their use of one nearby, a lock or unlock there
-    /// is followed on the pass that brings it, and this device says its own
-    /// session to them.
+    /// Follow the person's session on their other devices, every pass: idle time here counts from
+    /// their use of one nearby, a lock or unlock there is followed on the pass that brings it, and
+    /// this device says its own session to them.
     pub(crate) fn follow_owner_session(&mut self) -> Result<(), Error> {
         let Some(fabric) = self.shared.fabric.clone() else {
             return Ok(());
@@ -206,8 +201,8 @@ impl Session {
             .filter(|(id, _)| Some(*id) != local.as_ref())
             .map(|(_, snapshot)| snapshot.presence.clone())
             .collect();
-        // Idle time here counts from the person's last input on a device of
-        // theirs nearby: neither locks while they are on the other.
+        // Idle time here counts from the person's last input on a device of theirs nearby: neither
+        // locks while they are on the other.
         let used_nearby = own
             .as_ref()
             .and_then(|own| latest_use_nearby(own, others.iter()));
@@ -229,13 +224,13 @@ impl Session {
         );
         match followed {
             Some(Follow::Lock) => self.lock_by_person()?,
-            // The person unlocked on one of their other devices: this device
-            // unlocks the way it does when they type the password here.
+            // The person unlocked on one of their other devices: this device unlocks the way it
+            // does when they type the password here.
             Some(Follow::Unlock) => self.unlock_by_person()?,
             None => {}
         }
-        // What this device says of itself is what it is now: a lock or
-        // unlock followed this pass is said on the same one.
+        // What this device says of itself is what it is now: a lock or unlock followed this pass is
+        // said on the same one.
         let locked = self.compositor.locked();
         fabric.publish_owner_session(self.shared.owner_session.presence(locked, input_ms));
         Ok(())
@@ -347,9 +342,9 @@ mod tests {
 
     #[test]
     fn an_idle_lock_elsewhere_never_locks_a_device_set_never_to_lock() {
-        // The person unlocks the desktop after last touching the laptop, then
-        // leaves both; the desktop's idle timer locks it (or its idle sleep
-        // does, which counts as the idle timer's lock).
+        // The person unlocks the desktop after last touching the laptop, then leaves both; the
+        // desktop's idle timer locks it (or its idle sleep does, which counts as the idle timer's
+        // lock).
         let mut desktop = SessionFollow::default();
         desktop.changed_by_person(2_000);
         desktop.locked_by_idle();
@@ -376,8 +371,8 @@ mod tests {
             desktop.decide(false, 400, false, [session(true, 2_000)]),
             Some(Follow::Lock)
         );
-        // The tablet, last used before the desktop's last unlock, sees only
-        // the desktop: its lock is not the person's, nothing to follow.
+        // The tablet, last used before the desktop's last unlock, sees only the desktop: its lock
+        // is not the person's, nothing to follow.
         let mut tablet = SessionFollow::default();
         assert_eq!(
             tablet.decide(false, 300, false, [published(&desktop, true, 400)]),

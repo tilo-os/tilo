@@ -66,11 +66,6 @@ impl KeyboardBacklight {
 }
 
 /// Read the keyboard light.
-///
-/// # Errors
-///
-/// Returns an error message when this machine has no keyboard backlight or its attributes
-/// cannot be read.
 pub fn get_keyboard_backlight() -> Result<KeyboardBacklight, String> {
     get_in(Path::new(LEDS))
 }

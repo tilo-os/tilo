@@ -33,6 +33,17 @@ fn runner() -> EffectRunner<Probe, (), Work> {
     runner_on(Dispatcher::new("test", Probe::KIND, false, None))
 }
 
+/// The local effect operation of `work`'s payload `payload`, which it
+/// borrows: the bytes stay alive in the test as long as the operation.
+fn effect_op(invocation: InvocationId, payload: &[u8]) -> ResourceOperation<'_> {
+    ResourceOperation::local(
+        invocation,
+        tilo_actions::OperationKind::Effect,
+        Work::OPERATION,
+        payload,
+    )
+}
+
 fn runner_on(dispatch: Dispatcher<Probe>) -> EffectRunner<Probe, (), Work> {
     let mut doc = tilo_resource::Doc::new();
     Probe::initialize(&mut doc).unwrap();
@@ -49,12 +60,7 @@ fn blocking_cancellation_signal_tracks_actual_job_and_preserves_custody_checks()
     let mut runner = runner();
     let invocation = InvocationId::new();
     let payload = payload(&Work::Count);
-    let op = ResourceOperation::local(
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(invocation, &payload);
     let (entered, entrance) = channel();
     let (stopped, observation) = channel();
     runner
@@ -101,12 +107,7 @@ fn what_an_effect_submits_continues_its_invocation() {
     let mut runner = runner_on(dispatch.clone());
     let invocation = InvocationId::new();
     let payload = payload(&Work::Count);
-    let op = ResourceOperation::local(
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(invocation, &payload);
     runner
         .start(&op, &mut (), None, |(), _, cx| {
             cx.dispatcher().effect(&Work::Ping);
@@ -154,12 +155,7 @@ fn approved_check_reports_use_original_effect_progress_and_freeze_after_cancel()
     let mut runner = runner();
     let invocation = InvocationId::new();
     let payload = payload(&Work::Count);
-    let op = ResourceOperation::local(
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(invocation, &payload);
     let (forward, reports) = channel();
     let checked: ui_core::invocation_scope::ApprovedCheckReportedWork = Box::new(move |report| {
         forward.send(report).unwrap();
@@ -213,12 +209,7 @@ fn cancelling_a_job_stops_its_worker_and_drops_its_result() {
     let mut runner = runner();
     let invocation = InvocationId::new();
     let payload = payload(&Work::Count);
-    let op = ResourceOperation::local(
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(invocation, &payload);
     let (stopped, observed) = channel();
     let started = runner
         .start(&op, &mut (), None, |(), _, cx| {
@@ -260,12 +251,7 @@ fn a_job_left_to_answer_later_stops_when_its_caller_gives_up() {
     let mut runner = runner();
     let invocation = InvocationId::new();
     let payload = payload(&Work::Count);
-    let op = ResourceOperation::local(
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(invocation, &payload);
     let caller = Arc::new(AtomicBool::new(false));
     let (stopped, observed) = channel();
     let worker = Arc::clone(&caller);
@@ -310,12 +296,7 @@ fn a_failed_handler_cancels_the_job_it_already_started() {
     let mut runner = runner();
     let invocation = InvocationId::new();
     let payload = payload(&Work::Count);
-    let op = ResourceOperation::local(
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(invocation, &payload);
     let mut progress = None;
     let result = runner.start(&op, &mut (), None, |(), _, cx| {
         let reply = cx.reply();
@@ -331,12 +312,7 @@ fn a_failed_handler_cancels_the_job_it_already_started() {
 fn dropping_the_handler_cancels_its_retained_jobs() {
     let mut runner = runner();
     let payload = payload(&Work::Count);
-    let op = ResourceOperation::local(
-        InvocationId::new(),
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(InvocationId::new(), &payload);
     let mut progress = None;
     assert!(matches!(
         runner
@@ -376,12 +352,7 @@ fn a_handler_reads_the_document_now_and_at_a_version() {
     doc.put(ui_core::automerge::ROOT, "count", 2_i64).unwrap();
     tilo_resource::history::commit_stamped(&mut doc);
     let payload = payload(&Work::Ping);
-    let op = ResourceOperation::local(
-        InvocationId::new(),
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(InvocationId::new(), &payload);
     let count = |doc: &tilo_resource::Doc| {
         doc.get(ui_core::automerge::ROOT, "count")
             .unwrap()
@@ -433,12 +404,7 @@ fn open_here_job(
 ) -> InvocationId {
     let invocation = InvocationId::new();
     let payload = payload(&Work::Count);
-    let op = ResourceOperation::local(
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(invocation, &payload);
     let opener = opener.clone();
     runner
         .start(&op, &mut (), None, move |(), _, cx| {
@@ -489,12 +455,7 @@ fn opening_here_answers_with_the_hosts_answer_or_withdraws_when_cancelled() {
 fn an_effect_declared_immediate_cannot_answer_later() {
     let mut runner = runner();
     let payload = payload(&Work::Ping);
-    let op = ResourceOperation::local(
-        InvocationId::new(),
-        tilo_actions::OperationKind::Effect,
-        Work::OPERATION,
-        &payload,
-    );
+    let op = effect_op(InvocationId::new(), &payload);
     let refused = runner
         .start(&op, &mut (), None, |(), _, cx| {
             let _reply = cx.reply();

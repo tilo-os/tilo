@@ -748,9 +748,6 @@ pub fn body_at(doc: &AutoCommit, record: &ObjId) -> Option<ObjId> {
 }
 
 /// The body of `doc` opened as rich text.
-///
-/// # Errors
-/// Returns why `doc` holds no Writer document.
 pub fn open(doc: &AutoCommit) -> Result<tilo_doc::Containers, String> {
     let body = body(doc).ok_or("the document has no body")?;
     tilo_doc::model::open(doc, &body).map_err(|error| error.to_string())
@@ -759,9 +756,6 @@ pub fn open(doc: &AutoCommit) -> Result<tilo_doc::Containers, String> {
 /// `doc` as a file holds it: its body with the comment threads written
 /// into the text the way file formats keep comments, for the codecs
 /// ([`tilo_doc::Document::as_ref`]).
-///
-/// # Errors
-/// Returns why `doc` holds no Writer document.
 pub fn export_copy(doc: &AutoCommit) -> Result<tilo_doc::Document, String> {
     let document = <Document as Resource>::read(doc).map_err(|error| error.to_string())?;
     let threads = document.comment_views(doc);
@@ -792,9 +786,6 @@ pub fn export_copy(doc: &AutoCommit) -> Result<tilo_doc::Document, String> {
 
 /// Start a document's body in `doc` with the rich-text schema and nothing
 /// else, for tools and tests that build a document block by block.
-///
-/// # Errors
-/// Returns the document's write error.
 pub fn init(doc: &mut AutoCommit) -> Result<tilo_doc::Containers, String> {
     let body = match body(doc) {
         Some(body) => body,
@@ -825,9 +816,6 @@ impl Document {
 }
 
 /// The body of the Writer document `doc` as a tilo-doc [`tilo_doc::Document`].
-///
-/// # Errors
-/// Returns why `doc` holds no Writer document.
 pub fn reopen(doc: AutoCommit) -> Result<tilo_doc::Document, String> {
     let body = body(&doc).ok_or("the document has no body")?;
     tilo_doc::Document::from_automerge_under(doc, &body).map_err(|error| error.to_string())
@@ -835,9 +823,6 @@ pub fn reopen(doc: AutoCommit) -> Result<tilo_doc::Document, String> {
 
 /// Apply `op` to the body of `doc` directly, outside any host: for tools and
 /// tests that build a document.
-///
-/// # Errors
-/// Returns the action's refusal.
 pub fn apply(doc: &mut AutoCommit, op: &RichTextAction) -> Result<(), tilo_actions::ActionError> {
     tilo_actions::Action::apply(&action(op), doc)
 }

@@ -328,9 +328,6 @@ impl HeldViewExposure {
     }
     /// The original source owner stays in its own namespace. The actual managed
     /// consuming helper owns the separate staging namespace and launcher child.
-    /// # Errors
-    /// Returns an error if endpoint or launcher validation fails, the managed
-    /// helper cannot establish private namespace custody, or its lock is poisoned.
     pub fn prepare_remote(
         endpoint: Arc<TargetProjectionEndpoint>,
         peer: Arc<ExecutingPeer>,
@@ -351,9 +348,6 @@ impl HeldViewExposure {
         })
     }
     /// Install in the persistent root owner before any control exchange.
-    /// # Errors
-    /// Returns an error if authority has expired, placement fails, or the measured
-    /// mount identity, topology or security restrictions do not match.
     pub fn place(&mut self) -> io::Result<()> {
         self.endpoint.check()?;
         match &mut self.placement {

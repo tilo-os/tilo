@@ -306,9 +306,6 @@ fn read_comm(path: &str) -> io::Result<String> {
 }
 
 /// Context switches of every thread of `pid`.
-///
-/// # Errors
-/// Not Linux, or `/proc/<pid>` cannot be read (the process is gone).
 pub fn sample_process(pid: u32) -> io::Result<Vec<ThreadSample>> {
     if !cfg!(target_os = "linux") {
         return Err(unsupported());
@@ -351,9 +348,6 @@ pub fn sample_process(pid: u32) -> io::Result<Vec<ThreadSample>> {
 
 /// The kernel's id for the calling thread, as [`ThreadSample::tid`] names it,
 /// so a test can leave the thread that drives it out of a sample.
-///
-/// # Errors
-/// Not Linux.
 pub fn current_thread_id() -> io::Result<u32> {
     if !cfg!(target_os = "linux") {
         return Err(unsupported());

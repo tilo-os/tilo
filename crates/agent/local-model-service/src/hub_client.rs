@@ -153,9 +153,6 @@ pub(crate) struct HubClient {
 
 impl HubClient {
     /// A client with the stored token.
-    ///
-    /// # Errors
-    /// An unreadable vault or an unbuildable client.
     pub(crate) fn new() -> Result<Self, ServiceError> {
         let client = tilo_net::http::blocking_client()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {

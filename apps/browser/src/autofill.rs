@@ -135,16 +135,10 @@ impl AutofillStore {
             .flatten()
     }
     /// Turn address autofill on or off.
-    ///
-    /// # Errors
-    /// Returns an error in a private window or when the record refuses it.
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
         self.edit(&AddressBook::paths().enabled.set(enabled))
     }
     /// Save a validated address profile.
-    ///
-    /// # Errors
-    /// Returns an error when autofill is disabled, fields or profile count exceed limits, or the record refuses it.
     pub fn put(&mut self, profile: AddressProfile) -> Result<(), String> {
         if !self.enabled() {
             return Err("Enable address autofill before adding profiles".into());
@@ -165,9 +159,6 @@ impl AutofillStore {
         self.edit_all(&edits)
     }
     /// Delete a saved address profile by ID.
-    ///
-    /// # Errors
-    /// Returns an error in a private window or when the record refuses it.
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
         self.edit(
             &AddressBook::paths()

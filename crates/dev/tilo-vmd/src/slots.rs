@@ -297,9 +297,6 @@ impl SlotStore {
     }
 
     /// The slot as recorded on disk, if it is.
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn stored(&self, name: &str) -> Result<Option<SlotRecord>, DaemonError> {
         self.try_load(name)
     }
@@ -326,9 +323,6 @@ impl SlotStore {
     }
 
     /// Every slot on disk, sorted by name.
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn list(&self) -> Result<Vec<SlotRecord>, DaemonError> {
         let mut out = Vec::new();
         let Ok(entries) = fs::read_dir(&self.dir) else {
@@ -352,9 +346,6 @@ impl SlotStore {
     }
 
     /// Remove a slot's state; `false` when it did not exist.
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn remove(&self, name: &str) -> Result<bool, DaemonError> {
         let dir = self.dir.join(name);
         if !dir.exists() {
@@ -411,9 +402,6 @@ impl SlotStore {
     /// Write the generation that results from putting `layer` in place of
     /// `component`'s current layer. `None` when that is already current.
     /// The slot keeps its current generation until [`Self::set_current`].
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn prepare_swap(
         &self,
         record: &SlotRecord,
@@ -515,9 +503,6 @@ impl SlotStore {
 
     /// The transition a rollback makes: to `to`, or the newest generation
     /// older than the current one (the base when none is recorded).
-    ///
-    /// # Errors
-    /// Unknown targets, and rolling back from the base.
     pub fn rollback_target(
         &self,
         record: &SlotRecord,
@@ -553,9 +538,6 @@ impl SlotStore {
 
     /// Record that a transition to `number` is being applied. Cleared by
     /// [`Self::set_current`]; still present afterwards means it was cut short.
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn mark_pending(&self, name: &str, number: u64) -> Result<(), DaemonError> {
         write_atomic(&self.pending_path(name), number.to_string().as_bytes())
     }
@@ -583,9 +565,6 @@ impl SlotStore {
     /// Delete generations older than the newest `keep` (the current one, an
     /// interrupted transition's and `also_keep` are always kept) and return
     /// the survivors' layers plus what was deleted.
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn prune(
         &self,
         record: &SlotRecord,

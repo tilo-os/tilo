@@ -163,10 +163,6 @@ pub trait Observer {
 
     /// `bytes` more were written below the destination. An error stops the
     /// extraction with it, as when the disk is about to be full.
-    ///
-    /// # Errors
-    ///
-    /// Whatever should stop the extraction.
     fn wrote(&self, bytes: u64) -> io::Result<()> {
         let _ = bytes;
         Ok(())

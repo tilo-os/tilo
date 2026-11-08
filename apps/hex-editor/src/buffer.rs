@@ -131,9 +131,6 @@ impl ByteBuffer {
 
     /// Make `edit` to these bytes, as the edit at its path does to the
     /// stored pages: a verb's change, written back page by page.
-    ///
-    /// # Errors
-    /// Refuses an offset beyond the end of the buffer.
     pub fn edit(&mut self, edit: &BufferEdit) -> Result<(), Refusal> {
         let lengths = self.page_lengths();
         let pages = &self.pages;

@@ -480,9 +480,6 @@ impl<P: Resource> PersonField<P> {
 
     /// Create the field when it does not exist yet, so an editor has a
     /// document to write in before the first keystroke.
-    ///
-    /// # Errors
-    /// The record refused the start action.
     pub fn ensure(&mut self) -> Result<(), ActionError> {
         self.refresh();
         if self.field.is_none()

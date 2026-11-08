@@ -64,6 +64,69 @@ Summary:
 6. Join a workspace invite when needed:
    `tilo-runtime --profile /absolute/path/to/agent-profile --join '<invitation>'`
 
+## An agent on one of your devices steering another
+
+An agent on device A (a Tilo box, or a laptop running an enrolled
+`tilo-runtime`) can act on device B — its apps, files, terminal and
+workspace — exactly as if it ran on B, over B's own agent door. There is no
+TLS or HTTP listener, no SSH and no hosted proxy: the door is carried over
+iroh, as ALPN `tilo-agent-door/1` on the endpoint each device already runs
+(`crates/runtime/tilo-runtime/src/remote_door.rs`).
+
+```text
+Claude Code on A --stdio--> tilo-runtime-mcp --connect --device B
+                                 | {"forward":{"device":"B"}}   (A's session or runtime)
+                                 v
+                  A's endpoint --iroh, tilo-agent-door/1--> B's endpoint
+                                                              | device check
+                                                              v
+                                              B's agent door (sheet or setting)
+                                                              v
+                                              B's broker, as agent claude-code@a-…
+```
+
+1. **The client.** `tilo agent connect claude --device NAME [--workspace ID]`
+   registers `tilo-runtime-mcp --connect --device NAME` as the MCP server
+   `tilo-<name>`. The client opens its own host's door (the desktop's
+   `agent.sock`, or a standalone runtime's `native.sock`) and asks, in one
+   first line, to be carried to that device. Its host — the process that
+   holds A's device key and endpoint — dials B, shows A's device certificate,
+   and answers the client whether B's door opened; from then on the client's
+   stdio is B's door. A device is named by its label or its endpoint id.
+2. **B decides who dials from the transport.** The connection's endpoint id
+   is A's device key (the QUIC handshake proved it). The certificate A shows
+   must name that key, be signed by B's person's identity root, hold now, not
+   be a store node's, and not be revoked in the person's own store, which
+   carries revocations between all their devices. Anything else is refused,
+   with the reason, before anything else on the stream is read and before
+   anyone is asked.
+3. **Admission on B is the local door's.** The person is asked on the same
+   sheet (“Claude Code, from your device Studio laptop”), and “Always allow”
+   is remembered per (device, client). B's device setting **Agents from your
+   other devices** (`agent_door.accept_own_devices`, off unless turned on,
+   kept on B so a box branched from it inherits it) admits such an agent
+   without a sheet — for a headless box nobody sits at. It never admits a
+   device that fails step 2, nor a program of B's own login, and an agent from
+   another device may never act as the person.
+4. **What the agent is.** It works as `Caller::local_person(person)
+   .delegated_to(agent)`, in one workspace (the one it asked for with
+   `--workspace` when B holds it, else the one in front), through the same
+   gate as every caller. Its id names the device it came from
+   (`claude-code@studio-laptop-3f2a9c1b`), so what it does is told apart from
+   the same client on B and from another device's, and its seat on B's bar
+   carries that name; the person's Stop there ends the connection on A too.
+   Disconnecting either side ends the other; a question still up when the
+   agent leaves is withdrawn.
+
+The tool set is the local door's, so a remote session differs only in its
+attribution, plus `tilo_devices` on every door: the person's devices as this
+one knows them, with each one's endpoint id and whether its door answers now
+— how an agent finds the boxes it can be connected to.
+
+Device-to-device *actions* (`tilo.own-device`) still admit only the person at
+the device, never an agent: an agent reaches another device through that
+device's agent door, where its person decides.
+
 ## What this is not
 
 - Not a full OS, compositor, or apps UI install

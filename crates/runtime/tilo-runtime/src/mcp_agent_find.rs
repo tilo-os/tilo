@@ -47,8 +47,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         // Each resource once, by its path: the search ranks a resource and
         // the actions on it apart, and an agent acts on the resource. Each
-        // directory is read once for all of the results it names.
+        // directory is read once for all of the results it names. A hit is
+        // named as the listing names it, type and all: the same program form.
         let (_, running) = self.providers().await?;
+        let forms = self.program_forms().await.unwrap_or_default();
         let mut lines: Vec<String> = Vec::new();
         for hit in &found {
             if wanted
@@ -57,7 +59,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             {
                 continue;
             }
-            let Some(line) = self.found_line(hit, &running).await else {
+            let Some(line) = self.found_line(hit, &running, &forms).await else {
                 continue;
             };
             if !lines.contains(&line) {
@@ -111,10 +113,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// One result as the line an agent reads: the path `tilo_ls` names the
     /// resource by, then what it is, or the action it offers after `#`.
+    /// `forms` names the type as the listing does (`tasks.Task`), so a row
+    /// here reads back the same as a row there.
     pub(super) async fn found_line(
         &self,
         found: &Found,
         running: &[(String, Value)],
+        forms: &ProgramForms,
     ) -> Option<String> {
         let located = self.locate(found.app.as_deref(), found, running).await;
         // No directory of an app this workspace lists holds it (a setting's
@@ -124,6 +129,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // The path is `locate`'s, which is the one `tilo_ls` lists the
         // resource at: a search row and a listing name it the same way.
         let (named, kind) = located?;
+        let kind = forms.kind(&kind).unwrap_or(&kind);
         Some(match found.open.as_deref() {
             // The resource's own `open` names the resource itself; any other
             // action is written after `#`.
@@ -294,8 +300,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 // there, one container read.
                 let top_holder = match top_holder {
                     Some(owner) => Some(owner),
+                    // `parent` is an id, not a name a program types a type with: it is found
+                    // by the id alone, so no program form is read into it.
                     None => self
-                        .deep(provider, &parent, None, &mut levels)
+                        .deep(provider, &parent, None, &mut levels, None)
                         .await
                         .ok()
                         .flatten(),

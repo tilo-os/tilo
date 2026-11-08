@@ -24,35 +24,6 @@ export const WATCHING_EVERY_MS = 15_000;
 export const PAIR_WAIT_MS = 30_000;
 
 /**
- * The members of `layer` as the runtime reads them (`desktop_set_people`):
- * `null` while the layer is not live.
- */
-export function liveMembers(layer, seen) {
-  if (!layer?.available) return null;
-  return layer.members().map(publisher => {
-    const {participant, focus, place, wave, layout, following} = seen.get(publisher) ?? {};
-    return {
-      publisher,
-      kind: participant?.kind === 'agent' ? 'agent' : 'person',
-      label: participant?.label ?? '',
-      // The record they focus: the window it shows here, or where no
-      // window here shows it (a workspace whose layout is personal) its app,
-      // is where the people panel says they are.
-      focus: focus ?? null,
-      activity: participant?.activity ?? null,
-      // The strip a person shows, for the bar's counts.
-      place: participant?.kind === 'agent' ? null : place ?? null,
-      // A person's latest wave; the one it is for shows it, once.
-      wave: participant?.kind === 'agent' ? null : wave ?? null,
-      // Where a person's windows are, for a mini view of their screen.
-      layout: participant?.kind === 'agent' ? null : layout ?? null,
-      // Whose view a person follows: who follows whom, on every roster.
-      following: participant?.kind === 'agent' ? null : following ?? null,
-    };
-  });
-}
-
-/**
  * Keep the runtime's view of who is here current while `active()`.
  *
  * @param options.runtime      the page runtime
@@ -67,60 +38,31 @@ export function liveMembers(layer, seen) {
 export function createHere({runtime, mountId, active, layer, peer, presenceUrl, photos = null,
   fetch = globalThis.fetch, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout,
   visible = () => globalThis.document?.visibilityState !== 'hidden', onError = () => {}}) {
-  const seen = new Map(); // publisher -> {participant, focus, place, wave, layout, following}
   let stopped = false;
   let timer;
-  let peopleKey;
   let postedKey;
   let postedAt = -Infinity;
   let posting = false;
   let watchedAt = -Infinity;
   let saidStatus = null; // the own words last put on the person's presence
+  let saidNote = null; // the live note last logged, so a change is said once
   let lines = [];
+  const joined = new Set(); // publishers here, as the last tick read them
   let again = false; // asked to check while busy: check once it is done
   const arrivedAt = new Map(); // publisher -> when it joined, while unpaired
-  let saidNote = null; // the live note last logged, so a change is said once
 
-  function pushPeople() {
-    if (stopped || !active()) return;
-    const live = layer();
-    // With its person, so the desktop counts this person's other devices
-    // (their other tabs) as them rather than as someone else.
-    const own = peer?.participant
-      ? {publisher: live?.publisherId ?? '', kind: 'person', label: peer.participant.label, ...(peer.userPublicKey ? {user: peer.userPublicKey} : {})}
-      : null;
-    // Why this page shows no live presence: a browser without WebTransport,
-    // or a plane that could not be opened. It is said on the page, in the
-    // members' place, and said once here as it changes — a page that retries
-    // quietly reads as an empty workspace.
+  /** Why this page shows no live presence (a browser without WebTransport,
+   * or a plane that could not be opened), said once here as it changes: a
+   * page that retries quietly reads as an empty workspace. The page itself
+   * shows it in the members' place. */
+  function sayNote() {
     const unavailable = peer?.liveNote?.() ?? null;
     if (unavailable !== saidNote) {
       if (unavailable) console.warn(`live: ${unavailable}`);
       else if (saidNote) console.info('live: presence joined');
       saidNote = unavailable;
     }
-    const json = JSON.stringify({own, members: liveMembers(live, seen), unavailable});
-    if (json === peopleKey) return;
-    peopleKey = json;
-    runtime.desktop_set_people(mountId(), json);
   }
-  function remember({publisher, frame}) {
-    const previous = seen.get(publisher);
-    seen.set(publisher, {participant: frame.participant ?? previous?.participant ?? null, focus: frame.focus ?? null, place: frame.place ?? null, wave: frame.wave ?? null, layout: frame.layout ?? null, following: frame.following ?? null});
-    pushPeople();
-  }
-  const live = layer();
-  const stops = live ? [
-    live.onPresence(remember),
-    live.onMember(({publisher, active: present}) => {
-      if (!present) seen.delete(publisher);
-      else if (!paired(publisher)) arrivedAt.set(publisher, now());
-      pushPeople();
-      if (present && !paired(publisher)) wake();
-    }),
-    live.onState?.(() => pushPeople()) ?? (() => {}),
-  ] : [];
-  for (const remote of live?.remoteState?.() ?? []) remember({publisher: remote.publisher, frame: remote});
 
   /** Whether the host's last lines say whose device `publisher` is. */
   function paired(publisher) {
@@ -128,10 +70,12 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl, 
   }
   /** Someone who arrived lately whose person the host has not named yet. */
   function awaitingPerson(at) {
+    const members = layer()?.members?.() ?? [];
+    for (const publisher of members) if (!joined.has(publisher)) { joined.add(publisher); arrivedAt.set(publisher, at); }
     for (const [publisher, since] of arrivedAt) {
-      const agent = seen.get(publisher)?.participant?.kind === 'agent';
-      if (agent || paired(publisher) || at - since >= PAIR_WAIT_MS || !layer()?.members?.().includes(publisher)) arrivedAt.delete(publisher);
+      if (paired(publisher) || at - since >= PAIR_WAIT_MS || !members.includes(publisher)) arrivedAt.delete(publisher);
     }
+    for (const publisher of [...joined]) if (!members.includes(publisher)) joined.delete(publisher);
     return arrivedAt.size > 0;
   }
   async function post(state, at) {
@@ -164,7 +108,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl, 
     timer = undefined;
     if (stopped) return;
     try {
-      pushPeople();
+      sayNote();
       if (active() && visible()) {
         const at = now();
         const state = JSON.parse(runtime.desktop_here_tick(mountId(), at - RECENT_MS));
@@ -200,7 +144,6 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl, 
     stop() {
       stopped = true;
       if (timer !== undefined) clearTimer(timer);
-      for (const stop of stops) { try { stop(); } catch {} }
     },
   };
 }

@@ -18,9 +18,8 @@ use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource};
 use tilo_sheets::power::{Offers, PowerEffect};
 use ui::icons::Icon;
 
-/// The session's own rows, in the order a person reads them: what happens
-/// to the screen first, what happens to the computer last. Switch user and
-/// suspend are the power menu's, not the Tilo menu's.
+/// The session's own rows, in the order a person reads them: what happens to the screen first, what
+/// happens to the computer last. Switch user and suspend are the power menu's, not the Tilo menu's.
 const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
     (PowerEffect::Lock, SESSION_LOCK, "session-host-lock"),
     (PowerEffect::LogOut, SESSION_LOG_OUT, "session-host-log-out"),
@@ -36,16 +35,13 @@ const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
     ),
 ];
 
-/// Offer the session's host actions: the workspace rows always, the empty
-/// desk's welcome verbs, and the session's own rows where this session can
-/// carry them out — a session in a window of another desktop neither
-/// restarts nor shuts its host down, and one that cannot be unlocked again
-/// is not offered locking.
-///
-/// `can_join` is whether a workspace can be joined here at all, which is
-/// whether this session holds the directory a workspace is joined from, and
-/// `can_report` is whether this computer is told where a report about Tilo
-/// itself goes.
+/// Offer the session's host actions: the workspace rows always, the empty desk's welcome verbs, and
+/// the session's own rows where this session can carry them out — a session in a window of another
+/// desktop neither restarts nor shuts its host down, and one that cannot be unlocked again is not
+/// offered locking.
+/// `can_join` is whether a workspace can be joined here at all, which is whether this session holds
+/// the directory a workspace is joined from, and `can_report` is whether this computer is told
+/// where a report about Tilo itself goes.
 pub(crate) fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool, can_report: bool) {
     let t = tilo_desktop_surface::i18n::t;
     let offer =
@@ -60,9 +56,9 @@ pub(crate) fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool, ca
                 source: Some(source),
             }
         };
-    // Making something and bringing someone in are what a person may want to
-    // do from the empty card; leaving takes the workspace away from this
-    // computer, and its settings are looked for by name.
+    // Making something and bringing someone in are what a person may want to do from the empty
+    // card; leaving takes the workspace away from this computer, and its settings are looked for by
+    // name.
     let mut actions = vec![HostAction {
         unasked: true,
         ..offer(
@@ -102,12 +98,11 @@ pub(crate) fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool, ca
         Icon::Settings,
         HostActionSource::Workspace,
     ));
-    // The empty desk's welcome verbs, declared by the launchpad that shows
-    // them: the desk's cards, search and the catalogue agents read all read
-    // these rows.
+    // The empty desk's welcome verbs, declared by the launchpad that shows them: the desk's cards,
+    // search and the catalogue agents read all read these rows.
     actions.extend(LaunchpadAction::host_actions(WorkspaceScope::default()));
-    // A report about Tilo itself goes where this computer is told, so a
-    // computer told nowhere is offered no report.
+    // A report about Tilo itself goes where this computer is told, so a computer told nowhere is
+    // offered no report.
     if can_report {
         actions.push(offer(
             REPORT_PROBLEM,

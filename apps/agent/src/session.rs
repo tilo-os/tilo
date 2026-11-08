@@ -230,12 +230,6 @@ fn ask_for_document(link: &mut Link) -> Result<()> {
 
 impl Session {
     /// Connect, announce the route, and ask the workspace for the document.
-    ///
-    /// # Errors
-    ///
-    /// When the connection to the compositor's collaboration broker cannot
-    /// be made, or the initial route join or presence announce fails to
-    /// send.
     pub fn connect(cfg: Config) -> Result<Self> {
         let managed = managed_context(&cfg)?;
         let mut link = match &cfg.endpoint {

@@ -1,13 +1,10 @@
-//! Controllers in the room drive the desktop: a d-pad's directions arrive at
-//! the window in front as the keys that move focus, A activates and B backs
-//! out, the Guide chord and the buttons the guide draws do what the desktop
-//! already does, and the guide explains the controller in the person's hands
-//! rather than the keyboard.
-//!
-//! The controller is a stand-in for a real one (`controllers::Source::Lent`):
-//! the events below are what the evdev decoder hands the session, so what is
-//! tested here is the session's side of it, from the press to what the person
-//! sees.
+//! Controllers in the room drive the desktop: a d-pad's directions arrive at the window in front as
+//! the keys that move focus, A activates and B backs out, the Guide chord and the buttons the guide
+//! draws do what the desktop already does, and the guide explains the controller in the person's
+//! hands rather than the keyboard.
+//! The controller is a stand-in for a real one (`controllers::Source::Lent`): the events below are
+//! what the evdev decoder hands the session, so what is tested here is the session's side of it,
+//! from the press to what the person sees.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -32,7 +29,7 @@ use std::time::Duration;
 use common::window::{Client, pump};
 use os_actions::{ForwardedGamepadEvent, GamepadButton};
 use settings_store::hardware::ShortcutConfig;
-use tilo_compositor::{Compositor, InputEvent, OutputConfig};
+use tilo_compositor::{Compositor, InputEvent};
 use tilo_session::controller_nav::NavDirection;
 use tilo_session::controllers::{ControllerId, ControllerWake, GamepadSources, Source};
 use tilo_session::surfaces::Surface as SurfaceSpec;
@@ -43,9 +40,6 @@ use tilo_test_env::ScopedEnv;
 use ui::ControllerFamily;
 use ui::input::{ControllerButton, KeyLegend, KeyboardBinding, KeyboardModifier};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-
 /// What a key sends, evdev codes.
 const KEY_ESCAPE: u32 = 1;
 const KEY_TAB: u32 = 15;
@@ -54,8 +48,8 @@ const KEY_LEFT_ALT: u32 = 56;
 const KEY_F1: u32 = 59;
 const KEY_RIGHT: u32 = 106;
 
-/// The shortcut table is the person's settings, and the test that changes it
-/// saves there: it takes its turn rather than overwrite another's table.
+/// The shortcut table is the person's settings, and the test that changes it saves there: it takes
+/// its turn rather than overwrite another's table.
 static SHORTCUTS: Mutex<()> = Mutex::new(());
 
 fn take_turns() -> MutexGuard<'static, ()> {
@@ -68,8 +62,8 @@ fn take_turns() -> MutexGuard<'static, ()> {
     guard
 }
 
-/// A controller in the room, as the session reads it: the events a test
-/// presses on it, and the family whose legends it carries.
+/// A controller in the room, as the session reads it: the events a test presses on it, and the
+/// family whose legends it carries.
 #[derive(Clone, Default)]
 struct Fake(Rc<RefCell<FakeState>>);
 
@@ -152,10 +146,9 @@ impl GamepadSources for Fake {
     }
 }
 
-/// The panel's app for this package's tests: the surface probe the session
-/// package ships, standing in for a view that draws the panel and staying up
-/// while the session keeps it. The environment it reads is held by the test
-/// for as long as its app may be started.
+/// The panel's app for this package's tests: the surface probe the session package ships, standing
+/// in for a view that draws the panel and staying up while the session keeps it. The environment it
+/// reads is held by the test for as long as its app may be started.
 fn panel() -> (SurfaceSpec, ScopedEnv) {
     let mut environment = ScopedEnv::new();
     environment.set("SURFACE_PROBE_STAY", "1");
@@ -168,22 +161,16 @@ fn panel() -> (SurfaceSpec, ScopedEnv) {
     )
 }
 
-/// A session with `fake` in the room, its presses read as the person's, and
-/// quick settings to open.
+/// A session with `fake` in the room, its presses read as the person's, and quick settings to open.
 fn session_with(fake: &Fake) -> (Session, ScopedEnv) {
     let (panel, environment) = panel();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            config: SessionConfig::default(),
-            surfaces: vec![panel],
-            controllers: Some(Source::Lent(Box::new(fake.clone()))),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        config: SessionConfig::default(),
+        surfaces: vec![panel],
+        controllers: Some(Source::Lent(Box::new(fake.clone()))),
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).expect("step");
     (session, environment)
 }
@@ -196,8 +183,7 @@ fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
     });
 }
 
-/// Press or release `keycode` on the keyboard and let the session carry it
-/// out.
+/// Press or release `keycode` on the keyboard and let the session carry it out.
 fn key(session: &mut Session, keycode: u32, pressed: bool) {
     session
         .compositor()
@@ -230,12 +216,12 @@ fn guide_up(session: &Session) -> bool {
         .is_some_and(|seat| seat.presentation().is_open())
 }
 
-/// What a binding spells: `binding(&["Super"], "left")`.
+/// What a binding spells: `binding(&["Super"], "left")` .
 fn binding(modifiers: &[KeyboardModifier], key: &str) -> KeyboardBinding {
     KeyboardBinding::new(modifiers.to_vec(), KeyLegend::from_name(key))
 }
 
-/// A window of `app_id`, mapped and with the keyboard.
+/// A window of `app_id` , mapped and with the keyboard.
 #[track_caller]
 fn mapped(session: &mut Session, app_id: &str) -> Client {
     let mut client = Client::connect(session.compositor());
@@ -262,8 +248,8 @@ fn a_d_pad_moves_focus_a_activates_and_b_backs_out() {
         clients[0].seen.keyboard_focused
     });
 
-    // A direction is the key an app moves focus by — the toolkit's Alt+arrow
-    // — so the window in front moves its focus exactly as from the keyboard.
+    // A direction is the key an app moves focus by — the toolkit's Alt+arrow — so the window in
+    // front moves its focus exactly as from the keyboard.
     fake.dpad(NavDirection::Right);
     pump(&mut session, &mut [&mut client], |_, clients| {
         !clients[0].seen.keys.is_empty()
@@ -337,8 +323,7 @@ fn the_guide_chord_moves_between_windows() {
         focused_app(session.compositor()).as_deref() == Some("org.example.Right")
     });
 
-    // Guide held, the D-pad walks the desk's windows rather than the app's
-    // focus.
+    // Guide held, the D-pad walks the desk's windows rather than the app's focus.
     fake.hold(GamepadButton::Guide);
     fake.dpad(NavDirection::Left);
     pump(&mut session, &mut [&mut left, &mut right], |session, _| {
@@ -384,8 +369,7 @@ fn the_guide_explains_the_controller_that_opened_it() {
     assert_eq!(shown.faces.confirm, ControllerButton::East);
     assert_eq!(shown.faces.cancel, ControllerButton::South);
 
-    // B backs out of it, and a key of the person's own explains the keyboard
-    // again.
+    // B backs out of it, and a key of the person's own explains the keyboard again.
     fake.press(GamepadButton::South);
     until(&mut session, |session| !guide_up(session));
     tap(&mut session, KEY_F1);
@@ -401,8 +385,8 @@ fn a_controller_press_changes_a_shortcut_the_guide_waits_for() {
     let fake = Fake::new(ControllerFamily::Xbox);
     let (mut session, _panel) = session_with(&fake);
 
-    // The guide's first keycap holds the keyboard when it opens, and every
-    // row stands two: Tab walks to the keycap, Enter takes it.
+    // The guide's first keycap holds the keyboard when it opens, and every row stands two: Tab
+    // walks to the keycap, Enter takes it.
     tap(&mut session, KEY_F1);
     until(&mut session, guide_up);
     let action = "previous-tab";
@@ -421,8 +405,8 @@ fn a_controller_press_changes_a_shortcut_the_guide_waits_for() {
         guide(session).listening.as_deref() == Some(action)
     });
 
-    // While it waits, a direction of the controller is the chord the person
-    // presses, and it becomes the row's keys.
+    // While it waits, a direction of the controller is the chord the person presses, and it becomes
+    // the row's keys.
     fake.dpad(NavDirection::Right);
     until(&mut session, |session| guide(session).listening.is_none());
     assert_eq!(

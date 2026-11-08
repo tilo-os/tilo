@@ -545,9 +545,9 @@ pub use history_source::groups as history_groups;
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
-    HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource,
-    compare_entries, deterministic_narrative, heads_for_entry, human_label,
-    participant_display_label, validate_narrative, version_index_for_entry,
+    HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource, compare_entries,
+    deterministic_narrative, heads_for_entry, human_label, participant_display_label,
+    validate_narrative, version_index_for_entry,
 };
 pub use live_collaboration::{
     Availability, CallPresence, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,

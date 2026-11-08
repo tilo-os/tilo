@@ -26,6 +26,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 pub struct Button {
     id: String,
     label: String,
+    /// A fact told at the face's trailing edge, after the label (`Self::with_detail`): the time a
+    /// choice stands for, the amount a row holds. The label then stands at the leading edge, so
+    /// the face reads as a row the choice offers rather than a word centred in a button.
+    detail: Option<String>,
     /// A labelled button that opens a menu shows a trailing chevron, so it
     /// reads as a choice rather than an action.
     pub(crate) opens_menu: bool,
@@ -191,6 +195,7 @@ impl Button {
         Self {
             id: id.to_string(),
             label: label.to_string(),
+            detail: None,
             accessible_name: None,
             tooltip: None,
             description: None,
@@ -501,6 +506,31 @@ impl Button {
         self.dirty = true;
     }
 
+    /// Tell `detail` at the face's trailing edge, after the label, in the secondary ink: what the
+    /// choice stands for (`Tomorrow morning` … `Sat 09:00`). The label then stands at the leading
+    /// edge, and a screen reader hears the two as one name.
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.set_detail(Some(detail.into()));
+        self
+    }
+
+    /// [`Self::with_detail`] after construction; `None` takes it away.
+    pub fn set_detail(&mut self, detail: Option<String>) {
+        if detail == self.detail {
+            return;
+        }
+        self.layout_dirty = true;
+        self.detail = detail;
+        self.dirty = true;
+    }
+
+    /// What the face tells at its trailing edge, when it tells anything.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+
     /// Take the words and glyph of `fresh`, keeping this button's place and press; a shape apart
     /// (icon-only for a label, another role or size) can only change by building it again.
     pub(crate) fn take_words(&mut self, fresh: &Button) -> bool {
@@ -512,6 +542,7 @@ impl Button {
             return false;
         }
         self.set_label(fresh.label.clone(), fresh.placeholder);
+        self.set_detail(fresh.detail.clone());
         if let Some(icon) = fresh.icon {
             self.set_icon(icon);
         }
@@ -848,13 +879,14 @@ impl Button {
 
     /// Whether [`Self::set_compact_toolbar_presentation`] leaves a glyph to show instead of
     /// the label: a labelled button with an icon or with faces, or one already shown that way.
-    pub(crate) fn compacts_to_icon(&self) -> bool {
+    pub fn shrinks_to_icon(&self) -> bool {
         (self.icon.is_some() || !self.faces.is_empty())
             && (!self.label.is_empty() || self.compact_presentation.is_some())
     }
 
-    /// Whether the button is shown icon-only by a responsive toolbar.
-    pub(crate) fn is_compact_presentation(&self) -> bool {
+    /// Whether the button is shown icon-only by a row short of room
+    /// ([`Self::set_compact_toolbar_presentation`]).
+    pub fn is_shown_compact(&self) -> bool {
         self.compact_presentation.is_some()
     }
 
@@ -1227,6 +1259,7 @@ impl FaceSizer {
             tone: None,
             badge: None,
             label,
+            detail: None,
             hint: None,
             flush: false,
             filled_icon: false,
@@ -1245,8 +1278,8 @@ fn paint_corner_badge(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
     BadgeFace::new(pill, label).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 }
 
-/// What sits inside a button's face: an optional leading icon, the label and
-/// an optional trailing shortcut hint.
+/// What sits inside a button's face: an optional leading icon, the label, an
+/// optional fact at the trailing edge and an optional shortcut hint.
 struct FaceContent<'a> {
     icon: Option<crate::icons::Icon>,
     /// Painted instead of `icon` on an icon-only face.
@@ -1262,6 +1295,8 @@ struct FaceContent<'a> {
     tone: Option<Tone>,
     badge: Option<&'a str>,
     label: &'a str,
+    /// A fact told at the trailing edge, in the secondary ink; the label then leads.
+    detail: Option<&'a str>,
     hint: Option<String>,
     /// A labelled plain face: no inner padding, the ink on the layout edge.
     flush: bool,
@@ -1276,7 +1311,7 @@ impl FaceContent<'_> {
     /// an icon-only face is a square, a group of faces is as wide as the faces it shows, and a
     /// labelled one is at least twice its height, so a one-word label still reads as a button.
     fn intrinsic_width(&self, metrics: &FaceMetrics, text: &mut TextRenderer, height: f64) -> f64 {
-        if self.label.is_empty() && self.hint.is_none() {
+        if self.label.is_empty() && self.hint.is_none() && self.detail.is_none() {
             if !self.faces.is_empty() {
                 let pad = if self.flush { 0.0 } else { metrics.pad_x };
                 let group =
@@ -1296,6 +1331,10 @@ impl FaceContent<'_> {
         }
         if !self.label.is_empty() {
             width += f64::from(text.measure_style(self.label, None, &metrics.label_style).0);
+        }
+        if let Some(detail) = self.detail {
+            width += metrics.hint_gap
+                + f64::from(text.measure_style(detail, None, &metrics.label_style).0);
         }
         if let Some(hint) = &self.hint {
             width += metrics.hint_gap
@@ -1442,6 +1481,43 @@ impl FaceContent<'_> {
                 + metrics.icon_gap
         };
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
+        // A fact at the trailing edge makes the face a row: the label leads, the fact trails,
+        // and the ink between them is what a person scanning the column of choices compares.
+        if let Some(detail) = self.detail.filter(|detail| !detail.is_empty()) {
+            let detail_w = f64::from(ctx.text.measure_style(detail, None, style).0);
+            let detail_x = rect.x1 - pad - detail_w;
+            let label_room = (detail_x - metrics.hint_gap - rect.x0 - pad - lead).max(1.0);
+            // Half a pixel of slack, as below: a face sized to its measured label never elides
+            // it over shaping round-off.
+            let label =
+                ctx.text
+                    .elide_to_width_style(self.label, f32_of_f64(label_room + 0.5), style);
+            let (_, label_h) = ctx.text.measure_style(&label, None, style);
+            let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
+            let leading = rect.x0 + pad;
+            if let Some(icon) = self.icon {
+                let iy = rect.center().y - icon_px / 2.0;
+                self.draw_icon(
+                    ctx,
+                    icon,
+                    Rect::new(leading, iy, leading + icon_px, iy + icon_px),
+                    ink,
+                );
+            }
+            if let Some((name, identity)) = self.avatar {
+                let iy = rect.center().y - icon_px / 2.0;
+                let face = Rect::new(leading, iy, leading + icon_px, iy + icon_px);
+                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+            }
+            if !self.faces.is_empty() {
+                self.draw_faces(ctx, leading, rect.center().y, rect.height());
+            }
+            let label_x = leading + lead;
+            let label_ink = if self.placeholder { hint_ink } else { ink };
+            ctx.text(&label, style, label_ink, Point::new(label_x, text_y), None);
+            ctx.text(detail, style, hint_ink, Point::new(detail_x, text_y), None);
+            return;
+        }
         let trail = if self.menu {
             metrics.icon_gap + icon_px
         } else {
@@ -1747,6 +1823,7 @@ pub struct ButtonFace<'a> {
     interact: Interaction,
     control_size: ControlSize,
     shortcut: Option<crate::platform::Shortcut>,
+    detail: Option<&'a str>,
     accessible_name: Option<&'a str>,
 }
 
@@ -1763,6 +1840,7 @@ impl<'a> ButtonFace<'a> {
             interact: Interaction::default(),
             control_size: ControlSize::Regular,
             shortcut: None,
+            detail: None,
             accessible_name: None,
         }
     }
@@ -1808,6 +1886,12 @@ impl<'a> ButtonFace<'a> {
     #[must_use]
     pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
+        self
+    }
+    /// A fact told at the face's trailing edge, in the secondary ink: the label then leads.
+    #[must_use]
+    pub fn detail(mut self, detail: &'a str) -> Self {
+        self.detail = Some(detail);
         self
     }
     /// A toggle that is on: the face stands on the selection lift.
@@ -1872,6 +1956,7 @@ impl<'a> ButtonFace<'a> {
             tone: None,
             badge: None,
             label: &label,
+            detail: self.detail,
             hint: self.shortcut.as_ref().map(shortcut_text),
             flush: false,
             filled_icon: false,
@@ -1900,7 +1985,12 @@ impl<'a> ButtonFace<'a> {
         let style = &metrics.label_style;
         let shown = text.elide_to_width_style(&label, f32_of_f64(room + 0.5), style);
         let label_w = f64::from(text.measure_style(&shown, None, style).0);
-        let start_x = rect.center().x - (lead + label_w) / 2.0;
+        // A face telling a fact at its trailing edge leads with its icon, as its label does.
+        let start_x = if self.detail.is_some_and(|detail| !detail.is_empty()) {
+            rect.x0 + metrics.pad_x
+        } else {
+            rect.center().x - (lead + label_w) / 2.0
+        };
         Some(Rect::new(start_x, iy, start_x + icon_px, iy + icon_px))
     }
     /// Where a pointer activates this face: its rect, grown about its centre
@@ -1938,6 +2028,7 @@ impl<'a> ButtonFace<'a> {
                 tone: self.tone,
                 badge: None,
                 label,
+                detail: self.detail,
                 hint: self.shortcut.as_ref().map(shortcut_text),
                 // A painted face fills the rect its host gave it.
                 flush: false,
@@ -2043,6 +2134,7 @@ impl Button {
                 tone: None,
                 badge: None,
                 label: &label,
+                detail: self.detail.as_deref(),
                 hint,
                 filled_icon: false,
                 menu: self.opens_menu,
@@ -2389,6 +2481,7 @@ impl Widget for Button {
                 tone: self.content_tone,
                 badge: self.badge.as_deref(),
                 label: &label,
+                detail: self.detail.as_deref(),
                 hint,
                 filled_icon: self.icon.is_some_and(|icon| {
                     icon.is_brand()
@@ -2682,11 +2775,18 @@ impl Widget for Button {
                 ..Default::default()
             });
         // Why it cannot be pressed now, if it says: read beside its name, never instead of it.
+        // A fact at the trailing edge is such a word too: the label names the choice, the fact
+        // says what it stands for.
         let description = self
             .description
             .as_deref()
             .map(|why| i18n!(why))
-            .filter(|why| !why.trim().is_empty());
+            .filter(|why| !why.trim().is_empty())
+            .or_else(|| {
+                self.detail
+                    .clone()
+                    .filter(|detail| !detail.trim().is_empty())
+            });
         Some(match description {
             Some(why) => node.with_description(why),
             None => node,

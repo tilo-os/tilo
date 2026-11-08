@@ -27,8 +27,7 @@ use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatTrait};
 use crate::input::{PadAction, TabletEvent, TabletPadEvent, TabletPhase};
 use crate::state::State;
 
-/// Linux button codes (`linux/input-event-codes.h`) a pen's buttons click
-/// as a pointer.
+/// Linux button codes (`linux/input-event-codes.h`) a pen's buttons click as a pointer.
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
@@ -41,8 +40,8 @@ const BTN_STYLUS2: u32 = 0x14c;
 #[derive(Debug, Default)]
 pub(crate) struct Tablets {
     clients: HashSet<ClientId>,
-    /// The tablet-aware surface (and its origin) a stroke started on, while
-    /// the tip is down: the stroke stays with it wherever the pen goes.
+    /// The tablet-aware surface (and its origin) a stroke started on, while the tip is down: the
+    /// stroke stays with it wherever the pen goes.
     stroke: Option<(WlSurface, Point<f64, Logical>)>,
     /// Where the tool was last, for events that carry no position.
     position: Point<f64, Logical>,
@@ -70,9 +69,9 @@ impl Dispatch<ZwpTabletManagerV2, (), State> for State {
     }
 }
 
-/// The pointer button a pen button code clicks for apps without tablet
-/// support: the barrel buttons are secondary and middle, and the codes a
-/// tablet's settings remap them to are those mouse buttons.
+/// The pointer button a pen button code clicks for apps without tablet support: the barrel buttons
+/// are secondary and middle, and the codes a tablet's settings remap them to are those mouse
+/// buttons.
 pub(crate) const fn pointer_button(code: u32) -> Option<u32> {
     match code {
         BTN_LEFT => Some(BTN_LEFT),
@@ -121,8 +120,8 @@ impl State {
         } else {
             self.tablet_target(at)
         };
-        // The lock screen covers the display, stretched to it: it reads the
-        // point where it drew what the tool is over.
+        // The lock screen covers the display, stretched to it: it reads the point where it drew
+        // what the tool is over.
         let at = if self.locked() {
             self.lock_point(at)
         } else {
@@ -133,8 +132,7 @@ impl State {
         let tablet = tablet_seat.add_tablet::<Self>(&dh, &event.tablet);
         let tool = tablet_seat.add_tool::<Self>(self, &dh, &event.tool);
         let Some(focus) = target else {
-            // A pointer to everything else; the tool leaves any tablet-aware
-            // surface it was over.
+            // A pointer to everything else; the tool leaves any tablet-aware surface it was over.
             tool.proximity_out(time);
             self.tablets.stroke = None;
             self.tablet_as_pointer(event, at, serial, time);
@@ -192,8 +190,7 @@ impl State {
         }
     }
 
-    /// Pads follow the keyboard: the focused surface's client gets their
-    /// buttons, rings and strips.
+    /// Pads follow the keyboard: the focused surface's client gets their buttons, rings and strips.
     pub(crate) fn pads_follow_keyboard(&self, focused: Option<&WlSurface>) {
         let time = self.now_ms();
         self.seat
@@ -201,18 +198,16 @@ impl State {
             .set_pad_focus(focused, SERIAL_COUNTER.next_serial(), time);
     }
 
-    /// One pad event from a backend that acts on what no client takes; see
-    /// [`Self::tablet_pad`].
+    /// One pad event from a backend that acts on what no client takes; see [`Self::tablet_pad`].
     pub(crate) fn pad_input(&mut self, event: &TabletPadEvent) -> bool {
         self.note_input();
         let time = self.now_ms();
         self.tablet_pad(event, SERIAL_COUNTER.next_serial(), time)
     }
 
-    /// Route one pad event to the client the pad is focused on. Returns
-    /// whether a client took it: `false` leaves a button, ring or strip to
-    /// the compositor. Plugging, unplugging and mode switches are always
-    /// taken.
+    /// Route one pad event to the client the pad is focused on. Returns whether a client took it:
+    /// `false` leaves a button, ring or strip to the compositor. Plugging, unplugging and mode
+    /// switches are always taken.
     pub(crate) fn tablet_pad(&self, event: &TabletPadEvent, serial: Serial, time: u32) -> bool {
         let tablet_seat = self.seat.tablet_seat();
         if event.action == PadAction::Removed {
@@ -220,8 +215,7 @@ impl State {
             return true;
         }
         let dh = self.display.clone();
-        // A pad seen first through an event (its plug went unnoticed) is
-        // added then.
+        // A pad seen first through an event (its plug went unnoticed) is added then.
         let tablet = tablet_seat.add_tablet::<Self>(&dh, &event.tablet);
         let pad = tablet_seat.add_pad::<Self>(&dh, &event.pad, &tablet);
         let pressed = |pressed| {
@@ -249,9 +243,9 @@ impl State {
         true
     }
 
-    /// The pointer events a tool stands for where tablets are not taken:
-    /// hover moves the pointer, the tip presses [`TabletEvent::tip_button`]
-    /// and the barrel buttons click their pointer buttons.
+    /// The pointer events a tool stands for where tablets are not taken: hover moves the pointer,
+    /// the tip presses [`TabletEvent::tip_button`] and the barrel buttons click their pointer
+    /// buttons.
     fn tablet_as_pointer(
         &mut self,
         event: &TabletEvent,

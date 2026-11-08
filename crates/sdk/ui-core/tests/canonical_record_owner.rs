@@ -55,7 +55,6 @@ fn body(store: &RecordStore, want: &RecordCheckout) -> String {
 )]
 #[test]
 fn one_canonical_owner_shares_history_and_reserves_exactly_once() {
-    // Case `corrupt_is_not_a_new_record`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));
@@ -77,7 +76,6 @@ fn one_canonical_owner_shares_history_and_reserves_exactly_once() {
         }
     }
 
-    // Case `one_owner_shares_changes_and_history_but_workspaces_do_not_alias`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));
@@ -123,7 +121,6 @@ fn one_canonical_owner_shares_history_and_reserves_exactly_once() {
         assert_eq!(body(&reopened, &want), "changed");
     }
 
-    // Case `reservation_is_private_retryable_and_exactly_once`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
@@ -191,7 +188,6 @@ fn one_canonical_owner_shares_history_and_reserves_exactly_once() {
 )]
 #[test]
 fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
-    // Case `identity_refusal_preserves_complete_and_recovered_bytes`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
@@ -243,7 +239,6 @@ fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
         }
     }
 
-    // Case `validated_prefix_repair_preserves_home_and_survives_edit_flush_reopen`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
@@ -284,7 +279,6 @@ fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
         assert_eq!(body(&store, &want), "after-recovery");
     }
 
-    // Case `failed_initialization_keeps_unpublished_reservation_for_retry`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
@@ -322,7 +316,6 @@ fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
 
 #[test]
 fn status_polling_and_failed_flushes_keep_pending_edits() {
-    // Case `status_polling_preserves_pending_typing_and_memory_only`.
     {
         let memory = RecordStore::in_memory();
         let want = target();
@@ -365,7 +358,6 @@ fn status_polling_and_failed_flushes_keep_pending_edits() {
         assert_eq!(settled(&store, &want.id), RecordSaveStatus::Saved);
     }
 
-    // Case `failed_flush_retries_complete_latest_document_without_new_edit`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");

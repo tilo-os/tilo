@@ -1,17 +1,14 @@
 //! Who is here in a hosted workspace and what they are doing.
-//!
-//! Two sources meet here. A workspace's live layer names the members present
-//! now (people and agents), their colour, the record they focus and an
-//! agent's own activity line. The host answers `/here` with each person's
-//! one-line status and a summary of their last minutes, built from the
-//! titles of the actions they took (`tilo_relay_protocol::web::HERE_PATH`).
-//! Neither is written to the workspace's desktop document: the bar, the People
-//! popover and the windows read them as ambient presence.
-//!
-//! A person may be here from several devices at once (each browser tab is a
-//! device of its own). They are one person here: the host's lines pair each
-//! device with its person, devices of one person show once, and this page's
-//! person's other devices are this page's person, never someone else.
+//! Two sources meet here. A workspace's live layer names the members present now (people and
+//! agents), their colour, the record they focus and an agent's own activity line. The host answers
+//! `/here` with each person's one-line status and a summary of their last minutes, built from the
+//! titles of the actions they took (`tilo_relay_protocol::web::HERE_PATH`). Neither is written to
+//! the workspace's desktop document: the bar, the People popover and the windows read them as
+//! ambient presence.
+//! A person may be here from several devices at once (each browser tab is a device of its own).
+//! They are one person here: the host's lines pair each device with its person, devices of one
+//! person show once, and this page's person's other devices are this page's person, never someone
+//! else.
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
@@ -25,19 +22,18 @@ mod waves;
 pub use screen::{MemberLayout, MemberWindow, Screen, ScreenWindow};
 pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 
-/// The most bytes of a person's own words, as their live presence carries
-/// them (a participant's activity line).
+/// The most bytes of a person's own words, as their live presence carries them (a participant's
+/// activity line).
 const MAX_OWN_WORDS_BYTES: usize = 96;
 
-/// How long a host line keeps a person listed without the live layer to
-/// say they are present: a page posts every 20 seconds while open.
+/// How long a host line keeps a person listed without the live layer to say they are present: a
+/// page posts every 20 seconds while open.
 const HOST_ONLY_FRESH_MS: u64 = 90_000;
 
-/// How long a device that dropped out of the live layer still counts as
-/// here: back within it, it never left. A page renews its live grant every
-/// few minutes by reconnecting, which drops every member and adds them
-/// again, and a carrier re-announces a member as withdrawn and back; none
-/// of that is someone arriving.
+/// How long a device that dropped out of the live layer still counts as here: back within it, it
+/// never left. A page renews its live grant every few minutes by reconnecting, which drops every
+/// member and adds them again, and a carrier re-announces a member as withdrawn and back; none of
+/// that is someone arriving.
 const REJOIN_QUIET_MS: u64 = 90_000;
 
 /// A record a member focuses, as their live presence names it.
@@ -53,13 +49,13 @@ pub struct Focus {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct LiveMember {
     pub publisher: String,
-    /// `"person"` or `"agent"`.
+    /// `"person"` or `"agent"` .
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
     pub label: String,
-    /// What the device calls itself, from its certificate: what tells two
-    /// devices of one person apart. Empty on a device that named none.
+    /// What the device calls itself, from its certificate: what tells two devices of one person
+    /// apart. Empty on a device that named none.
     #[serde(default)]
     pub device: String,
     #[serde(default)]
@@ -67,13 +63,13 @@ pub struct LiveMember {
     /// An agent's own activity line.
     #[serde(default)]
     pub activity: Option<String>,
-    /// Where within the workspace's desktop a person is: the id of the strip
-    /// they are on, as their presence names it.
+    /// Where within the workspace's desktop a person is: the id of the strip they are on, as their
+    /// presence names it.
     #[serde(default)]
     pub place: Option<String>,
-    /// The person (user root, hex) this page is certified as: given for the
-    /// page's own entry only, which knows its certificate. Other members'
-    /// persons come from the host's lines, which the host authenticated.
+    /// The person (user root, hex) this page is certified as: given for the page's own entry only,
+    /// which knows its certificate. Other members' persons come from the host's lines, which the
+    /// host authenticated.
     #[serde(default)]
     pub user: Option<String>,
     /// The member's latest wave at someone here.
@@ -90,8 +86,8 @@ pub struct LiveMember {
     /// which pages reporting members leave out.
     #[serde(default)]
     pub availability: Option<String>,
-    /// The voice channel they are in, as their presence carries it
-    /// ([`ui::CallPresence::encode`]). `None` when they are in none.
+    /// The voice channel they are in, as their presence carries it ([`ui::CallPresence::encode`]).
+    /// `None` when they are in none.
     #[serde(default)]
     pub call: Option<String>,
 }
@@ -121,8 +117,8 @@ pub struct HostLine {
     pub profile_ms: u64,
 }
 
-/// A line of text and who wrote it: the person, a model, or the host
-/// reading it plainly off what they did.
+/// A line of text and who wrote it: the person, a model, or the host reading it plainly off what
+/// they did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     pub text: String,
@@ -140,11 +136,10 @@ impl Line {
 /// One device a person is here on, as their face lists them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersonDevice {
-    /// The device's live publisher, hex: what a copy affordance keeps, never
-    /// the device's name.
+    /// The device's live publisher, hex: what a copy affordance keeps, never the device's name.
     pub id: String,
-    /// What the device calls itself, from its certificate; empty on a device
-    /// that named itself none, which a card names by which one it is.
+    /// What the device calls itself, from its certificate; empty on a device that named itself
+    /// none, which a card names by which one it is.
     pub label: String,
     /// This is the device the desk is drawn on.
     pub this: bool,
@@ -157,11 +152,11 @@ pub struct PersonDevice {
 pub struct Person {
     /// Their live publisher (the device key for a person), hex.
     pub id: String,
-    /// The person (user root, hex) as the host authenticated them, once
-    /// its lines say: the id that stays theirs on every device.
+    /// The person (user root, hex) as the host authenticated them, once its lines say: the id that
+    /// stays theirs on every device.
     pub user: Option<String>,
-    /// What everyone here calls them: the person's name, whichever of their
-    /// devices is the one listed.
+    /// What everyone here calls them: the person's name, whichever of their devices is the one
+    /// listed.
     pub label: String,
     /// The devices they are here on, each as it calls itself.
     pub devices: Vec<PersonDevice>,
@@ -178,11 +173,11 @@ pub struct Person {
     pub place: Option<String>,
     pub status: Option<Line>,
     pub recent: Option<Line>,
-    /// Where their windows are on their screen, as their live presence
-    /// says: a person's only, from the first of their devices that says.
+    /// Where their windows are on their screen, as their live presence says: a person's only, from
+    /// the first of their devices that says.
     pub screen: Option<Screen>,
-    /// How available they said they were, from their presence: the face
-    /// dims while they are away or idle.
+    /// How available they said they were, from their presence: the face dims while they are away or
+    /// idle.
     pub availability: ui::Availability,
     /// The voice channel they are in, as their presence says.
     pub call: Option<ui::CallPresence>,
@@ -193,8 +188,8 @@ pub struct Person {
 pub struct HereState {
     /// The live layer's members, or `None` while it is not live.
     members: Option<Vec<LiveMember>>,
-    /// Why this page cannot join the live layer at all, in the words it shows
-    /// in the members' place: a browser without WebTransport.
+    /// Why this page cannot join the live layer at all, in the words it shows in the members'
+    /// place: a browser without WebTransport.
     unavailable: Option<String>,
     /// This page itself: its publisher, name and colour.
     own: Option<LiveMember>,
@@ -206,18 +201,18 @@ pub struct HereState {
     revision: u64,
     /// The ids last registered on window presence, to forget who left.
     registered: Vec<String>,
-    /// What this page's person lets the host say about them: only
-    /// [`ui::StatusSharing::Automatic`] sends their actions.
+    /// What this page's person lets the host say about them: only [`ui::StatusSharing::Automatic`]
+    /// sends their actions.
     sharing: ui::StatusSharing,
-    /// What this page's person says they are doing, in their own words:
-    /// it travels on their live presence and leads what everyone here
-    /// reads of them, before anything the host words automatically.
+    /// What this page's person says they are doing, in their own words: it travels on their live
+    /// presence and leads what everyone here reads of them, before anything the host words
+    /// automatically.
     own_words: Option<String>,
-    /// The other people's devices already announced as here; `None` until
-    /// the first roster arrived ([`HereState::take_arrivals`]).
+    /// The other people's devices already announced as here; `None` until the first roster arrived
+    /// ([`HereState::take_arrivals`]).
     announced: Option<std::collections::BTreeSet<String>>,
-    /// When each announced device last dropped out of the live layer, Unix
-    /// milliseconds, so one back within [`REJOIN_QUIET_MS`] is not news.
+    /// When each announced device last dropped out of the live layer, Unix milliseconds, so one
+    /// back within [`REJOIN_QUIET_MS`] is not news.
     dropped: HashMap<String, u64>,
     /// The waves this page sent and heard.
     waves: waves::Waves,
@@ -225,8 +220,8 @@ pub struct HereState {
     notice: Option<crate::chrome::WaveNotice>,
     /// Whose view this page follows: their publisher.
     following: Option<String>,
-    /// Each person's accounts elsewhere as their profile names them, by
-    /// their root key (lower-case hex).
+    /// Each person's accounts elsewhere as their profile names them, by their root key (lower-case
+    /// hex).
     linked: HashMap<String, Vec<tilo_app::linked_accounts::ProfileLink>>,
 }
 
@@ -248,8 +243,8 @@ fn host_line(text: &str, generated: bool) -> Option<Line> {
     )
 }
 
-/// How available a member said they were: their presence's word, and the
-/// default — available — when they said nothing of it.
+/// How available a member said they were: their presence's word, and the default — available — when
+/// they said nothing of it.
 fn availability_of(member: &LiveMember) -> ui::Availability {
     member
         .availability
@@ -258,8 +253,7 @@ fn availability_of(member: &LiveMember) -> ui::Availability {
         .unwrap_or(ui::Availability::Available)
 }
 
-/// What someone says they are doing in their own words, as their live
-/// presence carries it.
+/// What someone says they are doing in their own words, as their live presence carries it.
 fn own_words(member: &LiveMember) -> Option<Line> {
     member
         .activity
@@ -289,8 +283,8 @@ impl HereState {
         true
     }
 
-    /// What the page says it cannot do where it would show who is here, or
-    /// `None` while it can (or did). Returns whether it changed.
+    /// What the page says it cannot do where it would show who is here, or `None` while it can (or
+    /// did). Returns whether it changed.
     pub fn set_unavailable(&mut self, unavailable: Option<String>) -> bool {
         if self.unavailable == unavailable {
             return false;
@@ -328,8 +322,7 @@ impl HereState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// The accounts elsewhere `user`'s profile names now. Whether that
-    /// changed anything.
+    /// The accounts elsewhere `user` 's profile names now. Whether that changed anything.
     pub fn set_linked(
         &mut self,
         user: &str,
@@ -348,7 +341,7 @@ impl HereState {
         true
     }
 
-    /// The accounts elsewhere `user`'s profile names.
+    /// The accounts elsewhere `user` 's profile names.
     #[must_use]
     pub fn linked_of(&self, user: &str) -> &[tilo_app::linked_accounts::ProfileLink] {
         self.linked
@@ -356,14 +349,12 @@ impl HereState {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// Who joined since the last call, by the name everyone here sees: a
-    /// person who was not in the workspace before. The first roster this page
-    /// sees is who was already here, not arrivals; this page's person and
-    /// agents are never announced, and leaving is not news. A device back
-    /// within `REJOIN_QUIET_MS` of dropping out never left, and another
-    /// device of someone here is not them arriving. One whose name is not
-    /// known yet (neither their presence nor the host's lines carry it) is
-    /// announced once it is, by that name, as the bar shows them.
+    /// Who joined since the last call, by the name everyone here sees: a person who was not in the
+    /// workspace before. The first roster this page sees is who was already here, not arrivals;
+    /// this page's person and agents are never announced, and leaving is not news. A device back
+    /// within `REJOIN_QUIET_MS` of dropping out never left, and another device of someone here is
+    /// not them arriving. One whose name is not known yet (neither their presence nor the host's
+    /// lines carry it) is announced once it is, by that name, as the bar shows them.
     pub fn take_arrivals(&mut self, now_ms: u64) -> Vec<String> {
         let Some(members) = &self.members else {
             return Vec::new();
@@ -411,8 +402,8 @@ impl HereState {
         arrived
     }
 
-    /// The name a member goes by here: what their presence says, else the
-    /// host's line for their device.
+    /// The name a member goes by here: what their presence says, else the host's line for their
+    /// device.
     fn member_name<'a>(&'a self, member: &'a LiveMember) -> Option<&'a str> {
         Some(member.label.trim())
             .filter(|label| !label.is_empty())
@@ -447,10 +438,9 @@ impl HereState {
         }
     }
 
-    /// Say what this person is doing in their own words; `None` (or only
-    /// spaces) clears it. On one line, at most [`ui::MAX_STATUS_CHARS`]
-    /// characters and as many bytes as a live participant's activity
-    /// carries.
+    /// Say what this person is doing in their own words; `None` (or only spaces) clears it. On one
+    /// line, at most [`ui::MAX_STATUS_CHARS`] characters and as many bytes as a live participant's
+    /// activity carries.
     pub fn set_own_words(&mut self, words: Option<String>) {
         let words = words
             .map(|words| {
@@ -483,15 +473,15 @@ impl HereState {
         self.own_words.as_deref()
     }
 
-    /// The words this page publishes as what its person is doing: their
-    /// own, unless they share nothing of what they do.
+    /// The words this page publishes as what its person is doing: their own, unless they share
+    /// nothing of what they do.
     pub fn shared_words(&self) -> Option<&str> {
         self.own_words()
             .filter(|_| self.sharing != ui::StatusSharing::Off)
     }
 
-    /// What everyone here reads of this person: their own words, else
-    /// the host's automatic line while they share one.
+    /// What everyone here reads of this person: their own words, else the host's automatic line
+    /// while they share one.
     pub fn own_doing(&self) -> Option<Line> {
         self.shared_words()
             .and_then(|words| line(words, crate::collaborators::LineSource::Written))
@@ -523,8 +513,8 @@ impl HereState {
             .filter(|user| !user.is_empty())
     }
 
-    /// The person the device `publisher` is a device of: as the host's lines
-    /// say, else as the device's own certificate says; `None` before either.
+    /// The person the device `publisher` is a device of: as the host's lines say, else as the
+    /// device's own certificate says; `None` before either.
     pub fn user_of(&self, publisher: &str) -> Option<&str> {
         if Some(publisher) == self.own_id()
             && let Some(own) = self.own_user()
@@ -536,9 +526,9 @@ impl HereState {
             .find(|line| line.device == publisher && !line.user.is_empty())
             .map(|line| line.user.as_str())
             .or_else(|| {
-                // The live layer carries what each member was certified as
-                // before any host has spoken: enough to count two of their
-                // devices as one person, and never ours as someone else.
+                // The live layer carries what each member was certified as before any host has
+                // spoken: enough to count two of their devices as one person, and never ours as
+                // someone else.
                 self.members
                     .iter()
                     .flatten()
@@ -548,16 +538,15 @@ impl HereState {
             })
     }
 
-    /// Who `publisher` counts as: its person where known, else the device
-    /// itself, so devices of one person count once.
+    /// Who `publisher` counts as: its person where known, else the device itself, so devices of one
+    /// person count once.
     fn person_of<'a>(&'a self, publisher: &'a str) -> &'a str {
         self.user_of(publisher).unwrap_or(publisher)
     }
 
-    /// The devices the person behind `publisher` is here on: which of their
-    /// machines are here, each as it calls itself and as it said it was. A
-    /// device that named none is known by its publisher, never by its
-    /// person's name.
+    /// The devices the person behind `publisher` is here on: which of their machines are here, each
+    /// as it calls itself and as it said it was. A device that named none is known by its
+    /// publisher, never by its person's name.
     #[must_use]
     pub fn devices_of(&self, publisher: &str) -> Vec<PersonDevice> {
         let person = self.person_of(publisher);
@@ -569,8 +558,8 @@ impl HereState {
             .filter(|member| member.kind != "agent" && self.person_of(&member.publisher) == person)
             .map(|member| PersonDevice {
                 id: member.publisher.clone(),
-                // A device that named itself none keeps it empty: its key is
-                // an id, and never stands in for the name it did not give.
+                // A device that named itself none keeps it empty: its key is an id, and never
+                // stands in for the name it did not give.
                 label: member.device.trim().to_owned(),
                 this: here == Some(member.publisher.as_str()),
                 availability: availability_of(member),
@@ -578,9 +567,9 @@ impl HereState {
             .collect()
     }
 
-    /// Everyone here, by the device their presence comes from: the name and
-    /// colour of the person they are. What names a device in a place only
-    /// its publisher reaches, such as a pointer over a tile.
+    /// Everyone here, by the device their presence comes from: the name and colour of the person
+    /// they are. What names a device in a place only its publisher reaches, such as a pointer over
+    /// a tile.
     #[must_use]
     pub fn person_names(&self) -> HashMap<String, (String, (u8, u8, u8))> {
         let labels = self.labels();
@@ -607,8 +596,8 @@ impl HereState {
         names
     }
 
-    /// Where `person`'s windows are: the layout of the first of their
-    /// devices in the live layer that says.
+    /// Where `person` 's windows are: the layout of the first of their devices in the live layer
+    /// that says.
     fn screen_of(&self, person: &str) -> Option<Screen> {
         self.members
             .iter()
@@ -633,14 +622,12 @@ impl HereState {
             .filter(|label| !label.is_empty())
     }
 
-    /// The name and colour presence shows for the person `user` (their user
-    /// root, hex): their page's, found through the host's lines, which
-    /// pair each device with its person. `None` for someone not here now.
-    ///
-    /// Of a person's devices, the one live here names them, as the bar of
-    /// who is here does: a device they left (a page reloaded, a tab closed)
-    /// keeps its line a while, with the name it went by before they chose
-    /// theirs.
+    /// The name and colour presence shows for the person `user` (their user root, hex): their
+    /// page's, found through the host's lines, which pair each device with its person. `None` for
+    /// someone not here now.
+    /// Of a person's devices, the one live here names them, as the bar of who is here does: a
+    /// device they left (a page reloaded, a tab closed) keeps its line a while, with the name it
+    /// went by before they chose theirs.
     pub fn person(&self, user: &str) -> Option<(String, (u8, u8, u8))> {
         let member_of = |device: &str| {
             self.members
@@ -671,8 +658,8 @@ impl HereState {
         // Told apart by their person's name, as everywhere here names them.
         let person_of = self.person_of(&line.device).to_owned();
         let label = self.labels().label(&person_of, &label);
-        // A device that left the live layer keeps its line a while: their
-        // person's own colour then, as when alone here.
+        // A device that left the live layer keeps its line a while: their person's own colour then,
+        // as when alone here.
         let rgb = self
             .colors()
             .get(&line.device)
@@ -687,21 +674,17 @@ impl HereState {
         Some(color_in(&self.colors(), own))
     }
 
-    /// What colour everyone here is drawn in, by live publisher, this page
-    /// included. Settled over the whole workspace at once
-    /// ([`ui::presence::assign_peer_colors`]): two people here together
-    /// never share a colour while the ring has room for both, and every
-    /// page, seeing the same workspace, settles it alike. A person is settled by
-    /// who they are (their user root) so their other devices wear their
-    /// colour; an agent by its own publisher. The colour a page publishes
-    /// for itself is not consulted: a page picking alone cannot know who
-    /// else is here, which is how two visitors came to wear the same one.
-    ///
-    /// A person's device is in the live layer before either the host's lines
-    /// or its own certificate pairs it with its person. Until they do it has
-    /// no entry here, and takes no part in the settlement, so they are drawn
-    /// neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a colour
-    /// keyed by their device that changes once their person is known.
+    /// What colour everyone here is drawn in, by live publisher, this page included. Settled over
+    /// the whole workspace at once ([`ui::presence::assign_peer_colors`]): two people here together
+    /// never share a colour while the ring has room for both, and every page, seeing the same
+    /// workspace, settles it alike. A person is settled by who they are (their user root) so their
+    /// other devices wear their colour; an agent by its own publisher. The colour a page publishes
+    /// for itself is not consulted: a page picking alone cannot know who else is here, which is how
+    /// two visitors came to wear the same one.
+    /// A person's device is in the live layer before either the host's lines or its own certificate
+    /// pairs it with its person. Until they do it has no entry here, and takes no part in the
+    /// settlement, so they are drawn neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a
+    /// colour keyed by their device that changes once their person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
         let present: Vec<(&str, &str)> = match &self.members {
             Some(members) => members
@@ -716,8 +699,8 @@ impl HereState {
                     }
                 })
                 .collect(),
-            // Without the live layer the host's lines are who is here, each
-            // already known to the host.
+            // Without the live layer the host's lines are who is here, each already known to the
+            // host.
             None => self
                 .lines
                 .iter()
@@ -743,10 +726,8 @@ impl HereState {
             .and_then(|own| host_line(&own.status, own.generated))
     }
 
-    /// Everyone present but this page, people first, then agents, each in
-    /// the order they arrived. `tree` and `records` (each window's record)
-    /// place them in this desktop.
-    ///
+    /// Everyone present but this page, people first, then agents, each in the order they arrived.
+    /// `tree` and `records` (each window's record) place them in this desktop.
     /// `app_name` names an app by its id, for where someone is.
     pub fn people(
         &self,
@@ -758,7 +739,7 @@ impl HereState {
         let host = |device: &str| self.lines.iter().find(|line| line.device == device);
         let colors = self.colors();
         let mut people: Vec<Person> = Vec::new();
-        // Who each listed person counts as (`person_of`), beside `people`.
+        // Who each listed person counts as (`person_of`), beside `people` .
         let mut persons: Vec<&str> = Vec::new();
         for member in self.members.iter().flatten() {
             let agent = member.kind == "agent";
@@ -772,15 +753,14 @@ impl HereState {
             }
             persons.push(person);
             let line_of = host(&member.publisher);
-            // An agent names the record it works in; a person's page says
-            // which window they are in.
+            // An agent names the record it works in; a person's page says which window they are in.
             let tab = member
                 .focus
                 .as_ref()
                 .and_then(|focus| window_of(tree, records, focus))
                 .or_else(|| line_of.and_then(|l| shown_window(tree, l)));
-            // Their own words first (an agent's activity is its own), else
-            // what the host read off what they did.
+            // Their own words first (an agent's activity is its own), else what the host read off
+            // what they did.
             let status = own_words(member)
                 .or_else(|| line_of.and_then(|l| host_line(&l.status, l.generated)));
             let place = match tab {
@@ -811,8 +791,8 @@ impl HereState {
                 call: member.call.as_deref().and_then(ui::CallPresence::decode),
             });
         }
-        // Without the live layer the host's lines are all there is; a line
-        // the person stopped refreshing has left.
+        // Without the live layer the host's lines are all there is; a line the person stopped
+        // refreshing has left.
         let fresh = |l: &HostLine| {
             self.members.is_none()
                 && now_ms.saturating_sub(self.lines_at_ms) < HOST_ONLY_FRESH_MS
@@ -840,8 +820,7 @@ impl HereState {
                 status,
                 recent: host_line(&l.recent, l.generated),
                 screen: None,
-                // The host's lines say what a person does, never whether
-                // they are at their machine.
+                // The host's lines say what a person does, never whether they are at their machine.
                 availability: ui::Availability::Available,
                 call: None,
             });
@@ -849,29 +828,29 @@ impl HereState {
         people.compact_sort_by_key(|person| person.agent);
         let labels = self.labels();
         for person in people.iter_mut().filter(|person| !person.agent) {
-            // A person is told apart by their own name: every device of
-            // theirs is the same person, never a second one.
+            // A person is told apart by their own name: every device of theirs is the same person,
+            // never a second one.
             let person_of = person.user.clone().unwrap_or_else(|| person.id.clone());
             person.label = labels.label(&person_of, &person.label);
         }
         people
     }
 
-    /// This page's own name as everyone here is shown it: numbered when
-    /// someone else here goes by the same name.
+    /// This page's own name as everyone here is shown it: numbered when someone else here goes by
+    /// the same name.
     pub fn own_shown(&self) -> Option<String> {
         let own = self.own_label()?;
         let id = self.person_of(self.own_id()?).to_owned();
         Some(self.labels().label(&id, own))
     }
 
-    /// The numbers the people here are told apart by, this page's own
-    /// person included: the live layer's people, else the host's lines.
-    /// Keyed by person, so two devices of one person are one name to number.
+    /// The numbers the people here are told apart by, this page's own person included: the live
+    /// layer's people, else the host's lines. Keyed by person, so two devices of one person are one
+    /// name to number.
     fn labels<'a>(&'a self) -> ui::presence::ParticipantLabels {
         let mut named: Vec<(&'a str, String)> = Vec::new();
-        // One name per person, whoever of theirs spoke first: a device that
-        // has not said whose it is yet does not keep their name out.
+        // One name per person, whoever of theirs spoke first: a device that has not said whose it
+        // is yet does not keep their name out.
         let guest = guest_label();
         let add = |named: &mut Vec<(&'a str, String)>, id: &'a str, name: String| match named
             .iter_mut()
@@ -909,11 +888,10 @@ impl HereState {
         ui::presence::ParticipantLabels::new(named.iter().map(|(id, name)| (*id, name.as_str())))
     }
 
-    /// Show `people` on the windows they are in: each one's colour, name and
-    /// kind, registered on their window's tab. Whoever left, or focuses no
-    /// window here, is taken off every tab.
-    /// Show the waves at this person heard since the last call: each
-    /// waver's face bounces, and the last of them is the bar's notice.
+    /// Show `people` on the windows they are in: each one's colour, name and kind, registered on
+    /// their window's tab. Whoever left, or focuses no window here, is taken off every tab. Show
+    /// the waves at this person heard since the last call: each waver's face bounces, and the last
+    /// of them is the bar's notice.
     pub fn show_waves(&mut self, presence: &mut PresenceCtx) {
         let now = ui::time::now();
         for wave in self.take_waves() {
@@ -950,9 +928,9 @@ impl HereState {
             }
         }
         self.registered.clear();
-        // Every device here, not only the one each person is listed by:
-        // the pointer of someone's second tab wears their colour too, and
-        // a person id from elsewhere (a call's roster) finds it.
+        // Every device here, not only the one each person is listed by: the pointer of someone's
+        // second tab wears their colour too, and a person id from elsewhere (a call's roster) finds
+        // it.
         let colors = self.colors();
         presence.set_persons(colors.keys().filter_map(|publisher| {
             let person = self.user_of(publisher)?;
@@ -978,8 +956,8 @@ impl HereState {
     }
 }
 
-/// `publisher`'s colour in `colors` ([`HereState::colors`]), or the
-/// neutral face while the workspace has not settled one for it.
+/// `publisher` 's colour in `colors` ([`HereState::colors`]), or the neutral face while the
+/// workspace has not settled one for it.
 fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8, u8) {
     colors
         .get(publisher)
@@ -992,8 +970,7 @@ pub fn guest_label() -> String {
     "Guest".to_owned()
 }
 
-/// The window a host line says its person is in, when the active
-/// workspace has it.
+/// The window a host line says its person is in, when the active workspace has it.
 fn shown_window(tree: &DesktopTree, line: &HostLine) -> Option<TabId> {
     let tab = u64::from_str_radix(line.window.as_deref()?, 16).ok()?;
     tree.active_workspace()?
@@ -1005,8 +982,7 @@ fn shown_window(tree: &DesktopTree, line: &HostLine) -> Option<TabId> {
         .then_some(tab)
 }
 
-/// The window showing `focus`: the record's window, else the first window
-/// of its app.
+/// The window showing `focus` : the record's window, else the first window of its app.
 fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> Option<TabId> {
     let tabs: HashMap<TabId, &str> = tree
         .active_workspace()
@@ -1027,10 +1003,9 @@ fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> 
         .map(|(tab, _)| *tab)
 }
 
-/// Where the window `tab` is, in words beside `status`: "Strip · App".
-/// The strip is named only where the workspace has more than one (the one
-/// there is is no news), and the app only where `status` does not already
-/// say it ("Main · Chat" over "Working in Chat" says Chat twice). `None`
+/// Where the window `tab` is, in words beside `status` : "Strip · App". The strip is named only
+/// where the workspace has more than one (the one there is is no news), and the app only where
+/// `status` does not already say it ("Main · Chat" over "Working in Chat" says Chat twice). `None`
 /// when that leaves nothing.
 fn worded_place(
     tree: &DesktopTree,
@@ -1063,8 +1038,8 @@ fn worded_place(
     })
 }
 
-/// Where `member` is when no window here shows it: "In App", the app
-/// their presence focuses, unless `status` already names it.
+/// Where `member` is when no window here shows it: "In App", the app their presence focuses, unless
+/// `status` already names it.
 fn focused_app(
     member: &LiveMember,
     app_name: &dyn Fn(&str) -> Option<String>,
@@ -1089,16 +1064,16 @@ fn names(text: &str, name: &str) -> bool {
     !name.is_empty() && text.windows(name.len()).any(|run| run == name.as_slice())
 }
 
-/// `people` as the active workspace's collaborators, for the bar's avatars:
-/// read from a copy of the tree, never written to the workspace's document.
+/// `people` as the active workspace's collaborators, for the bar's avatars: read from a copy of the
+/// tree, never written to the workspace's document.
 pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
     let active = tree.active;
     let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.slot == active) else {
         return;
     };
     for person in people {
-        // Who a known member is belongs to the workspace; where they are and how
-        // available they are is presence's, and is said again every frame.
+        // Who a known member is belongs to the workspace; where they are and how available they are
+        // is presence's, and is said again every frame.
         if let Some(known) = workspace
             .collaborators
             .iter_mut()
@@ -1145,8 +1120,7 @@ mod tests {
         }
     }
 
-    /// A person's screen is their device's layout; an agent has none, even
-    /// when its frame says one.
+    /// A person's screen is their device's layout; an agent has none, even when its frame says one.
     #[test]
     fn a_person_s_layout_is_their_screen_and_an_agent_shows_none() {
         let layout = MemberLayout {
@@ -1180,8 +1154,8 @@ mod tests {
         assert_eq!(bot.screen, None);
     }
 
-    /// A person is named as their page's presence names them, found through
-    /// the host's line pairing their device with their user root.
+    /// A person is named as their page's presence names them, found through the host's line pairing
+    /// their device with their user root.
     #[test]
     fn a_person_is_named_by_their_pages_presence() {
         let mut here = HereState::default();
@@ -1216,8 +1190,8 @@ mod tests {
         assert_eq!(here.person("someone-who-left"), None);
     }
 
-    /// Someone joining is worth a notice; who was already here when this
-    /// page arrived, this page itself, agents and people leaving are not.
+    /// Someone joining is worth a notice; who was already here when this page arrived, this page
+    /// itself, agents and people leaving are not.
     #[test]
     fn only_people_who_join_later_are_announced() {
         let mut here = HereState::default();
@@ -1254,10 +1228,9 @@ mod tests {
         );
     }
 
-    /// Someone already here who drops out of the live layer for a moment
-    /// and is back, or whose presence arrives again, has not joined again:
-    /// a page renews its live grant by reconnecting, which drops and re-adds
-    /// every member, and a carrier re-announces a member as withdrawn and
+    /// Someone already here who drops out of the live layer for a moment and is back, or whose
+    /// presence arrives again, has not joined again: a page renews its live grant by reconnecting,
+    /// which drops and re-adds every member, and a carrier re-announces a member as withdrawn and
     /// back. Neither is news; one arrival is one notice, when it happens.
     #[test]
     fn a_reconnect_or_repeat_from_someone_here_is_not_a_second_arrival() {
@@ -1275,8 +1248,8 @@ mod tests {
         moved.place = Some("2".into());
         here.set_members(Some(me.clone()), Some(vec![me.clone(), moved]));
         assert!(here.take_arrivals(3_000).is_empty());
-        // This page renews its grant ten minutes on: everyone drops out and
-        // is back; then Ben's page does the same.
+        // This page renews its grant ten minutes on: everyone drops out and is back; then Ben's
+        // page does the same.
         for at in [600_000, 660_000] {
             here.set_members(Some(me.clone()), Some(vec![me.clone()]));
             assert!(here.take_arrivals(at).is_empty());
@@ -1299,14 +1272,12 @@ mod tests {
         assert!(here.take_arrivals(700_000).is_empty(), "his other tab");
     }
 
-    /// A visitor's other page (another tab, or one they left, whose host
-    /// line outlives it a while) has a line from before they named
-    /// themselves. The host lists lines by device key, not by which page is
-    /// live, so either may come first. Whichever does, the name a window row
-    /// gives its holder is the one the bar of who is here shows.
-    /// A visitor's presence can arrive before it carries their name: the
-    /// notice names them as the bar does, from the host's line, and waits
-    /// for a name rather than calling them a guest.
+    /// A visitor's other page (another tab, or one they left, whose host line outlives it a while)
+    /// has a line from before they named themselves. The host lists lines by device key, not by
+    /// which page is live, so either may come first. Whichever does, the name a window row gives
+    /// its holder is the one the bar of who is here shows. A visitor's presence can arrive before
+    /// it carries their name: the notice names them as the bar does, from the host's line, and
+    /// waits for a name rather than calling them a guest.
     #[test]
     fn a_visitor_is_announced_by_the_name_the_bar_shows() {
         let line = |device: &str, label: &str| HostLine {
@@ -1363,8 +1334,8 @@ mod tests {
             here.person("visitor-root").map(|(name, _)| name),
             Some(guest_label())
         );
-        // Their live page goes by the name they chose; the earlier one is
-        // gone from the live layer, but its line is still listed.
+        // Their live page goes by the name they chose; the earlier one is gone from the live layer,
+        // but its line is still listed.
         here.set_members(
             None,
             Some(vec![member("tab-now", "person", "Curious Beaver")]),
@@ -1387,8 +1358,8 @@ mod tests {
         }
     }
 
-    /// Where someone is says only what their status line does not: no
-    /// strip in a workspace of one, and no app their status already names.
+    /// Where someone is says only what their status line does not: no strip in a workspace of one,
+    /// and no app their status already names.
     #[test]
     fn where_someone_is_never_repeats_their_status() {
         use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceSlot};
@@ -1452,10 +1423,9 @@ mod tests {
         assert!(!names("Chatting", "Chat"), "a word, not part of one");
     }
 
-    /// Two visitors whose identities hash to the same colour still wear two
-    /// once they are here together, and each one's page settles the workspace
-    /// alike, so a person is the same colour on every screen, their own
-    /// included.
+    /// Two visitors whose identities hash to the same colour still wear two once they are here
+    /// together, and each one's page settles the workspace alike, so a person is the same colour on
+    /// every screen, their own included.
     #[test]
     fn visitors_here_together_wear_distinct_colours_on_every_page() {
         assert_eq!(
@@ -1490,11 +1460,10 @@ mod tests {
         assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
     }
 
-    /// Someone whose device is live here before the host's lines pair it
-    /// with their person is drawn neutral, never in a colour their device
-    /// would key that changes once their person is known: the face on the
-    /// bar, the People list's and the windows' all wear their workspace colour
-    /// from the first frame it is known, and none before.
+    /// Someone whose device is live here before the host's lines pair it with their person is drawn
+    /// neutral, never in a colour their device would key that changes once their person is known:
+    /// the face on the bar, the People list's and the windows' all wear their workspace colour from
+    /// the first frame it is known, and none before.
     #[test]
     fn a_face_is_neutral_until_the_workspace_knows_whose_it_is() {
         use ui::ColorCompat as _;
@@ -1543,9 +1512,9 @@ mod tests {
         assert!(painted.g().abs_diff(painted.b()) <= 1, "{painted:?}");
     }
 
-    /// A person's devices wear one colour (the person's, once the host pairs
-    /// each device with them), and the presence every window draws from
-    /// learns it for each device, so a second tab's pointer matches too.
+    /// A person's devices wear one colour (the person's, once the host pairs each device with
+    /// them), and the presence every window draws from learns it for each device, so a second tab's
+    /// pointer matches too.
     #[test]
     fn a_persons_devices_share_their_colour_in_presence() {
         let mut here = HereState::default();
@@ -1581,9 +1550,9 @@ mod tests {
         }
     }
 
-    /// What someone is doing reads their own words first, then a model's
-    /// line, then the host's plain reading of what they did: each marked
-    /// by who wrote it, so nothing automatic passes for their words.
+    /// What someone is doing reads their own words first, then a model's line, then the host's
+    /// plain reading of what they did: each marked by who wrote it, so nothing automatic passes for
+    /// their words.
     #[test]
     fn their_own_words_lead_then_a_models_then_the_hosts_reading() {
         use crate::collaborators::LineSource;
@@ -1721,8 +1690,8 @@ mod tests {
         assert_eq!(here.own_status().map(|l| l.text), Some("Mine".into()));
     }
 
-    /// A member's own certificate names the person it is a device of, before
-    /// any host line says so: their devices count as one person then too.
+    /// A member's own certificate names the person it is a device of, before any host line says so:
+    /// their devices count as one person then too.
     #[test]
     fn a_members_certificate_pairs_their_devices_before_the_host_says() {
         let mut here = HereState::default();
@@ -1748,9 +1717,9 @@ mod tests {
         );
     }
 
-    /// In a workspace whose layout is personal nobody's window is on this
-    /// desktop: a person's row still says where they are, from the app
-    /// their presence focuses, unless their status already names it.
+    /// In a workspace whose layout is personal nobody's window is on this desktop: a person's row
+    /// still says where they are, from the app their presence focuses, unless their status already
+    /// names it.
     #[test]
     fn someone_whose_window_is_not_here_is_in_their_app() {
         let mut here = HereState::default();
@@ -1784,8 +1753,8 @@ mod tests {
         assert_eq!(place("cy"), None, "an app this page cannot name");
     }
 
-    /// Two pages going by one name are numbered, this page included, by
-    /// their publishers — the same numbers on every page in the workspace.
+    /// Two pages going by one name are numbered, this page included, by their publishers — the same
+    /// numbers on every page in the workspace.
     #[test]
     fn people_sharing_a_name_are_numbered_alike_on_every_page() {
         let tree = DesktopTree::default();
@@ -1844,8 +1813,8 @@ mod tests {
         );
     }
 
-    /// Two tabs of one person are two devices of theirs: listed once to
-    /// everyone else, and to either tab never as someone else.
+    /// Two tabs of one person are two devices of theirs: listed once to everyone else, and to
+    /// either tab never as someone else.
     #[test]
     fn a_persons_devices_are_one_person() {
         let line = |device: &str, user: &str| HostLine {
@@ -1922,9 +1891,8 @@ mod tests {
         assert_eq!(ids, ["ada-tab-1"]);
     }
 
-    /// A person's devices are listed under their name, each as it calls
-    /// itself and as it said it was: what the card's device row and a pointer
-    /// over a tile read.
+    /// A person's devices are listed under their name, each as it calls itself and as it said it
+    /// was: what the card's device row and a pointer over a tile read.
     #[test]
     fn a_persons_devices_are_listed_under_their_name_and_never_name_them() {
         let mut here = HereState::default();

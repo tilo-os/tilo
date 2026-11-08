@@ -175,10 +175,6 @@ fn wait_for_file(
 }
 
 /// Run the package as an app until the session ends.
-///
-/// # Errors
-/// There is no nested-session build, a package does not compile at the start, or the session
-/// does not come up.
 pub fn run(options: &RunOptions) -> Result<(), String> {
     let repo = session::repo_root(options.repo.as_deref(), &options.dir)?;
     let build_dir = session::build_dir(&repo);

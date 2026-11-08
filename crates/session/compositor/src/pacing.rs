@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 
 /// Shortest lead a frame is due before its vblank.
 const MIN_LEAD: Duration = Duration::from_millis(1);
-/// Added to the worst recent cost: loop wakeup jitter, the GPU finishing
-/// after the flip is queued and the flip ioctl are not in the measured
-/// span, and a frame that misses its vblank is a dropped frame.
+/// Added to the worst recent cost: loop wakeup jitter, the GPU finishing after the flip is queued
+/// and the flip ioctl are not in the measured span, and a frame that misses its vblank is a dropped
+/// frame.
 const LEAD_MARGIN: Duration = Duration::from_millis(2);
 /// Frames whose cost the lead covers.
 const LEAD_FRAMES: usize = 64;
@@ -40,8 +40,7 @@ pub(crate) struct Pacing {
     costs: VecDeque<(Instant, Duration)>,
     /// The last vblank seen, the grid's anchor.
     vblank: Option<Instant>,
-    /// The frame queued and not yet shown: when its build started, and the
-    /// vblank it was built for.
+    /// The frame queued and not yet shown: when its build started, and the vblank it was built for.
     built: Option<(Instant, Option<Instant>)>,
     window: Window,
 }
@@ -57,8 +56,8 @@ struct Window {
 }
 
 impl Pacing {
-    /// How far ahead of its vblank a frame is built, within
-    /// [`MIN_LEAD`]..=`interval`; a whole interval until a cost is known.
+    /// How far ahead of its vblank a frame is built, within [`MIN_LEAD`]..=`interval`; a whole
+    /// interval until a cost is known.
     pub(crate) fn lead(&self, interval: Duration) -> Duration {
         self.worst().map_or(interval, |worst| {
             worst
@@ -71,28 +70,27 @@ impl Pacing {
         self.costs.iter().map(|(_, cost)| *cost).max()
     }
 
-    /// Frames do not fit one refresh with margin: each is built as soon as
-    /// the previous one is shown.
+    /// Frames do not fit one refresh with margin: each is built as soon as the previous one is
+    /// shown.
     fn render_bound(&self, interval: Duration) -> bool {
         self.worst()
             .is_some_and(|worst| worst.saturating_add(LEAD_MARGIN) > interval)
     }
 
-    /// The vblank `interval` after the last one, and the deadline before
-    /// it that a frame built at `start` aimed at, if `start` was on the
-    /// grid.
+    /// The vblank `interval` after the last one, and the deadline before it that a frame built at
+    /// `start` aimed at, if `start` was on the grid.
     fn target(&self, start: Instant, interval: Duration) -> Option<Instant> {
         let next = self.vblank?.checked_add(interval)?;
         let deadline = next.checked_sub(self.lead(interval))?;
         (start >= deadline && start < next).then_some(next)
     }
 
-    /// A frame whose build started at `start` (its deadline, or the
-    /// wakeup that built it) was queued at `queued`.
+    /// A frame whose build started at `start` (its deadline, or the wakeup that built it) was
+    /// queued at `queued` .
     pub(crate) fn queued(&mut self, start: Instant, queued: Instant, interval: Duration) {
         let target = self.target(start, interval);
-        // Off the grid (the first frame after an idle stretch, a late
-        // wakeup) the build began at the wakeup, not the deadline.
+        // Off the grid (the first frame after an idle stretch, a late wakeup) the build began at
+        // the wakeup, not the deadline.
         let cost = queued.saturating_duration_since(start);
         if self.costs.len() == LEAD_FRAMES {
             self.costs.pop_front();
@@ -110,10 +108,9 @@ impl Pacing {
         self.window.costs_us.push(micros(cost));
     }
 
-    /// When the frame after the queued one is due: the build point past the
-    /// blank the queued frame is shown at. `None` with nothing queued or an
-    /// off-grid build, and for a display that takes each frame as the last
-    /// is shown (adaptive, or frames that do not fit a refresh), whose flip
+    /// When the frame after the queued one is due: the build point past the blank the queued frame
+    /// is shown at. `None` with nothing queued or an off-grid build, and for a display that takes
+    /// each frame as the last is shown (adaptive, or frames that do not fit a refresh), whose flip
     /// is the wakeup.
     pub(crate) fn queued_next_frame(&self, interval: Duration, adaptive: bool) -> Option<Instant> {
         let (_, target) = self.built?;
@@ -126,8 +123,8 @@ impl Pacing {
             .checked_sub(self.lead(interval))
     }
 
-    /// The output showed a frame (or retired a flip) at `vblank`; when the
-    /// next frame is due. `adaptive`: the display follows the content.
+    /// The output showed a frame (or retired a flip) at `vblank` ; when the next frame is due.
+    /// `adaptive` : the display follows the content.
     pub(crate) fn shown(&mut self, vblank: Instant, interval: Duration, adaptive: bool) -> Instant {
         if let Some(previous) = self.vblank {
             let gap = micros(vblank.saturating_duration_since(previous));
@@ -154,8 +151,8 @@ impl Pacing {
             .unwrap_or(vblank)
     }
 
-    /// Nothing was queued at `now`: the next deadline on the grid after
-    /// it, or one refresh on without a grid.
+    /// Nothing was queued at `now` : the next deadline on the grid after it, or one refresh on
+    /// without a grid.
     pub(crate) fn idle(&self, now: Instant, interval: Duration, adaptive: bool) -> Instant {
         let later = now.checked_add(interval).unwrap_or(now);
         let Some(vblank) = self.vblank else {
@@ -184,8 +181,8 @@ impl Pacing {
             .unwrap_or(later)
     }
 
-    /// Logs the frames shown since the last line as `frame pacing` once
-    /// [`WINDOW`] has passed, and starts a new window.
+    /// Logs the frames shown since the last line as `frame pacing` once [`WINDOW`] has passed, and
+    /// starts a new window.
     pub(crate) fn log(&mut self, output: &str, now: Instant, interval: Duration) {
         let Some(summary) = self.take_summary(now, interval) else {
             return;
@@ -205,8 +202,8 @@ impl Pacing {
         );
     }
 
-    /// The measurements since the last line once [`WINDOW`] has passed since
-    /// its first shown frame; starts a new window.
+    /// The measurements since the last line once [`WINDOW`] has passed since its first shown frame;
+    /// starts a new window.
     fn take_summary(&mut self, now: Instant, interval: Duration) -> Option<Summary> {
         let started = self.window.started?;
         if now.saturating_duration_since(started) < WINDOW {
@@ -233,11 +230,9 @@ pub(crate) struct Summary {
     pub lead_us: u32,
     /// Deadline to queued flip, median and 99th percentile, microseconds.
     pub cost: (u32, u32),
-    /// Deadline to the vblank that showed it: the compositor's share of
-    /// input to photon.
+    /// Deadline to the vblank that showed it: the compositor's share of input to photon.
     pub build_to_vblank: (u32, u32),
-    /// The longest the output went between two shown frames: how long it
-    /// was held up.
+    /// The longest the output went between two shown frames: how long it was held up.
     pub gap_max_us: u32,
 }
 
@@ -321,8 +316,8 @@ mod tests {
             "nothing queued"
         );
         pacing.queued(due, due + ms(1), INTERVAL);
-        // It is shown at the next blank; the one after it is built one lead
-        // before the blank after that.
+        // It is shown at the next blank; the one after it is built one lead before the blank after
+        // that.
         let lead = pacing.lead(INTERVAL);
         assert_eq!(
             pacing.queued_next_frame(INTERVAL, false),

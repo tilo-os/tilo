@@ -136,10 +136,6 @@ impl Record {
     /// A document that does not read as the kind is brought up with the model's own migration,
     /// never rewritten by this host: what it held keeps its ids and nothing is deleted (the
     /// data invariants).
-    ///
-    /// # Errors
-    /// The module does not serve the kind, refused the call, or answered a document that is
-    /// not this record's.
     pub fn open(
         app: &str,
         kind: &str,
@@ -249,9 +245,6 @@ impl Record {
 
     /// Take in what another replica of the same record holds. The change is whoever made it:
     /// it is merged, not re-signed.
-    ///
-    /// # Errors
-    /// The changes do not apply to the document.
     pub fn merge(&mut self, other: &mut tilo_resource::Doc) -> Result<bool, RecordError> {
         use tilo_automerge::ApplyIncoming as _;
         let before = self.doc.get_heads();
@@ -269,9 +262,6 @@ impl Record {
     /// What the record offers now: the tree the module answered, rebuilt as this host publishes
     /// it, with every verb addressing [`Self::address`]. Recomputed only when the document
     /// moved.
-    ///
-    /// # Errors
-    /// The module refused to say, or answered what is not a tree.
     pub fn offers(&self) -> Result<ResourceSpec, RecordError> {
         let heads = self.doc.committed_document().get_heads();
         if let Some((at, spec)) = &*self.published.borrow()
@@ -298,9 +288,6 @@ impl Record {
 
     /// The record's own reading: what it holds, as typed data, and the ids of the parts it
     /// collects, each of which a view reads as its own item.
-    ///
-    /// # Errors
-    /// The module refused, or answered what is not a reading.
     pub fn reading(&self) -> Result<Json, RecordError> {
         self.reading_of(None)
     }
@@ -308,9 +295,6 @@ impl Record {
     /// The reading of the record, or of the item `item` names. `None` when `resource` is no
     /// part of this record — a view is offered readings, never a document, and a part it was
     /// not offered answers nothing.
-    ///
-    /// # Errors
-    /// The module refused, or answered what is not a reading.
     pub fn read(&self, resource: &str) -> Option<Result<Json, RecordError>> {
         if resource == self.address {
             return Some(self.reading());
@@ -348,10 +332,6 @@ impl Record {
     ///
     /// The app's process neither runs the verb nor signs the change: it submits the action,
     /// and this host runs the model and commits it.
-    ///
-    /// # Errors
-    /// The door's refusal (no such action, bad arguments, unavailable, the verb's own
-    /// refusal), or the document's write error.
     pub fn invoke(
         &mut self,
         resource: &str,

@@ -46,9 +46,6 @@ pub fn staging_path(destination: &Path) -> PathBuf {
 
 impl Staging {
     /// Make a private staging folder in `destination`.
-    ///
-    /// # Errors
-    /// The folder cannot be created or opened.
     pub(crate) fn create(destination: &Path) -> io::Result<Self> {
         let receiving = File::open(destination)?;
         let receiving_dir =
@@ -58,9 +55,6 @@ impl Staging {
 
     /// Make a private staging folder in the receiving folder held open as
     /// `receiving`, as a person sees it at `display`.
-    ///
-    /// # Errors
-    /// The folder cannot be created or opened.
     #[cfg(unix)]
     pub fn in_folder(receiving: &File, display: &Path) -> io::Result<Self> {
         let receiving = receiving.try_clone()?;
@@ -111,10 +105,6 @@ impl Staging {
 
     /// Take the private staging folder at `path`, which lies in `destination`:
     /// a caller that writes the paste down first chooses the name.
-    ///
-    /// # Errors
-    /// The folder cannot be created or opened, and a `path` outside
-    /// `destination` is refused.
     pub fn take(destination: &Path, path: &Path) -> io::Result<Self> {
         if path.parent() != Some(destination) {
             return Err(io::Error::other(
@@ -167,10 +157,6 @@ impl Staging {
 
     /// Create the folder `relative` in staging, and the folders above it,
     /// owner-only. Existing folders are opened, never replaced.
-    ///
-    /// # Errors
-    /// Refuses a path that is not relative, and returns what the filesystem
-    /// says.
     pub fn create_directory(&self, relative: &Path) -> io::Result<()> {
         let mut current = self.directory.try_clone()?;
         for component in relative.components() {
@@ -194,10 +180,6 @@ impl Staging {
     }
 
     /// Create the file `relative` in staging, exclusively and owner-only.
-    ///
-    /// # Errors
-    /// Refuses a path that is not relative or an existing name, and returns
-    /// what the filesystem says.
     pub fn create_file(&self, relative: &Path) -> io::Result<File> {
         let name = relative
             .file_name()
@@ -233,10 +215,6 @@ impl Staging {
     }
 
     /// Write `bytes` into this folder as its one payload, owner-only.
-    ///
-    /// # Errors
-    /// Returns what the filesystem says, or the refusal of the observer's
-    /// permission choice.
     pub(crate) fn stage_bytes(
         &self,
         bytes: &[u8],
@@ -264,9 +242,6 @@ impl Staging {
 
     /// Copy the tree at `source` to `name` in this folder. Nothing is flushed
     /// here: [`Self::sync`] commits the whole batch at once.
-    ///
-    /// # Errors
-    /// Refuses lost admission and I/O failures.
     pub fn stage(
         &self,
         source: &Path,
@@ -278,9 +253,6 @@ impl Staging {
 
     /// Flush every write staged here, so the copies are whole on disk before
     /// any of them is published.
-    ///
-    /// # Errors
-    /// Returns what the filesystem says.
     pub fn sync(&self) -> io::Result<()> {
         super::files::sync_filesystem(&self.receiving)?;
         #[cfg(unix)]

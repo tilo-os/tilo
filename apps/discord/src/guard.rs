@@ -18,9 +18,6 @@ pub fn bot(cx: &ActionCx) -> Result<(), Refusal> {
 }
 
 /// The caller is a person acting for themselves; returns their id.
-///
-/// # Errors
-/// A bot, agent, Shortcut or app, or no author.
 pub fn person(cx: &ActionCx) -> Result<String, Refusal> {
     match (cx.actor_kind(), cx.author()) {
         (None | Some(ActorKind::Person), Some(author)) => Ok(author.to_owned()),

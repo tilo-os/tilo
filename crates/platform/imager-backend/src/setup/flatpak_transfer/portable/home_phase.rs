@@ -205,8 +205,6 @@ fn verify_refs(
 impl ApplicationImport {
     /// Renew full-home fidelity plus actual original/signed application proof.
     /// This performs no migration or installation.
-    /// # Errors
-    /// Refuses altered original data, moved identities, settings, refs or checkpoint bytes.
     pub fn verify_home_for_applications(
         &mut self,
         home_review: &mut PortableHomeReview,
@@ -270,8 +268,6 @@ impl ApplicationImport {
     }
     /// Restore exact signed refs after full-home adoption, retaining independently
     /// verifiable original and output state for interruption/restart.
-    /// # Errors
-    /// Refuses altered grants/data/proofs and incomplete signature/deployment checks.
     pub fn restore_after_home(
         &mut self,
         home_review: &mut PortableHomeReview,

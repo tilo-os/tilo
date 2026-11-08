@@ -1,12 +1,9 @@
-//! The desktop services the session starts: the portal backend and the
-//! notifications daemon on the session bus, the polkit, network secrets
-//! and Bluetooth pairing agents on the system bus.
-//!
-//! They speak D-Bus on a runtime of their own and publish beside the
-//! system services: everything that needs the person's answer is a
-//! question resource (`question:<handle>`) the sheets answer, and the live
-//! notifications are resources the banners and the centre read. None of
-//! them draws anything.
+//! The desktop services the session starts: the portal backend and the notifications daemon on the
+//! session bus, the polkit, network secrets and Bluetooth pairing agents on the system bus.
+//! They speak D-Bus on a runtime of their own and publish beside the system services: everything
+//! that needs the person's answer is a question resource (`question:<handle>`) the sheets answer,
+//! and the live notifications are resources the banners and the centre read. None of them draws
+//! anything.
 
 use std::sync::Arc;
 
@@ -18,8 +15,8 @@ use tilo_service::{Questions, Service};
 
 use crate::portal_link::PortalSide;
 
-/// How long the session waits for the monitors to answer before it says
-/// it ends, and how often it asks.
+/// How long the session waits for the monitors to answer before it says it ends, and how often it
+/// asks.
 const QUERY_END_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 const QUERY_END_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -28,8 +25,8 @@ const QUERY_END_POLL: std::time::Duration = std::time::Duration::from_millis(50)
 pub enum Bus {
     /// Not reached: what needs it does not start.
     None,
-    /// The bus the environment names, as `DBUS_SESSION_BUS_ADDRESS` (or
-    /// the system bus's well-known socket) does.
+    /// The bus the environment names, as `DBUS_SESSION_BUS_ADDRESS` (or the system bus's well-known
+    /// socket) does.
     #[default]
     Default,
     /// The bus at this address.
@@ -50,31 +47,28 @@ pub struct DesktopServices {
     runtime: tokio::runtime::Runtime,
     questions: Questions,
     portal: Option<Portal>,
-    /// The files people choose for apps, while they are served as a
-    /// filesystem: the same table the portal grants through, which a
-    /// launcher binds an app's view of and the app finds at its own
+    /// The files people choose for apps, while they are served as a filesystem: the same table the
+    /// portal grants through, which a launcher binds an app's view of and the app finds at its own
     /// documents directory. Dropping it unmounts.
     chosen: Option<tilo_documents::mount::Mounted>,
     notifications: tilo_notifications_service::Notifications,
     roaming: RoamingWifiSlot,
-    /// The session bus connection the portal and the daemon serve on, and
-    /// what keeps the daemon's tasks alive.
+    /// The session bus connection the portal and the daemon serve on, and what keeps the daemon's
+    /// tasks alive.
     session: Option<(zbus::Connection, tilo_notifications_service::Server)>,
     /// The applications' tray items, and what keeps their watcher served.
     tray: Option<(
         Arc<tilo_tray_host::Tray>,
         tilo_tray_host::watcher::WatcherHandle,
     )>,
-    /// The apps the session sees run, by process: what names a notification's
-    /// sender, shared with the daemon.
+    /// The apps the session sees run, by process: what names a notification's sender, shared with
+    /// the daemon.
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
-    /// The system bus the agents registered on, which everything else the
-    /// session asks the machine goes through: one connection, not one per
-    /// service.
+    /// The system bus the agents registered on, which everything else the session asks the machine
+    /// goes through: one connection, not one per service.
     system: Option<zbus::Connection>,
-    /// The observer that keeps the person's lockdown policy applied while the
-    /// session runs: dropping it stops the policy reaching the services, so
-    /// it is kept, never read.
+    /// The observer that keeps the person's lockdown policy applied while the session runs:
+    /// dropping it stops the policy reaching the services, so it is kept, never read.
     _lockdown: Option<Arc<tilo_portal::lockdown::PolicyListener>>,
 }
 
@@ -110,8 +104,8 @@ impl DesktopServices {
         let notifications = tilo_notifications_service::Notifications::for_session();
         let roaming = RoamingWifiSlot::default();
         let running = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
-        // One table of chosen files: what the portal grants through, and
-        // what the filesystem a launcher binds an app's view of serves.
+        // One table of chosen files: what the portal grants through, and what the filesystem a
+        // launcher binds an app's view of serves.
         let documents = tilo_portal::documents_store();
         let chosen = serve_documents(documents.clone());
         let (portal, session) = runtime.block_on(on_session_bus(OnSessionBus {
@@ -159,16 +153,16 @@ impl DesktopServices {
         &self.questions
     }
 
-    /// The person's access decisions, which the portal gates its requests
-    /// with: another service of the session that asks about a capability
-    /// asks through these, so an answer given to one stands for the other.
+    /// The person's access decisions, which the portal gates its requests with: another service of
+    /// the session that asks about a capability asks through these, so an answer given to one
+    /// stands for the other.
     #[must_use]
     pub fn consents(&self) -> Option<&tilo_portal::consent::Consents> {
         self.portal.as_ref().map(tilo_portal::Portal::consents)
     }
 
-    /// The notifications the session shows: what this desktop tells the
-    /// person itself goes through the same service as an app's.
+    /// The notifications the session shows: what this desktop tells the person itself goes through
+    /// the same service as an app's.
     #[must_use]
     pub const fn notifications(&self) -> &tilo_notifications_service::Notifications {
         &self.notifications
@@ -194,8 +188,8 @@ impl DesktopServices {
         services
     }
 
-    /// The applications' tray items, once their watcher serves; the bar
-    /// draws them and the person's clicks go back through it.
+    /// The applications' tray items, once their watcher serves; the bar draws them and the person's
+    /// clicks go back through it.
     #[must_use]
     pub fn tray(&self) -> Option<&Arc<tilo_tray_host::Tray>> {
         self.tray.as_ref().map(|(tray, _)| tray)
@@ -207,18 +201,17 @@ impl DesktopServices {
         self.portal.as_ref()
     }
 
-    /// Whether the files people choose for apps are served as a filesystem
-    /// at [`tilo_documents::mountpoint`], which a launcher binds an app's
-    /// view of: only then is a sandboxed app answered with a path its own
-    /// sandbox holds the file at. Without it the chooser answers with the
-    /// host path, which a sandbox cannot open.
+    /// Whether the files people choose for apps are served as a filesystem at
+    /// [`tilo_documents::mountpoint`], which a launcher binds an app's view of: only then is a
+    /// sandboxed app answered with a path its own sandbox holds the file at. Without it the chooser
+    /// answers with the host path, which a sandbox cannot open.
     #[must_use]
     pub const fn documents_served(&self) -> bool {
         self.chosen.is_some()
     }
 
-    /// An app exited: what it was granted while it ran is forgotten, and
-    /// its processes no longer name its notifications.
+    /// An app exited: what it was granted while it ran is forgotten, and its processes no longer
+    /// name its notifications.
     pub fn app_exited(&self, app_id: &str) {
         if let Some(portal) = &self.portal {
             portal.grants().app_exited(app_id);
@@ -228,8 +221,8 @@ impl DesktopServices {
             .retain(|_, running| running != app_id);
     }
 
-    /// The app `pid` shows a window for, as the session sees it: what a
-    /// notification its process sends is attributed to.
+    /// The app `pid` shows a window for, as the session sees it: what a notification its process
+    /// sends is attributed to.
     pub fn note_running_app(&self, pid: u32, app_id: &str) {
         let mut running = self.running.lock_recover();
         if running.get(&pid).is_none_or(|known| known != app_id) {
@@ -237,9 +230,8 @@ impl DesktopServices {
         }
     }
 
-    /// The screen locked or unlocked: what apps were capturing is revoked
-    /// on the lock (nothing recorded is the lock screen), and the
-    /// monitors hear of the screensaver either way.
+    /// The screen locked or unlocked: what apps were capturing is revoked on the lock (nothing
+    /// recorded is the lock screen), and the monitors hear of the screensaver either way.
     pub fn set_screen_locked(&self, locked: bool) {
         if locked && let Some(portal) = &self.portal {
             portal.captures().broker().lock_recover().screen_locked();
@@ -279,8 +271,8 @@ impl DesktopServices {
         });
     }
 
-    /// Where the network secrets agent finds the Wi-Fi passphrases that
-    /// roam with the person, once peer sync fills it.
+    /// Where the network secrets agent finds the Wi-Fi passphrases that roam with the person, once
+    /// peer sync fills it.
     #[must_use]
     pub const fn roaming_wifi(&self) -> &RoamingWifiSlot {
         &self.roaming
@@ -315,23 +307,21 @@ impl DesktopServices {
         &self.runtime
     }
 
-    /// The system bus the agents registered on: what else the session asks
-    /// the machine goes through the same connection.
+    /// The system bus the agents registered on: what else the session asks the machine goes through
+    /// the same connection.
     #[must_use]
     pub fn system_bus(&self) -> Option<&zbus::Connection> {
         self.system.as_ref()
     }
 }
 
-/// Follow the person's lockdown policy while the services run: turning a
-/// switch on stops what is already happening, not only what starts next.
-/// Sound output is silenced at every player's next write and opens nothing
-/// new; the camera and the microphone stop being handed out, and the streams
-/// already handed out are revoked with their portal sessions.
-///
-/// `None` where the policy cannot be followed: what the portal checks at
-/// each request still enforces what the person chose, and an app that was
-/// already capturing keeps its stream until it is stopped.
+/// Follow the person's lockdown policy while the services run: turning a switch on stops what is
+/// already happening, not only what starts next. Sound output is silenced at every player's next
+/// write and opens nothing new; the camera and the microphone stop being handed out, and the
+/// streams already handed out are revoked with their portal sessions.
+/// `None` where the policy cannot be followed: what the portal checks at each request still
+/// enforces what the person chose, and an app that was already capturing keeps its stream until it
+/// is stopped.
 fn follow_lockdown(portal: Option<&Portal>) -> Option<Arc<tilo_portal::lockdown::PolicyListener>> {
     let captures = portal.map(|portal| portal.captures().clone());
     let listener: Arc<tilo_portal::lockdown::PolicyListener> = Arc::new(move |policy| {
@@ -351,13 +341,11 @@ fn follow_lockdown(portal: Option<&Portal>) -> Option<Arc<tilo_portal::lockdown:
     }
 }
 
-/// Serve the files people choose for apps as a filesystem at
-/// [`tilo_documents::mountpoint`], the table `documents` is: what the portal
-/// grants through and what a launcher binds an app's view of.
-///
-/// `None` where it cannot be served (no runtime directory, no FUSE): the
-/// portal is still told what apps run, but a chooser answering a sandboxed
-/// app then names the host file itself, which the app's sandbox cannot open.
+/// Serve the files people choose for apps as a filesystem at [`tilo_documents::mountpoint`], the
+/// table `documents` is: what the portal grants through and what a launcher binds an app's view of.
+/// `None` where it cannot be served (no runtime directory, no FUSE): the portal is still told what
+/// apps run, but a chooser answering a sandboxed app then names the host file itself, which the
+/// app's sandbox cannot open.
 fn serve_documents(documents: tilo_documents::Documents) -> Option<tilo_documents::mount::Mounted> {
     let Some(at) = tilo_documents::mountpoint() else {
         tracing::warn!(
@@ -401,10 +389,9 @@ async fn connect(bus: &Bus, system: bool) -> Option<zbus::Connection> {
         .ok()
 }
 
-/// The watcher of the applications' tray items, serving on `bus`. An item
-/// that names its icon rather than sending it is drawn from the person's
-/// icon themes, and the app that registered it is named from its process:
-/// the bar shows and words an item as the app's own. Nothing is dropped for
+/// The watcher of the applications' tray items, serving on `bus` . An item that names its icon
+/// rather than sending it is drawn from the person's icon themes, and the app that registered it is
+/// named from its process: the bar shows and words an item as the app's own. Nothing is dropped for
 /// an icon that cannot be found — the host falls back to a letter badge.
 async fn tray_on(
     bus: &Bus,
@@ -432,10 +419,9 @@ async fn tray_on(
         .map(|watcher| (tray, watcher))
 }
 
-/// The app the process `pid` demonstrably belongs to, proven as a
-/// notification's sender is: the Flatpak whose sandbox it runs in, else the
-/// app the session sees a window for it. A peer-to-peer item proves
-/// nothing, and an item's own claim is never taken for it.
+/// The app the process `pid` demonstrably belongs to, proven as a notification's sender is: the
+/// Flatpak whose sandbox it runs in, else the app the session sees a window for it. A peer-to-peer
+/// item proves nothing, and an item's own claim is never taken for it.
 fn tray_owner_resolver(
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
 ) -> tilo_tray_host::OwnerResolver {
@@ -451,8 +437,8 @@ struct OnSessionBus<'a> {
     bus: &'a Bus,
     questions: &'a Questions,
     notifications: &'a tilo_notifications_service::Notifications,
-    /// The files people choose for apps: the table the portal grants
-    /// through, which the session serves as a filesystem.
+    /// The files people choose for apps: the table the portal grants through, which the session
+    /// serves as a filesystem.
     documents: tilo_documents::Documents,
     /// What the session's loop hears of a change in either service.
     wake: tilo_service::Wake,
@@ -462,8 +448,7 @@ struct OnSessionBus<'a> {
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
 }
 
-/// The portal backend and the notifications daemon, serving on the bus
-/// `serving` names.
+/// The portal backend and the notifications daemon, serving on the bus `serving` names.
 async fn on_session_bus(
     serving: OnSessionBus<'_>,
 ) -> (
@@ -484,8 +469,8 @@ async fn on_session_bus(
     let Some(connection) = connect(bus, false).await else {
         return (None, None);
     };
-    // The frontend vouches for the app id it forwards; the app is the one
-    // it names, in the workspace the session sees it run in.
+    // The frontend vouches for the app id it forwards; the app is the one it names, in the
+    // workspace the session sees it run in.
     let named = side.clone();
     let resolver = Arc::new(move |app_id: &str, _window: Option<&str>| {
         Some(PortalCaller {
@@ -502,30 +487,27 @@ async fn on_session_bus(
         documents,
     )
     .with_capture(capture)
-    // What shares the session's screens, drives its seat and passes its
-    // selection.
+    // What shares the session's screens, drives its seat and passes its selection.
     .with_streams(side.streams())
     .with_input(side.input())
     .with_clipboard(side.clipboard())
-    // A workspace already granting an app what it asks for answers for the
-    // person.
+    // A workspace already granting an app what it asks for answers for the person.
     .with_consent_grants(side.grants());
-    // The desktop's selection moves when the person copies outside any
-    // portal ask: the apps holding its clipboard hear of the move, and the
-    // offer a remote session made ends.
+    // The desktop's selection moves when the person copies outside any portal ask: the apps holding
+    // its clipboard hear of the move, and the offer a remote session made ends.
     let clipboards = portal.clipboards().clone();
     side.follow_selection(move |mimes| clipboards.selection_changed(mimes));
     let portal = match inhibitors {
         Some(registry) => portal.with_inhibitions(registry),
         None => portal,
     };
-    // The appearance is also written to dconf, the environment's own: only
-    // a portal on the environment's bus speaks for it.
+    // The appearance is also written to dconf, the environment's own: only a portal on the
+    // environment's bus speaks for it.
     if *bus == Bus::Default {
         settings::follow_appearance(portal.settings().clone());
     }
-    // What the portal publishes of the live sessions changes outside the
-    // loop's turns: hearing of it lands on the next one.
+    // What the portal publishes of the live sessions changes outside the loop's turns: hearing of
+    // it lands on the next one.
     let waking = Arc::clone(&wake);
     portal.sessions().on_change(move || waking());
     let portal = match portal.serve(&connection).await {
@@ -535,9 +517,9 @@ async fn on_session_bus(
             None
         }
     };
-    // What the daemon receives wakes the loop: the session's banners read
-    // the arrivals on its next turn and show them as banners and in the
-    // centre, pixels and all; a fresh one does not wait for the loop's pass.
+    // What the daemon receives wakes the loop: the session's banners read the arrivals on its next
+    // turn and show them as banners and in the centre, pixels and all; a fresh one does not wait
+    // for the loop's pass.
     let woken = Arc::clone(&wake);
     notifications.on_change(move || woken());
     // Sandboxed apps' notifications are the daemon's, shown the same way.
@@ -602,15 +584,15 @@ async fn on_system_bus(
     drop((polkit, network, bluetooth));
 }
 
-/// The network secrets agent on `connection`, keeping what the person lets
-/// it remember in this session's vault.
+/// The network secrets agent on `connection` , keeping what the person lets it remember in this
+/// session's vault.
 async fn network_secrets(
     connection: zbus::Connection,
     questions: Questions,
     roaming: RoamingWifiSlot,
 ) -> zbus::Result<tilo_network_secret_agent::service::AgentHandle> {
-    // Choosing the vault's custody probes the secret store over a blocking
-    // D-Bus call, which must not run on a runtime thread.
+    // Choosing the vault's custody probes the secret store over a blocking D-Bus call, which must
+    // not run on a runtime thread.
     let store = tokio::task::spawn_blocking(move || VaultStore::for_session(roaming))
         .await
         .map_err(|error| zbus::Error::Failure(format!("network secrets vault: {error}")))?

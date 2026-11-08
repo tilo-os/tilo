@@ -60,7 +60,6 @@ fn button_rects(app: &App) -> Vec<KurboRect> {
 
 #[test]
 fn card_grid_has_geometry_focus_and_input_before_paint() {
-    // Case `card_grid_buttons_have_host_focus_and_geometry_before_paint`.
     {
         let (mut app, clicks) = fixture(6);
         layout(&mut app, 900);
@@ -108,7 +107,6 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         assert_eq!(app.focusable_order, order);
     }
 
-    // Case `card_grid_headless_uses_same_narrow_geometry_and_click_target`.
     {
         let (root, clicks) = fixture_tree(2);
         let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
@@ -134,7 +132,6 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         );
     }
 
-    // Case `card_grid_under_scrollable_clips_input_before_paint`.
     {
         let (mut app, clicks) = fixture(6);
         let child = std::mem::replace(&mut app.root_widget, Box::new(Column::new()));
@@ -161,7 +158,6 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         assert_eq!(*clicks.borrow(), vec![0]);
     }
 
-    // Case `card_grid_rebuilt_card_body_has_prepaint_geometry_and_input`.
     {
         let requested = Rc::new(Cell::new(1));
         let clicks = Rc::new(RefCell::new(Vec::new()));
@@ -216,7 +212,6 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         }
     }
 
-    // Case `card_grid_nested_below_minimum_uses_actual_parent_allocation`.
     {
         let nested = CardGrid::new(vec![
             Box::new(Button::new("nested-a", "A")),
@@ -245,7 +240,6 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
 
 #[test]
 fn card_grid_reflows_rows_and_retains_edit_state() {
-    // Case `card_grid_reflows_retained_nodes_and_keeps_explicit_rows`.
     {
         let (mut app, _) = fixture(6);
         layout(&mut app, 900);
@@ -280,7 +274,6 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         }
     }
 
-    // Case `card_grid_long_content_grows_its_row`.
     {
         let body = Column::new()
             .with_no_padding()
@@ -298,7 +291,6 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         assert_eq!(app.root_widget.get_rect().height(), card.height());
     }
 
-    // Case `card_grid_retains_local_edit_state_across_width_changes`.
     {
         let input = crate::widget::TextInput::local().with_initial_value("saved value");
         let mut app = App::new_with_controlled_inputs(
@@ -325,7 +317,6 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         }
     }
 
-    // Case `card_grid_forwards_retained_list_structure_changes_to_host`.
     {
         use crate::widget::{ListModel, VirtualList};
         use std::cell::Cell;
@@ -407,7 +398,6 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         }
     }
 
-    // Case `card_grid_empty_and_single_keep_intrinsic_height`.
     {
         for count in [0, 1] {
             let (mut app, _) = fixture(count);

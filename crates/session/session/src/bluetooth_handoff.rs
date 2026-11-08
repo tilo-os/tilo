@@ -1,21 +1,15 @@
-//! Moving one of the person's Bluetooth accessories to another of their
-//! devices.
-//!
-//! A bond belongs to the accessory, not to a device: moving it means the
-//! device that has it lets go, and the device it moves to connects it with
-//! the bond it already holds. Nothing is copied. The two sessions agree over
-//! the device fabric — prepare, commit, finished, accepted — and each does
-//! its own Bluetooth work on a worker of its own, so no pass of either
-//! session ever waits on `BlueZ`.
-//!
-//! Only an accessory the destination already holds a bond with moves this
-//! way: a destination that has none says so, and the accessory stays where
-//! it is rather than asking the person to pair it again.
-//!
-//! A move that the two devices do not finish — the destination leaves, a
-//! worked step fails, or [`WAIT`] runs out — puts the accessory back on the
-//! device it came from, so a failed move never leaves it connected to
-//! neither.
+//! Moving one of the person's Bluetooth accessories to another of their devices.
+//! A bond belongs to the accessory, not to a device: moving it means the device that has it lets
+//! go, and the device it moves to connects it with the bond it already holds. Nothing is copied.
+//! The two sessions agree over the device fabric — prepare, commit, finished, accepted — and each
+//! does its own Bluetooth work on a worker of its own, so no pass of either session ever waits on
+//! `BlueZ` .
+//! Only an accessory the destination already holds a bond with moves this way: a destination that
+//! has none says so, and the accessory stays where it is rather than asking the person to pair it
+//! again.
+//! A move that the two devices do not finish — the destination leaves, a worked step fails, or
+//! [`WAIT`] runs out — puts the accessory back on the device it came from, so a failed move never
+//! leaves it connected to neither.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -29,8 +23,8 @@ use crate::Shared;
 use crate::i18n::{t, t_args};
 use crate::notices::Notice;
 
-/// How long one move may take before both devices give it up and the
-/// accessory goes back where it was.
+/// How long one move may take before both devices give it up and the accessory goes back where it
+/// was.
 const WAIT: Duration = Duration::from_secs(75);
 
 /// How many moves one session may have under way at once.
@@ -43,8 +37,7 @@ enum Phase {
     Inspecting,
     /// The origin waits for the destination's answer.
     AwaitingReady,
-    /// The destination knows it holds the bond and waits to be told to take
-    /// the accessory.
+    /// The destination knows it holds the bond and waits to be told to take the accessory.
     Ready,
     /// The origin is letting go of the accessory.
     Disconnecting,
@@ -69,14 +62,12 @@ struct Transaction {
 }
 
 impl Transaction {
-    /// Whether this is the move `peer` made about `address`, on the
-    /// `outbound` side, in `phase`.
+    /// Whether this is the move `peer` made about `address` , on the `outbound` side, in `phase` .
     fn is(&self, peer: &DeviceId, address: &str, outbound: bool, phase: Phase) -> bool {
         &self.peer == peer && self.is_side(address, outbound, phase)
     }
 
-    /// Whether this is the move about `address`, on the `outbound` side, in
-    /// `phase`.
+    /// Whether this is the move about `address` , on the `outbound` side, in `phase` .
     fn is_side(&self, address: &str, outbound: bool, phase: Phase) -> bool {
         self.outbound == outbound
             && self.address.eq_ignore_ascii_case(address)
@@ -95,8 +86,7 @@ enum Operation {
     Release,
     /// Connect the accessory here, with the bond this device already holds.
     Take,
-    /// Connect the accessory again here, because the move stopped after this
-    /// device let go of it.
+    /// Connect the accessory again here, because the move stopped after this device let go of it.
     GiveBack,
 }
 
@@ -127,9 +117,8 @@ struct Done {
     outcome: Outcome,
 }
 
-/// The moves this session takes part in: what the panel asked of it, what
-/// the person's other devices said, and the workers' outcomes, which the
-/// session's pass takes in.
+/// The moves this session takes part in: what the panel asked of it, what the person's other
+/// devices said, and the workers' outcomes, which the session's pass takes in.
 pub(crate) struct Handoffs {
     transactions: RefCell<BTreeMap<[u8; 16], Transaction>>,
     /// What the panel asked for, waiting for the pass that holds the fabric.
@@ -151,15 +140,14 @@ impl Default for Handoffs {
 }
 
 impl Handoffs {
-    /// Move the accessory at `address` to the person's device `device`.
+    /// Move the accessory at `address` to the person's device `device` .
     pub(crate) fn ask(&self, address: &str, device: &str) {
         self.asked
             .borrow_mut()
             .push((address.to_owned(), device.to_owned()));
     }
 
-    /// Take one action from one of the person's devices, and answer whether
-    /// it was this one.
+    /// Take one action from one of the person's devices, and answer whether it was this one.
     pub(crate) fn arrived(
         &self,
         shared: &Shared,
@@ -192,10 +180,9 @@ impl Handoffs {
                 request_id,
                 address,
             } => self.cancelled(shared, fabric, envelope, request_id, address),
-            // A destination that wants the accessory paired with this
-            // approval has none to give here: this session asks the person
-            // for no pairing, so nothing ever offers one and an offer that
-            // arrives anyway is dropped.
+            // A destination that wants the accessory paired with this approval has none to give
+            // here: this session asks the person for no pairing, so nothing ever offers one and an
+            // offer that arrives anyway is dropped.
             PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. } => {}
             _ => return false,
@@ -203,9 +190,9 @@ impl Handoffs {
         true
     }
 
-    /// Do what the workers and the person's other devices left for this pass:
-    /// what the panel asked for, what the workers found, and the moves that
-    /// stop here because the destination left or took too long.
+    /// Do what the workers and the person's other devices left for this pass: what the panel asked
+    /// for, what the workers found, and the moves that stop here because the destination left or
+    /// took too long.
     pub(crate) fn pump(&self, shared: &Shared, fabric: &SharedLink) {
         let asked = std::mem::take(&mut *self.asked.borrow_mut());
         for (address, device) in asked {
@@ -218,8 +205,8 @@ impl Handoffs {
         self.follow(shared, fabric);
     }
 
-    /// Ask the destination whether it can take the accessory the person
-    /// named: the first step, which answers the person when it cannot.
+    /// Ask the destination whether it can take the accessory the person named: the first step,
+    /// which answers the person when it cannot.
     fn begin(&self, shared: &Shared, fabric: &SharedLink, address: &str, device: &str) {
         if !os_actions::bluez::valid_address(address) {
             refused(shared, address, &t("session-bluetooth-unknown"));
@@ -400,8 +387,7 @@ impl Handoffs {
         }
     }
 
-    /// The destination took the accessory, or could not: tell the origin
-    /// either way.
+    /// The destination took the accessory, or could not: tell the origin either way.
     fn taken(
         &self,
         fabric: &SharedLink,
@@ -452,8 +438,8 @@ impl Handoffs {
         }
     }
 
-    /// The person's other device asked this one to take an accessory: check
-    /// whether this device holds its bond, and answer.
+    /// The person's other device asked this one to take an accessory: check whether this device
+    /// holds its bond, and answer.
     fn prepare(
         &self,
         fabric: &SharedLink,
@@ -574,8 +560,7 @@ impl Handoffs {
         });
     }
 
-    /// The destination finished: confirm it took the accessory, or take the
-    /// accessory back here.
+    /// The destination finished: confirm it took the accessory, or take the accessory back here.
     fn finished(
         &self,
         shared: &Shared,
@@ -670,8 +655,8 @@ impl Handoffs {
         );
     }
 
-    /// The other device gave the move up: give it up here too, and put the
-    /// accessory back where it was.
+    /// The other device gave the move up: give it up here too, and put the accessory back where it
+    /// was.
     fn cancelled(
         &self,
         shared: &Shared,
@@ -701,8 +686,8 @@ impl Handoffs {
         }
     }
 
-    /// Give up on moves whose destination left the fabric or that took too
-    /// long, and put what they let go of back.
+    /// Give up on moves whose destination left the fabric or that took too long, and put what they
+    /// let go of back.
     fn follow(&self, shared: &Shared, fabric: &SharedLink) {
         let online = fabric.online_device_ids();
         let now = Instant::now();
@@ -750,7 +735,7 @@ impl Handoffs {
         }
     }
 
-    /// Do `work` on a thread of its own, so the pass never waits on `BlueZ`.
+    /// Do `work` on a thread of its own, so the pass never waits on `BlueZ` .
     fn spawn(&self, work: Work) {
         let sender = self.sender.clone();
         std::thread::spawn(move || {
@@ -784,7 +769,7 @@ impl Work {
     }
 }
 
-/// The name of the accessory at `address`, while it is connected here.
+/// The name of the accessory at `address` , while it is connected here.
 fn connected_name(address: &str) -> Result<String, String> {
     let accessory = os_actions::bluez::paired_devices()?
         .into_iter()
@@ -793,7 +778,7 @@ fn connected_name(address: &str) -> Result<String, String> {
     Ok(accessory.name)
 }
 
-/// Whether this device holds the bond of the accessory at `address`.
+/// Whether this device holds the bond of the accessory at `address` .
 fn paired(address: &str) -> bool {
     os_actions::bluez::paired_devices().is_ok_and(|devices| {
         devices

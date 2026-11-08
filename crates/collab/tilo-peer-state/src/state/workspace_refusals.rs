@@ -107,12 +107,6 @@ impl PeerWorkspaceMut<'_> {
     /// device's own. Answers whether the workspace changed: a verdict at or
     /// below the sequence already held for the same route and author is the
     /// one kept.
-    ///
-    /// # Errors
-    /// Refuses a caller that is not exact current admitted evidence or cannot
-    /// read the workspace, a key that is not the caller's, a verdict of
-    /// another device or workspace, an unsigned verdict, or a failed CRDT
-    /// write.
     pub fn record_own_write_refusal(
         self,
         caller: &tilo_user_identity::DeviceCert,

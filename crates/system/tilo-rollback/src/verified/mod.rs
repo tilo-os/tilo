@@ -350,10 +350,6 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Refuse to enroll a PIN-less keyslot on a boot that is not verified.
-///
-/// # Errors
-///
-/// Returns an error naming the condition that failed.
 pub fn require_verified(facts: &BootFacts) -> Result<Enrollment, Unverified> {
     Enrollment::record(facts)
 }
@@ -374,10 +370,6 @@ pub fn load_enrollment(state_path: &Path) -> Option<AnchorDigest> {
 }
 
 /// Record what this machine trusted when it created a PIN-less keyslot.
-///
-/// # Errors
-///
-/// Returns an error if the record cannot be written.
 pub fn save_enrollment(state_path: &Path, enrollment: &Enrollment) -> Result<()> {
     let path = enrollment_path(state_path);
     tilo_files::native::atomic::write_creating_parent_with_mode(

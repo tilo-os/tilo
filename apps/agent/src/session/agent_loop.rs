@@ -999,9 +999,6 @@ impl Session {
     /// limits only time, and its time). Without one the run has no turn or
     /// time cap: it goes until it is done or its person stops it, each turn
     /// bounded only by what one provider call may take.
-    ///
-    /// # Errors
-    /// An issue's budget no run may have.
     fn run_budget(&self, run: &runtime_collab::TaskRunEnvelope) -> Result<RunBudget, String> {
         let Some(budget) = run.execution_budget else {
             return Ok(RunBudget {

@@ -72,9 +72,6 @@ pub enum TransferOutcome {
 pub type MoveInto = fn(&Path, &Path) -> Result<PathBuf, String>;
 
 /// Validate a portable local leaf name before any staging is created.
-///
-/// # Errors
-/// Rejects empty names, traversal, separators, NUL and control characters.
 pub fn valid_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name == "."

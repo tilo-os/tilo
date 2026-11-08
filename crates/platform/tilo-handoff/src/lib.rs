@@ -183,10 +183,6 @@ impl PublicHandoff {
     /// The descriptor as it is published on the medium. It has no private
     /// source path, profile name, token or content key.
     /// Encode the descriptor as published on the medium.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an invalid descriptor or a value that cannot be encoded.
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         if !self.valid() {
             return Err(invalid("Invalid other-computer handoff"));
@@ -195,10 +191,6 @@ impl PublicHandoff {
     }
 
     /// Decode a bounded descriptor from the medium.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an oversized, malformed or invalid descriptor.
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() as u64 > MAX_DESCRIPTOR {
             return Err(invalid("Other-computer handoff is too large"));

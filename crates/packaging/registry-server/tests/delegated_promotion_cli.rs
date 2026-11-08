@@ -8,33 +8,96 @@
 )]
 
 use std::os::unix::fs::PermissionsExt as _;
-use std::process::{Command, Output};
-use tilo_test_env::SpawnUnderEnvLock as _;
+use std::process::Output;
 
+use crate::support::server_ok as ok;
 use ed25519_dalek::SigningKey;
 use registry_server::{
-    PendingSubmission, PromotionJournal, PublisherAllowlist, PublisherRow, ServerIdentity,
-    StagedArtifact, StagedPromotion, Storage,
+    PendingSubmission, PromotionJournal, StagedArtifact, StagedPromotion, Storage,
 };
 use registry_types::{
-    EntryAction, RegistryEntry, RegistryTarget, RegistryVersion, SignedRegistrySnapshot,
-    sign_change_request,
+    EntryAction, RegistryTarget, RegistryVersion, SignedRegistrySnapshot, sign_change_request,
 };
 use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
 fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
-    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(data_dir)
-        .args(arguments)
-        .output_locked()
-        .unwrap()
+    crate::support::server(data_dir, arguments).unwrap()
 }
 
 fn secret(path: &std::path::Path, key: &SigningKey) {
     std::fs::write(path, hex::encode(key.to_bytes())).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+/// The arguments authorizing `channel_hex` to serve `publisher_hex` under
+/// `owner_path` at `generation`.
+fn authorize<'a>(
+    owner_path: &'a std::path::Path,
+    channel_hex: &'a str,
+    publisher_hex: &'a str,
+    generation: &'a str,
+) -> [&'a str; 9] {
+    [
+        "authorize-channel",
+        "--owner-key-file",
+        owner_path.to_str().unwrap(),
+        "--channel-pubkey",
+        channel_hex,
+        "--publisher-pubkey",
+        publisher_hex,
+        "--generation",
+        generation,
+    ]
+}
+
+/// The arguments publishing the staged first-party promotion served by
+/// `channel_path`; `valid_for_seconds` sets the certificate lifetime when
+/// given.
+fn publish_args<'a>(
+    channel_path: &'a std::path::Path,
+    valid_for_seconds: Option<&'a str>,
+) -> Vec<&'a str> {
+    let mut arguments = vec![
+        "publish-staged-first-party",
+        "--channel-key-file",
+        channel_path.to_str().unwrap(),
+    ];
+    if let Some(seconds) = valid_for_seconds {
+        arguments.push("--valid-for-seconds");
+        arguments.push(seconds);
+    }
+    arguments
+}
+
+/// The arguments refreshing the delegated snapshot for `channel_path` with a
+/// lifetime of `valid_for_seconds` seconds.
+fn refresh_args<'a>(channel_path: &'a std::path::Path, valid_for_seconds: &'a str) -> [&'a str; 5] {
+    [
+        "sign-delegated-snapshot",
+        "--channel-key-file",
+        channel_path.to_str().unwrap(),
+        "--valid-for-seconds",
+        valid_for_seconds,
+    ]
+}
+
+/// The package ids of `snapshot`'s entries.
+fn ids(snapshot: &SignedRegistrySnapshot) -> Vec<&str> {
+    snapshot
+        .entries
+        .iter()
+        .map(|entry| entry.package_id.as_str())
+        .collect()
+}
+
+/// Store an allowlist admitting `publisher_hex` as a first-party publisher.
+fn allow(storage: &Storage, publisher_hex: &str, can_add_new: bool) {
+    let mut row = crate::support::publisher(publisher_hex, can_add_new);
+    row.note = "first party".into();
+    storage
+        .save_allowlist(&crate::support::allowlist(vec![row]))
+        .unwrap();
 }
 
 #[tokio::test]
@@ -48,23 +111,9 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     let owner_hex = hex::encode(owner.verifying_key().to_bytes());
     let channel_hex = hex::encode(channel.verifying_key().to_bytes());
     let publisher_hex = hex::encode(publisher.public_key_bytes());
-    let identity = ServerIdentity {
-        owner_pubkey_hex: owner_hex.clone(),
-        name: "test".into(),
-        description: "test".into(),
-        base_url: "https://registry.test".into(),
-    };
+    let identity = crate::support::identity(owner_hex.clone(), "https://registry.test");
     storage.save_identity(&identity).unwrap();
-    storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: false,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
-        .unwrap();
+    allow(&storage, &publisher_hex, false);
     let owner_path = temp.path().join("owner.seed");
     let channel_path = temp.path().join("channel.seed");
     secret(&owner_path, &owner);
@@ -79,30 +128,16 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         started_tx.send(()).unwrap();
         run(
             &authorization_dir,
-            &[
-                "authorize-channel",
-                "--owner-key-file",
-                authorization_owner_path.to_str().unwrap(),
-                "--channel-pubkey",
+            &authorize(
+                &authorization_owner_path,
                 &authorization_channel_hex,
-                "--publisher-pubkey",
                 &authorization_publisher_hex,
-                "--generation",
                 "1",
-            ],
+            ),
         )
     });
     started_rx.recv().unwrap();
-    storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
-        .unwrap();
+    allow(&storage, &publisher_hex, true);
     drop(authorization_lock);
     let authorized = authorizer.join().unwrap();
     assert!(
@@ -110,32 +145,13 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         "{}",
         String::from_utf8_lossy(&authorized.stderr)
     );
-    let authorized_again = run(
+    let authorized_again = ok(
         temp.path(),
-        &[
-            "authorize-channel",
-            "--owner-key-file",
-            owner_path.to_str().unwrap(),
-            "--channel-pubkey",
-            &channel_hex,
-            "--publisher-pubkey",
-            &publisher_hex,
-            "--generation",
-            "1",
-        ],
+        &authorize(&owner_path, &channel_hex, &publisher_hex, "1"),
     );
-    assert!(authorized_again.status.success());
     assert_eq!(authorized_again.stdout, authorized.stdout);
 
-    let idle_publish = run(
-        temp.path(),
-        &[
-            "publish-staged-first-party",
-            "--channel-key-file",
-            channel_path.to_str().unwrap(),
-        ],
-    );
-    assert!(idle_publish.status.success());
+    let idle_publish = ok(temp.path(), &publish_args(&channel_path, None));
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&idle_publish.stdout).unwrap()["status"],
         "noop"
@@ -166,76 +182,38 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     let replacement_hex = hex::encode(replacement.verifying_key().to_bytes());
     let blocked_rotation = run(
         temp.path(),
-        &[
-            "authorize-channel",
-            "--owner-key-file",
-            owner_path.to_str().unwrap(),
-            "--channel-pubkey",
-            &replacement_hex,
-            "--publisher-pubkey",
-            &publisher_hex,
-            "--generation",
-            "2",
-        ],
+        &authorize(&owner_path, &replacement_hex, &publisher_hex, "2"),
     );
     assert!(!blocked_rotation.status.success());
     assert!(
         String::from_utf8_lossy(&blocked_rotation.stderr)
             .contains("complete or recover the active first-party promotion")
     );
-    let idempotent_during_recovery = run(
+    ok(
         temp.path(),
-        &[
-            "authorize-channel",
-            "--owner-key-file",
-            owner_path.to_str().unwrap(),
-            "--channel-pubkey",
-            &channel_hex,
-            "--publisher-pubkey",
-            &publisher_hex,
-            "--generation",
-            "1",
-        ],
+        &authorize(&owner_path, &channel_hex, &publisher_hex, "1"),
     );
-    assert!(idempotent_during_recovery.status.success());
     storage.delete_promotion_transaction().unwrap();
 
     let (bytes, package_id) = signed_tapp(&publisher);
     let digest = blake3::hash(&bytes).to_hex().to_string();
-    let entry = RegistryEntry {
-        package_id: "so.tilo.editor".into(),
-        kind: registry_types::EntryKind::App,
+    let entry = registry_types::RegistryEntry {
         name: "Editor".into(),
         description: "Editor".into(),
         tagline: "Edit video on Tilo OS".into(),
-        images: registry_types::LocalizedImages::english_icon(
-            "https://apps.tilo.so/images/test-icon.svg",
-            "Test icon",
-        ),
-        supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into()],
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: publisher_hex.clone(),
-        versions: vec![RegistryVersion {
-            version: "1.0.0".into(),
-            released_at_unix: 1,
-            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                tapp_url: "https://apps.tilo.so/artifacts/editor-x86_64.tapp".into(),
-                tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
-                tapp_size_bytes: bytes.len() as u64,
-                tapp_blake3_hex: digest.clone(),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
-            }),
-        }],
-        updated_at_unix: 1,
-        signature_hex: String::new(),
+        versions: vec![crate::support::version(
+            "1.0.0",
+            1,
+            crate::support::tapp(
+                "https://apps.tilo.so/artifacts/editor-x86_64.tapp",
+                hex::encode(package_id.as_bytes()),
+                bytes.len() as u64,
+                digest.clone(),
+                None,
+            ),
+        )],
+        ..crate::support::entry("so.tilo.editor", publisher_hex.clone(), Vec::new())
     };
     let pending = PendingSubmission {
         submission_id: entry.package_id.clone(),
@@ -266,21 +244,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         .unwrap();
 
     std::fs::remove_file(&owner_path).unwrap();
-    let published = run(
-        temp.path(),
-        &[
-            "publish-staged-first-party",
-            "--channel-key-file",
-            channel_path.to_str().unwrap(),
-            "--valid-for-seconds",
-            "3600",
-        ],
-    );
-    assert!(
-        published.status.success(),
-        "{}",
-        String::from_utf8_lossy(&published.stderr)
-    );
+    ok(temp.path(), &publish_args(&channel_path, Some("3600")));
     let snapshot = storage.load_snapshot().unwrap().unwrap();
     registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
     assert_eq!(snapshot.entries.len(), 1);
@@ -316,42 +280,14 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         .save_channel_authorization(&expired_authorization)
         .unwrap();
     std::fs::remove_file(&channel_path).unwrap();
-    let recovered = run(
-        temp.path(),
-        &[
-            "publish-staged-first-party",
-            "--channel-key-file",
-            channel_path.to_str().unwrap(),
-            "--valid-for-seconds",
-            "3600",
-        ],
-    );
-    assert!(
-        recovered.status.success(),
-        "{}",
-        String::from_utf8_lossy(&recovered.stderr)
-    );
+    ok(temp.path(), &publish_args(&channel_path, Some("3600")));
     assert!(storage.load_promotion_transaction().unwrap().is_none());
     storage
         .save_channel_authorization(&live_authorization)
         .unwrap();
     secret(&channel_path, &channel);
 
-    let refreshed = run(
-        temp.path(),
-        &[
-            "sign-delegated-snapshot",
-            "--channel-key-file",
-            channel_path.to_str().unwrap(),
-            "--valid-for-seconds",
-            "3600",
-        ],
-    );
-    assert!(
-        refreshed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&refreshed.stderr)
-    );
+    ok(temp.path(), &refresh_args(&channel_path, "3600"));
     let snapshot = storage.load_snapshot().unwrap().unwrap();
     assert_eq!(snapshot.sequence, 2);
     registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
@@ -362,21 +298,15 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     // A higher-generation root authorization revokes the old channel at the
     // serving boundary immediately, even while its certificate is unexpired.
     secret(&owner_path, &owner);
-    let rotated = run(
+    ok(
         temp.path(),
-        &[
-            "authorize-channel",
-            "--owner-key-file",
-            owner_path.to_str().unwrap(),
-            "--channel-pubkey",
+        &authorize(
+            &owner_path,
             &replacement_hex,
-            "--publisher-pubkey",
             &hex::encode(publisher.public_key_bytes()),
-            "--generation",
             "2",
-        ],
+        ),
     );
-    assert!(rotated.status.success());
     let bound = registry_server::bind_and_run(
         "127.0.0.1:0".parse().unwrap(),
         registry_server::AppState::new(storage, identity),
@@ -400,53 +330,27 @@ fn collector_reuses_staged_bytes_and_leaves_uncollectable_submissions_pending() 
     let publisher_key = SigningKey::from_bytes(&[55; 32]);
     let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
     let publisher_hex = hex::encode(publisher.public_key_bytes());
-    storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
-        .unwrap();
+    allow(&storage, &publisher_hex, true);
     let (bytes, package_id) = signed_tapp(&publisher);
     let digest = blake3::hash(&bytes).to_hex().to_string();
     let submission = |id: &str, url: &str, blake3_hex: &str| {
-        let entry = RegistryEntry {
-            package_id: id.into(),
-            kind: registry_types::EntryKind::App,
+        let entry = registry_types::RegistryEntry {
             name: "Editor".into(),
             description: "Editor".into(),
             tagline: "Edit video on Tilo OS".into(),
-            images: registry_types::LocalizedImages::english_icon(
-                "https://apps.tilo.so/images/test-icon.svg",
-                "Test icon",
-            ),
-            supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
-            source_url: None,
-            homepage: None,
-            publisher_pubkey_hex: publisher_hex.clone(),
-            versions: vec![RegistryVersion {
-                version: "1.0.0".into(),
-                released_at_unix: 1,
-                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                    tapp_url: url.into(),
-                    tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
-                    tapp_size_bytes: bytes.len() as u64,
-                    tapp_blake3_hex: blake3_hex.into(),
-                    target: RegistryTarget {
-                        platform: registry_types::TILO_OS_PLATFORM.into(),
-                        architecture: "x86_64".into(),
-                        isa: "x86_64-v3".into(),
-                        runtime: None,
-                        interfaces: Vec::new(),
-                    },
-                }),
-            }],
-            updated_at_unix: 1,
-            signature_hex: String::new(),
+            versions: vec![crate::support::version(
+                "1.0.0",
+                1,
+                crate::support::tapp(
+                    url,
+                    hex::encode(package_id.as_bytes()),
+                    bytes.len() as u64,
+                    blake3_hex,
+                    None,
+                ),
+            )],
+            ..crate::support::entry(id, publisher_hex.clone(), Vec::new())
         };
         PendingSubmission {
             submission_id: id.into(),
@@ -502,56 +406,30 @@ fn thin_app_promotion_waits_for_its_exact_native_runtime() {
     let publisher_hex = hex::encode(publisher.public_key_bytes());
     let owner_hex = hex::encode(owner.verifying_key().to_bytes());
     storage
-        .save_identity(&ServerIdentity {
-            owner_pubkey_hex: owner_hex.clone(),
-            name: "test".into(),
-            description: "test".into(),
-            base_url: "https://registry.test".into(),
-        })
+        .save_identity(&crate::support::identity(
+            owner_hex.clone(),
+            "https://registry.test",
+        ))
         .unwrap();
-    storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
-        .unwrap();
+    allow(&storage, &publisher_hex, true);
     let owner_path = temp.path().join("owner.seed");
     let channel_path = temp.path().join("channel.seed");
     secret(&owner_path, &owner);
     secret(&channel_path, &channel);
-    let authorized = run(
+    ok(
         temp.path(),
-        &[
-            "authorize-channel",
-            "--owner-key-file",
-            owner_path.to_str().unwrap(),
-            "--channel-pubkey",
+        &authorize(
+            &owner_path,
             &hex::encode(channel.verifying_key().to_bytes()),
-            "--publisher-pubkey",
             &publisher_hex,
-            "--generation",
             "1",
-        ],
-    );
-    assert!(
-        authorized.status.success(),
-        "{}",
-        String::from_utf8_lossy(&authorized.stderr)
+        ),
     );
     let runtime = "tilo-runtime/2026.07+native.00112233445566778899aabbccddeeff";
     let app = native_submission(&publisher_key, "so.tilo.editor", "x86_64", runtime, false);
     stage_native_submissions(&storage, &publisher_hex, std::slice::from_ref(&app));
-    let arguments = [
-        "publish-staged-first-party",
-        "--channel-key-file",
-        channel_path.to_str().unwrap(),
-    ];
-    let missing = run(temp.path(), &arguments);
-    assert!(missing.status.success());
+    let arguments = publish_args(&channel_path, None);
+    let missing = ok(temp.path(), &arguments);
     let deferred: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
     assert_eq!(deferred["status"], "deferred");
     assert_eq!(deferred["published"], 0);
@@ -575,8 +453,7 @@ fn thin_app_promotion_waits_for_its_exact_native_runtime() {
         &publisher_hex,
         &[app.clone(), arm_app, wrong_arch],
     );
-    let mismatched = run(temp.path(), &arguments);
-    assert!(mismatched.status.success());
+    let mismatched = ok(temp.path(), &arguments);
     let partial: serde_json::Value = serde_json::from_slice(&mismatched.stdout).unwrap();
     assert_eq!(partial["status"], "published");
     assert_eq!(partial["promoted"], 2);
@@ -587,24 +464,9 @@ fn thin_app_promotion_waits_for_its_exact_native_runtime() {
         partial_snapshot.issued_at_unix,
     )
     .unwrap();
-    assert!(
-        partial_snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.package_id == "so.tilo.arm-app")
-    );
-    assert!(
-        partial_snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.package_id == "so.tilo.runtime.arm")
-    );
-    assert!(
-        partial_snapshot
-            .entries
-            .iter()
-            .all(|entry| entry.package_id != "so.tilo.editor")
-    );
+    assert!(ids(&partial_snapshot).contains(&"so.tilo.arm-app"));
+    assert!(ids(&partial_snapshot).contains(&"so.tilo.runtime.arm"));
+    assert!(!ids(&partial_snapshot).contains(&"so.tilo.editor"));
     assert_eq!(
         storage.load_pending("so.tilo.editor").unwrap().unwrap(),
         held_request
@@ -654,29 +516,14 @@ fn thin_app_promotion_waits_for_its_exact_native_runtime() {
     let mut removal_stage = storage.load_staged_promotion().unwrap().unwrap();
     removal_stage.submissions.push(removal);
     storage.save_staged_promotion(&removal_stage).unwrap();
-    let complete = run(temp.path(), &arguments);
-    assert!(
-        complete.status.success(),
-        "{}",
-        String::from_utf8_lossy(&complete.stderr)
-    );
+    ok(temp.path(), &arguments);
     let snapshot = storage.load_snapshot().unwrap().unwrap();
     registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
     assert_eq!(snapshot.entries.len(), 3);
     assert!(storage.load_pending("so.tilo.editor").unwrap().is_none());
     assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
-    assert!(
-        snapshot
-            .entries
-            .iter()
-            .all(|entry| entry.package_id != "so.tilo.new-arm-app")
-    );
-    assert!(
-        snapshot
-            .entries
-            .iter()
-            .all(|entry| entry.package_id != "so.tilo.runtime.arm")
-    );
+    assert!(!ids(&snapshot).contains(&"so.tilo.new-arm-app"));
+    assert!(!ids(&snapshot).contains(&"so.tilo.runtime.arm"));
     assert_eq!(
         storage
             .load_pending("so.tilo.new-arm-app")
@@ -703,42 +550,25 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
         let owner_hex = hex::encode(owner.verifying_key().to_bytes());
         let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
         storage
-            .save_identity(&ServerIdentity {
-                owner_pubkey_hex: owner_hex.clone(),
-                name: "test".into(),
-                description: "test".into(),
-                base_url: "https://registry.test".into(),
-            })
+            .save_identity(&crate::support::identity(
+                owner_hex.clone(),
+                "https://registry.test",
+            ))
             .unwrap();
-        storage
-            .save_allowlist(&PublisherAllowlist {
-                publishers: vec![PublisherRow {
-                    pubkey_hex: publisher_hex.clone(),
-                    can_add_new: true,
-                    note: "test publisher".into(),
-                    namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-                }],
-            })
-            .unwrap();
+        allow(&storage, &publisher_hex, true);
         let owner_path = temp.path().join("owner.seed");
         let channel_path = temp.path().join("channel.seed");
         secret(&owner_path, &owner);
         secret(&channel_path, &channel);
-        let authorized = run(
+        ok(
             temp.path(),
-            &[
-                "authorize-channel",
-                "--owner-key-file",
-                owner_path.to_str().unwrap(),
-                "--channel-pubkey",
+            &authorize(
+                &owner_path,
                 &hex::encode(channel.verifying_key().to_bytes()),
-                "--publisher-pubkey",
                 &publisher_hex,
-                "--generation",
                 "1",
-            ],
+            ),
         );
-        assert!(authorized.status.success());
         let absent_runtime = "tilo-runtime/2026.07+native.00000000000000000000000000000000";
         let offered_runtime = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
         let held = native_submission(&publisher, "so.tilo.held", "x86_64", absent_runtime, false);
@@ -802,28 +632,14 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
                 })
                 .unwrap();
         }
-        let args = [
-            "publish-staged-first-party",
-            "--channel-key-file",
-            channel_path.to_str().unwrap(),
-        ];
-        let recovered = run(temp.path(), &args);
-        assert!(
-            recovered.status.success(),
-            "{}",
-            String::from_utf8_lossy(&recovered.stderr)
-        );
+        let args = publish_args(&channel_path, None);
+        let recovered = ok(temp.path(), &args);
         let result: serde_json::Value = serde_json::from_slice(&recovered.stdout).unwrap();
         assert_eq!(result["promoted"], 2);
         let snapshot = storage.load_snapshot().unwrap().unwrap();
         registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
         assert_eq!(snapshot.entries.len(), 2);
-        assert!(
-            snapshot
-                .entries
-                .iter()
-                .all(|entry| entry.package_id != "so.tilo.held")
-        );
+        assert!(!ids(&snapshot).contains(&"so.tilo.held"));
         assert_eq!(
             storage.load_pending("so.tilo.held").unwrap().unwrap(),
             held.0
@@ -836,21 +652,15 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
         assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
         assert!(storage.load_staged_promotion().unwrap().is_none());
         assert!(storage.load_promotion_transaction().unwrap().is_none());
-        assert!(run(temp.path(), &args).status.success());
+        ok(temp.path(), &args);
         assert_eq!(storage.load_snapshot().unwrap().unwrap(), snapshot);
         // The ordinary collector can reconsider the untouched held request
         // from its retained bytes, and it still cannot publish without its SDK.
-        let recollected = run(
+        ok(
             temp.path(),
             &["collect-first-party", "--publisher-pubkey", &publisher_hex],
         );
-        assert!(
-            recollected.status.success(),
-            "{}",
-            String::from_utf8_lossy(&recollected.stderr)
-        );
-        let deferred = run(temp.path(), &args);
-        assert!(deferred.status.success());
+        let deferred = ok(temp.path(), &args);
         let result: serde_json::Value = serde_json::from_slice(&deferred.stdout).unwrap();
         assert_eq!(result["status"], "deferred");
         assert_eq!(storage.load_snapshot().unwrap().unwrap(), snapshot);
@@ -880,21 +690,16 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
             "--max-items",
             "1",
         ];
-        assert!(run(temp.path(), &collect_one).status.success());
+        ok(temp.path(), &collect_one);
         let selected = storage.load_staged_promotion().unwrap().unwrap();
         assert_eq!(selected.submissions, vec![restored.0]);
-        assert!(run(temp.path(), &args).status.success());
+        ok(temp.path(), &args);
         assert_eq!(
             storage.load_pending("so.tilo.held").unwrap().unwrap(),
             held.0
         );
-        assert!(run(temp.path(), &collect_one).status.success());
-        let admitted = run(temp.path(), &args);
-        assert!(
-            admitted.status.success(),
-            "{}",
-            String::from_utf8_lossy(&admitted.stderr)
-        );
+        ok(temp.path(), &collect_one);
+        ok(temp.path(), &args);
         let complete = storage.load_snapshot().unwrap().unwrap();
         registry_types::verify_snapshot(&complete, &owner_hex, complete.issued_at_unix).unwrap();
         assert_eq!(complete.sequence, snapshot.sequence + 2);
@@ -919,45 +724,24 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
     let publisher_hex = hex::encode(publisher.public_key_bytes());
     let owner_hex = hex::encode(owner.verifying_key().to_bytes());
     storage
-        .save_identity(&ServerIdentity {
-            owner_pubkey_hex: owner_hex.clone(),
-            name: "test".into(),
-            description: "test".into(),
-            base_url: "https://registry.test".into(),
-        })
+        .save_identity(&crate::support::identity(
+            owner_hex.clone(),
+            "https://registry.test",
+        ))
         .unwrap();
-    storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: "first party".into(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
-        .unwrap();
+    allow(&storage, &publisher_hex, true);
     let owner_path = temp.path().join("owner.seed");
     let channel_path = temp.path().join("channel.seed");
     secret(&owner_path, &owner);
     secret(&channel_path, &channel);
-    let authorized = run(
+    ok(
         temp.path(),
-        &[
-            "authorize-channel",
-            "--owner-key-file",
-            owner_path.to_str().unwrap(),
-            "--channel-pubkey",
+        &authorize(
+            &owner_path,
             &hex::encode(channel.verifying_key().to_bytes()),
-            "--publisher-pubkey",
             &publisher_hex,
-            "--generation",
             "1",
-        ],
-    );
-    assert!(
-        authorized.status.success(),
-        "{}",
-        String::from_utf8_lossy(&authorized.stderr)
+        ),
     );
     let retained = native_submission(
         &publisher_key,
@@ -979,18 +763,13 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         .status
         .success()
     );
-    let initial = run(
+    ok(
         temp.path(),
         &[
             "sign-snapshot",
             "--owner-key-file",
             owner_path.to_str().unwrap(),
         ],
-    );
-    assert!(
-        initial.status.success(),
-        "{}",
-        String::from_utf8_lossy(&initial.stderr)
     );
     // An authentic expired catalogue can be renewed; consumers still reject
     // those old bytes at the current time until renewal is published.
@@ -1006,32 +785,16 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         serde_json::to_vec(&expired).unwrap(),
     )
     .unwrap();
-    let refresh_args = [
-        "sign-delegated-snapshot",
-        "--channel-key-file",
-        channel_path.to_str().unwrap(),
-        "--valid-for-seconds",
-        "3600",
-    ];
-    let ordinary = run(temp.path(), &refresh_args);
-    assert!(
-        ordinary.status.success(),
-        "{}",
-        String::from_utf8_lossy(&ordinary.stderr)
-    );
+    let refresh = refresh_args(&channel_path, "3600");
+    ok(temp.path(), &refresh);
     let original = storage.load_snapshot().unwrap().unwrap();
     registry_types::verify_snapshot(&original, &owner_hex, original.issued_at_unix).unwrap();
 
     let runtime = "tilo-runtime/2026.07+native.00112233445566778899aabbccddeeff";
     let app = native_submission(&publisher_key, "so.tilo.editor", "x86_64", runtime, false);
     stage_native_submissions(&storage, &publisher_hex, std::slice::from_ref(&app));
-    let arguments = [
-        "publish-staged-first-party",
-        "--channel-key-file",
-        channel_path.to_str().unwrap(),
-    ];
-    let missing = run(temp.path(), &arguments);
-    assert!(missing.status.success());
+    let arguments = publish_args(&channel_path, None);
+    let missing = ok(temp.path(), &arguments);
     let deferred: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
     assert_eq!(deferred["status"], "deferred");
     assert_eq!(deferred["published"], 0);
@@ -1044,12 +807,7 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
     let staged = storage.load_staged_promotion().unwrap().unwrap();
     let stage_bytes = std::fs::read(temp.path().join("first-party-promotion.staged.json")).unwrap();
     let pending = storage.load_pending("so.tilo.editor").unwrap().unwrap();
-    let refreshed = run(temp.path(), &refresh_args);
-    assert!(
-        refreshed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&refreshed.stderr)
-    );
+    ok(temp.path(), &refresh);
     let current = storage.load_snapshot().unwrap().unwrap();
     registry_types::verify_snapshot(&current, &owner_hex, current.issued_at_unix).unwrap();
     assert_eq!(current.sequence, original.sequence + 1);
@@ -1068,16 +826,7 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         std::fs::read(temp.path().join("first-party-promotion.staged.json")).unwrap(),
         stage_bytes
     );
-    let invalid_lifetime = run(
-        temp.path(),
-        &[
-            "sign-delegated-snapshot",
-            "--channel-key-file",
-            channel_path.to_str().unwrap(),
-            "--valid-for-seconds",
-            "0",
-        ],
-    );
+    let invalid_lifetime = run(temp.path(), &refresh_args(&channel_path, "0"));
     assert!(!invalid_lifetime.status.success());
     assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
     assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
@@ -1088,7 +837,7 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         serde_json::to_vec(&tampered).unwrap(),
     )
     .unwrap();
-    let invalid_signature = run(temp.path(), &refresh_args);
+    let invalid_signature = run(temp.path(), &refresh);
     assert!(!invalid_signature.status.success());
     assert_eq!(storage.load_snapshot().unwrap().unwrap(), tampered);
     assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
@@ -1106,7 +855,7 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
     storage
         .save_channel_authorization(&expired_authorization)
         .unwrap();
-    assert!(!run(temp.path(), &refresh_args).status.success());
+    assert!(!run(temp.path(), &refresh).status.success());
     assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
     assert_eq!(storage.load_staged_promotion().unwrap().unwrap(), staged);
     storage.save_channel_authorization(&authorization).unwrap();
@@ -1119,7 +868,7 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         candidate_snapshot: current.clone(),
     };
     storage.save_promotion_transaction(&journal).unwrap();
-    let blocked = run(temp.path(), &refresh_args);
+    let blocked = run(temp.path(), &refresh);
     assert!(!blocked.status.success());
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("active first-party promotion"));
     assert_eq!(storage.load_snapshot().unwrap().unwrap(), current);
@@ -1144,8 +893,7 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         &publisher_hex,
         &[app.clone(), arm_app, wrong_arch],
     );
-    let mismatched = run(temp.path(), &arguments);
-    assert!(mismatched.status.success());
+    let mismatched = ok(temp.path(), &arguments);
     let partial: serde_json::Value = serde_json::from_slice(&mismatched.stdout).unwrap();
     assert_eq!(partial["status"], "published");
     assert_eq!(partial["promoted"], 2);
@@ -1156,24 +904,9 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         partial_snapshot.issued_at_unix,
     )
     .unwrap();
-    assert!(
-        partial_snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.package_id == "so.tilo.arm-app")
-    );
-    assert!(
-        partial_snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.package_id == "so.tilo.runtime.arm")
-    );
-    assert!(
-        partial_snapshot
-            .entries
-            .iter()
-            .all(|entry| entry.package_id != "so.tilo.editor")
-    );
+    assert!(ids(&partial_snapshot).contains(&"so.tilo.arm-app"));
+    assert!(ids(&partial_snapshot).contains(&"so.tilo.runtime.arm"));
+    assert!(!ids(&partial_snapshot).contains(&"so.tilo.editor"));
     assert_eq!(
         storage.load_pending("so.tilo.editor").unwrap().unwrap(),
         held_request
@@ -1195,12 +928,7 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
 
     let exact = native_submission(&publisher_key, "so.tilo.runtime", "x86_64", runtime, true);
     stage_native_submissions(&storage, &publisher_hex, &[app, exact]);
-    let complete = run(temp.path(), &arguments);
-    assert!(
-        complete.status.success(),
-        "{}",
-        String::from_utf8_lossy(&complete.stderr)
-    );
+    ok(temp.path(), &arguments);
     let snapshot = storage.load_snapshot().unwrap().unwrap();
     registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
     assert_eq!(snapshot.entries.len(), 5);
@@ -1209,7 +937,7 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
     assert!(storage.load_promotion_transaction().unwrap().is_none());
     assert!(storage.load_pending("so.tilo.editor").unwrap().is_none());
     assert!(storage.load_pending("so.tilo.runtime").unwrap().is_none());
-    let rollback = run(
+    ok(
         temp.path(),
         &[
             "rollback-snapshot",
@@ -1220,11 +948,6 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
             "--valid-for-seconds",
             "3600",
         ],
-    );
-    assert!(
-        rollback.status.success(),
-        "{}",
-        String::from_utf8_lossy(&rollback.stderr)
     );
     let rolled_back = storage.load_snapshot().unwrap().unwrap();
     registry_types::verify_snapshot(&rolled_back, &owner_hex, rolled_back.issued_at_unix).unwrap();
@@ -1303,9 +1026,7 @@ mode = "off"
         runtime: Some(runtime.into()),
         interfaces: Vec::new(),
     };
-    let entry = RegistryEntry {
-        package_id: package_id.into(),
-        kind: registry_types::EntryKind::App,
+    let entry = registry_types::RegistryEntry {
         name: "Native package".into(),
         description: "Native package".into(),
         tagline: "Native package".into(),
@@ -1313,11 +1034,6 @@ mode = "off"
             "https://apps.tilo.so/images/test.svg",
             "Test icon",
         ),
-        supported_languages: vec!["en".into()],
-        categories: Vec::new(),
-        source_url: None,
-        homepage: None,
-        publisher_pubkey_hex: hex::encode(identity.public_key_bytes()),
         versions: vec![RegistryVersion {
             version: "1.0.0".into(),
             released_at_unix: 1,
@@ -1331,8 +1047,11 @@ mode = "off"
                 target: target.clone(),
             }),
         }],
-        updated_at_unix: 1,
-        signature_hex: String::new(),
+        ..crate::support::entry(
+            package_id,
+            hex::encode(identity.public_key_bytes()),
+            Vec::new(),
+        )
     };
     let pending = PendingSubmission {
         submission_id: package_id.into(),

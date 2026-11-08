@@ -117,10 +117,6 @@ pub fn serve_test_worker() {
 
 /// Start a worker and report what its confinement still lets it do at
 /// `path`. Every field of the report is `false` for a confined worker.
-///
-/// # Errors
-///
-/// The worker did not start or could not confine itself.
 pub fn probe_confinement(path: &std::path::Path) -> Result<ProbeReport, String> {
     let mut process = process::Process::start(proto::Mode::Replica)?;
     match process.call(&proto::Request::Probe {

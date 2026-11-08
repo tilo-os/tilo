@@ -100,10 +100,6 @@ pub fn run_udisks(call: &UdisksCall) -> Result<(), String> {
 }
 
 /// A build without udisks2 changes no device.
-///
-/// # Errors
-///
-/// Always.
 #[cfg(not(feature = "live"))]
 pub fn run_udisks(call: &UdisksCall) -> Result<(), String> {
     Err(format!(
@@ -115,10 +111,6 @@ pub fn run_udisks(call: &UdisksCall) -> Result<(), String> {
 /// A real sequential-read + random-seek benchmark of a block device. Reads up
 /// to 64 MiB sequentially, then times 100 random 4 KiB reads. Needs read
 /// permission on `/dev/<leaf>` (root for most block devices).
-///
-/// # Errors
-///
-/// Returns an error if the device cannot be opened or read.
 pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let path = format!("/dev/{dev_leaf}");
     let mut f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;

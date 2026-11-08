@@ -1,4 +1,4 @@
-//! [`SearchIndex`]: a retained set of records, searchable through the
+//! [`SearchIndex`] — a retained set of records, searchable through the
 //! engine ([`crate::engine`]).
 
 use std::collections::{BTreeMap, BTreeSet};

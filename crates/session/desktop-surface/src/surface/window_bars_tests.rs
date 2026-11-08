@@ -11,10 +11,10 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 
 use crate::surface::{DesktopSurface, TileSource, seed_tree};
 
-/// An app as the apps moved to the window bar's slots are written: it
-/// declares its slots with [`ui::window_toolbar::declare`] and reads what the
-/// person did with [`ui::window_toolbar::take_events`], knowing nothing of
-/// the process it shares with the desktop and the other apps.
+/// An app as the apps moved to the window bar's slots are written: it declares its slots with
+/// [`ui::window_toolbar::declare`] and reads what the person did with
+/// [`ui::window_toolbar::take_events`], knowing nothing of the process it shares with the desktop
+/// and the other apps.
 struct SlotApp {
     action: &'static str,
     heard: Rc<RefCell<Vec<ToolbarEvent>>>,
@@ -76,9 +76,8 @@ impl TileSource for SlotApps {
     }
 }
 
-/// Two apps in the desktop's own process, as every app of the browser
-/// desktop runs: each one's slots stand in its own window's bar, and a press
-/// on one reaches that app and no other.
+/// Two apps in the desktop's own process, as every app of the browser desktop runs: each one's
+/// slots stand in its own window's bar, and a press on one reaches that app and no other.
 #[test]
 fn each_apps_slots_stand_in_its_windows_bar_and_a_press_reaches_it() {
     let mut minter = IdMinter::new(7);
@@ -163,9 +162,9 @@ fn shown_tabs(frame: &ui::headless::FrameHarness) -> Vec<(u64, u64)> {
         .collect()
 }
 
-/// An app in a process of its own declares its slots over its connection:
-/// the next pass shows them in its window's bar, what the person did there
-/// goes back on that same connection, and the slots go when it closes.
+/// An app in a process of its own declares its slots over its connection: the next pass shows them
+/// in its window's bar, what the person did there goes back on that same connection, and the slots
+/// go when it closes.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -222,8 +221,8 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
     assert!(!edited, "nothing asked for the location yet");
     assert!(button.area() > 0.0, "the slot is a button in the bar");
 
-    // The window is named by what it shows: its app's location label names
-    // the tab, so its bar, the overview and search say the same.
+    // The window is named by what it shows: its app's location label names the tab, so its bar, the
+    // overview and search say the same.
     let named = handle.read(|tree| {
         tree.workspaces
             .iter()
@@ -308,9 +307,8 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
         .cloned();
     assert_eq!(gone, None, "nothing of the app's is left in the bar");
 
-    // An app names its window again and then names nothing — the note it
-    // showed is closed: the window goes back to being called by its app, not
-    // by a place it has left.
+    // An app names its window again and then names nothing — the note it showed is closed: the
+    // window goes back to being called by its app, not by a place it has left.
     handle.declare_bar(
         front,
         43,
@@ -347,9 +345,8 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
     );
 }
 
-/// A window's app describes the controls of its own content over its
-/// connection: the desk lists them where they are drawn, a press goes back on
-/// that connection, and they go with it.
+/// A window's app describes the controls of its own content over its connection: the desk lists
+/// them where they are drawn, a press goes back on that connection, and they go with it.
 #[test]
 fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connection() {
     use ui::window_targets::{TargetAction, WindowTarget};
@@ -414,8 +411,7 @@ fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connectio
         "the press goes back on the connection that described the control"
     );
 
-    // A control nobody drew, and one the app answers nothing of, is not
-    // pressed.
+    // A control nobody drew, and one the app answers nothing of, is not pressed.
     assert!(
         handle
             .press_window_control("Nowhere", TargetAction::Activate)

@@ -1,6 +1,5 @@
-//! Real X11 clients against a headless compositor: Xwayland maps their
-//! windows, their program and icon reach the desktop, and the clipboard and
-//! drags cross between them and Wayland clients.
+//! Real X11 clients against a headless compositor: Xwayland maps their windows, their program and
+//! icon reach the desktop, and the clipboard and drags cross between them and Wayland clients.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -34,8 +33,8 @@ struct Session {
     root: Window,
     /// Everything the X11 client was sent so far.
     events: Vec<Event>,
-    /// The clipboard this X11 client owns, per format, answered while the
-    /// session runs; `None` when it owns none.
+    /// The clipboard this X11 client owns, per format, answered while the session runs; `None` when
+    /// it owns none.
     clipboard: Option<Vec<(String, Vec<u8>)>>,
 }
 
@@ -44,8 +43,8 @@ impl Session {
         Self::start_in_layout(scale, None)
     }
 
-    /// A session whose person types in `layout` before any X11 app opens, as
-    /// at login; `None` leaves the layout the session starts with.
+    /// A session whose person types in `layout` before any X11 app opens, as at login; `None`
+    /// leaves the layout the session starts with.
     fn start_in_layout(scale: f64, layout: Option<KeyboardLayout>) -> Self {
         let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("headless");
         compositor
@@ -69,8 +68,8 @@ impl Session {
         }
     }
 
-    /// The character `keycode` types for X clients, in the first group: what
-    /// the toolkit of an X11 app reads from the server's own keymap.
+    /// The character `keycode` types for X clients, in the first group: what the toolkit of an X11
+    /// app reads from the server's own keymap.
     fn character(&self, keycode: u8) -> char {
         let keysyms = self
             .x11
@@ -85,9 +84,8 @@ impl Session {
         }
     }
 
-    /// The fields of the root window's `_XKB_RULES_NAMES`, which layout
-    /// tools (`setxkbmap -query`) report: rules, model, layout, variant and
-    /// options.
+    /// The fields of the root window's `_XKB_RULES_NAMES` , which layout tools (`setxkbmap -query`)
+    /// report: rules, model, layout, variant and options.
     fn rules_names(&self) -> Vec<String> {
         let property = self
             .x11
@@ -110,7 +108,7 @@ impl Session {
             .collect()
     }
 
-    /// A window of `size` whose class is `class`, unmapped.
+    /// A window of `size` whose class is `class` , unmapped.
     fn window(&self, instance: &str, class: &str, size: (u16, u16)) -> Window {
         let window = self.x11.generate_id().expect("id");
         self.x11
@@ -150,7 +148,7 @@ impl Session {
         window
     }
 
-    /// Set a 32-bit property of `window` under `name`.
+    /// Set a 32-bit property of `window` under `name` .
     fn set_property32(&self, window: Window, name: &str, values: &[u32]) -> Atom {
         let atom = self.atom(name);
         self.x11
@@ -160,7 +158,7 @@ impl Session {
         atom
     }
 
-    /// The atom named `name`.
+    /// The atom named `name` .
     fn atom(&self, name: &str) -> Atom {
         self.x11
             .intern_atom(false, name.as_bytes())
@@ -170,8 +168,8 @@ impl Session {
             .atom
     }
 
-    /// The integer setting `name` of the XSETTINGS manager, as X clients
-    /// read it; `None` while it has none.
+    /// The integer setting `name` of the XSETTINGS manager, as X clients read it; `None` while it
+    /// has none.
     fn setting(&self, name: &str) -> Option<i32> {
         let owner = self
             .x11
@@ -200,7 +198,7 @@ impl Session {
         xsetting_integer(&value, name)
     }
 
-    /// The root window's `RESOURCE_MANAGER`, as X clients read it.
+    /// The root window's `RESOURCE_MANAGER` , as X clients read it.
     fn resources(&self) -> String {
         let value = self
             .x11
@@ -233,8 +231,7 @@ impl Session {
         self.x11.flush().expect("flush");
     }
 
-    /// Set a window's `WM_NAME` after it was created, as a program does when
-    /// what it shows changes.
+    /// Set a window's `WM_NAME` after it was created, as a program does when what it shows changes.
     fn set_title(&self, window: Window, title: &str) {
         self.x11
             .change_property8(
@@ -253,8 +250,8 @@ impl Session {
         self.x11.flush().expect("flush");
     }
 
-    /// Answer an X11 client asking for the clipboard this session's client
-    /// owns: its formats, or one of them.
+    /// Answer an X11 client asking for the clipboard this session's client owns: its formats, or
+    /// one of them.
     fn answer(&self, request: &SelectionRequestEvent) {
         let Some(offer) = &self.clipboard else {
             return;
@@ -324,8 +321,8 @@ impl Session {
         let _ = self.x11.flush();
     }
 
-    /// Make `window` own the clipboard with `offer` (text per format), and
-    /// wait until the session offers what it says.
+    /// Make `window` own the clipboard with `offer` (text per format), and wait until the session
+    /// offers what it says.
     fn own_clipboard(&mut self, window: Window, offer: &[(&str, &[u8])]) -> Vec<String> {
         self.clipboard = Some(
             offer
@@ -346,8 +343,7 @@ impl Session {
         self.compositor.selection_formats(Selection::Clipboard)
     }
 
-    /// Run the session on for a moment, as it would between two of a
-    /// person's actions.
+    /// Run the session on for a moment, as it would between two of a person's actions.
     fn settle(&mut self) {
         let started = Instant::now();
         while started.elapsed() < Duration::from_millis(100) {
@@ -383,7 +379,7 @@ impl Session {
         bytes.lock().expect("lock").take().expect("bytes")
     }
 
-    /// Let the compositor and the X11 client run until `done`.
+    /// Let the compositor and the X11 client run until `done` .
     fn pump(&mut self, mut done: impl FnMut(&Session) -> bool) {
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(20) {
@@ -408,9 +404,9 @@ impl Session {
     }
 }
 
-/// An X11 client on `display`: Xwayland answers the connection's setup only
-/// after it has roundtripped with the compositor, so the client waits in a
-/// thread while the compositor dispatches here.
+/// An X11 client on `display` : Xwayland answers the connection's setup only after it has
+/// roundtripped with the compositor, so the client waits in a thread while the compositor
+/// dispatches here.
 fn x11_client(compositor: &mut Compositor, display: u32) -> (RustConnection, Window) {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -433,9 +429,8 @@ fn x11_client(compositor: &mut Compositor, display: u32) -> (RustConnection, Win
     }
 }
 
-/// An integer in an `_XSETTINGS_SETTINGS` value, as X clients decode it:
-/// byte order (padded), serial, count, then per setting its type, name and
-/// value.
+/// An integer in an `_XSETTINGS_SETTINGS` value, as X clients decode it: byte order (padded),
+/// serial, count, then per setting its type, name and value.
 fn xsetting_integer(data: &[u8], name: &str) -> Option<i32> {
     let big_endian = match data.first()? {
         0 => false,
@@ -535,8 +530,8 @@ fn an_x11_window_knows_its_program_and_its_icon() {
     );
     session.map(window);
     session.pump(|session| !session.compositor.windows().is_empty());
-    // Xwayland associates a window's surface once it is mapped; the icon is
-    // read again then, as part of the window's facts.
+    // Xwayland associates a window's surface once it is mapped; the icon is read again then, as
+    // part of the window's facts.
     session.pump(|session| {
         session
             .compositor
@@ -573,8 +568,8 @@ fn an_x11_window_that_is_renamed_is_known_by_its_new_class() {
     let (mapped, _) = session.compositor.windows().remove(0);
     session.set_class(window, "thunderbird", "Thunderbird");
     session.set_title(window, "Inbox - Thunderbird");
-    // The two properties arrive as two separate changes; the desk names the
-    // window once it has both, so wait for both.
+    // The two properties arrive as two separate changes; the desk names the window once it has
+    // both, so wait for both.
     session.pump(|session| {
         session
             .compositor
@@ -591,8 +586,8 @@ fn an_x11_window_that_is_renamed_is_known_by_its_new_class() {
         .expect("identity");
     assert_eq!(identity.instance.as_deref(), Some("thunderbird"));
     assert_eq!(identity.class.as_deref(), Some("Thunderbird"));
-    // The desk names the tab by what the client says now, not by what it said
-    // when its window mapped.
+    // The desk names the tab by what the client says now, not by what it said when its window
+    // mapped.
     let (renamed, _) = session.compositor.windows().remove(0);
     assert_eq!(renamed.id, mapped.id);
     assert_eq!(renamed.app_id.as_deref(), Some("Thunderbird"));
@@ -610,9 +605,8 @@ fn x_clients_hear_how_dense_the_display_is() {
     assert!(resources.contains("Xft.dpi:\t192"), "{resources}");
     assert!(resources.contains("Xcursor.size:\t48"), "{resources}");
 
-    // Their windows are sized in those pixels: 400 by 300 X pixels are 200
-    // by 150 logical ones, centred on the output's 640 by 360 logical size
-    // like any other window.
+    // Their windows are sized in those pixels: 400 by 300 X pixels are 200 by 150 logical ones,
+    // centred on the output's 640 by 360 logical size like any other window.
     let window = session.window("xterm", "XTerm", (400, 300));
     session.map(window);
     session.pump(|session| !session.compositor.windows().is_empty());
@@ -669,8 +663,7 @@ const KEY_Y: u8 = 29;
 
 #[test]
 fn x11_apps_type_in_the_layout_the_person_chose() {
-    // The session sets the person's layout at login; the first X11 app they
-    // open types in it.
+    // The session sets the person's layout at login; the first X11 app they open types in it.
     let session = Session::start_in_layout(
         1.0,
         Some(KeyboardLayout {
@@ -734,8 +727,7 @@ fn a_copy_in_a_wayland_app_pastes_in_an_x11_app() {
     let mut session = Session::start(1.0);
     let window = session.window("xterm", "XTerm", (400, 300));
     session.map(window);
-    // An X11 client reads the clipboard only while one of its windows has
-    // the keyboard focus.
+    // An X11 client reads the clipboard only while one of its windows has the keyboard focus.
     session.pump(|session| {
         session
             .events
@@ -779,8 +771,8 @@ fn a_copy_in_a_wayland_app_pastes_in_an_x11_app() {
     assert_eq!(value, b"copied in a wayland app");
 }
 
-/// A window `x11` creates on `root`, with the class and title a program
-/// gives a toplevel, unmapped.
+/// A window `x11` creates on `root` , with the class and title a program gives a toplevel,
+/// unmapped.
 fn client_window(x11: &RustConnection, root: Window, instance: &str, class: &str) -> Window {
     let window = x11.generate_id().expect("id");
     x11.create_window(
@@ -817,7 +809,7 @@ fn client_window(x11: &RustConnection, root: Window, instance: &str, class: &str
     window
 }
 
-/// The atom named `name` on `x11`'s server.
+/// The atom named `name` on `x11` 's server.
 fn client_atom(x11: &RustConnection, name: &str) -> Atom {
     x11.intern_atom(false, name.as_bytes())
         .expect("atom")
@@ -826,7 +818,7 @@ fn client_atom(x11: &RustConnection, name: &str) -> Atom {
         .atom
 }
 
-/// Run a compositor without a client of the test's own, until `done`.
+/// Run a compositor without a client of the test's own, until `done` .
 fn pump_until(compositor: &mut Compositor, mut done: impl FnMut(&Compositor) -> bool) {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(20) {
@@ -916,10 +908,9 @@ fn each_workspace_gets_its_own_x_server_and_clipboard() {
 
 #[test]
 fn a_workspace_keeps_the_server_of_a_client_with_no_window_while_it_lives() {
-    // A clipboard owner or a helper connects and never maps a window. It
-    // needs its display while it lives, and its display's server follows it
-    // out: what keeps a windowless server running is its clients, and the
-    // session's own connections are not ones.
+    // A clipboard owner or a helper connects and never maps a window. It needs its display while it
+    // lives, and its display's server follows it out: what keeps a windowless server running is its
+    // clients, and the session's own connections are not ones.
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("headless");
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 1280, 720))
@@ -991,8 +982,8 @@ fn a_workspace_runs_its_x_server_only_while_its_apps_run() {
         "no X server runs with no window of the workspace's apps"
     );
 
-    // The display stays: the workspace's next app finds the same number, and
-    // a fresh server behind it.
+    // The display stays: the workspace's next app finds the same number, and a fresh server behind
+    // it.
     assert_eq!(
         compositor
             .x11_displays()
@@ -1001,9 +992,8 @@ fn a_workspace_runs_its_x_server_only_while_its_apps_run() {
         Some(number),
         "the workspace's display outlived its server"
     );
-    // A server on its way out still holds the display's socket for a moment
-    // and answers a client that connects right then; the next one reaches the
-    // fresh server.
+    // A server on its way out still holds the display's socket for a moment and answers a client
+    // that connects right then; the next one reaches the fresh server.
     let started = Instant::now();
     loop {
         let (_again, _root) = x11_client(&mut compositor, number);

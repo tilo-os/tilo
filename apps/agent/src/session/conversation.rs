@@ -71,10 +71,6 @@ pub(super) struct Record {
 
 /// The turn `run` answers, checked against what a conversation gives and
 /// what a turn of one may carry.
-///
-/// # Errors
-/// The run names no conversation message, or its title, instruction, lease or
-/// action context is not one this agent may act on.
 pub(super) fn validate(run: &runtime_collab::TaskRunEnvelope) -> Result<Cause, String> {
     if run.version != 1 || run.run_id == 0 {
         return Err("The run has an unsupported version or empty run id".into());

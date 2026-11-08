@@ -350,10 +350,6 @@ fn sample_number(schema: &serde_json::Value) -> serde_json::Value {
 
 /// Drive every scenario `A` stages and name the actions each publishes that
 /// an agent is never shown ([`tilo_actions::hidden_from_agents`]).
-///
-/// # Errors
-/// Each scenario that did not open, or that publishes such actions, with
-/// them.
 pub fn check_agents_are_shown_every_action<A: ResourceApp>() -> Result<(), String> {
     let mut failures = Vec::new();
     for scenario in A::scenarios() {

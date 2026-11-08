@@ -159,10 +159,6 @@ pub(crate) fn view_for(views: &Rc<dyn RustViews>, ty: &str, name: &str) -> Optio
 impl RustNode {
     /// This node as the runtime's, its events kept as the action references a tilolang view's
     /// events hold, and its binding as the field edit the runtime applies.
-    ///
-    /// # Errors
-    ///
-    /// An event that names no resource the runtime can parse.
     pub(crate) fn into_ui(
         self,
         events: &BTreeMap<(String, String), RustEvent>,

@@ -182,10 +182,6 @@ pub fn set_tier(dir: &Path, tier: Tier, total: Option<u64>) -> Result<(), String
 /// the kernel then ends everything in it together when it picks any of it.
 /// A cgroup without the memory controller has no such file and nothing to
 /// set.
-///
-/// # Errors
-///
-/// The kernel's refusal.
 pub fn set_oom_group(dir: &Path, on: bool) -> io::Result<()> {
     let path = dir.join("memory.oom.group");
     if !path.exists() {
@@ -242,10 +238,6 @@ pub fn footprint(dir: &Path) -> Option<u64> {
 
 /// Ask the kernel to reclaim `bytes` from the cgroup at `dir` now. It may
 /// reclaim less (`EAGAIN`); what it got is still freed.
-///
-/// # Errors
-///
-/// The kernel's refusal other than falling short.
 pub fn reclaim(dir: &Path, bytes: u64) -> io::Result<()> {
     match std::fs::write(dir.join("memory.reclaim"), bytes.to_string()) {
         Err(error) if error.raw_os_error() == Some(libc::EAGAIN) => Ok(()),
@@ -341,10 +333,6 @@ pub fn processes(dir: &Path) -> Vec<u32> {
 
 /// End every process in the app cgroup at `dir` at once, those that left
 /// its process tree (`setsid`, a double fork) included.
-///
-/// # Errors
-///
-/// The kernel's refusal.
 pub fn kill(dir: &Path) -> io::Result<()> {
     std::fs::write(dir.join("cgroup.kill"), "1")
 }

@@ -3,8 +3,8 @@
 //!
 //! The bot's program only sequences steps, so everything it does comes from
 //! two effects. `plan-route` names the Chat message an event is about, for
-//! the program to read with Chat's `read-workspace`. `plan-event` answers a
-//! [`BridgePlan`]: one list per verb, each element holding exactly that
+//! the program to read with Chat's `read-workspace`. `plan-event` answers
+//! a [`BridgePlan`]: one list per verb, each element holding exactly that
 //! verb's arguments, so the program is a fixed run of loops with no
 //! conditions. Work that needs an earlier result (a thread before the reply
 //! in it, an avatar before the post shown with it, a category before its

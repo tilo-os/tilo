@@ -1,10 +1,9 @@
-//! A strip or workspace the person goes to is drawn moving: the view they
-//! left stands where they left it and the one they chose arrives from the
-//! side it lies on, so the change is a slide across frames and never a cut.
-//!
+//! A strip or workspace the person goes to is drawn moving: the view they left stands where they
+//! left it and the one they chose arrives from the side it lies on, so the change is a slide across
+//! frames and never a cut.
 //! Only a hand moves the view. A key or an action lands, as
-//! `docs/architecture/window-management.md` says; a pointer and a finger
-//! slide, and while a finger is down the deck is under it.
+//! `docs/architecture/window-management.md` says; a pointer and a finger slide, and while a finger
+//! is down the deck is under it.
 
 use super::*;
 use ui::widget::TileContent;
@@ -72,8 +71,8 @@ impl Desk {
             });
             strips.push(id);
         }
-        // A second workspace with a strip of its own, so a switch one level
-        // out has somewhere to go.
+        // A second workspace with a strip of its own, so a switch one level out has somewhere to
+        // go.
         let mut elsewhere = Workspace::create("Elsewhere");
         let elsewhere_strip = tilo_desktop_model::Strip {
             id: StripId(minter.mint()),
@@ -107,7 +106,7 @@ impl Desk {
         }
     }
 
-    /// Go to `strip` with `source`, as the person did.
+    /// Go to `strip` with `source` , as the person did.
     fn go_to(&mut self, strip: StripId, source: ui::tokens::MotionSource) {
         let workspace = self
             .handle
@@ -120,13 +119,12 @@ impl Desk {
                 strip: strip.0.to_string(),
             })
             .expect("the strip is there");
-        // The layer a host draws for the chrome names what asked before the
-        // change is shown: the frame states it, as a chord or a press does.
+        // The layer a host draws for the chrome names what asked before the change is shown: the
+        // frame states it, as a chord or a press does.
         self.frame.root_mut::<DesktopSurface>().note_source(source);
     }
 
-    /// Where the leaving strip is drawn this frame, in pixels from where it
-    /// stood.
+    /// Where the leaving strip is drawn this frame, in pixels from where it stood.
     fn leaving(&self) -> Option<f64> {
         self.frame
             .root::<DesktopSurface>()
@@ -171,9 +169,9 @@ impl Desk {
     }
 }
 
-/// A strip the person clicked to is drawn on its way across the frames after
-/// the click, not cut to its place: the strip they left stands at its place
-/// and moves by more with every frame until it is gone.
+/// A strip the person clicked to is drawn on its way across the frames after the click, not cut to
+/// its place: the strip they left stands at its place and moves by more with every frame until it
+/// is gone.
 #[test]
 fn a_clicked_strip_slides_across_frames_instead_of_cutting() {
     let mut desk = Desk::new();
@@ -239,9 +237,8 @@ fn a_strip_change_is_a_step_along_the_deck() {
     assert_eq!((toward, steps), (-1.0, 2.0), "up the deck, two screens");
 }
 
-/// A chord's strip change moves within `fast`, as the design note says:
-/// spatial context may move, briefly, and it never takes the deck's full
-/// settle.
+/// A chord's strip change moves within `fast` , as the design note says: spatial context may move,
+/// briefly, and it never takes the deck's full settle.
 #[test]
 fn a_key_slide_is_within_fast() {
     let mut desk = Desk::new();
@@ -259,8 +256,8 @@ fn a_key_slide_is_within_fast() {
     assert!(!desk.moving(), "a chord's change is over within `fast`");
 }
 
-/// A change nobody's hand made (an action, a script, an agent) is a
-/// shortcut's too: it moves within `fast` and never waits on a hand.
+/// A change nobody's hand made (an action, a script, an agent) is a shortcut's too: it moves within
+/// `fast` and never waits on a hand.
 #[test]
 fn an_action_slide_is_within_fast() {
     let mut desk = Desk::new();
@@ -272,8 +269,8 @@ fn an_action_slide_is_within_fast() {
     assert!(!desk.moving());
 }
 
-/// A shortcut's slide is shorter than a hand's: the same change made with a
-/// pointer is still moving when a chord's has arrived.
+/// A shortcut's slide is shorter than a hand's: the same change made with a pointer is still moving
+/// when a chord's has arrived.
 #[test]
 fn a_chord_s_slide_is_shorter_than_a_click_s() {
     let mut by_key = Desk::new();
@@ -288,8 +285,8 @@ fn a_chord_s_slide_is_shorter_than_a_click_s() {
     assert!(by_click.moving(), "the click's is still moving");
 }
 
-/// The fingers carry the deck: every update puts the strip they landed on
-/// exactly that far the other way, so the strips are under the hand.
+/// The fingers carry the deck: every update puts the strip they landed on exactly that far the
+/// other way, so the strips are under the hand.
 #[test]
 fn a_finger_carries_the_deck_with_it() {
     let mut desk = Desk::new();
@@ -313,9 +310,8 @@ fn a_finger_carries_the_deck_with_it() {
     );
 }
 
-/// A slide starts from what the person sees: the strip it leaves is drawn at
-/// its own place at first, and the whole motion asks the clock for frames
-/// until it settles.
+/// A slide starts from what the person sees: the strip it leaves is drawn at its own place at
+/// first, and the whole motion asks the clock for frames until it settles.
 #[test]
 fn a_slide_asks_for_frames_and_starts_from_rest() {
     let mut desk = Desk::new();
@@ -331,8 +327,8 @@ fn a_slide_asks_for_frames_and_starts_from_rest() {
     assert!(!desk.moving());
 }
 
-/// A change asked for mid-slide keeps its place and carries on as one motion
-/// instead of starting over from the top.
+/// A change asked for mid-slide keeps its place and carries on as one motion instead of starting
+/// over from the top.
 #[test]
 fn a_second_change_mid_slide_carries_on_from_where_it_is_drawn() {
     let mut desk = Desk::new();
@@ -343,9 +339,8 @@ fn a_second_change_mid_slide_carries_on_from_where_it_is_drawn() {
     desk.go_to(third, ui::tokens::MotionSource::Pointer);
     desk.frames(1);
     let after = desk.leaving().expect("still drawn");
-    // The slide restarts its progress but keeps its place: the strip left is
-    // still the first one, drawn from where it stood, so the second change
-    // carries on out instead of cutting.
+    // The slide restarts its progress but keeps its place: the strip left is still the first one,
+    // drawn from where it stood, so the second change carries on out instead of cutting.
     assert!(
         after < 0.0 && after > -desk.height(),
         "the strips carry on from the place they were left in: {after} after {partway}"
@@ -353,9 +348,8 @@ fn a_second_change_mid_slide_carries_on_from_where_it_is_drawn() {
     let _ = first;
 }
 
-/// A workspace switch is a whole-view change one level out: it moves a
-/// direction's worth of the view, not a whole screen, as the old shell drew
-/// it.
+/// A workspace switch is a whole-view change one level out: it moves a direction's worth of the
+/// view, not a whole screen, as the old shell drew it.
 #[test]
 fn a_workspace_switch_is_a_whole_view_change() {
     let mut desk = Desk::new();
@@ -382,8 +376,8 @@ fn a_workspace_switch_is_a_whole_view_change() {
     );
 }
 
-/// The slide is not started when nothing was left behind: a request for the
-/// strip already shown paints no motion.
+/// The slide is not started when nothing was left behind: a request for the strip already shown
+/// paints no motion.
 #[test]
 fn asking_for_the_strip_already_shown_moves_nothing() {
     let mut desk = Desk::new();
@@ -394,8 +388,8 @@ fn asking_for_the_strip_already_shown_moves_nothing() {
     assert!(!desk.moving());
 }
 
-/// A hand's change is drawn from where the person was; a chord's is over
-/// within `fast`. Both start from what was on screen, so neither cuts.
+/// A hand's change is drawn from where the person was; a chord's is over within `fast` . Both start
+/// from what was on screen, so neither cuts.
 #[test]
 fn every_strip_change_starts_from_what_the_person_saw() {
     for source in [

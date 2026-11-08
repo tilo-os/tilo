@@ -1,27 +1,19 @@
 //! Pairing a nearby device with the person's identity, run by the session.
-//!
-//! Discovery listens on the LAN for an unprovisioned device announcing
-//! itself (`tilo-enroll discover[-device]`) and answers what it found, with
-//! the verification code both screens show. Approval runs the polkit-gated
-//! helper (`tilo-home-peer-control approve-…`), which asks an administrator
-//! to authenticate before it admits the device. The helper and its policy
-//! are unchanged; only their caller is the session now, so no sandboxed
-//! application starts a privileged process.
-//!
-//! Both steps run on a worker thread and answer through a [`Pending`], so
-//! whoever waits — the session's loop and the action broker for an
-//! application — never blocks on a LAN window that may stay open for
-//! minutes. One step runs at a time: discovery and approval listen on the
-//! same LAN port.
-//!
-//! An approval names a device this session discovered, with the relay
-//! service it announced: a caller cannot admit a key it merely names.
-//! Rejecting forgets the candidate and stops waiting on its approval; the
-//! helper's own LAN window bounds the privileged child.
-//!
-//! Who may pair is decided by the door the step arrives through, before it
-//! reaches this engine: only someone who administers the workspace's
-//! identity, and approval needs explicit confirmation.
+//! Discovery listens on the LAN for an unprovisioned device announcing itself (`tilo-enroll
+//! discover[-device]`) and answers what it found, with the verification code both screens show.
+//! Approval runs the polkit-gated helper (`tilo-home-peer-control approve-…`), which asks an
+//! administrator to authenticate before it admits the device. The helper and its policy are
+//! unchanged; only their caller is the session now, so no sandboxed application starts a privileged
+//! process.
+//! Both steps run on a worker thread and answer through a [`Pending`], so whoever waits — the
+//! session's loop and the action broker for an application — never blocks on a LAN window that may
+//! stay open for minutes. One step runs at a time: discovery and approval listen on the same LAN
+//! port.
+//! An approval names a device this session discovered, with the relay service it announced: a
+//! caller cannot admit a key it merely names. Rejecting forgets the candidate and stops waiting on
+//! its approval; the helper's own LAN window bounds the privileged child.
+//! Who may pair is decided by the door the step arrives through, before it reaches this engine:
+//! only someone who administers the workspace's identity, and approval needs explicit confirmation.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -43,8 +35,8 @@ const PKEXEC: &str = "/usr/bin/pkexec";
 /// How long `tilo-enroll` listens for an announcing device.
 const LISTEN_SECONDS: &str = "15";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
-/// The helper opens its own LAN window and waits for the administrator's
-/// authentication; this only bounds a child that never ends.
+/// The helper opens its own LAN window and waits for the administrator's authentication; this only
+/// bounds a child that never ends.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 /// How often a running step checks whether it was rejected.
@@ -121,9 +113,8 @@ pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     }
 }
 
-/// What `step` may do and answers, the same through every door. Approval
-/// admits a device to the person's identity through an administrator's
-/// authentication: privileged, and asked first.
+/// What `step` may do and answers, the same through every door. Approval admits a device to the
+/// person's identity through an administrator's authentication: privileged, and asked first.
 pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec, RetryPolicy,
@@ -244,8 +235,8 @@ pub(crate) struct Finished {
     pub(crate) stderr: Vec<u8>,
 }
 
-/// Runs a [`HostCommand`] to its end on the calling worker thread, giving
-/// up (and stopping the child) once `stop` is raised.
+/// Runs a [`HostCommand`] to its end on the calling worker thread, giving up (and stopping the
+/// child) once `stop` is raised.
 pub(crate) type Runner =
     Arc<dyn Fn(&HostCommand, &AtomicBool) -> Result<Finished, String> + Send + Sync>;
 
@@ -274,14 +265,13 @@ static SESSION: LazyLock<Pairing> = LazyLock::new(|| {
 });
 
 impl Pairing {
-    /// This session's pairing: what every door shares, so a device one
-    /// door discovered is approved or rejected through another.
+    /// This session's pairing: what every door shares, so a device one door discovered is approved
+    /// or rejected through another.
     pub(crate) fn session() -> &'static Self {
         &SESSION
     }
 
-    /// Pairing whose commands `runner` runs, on a device holding the
-    /// identity's whole key.
+    /// Pairing whose commands `runner` runs, on a device holding the identity's whole key.
     pub(crate) fn with_runner(runner: Runner) -> Self {
         Self {
             runner,
@@ -340,11 +330,10 @@ impl Pairing {
         Ok(answer)
     }
 
-    /// Admit the device `approval` names, which discovery found here, to
-    /// the identity at `paths`. A device holding the identity's key signs
-    /// its certificate through the helper, after an administrator
-    /// authenticated. The answer arrives once the device joined, or with
-    /// why it did not.
+    /// Admit the device `approval` names, which discovery found here, to the identity at `paths` .
+    /// A device holding the identity's key signs its certificate through the helper, after an
+    /// administrator authenticated. The answer arrives once the device joined, or with why it did
+    /// not.
     pub(crate) fn approve(
         &self,
         approval: &Approval,
@@ -428,8 +417,8 @@ impl Pairing {
         Ok(answer)
     }
 
-    /// Start `step` with `args`, which the door bound to [`params`] after
-    /// it decided the caller may pair.
+    /// Start `step` with `args` , which the door bound to [`params`] after it decided the caller
+    /// may pair.
     pub(crate) fn start(
         &self,
         step: &str,
@@ -474,8 +463,7 @@ impl Pairing {
         }
     }
 
-    /// Forget the discovered device `device` and stop waiting on its
-    /// approval, if one runs.
+    /// Forget the discovered device `device` and stop waiting on its approval, if one runs.
     pub(crate) fn reject(&self, device: &str) -> Answer {
         let device = node_id(device, "device")?;
         let mut flights = self.flights();
@@ -505,8 +493,8 @@ struct Admission {
     paths: PersonPaths,
     workspace_ids: Vec<u64>,
     candidate: Candidate,
-    /// The person's device fabric, where their other devices are asked to
-    /// certify the device when this one holds only a share of their key.
+    /// The person's device fabric, where their other devices are asked to certify the device when
+    /// this one holds only a share of their key.
     fabric: Option<SharedLink>,
 }
 
@@ -555,7 +543,7 @@ impl Admission {
     }
 }
 
-/// The helper invocation that admits `approval`'s device.
+/// The helper invocation that admits `approval` 's device.
 pub(crate) fn approval_command(
     approval: &Approval,
     paths: &PersonPaths,
@@ -639,8 +627,8 @@ fn spawn_step(step: impl FnOnce() + Send + 'static) -> Result<(), String> {
         .map_err(|error| format!("could not start pairing: {error}"))
 }
 
-/// The broker's door to pairing: how Settings pairs a device, as the person
-/// using it, without starting any process itself.
+/// The broker's door to pairing: how Settings pairs a device, as the person using it, without
+/// starting any process itself.
 pub(crate) struct BrokerDoor {
     pub(crate) desk: std::sync::Arc<crate::plane::DeskAuthority>,
     pub(crate) fabric: Option<SharedLink>,
@@ -648,14 +636,14 @@ pub(crate) struct BrokerDoor {
 }
 
 impl BrokerDoor {
-    /// Refuse unless `person` administers `workspace`'s identity: they may
-    /// grant in the workspace, and it has an identity selected.
+    /// Refuse unless `person` administers `workspace` 's identity: they may grant in the workspace,
+    /// and it has an identity selected.
     fn authorize(&self, workspace: &str, person: &str) -> Result<(), String> {
         crate::identity_admin::authorize(&self.desk, workspace, person).map(drop)
     }
 }
 
-/// `step`, described for the broker's catalogue.
+/// `step` , described for the broker's catalogue.
 fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
     use tilo_desktop_surface::i18n::t;
     let (label, description) = match step {
@@ -699,7 +687,7 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
     }
 }
 
-/// `argument`, in its slot form, bound to `params`.
+/// `argument` , in its slot form, bound to `params` .
 fn bind_slot(params: &[ActionParam], argument: Option<&str>) -> Result<ActionArgs, String> {
     let supplied = match argument {
         None | Some("") => serde_json::Map::new(),
@@ -746,8 +734,8 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
         &self,
         request: &tilo_action_broker::services::HostStepRequest<'_>,
     ) -> Result<Pending<tilo_action_broker::services::HostStepOutcome>, String> {
-        // Admitting a device to a person's identity is that person's own
-        // act: an agent or an app acting for nobody never pairs through here.
+        // Admitting a device to a person's identity is that person's own act: an agent or an app
+        // acting for nobody never pairs through here.
         let person = request
             .actor
             .direct_person()
@@ -797,8 +785,7 @@ mod tests {
         .into_bytes()
     }
 
-    /// The pairing whose commands are recorded and answered as `found`
-    /// announced itself.
+    /// The pairing whose commands are recorded and answered as `found` announced itself.
     fn recording(found: (String, String)) -> (Pairing, Arc<Mutex<Vec<HostCommand>>>) {
         let commands = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&commands);

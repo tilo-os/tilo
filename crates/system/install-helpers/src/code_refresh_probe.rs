@@ -63,9 +63,6 @@ pub trait Fixture {
     }
 
     /// The size of the block device `path` in bytes.
-    ///
-    /// # Errors
-    /// `blockdev` failing.
     fn size(&self, path: &Path) -> Result<u64> {
         let device = path.to_string_lossy();
         let output = crate::process::run(&["blockdev", "--getsize64", &device], None, TIMEOUT)?;
@@ -209,10 +206,6 @@ fn text_field<'a>(metadata: &'a Map<String, Value>, key: &str) -> Option<&'a str
 
 /// Promotes the fixture's sealed UKI onto a scratch target and ESP and
 /// requires only its command line to change.
-///
-/// # Errors
-/// Malformed promotion metadata, a failed promotion, or one that changed the
-/// origin, the loader entry or any byte outside the command line.
 pub fn promotion_probe(
     fixture: &dyn Fixture,
     root: &Path,
@@ -365,10 +358,6 @@ fn unpack(device: &Path, root: &Path) -> Result<(BTreeMap<String, String>, Optio
 /// Validates the attached original CI boot-input fixture: read-only,
 /// bounded, every file matching its manifest, and its boot inputs accepted
 /// by the development target validator.
-///
-/// # Errors
-/// A missing or writable fixture, one outside its bounds, files that differ
-/// from the manifest, or boot inputs the validator refuses.
 pub fn fixture_probe(fixture: &dyn Fixture) -> Result<Value> {
     let device = fixture.device();
     require(

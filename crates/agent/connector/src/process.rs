@@ -250,9 +250,6 @@ impl ConnectorProcess {
     /// Have the worker be in the outside call `call` from now on, showing
     /// `status` there (`None` leaves). Kept, and said again to a restarted
     /// worker.
-    ///
-    /// # Errors
-    /// The worker is not running now; a worker that starts later is told.
     pub async fn set_call(
         &self,
         call: Option<String>,
@@ -277,9 +274,6 @@ impl ConnectorProcess {
     }
 
     /// Hand the worker one Opus frame the room's call heard from `speaker`.
-    ///
-    /// # Errors
-    /// The worker is not running.
     pub async fn send_audio(&self, speaker: String, opus: Vec<u8>) -> std::io::Result<()> {
         send(
             &self.shared,

@@ -206,6 +206,9 @@ impl Pending {
         let texts = self.texts(host);
         let mut ready = true;
         let mut short = true;
+        // A form of one field states what it asks in its title: the field needs no label of
+        // its own beside it.
+        let labelled = self.fields.len() > 1;
         let mut children = Vec::with_capacity(self.fields.len());
         for (field, text) in self.fields.iter().zip(&texts) {
             let read = read(host, &self.meta, field, text);
@@ -217,7 +220,7 @@ impl Pending {
                 inner(&field.field_type),
                 FieldType::Date | FieldType::Time | FieldType::Duration
             );
-            children.push(self.field_node(host, names, field, text, &read));
+            children.push(self.field_node(host, names, field, text, &read, labelled));
         }
         let title = crate::runtime::platform::label_of(&self.action);
         let title = if title.ends_with('…') {
@@ -225,12 +228,17 @@ impl Pending {
         } else {
             format!("{title}…")
         };
+        let answers = self.quick_choice();
+        // A form whose moments answer it on one pick needs no confirm button until the person
+        // is on the way in by hand: the moment they type or pick is the one to confirm.
+        let confirm = answers.is_empty() || texts.iter().any(|text| !text.trim().is_empty());
         ui::Form {
             id: self.id,
             submit: title.trim_end_matches('…').to_owned(),
             title,
             destructive: self.action.role.as_deref() == Some("destructive"),
             ready,
+            confirm,
             error: self.error.clone(),
             from: self.from.clone(),
             fields: self
@@ -240,8 +248,24 @@ impl Pending {
                 .flat_map(|(field, text)| field_parts(field, text))
                 .collect(),
             short,
+            answers,
             tree: node("form", KEY, BTreeMap::new(), None, children),
         }
+    }
+
+    /// The control whose choice answers the form at once: the quick choices of a form's one
+    /// field, so a person who picks "Tomorrow morning" is reminded without a second step.
+    fn quick_choice(&self) -> Vec<String> {
+        let [field] = self.fields.as_slice() else {
+            return Vec::new();
+        };
+        matches!(
+            inner(&field.field_type),
+            FieldType::Time | FieldType::Duration
+        )
+        .then(|| format!("{}~quick", field.key))
+        .into_iter()
+        .collect()
     }
 
     /// The field `field` showing `text`: its label and control, and under it why it does not
@@ -253,6 +277,7 @@ impl Pending {
         field: &Field,
         text: &str,
         read: &Result<Value, String>,
+        labelled: bool,
     ) -> ui::Node {
         let label = crate::runtime::platform::sentence(&field.name);
         let optional = matches!(field.field_type, FieldType::Option(_));
@@ -270,22 +295,28 @@ impl Pending {
                 parts.push(self.choice_node(host, names, field, text, optional));
             }
             FieldType::Date => {
-                parts.push(day_node(field, text, optional, false));
-                parts.push(text_node(field, "~text", Some("tomorrow"), &label, false));
+                parts.push(moment_row(field, text, optional, false, "Pick a date…"));
             }
             FieldType::Time => {
-                parts.push(Self::quick_node(field, text, moments(host), optional));
-                parts.push(day_node(field, text, optional, true));
-                parts.push(text_node(
+                // The moments a person names, and one way into the rest: the entry they type
+                // a moment into, with the calendar and the hour at its end.
+                parts.push(Self::quick_node(
                     field,
-                    "~text",
-                    Some("tomorrow 9:30"),
-                    &label,
-                    false,
+                    text,
+                    moments(host),
+                    optional,
+                    Some("time"),
+                ));
+                parts.push(moment_row(
+                    field,
+                    text,
+                    optional,
+                    true,
+                    "Pick a date and time…",
                 ));
             }
             FieldType::Duration => {
-                parts.push(Self::quick_node(field, text, lengths(), optional));
+                parts.push(Self::quick_node(field, text, lengths(), optional, None));
                 parts.push(text_node(field, "~text", Some("1h 30m"), &label, false));
             }
             other => {
@@ -326,7 +357,9 @@ impl Pending {
             ));
         }
         let mut props = BTreeMap::new();
-        props.insert("label".to_owned(), ui::Value::text(&label));
+        if labelled {
+            props.insert("label".to_owned(), ui::Value::text(&label));
+        }
         node(
             "field",
             &format!("{}~field", field.key),
@@ -343,12 +376,13 @@ impl Pending {
     }
 
     /// The quick choices of `field` showing `text`: the few values the type is often given,
-    /// as segments, and none of them when the field may be empty.
+    /// one under the next, and none of them when the field may be empty.
     fn quick_node(
         field: &Field,
         text: &str,
         cases: Vec<(String, String)>,
         optional: bool,
+        as_kind: Option<&str>,
     ) -> ui::Node {
         let mut all: Vec<(String, String)> = Vec::new();
         if optional {
@@ -356,6 +390,12 @@ impl Pending {
         }
         all.extend(cases);
         let mut props = BTreeMap::new();
+        props.insert("list".to_owned(), ui::Value::Bool(true));
+        // What each case's value is, so the window tells it at the choice's trailing edge: a
+        // moment, in the person's own format ("Tomorrow morning … Sat 09:00").
+        if let Some(kind) = as_kind {
+            props.insert("case:as".to_owned(), ui::Value::text(kind));
+        }
         props.insert(
             "cases".to_owned(),
             ui::Value::List(
@@ -501,6 +541,7 @@ fn lengths() -> Vec<(String, String)> {
 fn moments(host: &Host) -> Vec<(String, String)> {
     [
         ("later today", "Later today"),
+        ("this evening", "This evening"),
         ("tomorrow morning", "Tomorrow morning"),
         ("next week 9am", "Next week"),
     ]
@@ -527,11 +568,36 @@ fn field_parts(field: &Field, text: &str) -> Vec<(String, String)> {
     parts
 }
 
+/// One way into the day or moment a field holds: an entry the person types it into ("tomorrow
+/// 9:30"), with the calendar at its end opening the day and, for a moment, the time of day. The
+/// entry leads, so the form's first key goes to it.
+fn moment_row(
+    field: &Field,
+    text: &str,
+    optional: bool,
+    time: bool,
+    placeholder: &str,
+) -> ui::Node {
+    let label = crate::runtime::platform::sentence(&field.name);
+    let mut entry = text_node(field, "~text", Some(placeholder), &label, false);
+    entry.props.insert("fill".to_owned(), ui::Value::Int(1));
+    node(
+        "row",
+        &format!("{}~pick", field.key),
+        BTreeMap::new(),
+        None,
+        vec![entry, day_node(field, text, optional, time)],
+    )
+}
+
 /// The field `field` picking a day (a moment, when `time`) as the toolkit's own date field,
 /// with the time of day it is due at in its popover when the field is a moment.
 fn day_node(field: &Field, text: &str, optional: bool, time: bool) -> ui::Node {
     let mut props = BTreeMap::new();
     props.insert("at".to_owned(), ui::Value::text(text));
+    // A calendar alone, beside the entry that tells the day: the entry says what the person
+    // picked or typed, and the calendar opens the rest.
+    props.insert("compact".to_owned(), ui::Value::Bool(true));
     if optional {
         props.insert("optional".to_owned(), ui::Value::Bool(true));
     }
@@ -692,8 +758,10 @@ fn read(host: &Host, meta: &Meta, field: &Field, text: &str) -> Result<Value, St
             .ok_or_else(|| "Not a number".to_owned())?,
         FieldType::Date => {
             let said = host.runtime().dated(trimmed);
+            // What the person typed says when and nothing else ("tomorrow", "Mon 9:30"): the
+            // words it leaves are the words it was given.
             match said.day {
-                Some(day) if said.text.trim().is_empty() => Json::String(day),
+                Some(day) if said.text.trim() == trimmed => Json::String(day),
                 _ if tilolang::calendar::calendar_span(trimmed).is_some() => {
                     Json::String(trimmed.to_owned())
                 }
@@ -704,16 +772,18 @@ fn read(host: &Host, meta: &Meta, field: &Field, text: &str) -> Result<Value, St
             // A moment the person named ("tomorrow 9:30"), a day picked from the calendar
             // (its morning), or the instant a choice or the picker holds.
             let said = host.runtime().dated(trimmed);
-            if let Some(at) = said.at
-                && said.text.trim().is_empty()
+            if said.text.trim() == trimmed
+                && let Some(at) = said.at
             {
                 Json::String(at)
             } else if tilolang::calendar::instant(trimmed).is_some() {
                 Json::String(trimmed.to_owned())
             } else {
-                let morning = host.runtime().dated(&format!("{trimmed} 9am"));
-                match morning.at {
-                    Some(at) if morning.text.trim().is_empty() => Json::String(at),
+                // A day alone ("next week") is due at the morning of it.
+                let morning = format!("{trimmed} 9am");
+                let said = host.runtime().dated(&morning);
+                match said.at {
+                    Some(at) if said.text.trim() == morning => Json::String(at),
                     _ => return Err("Not a time".to_owned()),
                 }
             }

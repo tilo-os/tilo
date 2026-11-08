@@ -1,8 +1,7 @@
-//! Layer surfaces: the session's own surfaces are Wayland clients that
-//! place themselves on a layer of an output, above or below the windows.
-//! They are composited like every other client's buffer, and take the
-//! pointer and the keyboard that lands on them. Only a client the session
-//! connected as trusted is offered the protocol.
+//! Layer surfaces: the session's own surfaces are Wayland clients that place themselves on a layer
+//! of an output, above or below the windows. They are composited like every other client's buffer,
+//! and take the pointer and the keyboard that lands on them. Only a client the session connected as
+//! trusted is offered the protocol.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -104,9 +103,8 @@ impl Client {
         self.connection.flush().expect("flush");
     }
 
-    /// Ask for a layer surface on `layer`: `size` (0 for the whole output
-    /// along an axis), anchored to `anchor`, keeping `exclusive` pixels of
-    /// the edge it hangs from.
+    /// Ask for a layer surface on `layer` : `size` (0 for the whole output along an axis), anchored
+    /// to `anchor` , keeping `exclusive` pixels of the edge it hangs from.
     fn layer_surface(
         &mut self,
         layer: zwlr_layer_shell_v1::Layer,
@@ -214,8 +212,7 @@ fn headless() -> Compositor {
     compositor
 }
 
-/// A trusted client with a surface on `layer`, drawn at the size the
-/// compositor gives it.
+/// A trusted client with a surface on `layer` , drawn at the size the compositor gives it.
 fn layer_client(
     compositor: &mut Compositor,
     layer: zwlr_layer_shell_v1::Layer,
@@ -698,9 +695,8 @@ fn an_idle_session_draws_nothing() {
     let (bar_frames, window_frames) = (bar.seen.frames, window.seen.frames);
     assert!(bar_frames > 0, "the bar was drawn");
 
-    // Three seconds of a desktop asking for frames at its refresh, with
-    // nothing happening: the session draws no frame and asks its clients
-    // for none.
+    // Three seconds of a desktop asking for frames at its refresh, with nothing happening: the
+    // session draws no frame and asks its clients for none.
     let idle = Duration::from_secs(3);
     let refresh = Duration::from_millis(16);
     let started = std::time::Instant::now();

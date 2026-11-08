@@ -137,11 +137,6 @@ impl FloorState {
     }
 
     /// How many `TPM2_NV_Increment` calls move the floor to `target`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `target_floor` maps to a counter value below the current one — NV
-    /// counters cannot decrement — or if the target generation doesn't fit the counter space.
     pub fn increments_to(&self, target_floor: u64) -> Result<u64> {
         let target_counter = self.operand_for(target_floor)?;
         if target_counter < self.counter {
@@ -225,12 +220,6 @@ pub fn read_name(runner: &dyn Runner, index: u32) -> Result<Vec<u8>> {
 /// * An index with different attributes or a different `authPolicy` has a different Name,
 ///   so every token sealed against the old Name fails to unseal — reported here, by name,
 ///   rather than discovered at the next boot.
-///
-/// # Errors
-///
-/// Returns an error if checking or reading the existing index fails, if an existing index's
-/// Name matches neither the expected written nor unwritten Name, or if defining a new index
-/// fails.
 pub fn define(
     runner: &dyn Runner,
     index: u32,

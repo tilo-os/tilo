@@ -60,10 +60,6 @@ fn refusal(message: &str) -> io::Error {
 /// The parent is pinned, the name is not followed and the open does not block,
 /// so a redirect, a device or a FIFO is refused instead of followed or waited
 /// on. A larger file is refused, never truncated into a shorter artifact.
-///
-/// # Errors
-///
-/// When the parent or file is missing, not private, redirected or oversized.
 pub fn read_private_file(path: &std::path::Path, limit: usize) -> io::Result<Vec<u8>> {
     use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
     use cap_primitives::fs::{FollowSymlinks, OpenOptions};

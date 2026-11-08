@@ -118,10 +118,6 @@ fn invalid() -> io::Error {
 impl Prepared {
     /// Seal only after independent recovery copies and their receipt are durable.
     /// The receipt is authenticated as associated data, not merely checksummed.
-    ///
-    /// # Errors
-    /// Rejects invalid bindings, passwords or hints, sealing failures, and
-    /// ciphertext that exceeds the reserved media capacity.
     pub fn seal(
         password: &[u8],
         binding: &str,
@@ -151,9 +147,6 @@ impl Prepared {
         Ok(prepared)
     }
     /// Validate the expectation, ciphertext digest, size and password envelope.
-    ///
-    /// # Errors
-    /// Rejects malformed expectations, mismatched ciphertext or invalid envelopes.
     pub fn verify(&self) -> io::Result<()> {
         if !self.expectation.valid()
             || self.ciphertext.len() != self.expectation.sealed_bytes as usize
@@ -165,9 +158,6 @@ impl Prepared {
         Ok(())
     }
     /// Check that this preparation authenticates the supplied recovery receipt.
-    ///
-    /// # Errors
-    /// Rejects invalid preparation or a receipt whose digest differs.
     pub fn verify_receipt(&self, receipt: &[u8]) -> io::Result<()> {
         self.verify()?;
         if hash(receipt) != self.expectation.recovery_receipt_sha256 {
@@ -176,9 +166,6 @@ impl Prepared {
         Ok(())
     }
     /// Add ciphertext only to reserved zero padding; never overwrite profile JSON.
-    ///
-    /// # Errors
-    /// Rejects invalid preparation, incorrectly sized blocks or nonzero padding.
     pub fn embed(&self, block: &mut [u8]) -> io::Result<()> {
         self.verify()?;
         if block.len() != BLOCK_BYTES {
@@ -203,10 +190,6 @@ impl Prepared {
 /// Reads from the same already-open medium that supplied the profile. No path
 /// lookup, root-owned marker or guessed attachment can stand in for that source.
 /// The caller must bind this expectation to its current private operation.
-///
-/// # Errors
-/// Reports seek/read failures and rejects invalid expectations, mismatched
-/// headers, ciphertext digests or password envelopes.
 pub fn read(
     source: &mut (impl Read + Seek),
     size: u64,
@@ -237,10 +220,6 @@ pub fn read(
 impl Prepared {
     /// Explicit password authentication, with the current operation's exact
     /// expectation checked again before any plaintext leaves private custody.
-    ///
-    /// # Errors
-    /// Rejects mismatched expectations, invalid preparation, failed password
-    /// authentication or malformed decrypted hints.
     pub fn unlock(&self, password: &[u8], expected: &Expectation) -> io::Result<Vec<AccountHint>> {
         if &self.expectation != expected {
             return Err(invalid());

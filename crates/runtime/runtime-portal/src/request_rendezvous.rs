@@ -30,19 +30,10 @@ fn current_uid() -> u32 {
 pub trait DirectoryPin: Send + Sync {
     fn file(&self) -> &File;
     /// Open a readable handle to the held directory.
-    ///
-    /// # Errors
-    /// Refuses unavailable directory evidence or failure to open a readable handle.
     fn readable_file(&self) -> io::Result<File>;
     /// Revalidate the caller's held directory ancestry.
-    ///
-    /// # Errors
-    /// Refuses changed or unavailable held namespace evidence.
     fn validate(&self) -> io::Result<()>;
     /// Revalidate the held destination before publishing caller-private files.
-    ///
-    /// # Errors
-    /// Refuses an inadmissible destination or changed held namespace evidence.
     fn validate_destination(&self) -> io::Result<()>;
 }
 
@@ -137,9 +128,6 @@ impl Listener {
         &self.socket
     }
     /// Revalidate the listener's held directory ancestry.
-    ///
-    /// # Errors
-    /// Refuses changed or unavailable held namespace evidence.
     pub fn validate(&self) -> io::Result<()> {
         self.parent.validate()
     }
@@ -173,8 +161,6 @@ pub fn publish_request_bytes(
 
 /// Root uses its actual existing pinned parent and observed filesystem owner;
 /// the decoded request remains untrusted until its executing Shell is admitted.
-/// # Errors
-/// Refuses a non-private, foreign, non-regular or oversized request.
 pub fn read_request_bytes(
     parent: &dyn DirectoryPin,
     caller: u32,

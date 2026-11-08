@@ -366,9 +366,6 @@ fn newest_nested(runtime: Option<&Path>) -> Result<PathBuf, String> {
 }
 
 /// Run the REPL until its input ends.
-///
-/// # Errors
-/// The session's door is not there, did not admit the REPL, or runs no programs.
 pub fn repl(options: &ReplOptions) -> Result<(), String> {
     let mut editor = Editor::new(Some(crate::state_dir().join("repl-history")));
     style::set(options.color.unwrap_or_else(|| editor.is_terminal()));

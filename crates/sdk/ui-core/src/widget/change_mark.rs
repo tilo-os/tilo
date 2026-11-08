@@ -457,4 +457,41 @@ mod tests {
         assert_eq!(said(1), "Mia changed one message");
         assert_eq!(said(3), "Mia changed 3 messages");
     }
+
+    /// German's perfect tense agrees with the person it names ("Mia hat …"), and a window's mark
+    /// names everyone who changed it ("Leo und Mia"), so its sentence names them without a verb
+    /// after the names: it reads right for one person and for several. The window speaks German
+    /// because its package ships it; the toolkit's words ride along in that language.
+    #[test]
+    fn a_german_mark_reads_right_for_several_names() {
+        let language = crate::i18n::speak_window_language(&[(
+            "de-DE".to_owned(),
+            "change-mark-probe = Probe".to_owned(),
+        )]);
+        assert_eq!(language, "de-DE");
+        let said = |who: &str, count: usize, more: bool| {
+            crate::i18n::widget_format(
+                if more {
+                    "change-window-changed-more"
+                } else {
+                    "change-window-changed"
+                },
+                &[
+                    ("who", who.into()),
+                    ("count", count.into()),
+                    ("noun", "Kommentare".into()),
+                    ("one", "Kommentar".into()),
+                ],
+            )
+        };
+        assert_eq!(said("Mia", 1, false), "Geändert von Mia: 1 Kommentar");
+        assert_eq!(
+            said("Leo und Mia", 5, false),
+            "Geändert von Leo und Mia: 5 Kommentare"
+        );
+        assert_eq!(
+            said("Leo und Mia", 5, true),
+            "Geändert von Leo und Mia: mindestens 5 Kommentare"
+        );
+    }
 }

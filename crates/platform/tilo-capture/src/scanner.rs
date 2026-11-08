@@ -35,10 +35,6 @@ pub enum ScanSource {
 }
 
 /// The scanners attached now.
-///
-/// # Errors
-///
-/// The scanner service failed; unsupported targets answer an empty list.
 pub fn scanners() -> Result<Vec<Scanner>, String> {
     imp::scanners()
 }

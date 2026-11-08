@@ -1,13 +1,9 @@
-//! The compositor in a window of the desktop it runs inside, for
-//! development.
-//!
-//! The window is winit's: a Wayland client where the desktop runs Wayland and
-//! an X11 window where it does not, so the session is a native window either
-//! way. The window is one output; resizing it changes its mode. Frames are
-//! composited with GLES on the GPU that draws the window and presented to the
-//! host with its damage. Pointer and keyboard input of the window becomes
-//! [`InputEvent`]s; the pointer is drawn as on a real screen, in place of the
-//! host's.
+//! The compositor in a window of the desktop it runs inside, for development.
+//! The window is winit's: a Wayland client where the desktop runs Wayland and an X11 window where
+//! it does not, so the session is a native window either way. The window is one output; resizing it
+//! changes its mode. Frames are composited with GLES on the GPU that draws the window and presented
+//! to the host with its damage. Pointer and keyboard input of the window becomes [`InputEvent`]s;
+//! the pointer is drawn as on a real screen, in place of the host's.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -79,17 +75,14 @@ impl NestedConfig {
     }
 }
 
-/// The session's window on the desktop it runs inside, opened before the
-/// session builds anything else.
-///
-/// A session started in a window is handed the desktop as `WAYLAND_SOCKET`:
-/// one connected socket, which a client takes once (`wl_display_connect`
-/// removes the variable). A session that builds its desk first — the surface
-/// apps' renderers ask Vulkan for an adapter, and Mesa's device-select layer
-/// connects to the desktop to pick it — leaves the window a connection that
-/// is already spent, and the window then opens on no desktop at all. So the
-/// window is opened first, while the handover is still there, and handed over
-/// ([`NestedBackend::start`]).
+/// The session's window on the desktop it runs inside, opened before the session builds anything
+/// else.
+/// A session started in a window is handed the desktop as `WAYLAND_SOCKET` : one connected socket,
+/// which a client takes once (`wl_display_connect` removes the variable). A session that builds its
+/// desk first — the surface apps' renderers ask Vulkan for an adapter, and Mesa's device-select
+/// layer connects to the desktop to pick it — leaves the window a connection that is already spent,
+/// and the window then opens on no desktop at all. So the window is opened first, while the
+/// handover is still there, and handed over ([`NestedBackend::start`]).
 pub struct HostWindow {
     window: WinitGraphicsBackend<GlesRenderer>,
     events: WinitEventLoop,
@@ -108,9 +101,8 @@ fn window_mode(size: Size<i32, Physical>) -> Option<Mode> {
     })
 }
 
-/// Offer `mode` as the one size `output` has: the window is the mode, so the
-/// sizes it had before a resize are no displays to offer — picking one would
-/// ask the window for a size it does not have.
+/// Offer `mode` as the one size `output` has: the window is the mode, so the sizes it had before a
+/// resize are no displays to offer — picking one would ask the window for a size it does not have.
 fn one_mode(output: &Output, mode: Mode) {
     for stale in output.modes().into_iter().filter(|known| *known != mode) {
         output.delete_mode(stale);
@@ -129,8 +121,8 @@ struct Inner {
 }
 
 /// The window backend. Created by [`NestedBackend::start`] from the window
-/// [`NestedBackend::open_window`] opened: it makes that window the output and
-/// registers the host's event loop in the compositor's.
+/// [`NestedBackend::open_window`] opened: it makes that window the output and registers the host's
+/// event loop in the compositor's.
 pub struct NestedBackend {
     inner: Rc<RefCell<Inner>>,
 }
@@ -147,8 +139,7 @@ impl NestedBackend {
         Ok(HostWindow { window, events })
     }
 
-    /// Make a window the desktop opened ([`NestedBackend::open_window`]) an
-    /// output.
+    /// Make a window the desktop opened ([`NestedBackend::open_window`]) an output.
     pub fn start(
         handle: &LoopHandle<'static, LoopData>,
         state: &mut State,
@@ -156,8 +147,8 @@ impl NestedBackend {
         host: HostWindow,
     ) -> Result<Self, Error> {
         let HostWindow { mut window, events } = host;
-        // Clients render on the GPU that draws this window, and hand their
-        // frames over as dma-bufs it can import.
+        // Clients render on the GPU that draws this window, and hand their frames over as dma-bufs
+        // it can import.
         let node = EGLDevice::device_for_display(window.renderer().egl_context().display())
             .ok()
             .and_then(|device| device.try_get_render_node().ok().flatten());
@@ -177,8 +168,7 @@ impl NestedBackend {
         let size = window.window_size();
         let mut output_config = OutputConfig::new(OUTPUT_NAME, size.w.max(1), size.h.max(1))
             .with_scale(
-                // The host's own scale is the window's: a desktop at 150%
-                // shows a 150% session.
+                // The host's own scale is the window's: a desktop at 150% shows a 150% session.
                 config.output_scale(),
             );
         output_config.refresh_mhz = REFRESH_MHZ;
@@ -207,11 +197,9 @@ impl NestedBackend {
 }
 
 /// The tracker drawing the scene into the window.
-///
-/// A window's framebuffer is counted from its bottom edge, the opposite of
-/// the physical space the scene is laid out in, so the scene goes into it
-/// flipped: a window rendering its output turned by `transform` is drawn as
-/// [`flip`]`(transform)`. Smithay's own window example draws the same way.
+/// A window's framebuffer is counted from its bottom edge, the opposite of the physical space the
+/// scene is laid out in, so the scene goes into it flipped: a window rendering its output turned by
+/// `transform` is drawn as [`flip`]`(transform)`. Smithay's own window example draws the same way.
 fn window_damage(output: &Output) -> OutputDamageTracker {
     let Some(mode) = output.current_mode() else {
         return OutputDamageTracker::from_output(output);
@@ -221,8 +209,7 @@ fn window_damage(output: &Output) -> OutputDamageTracker {
     OutputDamageTracker::new(mode.size, scale, transform)
 }
 
-/// The same turn of the output with one more flip: what drawing into the
-/// window adds to the scene.
+/// The same turn of the output with one more flip: what drawing into the window adds to the scene.
 const fn flip(transform: Transform) -> Transform {
     match transform {
         Transform::Normal => Transform::Flipped180,
@@ -307,8 +294,8 @@ impl Backend for NestedBackend {
                 .map_err(|error| failed("render window", error))?;
             (drawn.damage, drawn.states)
         };
-        // Clients draw their next frame now; with nothing new on screen the
-        // window is asked again one refresh later.
+        // Clients draw their next frame now; with nothing new on screen the window is asked again
+        // one refresh later.
         let presentation = state.frame_drawn(&inner.output, Some(&states));
         let damaged = damage.map(Vec::as_slice);
         inner
@@ -472,8 +459,8 @@ mod tests {
         assert!(window_mode((1600, 0).into()).is_none());
     }
 
-    /// A window that was another size before offers only the size it has now:
-    /// the sizes it had are not displays the window can be put into.
+    /// A window that was another size before offers only the size it has now: the sizes it had are
+    /// not displays the window can be put into.
     #[test]
     fn a_window_offers_the_one_size_it_has() {
         use smithay::output::{PhysicalProperties, Subpixel};
@@ -499,9 +486,8 @@ mod tests {
         assert_eq!(output.preferred_mode(), Some(large));
     }
 
-    /// The flip a framebuffer adds to the scene, taken back out for the
-    /// window, whatever the output's own turn: the window shows the scene as
-    /// the output is turned.
+    /// The flip a framebuffer adds to the scene, taken back out for the window, whatever the
+    /// output's own turn: the window shows the scene as the output is turned.
     #[test]
     fn the_window_draws_the_scene_as_the_output_is_turned() {
         const TURNS: [Transform; 8] = [

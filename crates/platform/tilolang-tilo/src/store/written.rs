@@ -32,11 +32,8 @@ fn select_written(held: &Written, fields: &[FieldSpec]) -> Written {
 }
 
 impl TiloStore {
-    /// [`tilolang_runtime::Store::written`]: what the change `change` wrote to each of `fields`
+    /// [`tilolang_runtime::Store::written`] — what the change `change` wrote to each of `fields`
     /// of `at`, before and after.
-    ///
-    /// # Errors
-    /// The record is not at hand, or does not hold the change or the resource.
     pub(super) fn written_by(
         &self,
         at: &ResourceRef,

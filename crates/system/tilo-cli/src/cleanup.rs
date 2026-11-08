@@ -150,9 +150,6 @@ impl Policy {
     }
 
     /// The first of `paths` that exists, parsed; the defaults when none does.
-    ///
-    /// # Errors
-    /// When the file exists but cannot be read or parsed.
     pub fn load(paths: &[PathBuf]) -> Result<Self> {
         for path in paths {
             match std::fs::read_to_string(path) {
@@ -375,9 +372,6 @@ fn settle(
 }
 
 /// The developer image copy `tilo-vm vm upgrade --from local` mirrors into the VM.
-///
-/// # Errors
-/// When the locks cannot be created or taken for a reason other than contention.
 pub fn clean_vm_image(
     record: &mut Record,
     vm_root: &Path,
@@ -419,9 +413,6 @@ pub fn clean_vm_image(
 /// The test fixture caches below `root`. Each directory directly under it is one cache,
 /// guarded by its `.lock`; its entries go one by one. A file directly under `root` is
 /// guarded by `root/.lock`.
-///
-/// # Errors
-/// When a lock cannot be created or taken for a reason other than contention.
 pub fn clean_test_caches(
     record: &mut Record,
     root: &Path,
@@ -743,9 +734,6 @@ pub fn free_space(path: &Path) -> Option<u64> {
 }
 
 /// Write `record` to `path` atomically, readable by everyone.
-///
-/// # Errors
-/// When the directory cannot be created or the file written.
 pub fn write_record(path: &Path, record: &Record) -> Result<()> {
     tilo_files::native::atomic::write_creating_parent_with_mode(
         path,
@@ -902,9 +890,6 @@ fn system_bootc() -> Bootc {
 }
 
 /// A root run of `scope`, recorded where `tilo os status` reads it.
-///
-/// # Errors
-/// When the policy is unreadable or the record cannot be written.
 pub fn run_system(scope: Scope) -> Result<Record> {
     let policy = Policy::load(&[PathBuf::from(SYSTEM_POLICY)])?;
     let mut record = Record::default();
@@ -942,9 +927,6 @@ pub fn run_system(scope: Scope) -> Result<Record> {
 /// Whether `/var` or the physical root has less free space than the policy's floor: the
 /// condition under which `tilo-cache-gc-pressure.timer` starts the cleanups at once rather
 /// than at their daily run.
-///
-/// # Errors
-/// When the policy is unreadable.
 pub fn system_low_on_space() -> Result<bool> {
     let policy = Policy::load(&[PathBuf::from(SYSTEM_POLICY)])?;
     Ok(["/var", SYSROOT].into_iter().any(|path| {
@@ -957,9 +939,6 @@ pub fn system_low_on_space() -> Result<bool> {
 }
 
 /// The person's run: their test caches, recorded in [`user_record`].
-///
-/// # Errors
-/// When the policy is unreadable or the record cannot be written.
 pub fn run_user() -> Result<Record> {
     let policy = Policy::load(&user_policy_paths())?;
     let mut record = Record::default();

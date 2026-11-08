@@ -268,9 +268,6 @@ impl ResourceApp for ContainersShell {
 
 impl ContainersState {
     /// What the container `id` is and how it stands, its row's read.
-    ///
-    /// # Errors
-    /// When the engine has no such container.
     pub(crate) fn read_container(&self, id: &str) -> Result<serde_json::Value, String> {
         let container = self
             .engine
@@ -298,9 +295,6 @@ impl ContainersState {
 
     /// Do what `effect` asks, for any caller: the rows, the palette, an
     /// agent.
-    ///
-    /// # Errors
-    /// Returns why it could not be done.
     pub(crate) fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
         match effect {
             ContainersEffect::SetSection { section } => {

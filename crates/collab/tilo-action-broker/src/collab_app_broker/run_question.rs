@@ -319,9 +319,6 @@ impl AppBrokerState {
     /// The tracker's `answer-confirmation` of `issue`, giving the person's
     /// `answer` to `request`: on its live window, else launching it. `None`
     /// when no tracker publishes it.
-    ///
-    /// # Errors
-    /// The person's edits change what the question's draft does not offer.
     fn tracker_answer(
         &self,
         request: &AppActionConsentRequest,
@@ -381,10 +378,6 @@ impl AppBrokerState {
 /// each checked against it ([`tilo_actions::Draft::check_edits`]). The
 /// broker applies them to the step's arguments when the step runs, and the
 /// confirmation admits exactly the arguments they make.
-///
-/// # Errors
-/// An edit to a field the draft does not offer for editing, or to a value
-/// of another type.
 fn answer_arguments(
     request: &AppActionConsentRequest,
     answer: &AppActionAnswer,

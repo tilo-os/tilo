@@ -60,11 +60,6 @@ pub use submission_review::Inspection;
 ///
 /// Returns `Ok(bound_addr)` — useful when the caller passed
 /// `0.0.0.0:0` for tests and needs to know the ephemeral port.
-///
-/// # Errors
-///
-/// Returns an error if `addr` can't be bound, or if reading the bound
-/// local address back from the listener fails.
 pub async fn bind_and_run(addr: SocketAddr, state: AppState) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;

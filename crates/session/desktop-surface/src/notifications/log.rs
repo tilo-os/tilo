@@ -1,10 +1,9 @@
-//! The live banners and the retained history, with the bookkeeping every
-//! host shares: the banner cap, the bounded history, a reversible Clear all
-//! and in-place replacement of mirrored notifications.
-//!
-//! The log performs no effects. Operations that take notifications out hand
-//! them back, so the host can answer the sender (a freedesktop signal, a
-//! command to the origin device) and decide whether they are retained.
+//! The live banners and the retained history, with the bookkeeping every host shares: the banner
+//! cap, the bounded history, a reversible Clear all and in-place replacement of mirrored
+//! notifications.
+//! The log performs no effects. Operations that take notifications out hand them back, so the host
+//! can answer the sender (a freedesktop signal, a command to the origin device) and decide whether
+//! they are retained.
 
 use std::collections::BTreeSet;
 
@@ -34,9 +33,9 @@ fn retain_newest(history: &mut Vec<Notification>) {
     }
 }
 
-/// Age `banners` for being `on_screen` at `now`, `held` or not, where
-/// `was_held` is whether they were held at the last call: every copy of the
-/// live banners (the log, a stack drawing them) ages them the same way.
+/// Age `banners` for being `on_screen` at `now` , `held` or not, where `was_held` is whether they
+/// were held at the last call: every copy of the live banners (the log, a stack drawing them) ages
+/// them the same way.
 pub(super) fn present_banners<'n>(
     banners: impl IntoIterator<Item = &'n mut Notification>,
     was_held: &mut bool,
@@ -63,13 +62,13 @@ pub struct NotificationLog {
     active: Vec<Notification>,
     /// Oldest-first, bounded to [`MAX_HISTORY`].
     history: Vec<Notification>,
-    /// History removed by the most recent Clear all, kept only long enough
-    /// to make that destructive-looking action safely reversible.
+    /// History removed by the most recent Clear all, kept only long enough to make that
+    /// destructive-looking action safely reversible.
     pending_clear: Option<PendingClear>,
     /// Set by every history mutation; the host persists and clears it.
     history_dirty: bool,
-    /// Whether the person held the banners at the last
-    /// [`Self::present`]: letting go grants [`RELEASE_GRACE`].
+    /// Whether the person held the banners at the last [`Self::present`]: letting go grants
+    /// [`RELEASE_GRACE`].
     held: bool,
 }
 
@@ -79,8 +78,8 @@ impl NotificationLog {
         &self.active
     }
 
-    /// When the log next changes with nobody asking: a banner's time on
-    /// screen running out, or a Clear all's undo window closing.
+    /// When the log next changes with nobody asking: a banner's time on screen running out, or a
+    /// Clear all's undo window closing.
     pub fn next_deadline(&self) -> Option<Instant> {
         let banners = self
             .active
@@ -95,8 +94,8 @@ impl NotificationLog {
         &self.history
     }
 
-    /// Show `notification` as a banner. Entries pushed past the cap leave
-    /// the stack oldest first and are handed back for retirement.
+    /// Show `notification` as a banner. Entries pushed past the cap leave the stack oldest first
+    /// and are handed back for retirement.
     #[must_use]
     pub fn show(&mut self, notification: Notification) -> Vec<Notification> {
         self.active.push(notification);
@@ -133,7 +132,7 @@ impl NotificationLog {
         self.held
     }
 
-    /// Take every banner whose dwell has run out at `now`, oldest first.
+    /// Take every banner whose dwell has run out at `now` , oldest first.
     pub fn take_expired(&mut self, now: Instant) -> Vec<Notification> {
         if !self.active.iter().any(|n| n.is_expired_at(now)) {
             return Vec::new();
@@ -152,19 +151,19 @@ impl NotificationLog {
         self.history_dirty = true;
     }
 
-    /// The retained notification `id`.
+    /// The retained notification `id` .
     pub fn history_entry(&self, id: u64) -> Option<&Notification> {
         self.history.iter().find(|n| n.id == id)
     }
 
-    /// Remove the retained notification `id`.
+    /// Remove the retained notification `id` .
     pub fn take_history(&mut self, id: u64) -> Option<Notification> {
         let pos = self.history.iter().position(|n| n.id == id)?;
         self.history_dirty = true;
         Some(self.history.remove(pos))
     }
 
-    /// Ids of every retained notification in the app group `key`.
+    /// Ids of every retained notification in the app group `key` .
     pub fn group_ids(&self, key: &str) -> Vec<u64> {
         self.history
             .iter()
@@ -173,14 +172,14 @@ impl NotificationLog {
             .collect()
     }
 
-    /// Rows of the notification centre, newest first, grouped by verified
-    /// app. `collapsed` names the group keys the viewer folded.
+    /// Rows of the notification centre, newest first, grouped by verified app. `collapsed` names
+    /// the group keys the viewer folded.
     pub fn rows(&self, collapsed: &BTreeSet<String>) -> Vec<HistoryRow> {
         history_rows(&self.history, collapsed)
     }
 
-    /// Clear the history, keeping it restorable for [`CLEAR_UNDO_WINDOW`].
-    /// Returns whether anything was cleared.
+    /// Clear the history, keeping it restorable for [`CLEAR_UNDO_WINDOW`]. Returns whether anything
+    /// was cleared.
     pub fn clear_history(&mut self, now: Instant) -> bool {
         if self.history.is_empty() {
             return false;
@@ -210,8 +209,8 @@ impl NotificationLog {
         self.pending_clear.as_ref().map(|pending| pending.deadline)
     }
 
-    /// Restore the cleared oldest-first snapshot ahead of notifications that
-    /// arrived during the undo window, preserving chronological order.
+    /// Restore the cleared oldest-first snapshot ahead of notifications that arrived during the
+    /// undo window, preserving chronological order.
     pub fn undo_clear(&mut self) -> bool {
         let Some(mut pending) = self.pending_clear.take() else {
             return false;
@@ -235,8 +234,8 @@ impl NotificationLog {
         expired
     }
 
-    /// Put history restored from an earlier session ahead of anything this
-    /// session already retained, keeping the newest bound.
+    /// Put history restored from an earlier session ahead of anything this session already
+    /// retained, keeping the newest bound.
     pub fn restore_history(&mut self, mut restored: Vec<Notification>) {
         let had_session_entries = !self.history.is_empty();
         restored.append(&mut self.history);
@@ -250,9 +249,9 @@ impl NotificationLog {
         std::mem::take(&mut self.history_dirty)
     }
 
-    /// Replace the live banner or retained entry mirrored from the same
-    /// origin as `replacement`, keeping the local id stable so hit targets
-    /// and centre selection survive. Returns whether one was replaced.
+    /// Replace the live banner or retained entry mirrored from the same origin as `replacement` ,
+    /// keeping the local id stable so hit targets and centre selection survive. Returns whether one
+    /// was replaced.
     pub fn replace_remote(&mut self, replacement: &Notification) -> bool {
         let Some(route) = replacement.remote_route.as_ref() else {
             return false;
@@ -262,8 +261,8 @@ impl NotificationLog {
             let (id, dwell) = (existing.id, existing.dwell);
             *existing = replacement.clone();
             existing.id = id;
-            // The banner the person is reading stays where it is in its
-            // time on screen, rather than sliding in again.
+            // The banner the person is reading stays where it is in its time on screen, rather than
+            // sliding in again.
             existing.dwell = dwell;
             return true;
         }
@@ -277,9 +276,8 @@ impl NotificationLog {
         false
     }
 
-    /// Forget every copy of a mirrored notification its origin retired:
-    /// live, retained and in a pending Clear all. Returns whether anything
-    /// changed.
+    /// Forget every copy of a mirrored notification its origin retired: live, retained and in a
+    /// pending Clear all. Returns whether anything changed.
     pub fn retire_remote(&mut self, source_device: &str, id: ContinuityNotificationId) -> bool {
         let matches = |n: &Notification| {
             n.remote_route.as_ref().is_some_and(|route| {
@@ -340,9 +338,8 @@ mod tests {
         assert_eq!(titles(log.active()), ["slow"]);
     }
 
-    /// A banner ages only on screen and unheld: one that did not fit, or
-    /// one under the pointer, outlives its dismiss window; letting go of
-    /// it leaves a moment before it leaves.
+    /// A banner ages only on screen and unheld: one that did not fit, or one under the pointer,
+    /// outlives its dismiss window; letting go of it leaves a moment before it leaves.
     #[test]
     fn banners_age_only_on_screen_and_unheld() {
         let mut log = NotificationLog::default();

@@ -232,8 +232,6 @@ impl PortableHomeReview {
     }
     /// Independently verify completed adoption and authenticated relocated bytes.
     /// This does not execute pending adoption work or trust a UI completion flag.
-    /// # Errors
-    /// Refuses absent journals, pending moves, collisions or changed archive/data.
     pub fn verify_completed_adoption(&mut self, cancel: &AtomicBool) -> io::Result<()> {
         let promotion = self.recover_promotion(
             &self.grants.workspace.join("imported/home"),

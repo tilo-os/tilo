@@ -199,9 +199,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     }
 
     /// Answer a private owner operation from the authenticated hosting shell.
-    ///
-    /// # Errors
-    /// Refuses unsupported or unavailable device-shell operations.
     fn device_shell_operation(
         &mut self,
         _operation: &ui_core::floating_surface::DeviceShellOperation,
@@ -666,9 +663,6 @@ pub(crate) trait SurfaceDriver: SurfacePublication {
     /// Present what changed, then sync the surface.
     fn sync(&mut self, state: &AppModel, path: &ModelPath);
     /// Start `op` as one of the surface's effects, if it is one.
-    ///
-    /// # Errors
-    /// The effect's refusal.
     fn start_effect(
         &mut self,
         op: &ResourceOperation<'_>,

@@ -1766,11 +1766,13 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
                 listed(&agent),
                 "the agent working the turn is offered the session's step"
             );
+            // The person at this seat is offered the same step, as they are their other steps:
+            // the REPL types what the agent would, and it runs as the person (shell.md §8.1).
             let person = Caller::local_person(hex::encode(f.native.certificate.user_public_key))
                 .in_workspace(workspace_id().to_string());
             assert!(
-                !listed(&person),
-                "a person's own catalogue carries none of the turn's steps"
+                listed(&person),
+                "the person at this seat is offered the session's step too"
             );
 
             // An agent working another turn of the conversation has no run: refused.

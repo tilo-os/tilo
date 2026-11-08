@@ -144,10 +144,6 @@ impl TestGovernor {
     /// Empty interactive workspace governed by the fixture session's actual
     /// root-certified device custody. Unlike `new`, this installs no app
     /// records, messages, agents or separately pinned delivery host.
-    ///
-    /// # Errors
-    /// The certificate does not verify, the key does not match, or the
-    /// canonical workspace seed/checkpoint cannot be admitted.
     pub fn empty_interactive(
         governor: DeviceCert,
         governor_key: SigningKey,
@@ -307,9 +303,6 @@ impl TestGovernor {
 
     /// The ids of the grants naming the agent `agent` in this governor's
     /// admitted workspace policy.
-    ///
-    /// # Errors
-    /// The governor has no admitted workspace policy.
     pub fn agent_grants(&self, agent: &str) -> Result<Vec<String>, String> {
         let workspace = self
             .peer
@@ -328,9 +321,6 @@ impl TestGovernor {
     /// Let `person` exercise the governance `action` of this workspace, as an
     /// administrator may: a participant a test needs to govern something
     /// without giving it the workspace's owner role.
-    ///
-    /// # Errors
-    /// The grant is not the governor's to record.
     pub fn allow_governance(&mut self, person: &str, action: &str) -> Result<(), String> {
         let now = self.now();
         let grant = tilo_action_policy::Grant::new(
@@ -384,9 +374,6 @@ impl TestGovernor {
     }
 
     /// Re-sign the workspace's full checkpoint at the next generation.
-    ///
-    /// # Errors
-    /// The checkpoint cannot be signed.
     pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
         let now = self.now();
         let (mut candidate, generation) = self.next_commit(now)?;
@@ -417,9 +404,6 @@ impl TestGovernor {
     /// lineage on the relay, a few fsyncs; a governor that re-signed one per
     /// admitted edit queued more of them than a loaded runner's disk keeps
     /// up with. The first commit is a whole checkpoint.
-    ///
-    /// # Errors
-    /// The commit cannot be signed.
     pub fn commit_changes(&mut self) -> Result<(), String> {
         let Some(before) = self.published.clone() else {
             return self.refresh_checkpoint();
@@ -448,9 +432,6 @@ impl TestGovernor {
     }
 
     /// Admit `message` from `origin` into the governor's peer.
-    ///
-    /// # Errors
-    /// The peer rejects it.
     pub fn receive(
         &mut self,
         origin: TransportOrigin,

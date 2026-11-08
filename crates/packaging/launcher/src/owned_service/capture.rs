@@ -83,8 +83,6 @@ pub struct CaptureAdmission {
 }
 impl CaptureAdmission {
     /// Admit an independently trusted, signed runtime and the broker's held subtree.
-    /// # Errors
-    /// Refuses missing/substituted shim bytes, non-directory sources and changed credentials.
     pub fn verify(
         runtime: &Path,
         publisher: &str,
@@ -171,8 +169,6 @@ impl CaptureAdmission {
     }
     /// Root-broker-only mounted roots from its protected readonly source context.
     /// Does not alter original caller credentials or admit cross-volume roots.
-    /// # Errors
-    /// Refuses ordinary capture, writable inputs, overlap or unbounded placements.
     pub fn with_original_mounted_roots(
         mut self,
         inputs: Vec<OriginalMountedInput>,
@@ -258,8 +254,6 @@ impl CaptureAdmission {
         Ok(())
     }
     /// Admit the fixed signed GNU tar helper and its bounded sealed ELF closure.
-    /// # Errors
-    /// Refuses missing, changed or unsigned helper/dependency bytes.
     pub fn with_archive_helper(mut self) -> io::Result<Self> {
         self.check()?;
         let archive = archive::Archive::admit(&self)?;
@@ -270,8 +264,6 @@ impl CaptureAdmission {
         Ok(self)
     }
     /// Admit the signed configured OSTree/OpenPGP closure for an original-source capsule.
-    /// # Errors
-    /// Refuses missing, unsigned or incompatible configured helper bytes.
     pub fn with_original_ostree_helper(mut self) -> io::Result<Self> {
         self.admit_original_ostree_helper()?;
         Ok(self)
@@ -308,9 +300,6 @@ impl CaptureAdmission {
     /// The broker must independently establish backing; filesystem magic alone
     /// cannot distinguish a physical disk from a RAM-backed loop device.
     /// This native held descriptor cannot be selected by serialized launch options.
-    /// # Errors
-    /// Refuses non-private ownership, unsupported filesystems, source overlap,
-    /// insufficient space, or duplicate attachment.
     pub fn with_inventory_scratch(
         mut self,
         directory: File,
@@ -330,8 +319,6 @@ impl CaptureAdmission {
         Ok(self)
     }
     /// Retain the broker's inventory storage lease without granting output writes.
-    /// # Errors
-    /// Refuses missing scratch, duplicate custody, retired authority or egress.
     pub fn retain_inventory_scratch_custody(
         mut self,
         custody: Arc<dyn ServiceAuthority>,
@@ -364,8 +351,6 @@ impl CaptureAdmission {
         Ok(())
     }
     /// Add the broker's separately authorized output directory, without executable rights.
-    /// # Errors
-    /// Refuses inaccessible output or an ancestor/descendant of the selected source.
     pub fn with_output(mut self, output: File) -> io::Result<Self> {
         self.check()?;
         if self.original_bootstrap.is_some() {
@@ -383,8 +368,6 @@ impl CaptureAdmission {
         Ok(self)
     }
     /// Add output approved by the live, authenticated root broker.
-    /// # Errors
-    /// Refuses a dead broker, substituted directories or changed original credentials.
     pub fn with_broker_output(
         mut self,
         output: File,
@@ -403,8 +386,6 @@ impl CaptureAdmission {
         Ok(self)
     }
     /// Attach root-authenticated original output custody.
-    /// # Errors
-    /// Refuses missing original-source admission, mismatched custody or inaccessible output.
     pub fn with_original_output(mut self, proof: OriginalOutputAdmission) -> io::Result<Self> {
         self.check()?;
         let digest = self.original_read_claim_digest().ok_or_else(|| {
@@ -422,8 +403,6 @@ impl CaptureAdmission {
         Ok(self)
     }
     /// Attach a distinct installed transaction; never impersonate USB custody.
-    /// # Errors
-    /// Refuses existing output, missing original-source admission or mismatched custody.
     pub fn with_installed_copy_output(
         mut self,
         proof: InstalledCopyOutputAdmission,
@@ -446,9 +425,6 @@ impl CaptureAdmission {
     /// Retain the root controller's original read context through namespace
     /// supervision and authenticated endpoint use. This is native-only and
     /// cannot be replaced or removed by the callback receiving this admission.
-    /// # Errors
-    /// Refuses ordinary captures, duplicate attachment, non-root controllers,
-    /// retired authority or authority granting network access.
     pub fn retain_original_source_custody(
         mut self,
         custody: Arc<dyn ServiceAuthority>,
@@ -707,8 +683,6 @@ pub(super) fn check_credentials(original_uid: u32) -> io::Result<()> {
     Ok(())
 }
 /// Run through the canonical signed service pipeline with one read-only subtree.
-/// # Errors
-/// Refuses network authority, changed native custody, or unavailable confinement.
 pub fn run_capture(
     launch: ServiceLaunch,
     admission: CaptureAdmission,

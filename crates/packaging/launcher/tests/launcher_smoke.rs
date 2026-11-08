@@ -70,11 +70,7 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         let home = runtime_home();
         let mut m = hello_manifest(BTreeMap::new());
         m.runtime = Some("tilo-runtime/nope-9.9.9".to_string());
-        let opts = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
-            ..Default::default()
-        };
+        let opts = offline_options();
         let err = run_with(&m, home.root(), &opts).unwrap_err();
         match &err {
             RunError::RuntimeBundleMissing { runtime, paths } => {
@@ -176,15 +172,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), service_req("required@1"));
         let m = hello_manifest(svcs);
-        let opts = RunOptions {
-            no_services: true,
-            runtime_root: None,
-            bwrap_bin: Some(bwrap),
-            minimal_libs: false,
-            landlock_enforce: false,
-            mode: launcher::run::LaunchMode::Gui,
-            ..isolated_options(data.path())
-        };
+        let opts = gui_options(data.path(), bwrap, true, false);
         let status = run_with(&m, payload, &opts).expect("launch");
         assert!(status.success());
     }
@@ -199,15 +187,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), service_req("optional@1"));
         let m = hello_manifest(svcs);
-        let opts = RunOptions {
-            no_services: false,
-            runtime_root: None,
-            bwrap_bin: Some(bwrap),
-            minimal_libs: false,
-            landlock_enforce: false,
-            mode: launcher::run::LaunchMode::Gui,
-            ..isolated_options(dir.path())
-        };
+        let opts = gui_options(dir.path(), bwrap, false, false);
         let status = run_with(&m, payload, &opts).expect("launch");
         assert!(status.success(), "optional missing should still run");
     }
@@ -218,16 +198,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let data = tempfile::tempdir().unwrap();
 
         let m = hello_manifest(BTreeMap::new());
-        let opts = RunOptions {
-            no_services: false,
-            runtime_root: None,
-            bwrap_bin: Some(bwrap),
-            sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
-            minimal_libs: false,
-            landlock_enforce: false,
-            mode: launcher::run::LaunchMode::Gui,
-            ..isolated_options(data.path())
-        };
+        let opts = gui_options(data.path(), bwrap, false, true);
         let (status, stdout) = run_with_captured(&m, payload, &opts).expect("launch");
         assert!(status.success(), "child exited non-zero: {status:?}");
         let stdout = String::from_utf8_lossy(&stdout);
@@ -290,16 +261,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
 
         let m = read_manifest(&row.manifest_path).expect("the launcher reads the signed manifest");
         let data = tempfile::tempdir().unwrap();
-        let opts = RunOptions {
-            no_services: false,
-            runtime_root: None,
-            bwrap_bin: Some(bwrap),
-            sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
-            minimal_libs: false,
-            landlock_enforce: false,
-            mode: launcher::run::LaunchMode::Gui,
-            ..isolated_options(data.path())
-        };
+        let opts = gui_options(data.path(), bwrap, false, true);
         let (status, stdout) = run_with_captured(&m, &row.payload_root, &opts).expect("launch");
         assert!(status.success(), "child exited non-zero: {status:?}");
         let stdout = String::from_utf8_lossy(&stdout);
@@ -314,6 +276,36 @@ fn apps_launch_unless_a_required_service_is_missing() {
 // thing under bwrap and has it try the reads/writes — the assertion is
 // on a syscall's answer, not an argv or an exit code that was never at
 // risk.
+
+/// Options that resolve without services and without enforcing the
+/// sandbox.
+fn offline_options() -> RunOptions {
+    RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    }
+}
+
+/// Options for a GUI launch confined with `bwrap` in `dir`, with the
+/// sandbox not enforced and `shim` naming the launcher's own shim.
+fn gui_options(
+    dir: &std::path::Path,
+    bwrap: std::path::PathBuf,
+    no_services: bool,
+    shim: bool,
+) -> RunOptions {
+    RunOptions {
+        no_services,
+        runtime_root: None,
+        bwrap_bin: Some(bwrap),
+        sandbox_shim_bin: shim.then(|| tilo_test_env::package_binary!("tilo-launcher")),
+        minimal_libs: false,
+        landlock_enforce: false,
+        mode: launcher::run::LaunchMode::Gui,
+        ..isolated_options(dir)
+    }
+}
 
 /// A fresh home for the runtime-bundle lookup, which is resolved from the
 /// environment: `$XDG_DATA_HOME/tilo-runtime` unless
@@ -433,10 +425,8 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         // requested, resolve_runtime picks the bundle — exercised directly
         // since argv isn't readable from `run_with` without spawning bwrap.
         let opts = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
             minimal_libs: true,
-            ..Default::default()
+            ..offline_options()
         };
         let resolved = launcher::run::resolve_runtime_test_helper(&m, &opts).expect("resolve ok");
         assert!(resolved.is_some(), "runtime should resolve");
@@ -506,11 +496,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
 
         // The manifest's `runtime` field resolves to the signed bundle
         // (signature verified inside resolve_runtime).
-        let opts = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
-            ..Default::default()
-        };
+        let opts = offline_options();
         let (resolved_path, resolved_ver) = launcher::run::resolve_runtime_test_helper(&m, &opts)
             .expect("resolve ok")
             .expect("bundle resolves");
@@ -736,11 +722,7 @@ fn required_runtimes_mount_when_installed_and_trusted_and_refuse_the_launch_othe
     std::fs::write(&trust_file, format!("{}\n", identity.public_key_hex())).unwrap();
     home.env()
         .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
-    let opts = RunOptions {
-        no_services: true,
-        landlock_enforce: false,
-        ..Default::default()
-    };
+    let opts = offline_options();
 
     // Phase `an_installed_trusted_bundle_is_mounted_read_only_before_the_entry`.
     let (argv, mounts) = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap();
@@ -805,11 +787,7 @@ fn an_entrypoint_runtime_is_mounted_and_required() {
     std::fs::write(&trust_file, format!("{}\n", identity.public_key_hex())).unwrap();
     home.env()
         .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
-    let opts = RunOptions {
-        no_services: true,
-        landlock_enforce: false,
-        ..Default::default()
-    };
+    let opts = offline_options();
 
     // Phase `the_entrypoint_runtime_is_mounted_like_every_required_one`.
     let (argv, mounts) = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap();
@@ -861,11 +839,7 @@ fn bundle_signatures_gate_the_runtime_mount() {
         let mut m = hello_manifest(BTreeMap::new());
         m.runtime = Some("tilo-runtime/sig-refuse-1".to_string());
 
-        let opts = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
-            ..Default::default()
-        };
+        let opts = offline_options();
         let err = launcher::run::resolve_runtime_test_helper(&m, &opts).unwrap_err();
         match &err {
             RunError::RuntimeBundleUnsigned { .. } => {}
@@ -873,10 +847,8 @@ fn bundle_signatures_gate_the_runtime_mount() {
         }
 
         let opts_ok = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
             allow_unsigned_runtime: true,
-            ..Default::default()
+            ..offline_options()
         };
         let resolved =
             launcher::run::resolve_runtime_test_helper(&m, &opts_ok).expect("opt-in accepts");
@@ -893,11 +865,7 @@ fn bundle_signatures_gate_the_runtime_mount() {
 
         let mut m = hello_manifest(BTreeMap::new());
         m.runtime = Some("tilo-runtime/trust-file-1".to_string());
-        let opts = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
-            ..Default::default()
-        };
+        let opts = offline_options();
 
         // 1. Trust file lists this publisher: accepted.
         let trust_file = home.root().join("trust.txt");
@@ -952,29 +920,21 @@ fn bundle_signatures_gate_the_runtime_mount() {
         m.runtime = Some("tilo-runtime/sig-pin-1".to_string());
 
         // Default: accepted.
-        let opts = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
-            ..Default::default()
-        };
+        let opts = offline_options();
         launcher::run::resolve_runtime_test_helper(&m, &opts).expect("accept signed");
 
         // Pin to the bundle's publisher: accepted.
         let opts_pinned = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
             require_runtime_publisher: Some(identity.public_key_hex()),
-            ..Default::default()
+            ..offline_options()
         };
         launcher::run::resolve_runtime_test_helper(&m, &opts_pinned).expect("pin matches");
 
         // Pin to a different publisher: refused.
         let other = runtime_bundle::Identity::generate();
         let opts_wrong = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
             require_runtime_publisher: Some(other.public_key_hex()),
-            ..Default::default()
+            ..offline_options()
         };
         let err = launcher::run::resolve_runtime_test_helper(&m, &opts_wrong).unwrap_err();
         match &err {
@@ -1023,10 +983,8 @@ fn capability_files_on_disk_become_binds_or_nothing() {
 
         let m = hello_manifest(BTreeMap::new());
         let opts = RunOptions {
-            no_services: true,
-            landlock_enforce: false,
             capabilities_path: Some(caps_file),
-            ..Default::default()
+            ..offline_options()
         };
         let plan = launcher::run::resolve_capabilities(&m, &opts);
         let argv = launcher::sandbox::build_bwrap_argv(

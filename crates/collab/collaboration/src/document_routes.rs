@@ -60,9 +60,6 @@ pub fn validated_route_payload_with(
 /// The mutation `payload` carries on `route`: the cleartext one, or the
 /// endpoint's decryption of an encrypted one, which must name `route`'s
 /// channel.
-///
-/// # Errors
-/// The decryption is missing, does not decode, or names another channel.
 pub fn decode_routed_mutation(
     route: &RouteSpec,
     payload: collab_types::WholeDocumentPayload,

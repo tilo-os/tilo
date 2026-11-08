@@ -22,6 +22,10 @@ impl Words for Toolkit {
         tilo_ui_host::i18n::add_catalogues(catalogues);
     }
 
+    fn add_used(&self, catalogues: &[(String, String)]) {
+        tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+    }
+
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
         tilo_ui_host::i18n::word(key, args, source)
     }

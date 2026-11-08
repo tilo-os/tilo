@@ -117,9 +117,6 @@ pub fn int(text: &str) -> Result<i128, String> {
 
 /// `base64.b64decode(text, validate=True)`: the standard alphabet with
 /// correct padding and nothing else; unused trailing bits are ignored.
-///
-/// # Errors
-/// Any other character, missing or misplaced padding.
 pub fn b64decode(text: &str) -> Result<Vec<u8>, base64::DecodeError> {
     const STRICT: GeneralPurpose = GeneralPurpose::new(
         &base64::alphabet::STANDARD,

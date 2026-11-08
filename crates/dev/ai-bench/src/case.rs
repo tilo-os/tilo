@@ -274,10 +274,6 @@ impl Suite {
 
     /// The suite as the case file spells it: pretty JSON with a trailing
     /// newline, so a captured case is a readable diff.
-    ///
-    /// # Errors
-    ///
-    /// When a case holds something JSON cannot carry.
     pub fn to_json(&self) -> Result<String, CaseError> {
         let mut text = serde_json::to_string_pretty(self)
             .map_err(|error| CaseError::suite(format!("the suite cannot be written: {error}")))?;

@@ -28,13 +28,13 @@ pub use tilo_projector::{CaptureProfile, ProjectionDevice, ProjectionMode, Proje
 
 use crate::i18n::t;
 
-/// The socket the projector reads the desktop's video from, beside its
-/// control socket; a broker of the person's own says so in the environment.
+/// The socket the projector reads the desktop's video from, beside its control socket; a broker of
+/// the person's own says so in the environment.
 const VIDEO_SOCKET_ENV: &str = "TILO_PROJECTOR_VIDEO_SOCKET";
 const VIDEO_SOCKET_NAME: &str = "video.sock";
 
-/// Where the projector reads the desktop's frames, for the sheet speaking on
-/// `control` (`None`: the service's own control socket).
+/// Where the projector reads the desktop's frames, for the sheet speaking on `control` (`None`: the
+/// service's own control socket).
 #[must_use]
 pub(crate) fn video_socket(control: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(VIDEO_SOCKET_ENV) {
@@ -48,15 +48,13 @@ pub(crate) fn video_socket(control: Option<&Path>) -> Option<PathBuf> {
 
 /// How long a discovery listens for receivers.
 const DISCOVERY_WINDOW_MS: u64 = 1_500;
-/// Replies may take their own bound plus this much: the service's 15 s ready
-/// timeout and 3 s stop bound for a connect, the 3 s stop bound for a
-/// disconnect.
+/// Replies may take their own bound plus this much: the service's 15 s ready timeout and 3 s stop
+/// bound for a connect, the 3 s stop bound for a disconnect.
 const DISCOVER_REPLY_TIMEOUT: Duration = Duration::from_millis(6_500);
 const CONNECT_REPLY_TIMEOUT: Duration = Duration::from_secs(25);
 const DISCONNECT_REPLY_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// What the sheet shows of the projector: looking, connecting, streaming, or
-/// what went wrong.
+/// What the sheet shows of the projector: looking, connecting, streaming, or what went wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectionStatus {
     Idle,
@@ -66,9 +64,8 @@ pub enum ProjectionStatus {
     Failed(ProjectionFailure),
 }
 
-/// What went wrong, as the person is told it: an outcome and a next step.
-/// The service's own words (socket errors, `os error` text, a receiver's
-/// diagnostic) go to the log, never to the sheet.
+/// What went wrong, as the person is told it: an outcome and a next step. The service's own words
+/// (socket errors, `os error` text, a receiver's diagnostic) go to the log, never to the sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectionFailure {
     /// The wireless display service isn't running or doesn't answer.
@@ -106,16 +103,16 @@ impl ProjectionFailure {
         })
     }
 
-    /// Record the service's own account of `self` for whoever reads the
-    /// log, and hand back the outcome the person is shown.
+    /// Record the service's own account of `self` for whoever reads the log, and hand back the
+    /// outcome the person is shown.
     fn logged(self, detail: impl fmt::Display) -> Self {
         tracing::warn!(failure = ?self, %detail, "projection");
         self
     }
 }
 
-/// Blocking protocol implementation. The controller always calls it on its
-/// worker thread, never on the loop.
+/// Blocking protocol implementation. The controller always calls it on its worker thread, never on
+/// the loop.
 pub trait ProjectionBackend: Send + 'static {
     /// # Errors
     ///
@@ -141,21 +138,21 @@ pub trait ProjectionBackend: Send + 'static {
     /// disconnect; [`ProjectionFailure::Unavailable`] without a service.
     fn disconnect(&mut self, device: &ProjectionDevice) -> Result<(), ProjectionFailure>;
 
-    /// Gives the backend somewhere to report session changes nobody asked
-    /// for. Backends without a live service (tests) have none to report.
+    /// Gives the backend somewhere to report session changes nobody asked for. Backends without a
+    /// live service (tests) have none to report.
     fn set_notice_sink(&mut self, _sink: NoticeSink) {}
 
-    /// Gives the backend somewhere to report the profile the projector asks
-    /// the desktop's frames at, as the receiver and the link allow more or
-    /// less. Backends without a live service (tests) ask for none.
+    /// Gives the backend somewhere to report the profile the projector asks the desktop's frames
+    /// at, as the receiver and the link allow more or less. Backends without a live service (tests)
+    /// ask for none.
     fn set_profile_sink(&mut self, _sink: ProfileSink) {}
 }
 
 /// Where a backend delivers the [`CaptureProfile`]s the projector asks for.
 pub type ProfileSink = Arc<dyn Fn(CaptureProfile) + Send + Sync>;
 
-/// A session change the backend learns of without being asked: the receiver
-/// went away, or the projection service itself did.
+/// A session change the backend learns of without being asked: the receiver went away, or the
+/// projection service itself did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectionNotice {
     Ended {
@@ -168,21 +165,18 @@ pub enum ProjectionNotice {
 /// Where a backend delivers [`ProjectionNotice`]s.
 pub type NoticeSink = Arc<dyn Fn(ProjectionNotice) + Send + Sync>;
 
-/// One connection to the broker: requests go out on the writer, and a thread
-/// reads the events back so a session that ended is reported without the
-/// sheet asking.
+/// One connection to the broker: requests go out on the writer, and a thread reads the events back
+/// so a session that ended is reported without the sheet asking.
 struct ControlLink {
     writer: UnixStream,
     events: Receiver<ProjectorEvent>,
 }
 
-/// The production adapter for the projection broker the OS image installs.
-/// The session never grants itself raw `PipeWire`, Wi-Fi Direct or mDNS
-/// access just to fill this sheet in.
-///
-/// It holds one connection to the broker's control socket for as long as the
-/// session runs; the socket is activated on the first request, so the session
-/// starts nothing beside the ones it already hosts.
+/// The production adapter for the projection broker the OS image installs. The session never grants
+/// itself raw `PipeWire` , Wi-Fi Direct or mDNS access just to fill this sheet in.
+/// It holds one connection to the broker's control socket for as long as the session runs; the
+/// socket is activated on the first request, so the session starts nothing beside the ones it
+/// already hosts.
 pub struct SystemProjectionBackend {
     socket: Option<PathBuf>,
     link: Option<ControlLink>,
@@ -200,8 +194,7 @@ impl fmt::Debug for SystemProjectionBackend {
 }
 
 impl SystemProjectionBackend {
-    /// The backend speaking to the service on `socket`; `None` is the
-    /// service's own.
+    /// The backend speaking to the service on `socket` ; `None` is the service's own.
     #[must_use]
     pub fn new(socket: Option<PathBuf>) -> Self {
         Self {
@@ -232,8 +225,8 @@ impl SystemProjectionBackend {
                 while let Ok(Some(event)) = control::read_event(&mut reader) {
                     match event {
                         ProjectorEvent::CaptureProfile(profile) => {
-                            // Nobody waited for this one: the frames of the
-                            // desktop are sent at it from now on.
+                            // Nobody waited for this one: the frames of the desktop are sent at it
+                            // from now on.
                             if let Some(profiles) = profiles.as_ref() {
                                 profiles(profile);
                             }
@@ -260,9 +253,9 @@ impl SystemProjectionBackend {
         Ok(ControlLink { writer, events })
     }
 
-    /// Sends `request` on the shared connection, opening (or reopening, after
-    /// the broker restarted) it as needed, and returns the event stream to
-    /// read the reply from. Events nobody waited for are dropped first.
+    /// Sends `request` on the shared connection, opening (or reopening, after the broker restarted)
+    /// it as needed, and returns the event stream to read the reply from. Events nobody waited for
+    /// are dropped first.
     fn send(
         &mut self,
         request: &ProjectorRequest,
@@ -293,8 +286,7 @@ impl SystemProjectionBackend {
         ))
     }
 
-    /// Reads events until `reply` turns one into a result, or `timeout`
-    /// passes.
+    /// Reads events until `reply` turns one into a result, or `timeout` passes.
     fn reply<T>(
         &mut self,
         request: &ProjectorRequest,
@@ -339,8 +331,8 @@ impl ProjectionBackend for SystemProjectionBackend {
                 _ => None,
             },
         )?;
-        // A receiver advertised on two interfaces must be one row. Sorting also
-        // makes refreshes stable instead of visually shuffling the sheet.
+        // A receiver advertised on two interfaces must be one row. Sorting also makes refreshes
+        // stable instead of visually shuffling the sheet.
         devices.sort_by(|a, b| {
             a.name
                 .to_lowercase()
@@ -363,16 +355,16 @@ impl ProjectionBackend for SystemProjectionBackend {
                 options.mode.label()
             )));
         }
-        // The secret crosses the socket in the request itself, never in an
-        // environment or argument, and is wiped once sent.
+        // The secret crosses the socket in the request itself, never in an environment or argument,
+        // and is wiped once sent.
         let credential = options.credential.take().map(Credential::new);
         let request = ProjectorRequest::Connect {
             device: device.clone(),
             options,
             credential,
         };
-        // A running session to the same receiver ends before this one
-        // starts; only events after this session's start answer it.
+        // A running session to the same receiver ends before this one starts; only events after
+        // this session's start answer it.
         let mut started = false;
         self.reply(&request, CONNECT_REPLY_TIMEOUT, |event| match event {
             ProjectorEvent::Connecting { device_id, stage } if device_id == device.id => {
@@ -436,9 +428,8 @@ enum WorkerEvent {
     Notice(ProjectionNotice),
 }
 
-/// What the sheet reads of the projector without waiting on it: the receivers
-/// found, how the session with one stands, and the options a stream starts
-/// with.
+/// What the sheet reads of the projector without waiting on it: the receivers found, how the
+/// session with one stands, and the options a stream starts with.
 pub struct ProjectionController {
     tx: Option<Sender<WorkerCommand>>,
     rx: Receiver<WorkerEvent>,
@@ -446,8 +437,8 @@ pub struct ProjectionController {
     pub status: ProjectionStatus,
     pub options: ProjectionOptions,
     pub selected: usize,
-    /// The profile the projector last asked the desktop's frames at; `None`
-    /// until it says, and for every new session until it does.
+    /// The profile the projector last asked the desktop's frames at; `None` until it says, and for
+    /// every new session until it does.
     profile: Arc<Mutex<Option<CaptureProfile>>>,
 }
 
@@ -463,8 +454,8 @@ impl fmt::Debug for ProjectionController {
 }
 
 impl ProjectionController {
-    /// A controller whose requests the worker runs against `backend`, waking
-    /// the session's loop with `wake` when something came back.
+    /// A controller whose requests the worker runs against `backend` , waking the session's loop
+    /// with `wake` when something came back.
     #[must_use]
     pub fn new(backend: Box<dyn ProjectionBackend>, wake: &tilo_service::Wake) -> Self {
         let (command_tx, command_rx) = mpsc::channel();
@@ -505,14 +496,12 @@ impl ProjectionController {
                 }
             });
         if let Err(err) = spawned {
-            // Every caller of `self.tx.send` already treats a closed
-            // channel as "service stopped" and reports
-            // [`ProjectionStatus::Failed`] (see `refresh`/`connect_selected`/
-            // `disconnect` below); a worker that never started degrades
-            // through that same path instead of panicking this
-            // panic=abort process. Dropping the closure here drops
-            // `command_rx`/`event_tx` with it, which is what makes the
-            // channels look "closed" to every method below.
+            // Every caller of `self.tx.send` already treats a closed channel as "service stopped"
+            // and reports [`ProjectionStatus::Failed`] (see `refresh` /`connect_selected`/
+            // `disconnect` below); a worker that never started degrades through that same path
+            // instead of panicking this panic=abort process. Dropping the closure here drops
+            // `command_rx` /`event_tx` with it, which is what makes the channels look "closed" to
+            // every method below.
             tracing::error!("projection: worker thread failed to start: {err}");
         }
         Self {
@@ -526,15 +515,15 @@ impl ProjectionController {
         }
     }
 
-    /// The profile the projector asks the desktop's frames at, once it said:
-    /// the receiver's and the link's own ceiling.
+    /// The profile the projector asks the desktop's frames at, once it said: the receiver's and the
+    /// link's own ceiling.
     #[must_use]
     pub fn profile(&self) -> Option<CaptureProfile> {
         *self.profile.lock_recover()
     }
 
-    /// The channel to the worker, once there is one: without a worker the
-    /// sheet says the service is unavailable.
+    /// The channel to the worker, once there is one: without a worker the sheet says the service is
+    /// unavailable.
     fn available_sender(&mut self) -> Option<&Sender<WorkerCommand>> {
         if self.tx.is_none() {
             self.status = ProjectionStatus::Failed(ProjectionFailure::Unavailable);
@@ -572,11 +561,11 @@ impl ProjectionController {
             self.status = ProjectionStatus::Connecting {
                 device_id: device.id,
             };
-            // A new session asks its own profile of the frames; the one the
-            // last receiver asked for says nothing about this one.
+            // A new session asks its own profile of the frames; the one the last receiver asked for
+            // says nothing about this one.
             *self.profile.lock_recover() = None;
-            // Do not retain a receiver password in session memory after it
-            // has crossed into the broker worker.
+            // Do not retain a receiver password in session memory after it has crossed into the
+            // broker worker.
             self.options.credential = None;
         }
     }
@@ -604,8 +593,8 @@ impl ProjectionController {
         }
     }
 
-    /// Drain everything the worker answered since the last pass. Returns
-    /// whether what the sheet shows changed.
+    /// Drain everything the worker answered since the last pass. Returns whether what the sheet
+    /// shows changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         loop {
@@ -647,9 +636,8 @@ impl ProjectionController {
         changed
     }
 
-    /// What an unrequested session change means for the sheet: only the
-    /// session it shows as connected can end under it. A connect or
-    /// disconnect in flight reports its own outcome.
+    /// What an unrequested session change means for the sheet: only the session it shows as
+    /// connected can end under it. A connect or disconnect in flight reports its own outcome.
     fn status_after(&self, notice: ProjectionNotice) -> Option<ProjectionStatus> {
         let ProjectionStatus::Connected { device_id: current } = &self.status else {
             return None;
@@ -666,8 +654,8 @@ impl ProjectionController {
         }
     }
 
-    /// Expose unsupported layout choices as disabled instead of accepting a
-    /// choice that the selected receiver cannot honour.
+    /// Expose unsupported layout choices as disabled instead of accepting a choice that the
+    /// selected receiver cannot honour.
     pub fn selected_device_supports(&self, mode: ProjectionMode) -> bool {
         self.devices
             .get(self.selected)
@@ -802,8 +790,8 @@ mod tests {
         settle(&mut controller);
         assert!(controller.selected_device_supports(ProjectionMode::Mirror));
         assert!(!controller.selected_device_supports(ProjectionMode::Extend));
-        // A receiver that cannot spread the desktop is streamed to in
-        // duplicate, which every one of them can do.
+        // A receiver that cannot spread the desktop is streamed to in duplicate, which every one of
+        // them can do.
         controller.options.mode = ProjectionMode::Extend;
         controller.connect_selected();
         settle(&mut controller);
@@ -859,9 +847,8 @@ mod tests {
         );
     }
 
-    /// The production backend against a stand-in broker on a real socket:
-    /// one connection for every request, the credential inside the connect
-    /// request, and an unrequested end reported.
+    /// The production backend against a stand-in broker on a real socket: one connection for every
+    /// request, the credential inside the connect request, and an unrequested end reported.
     #[test]
     fn the_backend_speaks_the_projector_control_socket() {
         let dir = tempfile::tempdir().expect("runtime dir");
@@ -902,8 +889,7 @@ mod tests {
             ] {
                 control::write_event(&mut stream, &event).expect("session event");
             }
-            // Only one connection: a second accept would mean the backend
-            // reconnected per request.
+            // Only one connection: a second accept would mean the backend reconnected per request.
             listener.set_nonblocking(true).expect("nonblocking");
             assert!(
                 listener.accept().is_err(),

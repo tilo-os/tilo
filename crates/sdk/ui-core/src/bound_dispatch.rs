@@ -4006,8 +4006,8 @@ pub(crate) struct TakenActionBracket {
 }
 
 impl TakenActionBracket {
-    /// `widget`'s bracket, if it reported one. Rising-edge, like
-    /// [`crate::undo::take_committed_action`]: taking it clears it.
+    /// `widget`'s bracket, if it reported one. Rising-edge,
+    /// like [`crate::undo::take_committed_action`]: taking it clears it.
     pub(crate) fn take(widget: &mut dyn Widget) -> Option<Self> {
         let before = crate::undo::take_committed_action(widget)?;
         Some(Self {

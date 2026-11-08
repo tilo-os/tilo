@@ -1,13 +1,10 @@
-//! The shortcut guide in the session: the sheet over the desktop that names
-//! every key the desktop answers, the chords each answers to now, and how to
-//! leave it.
-//!
+//! The shortcut guide in the session: the sheet over the desktop that names every key the desktop
+//! answers, the chords each answers to now, and how to leave it.
 //! The guide explains one table, the one the session's keys resolve against
-//! ([`crate::keys::SessionKeys`]); it is handed the same table rather than a
-//! copy, so a chord the person changes reads as changed here too. The guide
-//! itself is the sheet app's ([`tilo_sheets::shortcut_guide`]): this module
-//! shows it, keeps what it shows current, and answers what it asks: the new
-//! keys of a shortcut, the pair's defaults back, the guide gone.
+//! ([`crate::keys::SessionKeys`]); it is handed the same table rather than a copy, so a chord the
+//! person changes reads as changed here too. The guide itself is the sheet app's
+//! ([`tilo_sheets::shortcut_guide`]): this module shows it, keeps what it shows current, and
+//! answers what it asks: the new keys of a shortcut, the pair's defaults back, the guide gone.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -22,9 +19,8 @@ use ui::ControllerFamily;
 use crate::controller_nav::{FaceRole, face_button};
 use crate::keys::{Caught, GuideKeys};
 
-/// What the guide last showed, as the guide was given it: the table, the
-/// shortcut waiting for a chord, why the last change was refused, and the
-/// controller the person last used, if any.
+/// What the guide last showed, as the guide was given it: the table, the shortcut waiting for a
+/// chord, why the last change was refused, and the controller the person last used, if any.
 type Shown = (
     ShortcutConfig,
     Option<String>,
@@ -38,21 +34,19 @@ pub(crate) struct ShortcutGuide {
     seat: Option<GuideSeat>,
     /// The table the session answers keys with, shared with the key surface.
     table: Rc<RefCell<ShortcutConfig>>,
-    /// The guide's keys while it is up, shared with the key surface: what
-    /// the guide waits for, and the chords pressed for it.
+    /// The guide's keys while it is up, shared with the key surface: what the guide waits for, and
+    /// the chords pressed for it.
     keys: GuideKeys,
-    /// The apps' global shortcuts: their chords step aside for the table the
-    /// session answers, so a change has to reach them as it reaches the keys.
+    /// The apps' global shortcuts: their chords step aside for the table the session answers, so a
+    /// change has to reach them as it reaches the keys.
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
-    /// Why the last change was refused, shown while the guide waits for the
-    /// keys it explains.
+    /// Why the last change was refused, shown while the guide waits for the keys it explains.
     message: RefCell<Option<String>>,
-    /// The controller the person last drove the desktop with: the guide
-    /// explains its buttons rather than the keyboard while it is the input
-    /// in hand.
+    /// The controller the person last drove the desktop with: the guide explains its buttons rather
+    /// than the keyboard while it is the input in hand.
     controller: Rc<Cell<Option<ControllerFamily>>>,
-    /// The table, shortcut and message the guide was last built from, and
-    /// that guide: it is built again only when one of them changed.
+    /// The table, shortcut and message the guide was last built from, and that guide: it is built
+    /// again only when one of them changed.
     built: RefCell<Option<(Shown, Guide)>>,
 }
 
@@ -75,20 +69,19 @@ impl ShortcutGuide {
         }
     }
 
-    /// The guide's sheet's seat: whether it is up, where it sits, and what it
-    /// shows; `None` when the sheet did not mount.
+    /// The guide's sheet's seat: whether it is up, where it sits, and what it shows; `None` when
+    /// the sheet did not mount.
     pub(crate) fn seat(&self) -> Option<&GuideSeat> {
         self.seat.as_ref()
     }
 
-    /// The guide's presentation: where it sits; `None` when the sheet did
-    /// not mount.
+    /// The guide's presentation: where it sits; `None` when the sheet did not mount.
     pub(crate) fn presentation(&self) -> Option<&tilo_sheets::Presentation> {
         self.seat.as_ref().map(tilo_sheets::Seat::presentation)
     }
 
-    /// The person asked for the guide, or asked for it to go: put it up with
-    /// the keys as they are, or take it down.
+    /// The person asked for the guide, or asked for it to go: put it up with the keys as they are,
+    /// or take it down.
     pub(crate) fn toggle(&self) {
         let Some(seat) = &self.seat else {
             return;
@@ -102,8 +95,8 @@ impl ShortcutGuide {
         }
     }
 
-    /// Take the guide down: it is asked for no longer, and waits for no
-    /// chord. It draws its own leave until nothing of it is left.
+    /// Take the guide down: it is asked for no longer, and waits for no chord. It draws its own
+    /// leave until nothing of it is left.
     fn close(&self) {
         if let Some(seat) = &self.seat {
             seat.presentation().close();
@@ -112,8 +105,7 @@ impl ShortcutGuide {
         self.message.replace(None);
     }
 
-    /// Carry out what the person chose on the guide, and keep it showing the
-    /// table as it stands.
+    /// Carry out what the person chose on the guide, and keep it showing the table as it stands.
     pub(crate) fn follow(&self) {
         if let Some(seat) = &self.seat {
             for effect in seat.take_asked() {
@@ -142,11 +134,10 @@ impl ShortcutGuide {
         self.refresh();
     }
 
-    /// Let the table follow `chords`, the keys the armed shortcuts answer:
-    /// the keys claim them, the guide lists what each runs, and the apps'
-    /// shortcuts step aside for them. Nothing is written to the person's
-    /// settings: the chords are the shortcuts' own, taken from the workspaces
-    /// they are saved in, and the table is what shows them.
+    /// Let the table follow `chords` , the keys the armed shortcuts answer: the keys claim them,
+    /// the guide lists what each runs, and the apps' shortcuts step aside for them. Nothing is
+    /// written to the person's settings: the chords are the shortcuts' own, taken from the
+    /// workspaces they are saved in, and the table is what shows them.
     pub(crate) fn follow_trigger_chords(&self, chords: Vec<ActionChord>) {
         let mut table = self.table.borrow().clone();
         if !tilo_action_broker::automation::replace_trigger_chords(&mut table, chords) {
@@ -158,14 +149,14 @@ impl ShortcutGuide {
         }
     }
 
-    /// Give the shortcut `action` its keys: `chord`, once the table accepts
-    /// it and the person's settings keep it.
+    /// Give the shortcut `action` its keys: `chord` , once the table accepts it and the person's
+    /// settings keep it.
     fn bind(&self, action: &str, chord: &KeyChord) {
         let Some(action) = ShortcutAction::from_id(action) else {
             return;
         };
-        // A key that types a character needs a modifier: without one the
-        // shortcut would run instead of the letter everywhere.
+        // A key that types a character needs a modifier: without one the shortcut would run instead
+        // of the letter everywhere.
         if types_a_character(chord) {
             self.refuse(tilo_sheets::word("guide-rebind-needs-modifier"));
             return;
@@ -193,8 +184,8 @@ impl ShortcutGuide {
         self.accept(candidate, "guide-rebind-save-failed");
     }
 
-    /// Put the pair `first` and `second` back on their default chords: both
-    /// at once, so a default the pair shares among itself is free to take.
+    /// Put the pair `first` and `second` back on their default chords: both at once, so a default
+    /// the pair shares among itself is free to take.
     fn reset_to_defaults(&self, first: &str, second: &str) {
         let (Some(first), Some(second)) = (
             ShortcutAction::from_id(first),
@@ -231,9 +222,9 @@ impl ShortcutGuide {
         self.accept(candidate, "guide-reset-save-failed");
     }
 
-    /// Keep `candidate` as the table the session answers: saved first, so a
-    /// table the person's settings cannot keep never runs, then shared with
-    /// the keys, the apps' shortcuts and the guide, and the waiting ends.
+    /// Keep `candidate` as the table the session answers: saved first, so a table the person's
+    /// settings cannot keep never runs, then shared with the keys, the apps' shortcuts and the
+    /// guide, and the waiting ends.
     fn accept(&self, candidate: ShortcutConfig, on_save_failure: &str) {
         if candidate.save().is_err() {
             self.refuse(tilo_sheets::word(on_save_failure));
@@ -247,14 +238,14 @@ impl ShortcutGuide {
         self.message.replace(None);
     }
 
-    /// Say why the last press changed nothing; the guide keeps waiting for
-    /// the keys of the shortcut it asks about.
+    /// Say why the last press changed nothing; the guide keeps waiting for the keys of the shortcut
+    /// it asks about.
     fn refuse(&self, message: String) {
         self.message.replace(Some(message));
     }
 
-    /// Tell the guide what the table holds and what it waits for, when either
-    /// changed since it was last told.
+    /// Tell the guide what the table holds and what it waits for, when either changed since it was
+    /// last told.
     fn refresh(&self) {
         let Some(seat) = &self.seat else {
             return;
@@ -280,8 +271,8 @@ impl ShortcutGuide {
         let mut guide = tilo_sheets::shortcut_guide::keyboard_guide(&table);
         guide.listening = listening;
         guide.message = message;
-        // A controller in hand is explained by its own buttons, drawn with
-        // the legends that controller prints.
+        // A controller in hand is explained by its own buttons, drawn with the legends that
+        // controller prints.
         if let Some(family) = controller {
             guide.modality = Modality::Controller;
             guide.controller = Some(family);
@@ -292,7 +283,7 @@ impl ShortcutGuide {
     }
 }
 
-/// Which face button carries each role on `family`, as the guide draws them.
+/// Which face button carries each role on `family` , as the guide draws them.
 fn faces(family: ControllerFamily) -> Faces {
     Faces {
         confirm: face_button(family, FaceRole::Confirm),
@@ -302,19 +293,18 @@ fn faces(family: ControllerFamily) -> Faces {
     }
 }
 
-/// Whether `chord` is a key that types: a printable key with no modifier
-/// held would run the shortcut instead of typing.
+/// Whether `chord` is a key that types: a printable key with no modifier held would run the
+/// shortcut instead of typing.
 fn types_a_character(chord: &KeyChord) -> bool {
     chord.modifiers.is_empty() && (chord.key == "space" || chord.key.chars().count() == 1)
 }
 
-/// What the person calls the shortcut `action`, as the guide's own words say
-/// it.
+/// What the person calls the shortcut `action` , as the guide's own words say it.
 fn shortcut_name(action: ShortcutAction) -> String {
     tilo_sheets::word(&action.label_key())
 }
 
-/// What the person calls the fixed shortcut `id`.
+/// What the person calls the fixed shortcut `id` .
 fn fixed_shortcut_name(id: &str) -> String {
     settings_store::keyboard_shortcuts::fixed_shortcut(id)
         .map_or_else(|| id.to_owned(), |fixed| tilo_sheets::word(fixed.label_key))

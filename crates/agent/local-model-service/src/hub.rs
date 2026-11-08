@@ -47,9 +47,6 @@ pub trait HubApi {
 }
 
 /// Search the Hub for models with `format`'s files, most downloaded first.
-///
-/// # Errors
-/// An empty or oversized query, or the Hub's refusal or malformed answer.
 pub fn search(
     api: &mut dyn HubApi,
     query: &str,
@@ -67,9 +64,6 @@ pub fn search(
 }
 
 /// The Hub's description of the model `reference` names.
-///
-/// # Errors
-/// The Hub's refusal or malformed answer, or an answer about another model.
 pub fn model_info(api: &mut dyn HubApi, reference: &HubRef) -> Result<ApiModelInfo, ServiceError> {
     let url = picks::model_info_url(&reference.repo, reference.revision.as_deref());
     let info: ApiModelInfo = serde_json::from_slice(&api.get(&url, INFO_ANSWER_BYTES)?)?;

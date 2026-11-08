@@ -3,8 +3,8 @@
 //! A store device is an ordinary member of the workspaces it keeps: it holds
 //! their governance in its own engine (its roster, its grants, its removals)
 //! and none of their content keys, so the same membership every member acts
-//! on is the only thing it can decide with. This module is that answer for
-//! [`tilo_store_node::Access`]: a device may sync a workspace here when the
+//! on is the only thing it can decide with. This module is that answer
+//! for [`tilo_store_node::Access`]: a device may sync a workspace here when the
 //! engine's copy of that workspace admits the device now.
 
 use std::sync::Arc;

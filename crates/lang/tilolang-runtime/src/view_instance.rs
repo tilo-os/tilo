@@ -880,20 +880,34 @@ impl ViewInstance {
     }
 }
 
+/// Fill what the event carries (`value`) into the place an argument holds it: the value the
+/// view wrote as the event's own, an option the view set it into, or the part of a tuple the
+/// view reads it as. Anything else is a value of the view's own, already as it stands.
+fn fill_event_value(held: &mut Value, value: Option<&Value>) -> Result<(), ()> {
+    match held {
+        Value::Event => *held = value.cloned().ok_or(())?,
+        Value::EventPart(part) => {
+            let Some(Value::List(parts)) = value else {
+                return Err(());
+            };
+            *held = parts.get(*part).cloned().ok_or(())?;
+        }
+        // A view that sets the event's value into a state of its own wraps it in the state's
+        // option (`set(editing, c)` on an `Option<Comment>`): the value stands where the
+        // wrapper holds it, and the wrapper stays around what the event conveys.
+        Value::Opt(Some(inner)) => fill_event_value(inner, value)?,
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Put the value an event carries where the action reference holds it, through `then`: the
 /// whole of it, or the part of `[value, at]` a place names.
 fn fill_event(aref: &mut ActionRef, value: Option<&Value>) -> Result<(), ()> {
     for arg in &mut aref.args {
         match arg {
-            Value::Event => *arg = value.cloned().ok_or(())?,
-            Value::EventPart(part) => {
-                let Some(Value::List(parts)) = value else {
-                    return Err(());
-                };
-                *arg = parts.get(*part).cloned().ok_or(())?;
-            }
             Value::Action(inner) if aref.action == THEN_ACTION => fill_event(inner, value)?,
-            _ => {}
+            held => fill_event_value(held, value)?,
         }
     }
     Ok(())
@@ -945,6 +959,46 @@ fn field_mutation(
             )));
         }
     })
+}
+
+#[cfg(test)]
+mod event_value_tests {
+    use super::*;
+
+    /// A view that sets what an event carries into a state of its own holds it in the state's
+    /// option (`set(editing, c)` on an `Option<Comment>`), and the value fills it there: the
+    /// slot is the item the person opened, not the place the event's value stood in the view.
+    #[test]
+    fn the_event_value_fills_the_option_a_view_set_it_into() {
+        let comment = Value::text("said");
+        let mut aref = ActionRef::new(
+            "$set",
+            vec![
+                Value::text("w"),
+                Value::text("ada"),
+                Value::text("editing"),
+                Value::some(Value::Event),
+            ],
+        );
+        fill_event(&mut aref, Some(&comment)).expect("the event carries a value");
+        assert_eq!(aref.args[3], Value::some(comment));
+    }
+
+    /// A value the view wrote itself is the view's, whatever the event carries.
+    #[test]
+    fn the_event_value_leaves_what_the_view_wrote_alone() {
+        let mut aref = ActionRef::new(
+            "$set",
+            vec![
+                Value::text("w"),
+                Value::text("ada"),
+                Value::text("editing"),
+                Value::none(),
+            ],
+        );
+        fill_event(&mut aref, Some(&Value::text("said"))).expect("the event carries a value");
+        assert_eq!(aref.args[3], Value::none());
+    }
 }
 
 #[cfg(test)]

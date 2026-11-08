@@ -39,16 +39,16 @@ use ui::TextRole;
 /// Where a window's preview comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PreviewSource {
-    /// A client's own latest buffer, from the host's frame store. Works for
-    /// every tab of a client, shown or not.
+    /// A client's own latest buffer, from the host's frame store. Works for every tab of a client,
+    /// shown or not.
     Client { surface: u64 },
-    /// A window the host draws itself, painted through the same live path
-    /// a screenshot of it takes. Only the tab its group shows is painted.
+    /// A window the host draws itself, painted through the same live path a screenshot of it takes.
+    /// Only the tab its group shows is painted.
     Painted { capture_id: String },
     /// Never pictured: the app holds secrets.
     Withheld,
-    /// Nothing worth picturing: a hidden tab of a host-drawn app, a window
-    /// that is still a placeholder card, or a host that pictures nothing.
+    /// Nothing worth picturing: a hidden tab of a host-drawn app, a window that is still a
+    /// placeholder card, or a host that pictures nothing.
     Unavailable,
 }
 
@@ -59,22 +59,21 @@ impl PreviewSource {
     }
 }
 
-/// What only the host knows about a window: its application's artwork and
-/// whether (and from where) it may be pictured. The defaults suit a host
-/// with neither.
+/// What only the host knows about a window: its application's artwork and whether (and from where)
+/// it may be pictured. The defaults suit a host with neither.
 pub trait WindowSource {
     /// The glyph shown for `tile` when its application has no artwork.
     fn app_kind(&self, tile: &TileContent) -> UiAppKind {
         tilo_desktop_surface::tile_app_kind(tile)
     }
 
-    /// The application's own artwork for `tile`.
+    /// The application's own artwork for `tile` .
     fn app_icon(&self, _tile: &TileContent) -> Option<AppImage> {
         None
     }
 
-    /// Where a preview of `tile`, the tab `tab` of group `group`, comes
-    /// from. `shown` is whether that tab is the one its group displays.
+    /// Where a preview of `tile` , the tab `tab` of group `group` , comes from. `shown` is whether
+    /// that tab is the one its group displays.
     fn preview_source(
         &self,
         _tile: &TileContent,
@@ -102,16 +101,15 @@ pub struct WindowAddress {
 /// Which application a window belongs to, and how to draw it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowApp {
-    /// Two windows of one application share this key: the Wayland app id
-    /// for a client, the app kind for one of Tilo's own.
+    /// Two windows of one application share this key: the Wayland app id for a client, the app kind
+    /// for one of Tilo's own.
     pub key: String,
     /// The glyph shown when the application has no artwork of its own.
     pub kind: UiAppKind,
     pub icon: Option<AppImage>,
-    /// The toolkit's own symbol for the application, the one its launcher
-    /// entry wears: what a window picture shows when there is no live
-    /// picture and no artwork. [`Icon::AppWindow`] for an app it has no
-    /// symbol for, which then shows [`Self::kind`]'s mark.
+    /// The toolkit's own symbol for the application, the one its launcher entry wears: what a
+    /// window picture shows when there is no live picture and no artwork. [`Icon::AppWindow`] for
+    /// an app it has no symbol for, which then shows [`Self::kind`]'s mark.
     pub glyph: Icon,
 }
 
@@ -162,31 +160,28 @@ pub struct SwitcherWindow {
     pub preview: PreviewSource,
 }
 
-/// The shape a card takes when the desk knows nothing of its window's: the
-/// desk's own 16:10.
+/// The shape a card takes when the desk knows nothing of its window's: the desk's own 16:10.
 const STANDING_ASPECT: f64 = 16.0 / 10.0;
 
-/// The shortest a preview well goes, however small the display: a card still
-/// shows what it holds.
+/// The shortest a preview well goes, however small the display: a card still shows what it holds.
 const LEAST_WELL: f64 = 24.0;
 
-/// The tallest a preview goes, as a share of the display it stands on: previews
-/// grow with the screen rather than staying thumbnails on a large one.
+/// The tallest a preview goes, as a share of the display it stands on: previews grow with the
+/// screen rather than staying thumbnails on a large one.
 const CARD_HEIGHT_SHARE: f64 = 0.42;
 
-/// The widest one card goes, as a share of the display: a window far wider than
-/// its row-mates leaves the rest of the display in view beside it.
+/// The widest one card goes, as a share of the display: a window far wider than its row-mates
+/// leaves the rest of the display in view beside it.
 const CARD_WIDTH_SHARE: f64 = 0.6;
 
-/// One card of the panel: a window, the name over it, and the app whose face
-/// stands in its well until the compositor draws the window there.
+/// One card of the panel: a window, the name over it, and the app whose face stands in its well
+/// until the compositor draws the window there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SwitcherCard {
     /// The compositor's window, when its live picture stands in the well.
     pub window: Option<u64>,
-    /// The window's size in logical pixels, as the compositor lays it out: the
-    /// card takes the window's own shape, so its picture fills it. `None`
-    /// where there is no window to measure.
+    /// The window's size in logical pixels, as the compositor lays it out: the card takes the
+    /// window's own shape, so its picture fills it. `None` where there is no window to measure.
     pub size: Option<(u32, u32)>,
     pub title: String,
     /// The app the window shows, as the desk's reading names it.
@@ -194,8 +189,8 @@ pub struct SwitcherCard {
 }
 
 impl SwitcherCard {
-    /// The window's width over its height, or the standing shape of a card
-    /// with no window to measure.
+    /// The window's width over its height, or the standing shape of a card with no window to
+    /// measure.
     fn aspect(&self) -> f64 {
         self.size
             .filter(|(width, height)| *width > 0 && *height > 0)
@@ -205,12 +200,12 @@ impl SwitcherCard {
     }
 }
 
-/// What the panel shows: the windows the walk crosses, in its order, the one
-/// it has reached, and whether it crosses the app in front's windows alone.
+/// What the panel shows: the windows the walk crosses, in its order, the one it has reached, and
+/// whether it crosses the app in front's windows alone.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SwitcherView {
     pub cards: Vec<SwitcherCard>,
-    /// Which card the walk reached, an index into `cards`.
+    /// Which card the walk reached, an index into `cards` .
     pub selected: usize,
     /// The walk crosses the front app's windows (Alt+Grave) rather than the workspace's.
     pub app_scope: bool,
@@ -234,9 +229,8 @@ struct Metrics {
     icon: f64,
     /// The app mark beside a previewed window's title.
     mark: f64,
-    /// The height a card's well measures: the standing card's at the theme's
-    /// own size, and the page's shared one once the layout has fitted it to
-    /// the display.
+    /// The height a card's well measures: the standing card's at the theme's own size, and the
+    /// page's shared one once the layout has fitted it to the display.
     well_h: f64,
     well_radius: f64,
     inset: f64,
@@ -257,8 +251,8 @@ impl Metrics {
         let spacing = &tokens.spacing;
         let line = |role| f64::from(tokens.typography.style(role).line_height_px());
         let inset = f64::from(spacing.s2);
-        // The standing card is the one a window with no shape of its own gets:
-        // the same size the panel has always shown.
+        // The standing card is the one a window with no shape of its own gets: the same size the
+        // panel has always shown.
         let well_w = f64::from(spacing.s16) * 2.5;
         let well_h = well_w * 10.0 / 16.0;
         Self {
@@ -282,14 +276,14 @@ impl Metrics {
         3.0 * self.inset + self.title_h
     }
 
-    /// The tallest a well goes on this display: a share of the display, and
-    /// never under the standing card.
+    /// The tallest a well goes on this display: a share of the display, and never under the
+    /// standing card.
     fn box_h(self, host: Rect) -> f64 {
         (host.height() * CARD_HEIGHT_SHARE).max(self.well_h)
     }
 
-    /// The widest a card goes on this display, its insets included: a share of
-    /// the display, and never under the standing card.
+    /// The widest a card goes on this display, its insets included: a share of the display, and
+    /// never under the standing card.
     fn box_w(self, host: Rect) -> f64 {
         let standing = self.well_h * STANDING_ASPECT + 2.0 * self.inset;
         (host.width() * CARD_WIDTH_SHARE).max(standing)
@@ -300,8 +294,8 @@ impl Metrics {
         self.inset + self.footer_h
     }
 
-    /// These metrics with the outer margin given up to the card inset: what a
-    /// display too small for the margin keeps of the panel.
+    /// These metrics with the outer margin given up to the card inset: what a display too small for
+    /// the margin keeps of the panel.
     fn tightened(self) -> Self {
         Self {
             margin: self.margin.min(self.inset),
@@ -340,7 +334,7 @@ fn fit_count(span: f64, pitch: f64) -> usize {
     ((span / pitch).floor().max(1.0)) as usize
 }
 
-/// Whether `inner` stands inside `outer`.
+/// Whether `inner` stands inside `outer` .
 fn within(outer: Rect, inner: Rect) -> bool {
     inner.x0 >= outer.x0 - 1e-9
         && inner.y0 >= outer.y0 - 1e-9
@@ -348,9 +342,8 @@ fn within(outer: Rect, inner: Rect) -> bool {
         && inner.y1 <= outer.y1 + 1e-9
 }
 
-/// Cards in rows, centred on the display, each the shape of its own window at
-/// the height the page shares, with the selected window's page on screen when
-/// there are more windows than fit.
+/// Cards in rows, centred on the display, each the shape of its own window at the height the page
+/// shares, with the selected window's page on screen when there are more windows than fit.
 fn geometry(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
     if view.cards.is_empty() {
         return Geometry::default();
@@ -379,9 +372,8 @@ impl Layout {
     }
 }
 
-/// The cards at `well_h`: each the shape of its own window, all sharing one
-/// height, wrapped onto as many rows as `room_w` takes, with `room_h` standing
-/// as many of those rows as fit.
+/// The cards at `well_h` : each the shape of its own window, all sharing one height, wrapped onto
+/// as many rows as `room_w` takes, with `room_h` standing as many of those rows as fit.
 fn rows_at(aspects: &[f64], well_h: f64, m: Metrics, room_w: f64, room_h: f64) -> Layout {
     let widths: Vec<f64> = aspects
         .iter()
@@ -416,7 +408,7 @@ fn rows_at(aspects: &[f64], well_h: f64, m: Metrics, room_w: f64, room_h: f64) -
     }
 }
 
-/// The tallest well that stands every card on one line of `room_w`.
+/// The tallest well that stands every card on one line of `room_w` .
 fn one_line(aspects: &[f64], m: Metrics, room_w: f64) -> f64 {
     let shapes: f64 = aspects.iter().sum();
     if shapes <= 0.0 {
@@ -427,9 +419,9 @@ fn one_line(aspects: &[f64], m: Metrics, room_w: f64) -> f64 {
     ((room_w - spent) / shapes).max(0.0)
 }
 
-/// The tallest well that still stands every card on the page, found by halving:
-/// smaller cards wrap onto fewer rows and leave more of those rows on the page.
-/// `least` when even the least well pages.
+/// The tallest well that still stands every card on the page, found by halving: smaller cards wrap
+/// onto fewer rows and leave more of those rows on the page. `least` when even the least well
+/// pages.
 fn tallest_standing_on_page(
     aspects: &[f64],
     m: Metrics,
@@ -459,20 +451,19 @@ fn geometry_with(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
     let widest = aspects.iter().copied().fold(STANDING_ASPECT, f64::max);
     let room_w = (host.width() - 2.0 * (m.margin + m.pad)).max(0.0);
     let room_h = (host.height() - 2.0 * (m.margin + m.pad) - m.footer_band()).max(0.0);
-    // Every card shares one height, so the row reads as a row: as tall as the
-    // display's box allows, and low enough that the widest window still fits the
-    // box's width. No card is wider than its window's shape asks for, so the
-    // window's picture fills it rather than letterboxing in it.
+    // Every card shares one height, so the row reads as a row: as tall as the display's box allows,
+    // and low enough that the widest window still fits the box's width. No card is wider than its
+    // window's shape asks for, so the window's picture fills it rather than letterboxing in it.
     let usable_h = (room_h - m.text_part()).max(0.0);
     let widest_h = ((room_w.min(m.box_w(host)) - 2.0 * m.inset).max(0.0)) / widest;
     let tallest = usable_h.min(m.box_h(host)).min(widest_h);
-    // The least a card goes: the standing card the panel has always shown, or
-    // as much as a display too small for it allows. Cards never shrink under it
-    // to fit more on a page; the walk turns the page instead.
+    // The least a card goes: the standing card the panel has always shown, or as much as a display
+    // too small for it allows. Cards never shrink under it to fit more on a page; the walk turns
+    // the page instead.
     let least = m.well_h.min(tallest).max(LEAST_WELL.min(tallest));
-    // A handful of windows stands on one line, as tall as that line allows, so
-    // the walk reads at a glance. More windows than a line of standing cards
-    // holds give way to rows: as tall as stand every one of them on the page.
+    // A handful of windows stands on one line, as tall as that line allows, so the walk reads at a
+    // glance. More windows than a line of standing cards holds give way to rows: as tall as stand
+    // every one of them on the page.
     let line_h = one_line(&aspects, m, room_w).min(tallest);
     let well_h = if line_h >= least {
         line_h
@@ -545,12 +536,10 @@ fn geometry_with(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
     }
 }
 
-/// Alt+Tab's panel: what it shows, where it stands, and the windows whose
-/// pictures stand in its wells.
-///
-/// The desk owns the walk; this is one panel's worth of it, shared by the
-/// session (which sets it), the chrome (which draws it) and the compositor
-/// (which pictures the windows it names).
+/// Alt+Tab's panel: what it shows, where it stands, and the windows whose pictures stand in its
+/// wells.
+/// The desk owns the walk; this is one panel's worth of it, shared by the session (which sets it),
+/// the chrome (which draws it) and the compositor (which pictures the windows it names).
 #[derive(Clone)]
 pub struct Switcher {
     inner: Rc<Inner>,
@@ -562,8 +551,8 @@ struct Inner {
     revision: Cell<u64>,
     /// The revision last drawn: anything else owes a frame.
     drawn: Cell<u64>,
-    /// Where the panel and its cards stood at the last draw, in the chrome's
-    /// coordinates: the wells the compositor pictures windows in.
+    /// Where the panel and its cards stood at the last draw, in the chrome's coordinates: the wells
+    /// the compositor pictures windows in.
     geometry: RefCell<Geometry>,
     /// The card the pointer stands over.
     hover: Cell<Option<usize>>,
@@ -584,7 +573,7 @@ impl Default for Switcher {
 }
 
 impl Switcher {
-    /// Show `view`, or take the panel down with `None`. Returns whether what the panel shows
+    /// Show `view` , or take the panel down with `None` . Returns whether what the panel shows
     /// changed, which is what owes a frame.
     pub fn set(&self, view: Option<SwitcherView>) -> bool {
         let inner = &*self.inner;
@@ -608,8 +597,7 @@ impl Switcher {
         self.inner.view.borrow().is_some()
     }
 
-    /// What the panel shows: the windows the walk crosses, in its order, and the one it
-    /// reached.
+    /// What the panel shows: the windows the walk crosses, in its order, and the one it reached.
     #[must_use]
     pub fn view(&self) -> Option<SwitcherView> {
         self.inner.view.borrow().clone()
@@ -650,8 +638,7 @@ impl Switcher {
         self.inner.geometry.borrow().panel
     }
 
-    /// The card under `point`, as the panel was last drawn: the pointer's
-    /// presses and its hover.
+    /// The card under `point` , as the panel was last drawn: the pointer's presses and its hover.
     #[must_use]
     pub fn card_at(&self, point: Point) -> Option<usize> {
         let view = self.inner.view.borrow();
@@ -677,10 +664,9 @@ impl Switcher {
         self.panel_rect().contains(point)
     }
 
-    /// The pictures of the windows this panel names, where its wells stand:
-    /// each window's latest buffer, in the desk's coordinates. The session
-    /// hands them to the compositor, which draws them over the chrome, so a
-    /// preview is the window as it is now, not a copy of it.
+    /// The pictures of the windows this panel names, where its wells stand: each window's latest
+    /// buffer, in the desk's coordinates. The session hands them to the compositor, which draws
+    /// them over the chrome, so a preview is the window as it is now, not a copy of it.
     #[must_use]
     pub fn pictures(&self) -> Vec<Picture> {
         let view = self.inner.view.borrow();
@@ -756,8 +742,8 @@ impl Switcher {
         )
     }
 
-    /// Paint the panel, over the desk and under the windows' own pictures.
-    /// `host` is the display it centres on, in the chrome's coordinates.
+    /// Paint the panel, over the desk and under the windows' own pictures. `host` is the display it
+    /// centres on, in the chrome's coordinates.
     pub fn draw(
         &self,
         scene: &mut Scene,
@@ -781,8 +767,8 @@ impl Switcher {
         let panel = geometry.panel;
         let tokens = &theme.tokens;
 
-        // A Panel (HIG §9.1): the shell's floating-surface ground, edge and
-        // elevation, like the overview and the palette.
+        // A Panel (HIG §9.1): the shell's floating-surface ground, edge and elevation, like the
+        // overview and the palette.
         ui::surface::shadow(
             scene,
             transform,
@@ -825,9 +811,9 @@ impl Switcher {
             }
         }
 
-        // The keys under the cards, and the page's place among the windows when
-        // they do not all fit. The selected window's title is on its card
-        // already; repeating it here only said the same thing twice.
+        // The keys under the cards, and the page's place among the windows when they do not all
+        // fit. The selected window's title is on its card already; repeating it here only said the
+        // same thing twice.
         if geometry.footer.height() > 0.0 {
             Self::draw_footer(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -841,17 +827,16 @@ impl Switcher {
         inner.drawn.set(inner.revision.get());
     }
 
-    /// How a card paints: the card stands on the panel, not on the desk, so
-    /// its lift is taken off the panel's own ground — the surface step that
-    /// makes it read as lifted there rather than off the desk behind.
+    /// How a card paints: the card stands on the panel, not on the desk, so its lift is taken off
+    /// the panel's own ground — the surface step that makes it read as lifted there rather than off
+    /// the desk behind.
     fn card_tier(theme: &Theme, state: ui::chrome::SelectionState) -> ui::chrome::SelectionTier {
         ui::chrome::selection_tier_on(theme, state, ui::chrome::shell::panel_ground(theme))
     }
 
-    /// One window's card: its preview well (or app mark) over its elided
-    /// title, lifted off the panel's own ground when selected or hovered, and
-    /// ringed in the person's colour when the walk has reached it. A card
-    /// whose window the compositor pictures draws no face: the window itself
+    /// One window's card: its preview well (or app mark) over its elided title, lifted off the
+    /// panel's own ground when selected or hovered, and ringed in the person's colour when the walk
+    /// has reached it. A card whose window the compositor pictures draws no face: the window itself
     /// stands there.
     fn draw_card(
         ctx: &mut PaintCtx<'_>,
@@ -865,9 +850,8 @@ impl Switcher {
         let colors = &tokens.colors;
         Self::card_tier(theme, state).paint(scene, transform, card, m.card_radius);
         if state.active {
-            // The card the walk reached wears the person's own colour, just
-            // outside its edge: chosen at a glance on either theme, without
-            // taking any room from the window it shows.
+            // The card the walk reached wears the person's own colour, just outside its edge:
+            // chosen at a glance on either theme, without taking any room from the window it shows.
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
@@ -890,8 +874,7 @@ impl Switcher {
             window.window.is_none().then_some(&app),
         );
 
-        // The title line, led by the app mark when the well shows the
-        // window instead of the mark.
+        // The title line, led by the app mark when the well shows the window instead of the mark.
         let pictured = window.window.is_some();
         let gap = f64::from(tokens.spacing.s1);
         let lead = if pictured { m.mark + gap } else { 0.0 };
@@ -930,9 +913,8 @@ impl Switcher {
         );
     }
 
-    /// The keys the walk answers to, drawn under the cards in the person's own
-    /// keyboard legends, and where this page stands among the windows when
-    /// they do not all fit.
+    /// The keys the walk answers to, drawn under the cards in the person's own keyboard legends,
+    /// and where this page stands among the windows when they do not all fit.
     fn draw_footer(ctx: &mut PaintCtx<'_>, footer: Rect, view: &SwitcherView, paged: bool) {
         let theme = ctx.theme;
         let hints = Self::hints(view.app_scope);
@@ -966,8 +948,8 @@ impl Switcher {
         };
         let x0 = x0 + painted + gap;
         if x0 + caption_w > footer.x1 + 1.0 {
-            // A panel too narrow for both keeps its keys whole: the page's
-            // place is told to a reader instead.
+            // A panel too narrow for both keeps its keys whole: the page's place is told to a
+            // reader instead.
             return;
         }
         let (_, line) = ctx.text.measure_style(&caption, None, &style);
@@ -982,8 +964,8 @@ impl Switcher {
         );
     }
 
-    /// The keys under the panel: the chord that walks, and what Enter and
-    /// Escape do to the walk. The app's walk answers to the key above Tab.
+    /// The keys under the panel: the chord that walks, and what Enter and Escape do to the walk.
+    /// The app's walk answers to the key above Tab.
     fn hints(app_scope: bool) -> Vec<KeyHint> {
         let walk = if app_scope {
             ["Alt", "`"]
@@ -998,8 +980,8 @@ impl Switcher {
     }
 }
 
-/// One window the panel pictures, and where its well stands: the session
-/// hands each to the compositor, which draws the window's own buffer there.
+/// One window the panel pictures, and where its well stands: the session hands each to the
+/// compositor, which draws the window's own buffer there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Picture {
     /// The compositor's window: the client surface the card's window shows.
@@ -1008,8 +990,8 @@ pub struct Picture {
     pub rect: Rect,
 }
 
-/// The words a card shows for its window: an unnamed window is an untitled one, as the desk's
-/// own list calls it.
+/// The words a card shows for its window: an unnamed window is an untitled one, as the desk's own
+/// list calls it.
 fn title_of(card: &SwitcherCard) -> String {
     if card.title.trim().is_empty() {
         t("window-switcher-untitled")
@@ -1027,10 +1009,9 @@ pub struct PreviewWell {
     pub icon: f64,
 }
 
-/// A 16:10 well on the window-card surface, holding a window's live preview
-/// or, when `app` is given, that app's own face. Shared by the switcher and
-/// the overview so a window looks the same in both. A host that pictures the
-/// window itself passes `None`: the picture stands in the well.
+/// A 16:10 well on the window-card surface, holding a window's live preview or, when `app` is
+/// given, that app's own face. Shared by the switcher and the overview so a window looks the same
+/// in both. A host that pictures the window itself passes `None` : the picture stands in the well.
 pub fn draw_preview_well(
     scene: &mut Scene,
     transform: Affine,
@@ -1088,8 +1069,8 @@ fn draw_app_face(
     if app.glyph == Icon::AppWindow {
         ui::widget::draw_app_mark(scene, transform, mark, None, app.kind, ink);
     } else {
-        // The symbol's stroke grows with it, as the launcher's large
-        // symbols are drawn, so a big face does not read as a hairline.
+        // The symbol's stroke grows with it, as the launcher's large symbols are drawn, so a big
+        // face does not read as a hairline.
         let stroke = (well.icon / 24.0 * 1.5).clamp(1.5, 3.0);
         app.glyph
             .draw_with_stroke(scene, transform, mark, ink, stroke);
@@ -1100,8 +1081,8 @@ fn draw_app_face(
 mod tests {
     use super::*;
 
-    /// A window with no live picture and no artwork shows its app's own
-    /// symbol, so two apps' windows look different, in either host.
+    /// A window with no live picture and no artwork shows its app's own symbol, so two apps'
+    /// windows look different, in either host.
     #[test]
     fn a_window_without_a_picture_shows_its_apps_symbol() {
         let app = |app_id: &str| {
@@ -1162,10 +1143,9 @@ mod tests {
         assert!(many.panel.x1 <= host.x1 && many.panel.y1 <= host.y1);
     }
 
-    /// The panel and every card on it stay inside the display at every
-    /// size, from a phone-class window to the desktop, whatever the
-    /// window count: a host too small for one full card gets a smaller
-    /// card, never a panel that runs off the screen.
+    /// The panel and every card on it stay inside the display at every size, from a phone-class
+    /// window to the desktop, whatever the window count: a host too small for one full card gets a
+    /// smaller card, never a panel that runs off the screen.
     #[test]
     fn the_switcher_panel_fits_every_host() {
         for theme in [Theme::dark(), Theme::dark().with_text_scale(1.5)] {
@@ -1217,9 +1197,9 @@ mod tests {
         }
     }
 
-    /// Every card takes the shape of the window it shows, at the one height
-    /// the row shares: the compositor's picture of the window then fills the
-    /// card instead of standing in it with bare bars at its sides.
+    /// Every card takes the shape of the window it shows, at the one height the row shares: the
+    /// compositor's picture of the window then fills the card instead of standing in it with bare
+    /// bars at its sides.
     #[test]
     fn every_card_takes_its_windows_shape_at_the_rows_one_height() {
         let theme = Theme::dark();
@@ -1255,8 +1235,8 @@ mod tests {
                 "under the well only the title's room"
             );
         }
-        // A card the desk has no window to measure stands at the desk's own
-        // shape, so an unpictured window's app face is not squeezed either.
+        // A card the desk has no window to measure stands at the desk's own shape, so an unpictured
+        // window's app face is not squeezed either.
         let mut standing = shaped.clone();
         for card in &mut standing.cards {
             card.size = None;
@@ -1271,9 +1251,9 @@ mod tests {
         }
     }
 
-    /// A preview grows with the display it stands on: a handful of windows on a
-    /// desktop show far larger than the standing thumbnail, while a small
-    /// display still stands the panel inside itself.
+    /// A preview grows with the display it stands on: a handful of windows on a desktop show far
+    /// larger than the standing thumbnail, while a small display still stands the panel inside
+    /// itself.
     #[test]
     fn previews_grow_with_the_display_they_stand_on() {
         let m = Metrics::from_theme(&Theme::dark());
@@ -1295,9 +1275,9 @@ mod tests {
         );
     }
 
-    /// The card the walk reached is lifted off the panel's own ground by the
-    /// selection's full step and ringed in the person's colour; the cards the
-    /// walk has not reached are the panel itself, unringed.
+    /// The card the walk reached is lifted off the panel's own ground by the selection's full step
+    /// and ringed in the person's colour; the cards the walk has not reached are the panel itself,
+    /// unringed.
     #[test]
     fn the_walked_card_stands_off_the_panels_own_ground() {
         for theme in [Theme::dark(), Theme::light()] {
@@ -1321,8 +1301,8 @@ mod tests {
         }
     }
 
-    /// The keys the walk answers to stand under the cards in the person's
-    /// words, and a reader hears them there too, after the windows.
+    /// The keys the walk answers to stand under the cards in the person's words, and a reader hears
+    /// them there too, after the windows.
     #[test]
     fn the_panel_names_the_keys_under_its_cards() {
         let switcher = Switcher::default();
@@ -1392,9 +1372,8 @@ mod tests {
         }
     }
 
-    /// The panel names each window it shows where its well stands, in the
-    /// desk's coordinates, so the compositor can draw the window itself
-    /// there.
+    /// The panel names each window it shows where its well stands, in the desk's coordinates, so
+    /// the compositor can draw the window itself there.
     #[test]
     fn the_panel_hands_the_compositor_each_windows_place_on_the_desk() {
         let switcher = Switcher::default();
@@ -1449,8 +1428,8 @@ mod tests {
         );
     }
 
-    /// A window whose app holds secrets has no picture: its card says so with
-    /// the app's face, and the compositor is asked for nothing.
+    /// A window whose app holds secrets has no picture: its card says so with the app's face, and
+    /// the compositor is asked for nothing.
     #[test]
     fn a_card_without_a_window_shows_its_apps_face() {
         let switcher = Switcher::default();
@@ -1473,8 +1452,8 @@ mod tests {
         );
     }
 
-    /// A reader meets the windows as a list of choices, the one the walk
-    /// reached chosen and focused.
+    /// A reader meets the windows as a list of choices, the one the walk reached chosen and
+    /// focused.
     #[test]
     fn the_panel_reads_as_a_list_of_windows_with_the_reached_one_chosen() {
         let switcher = Switcher::default();

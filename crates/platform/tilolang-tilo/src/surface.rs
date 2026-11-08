@@ -547,9 +547,6 @@ struct SurfaceFile<'a> {
 /// The `surface.toml` bytes of the host with these packages.
 ///
 /// The host resource comes first: it is the host record's own kind.
-///
-/// # Errors
-/// The surface does not serialize (a schema holding a value TOML cannot write).
 pub fn surface_toml(packages: &[&Meta]) -> Result<Vec<u8>, toml::ser::Error> {
     surface_toml_reading(packages, &[])
 }
@@ -557,9 +554,6 @@ pub fn surface_toml(packages: &[&Meta]) -> Result<Vec<u8>, toml::ser::Error> {
 /// The `surface.toml` bytes of an app of `packages` that reads the records of the packages
 /// `reads` (those it `use`s): it declares their resource kinds as `reads`, which is what the
 /// broker admits its read-only join to their records by.
-///
-/// # Errors
-/// The surface does not serialize (a schema holding a value TOML cannot write).
 pub fn surface_toml_reading(
     packages: &[&Meta],
     reads: &[Meta],

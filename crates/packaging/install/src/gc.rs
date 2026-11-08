@@ -71,10 +71,6 @@ impl Request {
 
 /// The apps in `store` a change installed or updated at or after `since`
 /// (Unix seconds): what a collection after that change keeps.
-///
-/// # Errors
-///
-/// When the registry cannot be read.
 pub fn written_since(store: &PackageStore, since: u64) -> Result<Vec<String>, String> {
     let registry = store
         .registry()

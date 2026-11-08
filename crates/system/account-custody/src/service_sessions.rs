@@ -39,8 +39,6 @@ pub fn service_session_secret(session: &SessionCookies) -> Result<Secret, Custod
 }
 
 /// Authenticate the selected protected secret against a concrete person/setup.
-/// # Errors
-/// Rejects unsupported secret shapes, foreign bindings, or malformed credentials.
 pub fn service_session_from_secret(
     secret: &Secret,
     id: &AccountId,
@@ -74,8 +72,6 @@ pub fn service_session_from_secret(
 /// Exercise the protected codec without opening a vault or publishing credentials.
 ///
 /// Checks exact selection, person and setup bindings and redacted diagnostics.
-/// # Errors
-/// Rejects malformed sessions or a failed codec/binding contract.
 pub fn verify_service_session_codec(session: &SessionCookies) -> Result<(), CustodyError> {
     let secret = service_session_secret(session)?;
     let id = AccountId::new(&session.session_id);
@@ -179,8 +175,6 @@ impl Custodian {
     /// Durably forget precisely one authenticated selection, never another account.
     /// The vault replaces credentials with a bound receipt before metadata removal;
     /// a failed metadata save therefore cannot make the cookies usable again.
-    /// # Errors
-    /// Refuses foreign selections, missing/corrupt custody or failed durable saves.
     pub fn forget_service_session(
         &self,
         id: &AccountId,
@@ -291,8 +285,6 @@ impl Custodian {
 
     /// Resolve only this selected website session from private current-person custody.
     /// Cookie installation is not proof of provider authentication.
-    /// # Errors
-    /// Missing custody, changed metadata, foreign identity/setup, or invalid protected secret.
     pub fn service_session(
         &self,
         id: &AccountId,

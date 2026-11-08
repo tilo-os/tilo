@@ -33,10 +33,6 @@ impl std::error::Error for MissingRuntime {}
 
 /// Re-sign `entry` after reconciling obsolete, unpublished SDK dependencies.
 /// The caller must first verify the catalogue against its existing owner pin.
-///
-/// # Errors
-/// If signatures or publisher ownership differ, or dropping an orphan would
-/// remove the current artifact or one of its target's required rollback slots.
 pub fn reconcile(
     entry: &mut RegistryEntry,
     catalogue: &[RegistryEntry],

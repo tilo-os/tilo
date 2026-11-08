@@ -13,11 +13,9 @@ use tilo_compositor::{CursorIcon, HostLayer, KeyClaim, SurfaceHost};
 use tilo_desktop::overlays::Overlays;
 
 /// The session's reader of presses outside the overlays.
-///
-/// It shows nothing and takes nothing: it exists so the compositor's press
-/// reaches the stack with the point it landed on. A surface the session
-/// cannot judge — one its own view places, like a window's menu — is left to
-/// that view, which closes it as it always has.
+/// It shows nothing and takes nothing: it exists so the compositor's press reaches the stack with
+/// the point it landed on. A surface the session cannot judge — one its own view places, like a
+/// window's menu — is left to that view, which closes it as it always has.
 pub(crate) struct SlotsHost {
     overlays: Overlays,
 }
@@ -42,18 +40,17 @@ impl SurfaceHost for SlotsHost {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    /// A press outside the surface it landed in: the topmost popup the
-    /// session placed, standing where the press is not, goes down — and stays
-    /// down for that press, so it does not reopen under it.
+    /// A press outside the surface it landed in: the topmost popup the session placed, standing
+    /// where the press is not, goes down — and stays down for that press, so it does not reopen
+    /// under it.
     fn pressed_elsewhere(&mut self, x: f64, y: f64) {
         if let Some(slot) = self.overlays.press_outside(x, y) {
             self.overlays.dismiss(slot);
         }
     }
 
-    /// The button came up: the press is over. What it closed stays down until
-    /// what the press asked is carried out, which a quick click delivers after
-    /// its release.
+    /// The button came up: the press is over. What it closed stays down until what the press asked
+    /// is carried out, which a quick click delivers after its release.
     fn press_ended(&mut self, _x: f64, _y: f64) {
         self.overlays.press_ended();
     }
@@ -76,8 +73,7 @@ impl SurfaceHost for SlotsHost {
     }
 }
 
-/// Mount the session's reader of presses outside the overlays over
-/// `compositor`.
+/// Mount the session's reader of presses outside the overlays over `compositor` .
 pub(crate) fn mount(compositor: &mut tilo_compositor::Compositor, overlays: &Overlays) {
     compositor.add_host(Box::new(SlotsHost::new(overlays.clone())));
 }

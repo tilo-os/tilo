@@ -142,9 +142,6 @@ impl FeedbackServices {
 
     /// Start a report about what the person picked; the composer opens on
     /// it.
-    ///
-    /// # Errors
-    /// Refuses while the controller is busy in an effect.
     pub fn begin_report(&self, picked: PickedReport) -> Result<(), crate::feedback::Error> {
         let mut controller = self
             .controller
@@ -165,9 +162,6 @@ impl FeedbackServices {
 
     /// Name the window the next report is about, as the desktop chose it
     /// when the person asked for Feedback there.
-    ///
-    /// # Errors
-    /// Refuses while the controller is busy in an effect.
     pub fn about(&self, subject: Option<Subject>) -> Result<(), crate::feedback::Error> {
         let mut controller = self
             .controller
@@ -185,9 +179,6 @@ impl FeedbackServices {
     /// Pump after a host storage/transport wake, publishing progress to the
     /// current private presentation. Its `LocalState` retains the component's
     /// retirement scope, so a late completion cannot wake a closed component.
-    ///
-    /// # Errors
-    /// Reports a busy controller or the actual storage/transport failure.
     pub fn pump(&self) -> Result<(), crate::feedback::Error> {
         self.poll_model();
         let result = self
@@ -322,9 +313,6 @@ pub fn definition() -> &'static crate::application::ApplicationDefinition {
 /// Prepare the chrome component over an isolated, ephemeral store. The host's
 /// durable outbox is lent separately; raw drafts cannot reach profile records,
 /// history or workspace synchronization through this preparation path.
-///
-/// # Errors
-/// Reports invalid host identity or component admission failure.
 pub fn prepare(
     services: Option<FeedbackServices>,
     device: &str,

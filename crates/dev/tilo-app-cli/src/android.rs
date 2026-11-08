@@ -1091,11 +1091,6 @@ pub enum LibraryTarget {
 }
 
 /// The app's Android library target.
-///
-/// # Errors
-///
-/// When the app has neither an `<package>-android` example nor a library
-/// that calls `ui::dev_reload_entry!`.
 pub fn library_target(app_dir: &Path, package: &str) -> Result<LibraryTarget> {
     let manifest_path = app_dir.join("Cargo.toml");
     let manifest: toml::Table = std::fs::read_to_string(&manifest_path)
@@ -2289,10 +2284,6 @@ pub fn parse_devices(output: &str) -> (Vec<String>, Vec<(String, String)>) {
 impl Adb {
     /// The device `requested` names, else `$ANDROID_SERIAL`'s, else the one
     /// device connected.
-    ///
-    /// # Errors
-    ///
-    /// When `adb` cannot run, or no single device is ready.
     pub fn connect(tools: &Toolchain, requested: Option<&str>) -> Result<Self> {
         let program = tools.adb();
         let output = Command::new(&program)
@@ -2374,11 +2365,6 @@ impl Adb {
     }
 
     /// Install `apk`, replacing an earlier build of the app.
-    ///
-    /// # Errors
-    ///
-    /// When the install fails; a build signed with another key names the
-    /// uninstall that makes room for it.
     pub fn install(&self, apk: &Path, application_id: &str) -> Result<()> {
         let output = self
             .command()
@@ -2430,10 +2416,6 @@ impl Adb {
     }
 
     /// Stream the toolkit's log (tag `tilo`) and crashes from now on.
-    ///
-    /// # Errors
-    ///
-    /// When `adb logcat` cannot start.
     pub fn logcat(&self) -> Result<Child> {
         self.command()
             .args(["logcat", "-v", "brief", "-T", "1"])
@@ -2527,10 +2509,6 @@ pub fn run_on_device(start: &Path, request: &DeviceRequest) -> Result<AndroidBui
 /// `tilo-app dev --platform android`: `run`, then rebuild, reinstall and
 /// relaunch after every change to the app (and a local SDK) until Ctrl-C.
 /// The app restarts; its state is what it stored, as after any restart.
-///
-/// # Errors
-///
-/// When there is no device, or the file watcher cannot start.
 pub fn dev_on_device(start: &Path, dev: &crate::DevRequest, request: &DeviceRequest) -> Result<()> {
     if !dev.forwarded.is_empty() {
         bail!("an Android app takes no command-line arguments");
@@ -2583,10 +2561,6 @@ pub fn dev_on_device(start: &Path, dev: &crate::DevRequest, request: &DeviceRequ
 
 /// `tilo-app check --platform android`: Clippy over the Android library for
 /// `arch`, warnings denied.
-///
-/// # Errors
-///
-/// When the app has no Android entry, the NDK is missing, or Clippy fails.
 pub fn clippy(start: &Path, arch: PackageArch) -> Result<()> {
     let app_dir = super::resolve_app_dir(start)?;
     let package = super::cargo_package_name(&app_dir.join("Cargo.toml"))?;

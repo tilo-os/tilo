@@ -5482,6 +5482,15 @@
         {
           "name": "selected",
           "doc": "The selection changed: carries the items selected, in the order they stand, and none when the selection was put away."
+        },
+        {
+          "name": "opened",
+          "doc": "The person opened a row into its item where it stands: carries the item.",
+          "value": "resource"
+        },
+        {
+          "name": "closed",
+          "doc": "The row standing open closed: pressed again, Escape, a press beside it, or its item left the list."
         }
       ],
       "state": [
@@ -5508,6 +5517,13 @@
           "doc": "How far the list is scrolled, in logical pixels.",
           "type": {
             "option": "float"
+          }
+        },
+        {
+          "name": "open",
+          "doc": "The item standing open into its document where it stands in the list: its row grows to hold what the item's row gives as its `detail`, and Escape or a press beside it closes it. A host keeps which item is open and gives it back, so a list it builds again shows the item as the person left it.",
+          "type": {
+            "option": "resource"
           }
         }
       ],
@@ -7377,6 +7393,11 @@
           "doc": "The row: a `ui.ListRow`, or any view.",
           "accepts": "view",
           "default": true
+        },
+        {
+          "name": "detail",
+          "doc": "The item's document, shown under the row while the row stands open into it, one lead in under the row's text: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. Without one, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).",
+          "accepts": "view"
         }
       ],
       "semantics": {

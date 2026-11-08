@@ -234,19 +234,19 @@ export function createAgents({
      * Every agent cursor in the workspace now: the live layer's interpolated
      * remote state of publishers whose presence says `agent`.
      */
-    cursors(nowMs) {
+    cursors() {
       if (!live) return [];
-      return live.remoteState(nowMs)
-        .filter(state => state.participant?.kind === 'agent')
-        .map(state => ({
-          device: state.publisher,
-          label: state.participant.label,
-          color: state.participant.color,
-          activity: state.participant.activity,
-          focus: state.focus,
-          pointer: state.pointer,
-          selection: state.selection,
-          stale: state.stale,
+      return live.presenceMembers()
+        .filter(member => member.agent)
+        .map(member => ({
+          device: member.publisher,
+          label: member.label,
+          color: member.colour,
+          activity: member.activity,
+          focus: member.focus,
+          pointer: member.pointer ? {tile: {tab: member.pointer.tab}, at: member.pointer.at} : null,
+          selection: member.selection,
+          stale: !member.pointer || member.pointer.ageMs > 10000,
         }));
     },
     pump,

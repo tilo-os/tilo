@@ -196,9 +196,6 @@ impl Ini {
 
     /// `set(section, option, value)`: replaces the option's value in place,
     /// or adds the option at the end of the section.
-    ///
-    /// # Errors
-    /// No such section.
     pub fn set(&mut self, section: &str, option: &str, value: &str) -> Result<()> {
         let Some(found) = self.sections.iter_mut().find(|s| s.name == section) else {
             return Err(Error::new(format!("No section: '{section}'")));

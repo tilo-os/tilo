@@ -1,7 +1,6 @@
-//! The person's settings follow them to their other devices, and this
-//! device's stay on it: what the person sets here is offered to the peer
-//! fabric, what they set on their laptop arrives here, and neither carries a
-//! setting of the machine it was set on.
+//! The person's settings follow them to their other devices, and this device's stay on it: what the
+//! person sets here is offered to the peer fabric, what they set on their laptop arrives here, and
+//! neither carries a setting of the machine it was set on.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -16,12 +15,13 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
-use tilo_compositor::OutputConfig;
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_device_fabric::speaker_group::SpeakerFabricState;
 use tilo_device_fabric::unlock::UnlockFabricState;
@@ -32,9 +32,6 @@ use tilo_device_fabric::{
 };
 use tilo_session::{Options, Session};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-
 /// This device's fabric id.
 fn this_device() -> DeviceId {
     DeviceId::new("this-pc").expect("a device id")
@@ -44,9 +41,8 @@ fn this_device() -> DeviceId {
 #[derive(Default)]
 struct Fabric {
     converged: DeviceFabric,
-    /// What this device offered for its next snapshot: a transport publishes
-    /// what it was offered when it next carries the snapshot, not in the
-    /// pass it was offered in.
+    /// What this device offered for its next snapshot: a transport publishes what it was offered
+    /// when it next carries the snapshot, not in the pass it was offered in.
     pending: BTreeMap<DeviceId, Vec<RoamingSetting>>,
 }
 
@@ -64,8 +60,8 @@ impl FakeLink {
         link
     }
 
-    /// The fabric as every device of the person reads it: what this device
-    /// offered last pass is carried as its own snapshot.
+    /// The fabric as every device of the person reads it: what this device offered last pass is
+    /// carried as its own snapshot.
     fn converged(&self) -> DeviceFabric {
         let mut fabric = self.fabric.lock().expect("the fabric");
         let pending = std::mem::take(&mut fabric.pending);
@@ -110,8 +106,8 @@ impl FakeLink {
             .unwrap_or_default()
     }
 
-    /// Another of the person's devices set `values` at `counter`, as its own
-    /// records, beside whatever it already offered.
+    /// Another of the person's devices set `values` at `counter` , as its own records, beside
+    /// whatever it already offered.
     fn set_on(&self, device: &str, counter: u64, values: &[(&str, Value)]) -> Result<(), String> {
         let origin = DeviceId::new(device).expect("a device id");
         let stamp = FabricStamp {
@@ -148,7 +144,7 @@ impl FakeLink {
     }
 }
 
-/// A snapshot of `device` carrying `settings`, as its session publishes one.
+/// A snapshot of `device` carrying `settings` , as its session publishes one.
 fn snapshot(device: DeviceId, counter: u64, settings: Vec<RoamingSetting>) -> DeviceFabricSnapshot {
     DeviceFabricSnapshot {
         schema_version: FABRIC_SCHEMA_VERSION,
@@ -228,23 +224,18 @@ impl FabricLink for FakeLink {
 
 fn session(link: &FakeLink) -> Session {
     let fabric: SharedLink = Arc::new(link.clone());
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            fabric: Some(fabric),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        fabric: Some(fabric),
+        ..Options::default()
+    })
 }
 
 fn step(session: &mut Session) {
     session.step(Duration::from_millis(1)).expect("step");
 }
 
-/// Step the loop until `done` holds, for a couple of seconds: the fabric is
-/// read a few times a second, not on every turn.
+/// Step the loop until `done` holds, for a couple of seconds: the fabric is read a few times a
+/// second, not on every turn.
 fn when(session: &mut Session, done: impl Fn() -> bool) {
     let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
@@ -264,9 +255,9 @@ fn a_personal_setting_set_here_arrives_on_the_other_device_and_a_device_setting_
     let link = FakeLink::joined();
     let mut session = session(&link);
 
-    // The person turns the dark theme on, as the Settings pane and the
-    // palette do, and sets a thing or two that belong to this machine: the
-    // lock's deadline, and an app's entry that stays on this device.
+    // The person turns the dark theme on, as the Settings pane and the palette do, and sets a thing
+    // or two that belong to this machine: the lock's deadline, and an app's entry that stays on
+    // this device.
     settings_store::appearance::MODE
         .set(Some("dark".to_owned()))
         .expect("the theme is kept");
@@ -280,8 +271,7 @@ fn a_personal_setting_set_here_arrives_on_the_other_device_and_a_device_setting_
     )
     .expect("kept");
 
-    // The other device hears what the person holds: their theme, and nothing
-    // of this machine's.
+    // The other device hears what the person holds: their theme, and nothing of this machine's.
     when(&mut session, || {
         link.what_their_devices_read().get("tilo.appearance.mode")
             == Some(&serde_json::json!("dark"))
@@ -306,16 +296,16 @@ fn a_personal_setting_set_here_arrives_on_the_other_device_and_a_device_setting_
         "a device only offers its own records"
     );
 
-    // The theme keeps the stamp it was offered with: a setting that did not
-    // change is not offered again as though the person had just set it.
+    // The theme keeps the stamp it was offered with: a setting that did not change is not offered
+    // again as though the person had just set it.
     let stamp = offered["tilo.appearance.mode"].stamp.clone();
     for _ in 0..4 {
         step(&mut session);
     }
     assert_eq!(link.offered()["tilo.appearance.mode"].stamp, stamp);
 
-    // What they set on their laptop arrives here, in the document every pane
-    // and app reads; a setting of that machine's cannot travel at all.
+    // What they set on their laptop arrives here, in the document every pane and app reads; a
+    // setting of that machine's cannot travel at all.
     link.set_on(
         "laptop",
         1,
@@ -349,9 +339,9 @@ fn a_personal_setting_set_here_arrives_on_the_other_device_and_a_device_setting_
         serde_json::json!(true)
     );
 
-    // A value the person sets here is not undone by one their laptop still
-    // holds: the laptop's wallpaper was the newest the fabric had, they pick
-    // another here, and this desktop keeps theirs.
+    // A value the person sets here is not undone by one their laptop still holds: the laptop's
+    // wallpaper was the newest the fabric had, they pick another here, and this desktop keeps
+    // theirs.
     link.set_on(
         "laptop",
         100,
@@ -378,8 +368,7 @@ fn a_personal_setting_set_here_arrives_on_the_other_device_and_a_device_setting_
         "the newest change the person made is the one their devices read"
     );
 
-    // And it is theirs, not a change made here: this device does not offer it
-    // back as its own.
+    // And it is theirs, not a change made here: this device does not offer it back as its own.
     let offered = link.offered();
     assert!(
         offered

@@ -21,18 +21,17 @@ use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::shell::PingError;
 use smithay::wayland::shell::xdg::ShellClient;
 
-/// How long a ping may stay unanswered before the app counts as not
-/// responding. Long enough for a busy app to finish a heavy step (opening a
-/// large file, a garbage collection), short enough that a person who clicked
-/// learns why nothing happens.
+/// How long a ping may stay unanswered before the app counts as not responding. Long enough for a
+/// busy app to finish a heavy step (opening a large file, a garbage collection), short enough that
+/// a person who clicked learns why nothing happens.
 pub const UNANSWERED: Duration = Duration::from_secs(5);
 
-/// The least time between two pings to an app that answered: input comes in
-/// bursts, and one answer per burst says all there is to know.
+/// The least time between two pings to an app that answered: input comes in bursts, and one answer
+/// per burst says all there is to know.
 pub const PING_SPACING: Duration = Duration::from_secs(1);
 
-/// One client's ping in flight, as plain data: the compositor keeps one per
-/// client it pinged and counts its pongs.
+/// One client's ping in flight, as plain data: the compositor keeps one per client it pinged and
+/// counts its pongs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Watch {
     /// The client's pong count when the ping went out.
@@ -46,8 +45,7 @@ pub struct Watch {
 /// What a [`Watch`] calls for after a look at the client's pongs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// The ping was answered: the watch ends, and with it any "not
-    /// responding" state.
+    /// The ping was answered: the watch ends, and with it any "not responding" state.
     Answered,
     /// Still out, within its time.
     Waiting,
@@ -66,7 +64,7 @@ impl Watch {
         }
     }
 
-    /// Judge the watch against the client's pong count `pongs` at `now`.
+    /// Judge the watch against the client's pong count `pongs` at `now` .
     pub fn judge(&mut self, pongs: u64, now: Instant) -> Verdict {
         if pongs != self.pongs_at_send {
             self.hung = false;
@@ -80,15 +78,15 @@ impl Watch {
         }
     }
 
-    /// The person chose "Wait": not responding no longer shows, and shows
-    /// again only after another [`UNANSWERED`] without an answer.
+    /// The person chose "Wait": not responding no longer shows, and shows again only after another
+    /// [`UNANSWERED`] without an answer.
     pub const fn wait(&mut self, now: Instant) {
         self.since = now;
         self.hung = false;
     }
 
-    /// When this watch next needs a look: the moment it would turn hung.
-    /// `None` once it is hung; the answer wakes the loop by itself.
+    /// When this watch next needs a look: the moment it would turn hung. `None` once it is hung;
+    /// the answer wakes the loop by itself.
     #[must_use]
     pub fn deadline(&self) -> Option<Instant> {
         (!self.hung).then_some(self.since.checked_add(UNANSWERED).unwrap_or(self.since))
@@ -100,7 +98,7 @@ impl Watch {
     }
 }
 
-/// Pongs counted per `xdg_wm_base`, the only way a client answers a ping.
+/// Pongs counted per `xdg_wm_base` , the only way a client answers a ping.
 #[derive(Default)]
 pub struct Pongs(Vec<(ShellClient, u64)>);
 
@@ -123,7 +121,7 @@ impl Pongs {
             .map_or(0, |(_, count)| *count)
     }
 
-    /// Forget `client`, which is gone.
+    /// Forget `client` , which is gone.
     pub fn forget(&mut self, client: &ShellClient) {
         self.0.retain(|(known, _)| known != client);
     }
@@ -141,9 +139,8 @@ struct ClientWatch {
 pub struct Watches(Vec<ClientWatch>);
 
 impl Watches {
-    /// Input reached `client` (whose connection is `id`), at `pongs`
-    /// answers: ping it, unless a ping is already out or the last went out
-    /// under [`PING_SPACING`] ago.
+    /// Input reached `client` (whose connection is `id` ), at `pongs` answers: ping it, unless a
+    /// ping is already out or the last went out under [`PING_SPACING`] ago.
     pub fn note_input(&mut self, client: &ShellClient, id: &ClientId, pongs: u64, now: Instant) {
         let index = if let Some(index) = self.0.iter().position(|entry| entry.client == *id) {
             index
@@ -171,7 +168,7 @@ impl Watches {
         }
     }
 
-    /// The person chose "Wait" for the app of connection `id`.
+    /// The person chose "Wait" for the app of connection `id` .
     pub fn wait(&mut self, id: &ClientId, now: Instant) {
         if let Some(watch) = self
             .0
@@ -183,7 +180,7 @@ impl Watches {
         }
     }
 
-    /// Stop watching connection `id`: its app is gone.
+    /// Stop watching connection `id` : its app is gone.
     pub fn forget(&mut self, id: &ClientId) {
         self.0.retain(|entry| entry.client != *id);
     }

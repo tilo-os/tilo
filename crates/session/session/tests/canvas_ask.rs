@@ -34,40 +34,34 @@ mod common;
 use std::time::Duration;
 
 use chat::Chat;
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::InputEvent;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
 use common::{
-    CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, arrangement, on_screen, private_home, show_preset, until,
-    wait_for,
+    CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
 };
 
-/// The agent the workspace keeps for [`PERSON`]: the id its actor works as, and
-/// the one the session makes first when the workspace keeps none.
+/// The agent the workspace keeps for [`PERSON`]: the id its actor works as, and the one the session
+/// makes first when the workspace keeps none.
 const AGENT: &str = "assistant";
 
 /// Enter, the key that submits the canvas entry.
 const KEY_ENTER: u32 = 28;
 
-/// A headless session with the shell as the whole screen and the apps a
-/// development session seeds, the framed canvas in front.
+/// A headless session with the shell as the whole screen and the apps a development session seeds,
+/// the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(common::seeded_apps())],
-            questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(root.join("agent.sock")),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(common::seeded_apps())],
+        questions: Some(Questions::new()),
+        action_plane: ActionPlane::At(root.join("plane.sock")),
+        agent_door: Some(root.join("agent.sock")),
+        ..Options::default()
+    });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
@@ -83,14 +77,14 @@ fn workspace(session: &Session) -> String {
         .expect("a workspace is in front")
 }
 
-/// Chat's record of the workspace in front, as this session holds it open: the
-/// same record the pass derives turns from, so a test reads it without opening
-/// a second writer on the store the session writes through.
+/// Chat's record of the workspace in front, as this session holds it open: the same record the pass
+/// derives turns from, so a test reads it without opening a second writer on the store the session
+/// writes through.
 fn chat(session: &Session) -> Option<Chat> {
     session.chat_of(&workspace(session))
 }
 
-/// The channels Chat's record holds, as `(id, participant keys)`.
+/// The channels Chat's record holds, as `(id, participant keys)` .
 fn channels(chat: &Chat) -> Vec<(String, Vec<String>)> {
     chat.channels
         .iter()
@@ -107,8 +101,8 @@ fn channels(chat: &Chat) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// Type `text` in the canvas entry and press Enter: the person asking, through
-/// the shell's own action.
+/// Type `text` in the canvas entry and press Enter: the person asking, through the shell's own
+/// action.
 fn ask(session: &mut Session, text: &str) {
     common::press(session, CANVAS_ENTRY);
     common::type_text(session, text);
@@ -124,9 +118,8 @@ fn ask(session: &mut Session, text: &str) {
     }
 }
 
-/// A question typed into the canvas entry posts into the person's ask
-/// conversation with the agent the workspace keeps, and that conversation stands
-/// on the canvas where they typed.
+/// A question typed into the canvas entry posts into the person's ask conversation with the agent
+/// the workspace keeps, and that conversation stands on the canvas where they typed.
 #[test]
 fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
     let _settled = ui::motion::testing::settled();
@@ -169,8 +162,8 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
         "the conversation was not there before the ask: {before:?}"
     );
 
-    // Chat's record holds it, with the agent a participant: the turn the broker
-    // delivers to that agent is the person's message in this channel.
+    // Chat's record holds it, with the agent a participant: the turn the broker delivers to that
+    // agent is the person's message in this channel.
     let (_, participants) = channels(&chat(&mut session).expect("Chat's record"))
         .into_iter()
         .find(|(id, _)| *id == channel)
@@ -200,8 +193,47 @@ fn the_ask_is_the_persons_own_step() {
     assert_eq!(verb, "place", "asking is one arranging step");
 }
 
-/// A second ask brings the conversation's place forward instead of standing a
-/// second place of it (`shell.md` §8.1).
+/// What the person asked gives the agent the workspace keeps a turn: the run the broker hands it,
+/// read from the same source the broker reads (shell.md §8.1). The turn is the person's message,
+/// with the agent's id and the conversation's address, so the agent answering is answering this ask.
+#[test]
+fn the_ask_gives_the_kept_agent_a_turn() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    let workspace = workspace(&session);
+    let runs = session.conversation_runs();
+
+    let turns = wait_for(&mut session, "the agent's turn", |_session| {
+        let turns = runs.runs(&workspace).ok()?;
+        (!turns.is_empty()).then_some(turns)
+    });
+    assert_eq!(turns.len(), 1, "one ask is one turn: {turns:?}");
+    let turn = &turns[0];
+    assert_eq!(turn.agent, AGENT, "the agent the ask made is the one");
+    assert_eq!(
+        turn.instruction, "what is on my task list?",
+        "the turn is what the person asked"
+    );
+    let (address, message) = turn
+        .issue
+        .rsplit_once("/messages/")
+        .expect("the issue names the conversation's message");
+    assert!(
+        address.starts_with("chat.workspace/channels/"),
+        "the turn is in the conversation Chat holds: {address}"
+    );
+    assert_eq!(
+        turn.turn.as_ref().map(|turn| turn.message.as_str()),
+        Some(message),
+        "the turn answers that message"
+    );
+    assert!(turn.active, "the person's message waits for its answer");
+}
+
+/// A second ask brings the conversation's place forward instead of standing a second place of it
+/// (`shell.md` §8.1).
 #[test]
 fn a_second_ask_brings_the_conversation_forward() {
     let _settled = ui::motion::testing::settled();

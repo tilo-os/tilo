@@ -1089,25 +1089,23 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
         "the window counts the three changes she has not seen: {window:?}"
     );
     the_catch_up_names_each_item_it_changed(&window);
-    // The wide window's list column carries the mark in its own header, beside the title it
-    // counts: the place a window offers its header actions.
+    // The list is the window's content, so its header is the window's: the mark stands among
+    // the header actions, first, in the row that carries the title it counts.
     let mut slots = Vec::new();
     nodes(&composed, "slot", &mut slots);
     let header = slots
         .iter()
         .find(|slot| {
-            slot.props.get("name")
-                == Some(&tilo_render_protocol::patch::Value::text(
-                    "overview_actions",
-                ))
+            slot.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
+                && slot
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "ui.ChangeMark")
         })
-        .unwrap_or_else(|| panic!("the list's header holds the window's mark: {composed:?}"));
-    assert!(
-        header
-            .children
-            .iter()
-            .any(|child| child.kind == "ui.ChangeMark"),
-        "the list header's mark stands beside its title: {header:?}"
+        .unwrap_or_else(|| panic!("the window's header holds the window's mark: {composed:?}"));
+    assert_eq!(
+        header.children[0].kind, "ui.ChangeMark",
+        "the window's mark stands first among the header's actions: {header:?}"
     );
     // A node in the tree is not a pixel: the mark stands beside "Today", in its row, and the
     // frame has its ink there.
@@ -1122,8 +1120,8 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
         "the mark stands in the title's row: title {today:?}, mark {mark:?}"
     );
     assert!(
-        mark.x0 >= today.x1 && mark.x0 < today.x1 + 300.0,
-        "the mark stands beside the title it counts: title {today:?}, mark {mark:?}"
+        mark.x0 > today.x0 && mark.x1 <= 1280.0,
+        "the mark stands in the header, inside the window it counts: title {today:?}, mark {mark:?}"
     );
     let rgba = away.harness().render_rgba();
     let (wide, tall) = (1280usize, 800usize);

@@ -21,10 +21,6 @@ pub fn device_identity() -> anyhow::Result<SigningIdentity> {
 
 /// A publisher key file ([`registry_types::key_file`]), as
 /// `tilo-runtime-bundle key generate` writes it and CI keeps it in a secret.
-///
-/// # Errors
-///
-/// Reading the file, or a file that is no key file.
 pub fn identity_file(path: &Path) -> anyhow::Result<SigningIdentity> {
     Ok(SigningIdentity::from_signing_key(
         registry_types::key_file::load(path)?,

@@ -483,8 +483,6 @@ fn retain_manifest(
 impl NativeWorkspaceOwner {
     /// Execute a broker-admitted command with separately supplied governor custody.
     /// Public reads return verified metadata only, never retained document bytes.
-    /// # Errors
-    /// Refuses absent custody, current denial, conflicting invocation or damaged content.
     pub fn execute_checkpoint(
         &self,
         request: &CheckpointRequest,
@@ -545,10 +543,6 @@ impl NativeWorkspaceOwner {
     /// Current governor signing custody is required independently of caller Read.
     /// Reusing an id with the same routes returns its original durable acknowledgement;
     /// changed routes are refused, even after later mutations. Naming is separate.
-    ///
-    /// # Errors
-    /// Current read refusal, absent custody, bounded capacity, missing/encrypted/
-    /// incomplete data, pending checkpoint, content I/O or metadata publication failure.
     pub fn capture_checkpoint(
         &self,
         workspace: WorkspaceId,
@@ -689,9 +683,6 @@ impl NativeWorkspaceOwner {
         self.publish_workspace(workspace, candidate, None)
     }
     /// Move a human name to an existing immutable checkpoint. No content/grants copy.
-    ///
-    /// # Errors
-    /// Absent custody, denied current route, missing content or failed publication.
     #[cfg(test)]
     pub fn bind_checkpoint_name(
         &self,
@@ -768,9 +759,6 @@ impl NativeWorkspaceOwner {
     }
     /// Every move of the movable `name`, oldest first, so a person can see who
     /// pointed it where and at which acknowledged publication generation.
-    ///
-    /// # Errors
-    /// Unknown name, or a retained index that is not the accepted one.
     pub fn checkpoint_name_history(
         &self,
         workspace: WorkspaceId,
@@ -791,9 +779,6 @@ impl NativeWorkspaceOwner {
     }
     /// Resolve a movable name only if every retained route is currently readable
     /// and all retained snapshots verify against the authenticated manifest.
-    ///
-    /// # Errors
-    /// Unknown name, current read refusal or absent/corrupt retained content.
     pub fn resolve_checkpoint_name(
         &self,
         workspace: WorkspaceId,
@@ -828,9 +813,6 @@ impl NativeWorkspaceOwner {
 
     /// Materialize all snapshots only after checking EVERY route's current permission.
     /// The immutable id, not a movable name, selects the captured generation.
-    ///
-    /// # Errors
-    /// Current caller denial or any absent, corrupt or unsupported retained content.
     pub fn read_checkpoint(
         &self,
         workspace: WorkspaceId,

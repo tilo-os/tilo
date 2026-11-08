@@ -1597,10 +1597,6 @@ fn approved_in(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 /// Remove an installed extension: its files, its approval and its pin.
-///
-/// # Errors
-/// Returns an error when the directory is not an installed extension of
-/// `root` or cannot be removed.
 pub fn uninstall(extension: &ExtensionInfo, root: &Path) -> Result<(), ExtensionError> {
     let path = extension.path.canonicalize()?;
     let root = root.canonicalize()?;
@@ -1652,9 +1648,6 @@ pub fn granted(extension: &ExtensionInfo) -> ExtensionPermissionSet {
 
 /// Keep what the extension holds now of what it may ask for; nothing
 /// leaves no file.
-///
-/// # Errors
-/// Returns an error when the record cannot be written.
 pub fn set_granted(
     extension: &ExtensionInfo,
     granted: &ExtensionPermissionSet,
@@ -1723,9 +1716,6 @@ fn set_pinned_in(root: &Path, id: &str, pinned: bool) -> Result<(), ExtensionErr
 }
 
 /// Pin or unpin an extension's toolbar button.
-///
-/// # Errors
-/// Returns an error when the preference cannot be written.
 pub fn set_pinned(id: &str, pinned: bool) -> Result<(), ExtensionError> {
     let root = extensions_dir();
     std::fs::create_dir_all(&root)?;
@@ -1733,9 +1723,6 @@ pub fn set_pinned(id: &str, pinned: bool) -> Result<(), ExtensionError> {
 }
 
 /// Summarize permissions declared by an installed extension.
-///
-/// # Errors
-/// Returns an error if the manifest cannot be read or parsed.
 pub fn permission_summary(extension: &ExtensionInfo) -> Result<Vec<String>, ExtensionError> {
     summarize_manifest(&read_manifest(&extension.path.join("manifest.json"))?)
 }

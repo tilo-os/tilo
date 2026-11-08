@@ -65,7 +65,6 @@ fn controls(app: &App) -> Vec<(String, KurboRect)> {
 
 #[test]
 fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
-    // Case `content_card_host_geometry_focus_click_and_resize_are_coherent_before_paint`.
     {
         let mut app = fixture();
         layout(&mut app, 1000);
@@ -127,7 +126,6 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         }
     }
 
-    // Case `short_card_stack_scroll_and_tab_activate_final_action_once_from_enter`.
     {
         let invocations = Rc::new(Cell::new(0));
         let activated = invocations.clone();
@@ -217,7 +215,6 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         );
     }
 
-    // Case `scrollable_empty_state_action_uses_the_real_tab_and_enter_host_route`.
     {
         let invocations = Rc::new(Cell::new(0));
         let activated = invocations.clone();

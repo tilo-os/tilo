@@ -109,9 +109,6 @@ pub fn place(children: &Children, before: Option<&Id>) -> usize {
 
 /// Why a child cannot be grouped under `group`: it names no listed child,
 /// or the child itself (nothing is listed under itself).
-///
-/// # Errors
-/// The refusal, as the lifecycle actions say it.
 pub fn check_group(children: &Children, child: &Id, group: Option<&Id>) -> Result<(), String> {
     match group {
         Some(group) if group == child => Err("nothing is listed under itself".into()),

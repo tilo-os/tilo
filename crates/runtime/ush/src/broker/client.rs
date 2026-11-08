@@ -9,11 +9,6 @@ use super::{Request, Response, SocketAddress, WireFrame};
 
 /// Ask the broker one question, from inside a guest. A host command's output
 /// is discarded; use [`ask_streaming`] to see it.
-///
-/// # Errors
-///
-/// Returns an error if the socket can't be reached, the request can't be
-/// serialized, the write/read fails, or the reply isn't valid JSON.
 pub fn ask(socket: &Path, req: &Request) -> std::io::Result<Response> {
     ask_streaming(socket, req, &mut std::io::sink(), &mut std::io::sink())
 }
@@ -21,11 +16,6 @@ pub fn ask(socket: &Path, req: &Request) -> std::io::Result<Response> {
 /// Ask the broker while copying host-command output to the supplied streams as
 /// soon as it is produced. The output is not repeated in the response, which
 /// carries only the exit status.
-///
-/// # Errors
-///
-/// Returns an error when the broker cannot be reached, the socket protocol is
-/// invalid, or streamed output cannot be written.
 pub fn ask_streaming(
     socket: &Path,
     req: &Request,
@@ -37,11 +27,6 @@ pub fn ask_streaming(
 
 /// Streaming variant which also renders a sparse liveness message on stderr
 /// while a host command is silent. Callers should enable this only for a TTY.
-///
-/// # Errors
-///
-/// Returns an error when the broker cannot be reached, the socket protocol is
-/// invalid, or streamed output cannot be written.
 pub fn ask_streaming_with_progress(
     socket: &Path,
     req: &Request,

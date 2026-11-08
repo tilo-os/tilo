@@ -102,8 +102,6 @@ pub struct History {
 }
 impl History {
     /// Open private ciphertext under existing host-owned custody; never reset.
-    /// # Errors
-    /// Refuses competing owners, corrupt/oversized state and wrong authority.
     pub fn open(root: &Path, owner: &Owner, key: VaultKey) -> Result<Self, SendError> {
         if !owner.valid_principal()
             || !matches!(

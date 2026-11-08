@@ -311,11 +311,6 @@ fn spawn_erased(work: Work) -> Option<Receiver<Erased>> {
 /// not queue behind the background executor. Not generic: `std::thread`'s
 /// start-up and its result plumbing are compiled once for every thread
 /// Settings starts, rather than once per closure (about a kilobyte each).
-///
-/// # Errors
-///
-/// When the system refuses a new thread; `job` is dropped unrun, so a
-/// channel it held reports the work gone.
 pub fn thread(name: &str, job: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name(name.to_owned())

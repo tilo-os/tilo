@@ -13,16 +13,11 @@ use tilo_desktop_model::ids::device_salt_of_key;
 /// A session whose desk mints its ids under `salt`: the salt another device's
 /// key folds to, as this one's does.
 fn session_minting_under(salt: u16) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            salt,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        salt,
+        ..Options::default()
+    })
 }
 
 /// The salt a device's key folds to when the ids it mints do not fit an

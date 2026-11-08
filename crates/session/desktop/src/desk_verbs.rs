@@ -1,11 +1,9 @@
-//! What the desktop publishes: one verb vocabulary per resource, the desk's
-//! and the chrome's, and the rows under the desk — its windows, its
-//! displays, the open search and the empty desk's launchpad — each offering
-//! its own verb of the same vocabulary, bound to the row it stands for.
-//!
-//! A person, the palette, an agent or a test reaches each the same way, by
-//! its address: the verbs are the desk's ([`DeskEffect`]) and the chrome's
-//! ([`ChromeEffect`]), published through [`offer`] as every service's are.
+//! What the desktop publishes: one verb vocabulary per resource, the desk's and the chrome's, and
+//! the rows under the desk — its windows, its displays, the open search and the empty desk's
+//! launchpad — each offering its own verb of the same vocabulary, bound to the row it stands for.
+//! A person, the palette, an agent or a test reaches each the same way, by its address: the verbs
+//! are the desk's ([`DeskEffect`]) and the chrome's ([`ChromeEffect`]), published through [`offer`]
+//! as every service's are.
 
 use tilo_actions::{ActionSpec, Audience, ResourcePresentation, ResourceSpec};
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
@@ -35,19 +33,19 @@ pub const WINDOW_KIND: &str = "desktop.window";
 /// The kind of a display's resource.
 pub const DISPLAY_KIND: &str = "desktop.display";
 
-/// The address of the open search's row `row`.
+/// The address of the open search's row `row` .
 #[must_use]
 pub fn search_row_id(row: usize) -> String {
     format!("{SEARCH_RESOURCE}:row:{row}")
 }
 
-/// The address of tab `tab`'s resource.
+/// The address of tab `tab` 's resource.
 #[must_use]
 pub fn tab_resource_id(tab: u64) -> String {
     window::resource(tab)
 }
 
-/// The address of display `display`'s resource.
+/// The address of display `display` 's resource.
 #[must_use]
 pub fn display_resource_id(display: u32) -> String {
     format!("desktop:display:{display}")
@@ -56,7 +54,7 @@ pub fn display_resource_id(display: u32) -> String {
 /// The kind of a card of the empty desk's launchpad.
 pub const LAUNCHPAD_CARD_KIND: &str = "desktop.launchpad-card";
 
-/// The address of the launchpad's card `slug`.
+/// The address of the launchpad's card `slug` .
 #[must_use]
 pub fn launchpad_card_id(slug: &str) -> String {
     format!("{LAUNCHPAD_RESOURCE}:{slug}")
@@ -75,8 +73,8 @@ const VERB_SHORTCUTS: &[(&str, ShortcutAction)] = &[
     ("split-right", ShortcutAction::DetachTab),
 ];
 
-/// `resource` with the chord of each of its actions that a shortcut reaches
-/// shown beside it, as the person's table binds it now.
+/// `resource` with the chord of each of its actions that a shortcut reaches shown beside it, as the
+/// person's table binds it now.
 fn with_shortcuts(mut resource: ResourceSpec, shortcuts: &ShortcutConfig) -> ResourceSpec {
     for action in &mut resource.actions {
         let bound = VERB_SHORTCUTS
@@ -90,8 +88,8 @@ fn with_shortcuts(mut resource: ResourceSpec, shortcuts: &ShortcutConfig) -> Res
     resource
 }
 
-/// The chrome's resource: the verbs of everything over the desk, published
-/// as they are declared, each showing the chord that runs it.
+/// The chrome's resource: the verbs of everything over the desk, published as they are declared,
+/// each showing the chord that runs it.
 #[must_use]
 pub fn chrome_resource(shortcuts: &ShortcutConfig) -> ResourceSpec {
     with_shortcuts(
@@ -104,24 +102,22 @@ pub fn chrome_resource(shortcuts: &ShortcutConfig) -> ResourceSpec {
     )
 }
 
-/// The open search as the desk publishes it: what is typed, the rows it
-/// shows, and whether it is still filling in.
+/// The open search as the desk publishes it: what is typed, the rows it shows, and whether it is
+/// still filling in.
 #[derive(Clone, Copy)]
 pub struct OpenSearch<'a> {
     /// What is typed, or empty for the empty field.
     pub query: &'a str,
     /// The rows it shows, in the order the person sees them.
     pub rows: &'a [tilo_desktop_surface::SearchRow],
-    /// Whether a source has still to answer for the query, or the rows the
-    /// card shows are not cut to its room yet: the search says it is still
-    /// searching, and its rows will change.
+    /// Whether a source has still to answer for the query, or the rows the card shows are not cut
+    /// to its room yet: the search says it is still searching, and its rows will change.
     pub searching: bool,
 }
 
-/// A window the desk shows: the tab it stands in, the name the person reads
-/// it by, and — for a window this session does not run (an X11 or Wayland
-/// window of another desktop) — the app that showed it, which the desk can
-/// picture and read of, and never act on.
+/// A window the desk shows: the tab it stands in, the name the person reads it by, and — for a
+/// window this session does not run (an X11 or Wayland window of another desktop) — the app that
+/// showed it, which the desk can picture and read of, and never act on.
 #[derive(Clone)]
 pub struct Shown {
     /// Its tab.
@@ -163,9 +159,8 @@ pub fn desk_resource(
         )
         .with_action(focus)
     });
-    // Each window's verbs name the window they act on: an action row that
-    // says "Focus a window" makes the person find the window again in the
-    // next row.
+    // Each window's verbs name the window they act on: an action row that says "Focus a window"
+    // makes the person find the window again in the next row.
     let windows = windows.iter().map(|shown| {
         let id = &shown.tab;
         let names_the_window = &[("window", shown.title.as_str().into())];
@@ -182,16 +177,16 @@ pub fn desk_resource(
                 },
                 Some(t_args("desk-close-window", names_the_window)),
             ));
-        // A window this session does not run has no surface of its own to
-        // ask what it shows: the desk answers both read actions for it, and
-        // neither acts on it (`tilo_desktop_surface::window`).
+        // A window this session does not run has no surface of its own to ask what it shows: the
+        // desk answers both read actions for it, and neither acts on it
+        // (`tilo_desktop_surface::window`).
         if shown.foreign.is_some() {
             window = window
                 .with_action(window::look(t_args("desk-look-window", names_the_window)))
                 .with_action(window::read(t_args("desk-read-window", names_the_window)));
         }
-        // Only a window whose app stopped answering offers the two ways out
-        // of it: quitting a healthy app is nobody's accident to make.
+        // Only a window whose app stopped answering offers the two ways out of it: quitting a
+        // healthy app is nobody's accident to make.
         if !not_responding.contains(id) {
             return window;
         }
@@ -218,13 +213,11 @@ pub fn desk_resource(
     .with_children(windows.chain(screens).chain(search))
 }
 
-/// The launchpad's resource: each card a resource of its own that offers
-/// the desk's launchpad verb, bound to the card it stands for.
-///
-/// A card is one declaration ([`crate::launchpad::LaunchpadAction`]): the
-/// host publishes it as a host action, which is how the palette and the
-/// catalogue of actions name it, and this lists the same verb to agents and
-/// scripts that invoke an action by the resource it is published on. Both
+/// The launchpad's resource: each card a resource of its own that offers the desk's launchpad verb,
+/// bound to the card it stands for.
+/// A card is one declaration ([`crate::launchpad::LaunchpadAction`]): the host publishes it as a
+/// host action, which is how the palette and the catalogue of actions name it, and this lists the
+/// same verb to agents and scripts that invoke an action by the resource it is published on. Both
 /// reach the verb through the host's one door.
 #[must_use]
 pub fn launchpad_resource() -> ResourceSpec {
@@ -248,11 +241,9 @@ pub fn launchpad_resource() -> ResourceSpec {
     .with_children(rows)
 }
 
-/// The open search: what is typed, and each row it shows, which can be
-/// chosen. Its detail says it is still searching until every source has
-/// answered and its rows are cut to the card: a reader of the desk (a
-/// script, an agent, assistive technology) knows the rows are final once
-/// it is gone.
+/// The open search: what is typed, and each row it shows, which can be chosen. Its detail says it
+/// is still searching until every source has answered and its rows are cut to the card: a reader of
+/// the desk (a script, an agent, assistive technology) knows the rows are final once it is gone.
 fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
     let OpenSearch {
         query,
@@ -307,8 +298,8 @@ fn bound(verb: &DeskEffect, label: Option<String>) -> ActionSpec {
     spec
 }
 
-/// `verb` as the action its row offers, still asking its caller for the
-/// arguments named in `asking`, named `label` when one is given.
+/// `verb` as the action its row offers, still asking its caller for the arguments named in `asking`
+/// , named `label` when one is given.
 fn bound_asking(verb: &DeskEffect, asking: &[&str], label: Option<String>) -> ActionSpec {
     let mut spec = verb.bound_asking(asking);
     if let Some(label) = label {

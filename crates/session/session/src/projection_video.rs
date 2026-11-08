@@ -1,19 +1,14 @@
 //! The desktop as a wireless display's picture.
-//!
-//! A receiver of the network protocols (`Chromecast`, `FCast`) is shown the
-//! desktop the projector service serves as video, and the frames it serves
-//! are these: the compositor's own composition of every display, drawn at
-//! the profile the service asks for, H.264 encoded and handed to the
+//! A receiver of the network protocols (`Chromecast`, `FCast` ) is shown the desktop the projector
+//! service serves as video, and the frames it serves are these: the compositor's own composition of
+//! every display, drawn at the profile the service asks for, H.264 encoded and handed to the
 //! projector's video socket as one Annex B packet per frame.
-//!
-//! Nothing is captured until a session to such a receiver is live, and a
-//! locked session never is: a lock screen is not something to send to a
-//! television. Frames are rendered on the session's loop, at most as often as
-//! the profile's frame rate, and encoded on a worker of their own — one frame
-//! ahead at most, so an encoder that falls behind drops the newest frame
-//! instead of holding up the desktop. An encoder that cannot keep up lowers
-//! the profile itself (smaller and cheaper), and climbs back once frames are
-//! taken again, so a slow link degrades instead of stalling.
+//! Nothing is captured until a session to such a receiver is live, and a locked session never is: a
+//! lock screen is not something to send to a television. Frames are rendered on the session's loop,
+//! at most as often as the profile's frame rate, and encoded on a worker of their own — one frame
+//! ahead at most, so an encoder that falls behind drops the newest frame instead of holding up the
+//! desktop. An encoder that cannot keep up lowers the profile itself (smaller and cheaper), and
+//! climbs back once frames are taken again, so a slow link degrades instead of stalling.
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -25,13 +20,13 @@ use tilo_projector::{CaptureProfile, DisplayStreamPolicy, VideoPacket};
 use tilo_window_share::config::EncoderChoice;
 use tilo_window_share::encoder::{Encoder, EncoderInit, FrameInput, build};
 
-/// What a live projection streams: where the projector reads video, the
-/// options the person chose and the profile the service last asked for.
+/// What a live projection streams: where the projector reads video, the options the person chose
+/// and the profile the service last asked for.
 pub(crate) struct VideoStream {
     pub socket: PathBuf,
     pub policy: DisplayStreamPolicy,
-    /// The ceiling the service reported for this receiver; `None` until it
-    /// says anything, when the person's own options are used.
+    /// The ceiling the service reported for this receiver; `None` until it says anything, when the
+    /// person's own options are used.
     pub asked: Option<CaptureProfile>,
 }
 
@@ -45,16 +40,14 @@ struct RawFrame {
     bitrate_kbps: u32,
 }
 
-/// Encodes frames and writes them to the projector's video socket, off the
-/// session's loop.
+/// Encodes frames and writes them to the projector's video socket, off the session's loop.
 struct EncoderWorker {
     tx: SyncSender<RawFrame>,
 }
 
 impl EncoderWorker {
-    /// Starts the encoder thread. Returns `None` — logging why — if the OS
-    /// refuses to spawn it, in which case the desktop is not streamed rather
-    /// than the session stopping.
+    /// Starts the encoder thread. Returns `None` — logging why — if the OS refuses to spawn it, in
+    /// which case the desktop is not streamed rather than the session stopping.
     fn spawn(socket_path: &Path) -> Option<Self> {
         let (tx, rx) = mpsc::sync_channel::<RawFrame>(1);
         let socket_path = socket_path.to_owned();
@@ -91,9 +84,8 @@ impl EncoderWorker {
                         ) {
                             Ok(built) => Some(built),
                             Err(error) => {
-                                // An image without H.264 hardware encode and
-                                // without Cisco's openh264 has no H.264
-                                // encoder at all; say so once.
+                                // An image without H.264 hardware encode and without Cisco's
+                                // openh264 has no H.264 encoder at all; say so once.
                                 if !reported_unavailable {
                                     tracing::warn!(
                                         %error,
@@ -149,16 +141,16 @@ impl EncoderWorker {
     }
 }
 
-/// The desktop's frames for the projector: what is sent while a projection
-/// is live, and the profile it is sent at.
+/// The desktop's frames for the projector: what is sent while a projection is live, and the profile
+/// it is sent at.
 pub(crate) struct ProjectionVideo {
     worker: Option<EncoderWorker>,
     /// The socket the worker writes to.
     socket: Option<PathBuf>,
     started: Instant,
     last_frame: Option<Instant>,
-    /// The profile frames are rendered and encoded at now: it drops at once
-    /// when the service asks for less, and climbs back as frames are taken.
+    /// The profile frames are rendered and encoded at now: it drops at once when the service asks
+    /// for less, and climbs back as frames are taken.
     profile: CaptureProfile,
     accepted_since_pressure: u32,
 }
@@ -176,8 +168,8 @@ impl ProjectionVideo {
         }
     }
 
-    /// When a live projection next needs a frame of the desk: the profile's
-    /// frame rate, from the last frame drawn.
+    /// When a live projection next needs a frame of the desk: the profile's frame rate, from the
+    /// last frame drawn.
     pub(crate) fn next_deadline(&self, stream: Option<&VideoStream>) -> Option<Instant> {
         let stream = stream?;
         let asked = stream.asked.unwrap_or_else(|| stream.policy.ceiling(None));
@@ -191,14 +183,14 @@ impl ProjectionVideo {
         )
     }
 
-    /// Send the desktop to `stream`'s receiver, if a projection is live: the
-    /// next frame is drawn once the profile's frame rate allows it.
+    /// Send the desktop to `stream` 's receiver, if a projection is live: the next frame is drawn
+    /// once the profile's frame rate allows it.
     pub(crate) fn follow(&mut self, compositor: &mut Compositor, stream: Option<&VideoStream>) {
         let Some(stream) = stream else {
             return;
         };
-        // A lock screen is never shown to a receiver: the session stays
-        // connected, and its last frame is what the receiver keeps showing.
+        // A lock screen is never shown to a receiver: the session stays connected, and its last
+        // frame is what the receiver keeps showing.
         if compositor.locked() {
             return;
         }
@@ -250,8 +242,7 @@ impl ProjectionVideo {
         }
     }
 
-    /// The worker writing to `socket`, started (or replaced, when the
-    /// socket moved) as needed.
+    /// The worker writing to `socket` , started (or replaced, when the socket moved) as needed.
     fn worker(&mut self, socket: &Path) -> Option<&EncoderWorker> {
         if self.socket.as_deref() != Some(socket) {
             self.worker = EncoderWorker::spawn(socket);
@@ -304,8 +295,7 @@ mod tests {
         }
     }
 
-    /// A desktop with one 1080p display, drawn once as a session's pass
-    /// draws it.
+    /// A desktop with one 1080p display, drawn once as a session's pass draws it.
     fn desktop() -> Compositor {
         let mut compositor =
             Compositor::headless(Box::new(StackPolicy)).expect("an in-process compositor");
@@ -316,8 +306,8 @@ mod tests {
         compositor
     }
 
-    /// Whether this machine can encode H.264 at all: without hardware encode
-    /// and without Cisco's openh264 there is nothing to send with.
+    /// Whether this machine can encode H.264 at all: without hardware encode and without Cisco's
+    /// openh264 there is nothing to send with.
     fn has_h264_encoder() -> bool {
         media::realtime::local_capabilities().can_encode(media::StreamCodec::H264)
     }

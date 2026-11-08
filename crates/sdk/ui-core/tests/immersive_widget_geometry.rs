@@ -79,7 +79,6 @@ fn capture_rgba(w: u32, h: u32) -> Arc<[u8]> {
 )]
 #[test]
 fn immersive_widgets_render_reachable_geometry_at_every_size() {
-    // Case `video_player_controls_are_reachable_targets_on_their_control_rows`.
     {
         for (theme_name, theme, viewport, min_controls) in [
             ("dark", Theme::dark(), (960_u32, 540_u32), 7_usize),
@@ -178,7 +177,6 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
         }
     }
 
-    // Case `presence_pills_and_edge_tags_render_at_one_and_two_x`.
     // Round two: pointer pills (one an agent), and two off-screen peers whose
     // edge tags must stay inside their mist bands, at 1× and at 2× through the
     // renderer (the host-palette convention) — so the scaled insets and the
@@ -250,7 +248,6 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
         }
     }
 
-    // Case `screenshot_markup_renders_wide_and_narrow`.
     {
         for (name, viewport) in [
             ("wide", (1200_u32, 800_u32)),
@@ -267,7 +264,6 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
         }
     }
 
-    // Case `capture_studio_renders_selector_and_recording_bar`.
     {
         let theme = Theme::dark().with_reduce_motion(true);
 

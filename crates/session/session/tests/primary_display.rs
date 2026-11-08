@@ -1,6 +1,6 @@
-//! The display the person makes primary in Settings: across two displays
-//! their new windows and the sheets they open go to that one rather than to
-//! the one on the left, and the choice is theirs again after a restart.
+//! The display the person makes primary in Settings: across two displays their new windows and the
+//! sheets they open go to that one rather than to the one on the left, and the choice is theirs
+//! again after a restart.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -37,23 +37,21 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     });
 }
 
-/// A session whose two displays sit side by side, `HEADLESS-1` on the left
-/// and `HEADLESS-2` on the right.
+/// A session whose two displays sit side by side, `HEADLESS-1` on the left and `HEADLESS-2` on the
+/// right.
 fn docked() -> Session {
     let outputs: Vec<OutputConfig> = (1..=2)
         .map(|index| {
             OutputConfig::new(format!("HEADLESS-{index}"), WIDTH, HEIGHT).at(WIDTH * (index - 1), 0)
         })
         .collect();
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &outputs,
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("step");
     session
 }
@@ -71,8 +69,7 @@ fn map(session: &mut Session, client: &mut Client, app_id: &str) {
     client.map_plain(session, app_id, (300, 200));
 }
 
-/// Which display (0 left, 1 right) the window of `app` opened on; `None`
-/// while it is out of sight.
+/// Which display (0 left, 1 right) the window of `app` opened on; `None` while it is out of sight.
 fn display_of(session: &mut Session, app: &str) -> Option<i32> {
     let (_, (x, y, _, _)) = session
         .compositor()
@@ -82,7 +79,7 @@ fn display_of(session: &mut Session, app: &str) -> Option<i32> {
     (x >= 0 && y >= 0).then(|| x.div_euclid(WIDTH))
 }
 
-/// The rectangle of the right display, `HEADLESS-2`.
+/// The rectangle of the right display, `HEADLESS-2` .
 fn right() -> (i32, i32, u32, u32) {
     (
         WIDTH,
@@ -111,10 +108,9 @@ fn attached(session: &mut Session) -> (Vec<String>, DisplaySet) {
     (connectors, DisplaySet::of_descriptors(&descriptors))
 }
 
-/// Make `primary` the display the person chose, the way Settings does: the
-/// arrangement the displays attached now already have, with that one made
-/// primary, asked for as the display change the person made. Changing only
-/// the primary leaves no screen dark, so the session keeps it at once
+/// Make `primary` the display the person chose, the way Settings does: the arrangement the displays
+/// attached now already have, with that one made primary, asked for as the display change the
+/// person made. Changing only the primary leaves no screen dark, so the session keeps it at once
 /// instead of waiting for an answer.
 fn make_primary(session: &mut Session, primary: &str) {
     let (connectors, set) = attached(session);
@@ -136,15 +132,14 @@ fn make_primary(session: &mut Session, primary: &str) {
     DisplayTransaction::request(set, candidate).expect("a display change staged");
 }
 
-/// The display on the right of the two, `HEADLESS-2`, as the desk numbers
-/// its displays: the one the person makes primary here.
+/// The display on the right of the two, `HEADLESS-2` , as the desk numbers its displays: the one
+/// the person makes primary here.
 fn right_display(session: &Session) -> Option<u32> {
     session.handle().displays().get(1).copied()
 }
 
-/// Whether the desk has been told that the right display is the primary
-/// one; until it has, the first display stands in and the primary it names
-/// is the left one.
+/// Whether the desk has been told that the right display is the primary one; until it has, the
+/// first display stands in and the primary it names is the left one.
 fn primary_reached(session: &Session) -> bool {
     let right = right_display(session);
     right.is_some() && session.handle().primary_display() == right
@@ -169,8 +164,7 @@ fn new_windows_and_sheets_open_on_the_primary_the_person_chose() {
     make_primary(&mut session, "HEADLESS-2");
     until(&mut session, |session| primary_reached(session));
 
-    // The sheet opens on the display the person chose, before anything is
-    // open on either of them.
+    // The sheet opens on the display the person chose, before anything is open on either of them.
     let power = session.power_menu().expect("power sheet");
     power.presentation().open(false);
     client.pump(&mut session, |session, _| {

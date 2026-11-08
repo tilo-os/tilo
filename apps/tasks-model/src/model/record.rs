@@ -166,9 +166,6 @@ fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
 )]
 impl Tracker {
     /// Create an issue.
-    ///
-    /// # Errors
-    /// Refuses a parent that no longer exists, or an invalid assignee.
     #[action(writes = issues)]
     pub fn create(
         &mut self,
@@ -227,9 +224,6 @@ impl Tracker {
     }
 
     /// Rename the project or area `area`.
-    ///
-    /// # Errors
-    /// Refuses a project that no longer exists, or a name too long.
     #[action(item = areas, writes = areas)]
     pub fn rename_area(&mut self, area: &Id, name: NonBlank) -> Result<(), Refusal> {
         let target = self.area_mut(area)?;
@@ -242,9 +236,6 @@ impl Tracker {
 
     /// Say whether the project or area `area` reaches an end or goes on: a
     /// project with a goal, or an area that is a standing responsibility.
-    ///
-    /// # Errors
-    /// Refuses a project that no longer exists.
     #[action(item = areas, writes = areas)]
     pub fn set_kind(
         &mut self,
@@ -258,9 +249,6 @@ impl Tracker {
     /// Say who is involved in the project or area `area`, and what they do
     /// there. Naming someone grants them nothing: who may read the project
     /// is the sharing it was given, never a list of people.
-    ///
-    /// # Errors
-    /// Refuses a project that no longer exists.
     #[action(item = areas, writes = areas)]
     pub fn involve(
         &mut self,
@@ -283,9 +271,6 @@ impl Tracker {
 
     /// Take someone out of the list of people involved in `area`. They keep
     /// their access to it: that is the project's sharing, not this list.
-    ///
-    /// # Errors
-    /// Refuses a project that no longer exists.
     #[action(item = areas, writes = areas)]
     pub fn remove_person(&mut self, area: &Id, person: &Id) -> Result<(), Refusal> {
         self.area_mut(area)?.people.remove(person);
@@ -293,9 +278,6 @@ impl Tracker {
     }
 
     /// Move an issue under another one, or to the top level.
-    ///
-    /// # Errors
-    /// Refuses moving an issue under itself or one of its own sub-issues.
     #[action(item = issues, writes = issues)]
     pub fn move_under(&mut self, issue: &Id, parent: Option<Id>) -> Result<(), Refusal> {
         self.check_parent(parent.as_ref())?;
@@ -311,9 +293,6 @@ impl Tracker {
     }
 
     /// Assign an issue to a person or an agent, or to nobody.
-    ///
-    /// # Errors
-    /// Refuses an assignee that is neither `person:<id>` nor `agent:<id>`.
     #[action(item = issues, writes = issues)]
     pub fn assign(
         &mut self,
@@ -339,9 +318,6 @@ impl Tracker {
 
     /// Place an issue on the board: in a status column, before another
     /// issue or at the end.
-    ///
-    /// # Errors
-    /// Refuses an issue that no longer exists.
     #[action(item = issues, writes = issues)]
     pub fn place(
         &mut self,
@@ -365,9 +341,6 @@ impl Tracker {
     }
 
     /// Comment on an issue.
-    ///
-    /// # Errors
-    /// Refuses a message too long.
     #[action(item = issues, field = "comments", writes = issues)]
     pub fn comment(
         &mut self,
@@ -395,9 +368,6 @@ impl Tracker {
     }
 
     /// Link an issue to another resource.
-    ///
-    /// # Errors
-    /// Refuses an issue that no longer exists.
     #[action(item = issues, writes = issues)]
     pub fn link(
         &mut self,
@@ -427,9 +397,6 @@ impl Tracker {
     /// Link a note
     ///
     /// Link an issue to an existing note in Notes, picked by its title.
-    ///
-    /// # Errors
-    /// Refuses a reference that names no note.
     #[action(item = issues, writes = issues)]
     pub fn link_note(
         &mut self,
@@ -458,9 +425,6 @@ impl Tracker {
     }
 
     /// Delete an issue. Its sub-issues move up to its parent.
-    ///
-    /// # Errors
-    /// Refuses an issue that no longer exists.
     #[action(item = issues, destructive, writes = issues)]
     pub fn delete(&mut self, issue: &Id) -> Result<(), Refusal> {
         let removed = self.issues.remove(issue).ok_or_else(no_issue)?;

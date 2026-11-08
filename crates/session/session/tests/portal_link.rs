@@ -1,7 +1,6 @@
-//! The portal's link to the session's loop, on the headless backend: the
-//! screens an app may share are published, a stream the app starts is
-//! answered from the compositor, the app drives the seat, shares the
-//! selection, and input captures look at where the session's screens are.
+//! The portal's link to the session's loop, on the headless backend: the screens an app may share
+//! are published, a stream the app starts is answered from the compositor, the app drives the seat,
+//! shares the selection, and input captures look at where the session's screens are.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -36,22 +35,19 @@ fn serving(captures: Option<InputCaptures>) -> (Session, PortalSide) {
         Some(captures) => link.with_captures(captures),
         None => link,
     };
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             wake,
             portal: Some(link),
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
     (session, side)
 }
 
-/// Step `session` until `probe` finds what it looks for, however many
-/// passes that takes.
+/// Step `session` until `probe` finds what it looks for, however many passes that takes.
 #[track_caller]
 fn until<T>(session: &mut Session, probe: impl FnMut(&mut Session) -> Option<T>) -> T {
     common::wait_for(
@@ -61,9 +57,8 @@ fn until<T>(session: &mut Session, probe: impl FnMut(&mut Session) -> Option<T>)
     )
 }
 
-/// Ask `ask` of the portal's side on a thread of its own, as the portal's
-/// runtime does, and step the session until it is answered: the session
-/// answers on its loop.
+/// Ask `ask` of the portal's side on a thread of its own, as the portal's runtime does, and step
+/// the session until it is answered: the session answers on its loop.
 #[track_caller]
 fn asked<T: Send + 'static>(
     session: &mut Session,
@@ -145,8 +140,8 @@ fn the_portals_pointer_moves_the_sessions_pointer() {
     let before = session.compositor().pointer_location();
     let input = side.input();
     assert!(input.inject(RemoteInput::PointerMotion { dx: 40.0, dy: 25.0 }));
-    // A point of a stream no one shares is taken as it is offered: the
-    // absolute motion lands where the app said.
+    // A point of a stream no one shares is taken as it is offered: the absolute motion lands where
+    // the app said.
     input.inject(RemoteInput::PointerMotionAbsolute {
         stream: 0,
         x: 300.0,
@@ -194,8 +189,8 @@ fn the_persons_cut_chord_stops_the_portals_input_until_sharing_is_allowed_again(
     }
     assert!(session.compositor().remote_input_cut(), "the chord cut it");
 
-    // Once the person's own input stops counting, which takes half a
-    // second, the app still moves nothing.
+    // Once the person's own input stops counting, which takes half a second, the app still moves
+    // nothing.
     let started = Instant::now();
     while started.elapsed() < Duration::from_millis(600) {
         session.step(SETTLE).unwrap();

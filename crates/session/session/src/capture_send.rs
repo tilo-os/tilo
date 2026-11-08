@@ -1,16 +1,13 @@
-//! Sending the last screenshot: to one of the person's other devices, or into
-//! this workspace's files.
-//!
-//! A device send is an ordinary Nearby Send, so it goes through the session's
-//! one transfer engine: the screenshot is staged into this device's private
-//! spool, offered to the device as a fabric action, and its bytes stream from
-//! that spool; the receiving device's person still decides where it lands
-//! there. A workspace save copies the screenshot into the workspace's
-//! `Screenshots` folder through the same engine every other copy takes, where
-//! the person's collaborators see it like anything else placed there. That
-//! copy reads and writes files - possibly over a remote workspace mount - so
-//! it happens on a worker of its own, never on the session's pass: the pass
-//! hands the worker the save and takes what became of it.
+//! Sending the last screenshot: to one of the person's other devices, or into this workspace's
+//! files.
+//! A device send is an ordinary Nearby Send, so it goes through the session's one transfer engine:
+//! the screenshot is staged into this device's private spool, offered to the device as a fabric
+//! action, and its bytes stream from that spool; the receiving device's person still decides where
+//! it lands there. A workspace save copies the screenshot into the workspace's `Screenshots` folder
+//! through the same engine every other copy takes, where the person's collaborators see it like
+//! anything else placed there. That copy reads and writes files - possibly over a remote workspace
+//! mount - so it happens on a worker of its own, never on the session's pass: the pass hands the
+//! worker the save and takes what became of it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,14 +24,14 @@ use crate::nearby_transfer::NearbyTransfer;
 /// Folder inside the workspace files that sent screenshots land in.
 pub(crate) const WORKSPACE_SCREENSHOTS_DIR: &str = "Screenshots";
 
-/// The screenshots on their way to the person's other devices and into the
-/// workspace's files, and what became of the last one.
+/// The screenshots on their way to the person's other devices and into the workspace's files, and
+/// what became of the last one.
 pub(crate) struct Sends {
-    /// The session's transfer engine, when this session runs on a device
-    /// fabric: every send to another device is one of its transfers.
+    /// The session's transfer engine, when this session runs on a device fabric: every send to
+    /// another device is one of its transfers.
     nearby: Option<Arc<NearbyTransfer>>,
-    /// The worker that writes into the workspace's files; `None` when there
-    /// is no workspace or its worker could not start.
+    /// The worker that writes into the workspace's files; `None` when there is no workspace or its
+    /// worker could not start.
     jobs: Option<Sender<Job>>,
     /// The workspace's files root, when one is mounted for this session.
     workspace: Option<PathBuf>,
@@ -48,13 +45,13 @@ pub(crate) struct Sends {
 
 /// One save, as the pass hands it to the worker.
 enum Job {
-    /// Copy the screenshot at `path` into the files under `root`.
+    /// Copy the screenshot at `path` into the files under `root` .
     Workspace { path: PathBuf, root: PathBuf },
 }
 
 impl Sends {
-    /// The sends of a session whose transfers go through `nearby` and whose
-    /// workspace saves land under `workspace`.
+    /// The sends of a session whose transfers go through `nearby` and whose workspace saves land
+    /// under `workspace` .
     pub(crate) fn new(
         nearby: Option<Arc<NearbyTransfer>>,
         workspace: Option<PathBuf>,
@@ -86,12 +83,11 @@ impl Sends {
         }
     }
 
-    /// Offer the screenshot at `path` to the device the person picked, by the
-    /// id the studio listed. The device is resolved again here: the picker's
-    /// id is never trusted, and one that left since is refused at once.
-    ///
-    /// Returns what became of it when it was refused before anything was
-    /// staged; the engine reports the rest through [`Self::take`].
+    /// Offer the screenshot at `path` to the device the person picked, by the id the studio listed.
+    /// The device is resolved again here: the picker's id is never trusted, and one that left since
+    /// is refused at once.
+    /// Returns what became of it when it was refused before anything was staged; the engine reports
+    /// the rest through [`Self::take`].
     pub(crate) fn send(&self, id: &str, path: PathBuf) -> Option<Sent> {
         let Some(nearby) = &self.nearby else {
             return Some(Sent::refused(id.to_owned(), Refusal::SyncOff));
@@ -120,12 +116,10 @@ impl Sends {
         )
     }
 
-    /// Copy the screenshot at `path` into this workspace's files, on the
-    /// worker: the mount may be remote, and its write has no place on the
-    /// pass.
-    ///
-    /// Returns what became of it when the worker cannot take it; the worker
-    /// reports the rest through [`Self::take`].
+    /// Copy the screenshot at `path` into this workspace's files, on the worker: the mount may be
+    /// remote, and its write has no place on the pass.
+    /// Returns what became of it when the worker cannot take it; the worker reports the rest
+    /// through [`Self::take`].
     pub(crate) fn send_to_workspace(&self, path: PathBuf) -> Option<Sent> {
         let Some(root) = &self.workspace else {
             return Some(Sent::not_saved(Refusal::NoWorkspace));
@@ -172,8 +166,7 @@ fn work(jobs: Receiver<Job>, done: Sender<Sent>, wake: Wake) {
     }
 }
 
-/// Copy the screenshot at `path` into the files under `root`, and say the
-/// name it landed under.
+/// Copy the screenshot at `path` into the files under `root` , and say the name it landed under.
 fn save(path: &Path, root: &Path) -> Sent {
     if !path.is_file() {
         return Sent::not_saved(Refusal::Gone {
@@ -186,7 +179,7 @@ fn save(path: &Path, root: &Path) -> Sent {
     }
 }
 
-/// How the receipt names the copy at `saved`: its name in the folder.
+/// How the receipt names the copy at `saved` : its name in the folder.
 fn in_workspace_name(saved: &Path) -> String {
     saved.file_name().map_or_else(
         || saved.display().to_string(),
@@ -263,8 +256,8 @@ mod tests {
         }
     }
 
-    /// The person's fabric as a session sees it, recording what it is asked
-    /// to carry instead of carrying it.
+    /// The person's fabric as a session sees it, recording what it is asked to carry instead of
+    /// carrying it.
     struct FakeFabric {
         fabric: DeviceFabric,
         local: DeviceId,
@@ -378,8 +371,7 @@ mod tests {
         (wake, woken)
     }
 
-    /// What the person's settings say with nothing turned off: every facet of
-    /// continuity on.
+    /// What the person's settings say with nothing turned off: every facet of continuity on.
     fn permitted() -> Continuity {
         let continuity = Continuity::default();
         let document: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
@@ -390,8 +382,8 @@ mod tests {
         continuity
     }
 
-    /// The sends of a session on `link`, staging into `spool`, with a real
-    /// transfer engine behind them.
+    /// The sends of a session on `link` , staging into `spool` , with a real transfer engine behind
+    /// them.
     fn sending(
         link: Option<SharedLink>,
         spool: Option<PathBuf>,
@@ -581,8 +573,8 @@ mod tests {
             "what lands is what the studio wrote"
         );
 
-        // A second send of a file of the same name is a second screenshot:
-        // it lands beside the first instead of replacing it.
+        // A second send of a file of the same name is a second screenshot: it lands beside the
+        // first instead of replacing it.
         let sends = Sends::new(
             None,
             Some(workspace.path().to_path_buf()),

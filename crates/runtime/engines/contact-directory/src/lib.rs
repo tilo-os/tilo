@@ -29,9 +29,6 @@ pub use tilo_contact_directory;
 /// The engine's check binary and the apps' `--probe-contact-directory-engine`
 /// call it, so a release proves the library loads and runs against the
 /// runtime it ships with, and that the apps load it themselves.
-///
-/// # Errors
-/// Names the step the directory answered wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use tilo_contact_directory::{ContactDirectory, canonical_email_hint, canonical_phone};

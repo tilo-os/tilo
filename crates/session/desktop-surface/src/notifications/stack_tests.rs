@@ -28,8 +28,7 @@ impl TestHost {
     }
 }
 
-/// Run `f` on `stack` over what `host` shows now, and carry out what
-/// it asked, as a host does.
+/// Run `f` on `stack` over what `host` shows now, and carry out what it asked, as a host does.
 fn act<T>(
     stack: &mut NotificationStack,
     host: &TestHost,
@@ -120,8 +119,8 @@ fn clicking_a_painted_close_rect_dismisses_only_that_notification() {
     let first = host.push(Notification::new("First", ""));
     let second = host.push(Notification::new("Second", ""));
     let mut stack = NotificationStack::new();
-    // The paint records this exact geometry; seeding it keeps the routing
-    // test independent of a GPU while exercising the production hit test.
+    // The paint records this exact geometry; seeding it keeps the routing test independent of a GPU
+    // while exercising the production hit test.
     stack.hit_rects.push((
         first,
         Rect::new(100.0, 100.0, 460.0, 164.0),
@@ -195,8 +194,8 @@ fn shared_choice_buttons_route_their_keys_and_retire_stale_geometry() {
             ],
             "the painted choices are buttons a reader can press"
         );
-        // Assistive technology presses them by their targets, as a
-        // click does: each choice reaches the host with its key.
+        // Assistive technology presses them by their targets, as a click does: each choice reaches
+        // the host with its key.
         for (_, key, _) in &actions {
             let label = if key == "dismiss" {
                 "Dismiss"
@@ -413,8 +412,8 @@ fn draw(stack: &mut NotificationStack, host: &TestHost, theme: &Theme) {
     );
 }
 
-/// A transient's slot shifts below any window bar it would cover, and
-/// stays where nothing is under it.
+/// A transient's slot shifts below any window bar it would cover, and stays where nothing is under
+/// it.
 #[test]
 fn a_window_bar_wins_and_the_transient_shifts() {
     let viewport = Rect::new(0.0, 40.0, 1600.0, 900.0);
@@ -430,8 +429,8 @@ fn a_window_bar_wins_and_the_transient_shifts() {
     assert_eq!(slot.y0, 92.0 + TOAST_GAP, "just below the bar it met");
 }
 
-/// Banners start below the window bars the host keeps clear, so a
-/// window's maximise and close under the corner keep their clicks.
+/// Banners start below the window bars the host keeps clear, so a window's maximise and close under
+/// the corner keep their clicks.
 #[test]
 fn banners_start_below_the_window_bars() {
     // Motion reads at its end: this checks where the banner rests.
@@ -460,9 +459,8 @@ fn banners_start_below_the_window_bars() {
     );
 }
 
-/// The stack keeps clear of the window bars under its column at the
-/// top, and only of those: a bar beside the column or a window further
-/// down leaves the banners at the corner.
+/// The stack keeps clear of the window bars under its column at the top, and only of those: a bar
+/// beside the column or a window further down leaves the banners at the corner.
 #[test]
 fn banners_keep_clear_of_the_window_bars_under_the_corner() {
     let _settled = ui::motion::testing::settled();
@@ -480,8 +478,7 @@ fn banners_keep_clear_of_the_window_bars_under_the_corner() {
     stack.set_window_bars(vec![Rect::new(0.0, 400.0, 1440.0, 444.0)]);
     assert!((stack.first_top() - corner).abs() < f64::EPSILON);
 
-    // A window reaching the right edge, its bar with a toolbar row: the
-    // banner starts below it.
+    // A window reaching the right edge, its bar with a toolbar row: the banner starts below it.
     let bar = Rect::new(720.0, 36.0, 1428.0, 120.0);
     stack.set_window_bars(vec![Rect::new(0.0, 36.0, 700.0, 80.0), bar]);
     draw(&mut stack, &host, &Theme::dark());
@@ -558,10 +555,9 @@ fn under_reduced_motion_a_banner_fades_in_place() {
     );
 }
 
-/// A banner below one that leaves springs up to its new slot instead of
-/// jumping (`motion::ListChange`), and lands there; while the person
-/// holds the stack, a slot closing upward waits, so nothing moves under
-/// the pointer.
+/// A banner below one that leaves springs up to its new slot instead of jumping
+/// (`motion::ListChange`), and lands there; while the person holds the stack, a slot closing upward
+/// waits, so nothing moves under the pointer.
 #[test]
 fn a_banner_springs_to_its_slot_and_waits_while_held() {
     let mut stack = NotificationStack::new();
@@ -590,9 +586,8 @@ fn a_banner_springs_to_its_slot_and_waits_while_held() {
     assert!(released < 200.0, "let go: it closes up");
 }
 
-/// Banners that do not fit fold into one "N more" card that opens the
-/// centre; they stand still until they come on screen, and only the
-/// banners on screen age.
+/// Banners that do not fit fold into one "N more" card that opens the centre; they stand still
+/// until they come on screen, and only the banners on screen age.
 #[test]
 fn banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age() {
     // Motion reads at its end: this test checks the resting frame.
@@ -637,9 +632,9 @@ fn banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age() {
     }
 }
 
-/// The corner stands at most three banners. Further arrivals from one app
-/// fold into the last one's caption, which opens the centre where they all
-/// are; their own choices and close still reach them.
+/// The corner stands at most three banners. Further arrivals from one app fold into the last one's
+/// caption, which opens the centre where they all are; their own choices and close still reach
+/// them.
 #[test]
 fn a_fourth_banner_folds_into_the_last_ones_caption_and_opens_the_centre() {
     // Motion reads at its end: this test checks the resting frame.
@@ -692,9 +687,8 @@ fn a_fourth_banner_folds_into_the_last_ones_caption_and_opens_the_centre() {
     assert_eq!(host.log().active().len(), 5, "and nothing was dismissed");
 }
 
-/// Resting the pointer on the stack holds every banner on it: none
-/// fades or expires under the pointer, and letting go starts them
-/// again.
+/// Resting the pointer on the stack holds every banner on it: none fades or expires under the
+/// pointer, and letting go starts them again.
 #[test]
 fn the_pointer_resting_on_the_stack_holds_the_banners() {
     // Motion reads at its end: this test checks the resting frame.
@@ -741,9 +735,8 @@ fn the_pointer_resting_on_the_stack_holds_the_banners() {
     assert!(host.log().active()[0].dwell.is_running());
 }
 
-/// Passing over the stack on the way elsewhere is transit and holds
-/// nothing; heading for it and slowing to a stop there holds it, and a
-/// hand that stops short lets go after the aim lapses.
+/// Passing over the stack on the way elsewhere is transit and holds nothing; heading for it and
+/// slowing to a stop there holds it, and a hand that stops short lets go after the aim lapses.
 #[test]
 fn only_a_pointer_reaching_for_the_stack_holds_it() {
     // Motion reads at its end: this test checks the resting frame.
@@ -882,8 +875,7 @@ fn keyboard_focus_reaches_banner_actions_and_escape_dismisses() {
     );
 }
 
-/// Do Not Disturb puts no card on screen: with no banner, the stack
-/// paints nothing.
+/// Do Not Disturb puts no card on screen: with no banner, the stack paints nothing.
 #[test]
 fn quiet_mode_paints_no_card_of_its_own() {
     // Motion reads at its end: this test checks the resting frame.
@@ -938,8 +930,7 @@ fn accessibility_exposes_a_named_live_region_with_latest_notification() {
     assert_eq!(node.live, Some(Politeness::Polite));
 }
 
-/// A notification the person keeps off the lock screen does not lend
-/// its count to it.
+/// A notification the person keeps off the lock screen does not lend its count to it.
 #[test]
 fn the_locked_live_region_counts_only_what_is_allowed_there() {
     let host = TestHost::default();
@@ -959,8 +950,8 @@ fn the_locked_live_region_counts_only_what_is_allowed_there() {
     assert_eq!(node.value.as_deref(), Some("1 notification"));
 }
 
-/// Set `stack` up over one banner and paint it once, so the gesture
-/// tests work on the geometry the stack really records.
+/// Set `stack` up over one banner and paint it once, so the gesture tests work on the geometry the
+/// stack really records.
 fn one_painted_banner(
     stack: &mut NotificationStack,
     host: &TestHost,
@@ -983,9 +974,8 @@ fn one_painted_banner(
         .expect("the banner painted its card")
 }
 
-/// Moving a banner sideways past the slop is a swipe, not a press: it
-/// dislodges the card without opening it, and letting go past the
-/// threshold dismisses it once it has slid out.
+/// Moving a banner sideways past the slop is a swipe, not a press: it dislodges the card without
+/// opening it, and letting go past the threshold dismisses it once it has slid out.
 #[test]
 fn a_swipe_dismisses_the_banner_without_activating_it() {
     let _settled = ui::motion::testing::settled();
@@ -1018,8 +1008,8 @@ fn a_swipe_dismisses_the_banner_without_activating_it() {
     );
     assert!(stack.needs_animation_frame() || !stack.slides.is_empty());
 
-    // The next paint carries the finished slide out and asks the host
-    // to dismiss the banner; nothing asked to open it.
+    // The next paint carries the finished slide out and asks the host to dismiss the banner;
+    // nothing asked to open it.
     stack.set_feed(BannerFeed::of(&host));
     stack.draw(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
     let asks = stack.take_asks();
@@ -1036,8 +1026,8 @@ fn a_swipe_dismisses_the_banner_without_activating_it() {
     );
 }
 
-/// A drag that falls short springs the card back to its slot, and the
-/// press it started is still cancelled (a drag is not a click).
+/// A drag that falls short springs the card back to its slot, and the press it started is still
+/// cancelled (a drag is not a click).
 #[test]
 fn a_short_drag_springs_back_without_dismissing() {
     let _settled = ui::motion::testing::settled();
@@ -1069,8 +1059,7 @@ fn a_short_drag_springs_back_without_dismissing() {
     );
 }
 
-/// A horizontal drag that starts on an action button is the button's
-/// press, not the card's swipe.
+/// A horizontal drag that starts on an action button is the button's press, not the card's swipe.
 #[test]
 fn a_drag_that_starts_on_a_control_is_not_a_swipe() {
     let _settled = ui::motion::testing::settled();
@@ -1089,9 +1078,9 @@ fn a_drag_that_starts_on_a_control_is_not_a_swipe() {
     assert!(stack.swipe.is_none(), "a control keeps its own press");
 }
 
-/// Measurement: how long one paint takes while five banners reflow into
-/// four. Not a gate; run with `--ignored --nocapture`. A debug build
-/// paints slower than a person's, so the numbers bound the cost.
+/// Measurement: how long one paint takes while five banners reflow into four. Not a gate; run with
+/// `--ignored --nocapture` . A debug build paints slower than a person's, so the numbers bound the
+/// cost.
 #[test]
 #[ignore = "measurement; run with --ignored --nocapture"]
 fn reflow_with_five_banners_costs_one_frame() {
@@ -1161,8 +1150,8 @@ fn reflow_with_five_banners_costs_one_frame() {
     );
 }
 
-/// A banner whose sender takes a reply offers its field, and what the
-/// person types goes back as the reply: not as opening the banner.
+/// A banner whose sender takes a reply offers its field, and what the person types goes back as the
+/// reply: not as opening the banner.
 #[test]
 fn a_banner_that_takes_a_reply_sends_what_was_typed() {
     let _settled = ui::motion::testing::settled();
@@ -1207,8 +1196,8 @@ fn a_banner_that_takes_a_reply_sends_what_was_typed() {
     );
 }
 
-/// Escape gives up on the reply without sending it, and a stack whose
-/// host cannot carry an answer never offers the field.
+/// Escape gives up on the reply without sending it, and a stack whose host cannot carry an answer
+/// never offers the field.
 #[test]
 fn a_reply_can_be_given_up_and_is_only_offered_when_it_can_be_carried() {
     let _settled = ui::motion::testing::settled();

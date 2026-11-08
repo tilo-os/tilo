@@ -304,9 +304,6 @@ impl Plan {
     /// Digest of the plan without the journal locator. The private journal
     /// stores this value, while the plan stores the journal digest, so the two
     /// records bind each other without a circular digest.
-    ///
-    /// # Errors
-    /// Refuses an invalid base plan or one that cannot be serialized.
     pub fn base_digest(&self) -> io::Result<[u8; 32]> {
         use sha2::{Digest, Sha256};
         let mut base = self.clone();
@@ -316,9 +313,6 @@ impl Plan {
     }
 
     /// Attach an opaque journal locator only after the journal itself exists.
-    ///
-    /// # Errors
-    /// Refuses a locator for another UID, a zero digest or an invalid plan.
     pub fn attach_deferred_handoff(&mut self, handoff: DeferredHandoff) -> io::Result<()> {
         self.deferred_handoff = Some(handoff);
         self.validate()

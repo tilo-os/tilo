@@ -163,10 +163,6 @@ impl Arrangement {
 
     /// Store this as the person's arrangement; the device fabric carries it
     /// to their other devices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the settings document cannot be written.
     pub fn save(&self) -> std::io::Result<()> {
         let mut values = Map::new();
         values.insert(ARRANGEMENT_LEAF.into(), self.to_value());

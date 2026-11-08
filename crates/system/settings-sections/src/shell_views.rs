@@ -93,10 +93,6 @@ impl ui::storage::SettingsSchema for ShellViews {
 impl ShellViews {
     /// Bind `slot` to the view `view` of `app`, on every device or on the
     /// kind of device `on` names.
-    ///
-    /// # Errors
-    /// A slot the shell does not have, one it draws itself, or a binding that
-    /// names no app or no view.
     #[action(id = "bind")]
     pub fn bind(
         &mut self,
@@ -136,9 +132,6 @@ impl ShellViews {
 
     /// Show `slot` the way the shell ships it again, on every device or on
     /// one kind of device.
-    ///
-    /// # Errors
-    /// A slot the shell does not have, or one it draws itself.
     #[action(id = "reset")]
     pub fn reset(
         &mut self,
@@ -174,9 +167,6 @@ impl ShellViews {
 }
 
 /// `slot`, as the shell names the part it is.
-///
-/// # Errors
-/// A part of the shell that does not exist, or one the system draws itself.
 fn slot_named(slot: &str) -> Result<String, tilo_resource::Refusal> {
     let slot = slot.trim();
     let sheet = slot.strip_prefix(SHEET);

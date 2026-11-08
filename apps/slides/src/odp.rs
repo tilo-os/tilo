@@ -62,11 +62,6 @@ const MAX_IMPORTED_TEXT_CHARS: usize = 100_000;
 
 /// Serialise `deck` to the bytes of a `.odp` package, bundling the pictures
 /// `content` holds for its image elements.
-///
-/// # Errors
-///
-/// Returns an error if the ZIP writer fails (an I/O error on the underlying
-/// cursor, which does not happen in practice since it writes to memory).
 pub fn write_odp(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8>> {
     let pictures = collect_pictures(deck, content);
     let picture_hrefs: HashMap<&str, &str> = pictures

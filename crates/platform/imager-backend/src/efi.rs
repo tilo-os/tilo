@@ -74,8 +74,6 @@ pub fn encode_u16(number: u16) -> Vec<u8> {
 
 /// The lowest free `Boot####` at or above [`FIRST_OWNED_BOOT_NUMBER`] that is
 /// neither referenced by `boot_order` nor present (`exists` asks firmware).
-/// # Errors
-/// Returns an error if firmware cannot be queried or no number is free.
 pub fn allocate_boot_number(
     boot_order: &[u16],
     mut exists: impl FnMut(u16) -> Result<bool, String>,

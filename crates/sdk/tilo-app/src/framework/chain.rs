@@ -98,19 +98,12 @@ pub trait Chained: Resource {
     /// The part `action` changes, given the parts this device holds, oldest
     /// first: the one holding the item it names, or for a new item the head
     /// (or the next part, once the head is full).
-    ///
-    /// # Errors
-    /// Why the action changes no part held here (it names an item none of
-    /// them holds).
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self::State>)]) -> Result<u64, String>;
 
     /// Fill in, where the action is invoked, what it records from the app's
     /// own record (who a mention names), and refuse what that record does
     /// not allow (a post to a channel it has not got). A part's action
     /// itself reads only its part, so it replays the same on every replica.
-    ///
-    /// # Errors
-    /// Why the app's record refuses the action.
     fn prepare(
         action: &mut Self::Action,
         base: &<Self::Base as Resource>::State,
@@ -657,10 +650,6 @@ impl<P: Chained> ChainState<P> {
     /// against the app's record ([`Chained::prepare`]), checked against
     /// what they may do in the workspace, attributed to them and written into
     /// the part's history. The part it was applied to.
-    ///
-    /// # Errors
-    /// The participant may not, the app's record or the part refused it, or
-    /// the part could not be opened or started.
     pub(crate) fn apply_as(
         &self,
         action: &P::Action,
@@ -1082,9 +1071,6 @@ impl<P: Chained> Chain<P> {
     /// the workspace for it when this device has none of it. Its history merges
     /// in as it arrives ([`Self::revision`] moves, the window is woken);
     /// [`Self::waiting`] says where it stands until then.
-    ///
-    /// # Errors
-    /// The part could not be opened or asked for here.
     pub fn hold(&self, index: u64) -> Result<(), String> {
         self.state.hold(index)
     }
@@ -1197,9 +1183,6 @@ impl<P: Chained> Chain<P> {
     /// actions (`#[model(readonly)]`), which refuse every generic edit.
     /// Not an action: nothing checks who may, nobody is its author, and it
     /// is committed as the part's genesis, so only a fixture writes it.
-    ///
-    /// # Errors
-    /// The part could not be opened or started, or `state` does not fit it.
     pub fn write_start(&self, index: u64, state: &P::State) -> Result<(), String>
     where
         P::State: tilo_resource::Fields,

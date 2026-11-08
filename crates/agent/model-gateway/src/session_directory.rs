@@ -25,9 +25,6 @@ impl SessionDirectory {
         Self::new_with_clock(directory, Arc::new(tilo_clock::unix_now_ms))
     }
     /// [`Self::new`] with the wall clock read by `now_ms`.
-    ///
-    /// # Errors
-    /// Rejects missing, non-private or foreign-owned session directories.
     pub fn new_with_clock(
         directory: PathBuf,
         now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,

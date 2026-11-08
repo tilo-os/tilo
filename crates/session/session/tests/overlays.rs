@@ -1,13 +1,10 @@
-//! The surfaces over the desk as the session publishes them: what stands
-//! where, which of them holds the keyboard, what Escape closes and what a
-//! press outside one closes.
-//!
-//! The stack is the one answer every overlay used to give for itself; these
-//! tests hold the session to it — the window menu and quick settings, the two
-//! surfaces the session puts up itself, close by the dismissal table, the
-//! keyboard goes back to the window as the last of them closes, and a popover
-//! stands where its anchor and its size say, under the bar's trailing end or
-//! beside the caret that asked for it.
+//! The surfaces over the desk as the session publishes them: what stands where, which of them holds
+//! the keyboard, what Escape closes and what a press outside one closes.
+//! The stack is the one answer every overlay used to give for itself; these tests hold the session
+//! to it — the window menu and quick settings, the two surfaces the session puts up itself, close
+//! by the dismissal table, the keyboard goes back to the window as the last of them closes, and a
+//! popover stands where its anchor and its size say, under the bar's trailing end or beside the
+//! caret that asked for it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -20,6 +17,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session \
               outlives every call made into it"
 )]
+
+mod common;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -36,8 +35,7 @@ use tilo_session::surfaces::Surface;
 use tilo_session::{Options, Session, quick_settings};
 use tilo_test_env::ScopedEnv;
 
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
 /// What a key sends, evdev codes.
@@ -47,19 +45,17 @@ const KEY_ESCAPE: u32 = 1;
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 
-/// The gap a popover leaves between itself and the edges of its display, as
-/// the stack holds it.
+/// The gap a popover leaves between itself and the edges of its display, as the stack holds it.
 const MARGIN: f64 = 8.0;
 
 /// The width of a popover under the bar.
 const POPOVER_WIDTH: f64 = 380.0;
 
-/// The height of a popover under the bar: its footprint, which no page it
-/// shows moves.
+/// The height of a popover under the bar: its footprint, which no page it shows moves.
 const POPOVER_HEIGHT: f64 = 640.0;
 
-/// A coordinate the stack published stands where this test expects it, to the
-/// pixel the surface is drawn at.
+/// A coordinate the stack published stands where this test expects it, to the pixel the surface is
+/// drawn at.
 #[track_caller]
 fn near(actual: f64, expected: f64, what: &str) {
     assert!(
@@ -110,19 +106,16 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-/// A headless session showing `tree`, with a turn taken so its desk has laid
-/// the windows out.
+/// A headless session showing `tree` , with a turn taken so its desk has laid the windows out.
 fn session_with(tree: DesktopTree, panel: Option<Surface>) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             surfaces: panel.into_iter().collect(),
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session
@@ -133,23 +126,22 @@ fn session() -> Session {
     session_with(desk_tree(), None)
 }
 
-/// The panel's app for this package's tests: the surface probe the session
-/// package ships, standing in for a view that draws the panel and staying up
-/// while the session keeps it.
+/// The panel's app for this package's tests: the surface probe the session package ships, standing
+/// in for a view that draws the panel and staying up while the session keeps it.
 fn panel_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
-/// The environment its stand-in app reads, held for the test's life: it
-/// draws nothing, and stays up until the session stops it.
+/// The environment its stand-in app reads, held for the test's life: it draws nothing, and stays up
+/// until the session stops it.
 fn panel_environment() -> ScopedEnv {
     let mut environment = ScopedEnv::new();
     environment.set("SURFACE_PROBE_STAY", "1");
     environment
 }
 
-/// The session with the quick settings panel installed and its app running
-/// while the stack has the popover up.
+/// The session with the quick settings panel installed and its app running while the stack has the
+/// popover up.
 fn session_with_quick_settings() -> (Session, ScopedEnv) {
     let environment = panel_environment();
     let session = session_with(
@@ -164,8 +156,8 @@ fn args(arguments: &Value) -> serde_json::Map<String, Value> {
     arguments.as_object().expect("an object").clone()
 }
 
-/// Open the surface `slot`, hanging where `anchor` says, through the same
-/// verb a view or an agent invokes.
+/// Open the surface `slot` , hanging where `anchor` says, through the same verb a view or an agent
+/// invokes.
 fn open(session: &mut Session, slot: &str, anchor: Option<&str>) {
     let arguments = match anchor {
         Some(anchor) => json!({ "slot": slot, "anchor": anchor }),
@@ -195,7 +187,7 @@ fn slots(session: &Session) -> Vec<String> {
         .collect()
 }
 
-/// The one open surface of `slot`.
+/// The one open surface of `slot` .
 fn surface(session: &Session, slot: &str) -> Value {
     stack(session)
         .into_iter()
@@ -203,7 +195,7 @@ fn surface(session: &Session, slot: &str) -> Value {
         .unwrap_or_else(|| panic!("{slot} is up: {:?}", stack(session)))
 }
 
-/// Where the stack places a surface, as `(x, y, w, h)`.
+/// Where the stack places a surface, as `(x, y, w, h)` .
 fn place(session: &Session, slot: &str) -> (f64, f64, f64, f64) {
     let place = &surface(session, slot)["place"];
     (
@@ -237,8 +229,8 @@ fn tap(session: &mut Session, keycode: u32) {
     key(session, keycode, false);
 }
 
-/// One click delivered in one go: the button down and up before the session
-/// carries out what the press asked, as a quick tap of a trackpad does.
+/// One click delivered in one go: the button down and up before the session carries out what the
+/// press asked, as a quick tap of a trackpad does.
 fn quick_click(session: &mut Session, x: f64, y: f64) {
     session
         .compositor()
@@ -308,8 +300,8 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
     );
     assert_eq!(focus(&session), "overlay:window-menu");
 
-    // And quick settings under the bar's trailing end: one anchored surface
-    // at a time, so the menu goes down for the panel.
+    // And quick settings under the bar's trailing end: one anchored surface at a time, so the menu
+    // goes down for the panel.
     session
         .invoke(
             OVERLAYS,
@@ -358,9 +350,8 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
         "the panel takes the place of the menu"
     );
 
-    // Escape in the panel is the panel's: it goes back a page inside it
-    // before it closes (the shell proves that with the real app). Here the
-    // stack says the menu below went down for it.
+    // Escape in the panel is the panel's: it goes back a page inside it before it closes (the shell
+    // proves that with the real app). Here the stack says the menu below went down for it.
     session
         .invoke(
             OVERLAYS,
@@ -388,9 +379,9 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
 
 #[test]
 fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
-    // The menus, the picker, the overview and the strip ribbon open and close
-    // with the widgets that draw them, which say so to the same stack: the
-    // session's verb refuses them rather than putting up a second one.
+    // The menus, the picker, the overview and the strip ribbon open and close with the widgets that
+    // draw them, which say so to the same stack: the session's verb refuses them rather than
+    // putting up a second one.
     let mut session = session();
     for slot in ["emoji", "workspace-menu", "tilo-menu", "overview", "strips"] {
         let opened = session.invoke(OVERLAYS, "open", &args(&json!({ "slot": slot })));
@@ -409,23 +400,21 @@ fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
 
 #[test]
 fn a_press_on_the_desk_closes_the_workspace_menu_the_chrome_hangs_off_its_chip() {
-    // The chrome draws the menu and says where it stands; a press on the desk
-    // never reaches the chrome drawn over it, so the session's reader of
-    // presses outside is what closes the menu.
+    // The chrome draws the menu and says where it stands; a press on the desk never reaches the
+    // chrome drawn over it, so the session's reader of presses outside is what closes the menu.
     let mut session = session();
     let chip = (86.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
     press(&mut session, chip.0, chip.1);
     assert_eq!(slots(&session), ["workspace-menu"], "the chip opened it");
-    // Its release comes up before the chrome takes its next pass, as a quick
-    // click's does.
+    // Its release comes up before the chrome takes its next pass, as a quick click's does.
     quick_click(&mut session, 100.0, 400.0);
     session.step(REFRESH).expect("a turn of the session");
     assert!(
         slots(&session).is_empty(),
         "the press on the desk closed it"
     );
-    // And the menu it draws followed the stack: the chip opens it again
-    // rather than closing the one still standing under the person's finger.
+    // And the menu it draws followed the stack: the chip opens it again rather than closing the one
+    // still standing under the person's finger.
     press(&mut session, chip.0, chip.1);
     assert_eq!(
         slots(&session),
@@ -515,8 +504,8 @@ fn the_panel_stands_hidden_between_openings_and_the_next_opening_starts_nothing(
         "and the compositor shows it"
     );
 
-    // Closed: the app keeps running, hidden, so the next opening draws the
-    // panel instead of starting it.
+    // Closed: the app keeps running, hidden, so the next opening draws the panel instead of
+    // starting it.
     session
         .invoke(
             tilo_desktop::desk_verbs::CHROME_RESOURCE,
@@ -567,8 +556,7 @@ fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
         "a press in the panel is the panel's"
     );
 
-    // Anywhere else on the desk: it closes, and what the press landed on
-    // still gets it.
+    // Anywhere else on the desk: it closes, and what the press landed on still gets it.
     press(&mut session, 100.0, 400.0);
     assert!(
         !session.quick_settings_open(),
@@ -582,9 +570,8 @@ fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
 fn a_dismissing_press_does_not_reopen_what_it_closed() {
     let (mut session, _panel) = session_with_quick_settings();
     open(&mut session, "quick-settings", None);
-    // The person's finger goes down on the bar, outside the panel: the panel
-    // closes, and the bar's own toggle — raised by that same press — must not
-    // put it back up under the finger.
+    // The person's finger goes down on the bar, outside the panel: the panel closes, and the bar's
+    // own toggle — raised by that same press — must not put it back up under the finger.
     session
         .compositor()
         .input(InputEvent::PointerMotion { x: 100.0, y: 400.0 })
@@ -639,10 +626,9 @@ fn a_quick_click_on_the_bar_closes_the_panel_and_leaves_it_closed() {
     let (mut session, _panel) = session_with_quick_settings();
     open(&mut session, "quick-settings", None);
 
-    // The person taps the status cluster's button, at the bar's trailing
-    // end: the click comes up before the session has carried out the toggle
-    // its press raised, and the press that closed the panel still does not
-    // open it again.
+    // The person taps the status cluster's button, at the bar's trailing end: the click comes up
+    // before the session has carried out the toggle its press raised, and the press that closed the
+    // panel still does not open it again.
     let button = (f64::from(WIDTH) - 30.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
     quick_click(&mut session, button.0, button.1);
     session.step(REFRESH).expect("a turn of the session");

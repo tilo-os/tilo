@@ -1362,8 +1362,17 @@ fn offers_actions(ty: &Type) -> bool {
     }
 }
 
+/// Whether a value of `ty` shows text: text, or an option or list of it.
+pub(super) fn shows_text(ty: &Ty) -> bool {
+    match ty {
+        Ty::Text => true,
+        Ty::Option(inner) | Ty::List(inner) => shows_text(inner),
+        _ => false,
+    }
+}
+
 /// Whether a prop of `ty` shows text: text, or an option or list of it.
-fn shows_words(ty: &Type) -> bool {
+pub(super) fn shows_words(ty: &Type) -> bool {
     match ty {
         Type::Text => true,
         Type::Option(inner) | Type::List(inner) => shows_words(inner),
@@ -1437,6 +1446,9 @@ fn lang_type(ty: &Type) -> Ty {
 /// or a Time too, which the host shows the person's way.
 fn fits(ty: &Type, found: &Ty) -> bool {
     match (ty, found) {
+        // An option prop takes an optional value of its own too: the item a window holds open,
+        // or the selection it keeps.
+        (Type::Option(inner), Ty::Option(held)) => fits(inner, held),
         (Type::Option(inner), found) => fits(inner, found),
         // A list or a set takes either of the language's.
         (Type::List(inner) | Type::Set(inner), Ty::List(item) | Ty::Set(item)) => fits(inner, item),

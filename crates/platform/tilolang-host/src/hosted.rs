@@ -323,7 +323,8 @@ impl Platform for HostPlatform {
         self.phrases.language()
     }
 
-    fn add_words(&self, catalogues: &[(String, String)]) {
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        let _ = window;
         self.phrases.add_package(catalogues);
     }
 
@@ -522,9 +523,6 @@ pub struct Hosted {
 impl Hosted {
     /// The instance `spec` of `bundle`, over the workspace record its connection `manager` joined,
     /// kept in `kept`, sending its window patches over `window`.
-    ///
-    /// # Errors
-    /// The workspace record could not be opened on the connection.
     pub fn open(
         spec: Spec,
         manager: collaboration::CollaborationManager,
@@ -1788,9 +1786,6 @@ pub struct Applier {
 
 impl Applier {
     /// The origin of `record` for `bundle`'s app, taking its change on `connection`.
-    ///
-    /// # Errors
-    /// The runtime cannot be set up, the package does not load, or the connection is unusable.
     pub fn open(
         spec: Spec,
         record: InstanceRecord,

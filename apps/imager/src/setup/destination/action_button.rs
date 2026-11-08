@@ -1,4 +1,4 @@
-//! [`ActionButton`]: a wizard action, composed from the toolkit's own
+//! [`ActionButton`] — a wizard action, composed from the toolkit's own
 //! controls.
 //!
 //! A wizard's action is a `ui::Button` in the role the step gives it (the

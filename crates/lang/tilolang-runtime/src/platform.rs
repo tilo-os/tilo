@@ -1803,7 +1803,11 @@ impl Core {
             }
         }
         if target.item.is_none() && meta.roots.contains(&ty.id) {
-            return Ok(meta.title.clone());
+            return Ok(self.words.borrow().word(
+                &tilolang::messages::key_of(&meta.app),
+                &[],
+                &meta.title,
+            ));
         }
         Ok(sentence(&ty.name))
     }
@@ -2210,10 +2214,6 @@ impl Core {
     /// alone decides say: the first that does not hold, in `viewer`'s words. `None` when they
     /// all hold, or when the app keeps none the subject could decide. A place the view would
     /// supply is given as nothing: the item stands in no view here.
-    ///
-    /// # Errors
-    ///
-    /// A guard that traps, or answers something else than a text.
     pub(crate) fn refusal(
         &self,
         action: &str,
@@ -2277,10 +2277,6 @@ impl Core {
     /// the item where the view offers it — as the conditions its subject and the place it is
     /// offered in decide say: the first that does not hold, in `viewer`'s words, or `None` when
     /// they all hold. `args` is what the offer gives before the parameters it asks for.
-    ///
-    /// # Errors
-    ///
-    /// A condition that traps, or answers something else than a text.
     fn decided(
         &self,
         action: &str,

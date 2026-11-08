@@ -69,9 +69,9 @@ pub enum ActivityView {
 }
 
 impl ActivityView {
-    /// Why a surface with `capabilities` cannot present `self`, if it
-    /// cannot. The views read retained record and desktop history, which
-    /// only a host that installed a history source holds.
+    /// Why a surface with `capabilities` cannot present `self` , if it cannot. The views read
+    /// retained record and desktop history, which only a host that installed a history source
+    /// holds.
     pub fn unavailable(self, capabilities: &Capabilities) -> Option<&'static str> {
         match self {
             Self::CatchUp | Self::Explore if capabilities.workspace_history => None,
@@ -117,13 +117,13 @@ pub struct Destination {
     /// The display to show the window on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
-    /// The window group of `strip` to stand before; the strip's end when
-    /// absent, which in the window's own strip moves it to the last place.
-    /// Any place in the strip it already stands on reorders it.
+    /// The window group of `strip` to stand before; the strip's end when absent, which in the
+    /// window's own strip moves it to the last place. Any place in the strip it already stands on
+    /// reorders it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<String>,
-    /// The window group of the tab's own strip to put the tab in, its tab
-    /// joining that window instead of a window of its own.
+    /// The window group of the tab's own strip to put the tab in, its tab joining that window
+    /// instead of a window of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
 }
@@ -151,13 +151,12 @@ impl From<WidthPreset> for tilo_desktop_model::WindowWidth {
     }
 }
 
-/// What the desk under the windows can be asked to do: which window has
-/// focus, closing one, which display is worked on, what the search and the
-/// empty desk's launchpad do. Each is one published action on the desk's
-/// resource, so a person's chord, a page, a script and an agent do the same
-/// thing by the same verb. Ids travel as the decimal text the desk
-/// addresses its windows by; a caller that names something the desk does
-/// not hold is refused rather than given the nearest thing.
+/// What the desk under the windows can be asked to do: which window has focus, closing one, which
+/// display is worked on, what the search and the empty desk's launchpad do. Each is one published
+/// action on the desk's resource, so a person's chord, a page, a script and an agent do the same
+/// thing by the same verb. Ids travel as the decimal text the desk addresses its windows by; a
+/// caller that names something the desk does not hold is refused rather than given the nearest
+/// thing.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "so.tilo.desk")]
 pub enum DeskEffect {
@@ -178,7 +177,6 @@ pub enum DeskEffect {
     },
 
     /// Step through the windows
-    ///
     /// Along the shown strip, onto the neighbouring display past either end.
     #[effect(own_device)]
     StepFocus {
@@ -204,10 +202,8 @@ pub enum DeskEffect {
     },
 
     /// Search the desktop
-    ///
-    /// Open the desktop's search, or close it when it is already open, as
-    /// its key does; with `query` typed when given, into the search already
-    /// open instead.
+    /// Open the desktop's search, or close it when it is already open, as its key does; with
+    /// `query` typed when given, into the search already open instead.
     #[effect(own_device)]
     Search {
         /// What to type.
@@ -235,9 +231,8 @@ pub enum DeskEffect {
     },
 
     /// Keep waiting for its app
-    ///
-    /// Give the app of a window that stopped answering its pings another
-    /// period to answer before the window says so again.
+    /// Give the app of a window that stopped answering its pings another period to answer before
+    /// the window says so again.
     #[effect(own_device, idempotent)]
     WaitWindow {
         /// The tab's id.
@@ -246,9 +241,8 @@ pub enum DeskEffect {
     },
 
     /// Force quit its app
-    ///
-    /// End the app of a window that stopped answering. Only that app's
-    /// processes go; everything else stays as it was.
+    /// End the app of a window that stopped answering. Only that app's processes go; everything
+    /// else stays as it was.
     #[effect(own_device)]
     ForceQuitApp {
         /// The tab's id.
@@ -268,7 +262,6 @@ pub enum DeskEffect {
 #[effect(operation = "so.tilo.chrome")]
 pub enum ChromeEffect {
     /// Open an app
-    ///
     /// In a new window of the shown strip, or beside the window named.
     #[effect(own_device, icon = "app-window")]
     OpenApp {
@@ -284,9 +277,8 @@ pub enum ChromeEffect {
     },
 
     /// Show an app
-    ///
-    /// The shown strip's window of it when there is one, else a new window:
-    /// what following a link to the app does.
+    /// The shown strip's window of it when there is one, else a new window: what following a link
+    /// to the app does.
     #[effect(own_device, idempotent)]
     ShowApp {
         /// The app's id.
@@ -295,11 +287,9 @@ pub enum ChromeEffect {
     },
 
     /// Move a tab elsewhere
-    ///
-    /// Its window onto another strip of the workspace (or another place in
-    /// its own), the tab alone into another workspace as a window of its
-    /// own, its window onto another display, or the tab into a window of
-    /// its strip.
+    /// Its window onto another strip of the workspace (or another place in its own), the tab alone
+    /// into another workspace as a window of its own, its window onto another display, or the tab
+    /// into a window of its strip.
     #[effect(own_device)]
     MoveTab {
         /// The tab whose window moves.
@@ -311,7 +301,6 @@ pub enum ChromeEffect {
     },
 
     /// Close a window
-    ///
     /// Every tab in it, as one close.
     #[effect(own_device)]
     CloseWindow {
@@ -321,9 +310,7 @@ pub enum ChromeEffect {
     },
 
     /// Split right
-    ///
-    /// Detach the tab into a window of its own, right after the one it is
-    /// in.
+    /// Detach the tab into a window of its own, right after the one it is in.
     #[effect(own_device)]
     SplitRight {
         /// The tab to detach.
@@ -332,7 +319,6 @@ pub enum ChromeEffect {
     },
 
     /// New group
-    ///
     /// Detach the tab into a window of its own at the end of its strip.
     #[effect(own_device)]
     NewGroup {
@@ -342,7 +328,6 @@ pub enum ChromeEffect {
     },
 
     /// Set width
-    ///
     /// A preset share of its strip, or an exact share in permille.
     #[effect(own_device, idempotent)]
     SetWidth {
@@ -358,7 +343,6 @@ pub enum ChromeEffect {
     },
 
     /// Equalize widths
-    ///
     /// Every window of `strip` takes the same share of it.
     #[effect(own_device, idempotent)]
     Equalize {
@@ -390,9 +374,8 @@ pub enum ChromeEffect {
     },
 
     /// Rename something
-    ///
-    /// A window, a strip or a workspace, by the one id given; a blank name
-    /// gives a window its own title back.
+    /// A window, a strip or a workspace, by the one id given; a blank name gives a window its own
+    /// title back.
     #[effect(own_device, idempotent)]
     Rename {
         /// The window group to name.
@@ -410,7 +393,6 @@ pub enum ChromeEffect {
     },
 
     /// New strip
-    ///
     /// An empty strip at the end of the workspace shown.
     #[effect(own_device)]
     NewStrip {
@@ -431,13 +413,11 @@ pub enum ChromeEffect {
     },
 
     /// Reopen what was closed last
-    ///
     /// In the workspace shown, where it was, and focus it.
     #[effect(own_device)]
     ReopenClosed,
 
     /// Share a window
-    ///
     /// With the people of its workspace, or stop sharing it.
     #[effect(own_device)]
     ShareWindow {
@@ -466,9 +446,8 @@ pub enum ChromeEffect {
     },
 
     /// Switch workspace
-    ///
-    /// The one named, or that many on (back when negative); the overview's
-    /// strip ribbon leaves `strip` shown.
+    /// The one named, or that many on (back when negative); the overview's strip ribbon leaves
+    /// `strip` shown.
     #[effect(own_device, idempotent)]
     SwitchWorkspace {
         /// The workspace to go to.
@@ -480,7 +459,6 @@ pub enum ChromeEffect {
     },
 
     /// Show a strip
-    ///
     /// The strip of the workspace shown to put in front.
     #[effect(own_device, idempotent)]
     ShowStrip {
@@ -493,13 +471,11 @@ pub enum ChromeEffect {
     },
 
     /// Show the strips
-    ///
     /// The ribbon of the workspace shown, each strip where it stands.
     #[effect(view, own_device, idempotent)]
     ShowStrips,
 
     /// Pan a strip
-    ///
     /// Its horizontal offset, committed when the gesture ends.
     #[effect(own_device)]
     Pan {
@@ -528,7 +504,7 @@ pub enum ChromeEffect {
         /// The tab.
         #[param(decimal, "The tab")]
         tab: String,
-        /// `back` or `forward`.
+        /// `back` or `forward` .
         #[param("The way to go: back or forward")]
         target: String,
     },
@@ -564,9 +540,8 @@ pub enum ChromeEffect {
     },
 
     /// New workspace
-    ///
-    /// An empty one, or one joined from the directory when `workspace` is
-    /// given, named when a name is.
+    /// An empty one, or one joined from the directory when `workspace` is given, named when a name
+    /// is.
     #[effect(own_device)]
     NewWorkspace {
         /// The workspace to open here, by the id it is shared under.
@@ -582,7 +557,6 @@ pub enum ChromeEffect {
     JoinWorkspace,
 
     /// Leave a workspace
-    ///
     /// Here on this computer: the one named, or the one shown.
     #[effect(own_device)]
     LeaveWorkspace {
@@ -592,10 +566,9 @@ pub enum ChromeEffect {
     },
 
     /// Delete a workspace
-    ///
-    /// The workspace shown, when it is the person's own and this computer is
-    /// the only one holding it: it goes, with everything in it. Deleting is
-    /// asked first, so nothing goes until the person says `confirmed`.
+    /// The workspace shown, when it is the person's own and this computer is the only one holding
+    /// it: it goes, with everything in it. Deleting is asked first, so nothing goes until the
+    /// person says `confirmed` .
     #[effect(own_device)]
     DeleteWorkspace {
         /// The workspace to delete.
@@ -611,7 +584,6 @@ pub enum ChromeEffect {
     WorkspaceSettings,
 
     /// Run a desktop shortcut
-    ///
     /// By its id in the shortcut table, as its chord does.
     #[effect(own_device)]
     Shortcut {
@@ -633,7 +605,6 @@ pub enum ChromeEffect {
     },
 
     /// Open or close the overview
-    ///
     /// Whether it is to be open; toggled when absent.
     #[effect(view, own_device, idempotent)]
     Overview {
@@ -643,7 +614,6 @@ pub enum ChromeEffect {
     },
 
     /// Show the top bar over a full screen window
-    ///
     /// As the Super key and a finger swiped down from the top edge do.
     #[effect(view, own_device, idempotent)]
     RevealTopBar,
@@ -674,11 +644,21 @@ pub enum ChromeEffect {
         #[param("The fixed shortcut's id in the shortcut catalogue")]
         action: String,
     },
+
+    /// Lift a window out of its strip, or put it back
+    #[effect(own_device, idempotent)]
+    Float {
+        /// The window group.
+        #[param(decimal, "The window group")]
+        group: String,
+        /// Whether it floats above the desk.
+        #[param("Whether it floats above the desk")]
+        on: bool,
+    },
 }
 
-/// A verb a host page or a surface dispatches, from either resource: the
-/// desktop's own verbs and the ones its surfaces over it carry out, named by
-/// the one vocabulary's ids.
+/// A verb a host page or a surface dispatches, from either resource: the desktop's own verbs and
+/// the ones its surfaces over it carry out, named by the one vocabulary's ids.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verb {
     Desk(DeskEffect),
@@ -810,8 +790,8 @@ pub enum Admitted {
     Scroll(RouteIds, ScrollAction),
     /// Move the tab's own navigation history.
     History(RouteIds, HistoryDirection),
-    /// Open the workspace's history at a view, showing only what the
-    /// named person did when one is named.
+    /// Open the workspace's history at a view, showing only what the named person did when one is
+    /// named.
     Activity(WorkspaceSlot, ActivityView, Option<String>),
     CloseActivity(WorkspaceSlot),
     /// Open or close the notification centre.
@@ -819,8 +799,8 @@ pub enum Admitted {
     /// Open `app` as a tab right after the tab at the route, in its group,
     /// taking focus unless the last field says not to.
     TabOpenBeside(RouteIds, String, bool),
-    /// Carry the window into another strip of its workspace, before the
-    /// window named when one is: a place in its own strip reorders it.
+    /// Carry the window into another strip of its workspace, before the window named when one is: a
+    /// place in its own strip reorders it.
     MoveToStrip(RouteIds, StripId, Option<GroupId>),
     /// Put the tab into the window `GroupId` of its own strip.
     JoinGroup(RouteIds, GroupId),
@@ -834,8 +814,7 @@ pub enum Admitted {
     EqualizeWidths(RouteIds),
     /// Share the window with the people of its workspace, or stop.
     ShareWindow(RouteIds, bool),
-    /// Detach the tab into a window of its own, right after the one it is
-    /// in.
+    /// Detach the tab into a window of its own, right after the one it is in.
     SplitRight(RouteIds),
     /// Detach the tab into a window of its own at the end of its strip.
     MoveToNewGroup(RouteIds),
@@ -843,6 +822,8 @@ pub enum Admitted {
     CloseWindow(RouteIds),
     /// Take back the app's control of the desktop.
     StopDesktopControl(RouteIds),
+    /// Lift the window above the desk, or put it back into its strip.
+    Float(RouteIds, bool),
 }
 
 pub fn scroll_region(route: RouteIds, key: &str) -> String {
@@ -865,10 +846,9 @@ fn parse_scroll_region(region: &str) -> Result<RouteIds, String> {
     route.ids()
 }
 
-/// Which commands this surface performs without host services. The rest are
-/// refused with a reason rather than silently ignored. A host that installs
-/// a history source adds Catch up, Explore and Replay, and one that installs
-/// notifications adds the centre.
+/// Which commands this surface performs without host services. The rest are refused with a reason
+/// rather than silently ignored. A host that installs a history source adds Catch up, Explore and
+/// Replay, and one that installs notifications adds the centre.
 pub const CAPABILITIES: Capabilities = Capabilities {
     select: true,
     width: true,
@@ -917,9 +897,9 @@ pub fn group_route(tree: &DesktopTree, group: &str) -> Result<RouteIds, String> 
     Err("Window unavailable".into())
 }
 
-/// Whether the window at `ids` holds a tab besides `ids.tab`. A window of one
-/// tab is that tab's window already: there is nothing to split, close or group
-/// beside it, and a split asked of it is answered rather than done.
+/// Whether the window at `ids` holds a tab besides `ids.tab` . A window of one tab is that tab's
+/// window already: there is nothing to split, close or group beside it, and a split asked of it is
+/// answered rather than done.
 #[must_use]
 pub fn has_a_second_tab(tree: &DesktopTree, ids: &RouteIds) -> bool {
     tree.workspaces
@@ -953,8 +933,8 @@ pub fn tab_route(tree: &DesktopTree, tab: &str) -> Result<RouteIds, String> {
     Err("Window unavailable".into())
 }
 
-/// A person's name for the window at `ids`: trimmed, within the length a
-/// name may be, and refused for a window the tree no longer holds.
+/// A person's name for the window at `ids` : trimmed, within the length a name may be, and refused
+/// for a window the tree no longer holds.
 fn named(ids: RouteIds, name: &str, tree: &DesktopTree) -> Result<Admitted, String> {
     if name.chars().count() > MAX_NAME_CHARS {
         return Err("Window name too long".into());
@@ -988,10 +968,8 @@ fn admit_activity(
 }
 
 /// The workspace whose closes a `reopen` undoes: the one the surface shows.
-///
-/// The closes a workspace remembers belong to the device the person closed
-/// them on, so what can be reopened is read when the command applies; here
-/// the shown workspace is all there is to check.
+/// The closes a workspace remembers belong to the device the person closed them on, so what can be
+/// reopened is read when the command applies; here the shown workspace is all there is to check.
 fn admit_reopen(tree: &DesktopTree) -> Result<Admitted, String> {
     tree.active_workspace()
         .map(|workspace| Admitted::Reopen(workspace.slot))
@@ -1013,8 +991,8 @@ pub fn admit_with(
     }
 }
 
-/// The desk's own verbs, as the surface carries them out: the ones a page
-/// dispatches to move around the windows it shows.
+/// The desk's own verbs, as the surface carries them out: the ones a page dispatches to move around
+/// the windows it shows.
 fn admit_desk(verb: &DeskEffect, tree: &DesktopTree) -> Result<Admitted, String> {
     match verb {
         DeskEffect::CloseTab { tab } => tab_route(tree, tab).map(Admitted::Close),
@@ -1036,8 +1014,7 @@ fn admit_desk(verb: &DeskEffect, tree: &DesktopTree) -> Result<Admitted, String>
     }
 }
 
-/// The verbs the surfaces over the desk carry out, as the surface changes
-/// what it shows.
+/// The verbs the surfaces over the desk carry out, as the surface changes what it shows.
 #[expect(
     clippy::too_many_lines,
     reason = "one verb, one arm: every verb the surface carries out is admitted here"
@@ -1129,6 +1106,9 @@ fn admit_chrome(
         ChromeEffect::Fullscreen { group, on } => {
             group_route(tree, group).map(|ids| Admitted::Fullscreen(ids, *on))
         }
+        ChromeEffect::Float { group, on } => {
+            group_route(tree, group).map(|ids| Admitted::Float(ids, *on))
+        }
         ChromeEffect::Rename { group, name, .. } => match group {
             Some(group) => named(group_route(tree, group)?, name, tree),
             None => Err("Name a window, a strip or a workspace to rename".into()),
@@ -1206,10 +1186,9 @@ fn admit_chrome(
     }
 }
 
-/// A launch of `app`, checked against the desktop it opens on.
+/// A launch of `app` , checked against the desktop it opens on.
 fn admit_launch(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
-    // A workspace may hold no strip yet: the first window opened in it makes
-    // the strip it goes in.
+    // A workspace may hold no strip yet: the first window opened in it makes the strip it goes in.
     tree.active_workspace().ok_or("Workspace unavailable")?;
     if app.is_empty() {
         return Err("Application unavailable".into());
@@ -1217,7 +1196,7 @@ fn admit_launch(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
     Ok(Admitted::Launch(app.to_owned()))
 }
 
-/// A tab opening beside the window at `ids`, with the app it opens.
+/// A tab opening beside the window at `ids` , with the app it opens.
 fn admit_beside(ids: RouteIds, app: &str, background: bool) -> Result<Admitted, String> {
     if app.is_empty() {
         return Err("Application unavailable".into());
@@ -1225,8 +1204,7 @@ fn admit_beside(ids: RouteIds, app: &str, background: bool) -> Result<Admitted, 
     Ok(Admitted::TabOpenBeside(ids, app.to_owned(), background))
 }
 
-/// Where a window goes: the destination one of `to`'s ids names, checked
-/// against the tree.
+/// Where a window goes: the destination one of `to` 's ids names, checked against the tree.
 fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Admitted, String> {
     if let Some(group) = &to.group {
         let target: GroupId = id(group)?;
@@ -1256,9 +1234,8 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Adm
                         && strip.window_groups.iter().any(|group| group.id == before)
                 })
             });
-        // A place in the strip the window already stands on reorders it —
-        // the strip's end when no window is named before it; any other
-        // strip of its workspace carries it there.
+        // A place in the strip the window already stands on reorders it — the strip's end when no
+        // window is named before it; any other strip of its workspace carries it there.
         let there = strip_held;
         return there
             .then_some(Admitted::MoveToStrip(ids, target, before))
@@ -1290,8 +1267,8 @@ fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
     if app.is_empty() {
         return Err("Application unavailable".into());
     }
-    // A window already showing the app is the one the link means; a second
-    // copy would split the person's place in it.
+    // A window already showing the app is the one the link means; a second copy would split the
+    // person's place in it.
     let shown = workspace
         .strips
         .iter()
@@ -1312,8 +1289,8 @@ fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
     Ok(shown.map_or_else(|| Admitted::Open(app.to_owned()), Admitted::Select))
 }
 
-/// What [`Admitted::Open`] of `app` does on `tree` now: select the shown
-/// strip's window of it, or launch one.
+/// What [`Admitted::Open`] of `app` does on `tree` now: select the shown strip's window of it, or
+/// launch one.
 pub(crate) fn resolve_open(tree: &DesktopTree, app: &str) -> Admitted {
     match admit_open(tree, app) {
         Ok(Admitted::Select(ids)) => Admitted::Select(ids),
@@ -1458,12 +1435,12 @@ pub struct Capabilities {
     pub scroll: bool,
     /// Per-window back and forward through the tab's own history.
     pub history: bool,
-    /// The surface takes sideways wheel input itself: a trackpad swipe pans
-    /// the strip, a mouse wheel's spin alike, and focus follows. A
-    /// host must leave it the wheel rather than turn it into `pan` commands.
+    /// The surface takes sideways wheel input itself: a trackpad swipe pans the strip, a mouse
+    /// wheel's spin alike, and focus follows. A host must leave it the wheel rather than turn it
+    /// into `pan` commands.
     pub swipe: bool,
-    /// The surface shows notification banners and opens the notification
-    /// centre on `notification-center`.
+    /// The surface shows notification banners and opens the notification centre on
+    /// `notification-center` .
     pub notifications: bool,
 }
 
@@ -1496,8 +1473,7 @@ pub struct HistoryState {
     pub can_forward: bool,
 }
 
-/// Presentation the surface holds beside the tree: nothing here is saved
-/// or shared with peers.
+/// Presentation the surface holds beside the tree: nothing here is saved or shared with peers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Presentation {
     pub pan: Option<DesktopPan>,
@@ -1523,8 +1499,8 @@ pub struct NotificationsState {
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub route: Route,
-    /// The app the window shows, as links name it; `None` for a window that
-    /// shows no app of its own.
+    /// The app the window shows, as links name it; `None` for a window that shows no app of its
+    /// own.
     pub app: Option<String>,
     pub label: String,
     pub strip_label: String,
@@ -1577,8 +1553,8 @@ pub fn snapshot(tree: &DesktopTree, generation: &str, applications: Vec<Applicat
     snapshot_with(tree, generation, applications, &Presentation::default())
 }
 
-/// [`snapshot`] with what the surface presents beside the tree. Stale
-/// presentation (another strip, workspace or window) is left out.
+/// [`snapshot`] with what the surface presents beside the tree. Stale presentation (another strip,
+/// workspace or window) is left out.
 pub fn snapshot_with(
     tree: &DesktopTree,
     generation: &str,
@@ -1702,8 +1678,7 @@ mod tests {
         }
     }
 
-    /// A verb as a page sends it: its resource's effect id and the
-    /// arguments the caller gives.
+    /// A verb as a page sends it: its resource's effect id and the arguments the caller gives.
     fn decode<E: Effect>(effect: &str, args: serde_json::Value) -> Result<E, String> {
         let payload = serde_json::Value::Object(serde_json::Map::from_iter([
             ("effect".to_owned(), serde_json::Value::from(effect)),
@@ -1725,9 +1700,9 @@ mod tests {
         admit(verb, tree)
     }
 
-    /// Every verb of either vocabulary decodes from its declaration's id, and
-    /// is asked for with exactly the arguments its declaration makes
-    /// optional: nothing of it can be dropped, or invented, on the wire.
+    /// Every verb of either vocabulary decodes from its declaration's id, and is asked for with
+    /// exactly the arguments its declaration makes optional: nothing of it can be dropped, or
+    /// invented, on the wire.
     #[test]
     fn every_verb_decodes_from_its_id_and_refuses_a_bad_argument() {
         for declaration in DeskEffect::declarations()
@@ -1766,9 +1741,8 @@ mod tests {
             admit(&split, &tree).unwrap_err(),
             t("window-menu-split-one-tab")
         );
-        // A second tab makes the window one a split has something to take
-        // out of: the same chord is admitted, and the same rule keeps the
-        // menu's row.
+        // A second tab makes the window one a split has something to take out of: the same chord is
+        // admitted, and the same rule keeps the menu's row.
         let group = &mut tree.workspaces[0].strips[0].window_groups[0];
         group.tabs.push(Tab {
             id: 5,

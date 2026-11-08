@@ -3,7 +3,7 @@
 //! then the identity of the items it is in), which this reads back into a view path and a
 //! source span.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use tilolang::ast::{self, UiKind, UiStmt};
@@ -59,6 +59,7 @@ pub struct Origin {
 pub struct SourceMap {
     views: HashMap<String, View>,
     packages: HashMap<String, Package>,
+    called: BTreeSet<(String, String)>,
 }
 
 /// A source's files laid out as the compiler lays them out (`package::placed`): in path order,
@@ -130,6 +131,25 @@ fn callee(text: &str) -> String {
     text.get(..end).unwrap_or(text).trim().to_owned()
 }
 
+/// The view a UI call as written calls, as `(app, view name)`, when it names one: `chat.unread`
+/// is Chat's `unread`, through the alias the package imports Chat under, and `agent_chip` one of
+/// the package's own. A call of the toolkit's or the standard library's (`ui.NavItem`,
+/// `std.place`) names no view of an app.
+fn callee_view(
+    what: &str,
+    app: &str,
+    aliases: &HashMap<String, String>,
+    names: &BTreeSet<&str>,
+) -> Option<(String, String)> {
+    let what = what.split('<').next().unwrap_or(what).trim();
+    match what.rsplit_once('.') {
+        Some((prefix, view)) => Some((aliases.get(prefix)?.clone(), view.to_owned())),
+        None => names
+            .contains(what)
+            .then(|| (app.to_owned(), what.to_owned())),
+    }
+}
+
 fn collect(stmts: &[UiStmt], placed: &Placed, calls: &mut HashMap<ast::NodeId, Call>) {
     for stmt in stmts {
         match &stmt.kind {
@@ -186,6 +206,7 @@ impl SourceMap {
     pub fn new(packages: &[tilolang::source::BuiltPackage]) -> Self {
         let mut views = HashMap::new();
         let mut maps = HashMap::new();
+        let mut called = BTreeSet::new();
         for built in packages {
             let app = built.compiled.meta.app.clone();
             let placed = Placed::new(&built.source, &built.dir);
@@ -194,12 +215,37 @@ impl SourceMap {
             };
             let mut calls = HashMap::new();
             let mut spans = HashMap::new();
+            let mut aliases: HashMap<String, String> = HashMap::new();
             for item in &module.items {
-                if let ast::Item::View(view) = item {
-                    spans.insert(view.name.name.clone(), placed.span(view.span.start));
-                    collect(&view.body, &placed, &mut calls);
+                match item {
+                    ast::Item::Use(used) => {
+                        let alias = used.alias.as_ref().map_or_else(
+                            || tilolang::resolve::default_alias(&used.app),
+                            |alias| alias.name.clone(),
+                        );
+                        aliases.insert(alias, used.app.clone());
+                    }
+                    ast::Item::View(view) => {
+                        spans.insert(view.name.name.clone(), placed.span(view.span.start));
+                        collect(&view.body, &placed, &mut calls);
+                    }
+                    _ => {}
                 }
             }
+            let names: BTreeSet<&str> = built
+                .compiled
+                .meta
+                .views
+                .iter()
+                .map(|view| view.name.as_str())
+                .collect();
+            let mut callers = BTreeSet::new();
+            for call in calls.values() {
+                if let Some((app, view)) = callee_view(&call.what, &app, &aliases, &names) {
+                    callers.insert((app, view));
+                }
+            }
+            called.extend(callers.iter().cloned());
             for view in &built.compiled.meta.views {
                 let span = spans
                     .get(&view.name)
@@ -219,7 +265,16 @@ impl SourceMap {
         Self {
             views,
             packages: maps,
+            called,
         }
+    }
+
+    /// Every view a package's source calls, as `(app, view name)`, over the packages read: what
+    /// no call of the app's own or of an app that uses it names is a view nothing shows.
+    pub fn called(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.called
+            .iter()
+            .map(|(app, view)| (app.as_str(), view.as_str()))
     }
 
     /// Where the node keyed `key` in a window's tree comes from, when its key is the compiler's.

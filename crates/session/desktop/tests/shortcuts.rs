@@ -124,9 +124,9 @@ fn two_windows() -> DesktopTree {
     }])
 }
 
-/// A desk every place a chord reaches exists on: nine strips, the shown one
-/// holding nine windows, so numbering a strip or a window lands somewhere
-/// and moving to the strip above or below does too.
+/// A desk every place a chord reaches exists on: nine strips, the shown one holding nine windows,
+/// so numbering a strip or a window lands somewhere and moving to the strip above or below does
+/// too.
 fn every_place() -> DesktopTree {
     let groups: Vec<WindowGroup> = (0..9_u64)
         .map(|index| {
@@ -140,8 +140,7 @@ fn every_place() -> DesktopTree {
             )
         })
         .collect();
-    // Nine strips: the shown one holds the nine windows, and the eight
-    // below it one window each.
+    // Nine strips: the shown one holds the nine windows, and the eight below it one window each.
     let mut strips: Vec<Strip> = (1..9_u64)
         .map(|index| Strip {
             id: StripId(10 + index),
@@ -163,8 +162,7 @@ fn every_place() -> DesktopTree {
     desk_tree(strips)
 }
 
-/// The desk with `tree` on it and the chrome that carries the desktop's
-/// chords over it.
+/// The desk with `tree` on it and the chrome that carries the desktop's chords over it.
 fn desk_and_chrome(tree: &DesktopTree) -> (FrameHarness, FrameHarness, DesktopHandle) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
@@ -197,9 +195,8 @@ fn press(frame: &mut FrameHarness, key: Key) {
     frame.send_host_event(&key_press(key, None));
 }
 
-/// A key press as a browser page reports it: the letter is the one the
-/// held Shift and Alt type, while the physical place it stands on is what
-/// the page's stand-in for Super reads.
+/// A key press as a browser page reports it: the letter is the one the held Shift and Alt type,
+/// while the physical place it stands on is what the page's stand-in for Super reads.
 fn press_here(frame: &mut FrameHarness, code: KeyCode, logical: Key, mods: ModifiersState) {
     hold(frame, mods);
     frame.send_host_event(&WindowEvent::KeyboardInput {
@@ -255,8 +252,8 @@ fn modifiers(chord: &KeyChord) -> ModifiersState {
     state
 }
 
-/// Press the chord the person's table binds `action` to, and let the desk
-/// carry out what it asked for.
+/// Press the chord the person's table binds `action` to, and let the desk carry out what it asked
+/// for.
 fn press_chord(desk: &mut FrameHarness, frame: &mut FrameHarness, action: ShortcutAction) {
     let chord = ShortcutConfig::default()
         .bindings
@@ -271,7 +268,7 @@ fn press_chord(desk: &mut FrameHarness, frame: &mut FrameHarness, action: Shortc
     }
 }
 
-/// The windows of group `group`, in the order the strip shows them.
+/// The windows of group `group` , in the order the strip shows them.
 fn windows_of(handle: &DesktopHandle, group: &str) -> Vec<String> {
     handle
         .snapshot("g", vec![])
@@ -324,10 +321,9 @@ fn width_in_front(handle: &DesktopHandle) -> Option<u32> {
     })
 }
 
-/// Every shortcut of the table is carried out by one side or handed to the
-/// other: the desk answers the shortcuts of its own windows and asks its host
-/// for nothing, and the session's are passed on whole — none falls between
-/// them.
+/// Every shortcut of the table is carried out by one side or handed to the other: the desk answers
+/// the shortcuts of its own windows and asks its host for nothing, and the session's are passed on
+/// whole — none falls between them.
 #[test]
 fn the_table_hands_every_shortcut_to_the_desk_or_the_session() {
     let tree = every_place();
@@ -339,9 +335,8 @@ fn the_table_hands_every_shortcut_to_the_desk_or_the_session() {
         let taken = chrome.shortcut(action);
         let asks = chrome.take_asks();
         match (action, action.home()) {
-            // Reporting a problem is the desk's picker, which asks its host
-            // where to send it: the one session surface a chord reaches
-            // through the desk's own layer.
+            // Reporting a problem is the desk's picker, which asks its host where to send it: the
+            // one session surface a chord reaches through the desk's own layer.
             (ShortcutAction::ReportProblem, _) => {
                 assert!(taken, "{action:?} keeps its own chord");
                 assert_eq!(asks, [DesktopAsk::ReportProblem], "{action:?}");
@@ -362,9 +357,9 @@ fn the_table_hands_every_shortcut_to_the_desk_or_the_session() {
     }
 }
 
-/// The chords of the table move what they name: the tab in front within its
-/// window, a tab into a window of its own, that window along its strip and
-/// into the strip below, and the window's share of the strip.
+/// The chords of the table move what they name: the tab in front within its window, a tab into a
+/// window of its own, that window along its strip and into the strip below, and the window's share
+/// of the strip.
 #[test]
 fn the_chords_move_tabs_windows_and_strips() {
     let (mut desk, mut frame, handle) = desk_and_chrome(&two_windows());
@@ -381,8 +376,8 @@ fn the_chords_move_tabs_windows_and_strips() {
     press_chord(&mut desk, &mut frame, ShortcutAction::PreviousTab);
     assert_eq!(in_front(&handle), Some(21), "back the other way");
 
-    // A tab into a window of its own, right after the one it left: its own
-    // window holds the tab in front, and the window it left keeps the other.
+    // A tab into a window of its own, right after the one it left: its own window holds the tab in
+    // front, and the window it left keeps the other.
     press_chord(&mut desk, &mut frame, ShortcutAction::DetachTab);
     assert_eq!(windows_of(&handle, "3"), ["20"]);
     let split = groups_of_shown_strip(&handle);
@@ -410,8 +405,8 @@ fn the_chords_move_tabs_windows_and_strips() {
         "and back the other way"
     );
 
-    // Nowhere to go keeps the window where it is, and the desk says so
-    // rather than passing the chord on.
+    // Nowhere to go keeps the window where it is, and the desk says so rather than passing the
+    // chord on.
     let shown = in_front_group(&handle);
     press_chord(&mut desk, &mut frame, ShortcutAction::MoveGroupToNextStrip);
     assert_eq!(
@@ -429,9 +424,9 @@ fn the_chords_move_tabs_windows_and_strips() {
     assert_eq!(width_in_front(&handle), Some(normal), "and wider again");
 }
 
-/// The fixed chords find their commands: the window in front closes, another
-/// window of its app opens beside it, and what the session owns is asked for
-/// whole, so the same action answers a menu row, the palette and an agent.
+/// The fixed chords find their commands: the window in front closes, another window of its app
+/// opens beside it, and what the session owns is asked for whole, so the same action answers a menu
+/// row, the palette and an agent.
 #[test]
 fn the_fixed_chords_close_duplicate_and_ask_the_session() {
     let (mut desk, mut frame, handle) = desk_and_chrome(&two_windows());
@@ -444,14 +439,13 @@ fn the_fixed_chords_close_duplicate_and_ask_the_session() {
     }
     assert_eq!(in_front(&handle), Some(21), "the window in front closed");
 
-    // Another window of the app in front is the desk's to open; it asks the
-    // session for nothing.
+    // Another window of the app in front is the desk's to open; it asks the session for nothing.
     let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
     assert!(chrome.fixed_shortcut(FixedAction::DuplicateTab));
     assert!(chrome.take_asks().is_empty(), "the desk opens the window");
 
-    // The capture studio, the guide and the remote control are the
-    // session's: the desk asks for them rather than doing nothing.
+    // The capture studio, the guide and the remote control are the session's: the desk asks for
+    // them rather than doing nothing.
     let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
     for action in [
         FixedAction::CaptureScreenshot,
@@ -479,8 +473,8 @@ fn a_page_closes_a_window_and_asks_for_what_it_has_no_surface_for() {
     let (mut desk, mut frame, handle) = desk_and_chrome(&two_windows());
     assert_eq!(in_front(&handle), Some(20));
 
-    // Alt+Shift is Super where the browser keeps it: the window in front
-    // closes, as the native desktop's Super+W does.
+    // Alt+Shift is Super where the browser keeps it: the window in front closes, as the native
+    // desktop's Super+W does.
     press_here(
         &mut frame,
         KeyCode::KeyW,
@@ -492,8 +486,8 @@ fn a_page_closes_a_window_and_asks_for_what_it_has_no_surface_for() {
     }
     assert_eq!(in_front(&handle), Some(21), "the window in front closed");
 
-    // Super+Shift+S is a capture, taken by the session over the whole
-    // screen: the page has none, so its chrome hands the chord on.
+    // Super+Shift+S is a capture, taken by the session over the whole screen: the page has none, so
+    // its chrome hands the chord on.
     press_here(
         &mut frame,
         KeyCode::KeyS,
@@ -552,8 +546,8 @@ fn a_window_moves_to_the_strip_below() {
     );
 }
 
-/// A row a chord reaches shows the chord the person's table binds now, and a
-/// rebinding reads there too: one table, no copy of a default.
+/// A row a chord reaches shows the chord the person's table binds now, and a rebinding reads there
+/// too: one table, no copy of a default.
 #[test]
 fn a_row_a_chord_reaches_shows_the_chord_the_table_binds() {
     let table = ShortcutConfig::default();

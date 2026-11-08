@@ -150,9 +150,6 @@ pub fn newest_versions(versions: &[RegistryVersion]) -> Vec<RegistryVersion> {
 }
 
 /// The exact bytes of `entry`'s version index.
-///
-/// # Errors
-/// Returns an encoding error if the entry cannot be serialized.
 pub fn version_index_bytes(entry: &RegistryEntry) -> Result<Vec<u8>, SnapshotError> {
     serde_json::to_vec(&RegistryVersionIndex {
         protocol: PACKAGE_FORMAT_VERSION,
@@ -170,9 +167,6 @@ pub struct VersionIndexFile {
 
 /// The unsigned compact form of `full` and the version index files it names.
 /// Sign it with [`sign_compact_snapshot`] using the key that signed `full`.
-///
-/// # Errors
-/// Returns an encoding error if the snapshot or an entry cannot be serialized.
 pub fn compact_snapshot(
     full: &SignedRegistrySnapshot,
 ) -> Result<(CompactRegistrySnapshot, Vec<VersionIndexFile>), SnapshotError> {
@@ -252,9 +246,6 @@ pub fn sign_compact_snapshot(
 }
 
 /// Hash naming the exact signed compact bytes, for HTTP revalidation.
-///
-/// # Errors
-/// Returns an encoding error if the snapshot cannot be serialized.
 pub fn compact_snapshot_hash(snapshot: &CompactRegistrySnapshot) -> Result<String, SnapshotError> {
     let bytes = postcard::to_stdvec(snapshot).map_err(|_| SnapshotError::Encoding)?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
@@ -423,9 +414,6 @@ impl CatalogueSnapshot {
 
     /// The snapshot's identity for anti-rollback checkpoints: the full
     /// snapshot's hash, whichever form was fetched.
-    ///
-    /// # Errors
-    /// Returns an encoding error if a full snapshot cannot be serialized.
     pub fn checkpoint_hash(&self) -> Result<String, SnapshotError> {
         match self {
             Self::Full(full) => snapshot_hash(full),

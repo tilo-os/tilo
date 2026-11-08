@@ -1,5 +1,5 @@
-//! The file clipboard: copied files pasted into a folder on a thread of its
-//! own, through a receipt that outlives the session that started it.
+//! The file clipboard: copied files pasted into a folder on a thread of its own, through a receipt
+//! that outlives the session that started it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -50,8 +50,8 @@ fn step(session: &mut Session) {
     session.step(Duration::from_millis(1)).expect("step");
 }
 
-/// The CPU time this thread has run so far: what a turn of the loop itself
-/// spent, without the time a loaded machine kept it off a core.
+/// The CPU time this thread has run so far: what a turn of the loop itself spent, without the time
+/// a loaded machine kept it off a core.
 fn thread_cpu() -> Duration {
     let mut now = libc::timespec {
         tv_sec: 0,
@@ -66,9 +66,8 @@ fn thread_cpu() -> Duration {
     )
 }
 
-/// One turn of the loop and the CPU it spent, which is the turn's own time:
-/// the clock's time it took says as much about the machine's load as about
-/// the loop.
+/// One turn of the loop and the CPU it spent, which is the turn's own time: the clock's time it
+/// took says as much about the machine's load as about the loop.
 fn turn(session: &mut Session) -> Duration {
     let started = thread_cpu();
     step(session);
@@ -93,15 +92,14 @@ fn copy(session: &mut Session, paths: &[PathBuf], cut: bool) {
             vec![(COPIED_FILES_MIME.to_owned(), body.into_bytes())],
         )
         .expect("the app copies");
-    // The copy is read off the selection over the turns that follow: the app
-    // answers when it gets round to it.
+    // The copy is read off the selection over the turns that follow: the app answers when it gets
+    // round to it.
     for _ in 0..3 {
         step(session);
     }
 }
 
-/// Paste the copied files into `destination`, through the clipboard's
-/// published action.
+/// Paste the copied files into `destination` , through the clipboard's published action.
 fn paste_into(session: &mut Session, destination: &Path, conflict: Option<&str>) {
     let mut arguments = serde_json::json!({
         "destination": destination.to_string_lossy(),
@@ -142,8 +140,7 @@ fn staging(destination: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Write `count` files named `0`, `1`, ... , each holding `file <index>`, in
-/// `folder`.
+/// Write `count` files named `0` , `1` , ... , each holding `file <index>` , in `folder` .
 fn tree(folder: &Path, count: usize) -> Vec<PathBuf> {
     fs::create_dir_all(folder).expect("a folder");
     (0..count)
@@ -155,8 +152,7 @@ fn tree(folder: &Path, count: usize) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether `folder` holds exactly the `count` files [`tree`] writes, each with
-/// its own contents.
+/// Whether `folder` holds exactly the `count` files [`tree`] writes, each with its own contents.
 fn tree_is_whole(folder: &Path, count: usize) -> bool {
     let Ok(entries) = fs::read_dir(folder) else {
         return false;
@@ -265,9 +261,8 @@ fn replacing_sends_the_name_that_was_there_to_the_trash() {
     let mut session = session();
     copy(&mut session, &[source.join("note.txt")], false);
     paste_into(&mut session, &destination, Some("replace"));
-    // A replacement sends what was there to the Trash before the new file
-    // lands, so the name is gone for a moment: the wait asks what the name
-    // holds, not whether it can be read.
+    // A replacement sends what was there to the Trash before the new file lands, so the name is
+    // gone for a moment: the wait asks what the name holds, not whether it can be read.
     until(&mut session, "the paste finished", |_| {
         fs::read(destination.join("note.txt")).is_ok_and(|now| now == b"the new one")
     });
@@ -313,9 +308,8 @@ fn a_file_that_cannot_be_read_is_reported_and_the_rest_of_the_paste_lands() {
     until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
-    // The receipt goes before the worker says it is done, and the loop tells
-    // the person on the pass after that: the notice is waited on, not read
-    // from the receipt's going.
+    // The receipt goes before the worker says it is done, and the loop tells the person on the pass
+    // after that: the notice is waited on, not read from the receipt's going.
     until(
         &mut session,
         "the notice saying what did not land",
@@ -341,8 +335,8 @@ fn a_file_that_cannot_be_read_is_reported_and_the_rest_of_the_paste_lands() {
     );
 }
 
-/// A folder of many files pasted while the session keeps turning: no turn of
-/// the loop carries a copy, so every frame keeps its time.
+/// A folder of many files pasted while the session keeps turning: no turn of the loop carries a
+/// copy, so every frame keeps its time.
 #[test]
 fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     let home = TestHome::new().expect("a home of this test's own");
@@ -353,9 +347,9 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     let paths = tree(&source.join("big"), 12000);
 
     let mut session = session();
-    // What a turn's own work costs before the paste starts: a loaded machine
-    // takes every turn slowly, and the test is about the paste being spread
-    // over turns, not about the machine being idle.
+    // What a turn's own work costs before the paste starts: a loaded machine takes every turn
+    // slowly, and the test is about the paste being spread over turns, not about the machine being
+    // idle.
     let mut before: Vec<Duration> = (0..5).map(|_| turn(&mut session)).collect();
     before.sort_unstable();
     let pace = before.get(before.len() / 2).copied().unwrap_or_default();
@@ -389,20 +383,18 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         paths.len(),
         turns.len()
     );
-    // How many turns the paste spans is the machine's pace against the
-    // worker's, so all the count says is that the loop kept turning after the
-    // paste was asked: a paste carried inside the turn that asked for it would
-    // leave no turn at all. The turns' own times are what show none of them
+    // How many turns the paste spans is the machine's pace against the worker's, so all the count
+    // says is that the loop kept turning after the paste was asked: a paste carried inside the turn
+    // that asked for it would leave no turn at all. The turns' own times are what show none of them
     // carried a copy.
     assert!(
         !turns.is_empty(),
         "the loop kept turning while the paste ran: {} turns over {copied:?}",
         turns.len()
     );
-    // A turn that waits on the disk stands out from the turns around it by
-    // whole seconds, and a turn that copies files spends the CPU for them: a
-    // turn's own time is the CPU it spent, which a machine that holds it off a
-    // core for tens of milliseconds does not change.
+    // A turn that waits on the disk stands out from the turns around it by whole seconds, and a
+    // turn that copies files spends the CPU for them: a turn's own time is the CPU it spent, which
+    // a machine that holds it off a core for tens of milliseconds does not change.
     let quiet = pace.max(Duration::from_millis(50));
     assert!(
         p50 < quiet,
@@ -418,9 +410,8 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     );
 }
 
-/// The paste a child process starts, and the moment it loses power: the
-/// transfer ends the process at the moment `CLIPBOARD_KILL_AT` names, so
-/// nothing of it survives to tidy up.
+/// The paste a child process starts, and the moment it loses power: the transfer ends the process
+/// at the moment `CLIPBOARD_KILL_AT` names, so nothing of it survives to tidy up.
 fn kill_mid_transfer_child() {
     let Some(stage) = std::env::var_os("CLIPBOARD_KILL_AT") else {
         return;
@@ -434,10 +425,9 @@ fn kill_mid_transfer_child() {
     let mut session = session();
     copy(&mut session, &paths, true);
     paste_into(&mut session, &destination, None);
-    // The paste dies at the moment `stage` names (it ends this process
-    // there, as a power cut would), so this loop only lets it run: no reading
-    // of the disk races the transfer, and the machine's pace, not a count of
-    // turns, decides when it dies.
+    // The paste dies at the moment `stage` names (it ends this process there, as a power cut
+    // would), so this loop only lets it run: no reading of the disk races the transfer, and the
+    // machine's pace, not a count of turns, decides when it dies.
     let started = Instant::now();
     loop {
         assert!(
@@ -517,8 +507,8 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
     fs::create_dir_all(&destination).expect("a destination folder");
     tree(&source.join("big"), BIG);
 
-    // Killed while the copies are being staged: nothing is published, so
-    // nothing of the paste survives it but the sources.
+    // Killed while the copies are being staged: nothing is published, so nothing of the paste
+    // survives it but the sources.
     let status = kill_under("staging", &source, &destination);
     assert_eq!(
         status.signal(),
@@ -537,8 +527,8 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
     }
     assert_every_item_whole_or_untouched(&source, &destination);
 
-    // Killed while the copies are being published: what stands is whole and
-    // what does not is back where it came from.
+    // Killed while the copies are being published: what stands is whole and what does not is back
+    // where it came from.
     let status = kill_under("publishing", &source, &destination);
     assert_eq!(
         status.signal(),

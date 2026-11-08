@@ -83,8 +83,6 @@ impl SealedAccounts {
         &self.0
     }
     /// Parse only a bounded sealed artifact. Authentication occurs on import.
-    /// # Errors
-    /// Refuses oversized, malformed or non-key-based envelopes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, PortableError> {
         if bytes.len() > MAX_SEALED {
             return Err(PortableError::InvalidConfiguration);
@@ -122,8 +120,6 @@ impl PasswordSealedAccounts {
         &self.0
     }
     /// Parse a bounded password-wrapped artifact without decrypting it.
-    /// # Errors
-    /// Refuses invalid framing, envelope types or password-derivation parameters.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, PortableError> {
         ARTIFACT.parse(bytes).map_err(frame_error)?;
         Ok(Self(bytes.to_vec()))
@@ -220,9 +216,6 @@ fn valid_entries(entries: &[Entry]) -> Result<(), PortableError> {
 }
 /// Produce an actual portable selected-account artifact with a fresh
 /// content key wrapped under the person's explicit transport password.
-/// # Errors
-/// Refuses invalid passwords, bindings or selections, unavailable custody and
-/// encryption failures.
 pub fn seal_selected_accounts_with_password(
     root: &Path,
     selected: &[AccountId],
@@ -242,9 +235,6 @@ pub fn seal_selected_accounts_with_password(
 /// custody, then seal them under a fresh caller-owned transport key. Caller
 /// must wrap that key in authenticated setup custody and keep its
 /// setup binding; neither source vault files nor source keys are portable.
-/// # Errors
-/// Refuses invalid bindings or selections, missing accounts or credentials,
-/// inaccessible storage and encryption failures.
 pub fn seal_selected_accounts(
     root: &Path,
     selected: &[AccountId],
@@ -290,8 +280,6 @@ pub fn seal_selected_accounts(
 
 /// Import every account the artifact carries into an explicit custody root.
 /// The caller has already authenticated the artifact's selection itself.
-/// # Errors
-/// Refuses authentication failures, invalid bundles and storage conflicts.
 pub fn import_password_sealed_accounts(
     root: &Path,
     artifact: &PasswordSealedAccounts,
@@ -306,8 +294,6 @@ pub fn import_password_sealed_accounts(
 /// custody. Intended for explicit private custody roots, including staging roots;
 /// installed-user consumption must use [`adopt_installed_accounts`].
 /// Exact retries succeed; conflicting accounts are never overwritten.
-/// # Errors
-/// Refuses invalid selections, authentication failures and storage conflicts.
 pub fn import_password_sealed_accounts_matching(
     root: &Path,
     artifact: &PasswordSealedAccounts,
@@ -322,8 +308,6 @@ pub fn import_password_sealed_accounts_matching(
 }
 
 /// Import a symmetric envelope into an explicit private custody root.
-/// # Errors
-/// Refuses authentication failures, invalid bundles and storage conflicts.
 pub fn import_sealed_accounts(
     root: &Path,
     sealed: &SealedAccounts,
@@ -337,8 +321,6 @@ pub fn import_sealed_accounts(
 /// Neither root nor a privileged process impersonating the target may consume
 /// credentials. Run this after entering the destination user's login context.
 /// The caller must authenticate the supplied binding and expected IDs.
-/// # Errors
-/// Refuses root, a different real/effective uid, or invalid custody/artifacts.
 #[cfg(unix)]
 pub fn adopt_installed_accounts(
     artifact: &PasswordSealedAccounts,
@@ -483,8 +465,6 @@ fn matching_bundle(
 
 impl PasswordSealedAccounts {
     /// Inspect the exact authenticated selection's consumer requirement.
-    /// # Errors
-    /// Refuses incorrect passwords, binding, selection or invalid sealed custody.
     pub fn requires_protected_consumer(
         &self,
         password: &[u8],
@@ -499,8 +479,6 @@ impl PasswordSealedAccounts {
     }
     /// Authenticate and check exact manifest selection without creating any
     /// target metadata or vault. Used before accepting prepared setup custody.
-    /// # Errors
-    /// Refuses incorrect passwords, bindings, selections or invalid sealed custody.
     pub fn verify_selection(
         &self,
         password: &[u8],

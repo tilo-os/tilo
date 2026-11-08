@@ -30,77 +30,57 @@ impl Board {
         self.title = title;
     }
 }
+/// A stored scalar field with every flag at its ordinary value: the
+/// fields `Board`'s shape spells out differ from it only where they are
+/// named.
+const SCALAR: FieldShape = FieldShape {
+    key: "",
+    owner: "",
+    name: "",
+    ty: "",
+    title: "",
+    shape: Shape::Value,
+    unit: false,
+    readonly: false,
+    atom: false,
+    label: false,
+    label_part: 0,
+    quiet_remove: false,
+    trust: tilo_resource::Trust::Ordinary,
+    schema: <String as tilo_resource::Model>::value_schema,
+    field_type: <String as tilo_resource::Model>::field_type,
+    text: tilo_resource::stored_text::<String>,
+    absent: tilo_resource::absent_scalar::<String>,
+    resource: None,
+};
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the expected shape spelled out field by field"
-)]
 fn a_derived_record_lists_its_stored_fields() {
     const COLUMN: Shape = Shape::Record(&[
         FieldShape {
             key: "name",
             owner: "column",
             name: "name",
-
             ty: "String",
             title: "Name",
-            shape: Shape::Value,
-            unit: false,
-            readonly: false,
-            atom: false,
-            label: false,
-            label_part: 0,
-            quiet_remove: false,
-            trust: tilo_resource::Trust::Ordinary,
-            schema: <String as tilo_resource::Model>::value_schema,
-            field_type: <String as tilo_resource::Model>::field_type,
-            text: tilo_resource::stored_text::<String>,
-            absent: tilo_resource::absent_scalar::<String>,
-            resource: None,
+            ..SCALAR
         },
         FieldShape {
             key: "limit",
             owner: "column",
             name: "limit",
-
             ty: "u32",
             title: "Limit",
-            shape: Shape::Value,
-            unit: false,
-            readonly: false,
-            atom: false,
-            label: false,
-            label_part: 0,
-            quiet_remove: false,
-            trust: tilo_resource::Trust::Ordinary,
-            schema: <String as tilo_resource::Model>::value_schema,
-            field_type: <String as tilo_resource::Model>::field_type,
-            text: tilo_resource::stored_text::<String>,
-            absent: tilo_resource::absent_scalar::<String>,
-            resource: None,
+            ..SCALAR
         },
     ]);
     const META: Shape = Shape::Record(&[FieldShape {
         key: "by",
         owner: "meta",
         name: "by",
-
         ty: "String",
         title: "By",
-        shape: Shape::Value,
-        unit: false,
-        readonly: false,
-        atom: false,
-        label: false,
-        label_part: 0,
-        quiet_remove: false,
-        trust: tilo_resource::Trust::Ordinary,
-        schema: <String as tilo_resource::Model>::value_schema,
-        field_type: <String as tilo_resource::Model>::field_type,
-        text: tilo_resource::stored_text::<String>,
-        absent: tilo_resource::absent_scalar::<String>,
-        resource: None,
+        ..SCALAR
     }]);
     assert_eq!(
         Board::shape(),
@@ -109,85 +89,35 @@ fn a_derived_record_lists_its_stored_fields() {
                 key: "title",
                 owner: "board",
                 name: "title",
-
                 ty: "String",
                 title: "Title",
-                shape: Shape::Value,
-                unit: false,
-                readonly: false,
-                atom: false,
-                label: false,
-                label_part: 0,
-                quiet_remove: false,
-                trust: tilo_resource::Trust::Ordinary,
-                schema: <String as tilo_resource::Model>::value_schema,
-                field_type: <String as tilo_resource::Model>::field_type,
-                text: tilo_resource::stored_text::<String>,
-                absent: tilo_resource::absent_scalar::<String>,
-                resource: None,
+                ..SCALAR
             },
             FieldShape {
                 key: "cols",
                 owner: "board",
                 name: "columns",
-
                 ty: "Collection<Column>",
                 title: "Columns",
                 shape: Shape::Collection(&COLUMN),
-                unit: false,
-                readonly: false,
-                atom: false,
-                label: false,
-                label_part: 0,
-                quiet_remove: false,
-                trust: tilo_resource::Trust::Ordinary,
-                schema: <String as tilo_resource::Model>::value_schema,
-                field_type: <String as tilo_resource::Model>::field_type,
-                text: tilo_resource::stored_text::<String>,
-                absent: tilo_resource::absent_scalar::<String>,
-                resource: None,
+                ..SCALAR
             },
             FieldShape {
                 key: "archived",
                 owner: "board",
                 name: "archived",
-
                 ty: "Option<Meta>",
                 title: "Archived",
                 shape: META,
-                unit: false,
-                readonly: false,
-                atom: false,
-                label: false,
-                label_part: 0,
-                quiet_remove: false,
-                trust: tilo_resource::Trust::Ordinary,
-                schema: <String as tilo_resource::Model>::value_schema,
-                field_type: <String as tilo_resource::Model>::field_type,
-                text: tilo_resource::stored_text::<String>,
-                absent: tilo_resource::absent_scalar::<String>,
-                resource: None,
+                ..SCALAR
             },
             FieldShape {
                 key: "filter",
                 owner: "board",
                 name: "filter",
-
                 ty: "serde_json::Value",
                 title: "Filter",
-                shape: Shape::Value,
-                unit: false,
-                readonly: false,
-                atom: false,
-                label: false,
-                label_part: 0,
-                quiet_remove: false,
-                trust: tilo_resource::Trust::Ordinary,
-                schema: <String as tilo_resource::Model>::value_schema,
-                field_type: <String as tilo_resource::Model>::field_type,
-                text: tilo_resource::stored_text::<String>,
-                absent: tilo_resource::absent_scalar::<String>,
-                resource: None,
+                ..SCALAR
             },
         ])),
     );

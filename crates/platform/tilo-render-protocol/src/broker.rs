@@ -48,10 +48,6 @@ const REFUSED: u8 = b'N';
 pub const MAX_HANDSHAKE: usize = 4096;
 
 /// The line that names an app and its workspace on a new broker connection.
-///
-/// # Errors
-///
-/// When the names cannot be encoded.
 pub fn handshake(app_id: &str, workspace_id: Option<&str>) -> io::Result<Vec<u8>> {
     #[derive(serde::Serialize)]
     struct Line<'a> {

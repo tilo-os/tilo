@@ -1,12 +1,9 @@
-//! Display intent an app's Settings pane asks of the session that owns the
-//! displays.
-//!
-//! The app supplies intent and the output set it observed; this session owns
-//! prior state, transaction identity and persistence, and the compositor
-//! keeps KMS. A request that changes anything is admitted only from the
-//! device this workspace's identity enrolled and only for a person who may
-//! govern the workspace: a Settings worker on someone else's device changes
-//! nothing here, however well it was admitted to the app's channel.
+//! Display intent an app's Settings pane asks of the session that owns the displays.
+//! The app supplies intent and the output set it observed; this session owns prior state,
+//! transaction identity and persistence, and the compositor keeps KMS. A request that changes
+//! anything is admitted only from the device this workspace's identity enrolled and only for a
+//! person who may govern the workspace: a Settings worker on someone else's device changes nothing
+//! here, however well it was admitted to the app's channel.
 
 use std::sync::Arc;
 
@@ -19,15 +16,15 @@ use tilo_action_broker::services::DisplayControlServices;
 type Certificate =
     dyn Fn(&str, &str) -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync;
 
-/// Whether a person may govern a workspace: its owner, or a role the
-/// workspace admits with governance.
+/// Whether a person may govern a workspace: its owner, or a role the workspace admits with
+/// governance.
 type Administrator = dyn Fn(&str, &str) -> Result<bool, String> + Send + Sync;
 
 /// The displays' state as the compositor published it.
 type Observed = dyn Fn() -> Option<DisplayHardwareSnapshot> + Send + Sync;
 
-/// The session's display service over its own settings document, its
-/// identity store and the desk it shows.
+/// The session's display service over its own settings document, its identity store and the desk it
+/// shows.
 pub(crate) struct DisplayControl {
     source: Arc<dyn SettingsSource>,
     certificate: Arc<Certificate>,
@@ -36,8 +33,8 @@ pub(crate) struct DisplayControl {
 }
 
 impl DisplayControl {
-    /// The session's own answers: what the identity store says this device
-    /// is, and what the desk says the person may do in the workspace.
+    /// The session's own answers: what the identity store says this device is, and what the desk
+    /// says the person may do in the workspace.
     pub(crate) fn native(
         source: Arc<dyn SettingsSource>,
         desk: &Arc<crate::plane::DeskAuthority>,
@@ -59,8 +56,8 @@ impl DisplayControl {
         }
     }
 
-    /// The answer to display intent from the private Settings worker
-    /// `root`/`device` is on, in `workspace`.
+    /// The answer to display intent from the private Settings worker `root` /`device` is on, in
+    /// `workspace` .
     fn answer(
         &self,
         workspace: &str,
@@ -87,8 +84,8 @@ impl DisplayControl {
         self.execute(command)
     }
 
-    /// The command against the compositor's display state as it is now, with
-    /// the reply kept to what the wire carries.
+    /// The command against the compositor's display state as it is now, with the reply kept to what
+    /// the wire carries.
     fn execute(&self, command: DisplayCommand) -> Result<Vec<u8>, String> {
         let observed =
             (self.observed)().ok_or("The current compositor display state is unavailable.")?;
@@ -243,9 +240,8 @@ mod tests {
         control.answer("the-workspace", root, device, &bytes)
     }
 
-    /// Reading the displays needs nothing beyond the connection the broker
-    /// admitted: the reply is the compositor's state and the committed
-    /// configuration, and the app changes nothing.
+    /// Reading the displays needs nothing beyond the connection the broker admitted: the reply is
+    /// the compositor's state and the committed configuration, and the app changes nothing.
     #[test]
     fn a_settings_worker_reads_the_displays_it_stands_on() {
         let reply: Value = serde_json::from_slice(
@@ -269,8 +265,8 @@ mod tests {
         assert!(reply["transaction"].is_null(), "nothing was changed");
     }
 
-    /// A change is taken only from the device this workspace's identity
-    /// enrolled, and only for a person who may govern the workspace.
+    /// A change is taken only from the device this workspace's identity enrolled, and only for a
+    /// person who may govern the workspace.
     #[test]
     fn a_display_change_requires_this_devices_certificate_and_governing_policy() {
         let allowed = control(Device {
@@ -302,8 +298,7 @@ mod tests {
         );
     }
 
-    /// Intent that cannot be a display transaction is refused as such, never
-    /// run as something else.
+    /// Intent that cannot be a display transaction is refused as such, never run as something else.
     #[test]
     fn a_display_request_is_bounded_and_typed() {
         let displays = control(Device {
@@ -341,9 +336,8 @@ mod tests {
         );
     }
 
-    /// An admitted change becomes the transaction the app must keep or
-    /// revert, kept in this session's settings document; reverting it is
-    /// written there too.
+    /// An admitted change becomes the transaction the app must keep or revert, kept in this
+    /// session's settings document; reverting it is written there too.
     #[test]
     fn an_admitted_change_lands_in_the_sessions_settings_document() {
         let source = document();

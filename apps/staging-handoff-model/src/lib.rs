@@ -273,9 +273,6 @@ fn deserialize_profile<'de, D: serde::Deserializer<'de>>(
 }
 
 /// Validate the closed, secret-free installer profile shared by both sides.
-///
-/// # Errors
-/// Unknown fields or malformed values.
 pub fn validate_profile(
     profile: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {

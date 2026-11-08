@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-notes = Notes
+
 d-mavvhka7 = Note
     .doc = A note: a title, a body and the tags people gave it.
     .noun = { $count ->
@@ -15,6 +17,10 @@ d-olsyp3aw = Body
 d-gfk6rqxp = Pinned
 
 d-xcpasjg7 = Tags
+
+d-mavvhka7-filter-pinned = Pinned
+
+d-mavvhka7-filter-tags = Tags
 
 # refined
 d-v7cub7aw = Notes

@@ -1,6 +1,5 @@
-//! The workspace's activity as a desktop hosting its windows in process
-//! serves it to the Activity app: through the session the windows ask, as
-//! the app asks a native session's broker.
+//! The workspace's activity as a desktop hosting its windows in process serves it to the Activity
+//! app: through the session the windows ask, as the app asks a native session's broker.
 
 use std::sync::Arc;
 
@@ -16,8 +15,8 @@ use ui::widget::TileContent;
 
 const WORKSPACE: &str = "workspace-a";
 
-/// Write the desk as it stands into `doc` and commit it at `time`, as a page
-/// records each pass: one change of the desk, by its person.
+/// Write the desk as it stands into `doc` and commit it at `time` , as a page records each pass:
+/// one change of the desk, by its person.
 fn stamp(doc: &mut AutoCommit, tree: &DesktopTree, time: i64) {
     tilo_desktop_model::desktop_doc::seed(doc, tree);
     doc.commit_with(
@@ -95,8 +94,7 @@ impl HistorySource for RetainedHistory {
     }
 }
 
-/// A host that fetches the model's code when it is first needed, as the
-/// browser desktop does.
+/// A host that fetches the model's code when it is first needed, as the browser desktop does.
 struct DeferredHistory {
     retained: RetainedHistory,
     code: Rc<std::cell::Cell<ActivityPaneCode>>,
@@ -179,7 +177,7 @@ impl Served {
         }
     }
 
-    /// The windows' door to the session, as `caller`.
+    /// The windows' door to the session, as `caller` .
     fn door(&self, caller: Caller) -> RemoteActions {
         RemoteActions::with_host(self.session.clone(), caller.in_workspace(WORKSPACE))
     }
@@ -329,9 +327,8 @@ fn asking_for_activity_opens_the_app_at_the_view_asked_for() {
     assert_eq!(desk.activity_windows(), 0);
 }
 
-/// What this device has seen is the person's own, and so is every
-/// workspace's history but the one an agent works in; the history itself
-/// a page only shows.
+/// What this device has seen is the person's own, and so is every workspace's history but the one
+/// an agent works in; the history itself a page only shows.
 #[test]
 fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
     let mut desk = Served::new(None);
@@ -385,8 +382,8 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
     );
 }
 
-/// A host still loading the model's code serves once it has it; frames
-/// keep coming until then, whether or not the host wakes the desktop.
+/// A host still loading the model's code serves once it has it; frames keep coming until then,
+/// whether or not the host wakes the desktop.
 #[test]
 fn reads_asked_while_the_code_loads_are_served_once_it_has_loaded() {
     let code = Rc::new(std::cell::Cell::new(ActivityPaneCode::Loading));

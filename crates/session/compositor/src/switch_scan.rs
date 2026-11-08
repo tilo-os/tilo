@@ -1,14 +1,10 @@
-//! Switch scanning: a person who drives the desktop with one or two switches
-//! walks the focus from control to control and activates where it stops.
-//!
-//! A two-switch device is any keyboard that emits an ordinary key pair: the
-//! first switch steps the focus on (as Tab does), the second activates what
-//! has focus (as Return does). With an automatic period the walking happens
-//! by itself and one switch is enough. Everything a person sees is drawn by
-//! the focused surface itself: the focus ring that the toolkit draws
-//! ([`crate::host`]'s surfaces and the clients they stand for), so scanning
-//! needs nothing on screen of its own.
-//!
+//! Switch scanning: a person who drives the desktop with one or two switches walks the focus from
+//! control to control and activates where it stops.
+//! A two-switch device is any keyboard that emits an ordinary key pair: the first switch steps the
+//! focus on (as Tab does), the second activates what has focus (as Return does). With an automatic
+//! period the walking happens by itself and one switch is enough. Everything a person sees is drawn
+//! by the focused surface itself: the focus ring that the toolkit draws ([`crate::host`]'s surfaces
+//! and the clients they stand for), so scanning needs nothing on screen of its own.
 //! The machine is pure: key edges and instants in, [`Scan`] steps out.
 
 #![allow(
@@ -37,8 +33,8 @@ impl Scan {
         }
     }
 
-    /// The scan actions a key edge stands for: a press of the switch does
-    /// it, its release does nothing.
+    /// The scan actions a key edge stands for: a press of the switch does it, its release does
+    /// nothing.
     pub fn edges(action: impl IntoIterator<Item = Self>) -> Vec<(u32, bool)> {
         action
             .into_iter()
@@ -66,8 +62,7 @@ impl SwitchPair {
     /// Every pair, in the order Settings offers them.
     pub const ALL: [Self; 3] = [Self::F6F7, Self::F9F10, Self::Digits12];
 
-    /// The two evdev keycodes: first the switch that steps, then the one
-    /// that activates.
+    /// The two evdev keycodes: first the switch that steps, then the one that activates.
     pub const fn keycodes(self) -> (u32, u32) {
         match self {
             Self::F6F7 => (64, 65),
@@ -93,8 +88,7 @@ impl SwitchPair {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SwitchConfig {
     pub pair: SwitchPair,
-    /// How often the focus walks on by itself; `None` scans only when the
-    /// first switch is pressed.
+    /// How often the focus walks on by itself; `None` scans only when the first switch is pressed.
     pub period: Option<Duration>,
 }
 
@@ -119,16 +113,15 @@ impl Scanner {
         self.config
     }
 
-    /// What a key edge means while scanning: `None` (and the edge goes on to
-    /// everything else) for a key the switch pair does not use, else the
-    /// step it asks for — a press asks, a release asks for nothing and is
-    /// swallowed so it never reaches a client.
+    /// What a key edge means while scanning: `None` (and the edge goes on to everything else) for a
+    /// key the switch pair does not use, else the step it asks for — a press asks, a release asks
+    /// for nothing and is swallowed so it never reaches a client.
     pub fn key(&mut self, keycode: u32, pressed: bool, now: Instant) -> Option<Option<Scan>> {
         let config = self.config?;
         let action = config.pair.action(keycode)?;
         if pressed {
-            // A person's own press restarts the automatic walking, so the
-            // focus never moves twice in a row.
+            // A person's own press restarts the automatic walking, so the focus never moves twice
+            // in a row.
             self.due = config.period.map(|period| now + period);
             Some(Some(action))
         } else {
@@ -136,7 +129,7 @@ impl Scanner {
         }
     }
 
-    /// The automatic step due by `now`, if any.
+    /// The automatic step due by `now` , if any.
     pub fn tick(&mut self, now: Instant) -> Option<Scan> {
         let due = self.due?;
         if now < due {

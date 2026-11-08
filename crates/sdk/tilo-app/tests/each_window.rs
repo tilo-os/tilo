@@ -8,61 +8,8 @@ use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::WindowEvent;
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[(
-        "en-US",
-        "window-draft = Next task\nwindow-done = Completed\n",
-    )],
-);
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-/// One task.
-pub struct Task {
-    pub title: String,
-    pub done: bool,
-}
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-/// The draft and the tasks.
-pub struct Checklist {
-    pub draft: String,
-    pub tasks: Collection<Task>,
-}
-
-#[resource(kind = "test.window-checklist", label = "Checklist")]
-impl Checklist {
-    /// Set the next task's title.
-    #[action]
-    pub fn draft(&mut self, title: String) {
-        self.draft = title;
-    }
-
-    /// Add `count` tasks at the end.
-    #[action]
-    pub fn seed(&mut self, cx: &mut ActionCx, count: u32) {
-        for _ in 0..count {
-            let index = self.tasks.len();
-            self.tasks.push(
-                cx.id(),
-                Task {
-                    title: format!("Task {index}"),
-                    done: false,
-                },
-            );
-        }
-    }
-
-    /// Mark a task completed or open.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
-    #[action]
-    pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
-        self.tasks.get_mut(task).ok_or("gone")?.done = done;
-        Ok(())
-    }
-}
+use crate::support_checklist;
+use crate::support_checklist::{Checklist, Task};
 
 struct Window;
 
@@ -87,7 +34,7 @@ impl ResourceApp for Window {
     const TITLE: &'static str = "Checklist";
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&support_checklist::CATALOG)
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
@@ -118,7 +65,7 @@ fn task_row(row: &ViewCx<Checklist, Task>) -> Element {
         row.control_with(
             |shown| Checkbox::from_state(shown)
                 .with_id(&control)
-                .with_label("window-done"),
+                .with_label(support_checklist::DONE),
             |task| {
                 READS.with(|reads| reads.set(reads.get().saturating_add(1)));
                 task.done
@@ -138,7 +85,7 @@ impl ResourceApp for ShownWindow {
     const TITLE: &'static str = "Checklist";
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&support_checklist::CATALOG)
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
@@ -157,7 +104,7 @@ impl ResourceApp for BindingWindow {
     const TITLE: &'static str = "Checklist";
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&support_checklist::CATALOG)
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
@@ -473,7 +420,7 @@ fn a_live_window_mounts_an_added_row_in_place() {
             .cloned()
             .unwrap();
         app.invoke_local_resource_action(
-            &tilo_actions::ActionAddress::new("test.window-checklist", "seed"),
+            &tilo_actions::ActionAddress::new(Checklist::KIND, "seed"),
             &arguments,
         )
         .unwrap();

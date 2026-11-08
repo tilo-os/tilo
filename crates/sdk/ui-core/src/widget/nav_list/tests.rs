@@ -725,6 +725,68 @@ fn a_secondary_line_and_a_level_grow_the_row() {
 }
 
 #[test]
+fn a_destination_says_it_is_a_tree_item_and_a_finger_s_target_is_its_height() {
+    let list = NavList::new(vec![NavSection::new(
+        "places",
+        "Places",
+        vec![
+            NavItem::new("today", "Today"),
+            NavItem::new("later", "Later"),
+        ],
+    )])
+    .selected("later");
+    let mut h = FrameHarness::for_root(State::new(), list, (280, 360), Theme::dark());
+    h.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+    h.relayout_at((280, 360)).expect("layout");
+    let target = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+    for id in ["today", "later"] {
+        let height = h
+            .root::<NavList>()
+            .row_rect(id)
+            .expect("row in view")
+            .height();
+        assert!(
+            (height - target).abs() < 0.5,
+            "a finger's destination is {height} tall where the input's target is {target}"
+        );
+    }
+    // A destination is a row of the tree the list is, and says whether it is the one chosen: a
+    // walk that reads the rows without the list (the layout check's) reads the same thing.
+    let snapshot = h.inspection();
+    let mut rows: Vec<(String, crate::a11y::Role, bool)> = Vec::new();
+    fn walk(
+        node: &crate::headless::InspectionNode,
+        rows: &mut Vec<(String, crate::a11y::Role, bool)>,
+    ) {
+        if node.widget == "NavRow"
+            && let Some(semantics) = &node.semantics
+        {
+            rows.push((
+                semantics.name.clone().unwrap_or_default(),
+                semantics.role,
+                semantics.state.selected,
+            ));
+        }
+        for child in &node.children {
+            walk(child, rows);
+        }
+    }
+    walk(&snapshot.root, &mut rows);
+    let row = |name: &str| {
+        rows.iter()
+            .find(|(label, ..)| label == name)
+            .map(|(_, role, selected)| (*role, *selected))
+            .unwrap_or_else(|| panic!("{name}'s row is drawn: {rows:?}"))
+    };
+    assert_eq!(row("Today").0, crate::a11y::Role::TreeItem);
+    assert!(
+        !row("Today").1,
+        "the destination beside the chosen one is not chosen"
+    );
+    assert!(row("Later").1, "the chosen destination says so");
+}
+
+#[test]
 fn trailing_parts_line_up_and_give_way_to_actions() {
     let theme = Theme::dark();
     let mut text = crate::text_render::TextRenderer::new();

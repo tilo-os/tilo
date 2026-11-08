@@ -234,10 +234,6 @@ impl BlockList {
     }
 
     /// Write the person's own blocks to `path` (see [`person_list_path`]).
-    ///
-    /// # Errors
-    ///
-    /// The file or its directory cannot be written.
     pub fn save_person(&self, path: &Path) -> std::io::Result<()> {
         let file = PersonFile {
             blocked: self

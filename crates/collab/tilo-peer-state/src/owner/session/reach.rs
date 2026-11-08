@@ -141,9 +141,6 @@ impl Reach {
     /// of the certificate its record holds, when custody holds one
     /// ([`crate::owner::enroll::renew_membership`]). Answers whether it
     /// renewed.
-    ///
-    /// # Errors
-    /// The workspace is not held here, its host cannot be reached or refuses.
     pub async fn renew(&self, connect: &Connect, identity: &HostIdentity) -> Result<bool, String> {
         let workspace = connect.workspace();
         let own = identity.device_cert.device_public_key;

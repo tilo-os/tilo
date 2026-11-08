@@ -1,7 +1,6 @@
-//! The visual alert for what the person is told: when they asked for one, a
-//! notice the session raises, or a notification an app sends, lights the
-//! edge of the screen — the way someone who cannot hear the alert sound is
-//! told of it. With the setting off, nothing changes.
+//! The visual alert for what the person is told: when they asked for one, a notice the session
+//! raises, or a notification an app sends, lights the edge of the screen — the way someone who
+//! cannot hear the alert sound is told of it. With the setting off, nothing changes.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -13,6 +12,8 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
+
+mod common;
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -45,9 +46,9 @@ fn session(visual_alerts: bool) -> (Session, Rc<DesktopServices>) {
         )
         .expect("the desktop services"),
     );
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services: desktop.services(),
             wake,
             desktop: Some(Rc::clone(&desktop)),
@@ -61,9 +62,7 @@ fn session(visual_alerts: bool) -> (Session, Rc<DesktopServices>) {
             },
             ..Options::default()
         },
-        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("a frame");
     (session, desktop)
 }
@@ -78,8 +77,8 @@ fn plugged_in() -> Medium {
     }
 }
 
-/// How wide the alert's edge is on screen, physical pixels: the band it
-/// lights along each side of a display.
+/// How wide the alert's edge is on screen, physical pixels: the band it lights along each side of a
+/// display.
 const EDGE: u32 = 4;
 
 /// How bright the pixels of `frame` inside `area` are on average, in
@@ -121,8 +120,7 @@ fn edge_brightness(frame: &Screenshot) -> f64 {
         / 4.0
 }
 
-/// How bright the middle of the screen is: what an alert along the edge
-/// leaves as it was.
+/// How bright the middle of the screen is: what an alert along the edge leaves as it was.
 fn centre_brightness(frame: &Screenshot) -> f64 {
     let (w, h) = (frame.width, frame.height);
     brightness(frame, (w / 3, h / 3, w * 2 / 3, h * 2 / 3))

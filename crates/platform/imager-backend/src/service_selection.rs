@@ -76,9 +76,6 @@ impl CookieProfile {
     }
     /// Count this profile's cookies for one recognized service without reading
     /// values. `None` means this source carries no cookie material for it.
-    ///
-    /// # Errors
-    /// Refuses changed or unsafe source authority and unsupported cookie schemas.
     pub fn counts(&self, service: Service) -> io::Result<Option<ServiceCounts>> {
         #[cfg(target_os = "linux")]
         {

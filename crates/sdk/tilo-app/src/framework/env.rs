@@ -136,9 +136,6 @@ impl<R: Resource> RecordEnv<R> {
     /// the next frame. Refused in a past version and a capture.
     ///
     /// The outcome answers once the host opened it, or why it could not.
-    ///
-    /// # Errors
-    /// Returns that the window cannot open another record.
     pub fn open_here(
         &self,
         arguments: &[String],

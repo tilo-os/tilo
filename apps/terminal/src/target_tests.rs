@@ -390,6 +390,7 @@ fn supervisor_replies_say_what_to_do_next() {
             &SessionTarget::Host,
             Requester::Person,
             None,
+            None,
             Some("0123456789abcdef"),
             (80, 24),
         )
@@ -403,6 +404,7 @@ fn supervisor_replies_say_what_to_do_next() {
                 &[],
                 &SessionTarget::Legacy { vm: "linux".into() },
                 Requester::Person,
+                None,
                 None,
                 None,
                 (80, 24)
@@ -1654,13 +1656,84 @@ fn the_environments_panel_makes_environments_only_where_the_runtime_answers() {
         .collect();
     assert_eq!(names, ["Default", "Writing"]);
 
-    let stop = crate::HostedProcessServices::ask(&serde_json::json!({"op": "stop"}));
+    let stop = crate::HostedProcessServices::ask(&serde_json::json!({"op": "stop"}), None);
     drop(stop);
     let asked = runtime_answers.join().unwrap();
     assert!(
         asked
             .iter()
             .any(|request| request["op"] == "create-environment" && request["name"] == "Writing"),
+        "{asked:?}"
+    );
+}
+
+// Every directory request names the workspace the Terminal is in, which
+// its environments belong to: the panel's listing and the environment it
+// makes, and the window bar's listing off the UI thread, from the workspace
+// the desktop put the window in, read at each request; in a process of its
+// own, the workspace it was launched in. A Terminal that does not know its
+// workspace names none.
+#[cfg(unix)]
+#[test]
+fn directory_requests_name_the_terminals_workspace() {
+    let runtime = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
+    env.remove("TILO_WORKSPACE_ID");
+    let runtime_answers = directory_runtime(
+        runtime.path(),
+        vec![("default".to_owned(), "Default".to_owned())],
+    );
+
+    let window = ui::hosted_window::HostedWindow::new();
+    window.set_workspace(Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979".into()));
+    let mut widget = TerminalWidget::spawn_hosted_deferred();
+    widget.show_in_window(Some(window.clone()));
+    widget.open_environments_panel();
+    widget.set_environment_name_input("Writing");
+    widget.submit_environment_name();
+
+    let mut sessions = Sessions::hosted_deferred();
+    sessions.in_window(Some(window.clone()));
+    let waker = std::sync::Arc::new(std::sync::Mutex::new(ui::WakeHandle::new()));
+    sessions.refresh_environments_in_background(waker);
+    tilo_test_env::wait_until("the background listing", || {
+        sessions.poll_environment_refresh()
+    });
+
+    // The window left its workspace: no workspace is named.
+    window.set_workspace(None);
+    widget.open_environments_panel();
+    window.set_workspace(Some(String::new()));
+    widget.open_environments_panel();
+
+    // In a process of its own, the workspace the launcher started it in.
+    env.set("TILO_WORKSPACE_ID", "launched-workspace");
+    TerminalWidget::spawn_hosted_deferred().open_environments_panel();
+
+    let stop = crate::HostedProcessServices::ask(&serde_json::json!({"op": "stop"}), None);
+    drop(stop);
+    let asked = runtime_answers.join().unwrap();
+    let named: Vec<(&str, Option<&str>)> = asked
+        .iter()
+        .map(|request| {
+            (
+                request["op"].as_str().unwrap(),
+                request.get("workspace").map(|w| w.as_str().unwrap()),
+            )
+        })
+        .collect();
+    let workspace = Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979");
+    assert_eq!(
+        named,
+        [
+            ("list-environments", workspace),
+            ("create-environment", workspace),
+            ("list-environments", workspace),
+            ("list-environments", None),
+            ("list-environments", None),
+            ("list-environments", Some("launched-workspace")),
+        ],
         "{asked:?}"
     );
 }

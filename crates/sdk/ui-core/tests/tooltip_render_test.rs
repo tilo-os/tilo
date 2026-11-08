@@ -108,12 +108,10 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
 fn tooltip_renders_over_icon_button_in_both_themes() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `tooltip_renders_over_icon_button_dark`.
     {
         render_case(&Theme::dark(), Color::from_rgb8(0x0f, 0x17, 0x2a), "dark");
     }
 
-    // Case `tooltip_renders_over_icon_button_light`.
     {
         render_case(&Theme::light(), Color::from_rgb8(0xf5, 0xf6, 0xf8), "light");
     }

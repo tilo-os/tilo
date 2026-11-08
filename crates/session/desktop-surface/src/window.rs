@@ -19,14 +19,14 @@ use tilo_actions::{
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::layout::TileContent;
 
-/// `look`'s operation type: the window as a picture.
+/// `look` 's operation type: the window as a picture.
 pub const LOOK: &str = "so.tilo.desktop.window.look";
 
-/// `read`'s operation type: what the window says of itself.
+/// `read` 's operation type: what the window says of itself.
 pub const READ: &str = "so.tilo.desktop.window.read";
 
-/// The address of tab `tab`'s resource, which the desk publishes as the
-/// window's own: `desktop:tab:<tab>`.
+/// The address of tab `tab` 's resource, which the desk publishes as the window's own:
+/// `desktop:tab:<tab>` .
 #[must_use]
 pub fn resource(tab: u64) -> String {
     format!("{RESOURCE_PREFIX}{tab}")
@@ -35,32 +35,27 @@ pub fn resource(tab: u64) -> String {
 /// The prefix every window's resource address has, then its tab.
 pub const RESOURCE_PREFIX: &str = "desktop:tab:";
 
-/// The tab the window resource `resource` is of, when it is one of the
-/// desk's.
+/// The tab the window resource `resource` is of, when it is one of the desk's.
 #[must_use]
 pub fn resource_tab(resource: &str) -> Option<u64> {
     resource.strip_prefix(RESOURCE_PREFIX)?.parse().ok()
 }
 
-/// A window the desk shows that this session does not run: what `look` and
-/// `read` answer with.
+/// A window the desk shows that this session does not run: what `look` and `read` answer with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShownWindow {
-    /// Its title, as the desk names it in the bar, the strip and the
-    /// catalogue.
+    /// Its title, as the desk names it in the bar, the strip and the catalogue.
     pub title: String,
     /// The app that showed it: its Wayland app id or X11 class.
     pub app_id: String,
-    /// The window as the compositor knows it: what a picture of it is taken
-    /// by.
+    /// The window as the compositor knows it: what a picture of it is taken by.
     pub window: u64,
     /// The workspace it stands in, which its picture is kept as content of.
     pub workspace: String,
 }
 
-/// The window the desk shows in tab `tab`, when it is one this session does
-/// not run — a foreign X11 or Wayland window — which the desk publishes the
-/// read actions of.
+/// The window the desk shows in tab `tab` , when it is one this session does not run — a foreign
+/// X11 or Wayland window — which the desk publishes the read actions of.
 #[must_use]
 pub fn shown(tree: &DesktopTree, tab: u64) -> Option<ShownWindow> {
     tree.workspaces.iter().find_map(|workspace| {
@@ -82,8 +77,7 @@ pub fn shown(tree: &DesktopTree, tab: u64) -> Option<ShownWindow> {
     })
 }
 
-/// `look`: the window as it shows now, named `label` for the person reading
-/// the catalogue.
+/// `look` : the window as it shows now, named `label` for the person reading the catalogue.
 #[must_use]
 pub fn look(label: String) -> ActionSpec {
     let spec = ActionSpec::typed_operation(
@@ -107,8 +101,8 @@ pub fn look(label: String) -> ActionSpec {
     result(spec)
 }
 
-/// `read`: what the window says of itself — its title and the app it
-/// belongs to — named `label` for the person reading the catalogue.
+/// `read` : what the window says of itself — its title and the app it belongs to — named `label`
+/// for the person reading the catalogue.
 #[must_use]
 pub fn read(label: String) -> ActionSpec {
     let spec = ActionSpec::typed_operation(

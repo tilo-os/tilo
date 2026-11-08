@@ -1,9 +1,7 @@
-//! The sheets the session lends its seats to: the power menu, a workspace's
-//! settings, the directory, the portal apps open links through, the file
-//! picker, the guide, the display sheet, the questions about the person's
-//! apps and the one deleting a workspace asks — each mounted over the
-//! desktop and what it shows, and handed to the session as the seat it
-//! speaks through.
+//! The sheets the session lends its seats to: the power menu, a workspace's settings, the
+//! directory, the portal apps open links through, the file picker, the guide, the display sheet,
+//! the questions about the person's apps and the one deleting a workspace asks — each mounted over
+//! the desktop and what it shows, and handed to the session as the seat it speaks through.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -43,18 +41,16 @@ pub(crate) struct Sheets {
     pub(crate) shortcut_guide: Option<GuideSeat>,
     pub(crate) add_app: Option<AddSeat>,
     pub(crate) uninstall: Option<UninstallSeat>,
-    /// The lock screen, drawn in the session's own process when the app
-    /// that normally draws it is not there.
+    /// The lock screen, drawn in the session's own process when the app that normally draws it is
+    /// not there.
     pub(crate) lock_view: Option<LockSeat>,
 }
 
-/// What this session offers of locking and the computer's power, for the
-/// power menu and for the rows the Tilo menu and search list: the host's
-/// power is the host's, so a session in a window of another desktop offers
-/// no switching user, suspending or restarting, and a session that could
-/// not be left again offers no locking. Something to show the lock is
-/// always there — the lock screen's app, or the session's own view of it —
-/// so a password that can be checked is all locking needs.
+/// What this session offers of locking and the computer's power, for the power menu and for the
+/// rows the Tilo menu and search list: the host's power is the host's, so a session in a window of
+/// another desktop offers no switching user, suspending or restarting, and a session that could not
+/// be left again offers no locking. Something to show the lock is always there — the lock screen's
+/// app, or the session's own view of it — so a password that can be checked is all locking needs.
 pub(crate) fn power_offers(options: &Options) -> tilo_sheets::power::Offers {
     tilo_sheets::power::Offers {
         user_switching: options.machine.is_owned(),
@@ -105,8 +101,8 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
-    // The question deleting a workspace asks: over whatever the person was
-    // looking at, whichever surface asked it.
+    // The question deleting a workspace asks: over whatever the person was looking at, whichever
+    // surface asked it.
     let delete_workspace = mount_sheet(
         compositor,
         doors,
@@ -159,10 +155,9 @@ pub(crate) fn mount_sheets(
     }
 }
 
-/// The sheets about displays: the question a display change asks, standing
-/// on every display because it may be about the display it would otherwise be
-/// put on, and where the desktop appears, with the layouts and the wireless
-/// displays it streams to.
+/// The sheets about displays: the question a display change asks, standing on every display because
+/// it may be about the display it would otherwise be put on, and where the desktop appears, with
+/// the layouts and the wireless displays it streams to.
 fn mount_displays(
     compositor: &mut Compositor,
     doors: &mut Doors,
@@ -191,11 +186,10 @@ fn mount_displays(
     (display_confirm, displays)
 }
 
-/// The lock screen as a sheet of the session's own: the same view the lock
-/// screen's app shows, drawn here when that app is not there to draw it.
-/// The session opens it when the session is locked and the app cannot show
-/// the lock, so the machine is never left locked with nothing that could
-/// unlock it. It stands on every display while it is up.
+/// The lock screen as a sheet of the session's own: the same view the lock screen's app shows,
+/// drawn here when that app is not there to draw it. The session opens it when the session is
+/// locked and the app cannot show the lock, so the machine is never left locked with nothing that
+/// could unlock it. It stands on every display while it is up.
 fn mount_lock_view(
     compositor: &mut Compositor,
     doors: &mut Doors,
@@ -225,8 +219,8 @@ fn mount_lock_view(
     }
 }
 
-/// The questions about the person's apps: adding one from an installer, and
-/// uninstalling one — each its own sheet over the desk.
+/// The questions about the person's apps: adding one from an installer, and uninstalling one — each
+/// its own sheet over the desk.
 fn mount_app_questions(
     compositor: &mut Compositor,
     doors: &mut Doors,

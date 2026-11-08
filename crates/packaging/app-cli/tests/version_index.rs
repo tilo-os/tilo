@@ -17,7 +17,6 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
 use registry_types::{
     CompactRegistrySnapshot, PublisherAuthorization, RegistryEntry, RegistryVersion,
@@ -25,7 +24,7 @@ use registry_types::{
 };
 
 use crate::registry_to_installed::{
-    author_tapp_version, native_target, scoped_env, test_publisher, tilo_install_bin,
+    Device, author_tapp_version, native_target, registry_config, test_publisher,
 };
 
 const PACKAGE_ID: &str = "so.tilo.version-index-e2e";
@@ -253,30 +252,7 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
     assert_eq!(current.compact.entries[0].entry.versions.len(), 1);
     serve(&routes, &current);
 
-    let config_dir = tempfile::tempdir().unwrap();
-    let cache_dir = tempfile::tempdir().unwrap();
-    let apps_dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config_dir.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "local".into(),
-                base_url,
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let install_bin = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
-        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
-        ("TILO_APPS_DATA_DIR", apps_dir.path()),
-        ("TILO_INSTALL_BIN", &install_bin),
-    ]);
+    let _device = Device::new(Some(registry_config("local", &base_url, &owner)), &[]);
 
     // The catalogue comes from the compact snapshot alone.
     let listing = app_cli::available();

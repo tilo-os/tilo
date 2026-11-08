@@ -412,9 +412,6 @@ pub fn set_wifi_profile_password(uuid: &str, password: &str) -> Result<(), Strin
 }
 
 /// Join a network that does not broadcast its name.
-///
-/// # Errors
-/// An invalid name or password, or the network refusing to be joined.
 pub fn connect_hidden_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(char::is_control) {
         return Err("a network name is 1 to 32 characters".into());
@@ -785,9 +782,6 @@ fn base64_of(bytes: &[u8]) -> String {
 
 /// A new `WireGuard` key pair: the private key (kept by `NetworkManager`)
 /// and the public key the server is told.
-///
-/// # Errors
-/// The system has no randomness to give.
 pub fn generate_wireguard_keys() -> Result<(Zeroizing<String>, String), String> {
     let mut bytes = Zeroizing::new([0_u8; 32]);
     getrandom::fill(&mut *bytes).map_err(|error| format!("no randomness for a key: {error}"))?;
@@ -841,9 +835,6 @@ pub struct WireGuardTunnel {
 
 impl WireGuardTunnel {
     /// The tunnel as a `wg-quick` configuration file.
-    ///
-    /// # Errors
-    /// A value that is not what its field holds.
     pub fn config(&self) -> Result<Zeroizing<String>, String> {
         if !valid_ip_token(&self.address) || !self.address.contains('/') {
             return Err("the tunnel address is an address with its prefix: 10.7.0.2/32".into());
@@ -941,9 +932,6 @@ fn strip_config_comment(line: &str) -> &str {
 /// Whether `text` holds what a `kind` tunnel needs to be set up: a
 /// `WireGuard` file its key, address and peer; an `OpenVPN` file a server
 /// and a way to check it. Secrets are only looked for, never kept.
-///
-/// # Errors
-/// What is missing.
 pub fn validate_vpn_config(kind: &str, text: &str) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("The file is empty.".into());
@@ -1518,9 +1506,6 @@ pub fn create_plugin_vpn(service: &str, name: &str, server: &str) -> Result<Stri
 /// A VPN profile as the file Export writes: a `WireGuard` tunnel as a
 /// `wg-quick` file with its key, an `OpenVPN` one as a client file naming
 /// its certificates.
-///
-/// # Errors
-/// An invalid id, a type that cannot be exported, or the request refused.
 pub fn export_vpn(uuid: &str) -> Result<Zeroizing<String>, String> {
     validate_uuid(uuid)?;
     let profile = with_nm(|nm| async move { Ok(nm.profile(uuid).await?.settings) })?;

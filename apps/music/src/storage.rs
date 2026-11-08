@@ -211,10 +211,6 @@ impl MediaCache {
     }
 
     /// Remove a track's manifest entry and its unreferenced byte object.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the replacement manifest cannot be written.
     pub fn remove(&mut self, root: &Path, track_id: &str) -> std::io::Result<()> {
         let removed = self.entries.remove(track_id);
         // Publish the removal before deleting bytes: a failed manifest write
@@ -350,11 +346,6 @@ pub fn load_device_profile() -> DeviceProfile {
 
 /// Atomically store paused device-local resume state. Cache availability is
 /// not in it: the media manifest is the sole authority for bytes.
-///
-/// # Errors
-///
-/// Returns an I/O error when the profile directory cannot be created or the
-/// atomic write cannot be completed.
 pub fn save_device_profile_to(path: &Path, profile: &DeviceProfile) -> std::io::Result<()> {
     let persisted = profile.clone().paused();
     let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;

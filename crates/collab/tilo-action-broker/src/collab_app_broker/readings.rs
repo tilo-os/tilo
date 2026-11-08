@@ -23,8 +23,8 @@ pub(super) const REFUSED: &str = "caller is not granted this reading";
 /// Whether `caller` may read `resource`, which `granted` declares the workspace's
 /// grants decide, now.
 ///
-/// # Errors
-/// [`REFUSED`]: the workspace the app was launched in is no longer hosted, or
+/// #
+/// Errors [`REFUSED`]: the workspace the app was launched in is no longer hosted, or
 /// the grants do not let this app read there.
 pub(super) fn admit(
     state: &AppBrokerState,

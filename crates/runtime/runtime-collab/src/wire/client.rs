@@ -104,10 +104,6 @@ impl Subscription {
     }
 
     /// The next event, or why the subscription ended.
-    ///
-    /// # Errors
-    ///
-    /// The host ended the subscription, or the connection closed.
     pub async fn event(&mut self) -> Result<Event, Failure> {
         match self.deliveries.recv().await {
             Some(Delivery::Event(event)) => Ok(event),
@@ -157,10 +153,6 @@ impl Client {
     }
 
     /// Ask the host `request` and wait for its answer.
-    ///
-    /// # Errors
-    ///
-    /// The host's refusal, or the connection failing.
     pub async fn call(&self, request: Operation) -> Result<Reply, Failure> {
         let id = self.shared.id();
         let (answer, answered) = oneshot::channel();
@@ -187,10 +179,6 @@ impl Client {
     }
 
     /// Subscribe to `channel`'s `topic`.
-    ///
-    /// # Errors
-    ///
-    /// The host's refusal, or the connection failing.
     pub async fn subscribe(&self, channel: Handle, topic: Topic) -> Result<Subscription, Failure> {
         self.subscription(|id| (id, Operation::Subscribe { channel, topic }))
             .await
@@ -198,10 +186,6 @@ impl Client {
 
     /// Watch `resource`, one of the session's published ones: its reading
     /// now as [`Event::Reading`], and again each time it changes.
-    ///
-    /// # Errors
-    ///
-    /// The host's refusal, or the connection failing.
     pub async fn watch(&self, services: Handle, resource: String) -> Result<Subscription, Failure> {
         self.subscription(|id| (id, Operation::Watch { services, resource }))
             .await

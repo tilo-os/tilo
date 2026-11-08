@@ -57,7 +57,6 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
 
 #[test]
 fn audit_patterns_match_exactly_the_shapes_they_name() {
-    // Case `forbidden_patterns_match_the_shapes_they_name`.
     // The forbidden set must still bite: a pattern that no longer matches the
     // shape it names would let the audit pass empty.
     {
@@ -92,7 +91,6 @@ fn audit_patterns_match_exactly_the_shapes_they_name() {
         );
     }
 
-    // Case `a_file_gated_to_tests_has_no_production_style_lines`.
     // The `#[cfg(test)]` span finder and the baseline plumbing live in
     // `support::ratchet`, shared by every ratchet. The finder
     // covers exactly the item the attribute governs — an earlier copy here
@@ -479,7 +477,6 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
 
 #[test]
 fn launchers_build_on_the_shared_launch_specs() {
-    // Case `framework_launchers_build_on_the_shared_launch_spec`.
     // Accepting the framework's entry points is sound only while they stay on
     // `LaunchSpec`; a framework that grew its own launcher would take every
     // framework app off the acceptance matrix at once.
@@ -498,7 +495,6 @@ fn launchers_build_on_the_shared_launch_specs() {
         );
     }
 
-    // Case `product_apps_use_the_shared_responsive_launcher`.
     // Product apps share one viewport/large-type/pseudo-locale audit path. A new
     // bespoke launcher silently loses that acceptance matrix, so keep the fleet on
     // `LaunchSpec` — directly or through a framework entry point that builds it —

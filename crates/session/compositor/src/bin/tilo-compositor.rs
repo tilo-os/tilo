@@ -1,9 +1,8 @@
-//! The compositor on its own: `tilo-compositor [--backend
-//! nested|drm|headless] [--size WxH] [--scale S] [-- command args...]`.
-//! Listens on a fresh `wayland-N` socket, starts Xwayland, prints both and
-//! starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to them. Windows float on a plain
-//! background; no shell surfaces. Inside a desktop (`DISPLAY` set) it runs in
-//! a window by default, else on the TTY.
+//! The compositor on its own:
+//! `tilo-compositor [--backend nested|drm|headless] [--size WxH] [--scale S] [-- command args...]`
+//! . Listens on a fresh `wayland-N` socket, starts Xwayland, prints both and starts `command` with
+//! `WAYLAND_DISPLAY` and `DISPLAY` set to them. Windows float on a plain background; no shell
+//! surfaces. Inside a desktop (`DISPLAY` set) it runs in a window by default, else on the TTY.
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
@@ -50,8 +49,8 @@ fn main() -> std::process::ExitCode {
         }
     };
     println!("WAYLAND_DISPLAY={socket}");
-    // X11 clients through Xwayland: the display starts its server when the
-    // first one connects, so the command and whatever it starts share one.
+    // X11 clients through Xwayland: the display starts its server when the first one connects, so
+    // the command and whatever it starts share one.
     let x_display = compositor
         .x11_displays()
         .and_then(|displays| displays.display_for("default"))
@@ -88,8 +87,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// The compositor for `backend`, at the size and scale asked for, or why
-/// there is none.
+/// The compositor for `backend` , at the size and scale asked for, or why there is none.
 #[cfg(target_os = "linux")]
 fn start(
     backend: &str,

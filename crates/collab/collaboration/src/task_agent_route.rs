@@ -10,11 +10,6 @@ impl CertifiedEndpointIdentity {
     /// device's certificate and task delegation from `credentials`, proved
     /// by the task key's signature over the workspace's join bytes, and that key
     /// to sign its writes.
-    ///
-    /// # Errors
-    ///
-    /// Postcard's serialization error when the presentation cannot be
-    /// encoded.
     pub fn for_task_agent(
         credentials: &runtime_collab::TaskAgentCredentials,
     ) -> Result<Self, postcard::Error> {

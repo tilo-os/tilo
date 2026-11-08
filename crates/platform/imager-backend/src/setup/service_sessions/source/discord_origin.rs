@@ -29,9 +29,6 @@ pub struct DiscordOriginGrant {
 }
 impl DiscordOriginGrant {
     /// Call only after explicit consent to include the selected Discord session.
-    ///
-    /// # Errors
-    /// Refuses foreign/elevated callers, unsafe directory custody or non-directories.
     pub fn new(profile: File) -> Result<Self, SourceError> {
         let profile = crate::setup::migration_durability::readable_directory(&profile)
             .map_err(unavailable)?;

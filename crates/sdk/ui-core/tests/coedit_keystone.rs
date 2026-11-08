@@ -275,7 +275,6 @@ fn poll_until<T>(
 )]
 #[test]
 fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
-    // Case `peer_edit_converges_and_each_renders_the_shared_state_locally`.
     {
         let (mut a, mut b) = two_peers();
 
@@ -360,7 +359,6 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         drop(b);
     }
 
-    // Case `remote_caret_presence_round_trips_both_ways`.
     {
         let (mut a, mut b) = two_peers();
 
@@ -430,7 +428,6 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         drop(b);
     }
 
-    // Case `signed_edit_is_permission_gated`.
     {
         // One channel owner underwrites two members: a writer (Editor) and a
         // viewer (Viewer, no write capability). Both target the same Note

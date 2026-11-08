@@ -92,9 +92,6 @@ pub(super) fn filled(
 }
 
 /// A workspace whose root's list holds one item, holding `n` items of its own.
-///
-/// # Errors
-/// A type of the package is not registered, or the seed does not apply.
 pub(super) fn seeded(
     packages: &[Compiled],
     shape: &Shape,
@@ -180,9 +177,6 @@ impl Thread {
 }
 
 /// Run the transcript scenarios on `sized`, whose workspace [`seeded`] made.
-///
-/// # Errors
-/// A scenario fails.
 pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec<Record>, String> {
     let shape = sized.shape;
     let item = super::item_ref(shape, list, &thread_id());

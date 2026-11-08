@@ -84,9 +84,6 @@ pub trait Host {
 
     /// A tool's stripped standard output; a nonzero exit is refused with its
     /// status and stderr, never its arguments.
-    ///
-    /// # Errors
-    /// The tool failing, missing or timing out.
     fn run(&self, argv: &[&str], timeout: Duration) -> Result<String> {
         let output = crate::process::run(argv, None, timeout)?;
         let program = crate::process::name(argv.first().copied().unwrap_or_default());
@@ -192,9 +189,6 @@ fn valid_origin(profile: &str, origin: &str) -> bool {
 }
 
 /// The checked metadata and OCI layout of the staged target.
-///
-/// # Errors
-/// Anything that differs from one signed-target layout of the pinned image.
 pub fn read_target(host: &dyn Host, root: &Path) -> Result<(Map<String, Value>, PathBuf)> {
     require(!root.is_symlink(), "offline target directory is a symlink")?;
     let root = fs::canonicalize(root)?;
@@ -353,9 +347,6 @@ fn check_config(blobs: &Path, parsed: &Value) -> Result<()> {
 
 /// The rows of Cosign's verification output: one JSON document (a list or
 /// an object), or one per line.
-///
-/// # Errors
-/// Empty, oversized or malformed output.
 pub fn wrappers(output: &str) -> Result<Vec<Map<String, Value>>> {
     let length = output.chars().count();
     require(
@@ -555,9 +546,6 @@ fn provenance_match(row: &Map<String, Value>, metadata: &Map<String, Value>) -> 
 
 /// The CI SLSA provenance in Cosign's attestation output that binds
 /// `metadata`: exactly one statement must.
-///
-/// # Errors
-/// Malformed output, or no unique binding statement.
 pub fn checked_provenance(output: &str, metadata: &Map<String, Value>) -> Result<Value> {
     let matches: Vec<Value> = wrappers(output)?
         .iter()
@@ -606,9 +594,6 @@ fn signature_binds(row: &Map<String, Value>, metadata: &Map<String, Value>) -> R
 
 /// Verifies the staged target and saves the receipt; a development target is
 /// also imported.
-///
-/// # Errors
-/// Any check refusing, or a tool failing.
 pub fn verify(host: &dyn Host) -> Result<Value> {
     let root = host.root();
     let (metadata, layout) = read_target(host, &root)?;
@@ -694,10 +679,6 @@ fn is_image_id(text: &str) -> bool {
 
 /// Imports the verified target into local container storage and returns its
 /// immutable image ID.
-///
-/// # Errors
-/// No verified preflight, metadata changed since, an import that differs from
-/// the signed manifest, or a tool failing.
 pub fn import_image(host: &dyn Host) -> Result<String> {
     let root = host.root();
     let (metadata, layout) = read_target(host, &root)?;

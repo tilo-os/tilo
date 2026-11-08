@@ -36,9 +36,6 @@ impl HistoryContent {
         }
     }
     /// Retain a block durably, before publishing its root.
-    ///
-    /// # Errors
-    /// Quota, invalid block size or durable content I/O failure.
     pub fn put(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
         if bytes.len() > MAX_HISTORY_BLOCK {
             return Err("native history block capacity exceeded".into());
@@ -89,9 +86,6 @@ impl HistoryContent {
         Ok(hash)
     }
     /// Read the complete bounded block, including its content-verification EOF.
-    ///
-    /// # Errors
-    /// Missing, corrupt, oversized or unavailable history.
     pub fn read(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
         let reader = self
             .backend

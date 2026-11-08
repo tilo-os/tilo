@@ -45,8 +45,6 @@ mod cloud_browse;
 mod drives;
 mod entry_rows;
 mod mounted_cloud;
-mod native_open_with;
-mod selected_open;
 mod window;
 mod window_bar;
 pub use clipboard_client::Receipt as ClipboardReceipt;
@@ -566,53 +564,11 @@ pub struct StartupInputs {
     pub trusted_humans: crate::identity_directory::TrustedHumanDirectory,
 }
 
-/// Exact document-open route supplied by a hosting shell.
-#[derive(Clone)]
-pub enum DocumentOpenRoute {
-    /// This embedding deliberately provides no document owner.
-    Unavailable,
-    /// The shell drains a capability-bound request after the tile releases its
-    /// record loan. A different app cannot construct the shell's matching
-    /// capability.
-    Deferred(ui::widget::DocumentOpenCapability),
-}
-
-impl HostedFileServices {
-    /// Create the one deferred route whose capability the hosting shell will
-    /// retain and validate before it reads or publishes a document.
-    #[must_use]
-    pub fn deferred_document_open() -> Self {
-        Self {
-            thumbnails: None,
-            document_opener: DocumentOpenRoute::Deferred(
-                ui::widget::DocumentOpenCapability::issue(),
-            ),
-            open_with: None,
-            local_clipboard: true,
-        }
-    }
-
-    #[must_use]
-    pub fn accepts_document_open_capability(
-        &self,
-        capability: &ui::widget::DocumentOpenCapability,
-    ) -> bool {
-        matches!(
-            &self.document_opener,
-            DocumentOpenRoute::Deferred(expected) if expected == capability
-        )
-    }
-}
-
 /// Optional services supplied by an embedding host. Absence never selects
-/// the standalone thumbnail cache or global document opener.
+/// the standalone thumbnail cache.
 #[derive(Clone)]
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
-    pub document_opener: DocumentOpenRoute,
-    /// Lists and launches "Open with" applications; absent means the
-    /// submenu offers nothing rather than guessing.
-    pub open_with: Option<crate::open_with::SharedOpenWithRoute>,
     /// The host supplies the existing native Files clipboard lane. This is
     /// availability, never a filesystem grant or an invocation authority.
     pub local_clipboard: bool,
@@ -652,7 +608,6 @@ pub struct FilesState {
     /// The read of the folder shown still outstanding, if any.
     folder_reads: folder_read::FolderReads,
     local_clipboard: clipboard_client::Client,
-    selected_open: selected_open::Client,
     error: Option<String>,
     is_loading: bool,
     /// Reads the archive being browsed off the window's thread.
@@ -937,18 +892,6 @@ pub struct FilesState {
     /// The person's apps, for the Applications place.
     applications: applications::Applications,
     host_intent: Option<ui::widget::AppHostIntent>,
-    /// A one-shot shell-owned document admission. The reply is strong only
-    /// while this Files widget still owns the request; the shell gets a weak
-    /// witness and cannot act after this widget has gone away.
-    pending_document_open: Option<(u64, Rc<RefCell<ui::widget::DocumentOpenReply>>)>,
-    /// Files waiting to be opened while the host answers an earlier one.
-    open_queue: std::collections::VecDeque<PathBuf>,
-    /// The file [`Self::pending_document_open`] is opening, to name it if
-    /// the host refuses.
-    document_open_path: Option<PathBuf>,
-    /// A file handed to the desktop's default handler, until it answers.
-    pending_launch: Option<(PathBuf, ui::portal::LaunchChannel)>,
-    next_document_open_token: u64,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
     /// release — the app captures the pointer for the duration of the drag).
@@ -986,9 +929,20 @@ pub struct FilesState {
     recent: crate::recent::RecentFiles,
     /// Every device's Recent list, in a hosted window.
     recent_record: Option<ui::framework::PersonRecord<crate::recent::RecentRecord>>,
-    /// "Open With" candidates per file type, asked of the host once per
+    /// Asks the session to open a document, in a named app or in the one that
+    /// opens its type: [`crate::open_with::request`] in an app, a recorder in
+    /// tests.
+    open_request: crate::open_with::OpenRequest,
+    /// Lists the apps that open a document's type:
+    /// [`crate::open_with::candidates`] in an app, a recorder in tests.
+    document_candidates: crate::open_with::CandidateList,
+    /// Opens the session has taken and not answered yet, each with its path
+    /// and answer: asked off the window's thread and taken in by
+    /// [`Self::take_open_replies`].
+    open_replies: crate::open_with::OpenReplies,
+    /// "Open With" candidates per file type, asked of the session once per
     /// listing rather than once per row.
-    open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
+    open_with_cache: RefCell<HashMap<String, Vec<runtime_portal::tools::DocumentApp>>>,
     /// The listing's entries by resource id, made once per listing.
     entry_ids: RefCell<EntryIds>,
     /// The entry rows last published, kept while what each shows holds.
@@ -1144,8 +1098,6 @@ impl FileExplorerWidget {
             }),
             FileServices::Hosted(HostedFileServices {
                 thumbnails,
-                document_opener: DocumentOpenRoute::Unavailable,
-                open_with: None,
                 local_clipboard: false,
             }),
         );
@@ -1369,7 +1321,6 @@ impl FileExplorerWidget {
             merge_preflight_pending: None,
             effect_reply: None,
             local_clipboard: clipboard_client::Client::new(),
-            selected_open: selected_open::Client::default(),
             accounts_root: None,
             accounts_cache: Vec::new(),
             cloud: cloud_browse::CloudView::default(),
@@ -1379,11 +1330,9 @@ impl FileExplorerWidget {
             drives: drives::Drives::default(),
             applications: applications::Applications::default(),
             host_intent: None,
-            pending_document_open: None,
-            open_queue: std::collections::VecDeque::new(),
-            document_open_path: None,
-            pending_launch: None,
-            next_document_open_token: 0,
+            open_request: crate::open_with::request,
+            document_candidates: crate::open_with::candidates,
+            open_replies: Arc::default(),
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             item_rects: Rc::new(std::cell::RefCell::new(Vec::new())),
             marquee: None,
@@ -2569,47 +2518,8 @@ impl FilesState {
                 self.create_from_template(&target)?;
                 None
             }
-            FilesEffect::OpenWith {
-                entry,
-                app,
-                always,
-                access,
-            } => {
-                if let Some(access) = access {
-                    if !self.retained_selected_open_available() && !self.native_selected_discovery()
-                    {
-                        return Err(t("files-open-with-launch-unavailable"));
-                    }
-                    let access = match access.as_str() {
-                        "read-only" => {
-                            ui::collaboration::open_selected::v2::SelectedAccess::ReadOnly
-                        }
-                        "edit-in-parent" => {
-                            ui::collaboration::open_selected::v2::SelectedAccess::EditInParent
-                        }
-                        _ => return Err(t("files-open-with-access-unavailable")),
-                    };
-                    return self.begin_selected_open_v2(
-                        &entry,
-                        &app,
-                        invocation,
-                        always.unwrap_or(false),
-                        access,
-                    );
-                }
-                if self.retained_selected_open_available()
-                    && self
-                        .visible_entry_path(&entry)
-                        .is_some_and(|path| tilo_files::native::retained_home::contains(&path))
-                {
-                    return self.begin_selected_open(
-                        &entry,
-                        &app,
-                        invocation,
-                        always.unwrap_or(false),
-                    );
-                }
-                self.invoke_open_with(&entry, &app, always.unwrap_or(false))?;
+            FilesEffect::OpenWith { entry, app } => {
+                self.invoke_open_with(&entry, &app)?;
                 None
             }
             effect @ (FilesEffect::BrowseCloud { .. }
@@ -2877,7 +2787,6 @@ impl FilesState {
         {
             self.effect_reply.take();
             self.local_clipboard.abandon();
-            self.selected_open.abandon();
             self.status = Some(t("files-clipboard-cancelled"));
             self.structure_dirty = true;
         }
@@ -5156,11 +5065,7 @@ impl FilesState {
                 self.open_open_with_submenu(self.last_cursor);
                 true
             }
-            FileCommand::OpenWith {
-                path,
-                app_id,
-                always,
-            } => self.apply_open_with(&path, &app_id, always),
+            FileCommand::OpenWith { path, app_id } => self.apply_open_with(&path, &app_id),
             FileCommand::OpenWithOther => {
                 self.open_app_chooser();
                 true
@@ -6932,65 +6837,6 @@ impl FilesState {
         }
     }
 
-    fn request_deferred_document_open(
-        &mut self,
-        path: PathBuf,
-        capability: ui::widget::DocumentOpenCapability,
-    ) -> Result<(), String> {
-        if self.pending_document_open.is_some() {
-            // One request owns the only reply slot; this one waits for it.
-            self.open_queue.push_back(path);
-            return Ok(());
-        }
-        let token = self
-            .next_document_open_token
-            .checked_add(1)
-            .ok_or_else(|| t("files-open-unavailable"))?;
-        self.next_document_open_token = token;
-        let reply = Rc::new(RefCell::new(ui::widget::DocumentOpenReply::pending(token)));
-        let path_shown = path.clone();
-        self.host_intent = Some(ui::widget::AppHostIntent::OpenDocument {
-            path,
-            capability,
-            token,
-            reply: Rc::downgrade(&reply),
-        });
-        self.pending_document_open = Some((token, reply));
-        self.document_open_path = Some(path_shown);
-        self.set_external_status(t("files-opening-document"));
-        Ok(())
-    }
-
-    fn poll_deferred_document_open(&mut self) {
-        let Some((token, reply)) = &self.pending_document_open else {
-            return;
-        };
-        let Some(result) = reply
-            .try_borrow_mut()
-            .ok()
-            .and_then(|mut reply| reply.take_result(*token))
-        else {
-            return;
-        };
-        self.pending_document_open = None;
-        let path = self.document_open_path.take();
-        match result {
-            ui::widget::DocumentOpenOutcome::Opened => {
-                if self.status.as_deref() == Some(t("files-opening-document").as_str()) {
-                    self.status = None;
-                    self.structure_dirty = true;
-                }
-            }
-            ui::widget::DocumentOpenOutcome::Refused(reason) => match path {
-                Some(path) => self.notify_open_failed(&path, &reason),
-                None => self.set_external_status(reason),
-            },
-            ui::widget::DocumentOpenOutcome::Cancelled => {
-                self.set_external_status(t("files-document-opening-cancelled"));
-            }
-        }
-    }
-
     /// Enter: open every selected file, each in its app; a single folder
     /// (or a selection of only folders) opens the primary one here.
     fn open_selected(&mut self) {
@@ -7007,45 +6853,24 @@ impl FilesState {
         }
     }
 
-    /// Hand the next waiting file to the host once it has answered the last.
-    fn open_next_queued(&mut self) {
-        while self.pending_document_open.is_none() && self.pending_launch.is_none() {
-            let Some(next) = self.open_queue.pop_front() else {
-                return;
-            };
-            self.open_path(next);
-        }
-    }
-
     /// Open a path: navigate into directories, else launch its app.
     fn open_path(&mut self, path: PathBuf) {
-        let mut runner = SystemRunner;
-        let _ = self.open_target(path, &mut runner);
+        let _ = self.open_target(path);
     }
 
-    /// Open `path`: navigate into directories, and hand a file to the
-    /// desktop to open in whichever app owns it.
+    /// Open `path`: navigate into directories, and hand a file to the session
+    /// to open in whichever app owns it.
     ///
-    /// The explorer picks no app of its own. It asks the host
-    /// ([`set_document_opener`]), which resolves the owner, grants the
-    /// read, focuses the document if it is already open, and launches —
-    /// all in one place, shared with every other surface that can open a
-    /// file. Only when no host installed a route (a standalone run, off a
-    /// Tilo session, or a sandboxed Files) does this fall back to the
-    /// desktop's handler (its launch request, via
-    /// `CommandRunner::open_default`), which in a sandbox asks the session to
-    /// open the file in the app that owns it.
-    ///
-    /// A refusal from the host is shown in the status bar naming the
-    /// file; activation never silently does nothing.
+    /// The explorer picks no app of its own. It asks the session
+    /// ([`crate::open_with::request`]), which resolves what opens the file's
+    /// type, and launches it — the same place every other surface that opens a
+    /// resource asks. A refusal is shown in the notice naming the file, with
+    /// "Open with" beside it when another app claims it: activation never
+    /// silently does nothing.
     ///
     /// Returns whether the path was handed off (`false` when it navigated
     /// a dir).
-    fn open_target<R: CommandRunner>(
-        &mut self,
-        path: PathBuf,
-        runner: &mut R,
-    ) -> std::io::Result<bool> {
+    fn open_target(&mut self, path: PathBuf) -> std::io::Result<bool> {
         if let Some(app) = crate::applications::app_id(&path) {
             self.open_app(app.to_owned());
             return Ok(true);
@@ -7071,7 +6896,7 @@ impl FilesState {
             // off the window's thread: reaching it can mean decoding most of
             // a compressed tar.
             if let Some(copy) = archive_member_cached(&archive, &prefix) {
-                return self.open_target(copy, runner);
+                return self.open_target(copy);
             }
             self.archive_members.start(archive, prefix);
             return Ok(true);
@@ -7080,55 +6905,48 @@ impl FilesState {
             self.navigate(path);
             return Ok(false);
         }
-        if self.pending_document_open.is_some() || self.pending_launch.is_some() {
-            // The host answers one open at a time; the rest wait their turn
-            // (Enter on several selected files opens each).
-            self.open_queue.push_back(path);
-            return Ok(true);
-        }
-        let hosted_route = match &self.services {
-            FileServices::Legacy => None,
-            FileServices::Hosted(hosted) => Some(hosted.document_opener.clone()),
-        };
-        let result = match hosted_route {
-            None => ask_host_to_open(&path),
-            Some(DocumentOpenRoute::Unavailable) => Some(Err(t("files-open-unavailable"))),
-            Some(DocumentOpenRoute::Deferred(capability)) => {
-                Some(self.request_deferred_document_open(path.clone(), capability))
-            }
-        };
-        match result {
-            Some(Ok(())) => self.note_recent(&path, crate::recent::RecentUse::Opened),
-            Some(Err(reason)) => self.notify_open_failed(&path, &reason),
-            None => {
-                let launch = runner.open_default(&path);
-                self.pending_launch = Some((path, launch));
-                self.poll_pending_launch();
-            }
-        }
+        self.ask_open(&path, None);
         Ok(true)
     }
 
-    /// Report the desktop's answer to a file handed to its default handler.
-    fn poll_pending_launch(&mut self) {
-        let Some((path, launch)) = &self.pending_launch else {
-            return;
-        };
-        let outcome = match launch.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                ui::portal::LaunchOutcome::Failed(t("files-open-no-answer"))
-            }
-        };
-        let path = path.clone();
-        self.pending_launch = None;
-        match outcome {
-            ui::portal::LaunchOutcome::Opened => {
-                self.note_recent(&path, crate::recent::RecentUse::Opened);
-            }
-            ui::portal::LaunchOutcome::Failed(reason) => self.notify_open_failed(&path, &reason),
+    /// Ask the session to open `path`, in `app` or in the app that opens its
+    /// type, off the window's thread: starting an app can take a while, and
+    /// the window stays live while it does. The answer is taken in by
+    /// [`Self::take_open_replies`], which shows a refusal and puts an open in
+    /// the Recent list.
+    fn ask_open(&mut self, path: &Path, app: Option<String>) {
+        let request = self.open_request;
+        let replies = Arc::clone(&self.open_replies);
+        let shown = path.to_path_buf();
+        let spawned = std::thread::Builder::new()
+            .name("files-open".into())
+            .spawn(move || {
+                let answer = request(&shown, app.as_deref());
+                if let Ok(mut replies) = replies.lock() {
+                    replies.push((shown, answer));
+                }
+            });
+        if spawned.is_err() {
+            self.notify_open_failed(path, "the window could not ask the session to open it");
         }
+    }
+
+    /// Take in the answers to opens asked off the window's thread; whether any
+    /// came in.
+    fn take_open_replies(&mut self) -> bool {
+        let answered = self
+            .open_replies
+            .lock()
+            .map(|mut replies| std::mem::take(&mut *replies))
+            .unwrap_or_default();
+        let changed = !answered.is_empty();
+        for (path, answer) in answered {
+            match answer {
+                Ok(()) => self.note_recent(&path, crate::recent::RecentUse::Opened),
+                Err(reason) => self.notify_open_failed(&path, &reason),
+            }
+        }
+        changed
     }
 
     /// Say that `path` didn't open and why, offering another app when one
@@ -7139,7 +6957,7 @@ impl FilesState {
             |name| name.to_string_lossy().into_owned(),
         );
         let other_app = self.displayed_entries().iter().any(|e| e.path == path)
-            && !self.open_with_candidates(path).apps.is_empty();
+            && !self.open_with_candidates(path).is_empty();
         self.notify_failure(
             t_args("files-open-failed", &[arg("name", name)]),
             reason,
@@ -7554,31 +7372,6 @@ fn layout_menu_widget(menu: &mut ContextMenu) {
     }
 }
 
-/// Thin mockable wrapper around the desktop "open with default app"
-/// handler. Mocked in tests so the open paths are verifiable without
-/// asking a real desktop.
-pub trait CommandRunner {
-    /// Open `path` with the system default handler. This is the fallback for
-    /// every file type Tilo has no registered app for (images, PDFs, video,
-    /// audio, plain text, …) so double-click/Enter/Open never silently do
-    /// nothing.
-    ///
-    /// The desktop's answer arrives on the returned channel: a sandboxed
-    /// explorer asks the session (its portal, or the shell) to open the file
-    /// in the app that owns it.
-    fn open_default(&mut self, path: &std::path::Path) -> ui::portal::LaunchChannel;
-}
-
-pub struct SystemRunner;
-
-impl CommandRunner for SystemRunner {
-    fn open_default(&mut self, path: &std::path::Path) -> ui::portal::LaunchChannel {
-        #[cfg(test)]
-        crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
-        ui::portal::LaunchRequest::open(path).send()
-    }
-}
-
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
 /// The daemon still validates exact bytes and may reject a malformed serialized document,
 /// invalid UTF-8, overlapping edits, or a stale signed conflict.
@@ -7591,57 +7384,6 @@ fn merge_supported_path(path: &std::path::Path) -> bool {
                 "txt" | "qdoc" | "tilo-doc"
             )
         })
-}
-
-/// How the explorer hands a document to the application that owns it.
-///
-/// `Ok(())` means the host took it. `Err(reason)` is a failure the user
-/// must be told about, in words naming the file — the explorer shows it
-/// in its status bar.
-pub type DocumentOpener = Box<dyn FnMut(&std::path::Path) -> Result<(), String>>;
-
-thread_local! {
-    static DOCUMENT_OPENER: std::cell::RefCell<Option<DocumentOpener>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Install the route by which this explorer opens documents.
-///
-/// The explorer does not decide which app opens a `.odt`, and does not
-/// launch one. That decision belongs to the desktop — which app declares
-/// the type, which sandbox it runs in, which read capability it needs,
-/// and whether the document is already open somewhere — and it lives in
-/// one place, the compositor's `shell::shell::doc_open`. An explorer
-/// hosted by the compositor is wired straight to it here; nothing about
-/// opening a document is reimplemented on this side.
-///
-/// Thread-local rather than a global because what it points at is the
-/// compositor's chrome, which is thread-affine, and because it then
-/// reaches *every* explorer instance the host creates without threading a
-/// parameter through each widget constructor.
-///
-/// With nothing installed — the explorer run standalone, with no
-/// compositor to ask — activation falls back to the desktop's own
-/// handler. That is the honest answer off a Tilo session, not a second
-/// implementation of the decision.
-pub fn set_document_opener<F>(opener: F)
-where
-    F: FnMut(&std::path::Path) -> Result<(), String> + 'static,
-{
-    DOCUMENT_OPENER.with(|slot| *slot.borrow_mut() = Some(Box::new(opener)));
-}
-
-/// Remove the installed route, restoring the standalone fallback. Used by
-/// tests, which share the thread-local with each other.
-pub fn clear_document_opener() {
-    DOCUMENT_OPENER.with(|slot| *slot.borrow_mut() = None);
-}
-
-/// Ask the host to open `path`. `None` when no host installed a route.
-fn ask_host_to_open(path: &std::path::Path) -> Option<Result<(), String>> {
-    #[cfg(test)]
-    crate::model::fixture_io_guard::ambient_io("ask_host_to_open");
-    DOCUMENT_OPENER.with(|slot| slot.borrow_mut().as_mut().map(|open| open(path)))
 }
 
 impl FilesState {
@@ -7664,11 +7406,6 @@ impl FilesState {
     }
 
     /// Ask the shell to open Terminal in the current directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns the shell's reason when Terminal could not be opened, or that
-    /// there is no Tilo session to ask.
     pub fn open_terminal(&self) -> Result<(), String> {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("open_terminal");
@@ -7678,21 +7415,13 @@ impl FilesState {
 
     /// Activate entry `idx` (by displayed index): navigate into a directory
     /// or launch the associated app.
-    ///
-    /// # Errors
-    ///
-    /// Returns the OS error if launching the entry's associated app fails.
-    pub fn open_entry<R: CommandRunner>(
-        &mut self,
-        idx: usize,
-        runner: &mut R,
-    ) -> std::io::Result<bool> {
+    pub fn open_entry(&mut self, idx: usize) -> std::io::Result<bool> {
         let disp = self.displayed_entries();
         let Some(entry) = disp.get(idx) else {
             return Ok(false);
         };
         let path = entry.path.clone();
-        self.open_target(path, runner)
+        self.open_target(path)
     }
 
     /// Build + open the right-click menu at `at`, with items appropriate to
@@ -8294,9 +8023,6 @@ impl FilesState {
     /// Show the row `anchor` names as its own open action does: a place
     /// opens, a collaborative record is revealed, a remote account shows its
     /// connection details.
-    ///
-    /// # Errors
-    /// The anchor names no row Files opens, or opening it failed.
     pub(crate) fn open_anchor(&mut self, anchor: &str) -> Result<(), String> {
         use crate::effects::FilesEffect;
         let effect = if anchor.starts_with("files.place:") {
@@ -9340,29 +9066,19 @@ impl FilesState {
 
     /// Every deadline besides the listing's, which the sync serves.
     fn other_deadline(&self, chrome: &Chrome) -> Option<Instant> {
-        let document_open_reply = self
-            .pending_document_open
-            .as_ref()
-            .and_then(|(token, reply)| {
-                reply
-                    .try_borrow()
-                    .ok()
-                    .and_then(|reply| (!reply.is_pending(*token)).then(Instant::now))
-            });
         // Nearby Send asks only when the shell announces a change; the asks
         // that announcement queued go out on the next pump, at once.
         self.nearby_send
             .has_requests()
             .then(Instant::now)
             .into_iter()
-            .chain(document_open_reply)
-            .chain(
-                (!self.open_queue.is_empty()
-                    && self.pending_document_open.is_none()
-                    && self.pending_launch.is_none())
-                .then(Instant::now),
-            )
             .chain(self.local_clipboard.next_wake())
+            .chain(
+                self.open_replies
+                    .lock()
+                    .is_ok_and(|replies| !replies.is_empty())
+                    .then(Instant::now),
+            )
             .chain(self.drives.next_wake())
             .chain(self.applications.next_wake())
             .chain((!self.incoming.is_empty()).then(Instant::now))
@@ -9400,10 +9116,7 @@ impl FilesState {
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
         requests.extend(self.shortcut_menu.take_requests());
-        self.poll_selected_open();
         requests.extend(self.local_clipboard.take_request());
-        requests.extend(self.selected_open.take_request());
-        requests.extend(self.selected_open.discovery.take_request());
         requests
     }
 
@@ -9412,12 +9125,6 @@ impl FilesState {
         if let Some(result) = self.local_clipboard.event(event) {
             self.complete_clipboard_publication(result);
         }
-        if self.selected_open.discovery.event(event) {
-            self.invalidate_open_with();
-            self.structure_dirty = true;
-        }
-        self.selected_open.event(event);
-        self.poll_selected_open();
         self.drives.event(event);
         self.applications.event(event);
         let changed = self.handle_shortcut_event(event);
@@ -9592,6 +9299,7 @@ impl FilesState {
             | self.open_read_members();
         self.structure_dirty |= counted;
         self.poll_share_result()
+            | self.take_open_replies()
             | self.poll_history_result()
             | received
             | restored
@@ -9621,9 +9329,6 @@ impl FilesState {
         }
         self.poll_cloud();
         self.poll_mounted_cloud();
-        self.poll_deferred_document_open();
-        self.poll_pending_launch();
-        self.open_next_queued();
         self.take_incoming_drop();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(ui::time::now());
@@ -10125,9 +9830,6 @@ pub(crate) mod published {
 
     /// Invoke the action `action` of the published resource `resource` with
     /// `args`, as the palette or an agent does through the door.
-    ///
-    /// # Errors
-    /// The door's refusal, or why the operation failed.
     pub(crate) fn invoke(
         files: &mut FileExplorerWidget,
         doc: &mut automerge::AutoCommit,
@@ -10165,9 +9867,6 @@ pub(crate) mod published {
     /// Start the encoded operation on the window as the framework does:
     /// the effect vocabulary to the view's handler, anything else to the
     /// toolkit's widgets inside it.
-    ///
-    /// # Errors
-    /// Why the operation failed or was refused.
     pub(crate) fn start(
         files: &mut FileExplorerWidget,
         kind: ui::tilo_actions::OperationKind,

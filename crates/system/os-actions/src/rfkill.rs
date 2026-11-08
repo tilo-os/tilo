@@ -127,11 +127,6 @@ fn state_of(root: &Path) -> RfkillState {
 
 /// Lift every soft block on `kind`, as `rfkill unblock` does. A hard block
 /// stays; [`state`] says whether one remains.
-///
-/// # Errors
-///
-/// Returns why `/dev/rfkill` could not be written: it is missing, or this
-/// session may not change it.
 pub fn unblock(kind: RadioKind) -> Result<(), String> {
     use std::io::Write as _;
     let mut device = std::fs::OpenOptions::new()

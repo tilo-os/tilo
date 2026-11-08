@@ -37,15 +37,9 @@ const MAX_PROOF_BYTES: u64 = 4096;
 /// Where proofs are read from; the network in production.
 pub trait ProofSource {
     /// The TXT records at `name`, each as one string.
-    ///
-    /// # Errors
-    /// A description of why the lookup failed.
     fn txt_records(&self, name: &str) -> Result<Vec<String>, String>;
 
     /// The body of `url`, fetched over HTTPS from a public address.
-    ///
-    /// # Errors
-    /// A description of why the fetch failed.
     fn https_text(&self, url: &str) -> Result<String, String>;
 }
 
@@ -266,9 +260,6 @@ pub enum ApplicationFailure {
 
 /// Check `application` and queue it for the owner, replacing any earlier
 /// application from the same key.
-///
-/// # Errors
-/// Why the application was not queued.
 pub fn submit(
     storage: &Storage,
     application: PublisherApplication,
@@ -365,9 +356,6 @@ pub fn approve_reviewed(
 }
 
 /// Turn down a pending application; the key's allowlist row is untouched.
-///
-/// # Errors
-/// Why the application could not be rejected.
 pub fn reject(
     storage: &Storage,
     pubkey_hex: &str,

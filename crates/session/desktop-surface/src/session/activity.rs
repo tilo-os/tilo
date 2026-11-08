@@ -43,7 +43,7 @@ pub trait ActivityReads {
 
 /// What a window asked of the activity model, for the desktop's thread.
 pub enum ActivityAsk {
-    /// Run write `action` with `arguments`; whether it ran, or why not.
+    /// Run write `action` with `arguments` ; whether it ran, or why not.
     Act {
         action: String,
         arguments: Map<String, Value>,
@@ -86,13 +86,12 @@ impl Follow {
 struct State {
     follows: HashMap<InvocationId, Follow>,
     asks: Vec<ActivityAsk>,
-    /// The revision the model's reads were last served at: how a host knows
-    /// that what an app follows may read differently.
+    /// The revision the model's reads were last served at: how a host knows that what an app
+    /// follows may read differently.
     served: Option<u64>,
 }
 
-/// The windows' end: what [`super::DesktopSession`] routes to under
-/// [`wire::PROVIDER`].
+/// The windows' end: what [`super::DesktopSession`] routes to under [`wire::PROVIDER`].
 pub(super) struct Door {
     state: std::sync::Mutex<State>,
     woken: Arc<AtomicBool>,
@@ -104,15 +103,15 @@ pub struct ActivityRequests {
     door: Arc<Door>,
 }
 
-/// Wake every observe in `waiters`, outside the lock they were kept under.
+/// Wake every observe in `waiters` , outside the lock they were kept under.
 fn wake(waiters: Vec<Completer<()>>) {
     for waiter in waiters {
         waiter.complete(());
     }
 }
 
-/// Whether `caller` is the person at this device, rather than an agent, an
-/// app or a Shortcut acting on their behalf.
+/// Whether `caller` is the person at this device, rather than an agent, an app or a Shortcut acting
+/// on their behalf.
 fn is_person(caller: &Caller) -> bool {
     caller.actor().kind == ActorKind::Person
 }
@@ -140,7 +139,7 @@ impl Door {
         self.woken.store(true, Ordering::Release);
     }
 
-    /// Admit `request` from `caller`, a member of the workspace.
+    /// Admit `request` from `caller` , a member of the workspace.
     pub(super) fn invoke(
         &self,
         caller: &Caller,
@@ -197,7 +196,7 @@ impl Door {
         })
     }
 
-    /// Start following read `action`.
+    /// Start following read `action` .
     fn follow(
         &self,
         caller: &Caller,
@@ -218,8 +217,8 @@ impl Door {
                 Err(ActionHostError::InvocationConflict)
             };
         }
-        // Only the person reading what is new makes it seen; an agent that
-        // reads the summary changes nothing for them.
+        // Only the person reading what is new makes it seen; an agent that reads the summary
+        // changes nothing for them.
         if action == wire::SUMMARY && is_person(caller) {
             state.asks.push(ActivityAsk::BeginSummary);
         }
@@ -298,8 +297,8 @@ impl Door {
 }
 
 impl ActivityRequests {
-    /// What the windows asked of the activity model since this was last
-    /// taken, in the order they asked.
+    /// What the windows asked of the activity model since this was last taken, in the order they
+    /// asked.
     #[must_use]
     pub fn take(&self) -> Vec<ActivityAsk> {
         std::mem::take(&mut self.door.state.lock_recover().asks)
@@ -340,8 +339,8 @@ impl ActivityRequests {
             .map(|_| ())
     }
 
-    /// What the follow `invocation` last read: its value, or why it failed
-    /// for good. `None` until the model has read it.
+    /// What the follow `invocation` last read: its value, or why it failed for good. `None` until
+    /// the model has read it.
     #[must_use]
     pub fn served(&self, invocation: &InvocationId) -> Option<Result<Value, String>> {
         let state = self.door.state.lock_recover();
@@ -352,18 +351,17 @@ impl ActivityRequests {
         }
     }
 
-    /// The revision the model last served its reads at: a host that tells apps
-    /// when what they follow may read differently watches it.
+    /// The revision the model last served its reads at: a host that tells apps when what they
+    /// follow may read differently watches it.
     #[must_use]
     pub fn served_revision(&self) -> Option<u64> {
         self.door.state.lock_recover().served
     }
 
-    /// Read every followed read `model` has moved since, and send each
-    /// that reads differently as its next result; a read that fails ends
-    /// its view. A read may move the model itself (it can narrow it): the
-    /// revision after the reads is what they count as read at, so the next
-    /// pass reads again only when something moved since.
+    /// Read every followed read `model` has moved since, and send each that reads differently as
+    /// its next result; a read that fails ends its view. A read may move the model itself (it can
+    /// narrow it): the revision after the reads is what they count as read at, so the next pass
+    /// reads again only when something moved since.
     pub fn serve(&self, model: &mut dyn ActivityReads) {
         let now = model.revision();
         let due: Vec<(InvocationId, String, Map<String, Value>)> = {
@@ -423,9 +421,8 @@ impl ActivityRequests {
         wake(woken);
     }
 
-    /// Wake every waiting observe, whether or not its view moved: the
-    /// desktop calls this on each pass it serves, which bounds how long a
-    /// change could go unseen.
+    /// Wake every waiting observe, whether or not its view moved: the desktop calls this on each
+    /// pass it serves, which bounds how long a change could go unseen.
     pub fn wake_waiting(&self) {
         let waiters: Vec<_> = self
             .door

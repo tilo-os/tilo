@@ -1,6 +1,6 @@
-//! What the bar's controls are and where they are: the target names assistive
-//! technology and a pointer address, the rect each stands in, what a press
-//! activates, and the focus ring that says the keyboard is here.
+//! What the bar's controls are and where they are: the target names assistive technology and a
+//! pointer address, the rect each stands in, what a press activates, and the focus ring that says
+//! the keyboard is here.
 
 use super::{
     Affine, AppTrayRequest, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, Theme, TopBarChrome,
@@ -8,10 +8,9 @@ use super::{
 };
 
 impl TopBarChrome {
-    /// The bar control under the pointer, from the hit rects the last paint
-    /// laid down: plain at rest, it lifts while the pointer is over it. An
-    /// open ask's card under the band is the bar's too, so its chips lift as
-    /// the bar's do.
+    /// The bar control under the pointer, from the hit rects the last paint laid down: plain at
+    /// rest, it lifts while the pointer is over it. An open ask's card under the band is the bar's
+    /// too, so its chips lift as the bar's do.
     pub fn hovered_control(&self) -> Option<String> {
         let point = self.last_cursor?;
         if !self.rect.contains(point) && !self.ask.pill.contains(point) {
@@ -51,9 +50,8 @@ impl TopBarChrome {
         if !self.media_indicator_rect.is_zero_area() {
             controls.push(Self::CONTROL_MEDIA.to_string());
         }
-        // Each running application's tray icon is a control of the bar like
-        // any other: Tab reaches it, a reader names it, and it lifts under
-        // the pointer.
+        // Each running application's tray icon is a control of the bar like any other: Tab reaches
+        // it, a reader names it, and it lifts under the pointer.
         controls.extend(
             self.app_tray
                 .iter()
@@ -74,8 +72,8 @@ impl TopBarChrome {
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_PROFILE => self.own_avatar_rect,
             Self::CONTROL_INVITE => self.invite_rect,
-            // The people button opens everyone here; the faces beside it
-            // each open one person, so they are not this control.
+            // The people button opens everyone here; the faces beside it each open one person, so
+            // they are not this control.
             Self::CONTROL_COLLABORATORS => {
                 let people = if self.people_button_rect.is_zero_area() {
                     self.avatar_stack_rect
@@ -106,10 +104,9 @@ impl TopBarChrome {
         }
     }
 
-    /// Pointer/semantic target of the media indicator. The painted pill is
-    /// a quiet 22 px status mark, which is deliberately smaller than a
-    /// control; the target it answers to is still the bar's full control
-    /// height (HIG §9.6: a small glyph gets a 32 px hit rect). Zero while
+    /// Pointer/semantic target of the media indicator. The painted pill is a quiet 22 px status
+    /// mark, which is deliberately smaller than a control; the target it answers to is still the
+    /// bar's full control height (HIG §9.6: a small glyph gets a 32 px hit rect). Zero while
     /// nothing is capturing, so the control disappears with the mark.
     pub(super) fn media_hit_rect(&self) -> Rect {
         if self.media_indicator_rect.is_zero_area() {
@@ -124,8 +121,8 @@ impl TopBarChrome {
         )
     }
 
-    /// The status cluster's bell, read out: whether fresh banners are
-    /// silenced and how many are unread. `None` when no bell is painted.
+    /// The status cluster's bell, read out: whether fresh banners are silenced and how many are
+    /// unread. `None` when no bell is painted.
     pub(super) fn bell_name(&self) -> Option<String> {
         if self.bell.unread == 0 && !self.bell.quiet {
             return None;
@@ -142,9 +139,8 @@ impl TopBarChrome {
 
     pub(super) fn control_name(&self, target: &str) -> String {
         if let Some(key) = Self::tray_target_key(target) {
-            // The application's own name for its icon, never its bus
-            // address: an item is one app's window or state, said in the
-            // words that app chose.
+            // The application's own name for its icon, never its bus address: an item is one app's
+            // window or state, said in the words that app chose.
             return self
                 .app_tray
                 .iter()
@@ -232,8 +228,8 @@ impl TopBarChrome {
         }
     }
 
-    /// The click half of [`Widget::handle_event`]'s `MouseInput`
-    /// branch, split out to keep that function under the line budget.
+    /// The click half of [`Widget::handle_event`]'s `MouseInput` branch, split out to keep that
+    /// function under the line budget.
     pub(super) fn handle_left_click(&mut self, handled: &mut bool) {
         let pill = self.center_pill();
         if self
@@ -242,8 +238,8 @@ impl TopBarChrome {
             && let Some(chrome) = self.chrome.as_ref()
             && (pill.heading.is_some() || self.activity_is_visible())
         {
-            // An activity the pill names is pulled out as its card; the
-            // reading on its own opens the board.
+            // An activity the pill names is pulled out as its card; the reading on its own opens
+            // the board.
             if let Some(heading) = pill.heading {
                 chrome.intent(ChromeIntent::ExpandActivity {
                     app: heading.app,
@@ -300,9 +296,9 @@ impl TopBarChrome {
         *handled = chrome.intent(intent);
     }
 
-    /// A secondary press on the bar that no control of its own took: the
-    /// workspace menu, standing where the person pressed — the same menu the
-    /// workspace name opens, offering the desk's own commands there.
+    /// A secondary press on the bar that no control of its own took: the workspace menu, standing
+    /// where the person pressed — the same menu the workspace name opens, offering the desk's own
+    /// commands there.
     pub(super) fn handle_secondary_press(&self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::MouseInput {
             state: winit::event::ElementState::Pressed,
@@ -340,8 +336,8 @@ impl TopBarChrome {
         if rect.is_zero_area() {
             return;
         }
-        // The shared focus ring: the bar's controls show the same ring every
-        // other focusable control does, on the keyboard only.
+        // The shared focus ring: the bar's controls show the same ring every other focusable
+        // control does, on the keyboard only.
         ui::widget::paint_focus_ring(
             scene,
             transform,
@@ -365,8 +361,8 @@ impl TopBarChrome {
             return false;
         };
         if let Some(key) = Self::tray_target_key(target) {
-            // A key or a reader's activation does what a left click does:
-            // the item's primary action, or its own menu when it has none.
+            // A key or a reader's activation does what a left click does: the item's primary
+            // action, or its own menu when it has none.
             let rect = self.control_rect(target);
             let (x, y) = pointer_coordinates(rect.center());
             let item_is_menu = self
@@ -396,8 +392,8 @@ impl TopBarChrome {
         chrome.intent(intent)
     }
 
-    /// Accepting focuses the offered tab here; dismissing hides the offer
-    /// until that device's focus moves again. Neither happens on its own.
+    /// Accepting focuses the offered tab here; dismissing hides the offer until that device's focus
+    /// moves again. Neither happens on its own.
     pub(super) fn activate_continuity_control(&self, target: &str) -> bool {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
@@ -456,8 +452,8 @@ impl TopBarChrome {
         }
     }
 
-    /// Pointer motion: where the pointer is, for clicks. A wheel over the
-    /// bar is nobody's: the bar has nothing to scroll and nothing to cycle.
+    /// Pointer motion: where the pointer is, for clicks. A wheel over the bar is nobody's: the bar
+    /// has nothing to scroll and nothing to cycle.
     pub(super) fn handle_pointer_motion(
         &mut self,
         event: &WindowEvent,
@@ -487,8 +483,8 @@ impl TopBarChrome {
     }
 }
 
-/// A left button release on the bar, which the bar takes so no window under
-/// it sees the release of a press the bar answered.
+/// A left button release on the bar, which the bar takes so no window under it sees the release of
+/// a press the bar answered.
 pub(super) fn is_left_release(event: &WindowEvent) -> bool {
     matches!(
         event,
@@ -500,15 +496,15 @@ pub(super) fn is_left_release(event: &WindowEvent) -> bool {
     )
 }
 
-/// How the bar's focus last arrived, which decides whether its ring shows
-/// and whether it holds an auto-hiding bar shown.
+/// How the bar's focus last arrived, which decides whether its ring shows and whether it holds an
+/// auto-hiding bar shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FocusOrigin {
     /// Tab reached the bar, or a key went to it while it had focus.
     Keyboard,
     Pointer,
-    /// The shell placed its focus here with no input (the first focusable
-    /// control while a window types): nobody is reading the bar.
+    /// The shell placed its focus here with no input (the first focusable control while a window
+    /// types): nobody is reading the bar.
     Placed,
 }
 
@@ -517,17 +513,16 @@ pub(super) enum FocusOrigin {
 pub(super) struct TrayBell {
     /// Unread notifications, counted beside the bell.
     pub(super) unread: u32,
-    /// Fresh banners are held (Do Not Disturb, presenting, a focus
-    /// schedule): the bell is silenced.
+    /// Fresh banners are held (Do Not Disturb, presenting, a focus schedule): the bell is silenced.
     pub(super) quiet: bool,
-    /// The host has no quick settings, so the cluster is the bell itself:
-    /// always shown, and what the cluster is named.
+    /// The host has no quick settings, so the cluster is the bell itself: always shown, and what
+    /// the cluster is named.
     pub(super) only: bool,
 }
 
-/// Whether `key` moves keyboard focus through the bar: the keys whose use
-/// shows the focus ring (design-system: focus-visible follows keyboard
-/// navigation, never a pointer press or a key that moves nothing).
+/// Whether `key` moves keyboard focus through the bar: the keys whose use shows the focus ring
+/// (design-system: focus-visible follows keyboard navigation, never a pointer press or a key that
+/// moves nothing).
 pub(super) fn navigates(key: &winit::keyboard::Key) -> bool {
     use winit::keyboard::{Key, NamedKey};
     matches!(

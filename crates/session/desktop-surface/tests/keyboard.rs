@@ -1,11 +1,9 @@
-//! Keyboard focus on the desktop surface, inside the frame pipeline the
-//! browser desktop runs: the window the person is in owns the keyboard. Tab
-//! cycles through that app's controls and never reaches the desktop's
-//! chrome, a window brought forward (opened, clicked, switched to) takes
-//! focus, a click anywhere in a window, partly off screen too, aims typing
-//! there, and an app's own search button opens search over its window. What
-//! each search reaches — one app's window, a window group's applications, or
-//! the workspace — and where the hit it offers opens are here too.
+//! Keyboard focus on the desktop surface, inside the frame pipeline the browser desktop runs: the
+//! window the person is in owns the keyboard. Tab cycles through that app's controls and never
+//! reaches the desktop's chrome, a window brought forward (opened, clicked, switched to) takes
+//! focus, a click anywhere in a window, partly off screen too, aims typing there, and an app's own
+//! search button opens search over its window. What each search reaches — one app's window, a
+//! window group's applications, or the workspace — and where the hit it offers opens are here too.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -146,15 +144,14 @@ impl Widget for Field {
     }
 }
 
-/// The app: its search button above two fields, and an action button it
-/// adds once it has seen its document, as apps build header actions for
-/// what they show.
+/// The app: its search button above two fields, and an action button it adds once it has seen its
+/// document, as apps build header actions for what they show.
 struct Root {
     children: Vec<Box<dyn Widget>>,
     pressed: Rc<std::cell::Cell<usize>>,
     tab: u64,
-    /// Takes every key and composed text, focused or not, the way an app
-    /// that forgets to check its focus would.
+    /// Takes every key and composed text, focused or not, the way an app that forgets to check its
+    /// focus would.
     greedy: Option<Typed>,
     built_late: bool,
     dirty_late: bool,
@@ -183,8 +180,8 @@ impl Widget for Root {
         for child in &mut self.children {
             child.sync(state, path);
         }
-        // A panel toggle in its window's bar, as apps moved to the bar's
-        // slots declare their actions.
+        // A panel toggle in its window's bar, as apps moved to the bar's slots declare their
+        // actions.
         ui::window_toolbar::declare(Some(ui::window_toolbar::WindowToolbar {
             actions: vec![ui::window_toolbar::ToolbarAction::new(
                 "panel",
@@ -275,11 +272,11 @@ impl ui::search::capability::SearchSource for Root {
 fn videos(tab: u64) -> String {
     format!("keyboard/videos/{tab}")
 }
-/// The operation type of the app's `open`.
+/// The operation type of the app's `open` .
 const OPEN_TYPE: &str = "keyboard.open";
 
-/// The app's `open`, as a framework app publishes it: show the item at an
-/// anchor, as picking one of its search hits does.
+/// The app's `open` , as a framework app publishes it: show the item at an anchor, as picking one
+/// of its search hits does.
 impl ui::resources::PublishesResources for Root {
     fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let open = tilo_actions::ActionSpec::typed(
@@ -380,8 +377,7 @@ struct SearchLog {
     answered: bool,
     /// The anchors the app's `open` ran at.
     opened: Vec<String>,
-    /// What the app in a tab names the resource it publishes, where not
-    /// "Videos".
+    /// What the app in a tab names the resource it publishes, where not "Videos".
     labels: HashMap<u64, String>,
 }
 
@@ -392,8 +388,8 @@ struct HostLog {
     scopes: RefCell<Vec<Scope>>,
 }
 
-/// The host the desk searches through: one source of its own, which only a
-/// search of the workspace asks.
+/// The host the desk searches through: one source of its own, which only a search of the workspace
+/// asks.
 struct DeskHost(Rc<HostLog>);
 
 impl SearchHost for DeskHost {
@@ -664,14 +660,14 @@ struct Desk {
 }
 
 impl Desk {
-    /// `windows` app windows, each `permille` of the strip wide, in a
-    /// viewport 1200 px wide: wide windows run off its right edge.
+    /// `windows` app windows, each `permille` of the strip wide, in a viewport 1200 px wide: wide
+    /// windows run off its right edge.
     fn new(windows: usize, permille: u32) -> Self {
         Self::of(windows, permille, false)
     }
 
-    /// The same desk with the windows' tabs on one bar, as a window group
-    /// holding several tabs: a window a person adds a tab to.
+    /// The same desk with the windows' tabs on one bar, as a window group holding several tabs: a
+    /// window a person adds a tab to.
     fn one_window(windows: usize, permille: u32) -> Self {
         Self::of(windows, permille, true)
     }
@@ -741,8 +737,7 @@ impl Desk {
         for _ in 0..4 {
             self.driver.relayout();
             self.driver.service_pending_owner_models().unwrap();
-            // The chrome stands over the windows, as the compositor draws it
-            // after the desk.
+            // The chrome stands over the windows, as the compositor draws it after the desk.
             if let Some(chrome) = self.chrome.as_mut() {
                 chrome.relayout();
             }
@@ -775,8 +770,8 @@ impl Desk {
         })
     }
 
-    /// What the person types into the open palette's field: search's card is
-    /// the chrome's, over the windows, so the keys go there.
+    /// What the person types into the open palette's field: search's card is the chrome's, over the
+    /// windows, so the keys go there.
     fn type_search(&mut self, text: &str) {
         for character in text.chars() {
             let event = char_key(&character.to_string());
@@ -792,11 +787,10 @@ impl Desk {
         self.settle_search();
     }
 
-    /// Frames until every source of the open search has answered. A source
-    /// answers on a worker, and its answer wakes the desk: a test pumps what
-    /// the wake asks for and draws the frame it brings, as a host does. An
-    /// application's own answer is the host's to look for on its clock, so
-    /// this does not wait for one.
+    /// Frames until every source of the open search has answered. A source answers on a worker, and
+    /// its answer wakes the desk: a test pumps what the wake asks for and draws the frame it
+    /// brings, as a host does. An application's own answer is the host's to look for on its clock,
+    /// so this does not wait for one.
     fn settle_search(&mut self) {
         let background = ui::background::Background::current();
         let now = ui::time::now();
@@ -822,8 +816,7 @@ impl Desk {
         self.driver.inspection().keyboard_focus_owner
     }
 
-    /// The accessible name of the control holding keyboard focus: a
-    /// field's test id.
+    /// The accessible name of the control holding keyboard focus: a field's test id.
     fn focused_name(&self) -> Option<String> {
         self.driver.focused_access_node()?.name
     }
@@ -844,7 +837,7 @@ impl Desk {
         log
     }
 
-    /// The desk's windows, each `(strip, group, tabs)`.
+    /// The desk's windows, each `(strip, group, tabs)` .
     fn windows(&self) -> Vec<(u64, u64, usize)> {
         self.handle.read(|tree| {
             tree.workspaces
@@ -891,8 +884,8 @@ impl Drop for Desk {
 fn tab_cycles_through_the_focused_app_and_never_reaches_the_desktop_chrome() {
     let mut desk = Desk::new(2, 450);
     let first = desk.tabs[0];
-    // The first window is focused: its app's search button, two fields
-    // and late-built button are where Tab goes, in turn.
+    // The first window is focused: its app's search button, two fields and late-built button are
+    // where Tab goes, in turn.
     let app = "DesktopSurface[0]/GroupRow[0]/WindowGroup[0]/TileHost[0]/";
     let mut visited = std::collections::HashSet::new();
     for _ in 0..8 {
@@ -1004,8 +997,8 @@ fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
         Some("lofi"),
         "the app is asked what was typed: {asked:?}"
     );
-    // The app answers on a later frame: search asks again then, so what it
-    // offers for the query (a row searching its service) shows.
+    // The app answers on a later frame: search asks again then, so what it offers for the query (a
+    // row searching its service) shows.
     let before = asked.len();
     SEARCH.with_borrow_mut(|search| search.answered = true);
     desk.settle();
@@ -1016,9 +1009,8 @@ fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
     );
 }
 
-/// What an app's search offers for the query ("Search `YouTube` for …") is
-/// a row of the search over its window, and choosing it runs inside the
-/// app, at the hit's anchor, through the app's `open`.
+/// What an app's search offers for the query ("Search `YouTube` for …") is a row of the search over
+/// its window, and choosing it runs inside the app, at the hit's anchor, through the app's `open` .
 #[test]
 fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
     SEARCH.with_borrow_mut(|search| search.answered = true);
@@ -1077,9 +1069,8 @@ fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
     );
 }
 
-/// Search over one app's window asks that window's app and nothing else:
-/// not the desk's host, and not the desk's own commands; the hit it offers
-/// opens inside the app.
+/// Search over one app's window asks that window's app and nothing else: not the desk's host, and
+/// not the desk's own commands; the hit it offers opens inside the app.
 #[test]
 fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
     SEARCH.with_borrow_mut(|search| search.answered = true);
@@ -1117,9 +1108,8 @@ fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
     );
 }
 
-/// A window group's new tab asks which application to show there: the
-/// applications, not the rest of the desk, and the one chosen opens as a
-/// tab of that window group.
+/// A window group's new tab asks which application to show there: the applications, not the rest of
+/// the desk, and the one chosen opens as a tab of that window group.
 #[test]
 fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there() {
     let mut desk = Desk::one_window(2, 450);
@@ -1164,8 +1154,8 @@ fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there
     );
 }
 
-/// Search over the workspace asks the desk's host and the desk's own
-/// windows; an application chosen there opens as a window of its own.
+/// Search over the workspace asks the desk's host and the desk's own windows; an application chosen
+/// there opens as a window of its own.
 #[test]
 fn search_over_the_workspace_asks_the_host_and_opens_an_app_as_its_own_window() {
     let mut desk = Desk::new(2, 450);
@@ -1282,7 +1272,7 @@ fn one_click_in_an_inactive_window_gives_the_control_under_it_the_keyboard() {
     }
 }
 
-/// The retained path of the widget whose semantics are named `name`.
+/// The retained path of the widget whose semantics are named `name` .
 fn semantic_path(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
     if node
         .semantics
@@ -1320,10 +1310,9 @@ fn a_value_set_on_a_fields_semantics_reaches_the_app() {
     assert_eq!(desk.typed(&field), "Ada");
 }
 
-/// A press on one of the app's own slots in its window's bar is a press on
-/// the app: the keyboard the click gave the bar goes back to the control
-/// that had it, so Escape (which closes the panel the slot opened) and what
-/// is typed next reach the app, not the bar.
+/// A press on one of the app's own slots in its window's bar is a press on the app: the keyboard
+/// the click gave the bar goes back to the control that had it, so Escape (which closes the panel
+/// the slot opened) and what is typed next reach the app, not the bar.
 #[test]
 fn a_press_on_an_apps_slot_in_its_bar_leaves_the_keyboard_with_the_app() {
     let mut desk = Desk::new(1, 450);

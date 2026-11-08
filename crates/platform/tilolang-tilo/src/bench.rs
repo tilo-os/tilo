@@ -226,9 +226,6 @@ fn now_utc() -> String {
 }
 
 /// The packages `dir` needs, compiled, the package itself last.
-///
-/// # Errors
-/// A package does not read or compile.
 pub fn compile(dir: &Path) -> Result<Vec<Compiled>, String> {
     let search: Vec<PathBuf> = dir.parent().map(Path::to_path_buf).into_iter().collect();
     let dirs = dependency_order(dir, &search)?;
@@ -480,10 +477,6 @@ fn texts_of(schema: &crate::schema::TypeSchema) -> Vec<String> {
 /// that has no default (a time, a date, a person), as the type's constructor would have
 /// written one. Every record the bench seeds starts here, so none holds a field a view reads
 /// as a trap.
-///
-/// # Errors
-///
-/// The type is not registered, or has a register the bench cannot seed.
 pub(crate) fn unwritten(ty: &str) -> Result<DynRecord, String> {
     let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
     let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
@@ -540,10 +533,6 @@ fn fill_registers(record: &mut DynRecord, registers: &[(String, Ty)]) -> Result<
 /// Read from the type's own registered schema: a record the bench seeds is of the type it
 /// declares, and the package that seeds a workspace need not declare the roots of the apps it
 /// links.
-///
-/// # Errors
-///
-/// The type is not registered, or has a register whose type does not read.
 fn register_fields(ty: &str) -> Result<Vec<(String, Ty)>, String> {
     let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
     let mut registers = Vec::new();
@@ -1702,9 +1691,6 @@ fn workspace_sizes(shape: &Shape, sizes: &[usize]) -> Vec<usize> {
 }
 
 /// Run every scenario at every size.
-///
-/// # Errors
-/// The package does not compile or a scenario fails.
 pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Record>, String> {
     let engine = tilolang_runtime::configure(config.engine)?;
     if engine != config.engine {

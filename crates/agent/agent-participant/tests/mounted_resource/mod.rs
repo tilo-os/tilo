@@ -1,7 +1,8 @@
 use super::{
-    Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Replica, Seed,
-    common, enrol, record_provider, start_browser,
+    Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Seed, common,
+    enrol, record_provider, start_browser,
 };
+use tilo_agent_participant::ReplicaActor;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -175,12 +176,11 @@ pub async fn run() {
     } else {
         "Fixture owner".to_string()
     };
-    let mut source = Replica::open(
-        &common::catalogue(),
-        "so.tilo.chat",
+    let mut source = common::open_in(
         &workspace.workspace,
+        "so.tilo.chat",
         &source_author,
-        tilo_agent_participant::ReplicaActor::Owner,
+        ReplicaActor::Owner,
         seed,
     )
     .unwrap();

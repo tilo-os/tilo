@@ -27,13 +27,11 @@ pub const MAX_ROWS: usize = 6;
 #[derive(Clone, Debug, PartialEq)]
 pub struct TeamMember {
     pub row: RosterRow,
-    /// Where they are, or `None` when they are in the workspace but on
-    /// nothing.
+    /// Where they are, or `None` when they are in the workspace but on nothing.
     pub place: Option<Place>,
 }
 
-/// Where a person is: the strip they are on and the window there, as
-/// separate facts.
+/// Where a person is: the strip they are on and the window there, as separate facts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Place {
     /// The strip they are on, when it has a name.
@@ -54,8 +52,8 @@ impl Place {
     }
 }
 
-/// The people in the active workspace other than this person, people
-/// before agents, each with their status line and place.
+/// The people in the active workspace other than this person, people before agents, each with their
+/// status line and place.
 #[must_use]
 pub fn members(
     desktop: &DesktopTree,
@@ -68,8 +66,7 @@ pub fn members(
         .into_iter()
         .map(|mut row| {
             row.status = status_line(presence, &row, now);
-            // Idle or away dims their face; a call rings it, as everywhere
-            // else their face shows.
+            // Idle or away dims their face; a call rings it, as everywhere else their face shows.
             if let Some(id) = presence_id(presence, None, &row) {
                 row.availability = presence.availability_of(&id);
                 row.call = presence.call_of(&id).map(str::to_owned);
@@ -80,8 +77,8 @@ pub fn members(
         .collect()
 }
 
-/// The roster rows the Team card lists, in the order it lists them, before
-/// presence adds what each person is doing.
+/// The roster rows the Team card lists, in the order it lists them, before presence adds what each
+/// person is doing.
 #[must_use]
 pub fn rows(desktop: &DesktopTree, local_user: &str, own_id: &str) -> Vec<RosterRow> {
     let mut rows: Vec<RosterRow> =
@@ -94,9 +91,8 @@ pub fn rows(desktop: &DesktopTree, local_user: &str, own_id: &str) -> Vec<Roster
     rows
 }
 
-/// What `row`'s person says they are doing, marked by who wrote it: the
-/// status their presence carries under their id, or under a presence name
-/// matching their label.
+/// What `row` 's person says they are doing, marked by who wrote it: the status their presence
+/// carries under their id, or under a presence name matching their label.
 #[must_use]
 pub fn status_line(
     presence: &PresenceCtx,
@@ -123,9 +119,8 @@ pub fn status_line(
     })
 }
 
-/// Who `row` is to live presence in `workspace` (the workspace in front when
-/// `None`): their own id when presence knows it, else the one presence
-/// names as they are named.
+/// Who `row` is to live presence in `workspace` (the workspace in front when `None` ): their own id
+/// when presence knows it, else the one presence names as they are named.
 #[must_use]
 pub fn presence_id(
     presence: &PresenceCtx,

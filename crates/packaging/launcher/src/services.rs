@@ -88,13 +88,18 @@ pub const APP_HOST_SERVICE: &str = "app-host";
 /// permission requests it makes, and nobody else.
 pub const MESSAGING_SERVICE: &str = "messaging";
 /// The shell runtime's supervisor. Its connection is stamped with the app id
-/// before the app holds it, so the supervisor knows which app is asking —
-/// the device's own shell is answered for Terminal and nobody else.
+/// and the workspace the app was launched in before the app holds it, so the
+/// supervisor knows which app is asking — the device's own shell is answered
+/// for Terminal and nobody else — and keeps the app's environments in that
+/// workspace, never letting the app name another.
 pub const USH_SERVICE: &str = "ush";
 /// Prefix of the `ush` handoff; the supervisor reads it before any request.
 pub const USH_LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
 /// After [`USH_LAUNCH_MAGIC`]: a little-endian `u32` length, then
-/// `{"protocol":1,"app_id":"…"}`.
+/// `{"protocol":1,"app_id":"…","workspace":"…"}`. `workspace` is the
+/// workspace the app was launched in, absent when the launch has none; the
+/// supervisor keeps the app's environments in it and never lets the app name
+/// another.
 const USH_HANDOFF_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 /// Document media. Not declared by manifests: every app is handed a
 /// capability scoped to itself and its workspace, so a document's images live in
@@ -411,9 +416,6 @@ pub fn resolve_identity_bind_for_contract(
 
 /// Name the app and workspace an identity connection signs for, as the first
 /// thing on it.
-///
-/// # Errors
-/// The stream refuses the write.
 pub fn write_identity_handshake(
     stream: &mut UnixStream,
     app_id: &str,
@@ -450,10 +452,6 @@ fn write_identity_handshake_negotiated(
 
 /// The first line the launcher writes on a chooser connection: the app and
 /// the workspace it runs in, read by the shell before anything the app sends.
-///
-/// # Errors
-///
-/// Returns an error if the frame cannot be serialized.
 pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result<Vec<u8>> {
     let mut frame = serde_json::to_vec(&serde_json::json!({
         "protocol": CHOOSER_PROTOCOL,
@@ -690,10 +688,6 @@ fn write_blob_handoff(
 /// Called by whoever binds a service socket — a `bind` into a missing
 /// parent is `ENOENT`. Mode 0700: the sandbox boundary assumes only
 /// this user's session can reach these live connections.
-///
-/// # Errors
-///
-/// Returns an error if the directory cannot be created.
 pub fn ensure_services_root() -> std::io::Result<PathBuf> {
     let root = services_root();
     std::fs::create_dir_all(&root)?;
@@ -823,7 +817,7 @@ fn authenticate_service(
             };
             return handoff_failure(required, error, "optional ush service skipped");
         };
-        return match write_ush_handoff(stream, launch.app_id) {
+        return match write_ush_handoff(stream, launch.app_id, launch.workspace_id) {
             Ok(()) => Ok(HandoffOutcome::Ready),
             Err(source) => handoff_failure(
                 required,
@@ -848,12 +842,19 @@ fn authenticate_service(
     Ok(HandoffOutcome::Ready)
 }
 
-fn write_ush_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
-        "app_id": app_id,
-    }))
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+fn write_ush_handoff(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: Option<&str>,
+) -> std::io::Result<()> {
+    let mut handoff = serde_json::Map::new();
+    handoff.insert("protocol".into(), 1.into());
+    handoff.insert("app_id".into(), app_id.into());
+    if let Some(workspace) = workspace_id.filter(|workspace| !workspace.is_empty()) {
+        handoff.insert("workspace".into(), workspace.into());
+    }
+    let bytes = serde_json::to_vec(&handoff)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     let frame = USH_HANDOFF_FRAMING.encode(&bytes)?;
     stream.write_all(&USH_LAUNCH_MAGIC)?;
     stream.write_all(&frame)?;
@@ -1249,11 +1250,26 @@ mod tests {
                 app_only
             );
 
-            let bytes = written(|stream| write_ush_handoff(stream, "so.tilo.notes"));
+            let bytes = written(|stream| write_ush_handoff(stream, "so.tilo.notes", None));
             assert_eq!(bytes[..8], *b"QUS1\x27\0\0\0");
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
                 app_only
+            );
+            // An empty workspace is no workspace: the old bytes, exactly.
+            let empty = written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("")));
+            assert_eq!(empty, bytes);
+
+            let bytes =
+                written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("room-7")));
+            assert_eq!(bytes[..8], *b"QUS1\x3c\0\0\0");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+                serde_json::json!({
+                    "protocol": 1,
+                    "app_id": "so.tilo.notes",
+                    "workspace": "room-7",
+                })
             );
 
             let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));

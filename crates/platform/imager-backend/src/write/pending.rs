@@ -4,9 +4,6 @@ use crate::media_model::TargetDrive;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
 /// Revalidate a reviewed device before and after checking its independent sources.
-///
-/// # Errors
-/// Refuses changed device numbers, non-block targets, or failed source checks.
 pub fn validate_pending_source_disks(
     target: &TargetDrive,
     expected_number: u64,
@@ -22,9 +19,6 @@ pub fn validate_pending_source_disks(
 }
 
 /// Bind the opened descriptor to the pending reviewed device and source plans.
-///
-/// # Errors
-/// Refuses replaced descriptors, changed device numbers, or failed source checks.
 pub fn validate_pending_descriptor(
     target: &TargetDrive,
     device: &std::fs::File,

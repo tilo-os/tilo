@@ -471,8 +471,8 @@ impl SearchCatalog {
     }
 
     /// Replace an immutable snapshot in one generation, for weighted records
-    /// with optional bodies. This is the bulk counterpart to
-    /// [`Self::upsert_record`]: the whole snapshot is indexed in one build,
+    /// with optional bodies. This is the bulk counterpart
+    /// to [`Self::upsert_record`]: the whole snapshot is indexed in one build,
     /// while later incremental updates retain their existing semantics.
     ///
     /// # Errors

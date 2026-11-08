@@ -101,9 +101,6 @@ impl Bound {
     }
 
     /// The rule this stores.
-    ///
-    /// # Errors
-    /// The node, a kind or the answer is not one the policy reads.
     pub fn rule(&self) -> Result<tilo_action_policy::Rule, Refusal> {
         use std::str::FromStr as _;
         let node = tilo_action_policy::TreePath::from_str(&self.node)

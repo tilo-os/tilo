@@ -1,11 +1,10 @@
-//! Window warmth: the temperature of the workspace a window is in and the
-//! colour of the person at this machine.
-//!
-//! The desk paints its own chrome in the active workspace's appearance and
-//! sends each app window the appearance of the workspace that window is in
-//! ([`ui::floating_surface::FloatingSurfaceHostMessage::Appearance`]), so a
-//! window takes the same temperature as the workspace around it and the same
-//! focus ring, caret and selection colour as the desk.
+//! Window warmth: the temperature of the workspace a window is in and the colour of the person at
+//! this machine.
+//! The desk paints its own chrome in the active workspace's appearance and sends each app window
+//! the appearance of the workspace that window is in
+//! ([`ui::floating_surface::FloatingSurfaceHostMessage::Appearance`]), so a window takes the same
+//! temperature as the workspace around it and the same focus ring, caret and selection colour as
+//! the desk.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -16,12 +15,12 @@ use ui::Theme;
 use ui::WindowAppearance;
 use ui::tokens::PresenceHue;
 
-/// How often every workspace's temperature is looked at again while the
-/// active workspace stays put, so a new wallpaper retints its workspace.
+/// How often every workspace's temperature is looked at again while the active workspace stays put,
+/// so a new wallpaper retints its workspace.
 pub const RECHECK: Duration = Duration::from_secs(3);
 
-/// Every workspace's temperature as last looked at, and the person's
-/// colour. [`Self::revision`] moves whenever either changes.
+/// Every workspace's temperature as last looked at, and the person's colour. [`Self::revision`]
+/// moves whenever either changes.
 #[derive(Debug)]
 pub struct WindowWarmth {
     temperatures: HashMap<WorkspaceSlot, Option<f32>>,
@@ -43,15 +42,15 @@ impl WindowWarmth {
         }
     }
 
-    /// Moves whenever a workspace's temperature or the person's colour
-    /// changes, so a window's appearance only needs asking again then.
+    /// Moves whenever a workspace's temperature or the person's colour changes, so a window's
+    /// appearance only needs asking again then.
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// The person's colour changed (a choice in Settings, or the identity it
-    /// derives from). Returns whether it differs from before.
+    /// The person's colour changed (a choice in Settings, or the identity it derives from). Returns
+    /// whether it differs from before.
     pub fn set_your_colour(&mut self, hue: PresenceHue) -> bool {
         if self.your_colour == hue {
             return false;
@@ -61,8 +60,8 @@ impl WindowWarmth {
         true
     }
 
-    /// Whether the temperatures are due a look: the active workspace
-    /// changed, or [`RECHECK`] passed since the last look.
+    /// Whether the temperatures are due a look: the active workspace changed, or [`RECHECK`] passed
+    /// since the last look.
     #[must_use]
     pub fn due(&self, active: Option<WorkspaceSlot>, now: Instant) -> bool {
         self.active != active
@@ -71,9 +70,8 @@ impl WindowWarmth {
                 .is_none_or(|at| now.saturating_duration_since(at) >= RECHECK)
     }
 
-    /// Look at the temperature of every workspace in `workspaces`, forget
-    /// the ones that are gone and note which is `active`. Returns whether
-    /// the active workspace's appearance changed.
+    /// Look at the temperature of every workspace in `workspaces` , forget the ones that are gone
+    /// and note which is `active` . Returns whether the active workspace's appearance changed.
     pub fn update(
         &mut self,
         workspaces: &[WorkspaceSlot],
@@ -108,8 +106,8 @@ impl WindowWarmth {
         self.active() != before
     }
 
-    /// The appearance of a window in workspace `workspace`, or in the active
-    /// one when the window has not been placed yet.
+    /// The appearance of a window in workspace `workspace` , or in the active one when the window
+    /// has not been placed yet.
     #[must_use]
     pub fn in_workspace(&self, workspace: Option<WorkspaceSlot>) -> WindowAppearance {
         let workspace = workspace.or(self.active);
@@ -124,17 +122,15 @@ impl WindowWarmth {
         }
     }
 
-    /// The appearance of the active workspace: what the desk's own chrome
-    /// wears.
+    /// The appearance of the active workspace: what the desk's own chrome wears.
     #[must_use]
     pub fn active(&self) -> WindowAppearance {
         self.in_workspace(None)
     }
 
-    /// The appearance of the window showing `app`: the temperature of the
-    /// workspace that window is in (the active one while the tree does not
-    /// hold it yet), the person's colour, and the window's own corner
-    /// radius from `theme`.
+    /// The appearance of the window showing `app` : the temperature of the workspace that window is
+    /// in (the active one while the tree does not hold it yet), the person's colour, and the
+    /// window's own corner radius from `theme` .
     #[must_use]
     pub fn appearance_of(&self, tree: &DesktopTree, app: &str, theme: &Theme) -> WindowAppearance {
         let mut appearance = self.in_workspace(
@@ -224,8 +220,8 @@ mod tests {
         assert_eq!(warmth.active().your_colour, Some(PresenceHue::Violet));
     }
 
-    /// A wallpaper whose hue moves less than half a degree is the same
-    /// wallpaper, so a re-look does not retint the workspace every 3 s.
+    /// A wallpaper whose hue moves less than half a degree is the same wallpaper, so a re-look does
+    /// not retint the workspace every 3 s.
     #[test]
     fn a_temperature_within_half_a_degree_is_the_same_one() {
         let mut warmth = WindowWarmth::new(PresenceHue::Teal);

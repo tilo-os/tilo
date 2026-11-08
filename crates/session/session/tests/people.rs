@@ -25,8 +25,8 @@
 
 mod common;
 
-// A site admits its members' records through an Automerge worker: this binary
-// is that worker, as the session's own is.
+// A site admits its members' records through an Automerge worker: this binary is that worker, as
+// the session's own is.
 tilo_automerge_isolate::test_worker!();
 
 use common::people::{Person, Site};
@@ -38,22 +38,22 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
     let bob = Person::new("Bob");
     // Ada's site: her home peer, which governs her workspace and hosts it.
     let site = Site::start(&ada, "Studio");
-    // The workspace is public to its door, where anyone the site's own door
-    // admits joins as an editor.
+    // The workspace is public to its door, where anyone the site's own door admits joins as an
+    // editor.
     site.publish(WorkspaceRole::Editor);
     let mut ada_laptop = ada.device("Ada's laptop");
     let mut ada_phone = ada.device("Ada's phone");
     let mut bob_laptop = bob.device("Bob's laptop");
     let mut bob_phone = bob.device("Bob's phone");
 
-    // Ada joins her workspace at the site's door, as a person joining a
-    // workspace a site lists does, and lands in it.
+    // Ada joins her workspace at the site's door, as a person joining a workspace a site lists
+    // does, and lands in it.
     let invitation = site.admit(ada.public);
     ada_laptop.join(&invitation);
     ada_laptop.wait_holding(&site.workspace);
 
-    // Her second device joins by the invitation her site issues for her, and
-    // so does each of Bob's, by the invitation it issues for him.
+    // Her second device joins by the invitation her site issues for her, and so does each of Bob's,
+    // by the invitation it issues for him.
     let her_phone = site.invite(ada.public, WorkspaceRole::Editor);
     ada_phone.join(&her_phone);
     ada_phone.wait_holding(&site.workspace);
@@ -63,9 +63,9 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
         device.wait_holding(&site.workspace);
     }
 
-    // The workspace's own governance names Bob, in the part the invitation
-    // gave him, and no device of either person is a person of its own: the
-    // workspace's owner is its own, not one of its members.
+    // The workspace's own governance names Bob, in the part the invitation gave him, and no device
+    // of either person is a person of its own: the workspace's owner is its own, not one of its
+    // members.
     site.wait_for_member(bob.public);
     let members = site.members();
     assert_eq!(
@@ -125,16 +125,15 @@ fn a_person_the_workspace_never_admitted_is_refused_and_keeps_nothing() {
         "the door says why it refuses: {refusal}"
     );
 
-    // Ada, whose site the workspace is, invites Carol, and Carol's device
-    // joins.
+    // Ada, whose site the workspace is, invites Carol, and Carol's device joins.
     site.publish(WorkspaceRole::Editor);
     let ada_joined = site.admit(ada.public);
     ada_laptop.join(&ada_joined);
     ada_laptop.wait_holding(&site.workspace);
     let carol_joined = site.invite(carol.public, WorkspaceRole::Editor);
 
-    // A device that redeems an invitation the workspace issued for someone
-    // else is refused, and keeps nothing.
+    // A device that redeems an invitation the workspace issued for someone else is refused, and
+    // keeps nothing.
     let stranger = Person::new("Carl");
     let mut stranger_laptop = stranger.device("Carl's laptop");
     stranger_laptop.join(&carol_joined);

@@ -14,9 +14,6 @@ pub struct RootSuggestion {
 
 /// Suggestions require independent selection. Not a discovery of host data.
 /// The metadata adapter is unavailable off Windows, including mounted hives.
-///
-/// # Errors
-/// Refuses unsupported platforms, failed metadata queries and malformed results.
 pub fn suggestions() -> Result<Vec<RootSuggestion>, String> {
     #[cfg(windows)]
     {

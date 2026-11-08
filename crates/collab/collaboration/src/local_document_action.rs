@@ -35,8 +35,6 @@ pub struct CapturedAction {
 
 impl CapturedAction {
     /// Compute the content-bound identity after the exact mutations are known.
-    /// # Errors
-    /// Refuses captures without an original published invocation.
     pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
         self.clone().into_report()?.bound_invocation()
     }
@@ -46,8 +44,6 @@ impl CapturedAction {
     /// person retries, is reported against the surface published since.
     /// The revision is part of the content-bound identity, so the
     /// invocation is bound again.
-    /// # Errors
-    /// Refuses an invalid revision or a capture without a published invocation.
     pub fn report_against(&mut self, revision: &str) -> Result<(), String> {
         validate_report_field(revision)?;
         revision.clone_into(&mut self.revision);
@@ -56,9 +52,6 @@ impl CapturedAction {
     }
 
     /// The report the collab client sends for this capture.
-    ///
-    /// # Errors
-    /// Refuses a capture without a published invocation.
     pub fn into_report(self) -> Result<runtime_collab::LocalDocumentActionReport, String> {
         let published = self
             .published
@@ -111,9 +104,6 @@ impl std::fmt::Debug for CapturedAction {
 
 /// Whether `field` can travel in a report: non-empty, at most
 /// [`MAX_REPORT_FIELD`] bytes, without control characters.
-///
-/// # Errors
-/// Why the field cannot travel.
 pub fn validate_report_field(field: &str) -> Result<(), String> {
     if field.is_empty() || field.len() > MAX_REPORT_FIELD || field.chars().any(char::is_control) {
         return Err("invalid local document report field".into());

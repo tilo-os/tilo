@@ -1,17 +1,11 @@
-//! Settings' Identify: "which screen is which?" answered on the screens
-//! themselves.
-//!
-//! Settings writes an
-//! [`IdentifyRequest`](settings_store::display_identify::IdentifyRequest)
-//! when the person presses Identify. The session answers it once per press by
-//! handing the desk each display's number and name — the same number its tile
-//! on Settings' canvas carries, and the same name
-//! ([`display_names`](settings_store::display_identify::display_names)), read
-//! off the compositor's own display snapshot — and the desk says each on the
-//! display it names for a few seconds
-//! ([`tilo_desktop::display_identify`]). Nothing here counts down: the desk
-//! holds the cards for their moment and asks for the frame that takes them
-//! away.
+//! Settings' Identify: "which screen is which?" answered on the screens themselves.
+//! Settings writes an [`IdentifyRequest`](settings_store::display_identify::IdentifyRequest) when
+//! the person presses Identify. The session answers it once per press by handing the desk each
+//! display's number and name — the same number its tile on Settings' canvas carries, and the same
+//! name ([`display_names`](settings_store::display_identify::display_names)), read off the
+//! compositor's own display snapshot — and the desk says each on the display it names for a few
+//! seconds ([`tilo_desktop::display_identify`]). Nothing here counts down: the desk holds the cards
+//! for their moment and asks for the frame that takes them away.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -21,14 +15,13 @@ use settings_store::hardware::DisplayHardwareSnapshot;
 use tilo_compositor::OutputInfo;
 use tilo_desktop::display_identify::{Ask, Label};
 
-/// The Identify answers this session has given, and the desk's end of them:
-/// what the bar reads each pass.
+/// The Identify answers this session has given, and the desk's end of them: what the bar reads each
+/// pass.
 #[derive(Default)]
 pub(crate) struct Numbers {
     /// The cards the desk shows now, as the bar reads them.
     ask: Rc<RefCell<Option<Ask>>>,
-    /// The request answered last, so one press of Identify shows the cards
-    /// once.
+    /// The request answered last, so one press of Identify shows the cards once.
     answered: Option<u64>,
 }
 
@@ -38,10 +31,9 @@ impl Numbers {
         Rc::clone(&self.ask)
     }
 
-    /// Answer Settings' Identify request, if one came since the last pass:
-    /// each display's number and name, keyed by the monitor the desk follows
-    /// it by. A request older than the shell answers — a restarted session
-    /// seeing one written minutes ago — is left alone.
+    /// Answer Settings' Identify request, if one came since the last pass: each display's number
+    /// and name, keyed by the monitor the desk follows it by. A request older than the shell
+    /// answers — a restarted session seeing one written minutes ago — is left alone.
     pub(crate) fn follow(
         &mut self,
         snapshot: Option<&DisplayHardwareSnapshot>,
@@ -69,9 +61,9 @@ impl Numbers {
     }
 }
 
-/// Each display the session shows something on, with the number and name
-/// Settings gives it: the numbers and names come from the compositor's own
-/// snapshot, so the canvas tile and the physical screen say the same thing.
+/// Each display the session shows something on, with the number and name Settings gives it: the
+/// numbers and names come from the compositor's own snapshot, so the canvas tile and the physical
+/// screen say the same thing.
 fn labels_of(snapshot: Option<&DisplayHardwareSnapshot>, outputs: &[OutputInfo]) -> Vec<Label> {
     let Some(snapshot) = snapshot else {
         return Vec::new();

@@ -197,10 +197,6 @@ impl AppBrokerState {
     /// shortcut is checked again against what `caller` is offered now, so a
     /// shortcut that was deleted, lost the trigger, or reaches past a grant
     /// that has since been revoked does not start.
-    ///
-    /// # Errors
-    ///
-    /// Why the trigger may not start the shortcut.
     pub fn start_triggered_shortcut_run(
         self: &Arc<Self>,
         caller: &Caller,

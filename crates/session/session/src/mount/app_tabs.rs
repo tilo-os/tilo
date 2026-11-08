@@ -1,15 +1,13 @@
-//! Tabs of one app, opened and closed by the app itself.
-//! Applications have no tab strips: a second page, file or conversation is a second
-//! window of the app in a tab of the desktop's window group. An app asks for one
-//! over its authenticated `shell-ui` connection ([`ui::shell_tabs`]): another
-//! window after its own tab, its own tab closed, the last closed tab back, its
-//! group stepped on, or its next window beside its own. The connection vouches for
-//! the app and its workspace, so an app can never place, close or step another
-//! app's tab, and a refused request changes nothing. The asks become desk commands
-//! on the session loop's own pass: the desk is never read from another thread.
-//! An app also says here that its windows show a secret right now, which marks it
-//! private for the compositor that every capture asks, and every connection
-//! receives the appearance of its window's workspace.
+//! Tabs of one app, opened and closed by the app itself. Applications have no tab strips: a second
+//! page, file or conversation is a second window of the app in a tab of the desktop's window group.
+//! An app asks for one over its authenticated `shell-ui` connection ([`ui::shell_tabs`]): another
+//! window after its own tab, its own tab closed, the last closed tab back, its group stepped on, or
+//! its next window beside its own. The connection vouches for the app and its workspace, so an app
+//! can never place, close or step another app's tab, and a refused request changes nothing. The
+//! asks become desk commands on the session loop's own pass: the desk is never read from another
+//! thread. An app also says here that its windows show a secret right now, which marks it private
+//! for the compositor that every capture asks, and every connection receives the appearance of its
+//! window's workspace.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, Write};
@@ -43,32 +41,29 @@ use crate::desktop_services::DesktopServices;
 use crate::mount::apps::Apps;
 use crate::mount::host_shell::HostShellAsks;
 
-/// The longest frame an app may send: a paint stream and a marker
-/// inventory both fit, and nothing else comes close.
+/// The longest frame an app may send: a paint stream and a marker inventory both fit, and nothing
+/// else comes close.
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
-/// The longest address an app may ask to open in a new tab: as long as the
-/// shell's own link opening takes.
+/// The longest address an app may ask to open in a new tab: as long as the shell's own link opening
+/// takes.
 const MAX_TARGET_BYTES: usize = 8 * 1024;
 
-/// How the session makes a window's own connections to its services: the
-/// collaboration broker and the shell-ui socket, each of the window's own, so
-/// what the window asks is answered for it alone.
+/// How the session makes a window's own connections to its services: the collaboration broker and
+/// the shell-ui socket, each of the window's own, so what the window asks is answered for it alone.
 pub struct ServiceLinks {
     launches: Arc<Launches>,
 }
 
 impl ServiceLinks {
-    /// The connections of a window of the apps whose launches `launches`
-    /// records.
+    /// The connections of a window of the apps whose launches `launches` records.
     #[must_use]
     pub fn new(launches: Arc<Launches>) -> Self {
         Self { launches }
     }
 
-    /// The window's collaboration connection, attested as that window: the
-    /// record is the session's own, spent by the connection that names the
-    /// window's instance.
+    /// The window's collaboration connection, attested as that window: the record is the session's
+    /// own, spent by the connection that names the window's instance.
     fn collaboration(
         &self,
         app: &str,
@@ -92,10 +87,8 @@ impl ServiceLinks {
         Some(OwnedFd::from(stream))
     }
 
-    /// The window's shell-ui connection, attributed to the launch whose
-    /// process `launcher` is: the app and the workspace it runs in, without
-    /// which
-    /// what it asks reaches no desk.
+    /// The window's shell-ui connection, attributed to the launch whose process `launcher` is: the
+    /// app and the workspace it runs in, without which what it asks reaches no desk.
     fn shell_ui(&self, app: &str, launcher: Option<u32>) -> Option<OwnedFd> {
         let launcher = launcher?;
         self.launches.window_shell_ui(app, launcher);
@@ -106,8 +99,8 @@ impl ServiceLinks {
             let mut frame = serde_json::to_vec(&serde_json::json!({
                 "protocol": SHELL_UI_LAUNCH_PROTOCOL,
                 "app_id": app,
-                // What the app may know of the network was decided for its
-                // launch; the window does not widen it.
+                // What the app may know of the network was decided for its launch; the window does
+                // not widen it.
                 "network_status_allowed": false,
             }))
             .map_err(std::io::Error::other)?;
@@ -142,30 +135,29 @@ impl Connects for ServiceLinks {
     }
 }
 
-/// The shell-ui socket this session serves: what an app asks about its own
-/// tabs arrives here, and the session's loop answers it.
+/// The shell-ui socket this session serves: what an app asks about its own tabs arrives here, and
+/// the session's loop answers it.
 pub struct AppTabs {
     requests: mpsc::Receiver<Request>,
-    /// The connections that asked for their app's windows to be withheld
-    /// from captures, and the app each speaks for: the mark lasts while one
-    /// of them is open.
+    /// The connections that asked for their app's windows to be withheld from captures, and the app
+    /// each speaks for: the mark lasts while one of them is open.
     withheld: BTreeMap<u64, String>,
-    /// The open connections, by the app each vouches for and what it was
-    /// last told of its window's appearance.
+    /// The open connections, by the app each vouches for and what it was last told of its window's
+    /// appearance.
     links: BTreeMap<u64, Link>,
     /// The cards the apps draw themselves, and where the layer gives them.
     cards: crate::cards::Cards,
-    /// The apps this session started, whose launches name each app window:
-    /// what tells a window of an app from another window of the same app.
+    /// The apps this session started, whose launches name each app window: what tells a window of
+    /// an app from another window of the same app.
     launches: Arc<Launches>,
     /// The questions the person is answering for Terminal's own shell.
     host_shell: HostShellAsks,
     /// The listener the apps connect to, taken off on the session's own pass,
     /// and the socket's path, which goes when the session ends.
     socket: Socket,
-    /// What the windows' boxes sent and asked on this pass, carried out once
-    /// every ask of theirs is answered: they reach the session's records and
-    /// its search, which the answers themselves do not.
+    /// What the windows' boxes sent and asked on this pass, carried out once every ask of theirs is
+    /// answered: they reach the session's records and its search, which the answers themselves do
+    /// not.
     sent: Vec<Sent>,
     asked: Vec<Asked>,
 }
@@ -175,26 +167,24 @@ pub struct AppTabs {
 /// and what its window was last told.
 struct Link {
     app: String,
-    /// The launch the window that speaks on this connection belongs to: what
-    /// tells it apart from another window of the same app, and so whether the
-    /// very window that draws an activity is on the desk.
+    /// The launch the window that speaks on this connection belongs to: what tells it apart from
+    /// another window of the same app, and so whether the very window that draws an activity is on
+    /// the desk.
     launch: u32,
-    /// Whether this app's launch let it know the network's state; a window
-    /// never widens that for itself.
+    /// Whether this app's launch let it know the network's state; a window never widens that for
+    /// itself.
     network_allowed: bool,
     /// Whether this window's app said it opens a send-to box
-    /// ([`FloatingSurfaceClientMessage::SelectionCapable`]): only a window
-    /// that answered is asked to open one.
+    /// ([`FloatingSurfaceClientMessage::SelectionCapable`]): only a window that answered is asked
+    /// to open one.
     selection: bool,
     /// Writing to the connection.
     writer: Arc<Mutex<UnixStream>>,
-    /// The appearance the window was last told, so a pass that changes
-    /// nothing sends nothing.
+    /// The appearance the window was last told, so a pass that changes nothing sends nothing.
     told: Option<Delivered>,
 }
 
-/// What an appearance message carried, to tell whether a window needs
-/// another one.
+/// What an appearance message carried, to tell whether a window needs another one.
 #[derive(PartialEq)]
 struct Delivered {
     window: WindowAppearance,
@@ -207,11 +197,11 @@ struct Delivered {
 enum Ask {
     /// What the app asks of its own tabs.
     Message(Box<FloatingSurfaceClientMessage>),
-    /// The window joined: its side of the connection is open, and it is told
-    /// its window's appearance from the next pass on.
+    /// The window joined: its side of the connection is open, and it is told its window's
+    /// appearance from the next pass on.
     Connected { network_allowed: bool },
-    /// The connection ended: what it asked about captures goes with it, and
-    /// its window is told no more.
+    /// The connection ended: what it asked about captures goes with it, and its window is told no
+    /// more.
     Closed,
 }
 
@@ -223,8 +213,8 @@ struct Request {
     workspace: String,
     /// The launch the window that speaks on this connection belongs to.
     launch: u32,
-    /// The connection the ask came in on, which its answer goes back on and
-    /// which its capture protection lasts as long as.
+    /// The connection the ask came in on, which its answer goes back on and which its capture
+    /// protection lasts as long as.
     connection: u64,
     /// Writing to that connection.
     reply: Arc<Mutex<UnixStream>>,
@@ -276,8 +266,8 @@ impl AppTabs {
         Ok(())
     }
 
-    /// Answer what the apps asked since the last pass: each ask is a desk
-    /// command, so the desk is read and changed on this thread alone.
+    /// Answer what the apps asked since the last pass: each ask is a desk command, so the desk is
+    /// read and changed on this thread alone.
     pub(crate) fn follow(
         &mut self,
         shared: &crate::Shared,
@@ -287,9 +277,8 @@ impl AppTabs {
         services: Option<&DesktopServices>,
         studio: Option<&CaptureStudio>,
     ) {
-        // The windows that connected since the last pass join here, so an ask
-        // they write is answered on this pass and no thread of the session's
-        // waits on a client.
+        // The windows that connected since the last pass join here, so an ask they write is
+        // answered on this pass and no thread of the session's waits on a client.
         self.socket.take();
         {
             let mut answered = Answers {
@@ -308,11 +297,11 @@ impl AppTabs {
             for request in self.requests.try_iter() {
                 answered.answer(&mut self.host_shell, request);
             }
-            // What the person did in the windows' bars goes back to the app whose
-            // connection declared the slots there.
+            // What the person did in the windows' bars goes back to the app whose connection
+            // declared the slots there.
             answered.deliver_bar_events();
-            // A control of a window's own content, pressed where the desk lists
-            // it, goes to the app drawing that window.
+            // A control of a window's own content, pressed where the desk lists it, goes to the app
+            // drawing that window.
             answered.deliver_target_presses();
         }
         // What the windows' boxes sent and asked, now that every ask of
@@ -322,17 +311,15 @@ impl AppTabs {
         self.deliver_searches(shared);
         self.deliver_send_from(shared, desktop, compositor);
         self.deliver_report_problem(shared, desktop, compositor);
-        // Where each app's own card stands this pass: the floating layer's
-        // place, which the desk lays the app's window out by.
+        // Where each app's own card stands this pass: the floating layer's place, which the desk
+        // lays the app's window out by.
         self.follow_cards(desktop, compositor);
-        // The person may have answered a question about the device's own
-        // shell since the last pass.
+        // The person may have answered a question about the device's own shell since the last pass.
         self.host_shell.settle(services);
     }
 
-    /// Send what the windows' boxes sent, each as one action the person's own
-    /// grants decide, and tell a window whose message this session could not
-    /// deliver why.
+    /// Send what the windows' boxes sent, each as one action the person's own grants decide, and
+    /// tell a window whose message this session could not deliver why.
     fn deliver_sends(&mut self, shared: &crate::Shared) {
         for sent in std::mem::take(&mut self.sent) {
             let delivered = shared.send_to(
@@ -349,8 +336,8 @@ impl AppTabs {
         }
     }
 
-    /// Answer what the windows' boxes asked of the search: who a message
-    /// could go to, for what they typed.
+    /// Answer what the windows' boxes asked of the search: who a message could go to, for what they
+    /// typed.
     fn deliver_searches(&mut self, shared: &crate::Shared) {
         for asked in std::mem::take(&mut self.asked) {
             let rows = shared.recipients(&asked.query);
@@ -365,11 +352,10 @@ impl AppTabs {
         }
     }
 
-    /// Ask the window in front to open its send-to box, as the shell's send
-    /// key does ([`FloatingSurfaceHostMessage::ShareSelection`]): the app
-    /// draws the box alone, with no menu around it. A window whose app cannot
-    /// take it — it never said it opens a box, or it is gone — leaves the
-    /// chord to Chat, which a send has always opened.
+    /// Ask the window in front to open its send-to box, as the shell's send key does
+    /// ([`FloatingSurfaceHostMessage::ShareSelection`]): the app draws the box alone, with no menu
+    /// around it. A window whose app cannot take it — it never said it opens a box, or it is gone —
+    /// leaves the chord to Chat, which a send has always opened.
     fn deliver_send_from(
         &self,
         shared: &crate::Shared,
@@ -392,12 +378,11 @@ impl AppTabs {
         }
     }
 
-    /// Ask the window in front to open its box to the one place this computer
-    /// sends reports, as the shell's "report a problem" does: the person
-    /// writes what went wrong over the window it is about, and what it picked
-    /// goes with it (the box's box names the destination, so nothing but the
-    /// words is left to fill in). A window that cannot take a box leaves the
-    /// report to Chat, where the reports are read.
+    /// Ask the window in front to open its box to the one place this computer sends reports, as the
+    /// shell's "report a problem" does: the person writes what went wrong over the window it is
+    /// about, and what it picked goes with it (the box's box names the destination, so nothing but
+    /// the words is left to fill in). A window that cannot take a box leaves the report to Chat,
+    /// where the reports are read.
     fn deliver_report_problem(
         &self,
         shared: &crate::Shared,
@@ -425,10 +410,10 @@ impl AppTabs {
         }
     }
 
-    /// The connection of the window in front, among the windows whose app
-    /// opens a box: one that never said it does is never sent a box it would
-    /// not draw. A session that cannot tell which window is in front answers
-    /// with its one window that takes boxes, and none when it holds more.
+    /// The connection of the window in front, among the windows whose app opens a box: one that
+    /// never said it does is never sent a box it would not draw. A session that cannot tell which
+    /// window is in front answers with its one window that takes boxes, and none when it holds
+    /// more.
     fn link_in_front(&self, desktop: &DesktopHost, compositor: &Compositor) -> Option<&Link> {
         let ready = || self.links.values().filter(|link| link.selection);
         let focused = desktop
@@ -459,9 +444,9 @@ impl AppTabs {
     /// made when presenting, and its window is laid out by what this says.
     fn follow_cards(&self, desktop: &DesktopHost, compositor: &mut Compositor) {
         let placements = self.cards.placements();
-        // The windows on the desk this pass, and the launch each belongs to:
-        // what tells whether the very window that draws an activity is on
-        // screen, rather than another window of the same app.
+        // The windows on the desk this pass, and the launch each belongs to: what tells whether the
+        // very window that draws an activity is on screen, rather than another window of the same
+        // app.
         let shown: BTreeSet<u64> = desktop.with_policy(|policy| {
             policy
                 .layout()
@@ -480,12 +465,11 @@ impl AppTabs {
         let mut moved = false;
         for card in self.cards.presented() {
             let in_view = match self.links.get(&card.connection) {
-                // The launch that draws the activity has a window on the desk:
-                // the app draws it there, and another window of the same app
-                // elsewhere leaves the card to this one.
+                // The launch that draws the activity has a window on the desk: the app draws it
+                // there, and another window of the same app elsewhere leaves the card to this one.
                 Some(link) => shown_launches.contains(&link.launch),
-                // A connection that has not said whose launch it is is no
-                // window of its own yet: the app's windows stand for it.
+                // A connection that has not said whose launch it is is no window of its own yet:
+                // the app's windows stand for it.
                 None => desktop.with_policy(|policy| policy.shows(&card.app)),
             };
             self.cards.see(&card.app, &card.activity, in_view);
@@ -536,8 +520,8 @@ impl AppTabs {
                     moved = true;
                 }
             }
-            // The card's window is up and draws the activity: the app records
-            // the card as adopted, so it knows the desk shows it.
+            // The card's window is up and draws the activity: the app records the card as adopted,
+            // so it knows the desk shows it.
             if let Some((_, body)) = wanted
                 && placements.drawn(&card.token)
                 && self.cards.adopt(&card.app, &card.activity)
@@ -558,9 +542,8 @@ impl AppTabs {
         }
     }
 
-    /// A card's window that went away leaves the app drawing it on the desk
-    /// with nothing to draw it in: send it home, and it presents the card
-    /// again. Says whether the desk's cards changed.
+    /// A card's window that went away leaves the app drawing it on the desk with nothing to draw it
+    /// in: send it home, and it presents the card again. Says whether the desk's cards changed.
     fn home_lost_cards(&self) -> bool {
         let placements = self.cards.placements();
         let mut moved = false;
@@ -584,11 +567,10 @@ impl AppTabs {
         moved
     }
 
-    /// Give every open window the appearance of the desk it stands on: the
-    /// temperature of its workspace, the person's colour, the theme, and its
-    /// workspace's sync state, each when it differs from what that window
-    /// was last told. A window opens with one, and gets another whenever any of
-    /// it changes; a pass that changes nothing writes nothing.
+    /// Give every open window the appearance of the desk it stands on: the temperature of its
+    /// workspace, the person's colour, the theme, and its workspace's sync state, each when it
+    /// differs from what that window was last told. A window opens with one, and gets another
+    /// whenever any of it changes; a pass that changes nothing writes nothing.
     pub fn publish_window_warmth(
         &mut self,
         appearance_of: impl Fn(&str) -> WindowAppearance,
@@ -640,8 +622,8 @@ impl AppTabs {
     }
 }
 
-/// What one pass of answers reaches: the desk, the services the person
-/// answers through, and the connections the answers go back on.
+/// What one pass of answers reaches: the desk, the services the person answers through, and the
+/// connections the answers go back on.
 struct Answers<'a> {
     desktop: &'a DesktopHost,
     apps: Option<&'a Apps>,
@@ -652,15 +634,15 @@ struct Answers<'a> {
     links: &'a mut BTreeMap<u64, Link>,
     cards: &'a crate::cards::Cards,
     launches: &'a Launches,
-    /// The messages windows sent from their own boxes, and the searches they
-    /// asked, both carried out after the pass has every ask: they reach the
-    /// session's records, which the answers themselves do not touch.
+    /// The messages windows sent from their own boxes, and the searches they asked, both carried
+    /// out after the pass has every ask: they reach the session's records, which the answers
+    /// themselves do not touch.
     sent: &'a mut Vec<Sent>,
     asked: &'a mut Vec<Asked>,
 }
 
-/// A message a window's box sent: who it goes to, what it carries, and where
-/// it came from, so a refusal reaches the window that asked.
+/// A message a window's box sent: who it goes to, what it carries, and where it came from, so a
+/// refusal reaches the window that asked.
 struct Sent {
     app: String,
     workspace: String,
@@ -668,8 +650,8 @@ struct Sent {
     to: Vec<ui::floating_surface::Recipient>,
     attached: Vec<tilo_reference::Attached>,
     text: String,
-    /// Where the box stood on the desk: the spot the conversation it opens
-    /// stands at, so the message and where it landed are one gesture.
+    /// Where the box stood on the desk: the spot the conversation it opens stands at, so the
+    /// message and where it landed are one gesture.
     bounds: Option<[f64; 4]>,
 }
 
@@ -682,10 +664,9 @@ struct Asked {
 }
 
 impl Answers<'_> {
-    /// The app draws its activity in its own window again: the desk hides
-    /// the card's window, the app is told it stands down, and the window
-    /// that draws it comes forward — the person asked for the activity
-    /// where it lives, not for a card that vanishes.
+    /// The app draws its activity in its own window again: the desk hides the card's window, the
+    /// app is told it stands down, and the window that draws it comes forward — the person asked
+    /// for the activity where it lives, not for a card that vanishes.
     fn stand_down(&mut self, card: &crate::cards::Presented, reply: &Arc<Mutex<UnixStream>>) {
         self.cards.told(&card.app, &card.activity, None);
         self.cards.placements().suspend(&card.token);
@@ -717,9 +698,8 @@ impl Answers<'_> {
         }
     }
 
-    /// Answer one ask of the app it came from: an ask never changes another
-    /// app's tab, and an app whose ask this session cannot answer is told so
-    /// rather than left waiting.
+    /// Answer one ask of the app it came from: an ask never changes another app's tab, and an app
+    /// whose ask this session cannot answer is told so rather than left waiting.
     #[allow(
         clippy::too_many_lines,
         reason = "one arm per message, so every one of them is answered here"
@@ -744,8 +724,7 @@ impl Answers<'_> {
                     false,
                 );
                 self.links.remove(&connection);
-                // The cards it presented, and the windows the desk stood
-                // them in, go with it.
+                // The cards it presented, and the windows the desk stood them in, go with it.
                 let mut gone = false;
                 for card in self.cards.connection_closed(connection) {
                     self.cards.placements().withdraw(&card.token);
@@ -754,8 +733,8 @@ impl Answers<'_> {
                 if gone {
                     self.compositor.rearrange();
                 }
-                // What this connection declared for its window's bar goes
-                // with it, as does the question it waits on.
+                // What this connection declared for its window's bar goes with it, as does the
+                // question it waits on.
                 self.desktop
                     .with_policy(|policy| policy.handle().bar_connection_closed(connection));
                 host_shell.closed(connection);
@@ -804,8 +783,8 @@ impl Answers<'_> {
                 generation,
             } => self.answer_protection(connection, &app, &reply, protected, generation),
             FloatingSurfaceClientMessage::Toolbar { toolbar, .. } => {
-                // The slots this app shows in its window's bar, where its
-                // window is a tab of the desktop's.
+                // The slots this app shows in its window's bar, where its window is a tab of the
+                // desktop's.
                 match anchor {
                     Some(tab) => self.desktop.with_policy(|policy| {
                         policy.handle().declare_bar(tab, connection, toolbar);
@@ -814,9 +793,8 @@ impl Answers<'_> {
                 }
             }
             FloatingSurfaceClientMessage::WindowTargets { targets, .. } => {
-                // The controls of the window's own content, where its window
-                // is a tab of the desktop's, so a session names and presses
-                // them as it names the bar's.
+                // The controls of the window's own content, where its window is a tab of the
+                // desktop's, so a session names and presses them as it names the bar's.
                 match anchor {
                     Some(tab) => self.desktop.with_policy(|policy| {
                         policy.handle().declare_targets(tab, connection, targets);
@@ -849,56 +827,53 @@ impl Answers<'_> {
                 None => refuse(&reply, &app, &name, NO_WINDOW),
             },
             FloatingSurfaceClientMessage::AllowHostShell => {
-                // The person allows the device's own shell, and the runtime
-                // (`ush`) records their answer; the app hears it here.
+                // The person allows the device's own shell, and the runtime (`ush`) records their
+                // answer; the app hears it here.
                 host_shell.ask(self.services, &app, connection, Arc::clone(&reply));
             }
             FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => match self.studio {
                 Some(studio) => studio.open_asked(mode),
                 None => refuse(&reply, &app, &name, NO_CAPTURE),
             },
-            // A window paints its own action markers, at the control an agent
-            // would press, so nothing here draws a second one; and the session
-            // names none of them to assistive technology or opens what one
-            // points at, so the inventory is read and adds nothing. A surface
-            // cleared or a destination presented is the app's own business.
+            // A window paints its own action markers, at the control an agent would press, so
+            // nothing here draws a second one; and the session names none of them to assistive
+            // technology or opens what one points at, so the inventory is read and adds nothing. A
+            // surface cleared or a destination presented is the app's own business.
             FloatingSurfaceClientMessage::ActionMarkers { .. }
             | FloatingSurfaceClientMessage::SourceCleared { .. }
             | FloatingSurfaceClientMessage::DestinationPresented { .. } => {}
-            // The window opens a send-to box when the shell asks: from now on
-            // it is the one the shell's send key asks, and no window that
-            // never said so is ever sent a box it would not draw.
+            // The window opens a send-to box when the shell asks: from now on it is the one the
+            // shell's send key asks, and no window that never said so is ever sent a box it would
+            // not draw.
             FloatingSurfaceClientMessage::SelectionCapable => {
                 if let Some(link) = self.links.get_mut(&connection) {
                     link.selection = true;
                     tracing::debug!(app = %link.app, "a window opens a send-to box");
                 }
             }
-            // An app's own card — a call, a route — is a window of its own:
-            // the app presents it, the floating layer decides where it
-            // stands, and the app draws the activity inline whenever its own
-            // window is on the desk.
+            // An app's own card — a call, a route — is a window of its own: the app presents it,
+            // the floating layer decides where it stands, and the app draws the activity inline
+            // whenever its own window is on the desk.
             FloatingSurfaceClientMessage::Present { request } => {
                 if let Err(reason) = self.cards.present(&app, connection, &request) {
                     tracing::warn!(%app, %reason, "card refused");
                     refuse(&reply, &app, &name, &reason);
                 }
             }
-            // The app's own geometry is a request: the layer's place stands.
-            // A card it presents again after standing it down draws the
-            // activity there once more.
+            // The app's own geometry is a request: the layer's place stands. A card it presents
+            // again after standing it down draws the activity there once more.
             FloatingSurfaceClientMessage::SurfaceGeometry { id, .. } => {
                 self.cards.presented_again(&app, connection, &id);
             }
-            // The app draws the activity in its own window again: its card
-            // stands down until it presents one again.
+            // The app draws the activity in its own window again: its card stands down until it
+            // presents one again.
             FloatingSurfaceClientMessage::Suspend { id, .. } => {
                 if let Some(card) = self.cards.stood_down(&app, connection, &id) {
                     self.stand_down(&card, &reply);
                 }
             }
-            // The app ended the activity: its card goes, and the window the
-            // desk stood there goes with it.
+            // The app ended the activity: its card goes, and the window the desk stood there goes
+            // with it.
             FloatingSurfaceClientMessage::Dismiss { id } => {
                 if let Some(card) = self.cards.dismissed(connection, &id) {
                     self.cards.placements().withdraw(&card.token);
@@ -906,29 +881,28 @@ impl Answers<'_> {
                 }
                 tell(&reply, &FloatingSurfaceHostMessage::Closed { id }, &app);
             }
-            // A mirror of a window's pixels has no native card here: what
-            // floats is drawn by the app that owns it.
+            // A mirror of a window's pixels has no native card here: what floats is drawn by the
+            // app that owns it.
             FloatingSurfaceClientMessage::UpdateRegion { .. } => {
                 refuse(&reply, &app, &name, NO_REGION);
             }
-            // What a window shares live, the embeds it draws of other apps'
-            // resources, and the selection an agent works from: the session
-            // serves none of them over this connection yet.
+            // What a window shares live, the embeds it draws of other apps' resources, and the
+            // selection an agent works from: the session serves none of them over this connection
+            // yet.
             FloatingSurfaceClientMessage::WindowRecord { .. }
             | FloatingSurfaceClientMessage::Embeds { .. }
             | FloatingSurfaceClientMessage::SharedWindows { .. } => {
                 refuse(&reply, &app, &name, NO_WINDOW_SHARE);
             }
-            // The resource a window shows is what the composer asks the
-            // agent about it, so it goes with the selection it seeds.
+            // The resource a window shows is what the composer asks the agent about it, so it goes
+            // with the selection it seeds.
             FloatingSurfaceClientMessage::WindowResource { .. }
             | FloatingSurfaceClientMessage::Pointed { .. }
             | FloatingSurfaceClientMessage::PickAnswered { .. } => {
                 refuse(&reply, &app, &name, NO_AGENT);
             }
-            // The message its box sent, and whom its box could send to: both
-            // reach the session's records and the one search, so they are
-            // carried out after this pass has every ask.
+            // The message its box sent, and whom its box could send to: both reach the session's
+            // records and the one search, so they are carried out after this pass has every ask.
             FloatingSurfaceClientMessage::SendTo {
                 to,
                 attached,
@@ -951,41 +925,40 @@ impl Answers<'_> {
                     query,
                 });
             }
-            // What an app's page may be shared as, instead of video streamed
-            // from it: the session asks no window to paint its page.
+            // What an app's page may be shared as, instead of video streamed from it: the session
+            // asks no window to paint its page.
             FloatingSurfaceClientMessage::PaintCapable
             | FloatingSurfaceClientMessage::PaintStream { .. } => {
                 refuse(&reply, &app, &name, NO_PAINT);
             }
-            // The device's displays are placed in Settings, and its own shell
-            // is what a window of Terminal asks about: neither is asked here.
+            // The device's displays are placed in Settings, and its own shell is what a window of
+            // Terminal asks about: neither is asked here.
             FloatingSurfaceClientMessage::MoveDeviceDisplay { .. }
             | FloatingSurfaceClientMessage::DeviceShellOutcome { .. } => {
                 refuse(&reply, &app, &name, NO_DEVICE);
             }
-            // What is kept of a window's changes, in the person's words: the
-            // session keeps no model to describe them with.
+            // What is kept of a window's changes, in the person's words: the session keeps no model
+            // to describe them with.
             FloatingSurfaceClientMessage::DescribeHistory { .. } => {
                 refuse(&reply, &app, &name, NO_HISTORY);
             }
-            // The app under the pointer did not scroll with a sideways wheel:
-            // the strip its window stands in pans by it, as a wheel over the
-            // strip's own canvas does. Nothing to answer — the app took what
-            // it scrolled with, and this is what it left.
+            // The app under the pointer did not scroll with a sideways wheel: the strip its window
+            // stands in pans by it, as a wheel over the strip's own canvas does. Nothing to answer
+            // — the app took what it scrolled with, and this is what it left.
             FloatingSurfaceClientMessage::SidewaysWheel { travel } => {
                 if let Some(tab) = anchor {
                     self.desktop
                         .with_policy(|policy| policy.handle().sideways_wheel(tab, travel));
                 }
             }
-            // The connection said its version when it opened; a second one
-            // is answered with the one this session speaks.
+            // The connection said its version when it opened; a second one is answered with the one
+            // this session speaks.
             FloatingSurfaceClientMessage::Hello { .. } => refuse(&reply, &app, &name, SAID),
         }
     }
 
-    /// Open the place a window of `app` asked for: beside the one that
-    /// asked, and a launch that starts nothing takes the place back.
+    /// Open the place a window of `app` asked for: beside the one that asked, and a launch that
+    /// starts nothing takes the place back.
     fn answer_open_beside(
         &self,
         app: &str,
@@ -1010,8 +983,8 @@ impl Answers<'_> {
             app: app.to_owned(),
             open,
         };
-        // The place it opens into is there from this frame; a launch that
-        // starts nothing takes it back.
+        // The place it opens into is there from this frame; a launch that starts nothing takes it
+        // back.
         let held = self
             .desktop
             .with_policy(|policy| policy.hold_beside(app, anchor, background));
@@ -1023,8 +996,8 @@ impl Answers<'_> {
         }
     }
 
-    /// Withhold `app`'s windows from captures, as its own ask narrows what
-    /// leaves the display and never widens it, and confirm the change.
+    /// Withhold `app` 's windows from captures, as its own ask narrows what leaves the display and
+    /// never widens it, and confirm the change.
     fn answer_protection(
         &mut self,
         connection: u64,
@@ -1054,8 +1027,8 @@ impl Answers<'_> {
         tracing::debug!(connection, %app, protected, "capture protection asked");
     }
 
-    /// Write what the person did in the windows' bars to the app whose
-    /// connection declared the slots there.
+    /// Write what the person did in the windows' bars to the app whose connection declared the
+    /// slots there.
     fn deliver_bar_events(&self) {
         let events = self
             .desktop
@@ -1064,9 +1037,8 @@ impl Answers<'_> {
             let Some(link) = self.links.get(&connection) else {
                 continue;
             };
-            // The app had been sent no input of this session's when the
-            // person used its bar: it runs the event with the next input it
-            // reads.
+            // The app had been sent no input of this session's when the person used its bar: it
+            // runs the event with the next input it reads.
             tell(
                 &link.writer,
                 &FloatingSurfaceHostMessage::ToolbarEvent {
@@ -1106,22 +1078,19 @@ const NO_WINDOW: &str = "this session shows no window of that app";
 /// An app asked for the capture studio where the session has none.
 const NO_CAPTURE: &str = "this session has no capture studio";
 
-/// An app asked to float a surface over the desktop, which this session has
-/// no layer for.
+/// An app asked to float a surface over the desktop, which this session has no layer for.
 const NO_REGION: &str = "this session mirrors no floating surface's region";
 
 /// An app asked to share a window live or embed another's resource.
 const NO_WINDOW_SHARE: &str = "this session shares no window live";
 
-/// An app asked about what a person selected, and for an agent to work from
-/// it.
+/// An app asked about what a person selected, and for an agent to work from it.
 const NO_AGENT: &str = "this session asks no window about a selection";
 
 /// An app offered its page as a paint stream.
 const NO_PAINT: &str = "this session asks no window to paint its page";
 
-/// An app asked to move a device's display, or answered a device-shell
-/// operation.
+/// An app asked to move a device's display, or answered a device-shell operation.
 const NO_DEVICE: &str = "this session moves no device display here";
 
 /// An app asked for its changes described.
@@ -1149,8 +1118,8 @@ fn name_of(message: &FloatingSurfaceClientMessage) -> String {
     }
 }
 
-/// Tell the app on `reply` that this session does not answer `name`, and
-/// why, so nothing of the app's waits on an answer that will not come.
+/// Tell the app on `reply` that this session does not answer `name` , and why, so nothing of the
+/// app's waits on an answer that will not come.
 fn refuse(reply: &Arc<Mutex<UnixStream>>, app: &str, name: &str, reason: &str) {
     tell(
         reply,
@@ -1162,8 +1131,7 @@ fn refuse(reply: &Arc<Mutex<UnixStream>>, app: &str, name: &str, reason: &str) {
     );
 }
 
-/// Write `message` to the app on its connection, saying so when it cannot be
-/// written.
+/// Write `message` to the app on its connection, saying so when it cannot be written.
 fn tell(reply: &Arc<Mutex<UnixStream>>, message: &FloatingSurfaceHostMessage, app: &str) -> bool {
     let written = reply
         .lock()
@@ -1180,9 +1148,9 @@ fn tell(reply: &Arc<Mutex<UnixStream>>, message: &FloatingSurfaceHostMessage, ap
     }
 }
 
-/// Mark the windows of `app` private (`private`) or showable again, as
-/// `connection` asks: the mark lasts while one of the app's connections asks
-/// for it, so it goes when the last one stops asking or closes.
+/// Mark the windows of `app` private (`private`) or showable again, as `connection` asks: the mark
+/// lasts while one of the app's connections asks for it, so it goes when the last one stops asking
+/// or closes.
 fn withhold(
     withheld: &mut BTreeMap<u64, String>,
     desktop: &DesktopHost,
@@ -1198,15 +1166,14 @@ fn withhold(
     } else if asked && !withheld.values().any(|named| named == app) {
         compositor.protect_app(app, false);
     }
-    // The desk knows the same apps, so nothing it names for the compositor to
-    // draw is named for an app that keeps its content, and a card in the
-    // switcher or the overview says so instead of showing what the window
-    // holds back.
+    // The desk knows the same apps, so nothing it names for the compositor to draw is named for an
+    // app that keeps its content, and a card in the switcher or the overview says so instead of
+    // showing what the window holds back.
     desktop.set_withheld_apps(withheld.values().cloned().collect());
 }
 
-/// The address `app` asks to open, when its manifest claims it: a link it
-/// declares the scheme of, as its own menu would open one.
+/// The address `app` asks to open, when its manifest claims it: a link it declares the scheme of,
+/// as its own menu would open one.
 fn target_open(app: &str, target: &str) -> Option<Open> {
     if target.is_empty()
         || target.len() > MAX_TARGET_BYTES
@@ -1236,13 +1203,13 @@ struct Socket {
     /// What ends the loop's wait while an app connects or writes.
     watch: Option<ReadableWatch>,
     path: PathBuf,
-    /// The socket standing at `path` when it was bound: a session that takes
-    /// the path later binds one of its own, which this one leaves standing.
+    /// The socket standing at `path` when it was bound: a session that takes the path later binds
+    /// one of its own, which this one leaves standing.
     standing: Option<(u64, u64)>,
     /// The connection number the next connection taken is given.
     next: AtomicU64,
-    /// The launches a connection is checked against, the channel its asks
-    /// arrive on, and the wake that brings the session to answer them.
+    /// The launches a connection is checked against, the channel its asks arrive on, and the wake
+    /// that brings the session to answer them.
     launches: Arc<Launches>,
     requests: mpsc::Sender<Request>,
     wake: tilo_service::Wake,
@@ -1271,9 +1238,8 @@ impl Socket {
         })
     }
 
-    /// Take every connection waiting, each served on a thread of its own: what
-    /// it asks arrives on the session's channel, for the session to answer on
-    /// this pass.
+    /// Take every connection waiting, each served on a thread of its own: what it asks arrives on
+    /// the session's channel, for the session to answer on this pass.
     fn take(&self) {
         loop {
             let stream = match self.listener.accept() {
@@ -1304,38 +1270,35 @@ impl Socket {
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        // A session started while this one ran takes the path for its own: the
-        // socket standing there is that session's, and stays.
+        // A session started while this one ran takes the path for its own: the socket standing
+        // there is that session's, and stays.
         if standing(&self.path) == self.standing {
             let _ = std::fs::remove_file(&self.path);
         }
     }
 }
 
-/// The socket standing at `path`, as the file system names it: the device and
-/// inode of the node there. A bound socket's own file descriptor names an
-/// inode of the socket layer, not this one.
+/// The socket standing at `path` , as the file system names it: the device and inode of the node
+/// there. A bound socket's own file descriptor names an inode of the socket layer, not this one.
 fn standing(path: &std::path::Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::symlink_metadata(path).ok()?;
     Some((meta.dev(), meta.ino()))
 }
 
-/// The launcher's word for a connection, written before the sandbox starts:
-/// which app it is, as the launcher knows it, and whether that launch let
-/// the app know the network's state.
+/// The launcher's word for a connection, written before the sandbox starts: which app it is, as the
+/// launcher knows it, and whether that launch let the app know the network's state.
 #[derive(Deserialize)]
 struct LauncherHandshake {
     protocol: u16,
     app_id: String,
-    /// Absent from a launcher that predates the field: such an app is told
-    /// nothing of the network.
+    /// Absent from a launcher that predates the field: such an app is told nothing of the network.
     #[serde(default)]
     network_status_allowed: bool,
 }
 
-/// The app's first frame as every shell-ui version reads it:
-/// `{"type": "hello", "version": N}`, whatever else a later version adds.
+/// The app's first frame as every shell-ui version reads it: `{"type": "hello", "version": N}` ,
+/// whatever else a later version adds.
 #[derive(Deserialize)]
 struct Hello {
     #[serde(rename = "type")]
@@ -1366,8 +1329,8 @@ fn serve_connection(
     requests: &mpsc::Sender<Request>,
     wake: &tilo_service::Wake,
 ) {
-    // The process at the other end, as the socket says it: a window the app
-    // opened, or the session's own connection for one it opened in the app.
+    // The process at the other end, as the socket says it: a window the app opened, or the
+    // session's own connection for one it opened in the app.
     let peer = peer_pid(&stream);
     let Ok(mut writer) = stream.try_clone() else {
         return;
@@ -1390,8 +1353,8 @@ fn serve_connection(
     {
         return;
     }
-    // The app's first frame says the version it speaks; nothing else is read
-    // from an app at another one.
+    // The app's first frame says the version it speaks; nothing else is read from an app at another
+    // one.
     let Ok(Some(hello)) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) else {
         return;
     };
@@ -1405,8 +1368,8 @@ fn serve_connection(
         tracing::info!(%app, "a shell-ui connection names no app this session started");
         return;
     };
-    // The launch the window belongs to: an app runs one process per window
-    // tree, and a window that connects from below it names that tree.
+    // The launch the window belongs to: an app runs one process per window tree, and a window that
+    // connects from below it names that tree.
     let launch = launches.launch_of(pid).unwrap_or(pid);
     let reply = Arc::new(Mutex::new(writer));
     // From here the window is told the appearance of the desk it stands on,
@@ -1471,8 +1434,8 @@ fn serve_connection(
     tracing::debug!(connection, %app, "shell-ui connection closed");
 }
 
-/// The process at the other end of `stream`, as the kernel names it: the
-/// app's own process, or the session itself for a window it connected.
+/// The process at the other end of `stream` , as the kernel names it: the app's own process, or the
+/// session itself for a window it connected.
 fn peer_pid(stream: &UnixStream) -> Option<u32> {
     let mut credentials = libc::ucred {
         pid: 0,
@@ -1497,14 +1460,13 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
     u32::try_from(credentials.pid).ok().filter(|pid| *pid > 0)
 }
 
-/// The workspace the app the connection names runs in and the process the
-/// window that speaks for it runs in, when this session started it: the
-/// launch the peer's process belongs to, which is the process the window's
-/// activity draws in.
+/// The workspace the app the connection names runs in and the process the window that speaks for it
+/// runs in, when this session started it: the launch the peer's process belongs to, which is the
+/// process the window's activity draws in.
 fn launched(launches: &Launches, peer: Option<u32>, app: &str) -> Option<(String, u32)> {
     let pid = match peer {
-        // The session connects a window it opens in an app's running process
-        // itself: what it recorded for that connection names the launch.
+        // The session connects a window it opens in an app's running process itself: what it
+        // recorded for that connection names the launch.
         Some(pid) if pid == std::process::id() => launches.take_window_shell_ui(app)?,
         peer => peer?,
     };
@@ -1513,8 +1475,8 @@ fn launched(launches: &Launches, peer: Option<u32>, app: &str) -> Option<(String
         .map(|workspace| (workspace, pid))
 }
 
-/// Tell an app speaking another shell-ui version which one this session
-/// speaks, so the one behind can be updated.
+/// Tell an app speaking another shell-ui version which one this session speaks, so the one behind
+/// can be updated.
 fn refuse_version(writer: &mut UnixStream, app: &str, app_version: Option<u16>) {
     if let Err(error) = write_message(
         writer,
@@ -1532,8 +1494,7 @@ fn refuse_version(writer: &mut UnixStream, app: &str, app_version: Option<u16>) 
     );
 }
 
-/// Write one message to an app, as the one-line frame every shell-ui version
-/// reads.
+/// Write one message to an app, as the one-line frame every shell-ui version reads.
 fn write_message(
     writer: &mut UnixStream,
     message: &FloatingSurfaceHostMessage,
@@ -1559,8 +1520,8 @@ mod tests {
         frame
     }
 
-    /// A socket on a path of the test's own, with the channel its asks land
-    /// on and a wake that does nothing.
+    /// A socket on a path of the test's own, with the channel its asks land on and a wake that does
+    /// nothing.
     fn socket_at(path: &std::path::Path) -> (Socket, mpsc::Receiver<Request>) {
         let (requests, answers) = mpsc::channel();
         let socket = Socket::serve(
@@ -1574,9 +1535,8 @@ mod tests {
         (socket, answers)
     }
 
-    /// A session started while another ran takes the shell-ui path for itself.
-    /// The one that lost it ends without a client waking a thread for it, and
-    /// leaves the socket standing there alone.
+    /// A session started while another ran takes the shell-ui path for itself. The one that lost it
+    /// ends without a client waking a thread for it, and leaves the socket standing there alone.
     #[test]
     fn a_session_ending_leaves_the_socket_another_one_took() {
         let dir = tempfile::tempdir().unwrap();
@@ -1584,8 +1544,8 @@ mod tests {
         let (first, _first_answers) = socket_at(&path);
         std::fs::remove_file(&path).unwrap();
         let (second, _second_answers) = socket_at(&path);
-        // Nothing connects to the socket the first one bound: ending it
-        // returns all the same, on the thread that serves it.
+        // Nothing connects to the socket the first one bound: ending it returns all the same, on
+        // the thread that serves it.
         drop(first);
         assert!(path.exists(), "the second session's socket stands");
         drop(second);
@@ -1617,8 +1577,7 @@ mod tests {
         hello.push(b'\n');
         frames.extend_from_slice(&hello);
         client.write_all(&frames).unwrap();
-        // An app this session started nothing of is told nothing, and the
-        // connection closes.
+        // An app this session started nothing of is told nothing, and the connection closes.
         let mut rest = Vec::new();
         client.read_to_end(&mut rest).unwrap();
         assert!(rest.is_empty(), "nothing is written to that connection");
@@ -1628,9 +1587,8 @@ mod tests {
         );
     }
 
-    /// What the session cannot do of an ask is written back on the app's
-    /// own connection, naming the message it sent, so nothing of the app's
-    /// waits on an answer that never comes.
+    /// What the session cannot do of an ask is written back on the app's own connection, naming the
+    /// message it sent, so nothing of the app's waits on an answer that never comes.
     #[test]
     fn an_ask_the_session_does_not_answer_is_told_so() {
         use std::io::BufRead as _;
@@ -1656,8 +1614,8 @@ mod tests {
         );
     }
 
-    /// An ask is named to the app the way the app sent it, so the reply says
-    /// which of its messages this session could not answer.
+    /// An ask is named to the app the way the app sent it, so the reply says which of its messages
+    /// this session could not answer.
     #[test]
     fn an_ask_is_named_as_the_app_sent_it() {
         assert_eq!(
@@ -1683,8 +1641,8 @@ mod tests {
         assert_eq!(parsed.protocol, SHELL_UI_LAUNCH_PROTOCOL);
         assert_eq!(parsed.app_id, "so.tilo.notes");
         assert!(!parsed.network_status_allowed);
-        // What the launcher says of the network reaches the window; one that
-        // predates the field leaves it out.
+        // What the launcher says of the network reaches the window; one that predates the field
+        // leaves it out.
         let allowed: LauncherHandshake = serde_json::from_value(serde_json::json!({
             "protocol": SHELL_UI_LAUNCH_PROTOCOL,
             "app_id": "so.tilo.notes",

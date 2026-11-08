@@ -249,9 +249,6 @@ impl StatePeer {
 }
 impl PeerWorkspace<'_> {
     /// Check that this admitted device may grant in the workspace now.
-    ///
-    /// # Errors
-    /// Refuses stale membership or a person not granted the workspace's grant action.
     pub fn check_workspace_administration(
         self,
         device: [u8; 32],
@@ -271,10 +268,6 @@ impl PeerWorkspace<'_> {
 impl PeerWorkspaceMut<'_> {
     /// Apply the retained person's typed membership command using actual
     /// governor signing custody. Public command arguments grant no authority.
-    ///
-    /// # Errors
-    /// Refuses stale certificates, non-administrators, malformed identifiers,
-    /// unavailable governor signing custody or invalid governed policy.
     pub fn apply_workspace_membership_command(
         self,
         caller: &DeviceCert,

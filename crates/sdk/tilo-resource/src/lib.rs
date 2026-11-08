@@ -280,9 +280,6 @@ pub mod __private {
 
     /// The field edit `op` at `rest` inside the field `key` of `obj`,
     /// located at it.
-    ///
-    /// # Errors
-    /// Why the edit does not fit, located at the field.
     pub fn edit_at<T: crate::Model>(
         doc: &mut crate::Doc,
         obj: &ObjId,
@@ -688,9 +685,6 @@ pub mod __private {
 
     /// Refused unless `value` lies within `low..=high`; `key` names the
     /// field as a field edit's path does.
-    ///
-    /// # Errors
-    /// The value is outside the declared range, or not a number.
     pub fn declared_range(
         value: &impl DeclaredNumber,
         low: f64,
@@ -706,9 +700,6 @@ pub mod __private {
     }
 
     /// Refused unless `value` is one of `choices`.
-    ///
-    /// # Errors
-    /// The value is none of the declared choices.
     pub fn declared_choices(
         value: &impl DeclaredChoice,
         choices: &[&str],
@@ -926,9 +917,6 @@ pub mod __private {
     /// The action `id` with `arguments`, stamped `now_ms`, decoded as a
     /// recorded action is (`{"op": {"action", "args"}, "at"}` from bytes):
     /// one decoder per resource serves building and replaying.
-    ///
-    /// # Errors
-    /// Why the arguments do not decode as the action's parameters.
     pub fn build_stamped<O: serde::de::DeserializeOwned>(
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
@@ -994,9 +982,6 @@ pub mod __private {
 
     /// The byte argument `name` taken from `args`, decoded by `decode`
     /// ([`crate::content::bytes`]): inline, or by a content reference.
-    ///
-    /// # Errors
-    /// Why the argument is missing or not bytes.
     pub fn bytes_arg<T>(
         args: &mut serde_json::Map<String, serde_json::Value>,
         name: &'static str,
@@ -1070,9 +1055,6 @@ pub mod __private {
     }
 
     /// A `#[model(check)]` function's result as a refusal.
-    ///
-    /// # Errors
-    /// Returns the check's refusal.
     pub fn check_outcome<O: crate::Outcome>(outcome: O) -> Result<(), crate::Refusal> {
         outcome.into_result()
     }

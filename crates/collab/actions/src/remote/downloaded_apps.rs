@@ -139,13 +139,13 @@ fn is_false(value: &bool) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DownloadedDoing {
-    /// [`ADD`]: the program did not become one of the person's apps.
+    /// [`ADD`] — the program did not become one of the person's apps.
     Add,
-    /// [`LOCATE`]: the entry was not pointed at the file.
+    /// [`LOCATE`] — the entry was not pointed at the file.
     Locate,
-    /// [`REMOVE`]: the entry did not leave the person's apps.
+    /// [`REMOVE`] — the entry did not leave the person's apps.
     Remove,
-    /// [`UNINSTALL`]: the app's copies did not all go to the Trash, or its
+    /// [`UNINSTALL`] — the app's copies did not all go to the Trash, or its
     /// entry did not leave the apps.
     Uninstall,
 }

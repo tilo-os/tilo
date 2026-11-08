@@ -20,10 +20,6 @@ pub const MAX_MESSAGE: usize = 1024;
 const MAX_FDS: usize = 5;
 
 /// `fields` as one message: NUL-separated, so no field may contain a NUL.
-///
-/// # Errors
-///
-/// A field that contains a NUL.
 pub fn encode(fields: &[&[u8]]) -> io::Result<Vec<u8>> {
     if fields.iter().any(|field| field.contains(&0)) {
         return Err(io::Error::new(
@@ -41,11 +37,6 @@ pub fn decode(message: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Send `fields`, with `fds` beside them, as one message over `socket`.
-///
-/// # Errors
-///
-/// A field with a NUL, more descriptors than one message carries, or the
-/// socket's refusal.
 #[cfg(unix)]
 pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
@@ -74,10 +65,6 @@ pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) ->
 
 /// One message and the descriptors that came with it, close-on-exec;
 /// `None` at end of file.
-///
-/// # Errors
-///
-/// A message that was cut short, or the socket's refusal.
 #[cfg(unix)]
 pub fn receive(
     socket: BorrowedFd<'_>,

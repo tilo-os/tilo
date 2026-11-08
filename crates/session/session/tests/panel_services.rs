@@ -1,12 +1,9 @@
-//! A panel the session starts is an ordinary app: it reaches what the
-//! session's services publish the way Settings does, as the launch the session
-//! recorded for it.
-//!
-//! These start a surface app through the session's own surface machinery — the
-//! same call that starts Quick Settings and the top bar — and let it read and
-//! change the sound service's `sound` resource. It is admitted only because the
-//! session started it: a process of the same app that the session did not start
-//! reaches nothing.
+//! A panel the session starts is an ordinary app: it reaches what the session's services publish
+//! the way Settings does, as the launch the session recorded for it.
+//! These start a surface app through the session's own surface machinery — the same call that
+//! starts Quick Settings and the top bar — and let it read and change the sound service's `sound`
+//! resource. It is admitted only because the session started it: a process of the same app that the
+//! session did not start reaches nothing.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -37,8 +34,7 @@ use tilo_session::surfaces::Surface;
 use tilo_session::{ActionPlane, Options, Service, Session};
 use tilo_test_env::ScopedEnv;
 
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
 /// The sound service over the card in memory, as the session hosts it.
@@ -66,15 +62,14 @@ fn panel_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
-/// The session the panel talks to: headless, hosting the sound service, with
-/// its plane on `socket` and the panel started the way it starts Quick
-/// Settings.
+/// The session the panel talks to: headless, hosting the sound service, with its plane on `socket`
+/// and the panel started the way it starts Quick Settings.
 fn session_with_panel(socket: &Path) -> Session {
     let wake = LoopWake::default();
     let services: Vec<Box<dyn Service>> = sound(&wake);
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
@@ -82,31 +77,26 @@ fn session_with_panel(socket: &Path) -> Session {
             surfaces: vec![Surface::new("probe", panel_binary())],
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
 /// A session with the sound service and its plane, starting no panel.
 fn session_alone(socket: &Path) -> Session {
     let wake = LoopWake::default();
     let services: Vec<Box<dyn Service>> = sound(&wake);
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
             action_plane: ActionPlane::At(socket.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
-/// The session's turns until the panel has reported, as the session runs its
-/// loop.
+/// The session's turns until the panel has reported, as the session runs its loop.
 fn until_reported(session: &mut Session, report: &Path) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -123,7 +113,7 @@ fn until_reported(session: &mut Session, report: &Path) -> String {
     }
 }
 
-/// The reading named on the line that starts with `prefix`.
+/// The reading named on the line that starts with `prefix` .
 fn reading(report: &str, prefix: &str) -> Value {
     let line = report
         .lines()
@@ -138,8 +128,8 @@ fn a_panel_the_session_starts_reads_and_changes_what_its_services_publish() {
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();
-    // What the panel is to read and change, beside what the session writes on
-    // its environment when it starts it.
+    // What the panel is to read and change, beside what the session writes on its environment when
+    // it starts it.
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", "sound");
     environment.set("SURFACE_PROBE_ACTION", "set-volume");
@@ -176,9 +166,8 @@ fn a_process_the_session_did_not_start_reaches_no_service() {
     let report = root.path().join("report");
     let mut session = session_alone(&socket);
 
-    // The same panel binary, by the same app id, in the same workspace, on the
-    // same socket — started by anyone but the session, so no launch of the
-    // session's names its process.
+    // The same panel binary, by the same app id, in the same workspace, on the same socket —
+    // started by anyone but the session, so no launch of the session's names its process.
     let launched_in = session
         .handle()
         .read(|tree| {

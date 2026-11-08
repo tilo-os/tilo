@@ -52,9 +52,6 @@ impl LiveClient {
     /// A client over the process's YouTube client that fetches pictures with `fetch` and keeps
     /// them in `content`, as a test hands a recording's bytes and a store of its own: what a
     /// recorded answer becomes is then a claim the test makes, with no network.
-    ///
-    /// # Errors
-    /// The process's client could not be built.
     pub fn over(
         fetch: PictureFetch,
         content: Option<ui::content::ContentStore>,
@@ -75,9 +72,6 @@ impl std::fmt::Debug for LiveClient {
 }
 
 /// The process's client, built on first use inside the app runtime.
-///
-/// # Errors
-/// No app runtime, or the client could not be built.
 pub fn client() -> Result<LiveClient, ServiceError> {
     static CLIENT: OnceLock<Result<RustyPipe, String>> = OnceLock::new();
     let runtime = ui::rt::try_app()
@@ -206,9 +200,6 @@ impl LiveClient {
 }
 
 /// What YouTube finds for `query`, split the way the client's search view lists it.
-///
-/// # Errors
-/// YouTube could not be reached, or refused the query.
 pub fn search(client: &LiveClient, query: &str) -> Result<SearchPage, ServiceError> {
     let q = client.query();
     let found = client.block(tilo_innertube::search(&q, query))?;
@@ -242,9 +233,6 @@ pub fn page_of(
 }
 
 /// A channel's page and its newest videos.
-///
-/// # Errors
-/// YouTube could not be reached, or has no such channel.
 pub fn channel(client: &LiveClient, key: &str) -> Result<ChannelPage, ServiceError> {
     let q = client.query();
     let found = client.block(tilo_innertube::channel_videos(&q, key))?;
@@ -270,9 +258,6 @@ pub fn channel(client: &LiveClient, key: &str) -> Result<ChannelPage, ServiceErr
 }
 
 /// The videos YouTube lists as trending.
-///
-/// # Errors
-/// YouTube could not be reached.
 pub fn trending(client: &LiveClient) -> Result<TrendingPage, ServiceError> {
     let q = client.query();
     let found = client.block(tilo_innertube::trending(&q))?;
@@ -283,9 +268,6 @@ pub fn trending(client: &LiveClient) -> Result<TrendingPage, ServiceError> {
 
 /// The address a video's bytes play from: the progressive stream carrying picture and sound,
 /// so a plain HTTP source can stream, seek and reach the end.
-///
-/// # Errors
-/// YouTube could not be reached, or serves no playable stream of it.
 pub fn stream(client: &LiveClient, key: &str) -> Result<String, ServiceError> {
     let q = client.query();
     let player = client.block(tilo_innertube::player(&q, key))?;

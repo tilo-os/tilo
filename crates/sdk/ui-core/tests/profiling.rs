@@ -24,7 +24,6 @@ fn list_app(rows: usize) -> (State, Box<dyn Widget>) {
 
 #[test]
 fn profiling_collects_per_pass_stats_and_reports_them() {
-    // Case `scroll_scenario_produces_per_pass_stats`.
     // A scroll scenario collects one per-pass timing per frame and aggregates
     // them into a stats report on the real FrameHarness path.
     {
@@ -75,7 +74,6 @@ fn profiling_collects_per_pass_stats_and_reports_them() {
         );
     }
 
-    // Case `steady_state_frames_have_zero_handle_event`.
     // A steady-state scenario dispatches no input, so `handle_event` is zero for
     // every frame while the render passes are still measured — proving the passes
     // are attributed independently, not lumped together.
@@ -98,7 +96,6 @@ fn profiling_collects_per_pass_stats_and_reports_them() {
         assert!(report.total.max_us > 0);
     }
 
-    // Case `report_renders_table_and_json`.
     // The report renders a human-readable table and machine-readable JSON — the
     // two shapes a CLI / CI consumes.
     {

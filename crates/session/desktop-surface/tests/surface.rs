@@ -1,5 +1,5 @@
-//! The desktop surface inside the toolkit's real frame pipeline: navigation
-//! commands move the model and the live widgets together.
+//! The desktop surface inside the toolkit's real frame pipeline: navigation commands move the model
+//! and the live widgets together.
 
 #![allow(
     clippy::unwrap_used,
@@ -167,9 +167,8 @@ impl DesktopRules for ChromeRules {
     }
 }
 
-/// The chrome the session hosts over the windows, over the desk `handle`
-/// holds: search's palette is drawn and answered there, so a test that
-/// searches drives this beside the desk.
+/// The chrome the session hosts over the windows, over the desk `handle` holds: search's palette is
+/// drawn and answered there, so a test that searches drives this beside the desk.
 fn chrome_at(handle: &DesktopHandle, size: (u32, u32)) -> ui::headless::FrameHarness {
     let chrome = DesktopChrome::new(
         handle.clone(),
@@ -192,11 +191,10 @@ fn chrome_at(handle: &DesktopHandle, size: (u32, u32)) -> ui::headless::FrameHar
     frame
 }
 
-/// What the person types into the open palette's field: search's card is the
-/// chrome's, over the windows, so the keys go there, and the desk takes up
-/// what the card asked before the card draws it again. The search's sources
-/// answer on workers, so what they answered is in before the test reads a
-/// row.
+/// What the person types into the open palette's field: search's card is the chrome's, over the
+/// windows, so the keys go there, and the desk takes up what the card asked before the card draws
+/// it again. The search's sources answer on workers, so what they answered is in before the test
+/// reads a row.
 fn type_search(
     desk: &mut ui::headless::FrameHarness,
     chrome: &mut ui::headless::FrameHarness,
@@ -225,9 +223,9 @@ fn key_search(
     settle_search(desk, chrome, handle);
 }
 
-/// Draw the desk's and the card's frames until the search has ended. A source
-/// answers on a worker, and its answer wakes the desk: a test pumps what the
-/// wake asks for and draws the frame it brings, as a host does.
+/// Draw the desk's and the card's frames until the search has ended. A source answers on a worker,
+/// and its answer wakes the desk: a test pumps what the wake asks for and draws the frame it
+/// brings, as a host does.
 fn settle_search(
     desk: &mut ui::headless::FrameHarness,
     chrome: &mut ui::headless::FrameHarness,
@@ -399,8 +397,8 @@ fn an_idle_desktop_asks_its_host_for_no_frame() {
         &handle,
         verb("focus", serde_json::json!({"tab":routes[1].route.tab})),
     );
-    // The view slides to the window the change focused; once it is there
-    // the desk asks for no frame again.
+    // The view slides to the window the change focused; once it is there the desk asks for no frame
+    // again.
     settle_still(&mut driver);
     assert!(
         idle(&driver),
@@ -471,8 +469,8 @@ fn a_launched_window_is_on_screen_in_the_frame_that_opens_it() {
             );
         });
     };
-    // Launches a person makes come seconds apart: each earlier one has
-    // come to rest, sharing the screen with its neighbour, by the next.
+    // Launches a person makes come seconds apart: each earlier one has come to rest, sharing the
+    // screen with its neighbour, by the next.
     for app in ["so.tilo.a", "so.tilo.b", "so.tilo.c"] {
         launch(&mut driver, app);
         settle(&mut driver);
@@ -632,9 +630,8 @@ thread_local! {
     static WIDE: Rc<std::cell::Cell<f64>> = Rc::new(std::cell::Cell::new(0.0));
 }
 
-/// A view wider than its window that scrolls sideways with a sideways
-/// wheel, as a wide page or a spreadsheet does: it takes the wheel while
-/// it can still move that way and leaves it at its edge.
+/// A view wider than its window that scrolls sideways with a sideways wheel, as a wide page or a
+/// spreadsheet does: it takes the wheel while it can still move that way and leaves it at its edge.
 struct WideView {
     rect: ui::kurbo::Rect,
     offset: Rc<std::cell::Cell<f64>>,
@@ -738,8 +735,8 @@ impl TileSource for Apps {
     }
 }
 
-/// An app that takes every wheel it is handed, wherever the pointer is, as
-/// a chat's message list follows any wheel that reaches it.
+/// An app that takes every wheel it is handed, wherever the pointer is, as a chat's message list
+/// follows any wheel that reaches it.
 #[derive(Default)]
 struct TakesEveryWheel {
     rect: ui::kurbo::Rect,
@@ -788,8 +785,8 @@ impl ui::widget::Widget for TakesEveryWheel {
     }
 }
 
-/// An editor whose caret stays where it is without keyboard focus: its
-/// presence key is its title, its caret at 7.
+/// An editor whose caret stays where it is without keyboard focus: its presence key is its title,
+/// its caret at 7.
 struct CaretProbe {
     key: ui::presence::PresenceKey,
     rect: ui::kurbo::Rect,
@@ -942,8 +939,8 @@ fn pan_moves_the_shown_strip_without_changing_the_saved_tree() {
     assert_eq!(wrong_strip.unwrap_err(), "Strip is no longer active");
 }
 
-/// Page deltaX of one Mac trackpad swipe: a small lead-in while the
-/// fingers start, then the OS momentum decaying after they lift.
+/// Page deltaX of one Mac trackpad swipe: a small lead-in while the fingers start, then the OS
+/// momentum decaying after they lift.
 fn trackpad_swipe() -> Vec<f64> {
     let mut deltas = vec![1.0, 2.0, 4.0, 7.0, 11.0, 14.0, 16.0, 15.0];
     let mut v = 15.0_f64;
@@ -964,9 +961,8 @@ const EVENT: Duration = Duration::from_millis(8);
 /// One frame of a 60 Hz display after the last.
 const FRAME: Duration = Duration::from_millis(16);
 
-/// Run `step` with the desktop's clock moved on by `after`. Gestures and the
-/// pauses between them last exactly as long as the test says, however fast
-/// or loaded the machine running it is.
+/// Run `step` with the desktop's clock moved on by `after` . Gestures and the pauses between them
+/// last exactly as long as the test says, however fast or loaded the machine running it is.
 fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
     let at = CLOCK
         .get()
@@ -1004,9 +1000,8 @@ fn relayout(driver: &mut ui::headless::FrameHarness) {
     on_clock(Duration::ZERO, || driver.relayout());
 }
 
-/// Frames until the wheel has paused longer than a swipe, so the next
-/// input is a new gesture, and a last frame long after, once whatever the
-/// gesture started has run its course.
+/// Frames until the wheel has paused longer than a swipe, so the next input is a new gesture, and a
+/// last frame long after, once whatever the gesture started has run its course.
 fn settle(driver: &mut ui::headless::FrameHarness) {
     for _ in 0..30 {
         on_clock(FRAME, || driver.relayout());
@@ -1105,8 +1100,8 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
         "and swiping back follows the fingers again"
     );
 
-    // Vertical scrolling over a window is the app's, never the strip's
-    // (over the desktop's own bars it pans the strip).
+    // Vertical scrolling over a window is the app's, never the strip's (over the desktop's own bars
+    // it pans the strip).
     pause();
     let (_, shown) = handle.shown_tabs()[0];
     let at = shown.center();
@@ -1121,9 +1116,9 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     assert!((pan_offset(&handle) - before).abs() < 0.01);
 }
 
-/// A browser page presents on animation frames, and a trackpad's wheel
-/// events outpace them: each event pans the strip at once, and the next
-/// frame moves the laid-out windows there without solving any size.
+/// A browser page presents on animation frames, and a trackpad's wheel events outpace them: each
+/// event pans the strip at once, and the next frame moves the laid-out windows there without
+/// solving any size.
 #[test]
 fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
@@ -1179,10 +1174,9 @@ fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
     );
 }
 
-/// A page hosting the desktop shows the toolkit's tooltips as the installed
-/// shell does: the pointer resting on a window bar's magnifier asks for a
-/// frame when its dwell runs out, and that frame paints what the control
-/// searches; pressing it takes the tooltip away.
+/// A page hosting the desktop shows the toolkit's tooltips as the installed shell does: the pointer
+/// resting on a window bar's magnifier asks for a frame when its dwell runs out, and that frame
+/// paints what the control searches; pressing it takes the tooltip away.
 #[test]
 fn resting_on_the_window_bars_magnifier_shows_what_it_searches() {
     let _settled = ui::motion::testing::settled();
@@ -1303,8 +1297,8 @@ fn phase_calls(rows: &[tilo_resource::profiling::Sample], phase: &str) -> usize 
         .map_or(0, |row| row.calls)
 }
 
-/// Only a wheel the strip pans with skips its own tick: one that reaches the
-/// window under the pointer may dispatch there, so it ticks at once.
+/// Only a wheel the strip pans with skips its own tick: one that reaches the window under the
+/// pointer may dispatch there, so it ticks at once.
 #[test]
 fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
@@ -1323,8 +1317,8 @@ fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
     assert_eq!(phase_calls(&rows, "ui.host_tick"), 1, "{rows:?}");
 }
 
-/// Move the pointer onto the shown window's content, where the row routes
-/// the wheel into the app it runs.
+/// Move the pointer onto the shown window's content, where the row routes the wheel into the app it
+/// runs.
 fn point_at_the_window(driver: &mut ui::headless::FrameHarness, handle: &DesktopHandle) {
     let Some((_, window)) = handle.shown_tabs().first().copied() else {
         panic!("the desk shows no window to point at");
@@ -1336,13 +1330,12 @@ fn point_at_the_window(driver: &mut ui::headless::FrameHarness, handle: &Desktop
     });
 }
 
-/// The app under the pointer has the sideways scroll first, and the strip
-/// takes what the app leaves: whichever way the gesture goes, all of it
-/// stays with the one that took its first event.
+/// The app under the pointer has the sideways scroll first, and the strip takes what the app
+/// leaves: whichever way the gesture goes, all of it stays with the one that took its first event.
 #[test]
 fn the_app_under_the_pointer_has_the_sideways_scroll_first() {
-    // An app that takes every wheel keeps the whole gesture, backwards and
-    // forwards, though the strip could pan far both ways.
+    // An app that takes every wheel keeps the whole gesture, backwards and forwards, though the
+    // strip could pan far both ways.
     let (mut driver, handle, _) = mount_apps(&["Greedy", "B", "C", "D", "E"]);
     let max = handle.snapshot("g", vec![]).desktop_pan.unwrap().max;
     assert!(max > 1000.0, "the strip could pan: {max}");
@@ -1360,8 +1353,8 @@ fn the_app_under_the_pointer_has_the_sideways_scroll_first() {
         pan_offset(&handle)
     );
 
-    // An app that scrolls only up and down leaves the sideways scroll to
-    // the strip, which pans by it from the gesture's first event.
+    // An app that scrolls only up and down leaves the sideways scroll to the strip, which pans by
+    // it from the gesture's first event.
     let (mut driver, handle, _) = mount_apps(&["Long", "B", "C", "D", "E"]);
     point_at_the_window(&mut driver, &handle);
     let home = pan_offset(&handle);
@@ -1377,8 +1370,8 @@ fn the_app_under_the_pointer_has_the_sideways_scroll_first() {
     );
 }
 
-/// A view wide enough to scroll sideways itself keeps the sideways scroll:
-/// its app moves it, and the strip stays where it was.
+/// A view wide enough to scroll sideways itself keeps the sideways scroll: its app moves it, and
+/// the strip stays where it was.
 #[test]
 fn a_wide_view_keeps_the_sideways_scroll_and_the_strip_stays_home() {
     WIDE.with(|offset| offset.set(0.0));
@@ -1405,8 +1398,8 @@ fn a_wide_view_keeps_the_sideways_scroll_and_the_strip_stays_home() {
     assert!(WIDE.with(|offset| offset.get()) < scrolled);
     assert!((pan_offset(&handle) - home).abs() < 0.5);
 
-    // A flick that reaches the view's edge inside the gesture stays the
-    // view's: the rest of the gesture does not fall through to the strip.
+    // A flick that reaches the view's edge inside the gesture stays the view's: the rest of the
+    // gesture does not fall through to the strip.
     pause();
     for _ in 0..40 {
         page_wheel(&mut driver, 80.0, 0.0);
@@ -1627,8 +1620,8 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
     on_clock(Duration::ZERO, || {
         driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
     });
-    // A sideways wheel spun to the right as Firefox reports it: six lines a
-    // notch, which winit reports with negative x.
+    // A sideways wheel spun to the right as Firefox reports it: six lines a notch, which winit
+    // reports with negative x.
     let before = pan_offset(&handle);
     for _ in 0..4 {
         wheel_notch(&mut driver, -6.0);
@@ -1701,9 +1694,9 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
     relayout(&mut driver);
     settle(&mut driver);
 
-    // A spin whose notches arrive slowly, one or two at a time with pauses
-    // between them, as a busy page gets them: each pause ends a gesture and
-    // focus follows, but the strip still pans exactly the notches' travel.
+    // A spin whose notches arrive slowly, one or two at a time with pauses between them, as a busy
+    // page gets them: each pause ends a gesture and focus follows, but the strip still pans exactly
+    // the notches' travel.
     let from = pan_offset(&handle);
     for lines in [1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0] {
         wheel_notch(&mut driver, lines);
@@ -1888,9 +1881,9 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
     );
 }
 
-/// A slip of the finger on Escape costs the query, not the whole search: the
-/// first press clears what was typed and the rows list everything again, a
-/// second press on the empty field closes search.
+/// A slip of the finger on Escape costs the query, not the whole search: the first press clears
+/// what was typed and the rows list everything again, a second press on the empty field closes
+/// search.
 #[test]
 fn escape_clears_what_was_typed_before_it_closes_search() {
     let (mut driver, handle, _) = mount();
@@ -2105,9 +2098,8 @@ fn result_names(chrome: &ui::headless::FrameHarness) -> Vec<String> {
         .collect()
 }
 
-/// A source answers on a worker, and its answer is what asks for the frame
-/// that shows it: the desk draws no frame of its own while a source works, so
-/// nothing on a clock asks the sources again.
+/// A source answers on a worker, and its answer is what asks for the frame that shows it: the desk
+/// draws no frame of its own while a source works, so nothing on a clock asks the sources again.
 #[test]
 fn an_answer_asks_for_the_frame_that_shows_it() {
     let (services, _recorder) = ui::host::HostServices::recording();
@@ -2117,9 +2109,8 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
         let (mut desk, handle, _) = mount();
         let mut chrome = chrome_at(&handle, (1200, 800));
         handle.open_search(Scope::Workspace, Some("notes".into()));
-        // The frames the desk owes itself: asking the sources that hold its
-        // own state, and cutting the rows to the card. The sources on
-        // workers have not run yet, so they have not answered.
+        // The frames the desk owes itself: asking the sources that hold its own state, and cutting
+        // the rows to the card. The sources on workers have not run yet, so they have not answered.
         let mut frames = 0;
         loop {
             let (open, filling) = {
@@ -2153,8 +2144,7 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
             result_names(&chrome)
         );
 
-        // The answer asks for the frame that shows it, and that frame shows
-        // the row it brings.
+        // The answer asks for the frame that shows it, and that frame shows the row it brings.
         pumped.run_pending();
         assert!(
             desk.frame_schedule().queued_work,
@@ -2175,10 +2165,9 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
     });
 }
 
-/// Search over everything answers what is not a name, as the native shell's
-/// does: a sum and a unit conversion lead and are copied, and any query can
-/// be searched on the web, which opens where the host opens addresses (a
-/// new tab of the browser the web desktop runs in).
+/// Search over everything answers what is not a name, as the native shell's does: a sum and a unit
+/// conversion lead and are copied, and any query can be searched on the web, which opens where the
+/// host opens addresses (a new tab of the browser the web desktop runs in).
 #[test]
 fn search_works_out_sums_and_conversions_and_searches_the_web() {
     let (services, recorder) = ui::host::HostServices::recording();
@@ -2223,9 +2212,8 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
             .collect::<Vec<_>>(),
         ["84", "3.1069 mi"]
     );
-    // The search opens where the host opens web searches, off the loop:
-    // the person's browser takes it, and the web engine only where none
-    // does.
+    // The search opens where the host opens web searches, off the loop: the person's browser takes
+    // it, and the web engine only where none does.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while recorder.opened_uris().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -2380,9 +2368,8 @@ fn published_selection_prefers_keyboard_focus_inside_the_window() {
 
 #[test]
 fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
-    // Mounted as its own type, so the test can find the control to press.
-    // A window of one tab shows it as its title and offers no new tab, so
-    // the focused window holds two.
+    // Mounted as its own type, so the test can find the control to press. A window of one tab shows
+    // it as its title and offers no new tab, so the focused window holds two.
     let mut minter = IdMinter::new(7);
     let tabs = vec![tab(&mut minter, "Notes")];
     let mut tree = seed_tree(&mut minter, "Desk", tabs);
@@ -2505,8 +2492,7 @@ fn a_click_in_a_window_partly_off_screen_brings_it_into_view() {
     );
 }
 
-/// Every accessible name under the first node of `widget`, synthetic
-/// children included.
+/// Every accessible name under the first node of `widget` , synthetic children included.
 fn names_under(root: &ui::headless::InspectionNode, widget: &str) -> Vec<String> {
     fn semantic(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
         out.extend(node.name.clone());
@@ -2529,8 +2515,8 @@ fn names_under(root: &ui::headless::InspectionNode, widget: &str) -> Vec<String>
     out
 }
 
-/// A maximized window keeps its bar, so a reader is told of it as of a
-/// restored one: its title and controls, and its search.
+/// A maximized window keeps its bar, so a reader is told of it as of a restored one: its title and
+/// controls, and its search.
 #[test]
 fn a_maximized_windows_bar_and_search_are_in_the_accessibility_tree() {
     let (mut driver, handle, _) = mount_apps(&["A"]);
@@ -2578,10 +2564,9 @@ fn a_window_restored_from_maximized_is_in_view() {
         ),
     );
     settle_still(&mut driver);
-    // The strip is back home while the window fills the display, which
-    // leaves the restored window partly off screen unless it is revealed.
-    // (Where the strip already stays home under a maximized window, the
-    // pan has nothing left to do.)
+    // The strip is back home while the window fills the display, which leaves the restored window
+    // partly off screen unless it is revealed. (Where the strip already stays home under a
+    // maximized window, the pan has nothing left to do.)
     let _ = try_dispatch(
         &mut driver,
         &handle,
@@ -2603,9 +2588,8 @@ fn a_window_restored_from_maximized_is_in_view() {
     );
 }
 
-/// One member's desk in a workspace whose layout is personal: a tree of its own
-/// (its own ids, its own strip) showing a Notes and a Chat window, on a
-/// screen `width` wide.
+/// One member's desk in a workspace whose layout is personal: a tree of its own (its own ids, its
+/// own strip) showing a Notes and a Chat window, on a screen `width` wide.
 fn personal_desk(seed: u16, width: u32) -> (ui::headless::FrameHarness, DesktopHandle) {
     let mut minter = IdMinter::new(seed);
     let tabs = ["Notes", "Chat"]
@@ -2643,9 +2627,9 @@ fn rect_f32(rect: ui::kurbo::Rect) -> [f32; 4] {
     ]
 }
 
-/// What a desk shows that a member's pointer can be relative to, as the
-/// browser runtime lays it out: each shown window by the record it shows
-/// (here, its app's workspace record) and the shown strip.
+/// What a desk shows that a member's pointer can be relative to, as the browser runtime lays it
+/// out: each shown window by the record it shows (here, its app's workspace record) and the shown
+/// strip.
 fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerLayout {
     let shown = handle.shown_tabs();
     let windows = handle.read(|tree| {
@@ -2688,11 +2672,10 @@ fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
     (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01
 }
 
-/// Two visitors of a workspace whose layout is personal, on screens of other
-/// widths: their strips are their own, with ids of their own, so a pointer
-/// over one's empty desktop says where it is beside the nearest window, and
-/// lands as far beside that window on the other's desk. Said in the strip's
-/// coordinates, it never landed anywhere.
+/// Two visitors of a workspace whose layout is personal, on screens of other widths: their strips
+/// are their own, with ids of their own, so a pointer over one's empty desktop says where it is
+/// beside the nearest window, and lands as far beside that window on the other's desk. Said in the
+/// strip's coordinates, it never landed anywhere.
 #[test]
 fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
     use tilo_relay_protocol::live::LivePointer;
@@ -2762,8 +2745,8 @@ fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
     assert_eq!(narrow_layout.place(&on_strip), None);
 }
 
-/// On a phone the search palette fits the screen: centred, within its
-/// edges, and as wide as the screen allows rather than its own width.
+/// On a phone the search palette fits the screen: centred, within its edges, and as wide as the
+/// screen allows rather than its own width.
 #[test]
 fn search_fits_a_phone_screen() {
     let mut minter = IdMinter::new(7);
@@ -2800,10 +2783,9 @@ fn search_fits_a_phone_screen() {
     );
 }
 
-/// A wheel goes to the window under the pointer: a window beside it whose
-/// app takes any wheel it is handed does not get it first, so the scroll
-/// view under the pointer scrolls. The browser desktop sends the wheel as
-/// it does, coalesced into its next frame.
+/// A wheel goes to the window under the pointer: a window beside it whose app takes any wheel it is
+/// handed does not get it first, so the scroll view under the pointer scrolls. The browser desktop
+/// sends the wheel as it does, coalesced into its next frame.
 #[test]
 fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
     let (mut driver, handle, _) = mount_apps(&["Greedy", "Long"]);
@@ -2845,9 +2827,8 @@ fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
 #[path = "surface/actions.rs"]
 mod actions;
 
-/// A desk nobody touches has nothing to draw: a settled desk declines the
-/// frame its host offers, so a window's bar and its search lane paint nothing
-/// until what they show changes.
+/// A desk nobody touches has nothing to draw: a settled desk declines the frame its host offers, so
+/// a window's bar and its search lane paint nothing until what they show changes.
 #[test]
 fn a_settled_idle_desk_repaints_nothing() {
     let (mut driver, _handle, _) = mount();
@@ -2868,10 +2849,9 @@ fn a_settled_idle_desk_repaints_nothing() {
     }
 }
 
-/// A desk whose windows hold apps whose first frame is still on its way: the
-/// native session's tabs before a client draws at all. Their placeholders
-/// are deadlines, not animations, so such a desk at rest has nothing to draw
-/// either.
+/// A desk whose windows hold apps whose first frame is still on its way: the native session's tabs
+/// before a client draws at all. Their placeholders are deadlines, not animations, so such a desk
+/// at rest has nothing to draw either.
 #[test]
 fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
     struct Arriving;
@@ -2901,8 +2881,7 @@ fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
     driver.set_caller_palette_enabled(false);
     driver.relayout();
     driver.settle_for_capture(Duration::from_millis(2000));
-    // A host presents the frame settling made due; the offers after it find
-    // nothing.
+    // A host presents the frame settling made due; the offers after it find nothing.
     driver.profile_frame();
     for _ in 0..3 {
         let schedule = driver.frame_schedule();
@@ -2940,15 +2919,14 @@ fn accessible_names(root: &ui::headless::InspectionNode) -> Vec<String> {
     out
 }
 
-/// A window's bar reaches a reader once: the bar is the window's child and
-/// publishes its own node, so the window publishes none of it of its own.
+/// A window's bar reaches a reader once: the bar is the window's child and publishes its own node,
+/// so the window publishes none of it of its own.
 #[test]
 fn a_windows_bar_is_in_the_accessibility_tree_once() {
     let (mut driver, _handle, _) = mount_apps(&["Groceries", "Recipes"]);
     settle_still(&mut driver);
     let names = accessible_names(&driver.inspection().root);
-    // Each window's bar reads its own pill once, and the controls every bar
-    // shows once per window.
+    // Each window's bar reads its own pill once, and the controls every bar shows once per window.
     for name in ["Close Groceries", "Close Recipes"] {
         assert_eq!(
             names.iter().filter(|read| *read == name).count(),
@@ -2963,8 +2941,8 @@ fn a_windows_bar_is_in_the_accessibility_tree_once() {
             "{name:?} is read once for each of the two windows: {names:?}"
         );
     }
-    // A window's title is read twice, each time by something of its own:
-    // the bar's pill names the tab, the app's content group what it shows.
+    // A window's title is read twice, each time by something of its own: the bar's pill names the
+    // tab, the app's content group what it shows.
     for title in ["Groceries", "Recipes"] {
         assert_eq!(
             names.iter().filter(|read| *read == title).count(),

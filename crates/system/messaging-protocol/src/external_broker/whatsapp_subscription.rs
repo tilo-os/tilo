@@ -63,8 +63,6 @@ pub struct WhatsappReceiptSubscription {
 impl WhatsappReceiptSubscription {
     /// Register only on the precise SDK owned by this `WhatsApp` broker, before
     /// connecting it. Holding a client is not credential or Contacts authority.
-    /// # Errors
-    /// Refuses foreign clients and brokers for another service.
     pub async fn attach(
         broker: &Arc<ExternalBroker>,
         source: Arc<Client>,

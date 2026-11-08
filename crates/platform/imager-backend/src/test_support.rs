@@ -18,9 +18,6 @@ use std::{
 };
 
 /// Parse with the same implementation used by `tilo-staging-handoff`.
-///
-/// # Errors
-/// Refuses malformed, oversized or inconsistent handoff data.
 #[cfg(all(feature = "test-support", target_os = "linux"))]
 pub fn parse_live_handoff(bytes: &[u8]) -> Result<serde_json::Value, String> {
     tilo_install_helpers::staging_handoff::parse_handoff(bytes)

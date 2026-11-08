@@ -298,9 +298,6 @@ fn allowed(
 }
 /// Whether a host file of layout `version` may carry `storage`. Workspace
 /// records came in with layout 4; later layouts carry them as it does.
-///
-/// # Errors
-/// A workspace record or its publication does not belong in that layout.
 pub fn validate_file_layout(
     version: u32,
     storage: &record::NativeAuthorityStorage,
@@ -453,7 +450,7 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     )
 }
 /// Workspace for `bytes` in the outgoing custody.
-pub(crate) fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
+fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
     let publication = state(view)?;
     let total = bounds(publication)?;
     if publication.entries.len() >= MAX_ENTRIES
@@ -732,7 +729,27 @@ fn append(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> 
     Ok(())
 }
 pub(crate) fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
-    append(view, bytes)
+    if !view.hosted_here() {
+        return append(view, bytes);
+    }
+    // The workspace's own device is its keeper: what it admits is already
+    // where the workspace's records live, and no one else answers a publish.
+    // Nothing waits here, and what an earlier record kept waiting is released
+    // with this commit, so custody of a device-hosted workspace stays empty.
+    let publication = view
+        .record
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?;
+    if publication.entries.is_empty() {
+        return Ok(());
+    }
+    publication.entries.clear();
+    publication.revision = publication
+        .revision
+        .checked_add(1)
+        .ok_or("native publication revision exhausted")?;
+    Ok(())
 }
 pub(crate) fn has_exact(view: &NativeCommittedView, bytes: &[u8]) -> Result<bool, String> {
     Ok(state(view)?
@@ -973,9 +990,6 @@ impl NativeWorkspaceOwner {
     }
     /// How many of this device's committed writes to `workspace` are still in
     /// its outgoing custody: not yet admitted by the workspace's governor.
-    ///
-    /// # Errors
-    /// The workspace is not held here or is fenced.
     pub fn unadmitted_writes(&self, workspace: WorkspaceId) -> Result<usize, String> {
         self.with_current(workspace, |view| Ok(state(view)?.entries.len()))
     }
@@ -989,10 +1003,6 @@ impl NativeWorkspaceOwner {
     }
     /// Retire every retained frame the workspace has refused or a durable
     /// receipt names, and commit the retirement.
-    ///
-    /// # Errors
-    /// The workspace is not held here or is fenced, or the retirement cannot
-    /// be committed.
     pub fn retire_outgoing(&self, workspace: WorkspaceId) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;

@@ -41,9 +41,6 @@ pub struct SignalRuntime {
 impl SignalRuntime {
     /// Use an existing OS-keychain key with the supervisor's verified handle.
     /// No persistent grant, key or Signal linking is created by this call.
-    ///
-    /// # Errors
-    /// Refuses unavailable custody, wrong ownership or unusable socket handles.
     pub fn open_system(
         root: &Path,
         owner: Owner,
@@ -60,9 +57,6 @@ impl SignalRuntime {
 
     /// Host-injected custody, without weakening the production OS-keychain path.
     /// The journal's frozen device/account/link generation must match exactly.
-    ///
-    /// # Errors
-    /// Refuses mismatched journal ownership and unusable socket handles.
     pub fn from_journal(
         owner: Owner,
         signal_account: String,
@@ -106,8 +100,6 @@ impl SignalRuntime {
         Ok(account)
     }
     /// Compare the current verified provider key without changing trust.
-    /// # Errors
-    /// Refuses unknown, changed or unverified recipient keys and probe failures.
     pub fn verify_recipient(
         &mut self,
         recipient: &str,
@@ -162,9 +154,6 @@ impl SignalRuntime {
 
     /// Receive a direct text notification within a total I/O budget. Rich
     /// events remain available to explicit handlers via [`Self::take_events`].
-    ///
-    /// # Errors
-    /// Refuses invalid budgets, wrong-account, malformed or unsupported events.
     pub fn receive(&mut self, timeout: Duration) -> Result<Incoming, Error> {
         self.deadline
             .arm(timeout)
@@ -256,8 +245,6 @@ pub struct SignalReceiver {
 #[cfg(feature = "signal-broker")]
 impl SignalReceiver {
     /// The supervisor supplies a separately authenticated daemon connection.
-    /// # Errors
-    /// Refuses malformed owner/identity, unavailable stream or wrong daemon account.
     pub fn new(
         owner: Owner,
         signal_account: String,

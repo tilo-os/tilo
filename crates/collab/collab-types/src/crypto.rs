@@ -155,8 +155,8 @@ pub fn sign_event<T: Serialize>(
     Ok(Signature(sig.to_bytes()))
 }
 
-/// Verify a signature over an arbitrary serializable value. Mirrors
-/// [`sign_event`]: the same pre-signature view must be reconstructable on
+/// Verify a signature over an arbitrary serializable value.
+/// Mirrors [`sign_event`]: the same pre-signature view must be reconstructable on
 /// the receiving side. `BadSignature` on mismatch, `InvalidPublicKey` if malformed.
 ///
 /// # Errors

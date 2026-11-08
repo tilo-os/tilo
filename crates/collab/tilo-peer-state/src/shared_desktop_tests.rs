@@ -8,10 +8,11 @@ use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD, S
 use tilo_desktop_model::{
     DesktopTree, StripId, WindowWidth, Workspace, WorkspaceSlot, shared_record,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 
 use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
+use crate::owner::testing::member_certificate as certificate;
 use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
@@ -20,20 +21,6 @@ fn now() -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(2000))
         .unwrap()
-}
-
-fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
 }
 
 fn tab(id: u64) -> Tab {

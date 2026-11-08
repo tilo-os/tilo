@@ -225,9 +225,6 @@ pub trait Effect: Sized + 'static {
     fn arguments(&self) -> serde_json::Map<String, serde_json::Value>;
 
     /// The effect `id` with `arguments`, as a caller invoked it.
-    ///
-    /// # Errors
-    /// Returns why the id or the arguments do not name an effect.
     fn decode(
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
@@ -311,9 +308,6 @@ pub trait Effect: Sized + 'static {
     }
 
     /// Decode one invocation's payload, as the operation's specs encode it.
-    ///
-    /// # Errors
-    /// Returns why the payload is not an effect of this vocabulary.
     fn from_payload(payload: &[u8]) -> Result<Self, EffectDecodeError> {
         let Payload { effect, args } = decode_payload(payload)?;
         Self::decode(&effect, &args)
@@ -1008,9 +1002,6 @@ impl Effect for NoEffect {
 
 /// Read one argument of an effect being decoded. An absent argument reads
 /// as `null`, which an `Option` field takes as `None`.
-///
-/// # Errors
-/// Returns why the argument does not have the field's type.
 #[doc(hidden)]
 pub fn argument<T: serde::de::DeserializeOwned>(
     arguments: &serde_json::Map<String, serde_json::Value>,
@@ -1028,9 +1019,6 @@ pub fn argument<T: serde::de::DeserializeOwned>(
 /// surface name their windows, strips, groups and workspaces by. A salted id
 /// outgrows what a JSON number carries exactly, so it travels as text; any
 /// other text names no id, and is refused here rather than taken for one.
-///
-/// # Errors
-/// Returns why the argument is not an identity.
 pub fn identity_argument(
     arguments: &serde_json::Map<String, serde_json::Value>,
     name: &str,
@@ -1046,9 +1034,6 @@ pub fn identity_argument(
 }
 
 /// [`identity_argument`] for an identity that need not be given.
-///
-/// # Errors
-/// Returns why the argument is not an identity.
 pub fn optional_identity_argument(
     arguments: &serde_json::Map<String, serde_json::Value>,
     name: &str,

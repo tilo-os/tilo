@@ -19,10 +19,6 @@ pub struct SettingsWatch {
 /// Call `on_change` every time this process's settings ([`crate::source`]) change. The
 /// callback runs on the thread that made or noticed the change, so it should only hand the
 /// news to whoever re-reads the document.
-///
-/// # Errors
-///
-/// Fails when there are no settings: no config directory and no installed source.
 pub fn watch_settings(
     on_change: impl Fn() + Send + Sync + 'static,
 ) -> std::io::Result<SettingsWatch> {
@@ -40,10 +36,6 @@ pub fn watch_settings(
 /// Call `on_change` every time the file at `path` is created, rewritten, renamed into place
 /// or removed: a runtime publication another process replaces by rename. The callback runs
 /// on the watcher's own thread.
-///
-/// # Errors
-///
-/// Fails when the directory cannot be created or the platform watcher cannot be started.
 pub fn watch_file_at(
     path: &Path,
     on_change: impl Fn() + Send + 'static,
@@ -64,10 +56,6 @@ pub fn watch_file_at(
 
 /// Watch the existing identity directory for selector and identity-record changes.
 /// Re-read the verified active owner after each notification.
-///
-/// # Errors
-///
-/// Fails if the directory does not exist or the platform watcher cannot start.
 pub fn watch_identity_at(
     directory: &Path,
     on_change: impl Fn() + Send + 'static,

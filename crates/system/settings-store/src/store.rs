@@ -165,9 +165,6 @@ fn load_docs(records: &Records) -> std::io::Result<(AutoCommit, AutoCommit, (Sta
 impl Store {
     /// Open the profile at `root`: as its holder when no other process holds
     /// it, else read-only, following the holder.
-    ///
-    /// # Errors
-    /// A document exists and cannot be read.
     pub fn open(root: &Path) -> std::io::Result<Arc<Self>> {
         Self::open_as(root, true)
     }
@@ -175,9 +172,6 @@ impl Store {
     /// Open the profile at `root` read-only, following whoever holds it, for
     /// a process that only reads settings (a service the session starts)
     /// and must never keep the session from holding them.
-    ///
-    /// # Errors
-    /// A document exists and cannot be read.
     pub fn follow(root: &Path) -> std::io::Result<Arc<Self>> {
         Self::open_as(root, false)
     }
@@ -519,9 +513,6 @@ impl Store {
     /// (a section's undo, which reads its history and marks what it took
     /// back). The change records the leaves it set, as every write does,
     /// and is shown and saved like one. `edit` refusing changes nothing.
-    ///
-    /// # Errors
-    /// `edit` refused, or this process may not write the profile.
     pub fn edit_document(
         &self,
         section: &str,

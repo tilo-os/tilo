@@ -89,8 +89,8 @@ impl ConnectorHost {
         Ok(instance)
     }
 
-    /// Start the connector `planned` ran, releasing the door `door` to it through the
-    /// launcher's registration gate, and following it on a thread of its own.
+    /// Start the connector `planned` ran, releasing the door `door` to it through the launcher's
+    /// registration gate, and following it on a thread of its own.
     fn start(planned: &Planned, door: &OwnedFd) -> Result<Child, String> {
         tilo_app_launch::name_surface(planned);
         let mut command = Command::new(&planned.program);
@@ -99,8 +99,8 @@ impl ConnectorHost {
             .env_clear()
             .envs(&planned.env)
             .stdin(Stdio::null())
-            // The connector's own account of a service that refused it: the
-            // session's log keeps it, the same as a window's app's.
+            // The connector's own account of a service that refused it: the session's log keeps it,
+            // the same as a window's app's.
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let gate = launcher::registration_gate::install(&mut command)
@@ -109,8 +109,8 @@ impl ConnectorHost {
             .spawn()
             .map_err(|error| format!("{}'s connector did not start: {error}", planned.app))?;
         drop(command);
-        // The connector is a launch of the app's own, and says what went wrong
-        // on its standard streams: the session's log keeps them.
+        // The connector is a launch of the app's own, and says what went wrong on its standard
+        // streams: the session's log keeps them.
         let output = std::sync::Arc::new(tilo_app_launch::output::AppOutput::new(
             planned.app.clone(),
             None,
@@ -141,23 +141,22 @@ impl Drop for ConnectorHost {
 }
 
 /// Start the connectors the session's services keep records in step with
-/// (`docs/architecture/apps.md` §1, §8): for each origin a service names, the process of the
-/// app whose package declares it, in the sandbox its signed manifest gives that origin, and
-/// the service reached through it.
-///
-/// A connector is the app's own launch with no window (`--tilolang-connector <origin>`): it
-/// holds the network and the custody the session and the tilolang host never have. It runs
-/// whether or not a window of the app is open, so what the service says meanwhile waits in it.
-/// A session that cannot start one says why and goes on: the app's records then stand as they
-/// are, and its views show what they last held.
+/// (`docs/architecture/apps.md` §1, §8): for each origin a service names, the process of the app
+/// whose package declares it, in the sandbox its signed manifest gives that origin, and the service
+/// reached through it.
+/// A connector is the app's own launch with no window (`--tilolang-connector <origin>`): it holds
+/// the network and the custody the session and the tilolang host never have. It runs whether or not
+/// a window of the app is open, so what the service says meanwhile waits in it. A session that
+/// cannot start one says why and goes on: the app's records then stand as they are, and its views
+/// show what they last held.
 pub(crate) fn start_all(session: &crate::Session) {
-    // An origin's own crate registers how the platform reaches its connector, so a session
-    // reaches one without naming the crate that keeps the service.
+    // An origin's own crate registers how the platform reaches its connector, so a session reaches
+    // one without naming the crate that keeps the service.
     tilolang_mail::register();
     tilolang_youtube::register();
     let wake = session.shared.wake_handle.clone();
-    // The service that keeps an origin in step is told what wakes the loop: an answer from
-    // the service it asked, which the next pass polls and writes.
+    // The service that keeps an origin in step is told what wakes the loop: an answer from the
+    // service it asked, which the next pass polls and writes.
     session.shared.services.borrow_mut().wake_origins(&wake);
     let connectors = session.shared.services.borrow().connectors();
     if connectors.is_empty() {

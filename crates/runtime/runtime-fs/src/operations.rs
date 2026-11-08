@@ -103,8 +103,6 @@ pub use created_temporary::NativeCreatedTemporary;
 impl FsJob {
     /// Obtain only the opaque custody minted by this exact durable `CreateFile`
     /// job. A polled receipt, UUID, name or caller label cannot construct it.
-    /// # Errors
-    /// Refuses unfinished/failed/noncreation jobs and expired native authority.
     pub fn created_temporary(&self) -> Result<Arc<NativeCreatedTemporary>, FsError> {
         let value = lock(&self.control.results)?
             .created_temporary
@@ -157,8 +155,6 @@ impl PreparedNativeReplacement {
     }
     /// Descriptive purpose of this same live held native reservation; it is
     /// already part of the signed intent bytes, not an execution authority.
-    /// # Errors
-    /// Refuses consumed reservations or stale native intent observations.
     pub fn purpose(&self) -> Result<NativeReplacementPurpose, FsError> {
         self.intent_digest()?;
         Ok(self
@@ -179,8 +175,6 @@ impl PreparedNativeReplacement {
     /// Observe a domain-separated digest of this actual admitted namespace intent.
     /// Hardlink aliases are distinguished by held parent identities and raw loci.
     /// The observation itself grants no execution or canonical history authority.
-    /// # Errors
-    /// Refuses closed reservations, changed source scope or inconsistent intent.
     pub fn intent_digest(&self) -> Result<[u8; 32], FsError> {
         let work = self.work.as_ref().ok_or(FsError::Closed)?;
         let expected = work.prepared_intent.as_ref().ok_or(FsError::Denied)?;
@@ -192,8 +186,6 @@ impl PreparedNativeReplacement {
     }
     /// Exact source-minted canonical metadata bytes hashed by `intent_digest`.
     /// This description cannot construct Work, grants or history authority.
-    /// # Errors
-    /// Refuses closed/stale reservations and oversized metadata descriptions.
     pub fn reservation_description(&self) -> Result<Vec<u8>, FsError> {
         self.intent_digest()?;
         let intent = self
@@ -210,8 +202,6 @@ impl PreparedNativeReplacement {
     }
     /// Observe this actual admitted future protected capture plan. This is not
     /// evidence of an existing capture, `RecoveryId`, or immutable byte archive.
-    /// # Errors
-    /// Refuses closed reservations, changed intent or non-prepared journal state.
     pub fn archive_plan_digest(&self) -> Result<[u8; 32], FsError> {
         let intent = self.intent_digest()?;
         let work = self.work.as_ref().ok_or(FsError::Closed)?;
@@ -234,8 +224,6 @@ impl PreparedNativeReplacement {
     /// Verify and durably retain the enrolled daemon's exact preparation before
     /// submitting this actual source-held reservation. A receipt cannot create
     /// a reservation or grant Replace rights.
-    /// # Errors
-    /// Refuses stale scope, mismatched intent/plan, invalid signer or journal loss.
     pub fn start_with_history(
         mut self,
         prepared: &crate::external_history::PreparedReceipt,
@@ -277,8 +265,6 @@ impl PreparedNativeReplacement {
     }
     /// Submit only after the enrolled canonical host has durably signed prepare.
     /// Native effects still revalidate actual grants/cancellation at their boundary.
-    /// # Errors
-    /// Refuses closed queue or original source scope.
     pub fn start(mut self) -> Result<FsJob, FsError> {
         self.intent_digest()?;
         let work = self.work.as_ref().ok_or(FsError::Closed)?;
@@ -589,8 +575,6 @@ enum Request {
 impl FsSession {
     /// Reserve an actual replacing job before any namespace effect, for the
     /// enrolled daemon's canonical signed external-effect prepare transaction.
-    /// # Errors
-    /// Refuses absent authentic source owner, stale grants or durable admission.
     pub fn prepare_replace(
         &self,
         entry: GrantedEntry,

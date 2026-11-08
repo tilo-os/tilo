@@ -57,6 +57,29 @@ pub struct Registry {
     pub remote_builders: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub vms: BTreeMap<String, VmEntry>,
+    /// Frozen disks `vm branch` made, by id. A base is deleted once no VM
+    /// and no other base has it as its `image` ([`Registry::base_users`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bases: BTreeMap<String, Base>,
+}
+
+/// A VM's disk as it was when `vm branch` froze it: read-only, the backing
+/// file of the VM's next disk and of each of its branches' disks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Base {
+    /// The frozen qcow2 file.
+    pub disk: String,
+    /// Its own backing file: the image the VM was created from, or the
+    /// base of an earlier branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// `raw` when `image` is a raw disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_format: Option<String>,
+    /// The VM whose disk it was.
+    pub from: String,
+    /// When it was frozen (RFC 3339).
+    pub frozen: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +171,19 @@ pub struct VmEntry {
     /// `tilo-vm rollback --slot vm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_kernel: Option<DirectKernel>,
+    /// The hypervisor identity tilo-vm gave the VM, unique per VM and the
+    /// same at every boot: the libvirt domain UUID and SMBIOS system UUID
+    /// (the guest's `/sys/class/dmi/id/product_uuid`), or the UUID UTM
+    /// gave a clone. Absent for a VM made before tilo-vm set one, which
+    /// keeps the identity its hypervisor chose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    /// The MAC address of the VM's network interface, set with `uuid`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nic_mac: Option<String>,
+    /// The VM this one was branched from (`vm branch`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branched_from: Option<String>,
 }
 
 /// Where a device answers over the peer network (`tilo-vm guide devices`,
@@ -259,6 +295,22 @@ impl Registry {
 
     pub fn keep_generations(&self) -> u32 {
         self.keep_generations.unwrap_or(DEFAULT_KEEP_GENERATIONS)
+    }
+
+    /// What has base `disk` as its backing file: the VMs, then the bases
+    /// made from them, by name.
+    pub fn base_users(&self, disk: &str) -> Vec<String> {
+        let vms = self
+            .vms
+            .iter()
+            .filter(|(_, vm)| vm.image.as_deref() == Some(disk));
+        let bases = self
+            .bases
+            .iter()
+            .filter(|(_, base)| base.image.as_deref() == Some(disk));
+        vms.map(|(name, _)| name.clone())
+            .chain(bases.map(|(id, _)| format!("base {id}")))
+            .collect()
     }
 }
 

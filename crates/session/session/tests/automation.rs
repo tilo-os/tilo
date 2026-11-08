@@ -1,7 +1,6 @@
-//! A shortcut's triggers start it without anyone invoking it: a change a
-//! person's app committed to a record in the workspace fires the shortcut
-//! saved there, on their own device, once, and a schedule fires once per
-//! fire time and keeps its place across a restart.
+//! A shortcut's triggers start it without anyone invoking it: a change a person's app committed to
+//! a record in the workspace fires the shortcut saved there, on their own device, once, and a
+//! schedule fires once per fire time and keeps its place across a restart.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -13,6 +12,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,16 +24,12 @@ use settings_store::notification_policy::NotificationPolicy;
 use tilo_automation::{
     CatchUp, FOCUS_DO_NOT_DISTURB, FocusTransition, SavedShortcut, Schedule, Shortcut, TriggerSpec,
 };
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::InputEvent;
 use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-
-/// The workspace the desk shows, the id it has on every device, and the app
-/// whose records it holds.
+/// The workspace the desk shows, the id it has on every device, and the app whose records it holds.
 const WORKSPACE: &str = "5c07c075-0000-4000-8000-000000000042";
 const PACKAGE: &str = "so.tilo.chat";
 const KIND: &str = "so.tilo.chat.message";
@@ -43,11 +40,10 @@ const KEY_J: u32 = 36;
 const KEY_LEFT_CTRL: u32 = 29;
 const KEY_LEFT_ALT: u32 = 56;
 
-/// This computer: the identity store's provisioned identity, and the device
-/// it enrolled here. Returns the root, which must outlive the session, and
-/// the device's key and certificate, which sign what the person saves — a
-/// shortcut runs under the certificate this device acts with, so an identity
-/// that only looks like one would leave nothing to run.
+/// This computer: the identity store's provisioned identity, and the device it enrolled here.
+/// Returns the root, which must outlive the session, and the device's key and certificate, which
+/// sign what the person saves — a shortcut runs under the certificate this device acts with, so an
+/// identity that only looks like one would leave nothing to run.
 fn this_computer(
     home: &mut tilo_test_env::TestHome,
 ) -> (
@@ -92,38 +88,32 @@ fn person_of(cert: &tilo_user_identity::DeviceCert) -> String {
         })
 }
 
-/// A session keeping this device's desk under `state`, with the action plane
-/// the shortcuts run on at `socket`, for `person`.
+/// A session keeping this device's desk under `state` , with the action plane the shortcuts run on
+/// at `socket` , for `person` .
 fn session_keeping(state: &Path, socket: &Path, person: &str) -> Session {
     session_launching(state, socket, person, Arc::new(Launches::default()))
 }
 
-/// The same session, starting its apps from `launches`: the record of what it
-/// started is the test's, so it can start one.
+/// The same session, starting its apps from `launches` : the record of what it started is the
+/// test's, so it can start one.
 fn session_launching(
     state: &Path,
     socket: &Path,
     person: &str,
     launches: Arc<Launches>,
 ) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(state.to_path_buf()),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: person.to_owned(),
-            wake: LoopWake::default(),
-            launches,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        state: Some(state.to_path_buf()),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: person.to_owned(),
+        wake: LoopWake::default(),
+        launches,
+        ..Options::default()
+    })
 }
 
-/// The shortcut named `Tidy` in [`WORKSPACE`], with `trigger`, saved by this
-/// computer's person.
+/// The shortcut named `Tidy` in [`WORKSPACE`], with `trigger` , saved by this computer's person.
 fn tidy_with(
     trigger: &TriggerSpec,
     device: &ed25519_dalek::SigningKey,
@@ -141,8 +131,7 @@ fn tidy_with(
     SavedShortcut::encode(&shortcut)
 }
 
-/// Put `workspace` on this session's desk, in place of the one it showed for
-/// the same workspace.
+/// Put `workspace` on this session's desk, in place of the one it showed for the same workspace.
 fn show(session: &Session, workspace: Workspace) {
     let id = workspace.id();
     let mut tree = session.handle().read(Clone::clone);
@@ -160,9 +149,8 @@ fn show_room(session: &Session, shortcuts: Vec<SavedShortcut>) {
     show(session, workspace);
 }
 
-/// Put a workspace for [`WORKSPACE`] on this session's desk whose `person` reads
-/// the folder `folder` through the capability `capability`, holding
-/// `shortcuts`.
+/// Put a workspace for [`WORKSPACE`] on this session's desk whose `person` reads the folder
+/// `folder` through the capability `capability` , holding `shortcuts` .
 fn show_room_sharing(
     session: &Session,
     person: &str,
@@ -261,8 +249,8 @@ fn seed_record(home: &tilo_test_env::TestHome) {
     std::fs::write(&path, doc.save()).expect("the record");
 }
 
-/// What the app commits when its person sends a message: a change whose
-/// history entry names the verb that made it.
+/// What the app commits when its person sends a message: a change whose history entry names the
+/// verb that made it.
 fn a_posted_message_change() -> String {
     use tilo_actions::{ActionContext, ActionInvoker, ActionKey, Described, Did};
     ActionContext::for_app(PACKAGE, "Chat")
@@ -294,9 +282,8 @@ fn post_a_message(home: &tilo_test_env::TestHome) {
 #[track_caller]
 fn until_a_run(session: &mut Session, wanted: usize) -> Vec<String> {
     let mut seen = Vec::new();
-    // A firing waits for the ledger that records it to be on disk, and a
-    // writer busy with the rest of the suite is what makes it take a while:
-    // the bound is the suite's own, not a second count.
+    // A firing waits for the ledger that records it to be on disk, and a writer busy with the rest
+    // of the suite is what makes it take a while: the bound is the suite's own, not a second count.
     tilo_test_env::wait_for("a shortcut run to start", || {
         session.step(Duration::from_millis(2)).expect("step");
         seen.extend(session.take_finished_shortcut_runs());
@@ -330,14 +317,14 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
             &cert,
         )],
     );
-    // The pass that shows the shortcut catches up with the record: the first
-    // look at a record only learns its heads, so a message posted before the
-    // shortcut is on the desk is not one it fires on.
+    // The pass that shows the shortcut catches up with the record: the first look at a record only
+    // learns its heads, so a message posted before the shortcut is on the desk is not one it fires
+    // on.
     session.step(Duration::from_millis(1)).expect("a frame");
     post_a_message(&home);
     let runs = until_a_run(&mut session, 1);
-    // Many more passes over the same change start nothing: a fire time is
-    // started once, by its run's id.
+    // Many more passes over the same change start nothing: a fire time is started once, by its
+    // run's id.
     for _ in 0..50 {
         session.step(Duration::from_millis(2)).expect("step");
     }
@@ -400,8 +387,7 @@ fn ledger_path(state: &Path) -> std::path::PathBuf {
     state.join("tilo").join("automation").join("schedules.json")
 }
 
-/// The one schedule the ledger holds, as (its key, its trigger, its next fire
-/// time).
+/// The one schedule the ledger holds, as (its key, its trigger, its next fire time).
 fn only_schedule(state: &Path) -> (String, serde_json::Value, i64) {
     let text = std::fs::read_to_string(ledger_path(state)).expect("the schedule ledger");
     let ledger: serde_json::Value = serde_json::from_str(&text).expect("the ledger's JSON");
@@ -415,8 +401,8 @@ fn only_schedule(state: &Path) -> (String, serde_json::Value, i64) {
     )
 }
 
-/// The ledger a device that was off when a fire time came finds: the
-/// schedule it kept, its next fire `due` milliseconds past the epoch.
+/// The ledger a device that was off when a fire time came finds: the schedule it kept, its next
+/// fire `due` milliseconds past the epoch.
 fn keep_a_schedule_due_at(state: &Path, trigger: &TriggerSpec, due: i64) {
     let ledger = serde_json::json!({
         "schedules": {
@@ -450,8 +436,8 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
         )
     };
 
-    // The hour came and went while the session was not running: the fire time
-    // it kept is now in the past, and the session it starts in runs it.
+    // The hour came and went while the session was not running: the fire time it kept is now in the
+    // past, and the session it starts in runs it.
     let trigger = TriggerSpec::Schedule {
         schedule: Schedule::Interval { seconds: 3600 },
         catch_up: CatchUp::RunOnce,
@@ -459,9 +445,8 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
     let due = i64::try_from(tilo_clock::unix_now_ms()).unwrap() - 1_000;
     keep_a_schedule_due_at(state.path(), &trigger, due);
     let mut session = session_keeping(state.path(), &socket, &person);
-    // The workspace is on the desk before the first pass, as it is kept with the
-    // desk across a restart: a schedule no workspace shows is one this device
-    // no longer keeps a fire time for.
+    // The workspace is on the desk before the first pass, as it is kept with the desk across a
+    // restart: a schedule no workspace shows is one this device no longer keeps a fire time for.
     show_room(&session, vec![scheduled(&device, &cert)]);
     let runs = until_a_run(&mut session, 1);
     assert_eq!(
@@ -469,8 +454,8 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
         vec!["tidy".to_string()],
         "the missed fire time ran once"
     );
-    // The ledger's move past the fire time is a write of the session's to disk:
-    // a counted number of frames is not that write landing.
+    // The ledger's move past the fire time is a write of the session's to disk: a counted number of
+    // frames is not that write landing.
     let (key, entry, next) =
         tilo_test_env::wait_for("the ledger to move past the fire time it ran", || {
             session.step(Duration::from_millis(2)).expect("step");
@@ -563,8 +548,7 @@ fn a_shortcut_armed_on_an_app_runs_once_when_it_starts() {
             &cert,
         )],
     );
-    // A tick arms the shortcut and learns the apps running, of which there
-    // are none.
+    // A tick arms the shortcut and learns the apps running, of which there are none.
     pass(&mut session, Duration::from_millis(700));
     // The session starts the app: its own process runs it.
     launches.started(std::process::id(), PACKAGE, WORKSPACE, false);

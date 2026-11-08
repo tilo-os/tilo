@@ -75,9 +75,6 @@ fn with_points(mark: &Mark, points: Vec<StrokePoint>) -> Mark {
 /// (in artwork units): it keeps the part before, and the part after
 /// becomes a new stroke just above it with the same brush. Answers both
 /// ids.
-///
-/// # Errors
-/// Refuses anything but one stroke, and a cut at either end.
 pub fn split(
     doc: &mut Artwork,
     art: &Artwork,
@@ -155,11 +152,6 @@ pub fn split(
 /// Join the strokes `ids` names into the first, in the order named, each
 /// turned to run on from the end nearest it; the others are removed.
 /// Answers the joined stroke's id.
-///
-/// # Errors
-/// Refuses fewer than two strokes, marks that are not strokes, strokes on
-/// different layers or under different transforms, and a join past the
-/// point limit.
 pub fn merge(doc: &mut Artwork, art: &Artwork, ids: &[String]) -> Result<String, Refusal> {
     let marks = ids
         .iter()

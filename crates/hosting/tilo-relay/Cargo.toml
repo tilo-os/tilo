@@ -101,6 +101,8 @@ tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 # and content hydration.
 iroh.workspace = true
 iroh-base.workspace = true
+# The packet relay this host runs for the pages it serves.
+iroh-relay = { version = "1.0.3", features = ["server"] }
 
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
@@ -247,7 +249,6 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 # The offloadable action the offload journey runs: a batch of thumbnails.

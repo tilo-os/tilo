@@ -251,9 +251,6 @@ impl Exclusions {
 
     /// The Home exclusion set as the private plan carries it. Shape is checked
     /// again by the plan and by the producer that applies it.
-    ///
-    /// # Errors
-    /// Refuses paths that cannot be represented as a native relative path.
     pub fn home_paths(&self) -> std::io::Result<Vec<NativePath>> {
         self.home
             .iter()
@@ -330,9 +327,6 @@ impl Selection {
     /// Select or exclude one node. Selecting a node inside an excluded ancestor
     /// keeps the rest of that ancestor excluded by excluding the sibling
     /// branches: a selection never broadens to data the person did not pick.
-    ///
-    /// # Errors
-    /// Refuses unknown or unavailable nodes and unbounded exclusion sets.
     pub fn set(&mut self, id: &str, decision: Decision) -> Result<(), String> {
         let node = self.tree.node(id).ok_or("unknown source node")?.clone();
         if !node.selectable {
@@ -952,9 +946,6 @@ pub fn discover_windows(
 /// Decode and shape-check root-relative exclusion paths. They are consent
 /// metadata, never a path grant: the producer still revalidates each path under
 /// its own pinned source before skipping anything.
-///
-/// # Errors
-/// Refuses too many paths, unrepresentable bytes and non-relative components.
 pub fn exclusion_paths(values: &[NativePath]) -> std::io::Result<Vec<PathBuf>> {
     if values.len() > MAX_EXCLUSIONS {
         return Err(std::io::Error::new(
@@ -986,9 +977,6 @@ pub fn exclusion_paths(values: &[NativePath]) -> std::io::Result<Vec<PathBuf>> {
 /// Validate that each exclusion resolves under `root` without following a link.
 /// A vanished or replaced exclusion refuses the operation instead of silently
 /// including data the person excluded.
-///
-/// # Errors
-/// Refuses missing, linked, replaced or non-file-and-folder exclusion paths.
 pub fn validate_exclusions_under(root: &std::fs::File, paths: &[PathBuf]) -> std::io::Result<()> {
     use crate::nofollow::{metadata_nofollow, open_directory_nofollow};
     for path in paths {
@@ -1035,9 +1023,6 @@ pub fn validate_exclusions_under(root: &std::fs::File, paths: &[PathBuf]) -> std
 /// Home inventory, so the tree describes exactly what a later export would see.
 /// A host that cannot read a Home inventory has no Home sources to offer, so it
 /// refuses here instead of making every caller decide by target.
-///
-/// # Errors
-/// Refuses unsafe grants, unsupported mounts and changed or unreadable sources.
 pub fn discover_home(home: &std::path::Path, catalog: &SteamCatalog) -> std::io::Result<Tree> {
     #[cfg(target_os = "linux")]
     {

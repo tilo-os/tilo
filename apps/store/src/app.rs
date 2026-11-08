@@ -761,10 +761,6 @@ impl StoreState {
 
     /// Change the person's own block list: `block` or lift their block of
     /// `app`, written where desktop search reads it too.
-    ///
-    /// # Errors
-    /// Returns why the block could not change: someone else blocked the app,
-    /// it was not blocked, or the list could not be written.
     fn change_person_block(&mut self, app: &str, block: bool) -> Result<(), String> {
         if !crate::reports::valid_app_id(app) {
             return Err("invalid app identity".into());
@@ -1778,9 +1774,6 @@ impl StoreState {
 
     /// Check `effect` against what the Store shows now and carry out what
     /// needs no job.
-    ///
-    /// # Errors
-    /// Returns why the effect cannot run now.
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive match over the Store's effects keeps every capability check beside the effect it guards"
@@ -2092,9 +2085,6 @@ impl StoreState {
 
     /// The app `action` is asked of, if the action is the one the app
     /// offers now and nothing else is running.
-    ///
-    /// # Errors
-    /// Returns why the operation cannot run.
     pub fn package_operation(&self, app: &str, action: ActionKind) -> Result<StoreItem, String> {
         let item = self
             .items

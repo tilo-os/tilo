@@ -604,8 +604,6 @@ fn publish_claim(digest: [u8; 32]) -> io::Result<()> {
 }
 /// Compare an original request with the digest inherited from the signed shim.
 /// A serialized claim, environment variable or ordinary file cannot authorize it.
-/// # Errors
-/// Refuses missing, unsealed or mismatched authenticated original-source claims.
 pub fn verify_original_read_claim(expected: [u8; 32]) -> io::Result<()> {
     if expected == [0; 32] {
         return Err(refused("Original read claim is empty"));

@@ -3,14 +3,12 @@ use tilo_ui::tokens::{Metrics, Radii, Spacing, SpacingStep, Tokens};
 
 #[test]
 fn colour_and_radius_tokens_have_their_documented_shape() {
-    // Case `tokens_dark_has_11_neutral_stops`.
     {
         let t = Tokens::dark();
         assert_eq!(t.colors.neutral.len(), 11);
         assert_ne!(t.colors.neutral[0], t.colors.neutral[10]);
     }
 
-    // Case `radii_are_the_shape_table_by_role`.
     // Each role is pinned to the design language's table, so a drift in one
     // step is a visible failure rather than a softer corner.
     {
@@ -49,7 +47,6 @@ fn spacing_scale_is_4px_base_by_field_and_by_step() {
 
 #[test]
 fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
-    // Case `metrics_default_to_the_hig_density_table`.
     // HIG §9.6 density, stated once. Every theme constructor starts from this.
     {
         let m = Metrics::default();
@@ -88,7 +85,6 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         }
     }
 
-    // Case `theme_exposes_tokens`.
     {
         let t = Theme::dark();
         assert_eq!(t.padding_standard, t.tokens.spacing.s3);
@@ -97,7 +93,6 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         assert_eq!(f64::from(t.tokens.radii.control), t.radius_standard);
     }
 
-    // Case `ui_scale_scales_metrics_with_spacing`.
     // `ui_scale` is the one knob that resizes density; metrics follow spacing.
     {
         let scaled = Theme::dark().with_ui_scale(1.5);
@@ -129,7 +124,6 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         }
     }
 
-    // Case `text_growth_follows_larger_text_and_never_shrinks`.
     // HIG §9.6: the text-growth rule the responsive shells apply to a
     // text-sized width or breakpoint is `text_scale.max(1.0)`, stated once.
     {

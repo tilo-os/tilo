@@ -144,8 +144,8 @@ pub fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::E
     decode_payload("", bytes)
 }
 
-/// A `T` from the payload of an action of type `type_id`, like
-/// [`decode_json`]: a group written with what its members share once
+/// A `T` from the payload of an action of type `type_id`,
+/// like [`decode_json`]: a group written with what its members share once
 /// ([`crate::group_form`]) reads as the list of them.
 pub fn decode_payload<T: DeserializeOwned>(
     type_id: &str,

@@ -62,18 +62,17 @@ impl Default for WindowEffect {
     }
 }
 
-/// A window a hosted surface pictures: its live buffer, scaled to fit
-/// `rect` (centred, its aspect kept), clipped to `clip`.
+/// A window a hosted surface pictures: its live buffer, scaled to fit `rect` (centred, its aspect
+/// kept), clipped to `clip` .
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowPicture {
     /// The window, by [`crate::WindowInfo::id`].
     pub window: u64,
-    /// Where the picture rests, logical `(x, y, width, height)`.
+    /// Where the picture rests, logical `(x, y, width, height)` .
     pub rect: (f64, f64, f64, f64),
     /// Its opacity, 0 to 1.
     pub opacity: f32,
-    /// What it may cover, logical `(x, y, width, height)`; all of the
-    /// output when `None`.
+    /// What it may cover, logical `(x, y, width, height)` ; all of the output when `None` .
     pub clip: Option<(f64, f64, f64, f64)>,
 }
 
@@ -92,8 +91,8 @@ pub(crate) struct Framing<'a> {
     pub(crate) state: &'a crate::state::State,
 }
 
-/// What a window's effect draws: its live surfaces, or the last frame it
-/// drew, kept so it can be animated away after it closed.
+/// What a window's effect draws: its live surfaces, or the last frame it drew, kept so it can be
+/// animated away after it closed.
 #[derive(Clone, Copy)]
 pub(crate) enum Content<'a> {
     /// A window as it stands.
@@ -121,9 +120,8 @@ impl Content<'_> {
 }
 
 smithay::backend::renderer::element::render_elements! {
-    /// One drawn piece of a window moved, scaled and clipped, its corners cut
-    /// to the desktop's rounding: a surface as usual, or the rendition of a
-    /// surface that carries an HDR signal.
+    /// One drawn piece of a window moved, scaled and clipped, its corners cut to the desktop's
+    /// rounding: a surface as usual, or the rendition of a surface that carries an HDR signal.
     pub TransformedElement<R> where R: ImportAll + ImportMem;
     /// A client surface.
     Surface=RoundedElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>,
@@ -139,12 +137,10 @@ pub type FrameElement<R> =
     CropRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<R>>>;
 
 /// An element with its corners cut to a rounded rect.
-///
-/// The cut is made where the element is drawn ([`RenderElement::draw`]), by
-/// drawing its rows: the corner strips in as many rows as the arc is deep
-/// and the rest once. Every renderer draws a texture into a rows worth of a
-/// destination the same way, so this needs nothing of the GPU and nothing
-/// of the CPU renderer's shape handling.
+/// The cut is made where the element is drawn ([`RenderElement::draw`]), by drawing its rows: the
+/// corner strips in as many rows as the arc is deep and the rest once. Every renderer draws a
+/// texture into a rows worth of a destination the same way, so this needs nothing of the GPU and
+/// nothing of the CPU renderer's shape handling.
 #[derive(Debug)]
 pub struct RoundedElement<E> {
     element: E,
@@ -235,8 +231,8 @@ where
         if bands.len() <= 1 {
             return self.element.draw(frame, src, dst, damage, opaque_regions);
         }
-        // `damage` and `opaque_regions` are relative to `dst`; each row is
-        // handed its own share of them.
+        // `damage` and `opaque_regions` are relative to `dst` ; each row is handed its own share of
+        // them.
         let within = |rect: Rectangle<i32, Physical>, row: Rectangle<i32, Physical>| {
             let absolute = Rectangle::new(rect.loc + dst.loc, rect.size);
             absolute
@@ -289,7 +285,7 @@ struct Placement {
     at: Point<f64, Logical>,
     /// What it is scaled about, physical.
     pivot: Point<i32, Physical>,
-    /// By how much, about `pivot`.
+    /// By how much, about `pivot` .
     scale: f64,
     /// Its opacity, 0 to 1.
     opacity: f32,
@@ -299,9 +295,8 @@ struct Placement {
     radius: f64,
 }
 
-/// `window` as `placement` draws it: its surfaces, with a surface that
-/// carries an HDR signal drawn as its rendition and given to the output as a
-/// layer of its own.
+/// `window` as `placement` draws it: its surfaces, with a surface that carries an HDR signal drawn
+/// as its rendition and given to the output as a layer of its own.
 fn draw_window<R>(
     renderer: &mut R,
     framing: Framing<'_>,
@@ -373,9 +368,9 @@ where
             })
             .collect(),
     };
-    // What the window drew is kept while it stands, so its close has a
-    // frame to animate even once its surface is gone: its texture, or, for
-    // a window drawn as its HDR rendition, that rendition.
+    // What the window drew is kept while it stands, so its close has a frame to animate even once
+    // its surface is gone: its texture, or, for a window drawn as its HDR rendition, that
+    // rendition.
     if let Some(id) = id {
         framing
             .snapshots
@@ -384,8 +379,7 @@ where
     elements
 }
 
-/// `content` and its frame placed as `placement` says on an output of
-/// `output_scale`, front first.
+/// `content` and its frame placed as `placement` says on an output of `output_scale` , front first.
 fn placed<R>(
     renderer: &mut R,
     framing: Framing<'_>,
@@ -398,9 +392,9 @@ where
     R::TextureId: Clone + Send + 'static,
 {
     let size = content.size();
-    // A window placed across a pixel or two is a line of its colour, not a
-    // picture: what a renderer can fit of a whole buffer there is nothing to
-    // sample. The view that placed it draws it again once it gives it room.
+    // A window placed across a pixel or two is a line of its colour, not a picture: what a renderer
+    // can fit of a whole buffer there is nothing to sample. The view that placed it draws it again
+    // once it gives it room.
     let placed_pixels = size.to_f64() * (placement.scale * output_scale);
     if placed_pixels.w < 2.0 || placed_pixels.h < 2.0 {
         return Vec::new();
@@ -529,8 +523,8 @@ where
     )
 }
 
-/// The scale and top left (logical) that fit a window of `size` into
-/// `rect`, centred, its aspect kept; `None` for an empty window or rect.
+/// The scale and top left (logical) that fit a window of `size` into `rect` , centred, its aspect
+/// kept; `None` for an empty window or rect.
 pub(crate) fn fit(
     size: (f64, f64),
     rect: (f64, f64, f64, f64),
@@ -545,9 +539,9 @@ pub(crate) fn fit(
     Some((scale, Point::from((left, top))))
 }
 
-/// `window` pictured as `picture` says, on an output whose top left in the
-/// logical layout is `output_origin`; a `withheld` window as the placeholder
-/// a capture of it shows, carrying nothing of it.
+/// `window` pictured as `picture` says, on an output whose top left in the logical layout is
+/// `output_origin` ; a `withheld` window as the placeholder a capture of it shows, carrying nothing
+/// of it.
 pub(crate) fn pictured<R>(
     renderer: &mut R,
     framing: Framing<'_>,
@@ -584,8 +578,8 @@ where
         return Vec::new();
     };
     if withheld {
-        // What the window holds is not shown here either: the picture is
-        // the placeholder its captures are, in the rect it fits.
+        // What the window holds is not shown here either: the picture is the placeholder its
+        // captures are, in the rect it fits.
         let rect = Rectangle::<f64, Logical>::new(at, (size.w * scale, size.h * scale).into())
             .to_physical(output_scale)
             .to_i32_round();
@@ -600,9 +594,8 @@ where
             })
             .unwrap_or_default();
     }
-    // Drawn at its own size with its top left on the picture's, then
-    // scaled about that corner. The shadow is scaled with it, so a
-    // thumbnail carries the window's own lift.
+    // Drawn at its own size with its top left on the picture's, then scaled about that corner. The
+    // shadow is scaled with it, so a thumbnail carries the window's own lift.
     placed(
         renderer,
         framing,

@@ -89,6 +89,11 @@ pub struct WebArgs {
     /// this origin.
     #[arg(long = "web-live-origin", value_name = "ORIGIN", requires = "web")]
     pub web_live_origin: Option<String>,
+    /// Run this host's own iroh packet relay at this address, and have its
+    /// pages reach it through it: a page has no UDP socket, so it reaches a
+    /// host only through a relay. Without it the host uses the public relays.
+    #[arg(long = "packet-relay", value_name = "ADDR")]
+    pub packet_relay: Option<SocketAddr>,
     /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
     /// Tilo app opens this host's links: announced in catalogue locators,
     /// so `share-link` and bots mint links under it. Overrides the config's
@@ -303,6 +308,7 @@ pub async fn start_relay_lending(
         cfg.max_workspace_grants = Some(max);
     }
     announce_web_entry(&mut cfg, args);
+    cfg.packet_relay = cfg.packet_relay.or(args.packet_relay);
     let lock =
         tilo_relay::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "agents")]

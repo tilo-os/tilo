@@ -1,4 +1,4 @@
-//! [`Presence`]: whether something is shown, and how far along its coming
+//! [`Presence`] — whether something is shown, and how far along its coming
 //! or going is.
 
 use super::spec::{Direction, MotionSpec};

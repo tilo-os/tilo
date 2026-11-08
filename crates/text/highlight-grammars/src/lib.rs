@@ -14,8 +14,8 @@
 //! grammars to run, so neither syntect nor its regex engines are linked: the
 //! set holds only plain text, and every language highlights as plain text.
 //!
-//! The toolkit reaches this through [`grammars`] as a
-//! [`tilo_highlight::Grammars`]: linked in a build without the shared
+//! The toolkit reaches this through [`grammars`] as
+//! a [`tilo_highlight::Grammars`]: linked in a build without the shared
 //! runtime, from `libtilo_highlight_engine.so` in one.
 //!
 //! [`TokenKind`]: tilo_highlight::TokenKind

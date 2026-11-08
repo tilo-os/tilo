@@ -35,9 +35,6 @@ pub struct Expectation<K: UnitKind> {
 
 impl<K: UnitKind> Expectation<K> {
     /// The unit's file name for `operation`.
-    ///
-    /// # Errors
-    /// Refuses an operation this kind does not accept.
     pub fn filename(operation: &str) -> io::Result<String> {
         if !K::operation_valid(operation) {
             return Err(changed(K::INVALID));

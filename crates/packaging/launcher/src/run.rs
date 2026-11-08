@@ -1552,10 +1552,6 @@ pub fn run_manifest(
 /// This changes supervision only: services, egress, private state and sandbox
 /// grants still come from the ordinary application pipeline. The owner does
 /// not confer retained file authority.
-///
-/// # Errors
-/// Refuses unsigned/unpinned launches, non-GUI modes, changed installation,
-/// failed namespace observation or retired owner authority.
 pub fn run_supervised_gui(
     manifest_path: &Path,
     payload_root: &Path,

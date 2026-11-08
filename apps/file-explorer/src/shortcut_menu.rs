@@ -185,10 +185,6 @@ impl ShortcutMenuState {
     }
 
     /// Run shortcut `shortcut` on the resource of `identities` it takes.
-    ///
-    /// # Errors
-    ///
-    /// Why it cannot run on that resource, for the status line.
     pub fn run(
         &mut self,
         shortcut: &str,

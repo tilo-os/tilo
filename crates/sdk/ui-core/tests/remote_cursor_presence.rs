@@ -18,7 +18,6 @@ fn new_headless_app() -> App {
 
 #[test]
 fn remote_cursor_moves_populate_and_update_presence() {
-    // Case `remote_cursor_move_populates_presence_ctx`.
     {
         let mut app = new_headless_app();
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
@@ -43,7 +42,6 @@ fn remote_cursor_moves_populate_and_update_presence() {
         assert_eq!(c.color[3], 1.0);
     }
 
-    // Case `remote_cursor_move_updates_existing_entry_in_place`.
     {
         let mut app = new_headless_app();
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
@@ -66,7 +64,6 @@ fn remote_cursor_moves_populate_and_update_presence() {
         assert_eq!(presence.remote_cursors[0].position, [200.0, 300.0]);
     }
 
-    // Case `authenticated_context_marks_agent_presence_before_it_moves`.
     {
         let mut app = new_headless_app();
         app.apply_collab_event_for_test(CollabEvent::Context {

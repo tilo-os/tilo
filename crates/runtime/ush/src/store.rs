@@ -3,6 +3,8 @@
 //! ```text
 //! environments/<record>/home/   an environment's home
 //! environments/<record>/var/    its /var/lib and /var/cache
+//! workspaces/<id>/environments/ the same, for the environments of a
+//!                               workspace other than the primary one
 //! sessions/<id>/                live session scratch: generated /etc entries,
 //!                               the broker socket, an ephemeral home
 //! audit/                        the broker's append-only log
@@ -17,6 +19,8 @@
 //! asked for.
 
 use std::path::{Path, PathBuf};
+
+use crate::workspace::{Confinement, WorkspaceId};
 
 /// Environment override for the store root; set by tests or to run two
 /// independent runtimes on one machine. With it set, the environment
@@ -34,11 +38,23 @@ pub const RECORDS_ENV: &str = "TILO_USH_RECORDS";
 /// member's own file area; unset, grants bind the machine's own paths.
 pub const GRANT_ROOT_ENV: &str = "TILO_USH_GRANT_ROOT";
 
-/// The workspace's folder, which every environment's `~` is: where the
-/// supervisor found it, handed to the sessions it starts. Unset, a store at
-/// its default place takes the workspace this device mounts
-/// ([`crate::images::synced_files`]), and a moved store (a test's) has none.
+/// The folder an environment's `~` is: the device's files folder for the
+/// primary workspace, a workspace's own tree in it for any other
+/// ([`Store::for_workspace`]). The supervisor hands it to the sessions it
+/// starts. Unset, a store at its default place takes the files this device
+/// mounts ([`crate::images::synced_files`]), and a moved store (a test's)
+/// has none.
 pub const WORKSPACE_ENV: &str = "TILO_USH_WORKSPACE";
+
+/// The device's files folder, which holds every workspace's tree, handed to
+/// the sessions the supervisor starts with [`WORKSPACE_ENV`]. Unset, it is
+/// the [`WORKSPACE_ENV`] folder.
+pub const FILES_ENV: &str = "TILO_USH_FILES";
+
+/// The workspace a session's environment belongs to
+/// ([`crate::workspace::WorkspaceId`]), handed to the sessions the
+/// supervisor starts. Unset, the primary workspace.
+pub const WORKSPACE_ID_ENV: &str = "TILO_USH_WORKSPACE_ID";
 
 /// The runtime's store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +62,15 @@ pub struct Store {
     root: PathBuf,
     records: PathBuf,
     grant_root: Option<PathBuf>,
+    /// What `~` is: [`WORKSPACE_ENV`].
     workspace: Option<PathBuf>,
+    /// The device's files folder: [`FILES_ENV`].
+    files: Option<PathBuf>,
+    /// The workspace the records and environments are of.
+    workspace_id: WorkspaceId,
+    /// The user's data home, when the records are where Terminal keeps its
+    /// own: then each workspace's are in a directory of its own there.
+    data_home: Option<PathBuf>,
 }
 
 impl Store {
@@ -63,13 +87,17 @@ impl Store {
                 tilo_paths::data_dir().unwrap_or_else(tilo_paths::xdg::runtime_dir_or_default);
             Self {
                 root: data.join("ush"),
-                records: crate::records::terminal_data_home(&data),
+                records: crate::records::terminal_data_home(&data, crate::workspace::PRIMARY),
                 grant_root: None,
                 workspace: None,
+                files: None,
+                workspace_id: WorkspaceId::primary(),
+                data_home: Some(data),
             }
         };
         if let Some(raw) = std::env::var_os(RECORDS_ENV) {
             store.records = PathBuf::from(raw);
+            store.data_home = None;
         }
         store.grant_root = std::env::var_os(GRANT_ROOT_ENV)
             .map(PathBuf::from)
@@ -79,6 +107,16 @@ impl Store {
             None if !moved => crate::images::synced_files(),
             None => None,
         };
+        store.files = std::env::var_os(FILES_ENV)
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .or_else(|| store.workspace.clone());
+        if let Some(raw) = std::env::var_os(WORKSPACE_ID_ENV) {
+            match WorkspaceId::parse(raw.to_str()) {
+                Ok(id) => store.workspace_id = id,
+                Err(why) => tracing::warn!(%why, "ush: the session names no workspace"),
+            }
+        }
         store
     }
 
@@ -90,20 +128,83 @@ impl Store {
             root,
             grant_root: None,
             workspace: None,
+            files: None,
+            workspace_id: WorkspaceId::primary(),
+            data_home: None,
         }
     }
 
-    /// This store, with `workspace` as the workspace's folder.
+    /// This store, with `workspace` as the device's files folder: the
+    /// primary workspace's `~`, and where every other workspace's tree is.
     #[must_use]
     pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
-        self.workspace = Some(workspace.into());
+        let workspace = workspace.into();
+        self.files = Some(workspace.clone());
+        self.workspace = if self.workspace_id.is_primary() {
+            Some(workspace)
+        } else {
+            tilo_paths::workspace_tree(&workspace, self.workspace_id.as_str())
+        };
         self
     }
 
-    /// The workspace's folder, which every environment's `~` is, when this
-    /// device has the workspace.
+    /// This store as the workspace `id` uses it: the records in that
+    /// workspace's room (where Terminal opened in it keeps its own), its
+    /// environments' homes and `/var` state in a directory of its own, and
+    /// its own tree of the device's files as `~`
+    /// ([`tilo_paths::workspace_tree`]). The sessions, the audit log and the
+    /// images are the device's, shared.
+    #[must_use]
+    pub fn for_workspace(&self, id: &WorkspaceId) -> Self {
+        let mut store = self.clone();
+        if let Some(data) = &self.data_home {
+            store.records = crate::records::terminal_data_home(data, id.as_str());
+        }
+        store.workspace = if id.is_primary() {
+            self.files.clone()
+        } else {
+            self.files
+                .as_deref()
+                .and_then(|files| tilo_paths::workspace_tree(files, id.as_str()))
+        };
+        store.workspace_id = id.clone();
+        store
+    }
+
+    /// The workspace this store's records and environments are of.
+    pub fn workspace_id(&self) -> &WorkspaceId {
+        &self.workspace_id
+    }
+
+    /// The folder `~` is for this store's environments, when this device
+    /// has the files: the device's files folder for the primary workspace,
+    /// the workspace's own tree in it for any other.
     pub fn workspace(&self) -> Option<&Path> {
         self.workspace.as_deref()
+    }
+
+    /// The device's files folder, which holds every workspace's tree.
+    pub fn files(&self) -> Option<&Path> {
+        self.files.as_deref()
+    }
+
+    /// What this store's environments may be granted of the device's files
+    /// ([`Confinement`]): `None` for the primary workspace. A device that
+    /// has not mounted its files yet is confined against where they mount.
+    pub fn confinement(&self) -> Option<Confinement> {
+        let files = self
+            .files
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(tilo_paths::WORKSPACE_MOUNT));
+        Confinement::new(&files, &self.workspace_id)
+    }
+
+    /// Where every workspace's records are, when they are where Terminal
+    /// keeps its own (`<data home>/tilo-rooms`): never seen in a guest, so
+    /// no environment reaches another workspace's records.
+    pub fn rooms_dir(&self) -> Option<PathBuf> {
+        let rooms = self.records.ancestors().nth(4)?;
+        (rooms.file_name()? == crate::records::ROOMS_DIR).then(|| rooms.to_path_buf())
     }
 
     /// Where granted directories' contents are, when not at their own paths.
@@ -124,9 +225,19 @@ impl Store {
         self.root.join("environments")
     }
 
-    /// Everything one environment owns outside its record.
+    /// Everything one environment owns outside its record. The primary
+    /// workspace's are where they always were; another workspace's are in a
+    /// directory of its own, since every workspace has a `default`.
     pub fn environment_dir(&self, record: &str) -> PathBuf {
-        self.environments_dir().join(record)
+        if self.workspace_id.is_primary() {
+            self.environments_dir().join(record)
+        } else {
+            self.root
+                .join("workspaces")
+                .join(self.workspace_id.as_str())
+                .join("environments")
+                .join(record)
+        }
     }
 
     /// Where an environment's home was kept before `~` was the workspace's
@@ -221,5 +332,61 @@ mod tests {
         );
 
         store.ensure().unwrap();
+    }
+
+    /// A workspace's store keeps its records in its own room, its
+    /// environments' state in a directory of its own, and its own tree of
+    /// the device's files as `~`; the primary workspace's is the store as
+    /// it always was.
+    #[test]
+    fn a_workspace_has_its_own_records_state_and_files() {
+        let data = PathBuf::from("/home/you/.local/share");
+        let base = Store {
+            root: data.join("ush"),
+            records: crate::records::terminal_data_home(&data, crate::workspace::PRIMARY),
+            grant_root: None,
+            workspace: Some(PathBuf::from("/var/workspace")),
+            files: Some(PathBuf::from("/var/workspace")),
+            workspace_id: WorkspaceId::primary(),
+            data_home: Some(data.clone()),
+        };
+        let w1 = WorkspaceId::parse(Some("w1")).unwrap();
+        let store = base.for_workspace(&w1);
+        assert_eq!(
+            store.records_root(),
+            data.join("tilo-rooms/w1/so.tilo.terminal/.local/share")
+        );
+        assert_eq!(
+            store.workspace(),
+            Some(Path::new("/var/workspace/.workspaces/w1"))
+        );
+        assert_eq!(store.files(), Some(Path::new("/var/workspace")));
+        assert_eq!(
+            store.environment_var("default"),
+            data.join("ush/workspaces/w1/environments/default/var")
+        );
+        assert_eq!(store.sessions_dir(), base.sessions_dir());
+        assert_eq!(store.rooms_dir(), Some(data.join("tilo-rooms")));
+        assert!(store.confinement().is_some());
+
+        let primary = store.for_workspace(&WorkspaceId::primary());
+        assert_eq!(primary, base);
+        assert_eq!(
+            primary.records_root(),
+            data.join("tilo-rooms/personal/so.tilo.terminal/.local/share")
+        );
+        assert_eq!(primary.workspace(), Some(Path::new("/var/workspace")));
+        assert_eq!(
+            primary.environment_var("default"),
+            data.join("ush/environments/default/var")
+        );
+        assert!(primary.confinement().is_none());
+
+        // A moved store keeps every room's records under one root, apart
+        // by the room in each record's address.
+        let moved = Store::at("/tmp/ush").for_workspace(&w1);
+        assert_eq!(moved.records_root(), Path::new("/tmp/ush/records"));
+        assert_eq!(moved.workspace(), None, "no files, no home folder");
+        assert_eq!(moved.rooms_dir(), None);
     }
 }

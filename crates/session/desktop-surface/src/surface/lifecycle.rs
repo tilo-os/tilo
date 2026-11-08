@@ -1,6 +1,5 @@
-//! The surface's component lifecycle and control custody: every tab's
-//! application, shown or not, closes and takes its controls with the
-//! surface, whichever strip or row it stands in.
+//! The surface's component lifecycle and control custody: every tab's application, shown or not,
+//! closes and takes its controls with the surface, whichever strip or row it stands in.
 
 use super::{DesktopSurface, TabId};
 use ui::widget::{TileHost, Widget};
@@ -14,8 +13,7 @@ impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
     fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
         let mut reports =
             self.each_host(|host| ui::component_lifecycle::take_component_close_reports(host));
-        // Windows a row removed itself: pruned after their close, or
-        // dropped by a tree change.
+        // Windows a row removed itself: pruned after their close, or dropped by a tree change.
         for row in self.rows.values_mut() {
             reports.extend(ui::component_lifecycle::take_component_close_reports(row));
         }
@@ -24,8 +22,8 @@ impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
 }
 
 impl ui::widget::controls::ActionControls for DesktopSurface {
-    /// Bind every tab, shown or not, and keep `domain` for the tabs built
-    /// later; then the overlays the surface currently shows.
+    /// Bind every tab, shown or not, and keep `domain` for the tabs built later; then the overlays
+    /// the surface currently shows.
     fn install_control_custody(
         &mut self,
         domain: &ui::ControlDomain,

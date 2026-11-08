@@ -1,13 +1,10 @@
 //! The panel's brightness follows the light in the room.
-//!
-//! `display.auto_brightness` records the policy; the session owns the
-//! displays, so the session applies it, whether Settings is open or not.
-//! While it is on, the ambient light sensor is read every couple of seconds
-//! and the panel's own backlight follows, in the steps
-//! [`AmbientBrightnessController`] smooths them into. A machine without a
-//! sensor or a backlight writes nothing, and while the idle dim holds the
-//! backlight the policy waits: the dim's restore is not overruled behind the
-//! person's back.
+//! `display.auto_brightness` records the policy; the session owns the displays, so the session
+//! applies it, whether Settings is open or not. While it is on, the ambient light sensor is read
+//! every couple of seconds and the panel's own backlight follows, in the steps
+//! [`AmbientBrightnessController`] smooths them into. A machine without a sensor or a backlight
+//! writes nothing, and while the idle dim holds the backlight the policy waits: the dim's restore
+//! is not overruled behind the person's back.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,8 +27,7 @@ pub(crate) struct AutoBrightness {
 }
 
 impl AutoBrightness {
-    /// Automatic brightness following `enabled`, which the settings watch
-    /// keeps current.
+    /// Automatic brightness following `enabled` , which the settings watch keeps current.
     fn new(enabled: Arc<AtomicBool>) -> Self {
         Self {
             controller: os_actions::AmbientBrightnessController::default(),
@@ -40,8 +36,7 @@ impl AutoBrightness {
         }
     }
 
-    /// Automatic brightness following the settings, and the flag the watch
-    /// keeps current.
+    /// Automatic brightness following the settings, and the flag the watch keeps current.
     pub(crate) fn watched() -> (Self, Arc<AtomicBool>) {
         let enabled = Arc::new(AtomicBool::new(
             settings_store::hardware::AUTO_BRIGHTNESS.get(),
@@ -54,10 +49,9 @@ impl AutoBrightness {
         self.enabled.load(Ordering::Relaxed)
     }
 
-    /// Read the light in the room at `lux`, if it is time to, and say what the
-    /// panel's backlight becomes. `None` when the policy is off, the sample is
-    /// too early, the dim holds the backlight, or the change is inside the
-    /// controller's deadband.
+    /// Read the light in the room at `lux` , if it is time to, and say what the panel's backlight
+    /// becomes. `None` when the policy is off, the sample is too early, the dim holds the
+    /// backlight, or the change is inside the controller's deadband.
     pub(crate) fn follow(&mut self, now: Instant, dimmed: bool, lux: Option<f32>) -> Option<f32> {
         if !self.enabled() {
             self.controller.reset();
@@ -83,7 +77,7 @@ impl AutoBrightness {
     }
 }
 
-/// Take `document`, the settings as they now are, into `enabled`.
+/// Take `document` , the settings as they now are, into `enabled` .
 pub(crate) fn read(enabled: &AtomicBool, document: &serde_json::Map<String, serde_json::Value>) {
     enabled.store(
         settings_store::hardware::AUTO_BRIGHTNESS.from_document(document),
@@ -111,9 +105,8 @@ impl Session {
     }
 }
 
-/// Move the built-in panel's own backlight to `percent`. A monitor across the
-/// desk is not moved: the light in the room says nothing about it, and its
-/// DDC/CI level is the person's to set.
+/// Move the built-in panel's own backlight to `percent` . A monitor across the desk is not moved:
+/// the light in the room says nothing about it, and its DDC/CI level is the person's to set.
 pub(crate) fn apply(percent: f32) {
     let service = BrightnessService::global();
     let panel = service.levels().into_iter().find(|level| {

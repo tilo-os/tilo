@@ -132,10 +132,6 @@ impl PreparedReadExclusion {
     /// All sibling objects are granted by held descriptors, never by following
     /// aliases. Ancestors themselves are not granted, so no rule covers the
     /// excluded inode even through a proc-fd or symbolic-link alias.
-    ///
-    /// # Errors
-    /// Refuses unsupported kernels, malformed/missing paths, redirecting
-    /// ancestors, or any rule that the kernel cannot enforce.
     pub fn prepare(excluded: &Path) -> io::Result<Self> {
         if !excluded.is_absolute() {
             return Err(error());

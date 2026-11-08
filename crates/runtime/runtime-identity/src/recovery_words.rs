@@ -224,11 +224,6 @@ pub fn recovery_words_public_key(phrase: &str) -> Result<[u8; 32], RecoveryWords
 /// [`import_recovery_words`], so a person restoring a joined device, or one
 /// whose secret store lost its key, cannot end up with a second identity by
 /// mistake. Reads public fields only; never contacts a secret provider.
-///
-/// # Errors
-///
-/// Returns an error if `identity_dir` is not a real directory owned by this
-/// user or cannot be read.
 pub fn recovery_expected_identity(identity_dir: &Path) -> io::Result<Option<[u8; 32]>> {
     Ok(super::list_identities(identity_dir)?
         .into_iter()

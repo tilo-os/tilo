@@ -1,6 +1,5 @@
-//! Real Wayland clients against a headless compositor: windows are mapped
-//! where the policy says, composited with hosted layers on top, and input
-//! reaches whoever it belongs to.
+//! Real Wayland clients against a headless compositor: windows are mapped where the policy says,
+//! composited with hosted layers on top, and input reaches whoever it belongs to.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -106,16 +105,15 @@ fn a_window_opens_from_its_first_buffer() {
     pump(&mut compositor, &mut [&mut client], |_, clients| {
         clients[0].seen.configured
     });
-    // Committed without a buffer, it is not on the desktop yet: nothing
-    // stands there to be animated open.
+    // Committed without a buffer, it is not on the desktop yet: nothing stands there to be animated
+    // open.
     pump(&mut compositor, &mut [&mut client], |_, _| true);
     assert!(compositor.windows().is_empty());
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(320, 240), Some(BACKGROUND));
 
-    // Its first buffer is what it opens from: the desktop animates the
-    // window it can already see.
+    // Its first buffer is what it opens from: the desktop animates the window it can already see.
     client.show(200, 100, [255, 0, 0, 255]);
     pump(&mut compositor, &mut [&mut client], |compositor, _| {
         !compositor.windows().is_empty()
@@ -148,9 +146,9 @@ fn a_scaled_output_composites_in_physical_pixels() {
         .add_output(&OutputConfig::new("HEADLESS-1", 1280, 960).with_scale(2.0))
         .unwrap();
     let _client = mapped_client(&mut compositor, "blue", (200, 100), [0, 0, 255, 255]);
-    // A logical 640x480 output: the scale-1 buffer is centred there and
-    // drawn at twice its size, physical (440, 380) to (840, 580); edges are
-    // filtered, so the checks sit a few pixels inside and outside.
+    // A logical 640x480 output: the scale-1 buffer is centred there and drawn at twice its size,
+    // physical (440, 380) to (840, 580); edges are filtered, so the checks sit a few pixels inside
+    // and outside.
     assert_eq!(compositor.windows()[0].1, (220, 190, 200, 100));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
@@ -471,11 +469,11 @@ struct HostLog {
     left: u32,
     keys: Vec<HostKey>,
     wants_keyboard: bool,
-    /// Each Super+X the surface was offered, and whether it was told a client
-    /// holds the desktop's shortcuts.
+    /// Each Super+X the surface was offered, and whether it was told a client holds the desktop's
+    /// shortcuts.
     taken: Vec<(u32, bool)>,
-    /// The text field the surface draws, when it draws one: what it declares
-    /// and where its caret stands on the desk.
+    /// The text field the surface draws, when it draws one: what it declares and where its caret
+    /// stands on the desk.
     field: Option<HostTextInput>,
     /// What the input method did with the field, in order.
     ime: Vec<HostIme>,
@@ -569,8 +567,8 @@ impl SurfaceHost for Square {
     }
 }
 
-/// The desktop's own key surface, as the session's is: it answers Super+X
-/// wherever the keyboard is, unless a client holds the desktop's shortcuts.
+/// The desktop's own key surface, as the session's is: it answers Super+X wherever the keyboard is,
+/// unless a client holds the desktop's shortcuts.
 struct Chords {
     log: Rc<RefCell<HostLog>>,
 }
@@ -766,8 +764,7 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
     assert_eq!(shown(&mut compositor, 110, 110), Some(BACKGROUND));
 }
 
-/// Floating windows; takes touchpad gestures when `claims`, and records
-/// what reached it.
+/// Floating windows; takes touchpad gestures when `claims` , and records what reached it.
 struct Desktop {
     claims: bool,
     gestures: Rc<RefCell<Vec<GestureEvent>>>,
@@ -1036,8 +1033,7 @@ fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
     assert!(client.seen.buttons.is_empty());
 }
 
-/// A floating stack whose focus and closes a test sets, as a desktop's own
-/// controls would.
+/// A floating stack whose focus and closes a test sets, as a desktop's own controls would.
 #[derive(Default)]
 struct Steered {
     focus: Rc<RefCell<Option<u64>>>,
@@ -1122,14 +1118,13 @@ fn a_window_is_drawn_with_rounded_corners_and_a_shadow_below_it() {
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let pixel = |x, y| frame.pixel(x, y).expect("on the output");
     let red = [255, 0, 0, 255];
-    // The window stands at (220, 190) to (420, 290) and the window tile
-    // rounds its corners by 14: the corner pixels are not the window's.
+    // The window stands at (220, 190) to (420, 290) and the window tile rounds its corners by 14:
+    // the corner pixels are not the window's.
     assert_eq!(pixel(320, 240), red, "the middle is the window");
     assert_eq!(pixel(232, 200), red, "just inside the corner");
     assert_ne!(pixel(221, 191), red, "the corner itself is cut");
     assert_eq!(pixel(420 - 12, 290 - 20), red, "inside the far corner");
-    // Its shadow falls below it, and the hairline that marks its edge runs
-    // just outside it.
+    // Its shadow falls below it, and the hairline that marks its edge runs just outside it.
     assert!(
         luma(pixel(320, 292)) < luma(BACKGROUND),
         "the shadow darkens the ground below: {:?}",
@@ -1259,8 +1254,8 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
         compositor.windows().is_empty()
     });
 
-    // The window left the desktop's windows, and its last frame stays where
-    // it stood, kept as an element the desktop animates away.
+    // The window left the desktop's windows, and its last frame stays where it stood, kept as an
+    // element the desktop animates away.
     let closing = compositor.closing_windows();
     assert_eq!(closing.len(), 1, "one snapshot: {closing:?}");
     assert_eq!(closing[0].0.id, info.id);
@@ -1423,8 +1418,7 @@ fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
         pixel(60, 88)
     );
 
-    // The picture is a view of its own: the window's effect moves the
-    // window, not the picture.
+    // The picture is a view of its own: the window's effect moves the window, not the picture.
     compositor.set_window_effect(
         info.id,
         Some(WindowEffect {
@@ -1446,14 +1440,14 @@ fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
     );
 }
 
-/// The pixels of a picture's rect (fits 200 x 100 into 100 x 100: 100 x 50
-/// at 10, 35) and of the window itself (centred: 220, 190 to 420, 290).
+/// The pixels of a picture's rect (fits 200 x 100 into 100 x 100: 100 x 50 at 10, 35) and of the
+/// window itself (centred: 220, 190 to 420, 290).
 const IN_PICTURE: [(u32, u32); 4] = [(15, 40), (60, 60), (105, 40), (60, 80)];
 const IN_WINDOW: (u32, u32) = (320, 240);
 
-/// A window the session keeps private is a placeholder wherever a hosted
-/// surface pictures it, on the person's own display too: the desk a
-/// picture stands on is what a screenshot, a recording and a share show.
+/// A window the session keeps private is a placeholder wherever a hosted surface pictures it, on
+/// the person's own display too: the desk a picture stands on is what a screenshot, a recording and
+/// a share show.
 #[test]
 fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
     let mut compositor = headless(Box::new(StackPolicy));
@@ -1502,8 +1496,8 @@ fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
         );
     }
 
-    // A copy of the desk shows the window and its picture as that same
-    // placeholder: no secret leaves with it.
+    // A copy of the desk shows the window and its picture as that same placeholder: no secret
+    // leaves with it.
     let copy = compositor
         .read_back_region("HEADLESS-1", (0, 0, 640, 480))
         .expect("a capture of the output");
@@ -1532,8 +1526,8 @@ fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
     assert_eq!(frame.pixel(60, 60), Some([255, 0, 0, 255]), "pictured live");
 }
 
-/// An app known to hold secrets is private without asking, and its picture
-/// is the placeholder its captures are.
+/// An app known to hold secrets is private without asking, and its picture is the placeholder its
+/// captures are.
 #[test]
 fn a_picture_of_an_app_that_holds_secrets_is_its_placeholder() {
     let mut compositor = headless(Box::new(StackPolicy));
@@ -1664,8 +1658,8 @@ impl SurfaceHost for Frosted {
 fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes() {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
-    // The window covers 220..420 x 190..290: the region's right and lower
-    // part is red, the rest background.
+    // The window covers 220..420 x 190..290: the region's right and lower part is red, the rest
+    // background.
     let handed = Rc::new(RefCell::new(Vec::new()));
     compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
     compositor.draw_frame().expect("a frame");
@@ -1717,8 +1711,8 @@ fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
     compositor.draw_frame().expect("a frame");
     handed.borrow_mut().clear();
 
-    // The desktop slides the window 200 px left: it now covers the left of
-    // the hosted surface's region, where nothing stood before.
+    // The desktop slides the window 200 px left: it now covers the left of the hosted surface's
+    // region, where nothing stood before.
     let (info, _) = compositor.windows()[0].clone();
     compositor.set_window_effect(
         info.id,
@@ -1881,8 +1875,7 @@ fn a_text_field_waiting_for_typing_is_told_apart_from_the_way_it_is_typed() {
     assert!(!entry.wants_typing, "nothing is being typed into yet");
     assert!(!entry.on_the_glass, "no touch has happened at all");
 
-    // A hardware key first, then a touch on the screen: the glass is what
-    // they type on.
+    // A hardware key first, then a touch on the screen: the glass is what they type on.
     compositor
         .input(InputEvent::Key {
             keycode: KEY_A,
@@ -1908,8 +1901,8 @@ fn a_text_field_waiting_for_typing_is_told_apart_from_the_way_it_is_typed() {
         "a key hands typing back to the keyboard they hold"
     );
 
-    // The on-screen keyboard is up, as a client the session trusts, and
-    // the window holds a field that asks for typing.
+    // The on-screen keyboard is up, as a client the session trusts, and the window holds a field
+    // that asks for typing.
     let mut keyboard = TestClient::connect_trusted(&mut compositor);
     pump(
         &mut compositor,
@@ -1967,8 +1960,7 @@ fn a_text_field_waiting_for_typing_is_told_apart_from_the_way_it_is_typed() {
     );
 }
 
-/// A focused window that has no text field yet, and the on-screen keyboard
-/// serving the seat.
+/// A focused window that has no text field yet, and the on-screen keyboard serving the seat.
 fn window_and_keyboard() -> (Compositor, TestClient, TestClient) {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "form", (200, 100), [0, 255, 0, 255]);
@@ -1999,8 +1991,7 @@ fn settle(compositor: &mut Compositor, client: &mut TestClient, keyboard: &mut T
     pump(compositor, &mut [client, keyboard], |_, _| true);
 }
 
-/// Wait until the compositor has taken the field's last commit: it tells the
-/// input method so.
+/// Wait until the compositor has taken the field's last commit: it tells the input method so.
 fn committed(
     compositor: &mut Compositor,
     client: &mut TestClient,
@@ -2036,8 +2027,7 @@ fn a_field_that_commits_again_is_no_longer_the_one_dictation_bound() {
         .expect("a field to dictate into");
     assert!(!field.multiline, "an ordinary text box takes one line");
 
-    // The caret moves: still the same field, but another revision of what
-    // its client committed.
+    // The caret moves: still the same field, but another revision of what its client committed.
     let done = keyboard.seen.ime_done;
     client.move_caret(3);
     committed(&mut compositor, &mut client, &mut keyboard, done);
@@ -2057,8 +2047,8 @@ fn a_field_that_commits_again_is_no_longer_the_one_dictation_bound() {
         "a field that moved takes nothing"
     );
 
-    // Another field of the same window enables the object again: the same
-    // object on the same surface, so the same identity, and a new revision.
+    // Another field of the same window enables the object again: the same object on the same
+    // surface, so the same identity, and a new revision.
     let field = compositor
         .dictation_field()
         .expect("a field to dictate into");
@@ -2159,8 +2149,7 @@ fn dictation_keeps_out_of_secret_and_terminal_fields() {
         "a password field takes nothing"
     );
 
-    // Digits are a PIN pad: the on-screen keyboard treats them as secret
-    // too.
+    // Digits are a PIN pad: the on-screen keyboard treats them as secret too.
     let done = keyboard.seen.ime_done;
     client.set_content_type(ContentHint::empty(), ContentPurpose::Digits);
     committed(&mut compositor, &mut client, &mut keyboard, done);
@@ -2243,10 +2232,9 @@ fn dictation_writes_once_into_the_field_it_bound() {
     );
 }
 
-/// The emoji picker goes where the person types: the caret its card opens at
-/// is the one the field reports on the window it is in, and a pick reaches
-/// the field even when the field keeps its content secret — it is only not
-/// remembered then.
+/// The emoji picker goes where the person types: the caret its card opens at is the one the field
+/// reports on the window it is in, and a pick reaches the field even when the field keeps its
+/// content secret — it is only not remembered then.
 #[test]
 fn a_pick_opens_at_the_caret_and_reaches_even_a_secret_field() {
     let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
@@ -2299,8 +2287,7 @@ fn a_pick_opens_at_the_caret_and_reaches_even_a_secret_field() {
     );
     assert_eq!(client.seen.committed, vec!["🎉".to_owned()]);
 
-    // A password field takes it too, and says so: what it holds is never
-    // remembered.
+    // A password field takes it too, and says so: what it holds is never remembered.
     let done = keyboard.seen.ime_done;
     client.focus_another_field(ContentHint::empty(), ContentPurpose::Password);
     committed(&mut compositor, &mut client, &mut keyboard, done);
@@ -2346,7 +2333,7 @@ fn the_policy_knows_each_output_by_the_monitor_on_it() {
     assert_eq!(outputs[1].label, "HEADLESS-2");
 }
 
-/// Click the left button at `(x, y)`.
+/// Click the left button at `(x, y)` .
 fn click(compositor: &mut Compositor, x: f64, y: f64) {
     compositor
         .input(InputEvent::PointerMotion { x, y })
@@ -2409,7 +2396,7 @@ fn with_a11y(compositor: &mut Compositor, change: impl FnOnce(&mut tilo_composit
     compositor.set_a11y(a11y).expect("accessibility settings");
 }
 
-/// Every pixel of `frame` that is `wanted`.
+/// Every pixel of `frame` that is `wanted` .
 fn count(frame: &tilo_compositor::Screenshot, wanted: [u8; 4]) -> usize {
     (0..frame.height)
         .flat_map(|y| (0..frame.width).map(move |x| (x, y)))
@@ -2424,8 +2411,8 @@ fn sticky_keys_hold_a_modifier_for_one_chord() {
     let mut client = mapped_client(&mut compositor, "sticky", (200, 100), [0, 255, 0, 255]);
     with_a11y(&mut compositor, |a11y| a11y.assists.sticky_keys = true);
 
-    // Shift, pressed and let go, then a letter: the shift stays down for
-    // the letter and comes up with it.
+    // Shift, pressed and let go, then a letter: the shift stays down for the letter and comes up
+    // with it.
     for (keycode, pressed) in [
         (KEY_LEFTSHIFT, true),
         (KEY_LEFTSHIFT, false),
@@ -2586,8 +2573,7 @@ fn the_visual_alert_lights_the_display_edge_and_fades() {
         "the alert is an edge, not a wash over the screen"
     );
 
-    // It fades out as time passes: once its run is over the frame is the
-    // desktop again.
+    // It fades out as time passes: once its run is over the frame is the desktop again.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut faded = false;
     while std::time::Instant::now() < deadline {
@@ -2673,7 +2659,7 @@ fn press_button(compositor: &mut Compositor, button: u32) {
     }
 }
 
-/// A press and its release of `keys`, in order, as fingers type a chord.
+/// A press and its release of `keys` , in order, as fingers type a chord.
 fn press_keys(compositor: &mut Compositor, keys: &[u32]) {
     for &keycode in keys {
         compositor
@@ -2706,8 +2692,7 @@ fn a_locked_pointer_only_moves_its_client_by_deltas_and_follows_focus() {
         "the window mapped last has the keyboard, not this one"
     );
 
-    // Under the pointer is not enough: the lock takes hold with the keyboard
-    // focus, and only then.
+    // Under the pointer is not enough: the lock takes hold with the keyboard focus, and only then.
     compositor
         .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
         .expect("input");
@@ -2755,8 +2740,7 @@ fn a_locked_pointer_only_moves_its_client_by_deltas_and_follows_focus() {
         |_, clients| clients[0].seen.pointer_locked,
     );
 
-    // Ctrl+Alt+Escape gives the pointer back, and keeps it back while the
-    // game keeps the focus.
+    // Ctrl+Alt+Escape gives the pointer back, and keeps it back while the game keeps the focus.
     press_keys(&mut compositor, &[KEY_LEFTCTRL, KEY_LEFTALT, KEY_ESCAPE]);
     pump(
         &mut compositor,
@@ -2799,8 +2783,7 @@ fn a_confined_pointer_stops_at_the_edge_of_its_region() {
         clients[0].seen.pointer_confined
     });
 
-    // Past the region the pointer stops at its edge, on the client's own
-    // surface coordinates.
+    // Past the region the pointer stops at its edge, on the client's own surface coordinates.
     compositor
         .input(InputEvent::PointerMotion { x: 200.0, y: 150.0 })
         .expect("input");
@@ -2858,8 +2841,7 @@ fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_cho
         clients[0].seen.shortcuts_inhibited
     });
 
-    // A locked session hands them back too: the lock screen is the
-    // desktop's.
+    // A locked session hands them back too: the lock screen is the desktop's.
     compositor.lock_now().expect("lock");
     pump(&mut compositor, &mut [&mut vm, &mut other], |_, clients| {
         !clients[0].seen.shortcuts_inhibited
@@ -2925,8 +2907,8 @@ fn a_hosted_surface_hears_how_long_the_display_holds_a_frame() {
         Some(Duration::from_nanos(1_000_000_000_000 / 144_000)),
         "the surface draws on the display's grid"
     );
-    // The fastest display sets the grid: a frame kept for the slow one shows
-    // on the fast one later than it runs.
+    // The fastest display sets the grid: a frame kept for the slow one shows on the fast one later
+    // than it runs.
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 640, 480))
         .unwrap();

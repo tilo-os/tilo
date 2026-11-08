@@ -54,7 +54,6 @@ fn snapshot(binding: &CallbackBinding) -> Snapshot {
 }
 #[test]
 fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
-    // Case `owned_restore_bound_exact_span_instance_stamp_and_undo_without_duplicate_boundary`.
     {
         let host = ProbeHost::new();
         let component =
@@ -112,7 +111,6 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
         assert!(outer.base_heads().is_empty());
     }
 
-    // Case `owned_restore_bound_noop_and_stale_preserve_redo_and_empty_continuation`.
     {
         let host = ProbeHost::new();
         let component =
@@ -154,7 +152,6 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
         assert_eq!(snapshot(&binding), before);
     }
 
-    // Case `owned_restore_bound_engine_rollback_preserves_redo_and_generation`.
     {
         let host = ProbeHost::new();
         let component =
@@ -203,7 +200,6 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
 }
 #[test]
 fn owned_restore_bound_refuses_mismatched_or_active_targets_without_bookkeeping() {
-    // Case `owned_restore_bound_refuses_physical_logical_and_generation_without_bookkeeping`.
     {
         for case in 0..5 {
             let host = ProbeHost::new();
@@ -259,7 +255,6 @@ fn owned_restore_bound_refuses_mismatched_or_active_targets_without_bookkeeping(
         }
     }
 
-    // Case `owned_restore_bound_active_mutation_and_nested_operation_refused`.
     {
         let host = ProbeHost::new();
         let component =

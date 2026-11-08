@@ -15,7 +15,6 @@ fn drawn(field: TextInput) -> App {
 
 #[test]
 fn a_window_showing_a_typed_secret_is_withheld_from_captures() {
-    // Case `a_typed_password_withholds_the_window_masked_or_shown`.
     for revealed in [false, true] {
         let mut field = TextInput::local()
             .with_secret(true)
@@ -28,7 +27,6 @@ fn a_window_showing_a_typed_secret_is_withheld_from_captures() {
         assert!(app.withholds_captures(), "revealed: {revealed}");
     }
 
-    // Case `an_empty_password_or_plain_text_withholds_nothing`.
     for field in [
         TextInput::local().with_secret(true),
         TextInput::local().with_initial_value("hunter2"),
@@ -36,7 +34,6 @@ fn a_window_showing_a_typed_secret_is_withheld_from_captures() {
         assert!(!drawn(field).withholds_captures());
     }
 
-    // Case `an_app_that_asked_stays_withheld`.
     let mut app = drawn(TextInput::local());
     app.set_capture_protected(true);
     assert!(app.withholds_captures());

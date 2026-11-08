@@ -1,11 +1,8 @@
 //! Idle dimming and blanking, and outputs turned off and on.
-//!
-//! [`crate::idle::SessionManager`] decides; this applies its decisions:
-//! the dim lowers the session's backlight or darkens the scene
-//! ([`crate::dim`]), a blank switches every panel off through
-//! [`crate::output_power`], and locking or suspending is handed to the
-//! session ([`crate::Compositor::take_session_events`]), which starts its
-//! lock client or asks logind.
+//! [`crate::idle::SessionManager`] decides; this applies its decisions: the dim lowers the
+//! session's backlight or darkens the scene ([`crate::dim`]), a blank switches every panel off
+//! through [`crate::output_power`], and locking or suspending is handed to the session
+//! ([`crate::Compositor::take_session_events`]), which starts its lock client or asks logind.
 
 use std::time::Instant;
 
@@ -26,8 +23,8 @@ pub(crate) struct Idle {
     pub(crate) lock_of: LockedBy,
     /// Something outside the compositor holds the machine awake.
     pub(crate) suspend_held: bool,
-    /// Something outside the compositor says the person is there without
-    /// touching anything: an app's `Inhibit IDLE`, a presentation.
+    /// Something outside the compositor says the person is there without touching anything: an
+    /// app's `Inhibit IDLE` , a presentation.
     pub(crate) held: bool,
 }
 
@@ -51,8 +48,8 @@ impl State {
         self.apply_idle(transitions, LockedBy::Person);
     }
 
-    /// Advance the idle timers; an idle-inhibit surface, a hold from outside
-    /// or a suspend hold keeps them from firing.
+    /// Advance the idle timers; an idle-inhibit surface, a hold from outside or a suspend hold
+    /// keeps them from firing.
     pub(crate) fn tick_idle(&mut self) {
         let holds = Holds {
             idle: self.idle_inhibited() || self.idle.held,
@@ -62,14 +59,13 @@ impl State {
         self.apply_idle(transitions, LockedBy::IdleTimer);
     }
 
-    /// Whether the lock the session has is the idle timer's rather than the
-    /// person's.
+    /// Whether the lock the session has is the idle timer's rather than the person's.
     pub(crate) fn lock_by_idle(&self) -> bool {
         self.idle.session.is_locked() && self.idle.lock_of == LockedBy::IdleTimer
     }
 
-    /// Apply what the idle state machine decided, `locked_by` saying whose
-    /// the lock is when one is among the transitions.
+    /// Apply what the idle state machine decided, `locked_by` saying whose the lock is when one is
+    /// among the transitions.
     pub(crate) fn apply_idle(&mut self, transitions: Vec<SessionTransition>, locked_by: LockedBy) {
         if transitions.is_empty() {
             return;
@@ -96,8 +92,8 @@ impl State {
             .keep_session_truthful(&mut self.idle.session);
     }
 
-    /// A lock client locked the session: idle locking has nothing left to
-    /// do, and the lock surface shows at full brightness.
+    /// A lock client locked the session: idle locking has nothing left to do, and the lock surface
+    /// shows at full brightness.
     pub(crate) fn lock_shown(&mut self) {
         let transitions = self.idle.session.request_lock(Instant::now());
         let display: Vec<SessionTransition> = transitions
@@ -130,8 +126,8 @@ impl State {
             .collect()
     }
 
-    /// Every known output: its connector, whether it is on, its logical
-    /// rectangle while it is, and the colour `colour` says it shows.
+    /// Every known output: its connector, whether it is on, its logical rectangle while it is, and
+    /// the colour `colour` says it shows.
     pub(crate) fn output_infos(
         &self,
         colour: impl Fn(&Output) -> tilo_color_pipeline::hdr_display::DisplayCapabilities,
@@ -198,8 +194,7 @@ impl State {
         self.space.map_output(&output, location);
     }
 
-    /// The overlay alpha the scene is drawn under while dimmed without a
-    /// backlight.
+    /// The overlay alpha the scene is drawn under while dimmed without a backlight.
     pub(crate) fn dim_alpha(&self) -> Option<f32> {
         self.idle.dimmer.overlay_alpha()
     }

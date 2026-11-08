@@ -87,8 +87,8 @@ fn time_bucket_wait_runs_to_the_next_whole_bucket() {
     );
 }
 
-/// The clock is read only when drawing, so an idle desktop repaints it
-/// solely through the bar's wake deadline at the end of the minute.
+/// The clock is read only when drawing, so an idle desktop repaints it solely through the bar's
+/// wake deadline at the end of the minute.
 #[test]
 fn idle_clock_wakes_and_repaints_when_the_minute_turns() {
     let mut bar = sample_chrome();
@@ -99,8 +99,7 @@ fn idle_clock_wakes_and_repaints_when_the_minute_turns() {
     );
     assert!(!bar.update(&(), &()));
 
-    // The bar's clock stands still, so the minute turns only when the
-    // test says it did.
+    // The bar's clock stands still, so the minute turns only when the test says it did.
     let now = ui::time::now();
     ui::time::testing::with_monotonic_time(now, || {
         lay_out_and_draw(&mut bar, 1200.0);
@@ -134,8 +133,8 @@ fn lay_out_and_draw_with_theme(bar: &mut TopBarChrome, width: f32, theme: &Theme
     lay_out_and_draw_with_text(bar, width, theme, &mut TextRenderer::new());
 }
 
-/// [`lay_out_and_draw_with_theme`] with `text_renderer`, which a test
-/// comparing two draws keeps: its fonts are what the glyphs refer to.
+/// [`lay_out_and_draw_with_theme`] with `text_renderer` , which a test comparing two draws keeps:
+/// its fonts are what the glyphs refer to.
 pub(super) fn lay_out_and_draw_with_text(
     bar: &mut TopBarChrome,
     width: f32,
@@ -178,9 +177,8 @@ pub(super) fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
     lay_out_and_draw_with_theme(bar, width, &Theme::default());
 }
 
-/// Lay `bar` out at the top of a 1280x800 column whose other child
-/// stands for the windows, as the desktop surface stacks them; returns
-/// where the windows start.
+/// Lay `bar` out at the top of a 1280x800 column whose other child stands for the windows, as the
+/// desktop surface stacks them; returns where the windows start.
 fn lay_out_over_windows(bar: &mut TopBarChrome) -> f32 {
     let theme = Theme::default();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -292,8 +290,8 @@ fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
     assert!(!painted(&mut bar));
 }
 
-/// Do Not Disturb is shown in the status cluster, as the bell silenced
-/// in its own slot, not as a card over the person's work.
+/// Do Not Disturb is shown in the status cluster, as the bell silenced in its own slot, not as a
+/// card over the person's work.
 #[test]
 fn quiet_mode_silences_the_bell_in_the_status_cluster() {
     let mut bar = sample_chrome();
@@ -361,10 +359,9 @@ fn the_unread_count_stays_inside_the_bar() {
     }
 }
 
-/// Every host draws the bell in the status cluster, quiet with nothing
-/// unread, so both trays are one design. A host without quick settings
-/// (the web) names the cluster "Notifications", since that is all it
-/// opens.
+/// Every host draws the bell in the status cluster, quiet with nothing unread, so both trays are
+/// one design. A host without quick settings (the web) names the cluster "Notifications", since
+/// that is all it opens.
 #[test]
 fn without_quick_settings_the_status_cluster_is_the_notifications_bell() {
     let mut bar = sample_chrome();
@@ -427,9 +424,9 @@ fn bar_controls_share_one_height_and_centre_line() {
     assert!(bar.center_is_plain_text());
 }
 
-/// The workspace capsule pads its label on the left exactly as much
-/// as it pads the chevron on the right, and the chevron sits on the
-/// pill's centre line — so the pill reads centred on its contents.
+/// The workspace capsule pads its label on the left exactly as much as it pads the chevron on the
+/// right, and the chevron sits on the pill's centre line — so the pill reads centred on its
+/// contents.
 #[test]
 fn workspace_pill_pads_its_label_and_chevron_symmetrically() {
     let mut bar = sample_chrome();
@@ -450,8 +447,8 @@ fn workspace_pill_pads_its_label_and_chevron_symmetrically() {
         "leading pad is {} not {pad}",
         text_x - bar.ws_pill_rect.x0
     );
-    // A bar control's width rounds up to a whole pixel, so the trailing
-    // pad may be up to a pixel wider, never narrower.
+    // A bar control's width rounds up to a whole pixel, so the trailing pad may be up to a pixel
+    // wider, never narrower.
     let trailing = bar.ws_pill_rect.x1 - bar.ws_chevron_rect.x1;
     assert!(
         trailing >= pad - 0.01 && trailing < pad + 1.0,
@@ -465,8 +462,8 @@ fn workspace_pill_pads_its_label_and_chevron_symmetrically() {
     );
 }
 
-/// The bar's density constants are the spacing scale under other
-/// names; this pins them so they cannot drift off it unnoticed.
+/// The bar's density constants are the spacing scale under other names; this pins them so they
+/// cannot drift off it unnoticed.
 #[test]
 fn bar_density_sits_on_the_spacing_scale() {
     let tokens = Theme::default().tokens;
@@ -481,8 +478,8 @@ fn bar_density_sits_on_the_spacing_scale() {
     assert!(TOPBAR_HEIGHT_PX < tokens.metrics.bar_height);
 }
 
-/// At the default text size the bar is 32 px; a large text size grows
-/// it so the time's line never spills out of it.
+/// At the default text size the bar is 32 px; a large text size grows it so the time's line never
+/// spills out of it.
 #[test]
 fn the_bar_grows_with_large_text_and_not_before() {
     assert_eq!(topbar_height(&Theme::default()), TOPBAR_HEIGHT_PX);
@@ -543,8 +540,8 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
     tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-    // The 960px chrome reserves a 360px centre selector; after its dots
-    // and breathing room, this is the usable activity lane.
+    // The 960px chrome reserves a 360px centre selector; after its dots and breathing room, this is
+    // the usable activity lane.
     bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
     bar.activity_headline = Some("Ada · 2 permission changes".into());
     bar.activity_unread = 4;
@@ -581,8 +578,8 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
     assert!(!chrome.borrow().overlays.workspace_activity);
 }
 
-/// A press on the pill pulls the activity it names out of the bar as its
-/// card; the plain clock reading opens the board instead.
+/// A press on the pill pulls the activity it names out of the bar as its card; the plain clock
+/// reading opens the board instead.
 #[test]
 fn pressing_the_pill_expands_the_activity_it_names() {
     let mut tree = DesktopTree {
@@ -627,9 +624,8 @@ fn pressing_the_pill_expands_the_activity_it_names() {
     );
 }
 
-/// A live activity reads in the bar as its own reading in a pill that hugs
-/// it, with a dot for each activity waiting behind it; the time steps aside
-/// while it runs.
+/// A live activity reads in the bar as its own reading in a pill that hugs it, with a dot for each
+/// activity waiting behind it; the time steps aside while it runs.
 #[test]
 fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
     let mut tree = DesktopTree {
@@ -674,8 +670,8 @@ fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
     ];
     lay_out_and_draw(&mut bar, 1600.0);
     assert_eq!(bar.center_pill().more, 1, "one activity waits behind it");
-    // The band follows its target, so the pill it grows into is what the
-    // width is asked for: a dot is part of the pill, not painted over it.
+    // The band follows its target, so the pill it grows into is what the width is asked for: a dot
+    // is part of the pill, not painted over it.
     let two = bar.center_pill_width(&Theme::default(), &mut TextRenderer::new(), 1600.0);
     assert!(two > one, "its dot widens the pill: {two} against {one}");
 }
@@ -736,13 +732,11 @@ fn two_workspace_tree() -> DesktopTree {
     }
 }
 
-/// Your colour rings a top-bar control only for keyboard focus. Clicking
-/// the bar used to light its first stop in your colour, though no
-/// keyboard was involved. Focus the shell merely placed on the bar (its
-/// first focusable control, while a window has the keyboard) is not
-/// keyboard use either: it shows no ring and holds no auto-hiding bar
-/// shown, or a maximized window's bar stayed up for as long as nobody
-/// pressed a key.
+/// Your colour rings a top-bar control only for keyboard focus. Clicking the bar used to light its
+/// first stop in your colour, though no keyboard was involved. Focus the shell merely placed on the
+/// bar (its first focusable control, while a window has the keyboard) is not keyboard use either:
+/// it shows no ring and holds no auto-hiding bar shown, or a maximized window's bar stayed up for
+/// as long as nobody pressed a key.
 #[test]
 fn the_focus_ring_follows_the_keyboard_not_a_click() {
     let tab = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
@@ -793,8 +787,8 @@ fn the_focus_ring_follows_the_keyboard_not_a_click() {
         "focus tabbed into afresh starts unpointed"
     );
 
-    // A click, then Escape (closing the menu the click opened): Escape
-    // moves no focus, so no ring lights where the click left focus.
+    // A click, then Escape (closing the menu the click opened): Escape moves no focus, so no ring
+    // lights where the click left focus.
     let _ = dispatch_topbar_event(&mut bar, &press);
     assert!(!bar.focus_ring_visible());
     let escape = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
@@ -809,9 +803,8 @@ fn the_focus_ring_follows_the_keyboard_not_a_click() {
     );
 }
 
-/// A running application's icon stands on the bar as its own control:
-/// it is in the focus order, a reader names it with the name the
-/// application chose, and Enter does what a click does.
+/// A running application's icon stands on the bar as its own control: it is in the focus order, a
+/// reader names it with the name the application chose, and Enter does what a click does.
 #[test]
 fn an_applications_tray_icon_is_a_named_control_the_keyboard_reaches() {
     let workspace = Workspace::new(WorkspaceSlot(1), "A");
@@ -920,8 +913,8 @@ fn keyboard_navigation_is_one_focus_stop_with_optional_controls() {
         Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
     );
 
-    // Removing an optional target leaves the focus stop intact and End
-    // resolves against the newly published control set.
+    // Removing an optional target leaves the focus stop intact and End resolves against the newly
+    // published control set.
     bar.media_indicator_rect = Rect::ZERO;
     assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
     assert_eq!(
@@ -958,9 +951,8 @@ fn strips_tree() -> DesktopTree {
     tree
 }
 
-/// The left end names where you are: the workspace, then the strip
-/// shown. The strip's name is its own target and opens the strip
-/// switcher; the workspace's pill opens the workspace menu.
+/// The left end names where you are: the workspace, then the strip shown. The strip's name is its
+/// own target and opens the strip switcher; the workspace's pill opens the workspace menu.
 #[test]
 fn the_bar_names_the_strip_after_the_workspace_and_it_opens_the_strip_switcher() {
     let tree = strips_tree();
@@ -1012,8 +1004,8 @@ fn an_unnamed_strip_leaves_the_workspace_pill_alone() {
     assert!(bar.ws_strip_rect.is_zero_area());
 }
 
-/// Scrolling over the top of the screen changes nothing: the bar keeps
-/// the time, and a wheel there is not the bar's.
+/// Scrolling over the top of the screen changes nothing: the bar keeps the time, and a wheel there
+/// is not the bar's.
 #[test]
 fn a_wheel_over_the_time_changes_nothing() {
     let tree = two_workspace_tree();
@@ -1038,8 +1030,7 @@ fn a_wheel_over_the_time_changes_nothing() {
     assert!(chrome.borrow().intents.is_empty());
 }
 
-/// What the bar paints, to compare: its path data and how many draws
-/// and glyph runs.
+/// What the bar paints, to compare: its path data and how many draws and glyph runs.
 fn scene_fingerprint(bar: &mut TopBarChrome) -> (Vec<u32>, usize, usize) {
     let mut scene = Scene::new();
     bar.cache_fp = CacheFingerprint::default();
@@ -1333,8 +1324,8 @@ fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
     assert!(bar.avatar_stack_rect.x1 + 8.0 <= bar.tray_pill_rect.x0);
 }
 
-/// The widget's content is centred in its band: equal insets either
-/// side, so the time does not sit off the band's middle.
+/// The widget's content is centred in its band: equal insets either side, so the time does not sit
+/// off the band's middle.
 #[test]
 fn center_content_is_centred_in_its_band() {
     let band = Rect::new(620.0, 2.0, 980.0, 22.0);
@@ -1386,10 +1377,9 @@ fn the_clock_pill_hugs_the_time_and_holds_its_width() {
     assert!(x1 - x0 >= f64::from(time), "the time fits its content lane");
 }
 
-/// A phone-wide bar grows its centre lane around a live activity's reading
-/// rather than pinning it to the clock's width: the highlight stands centred
-/// behind the text it belongs to, and the workspace name beside it yields
-/// instead of drawing underneath.
+/// A phone-wide bar grows its centre lane around a live activity's reading rather than pinning it
+/// to the clock's width: the highlight stands centred behind the text it belongs to, and the
+/// workspace name beside it yields instead of drawing underneath.
 #[test]
 fn a_narrow_bar_centres_its_pill_on_the_reading_it_shows() {
     let mut tree = DesktopTree {
@@ -1471,8 +1461,8 @@ fn new_activity_temporarily_shows_over_the_time() {
     assert!(bar.center_is_plain_text(), "the time again");
 }
 
-/// The time and a live activity swap with the standard cross-fade
-/// (`ui::motion::CrossFade`), which settles and then asks for nothing.
+/// The time and a live activity swap with the standard cross-fade (`ui::motion::CrossFade`), which
+/// settles and then asks for nothing.
 #[test]
 fn the_time_and_a_live_activity_cross_fade_and_settle() {
     let motion = Theme::dark().motion();
@@ -1497,9 +1487,8 @@ fn the_time_and_a_live_activity_cross_fade_and_settle() {
     );
 }
 
-// The centre showed the time and an activity on top of each other, both
-// at part opacity: the frame painted mid cross-fade stayed on screen
-// because nothing asked to paint once the fade had settled.
+// The centre showed the time and an activity on top of each other, both at part opacity: the frame
+// painted mid cross-fade stayed on screen because nothing asked to paint once the fade had settled.
 #[test]
 fn a_centre_that_swaps_again_and_again_settles_on_one_label() {
     let mut tree = DesktopTree {
@@ -1593,9 +1582,9 @@ fn a_centre_that_swaps_again_and_again_settles_on_one_label() {
     }
 }
 
-// The centre selector jumped from the time's width to the whole lane
-// when an activity arrived; it grows into the lane on the standard
-// expand/collapse motion and shrinks back to the time when it goes.
+// The centre selector jumped from the time's width to the whole lane when an activity arrived; it
+// grows into the lane on the standard expand/collapse motion and shrinks back to the time when it
+// goes.
 #[test]
 fn the_centre_selector_grows_into_the_lane_and_back() {
     let mut tree = DesktopTree {
@@ -1710,8 +1699,8 @@ fn clicking_a_person_opens_people_not_history() {
     );
 }
 
-/// A strip whose windows show the given foreign surfaces under the
-/// given titles, so sharing disclosure can name them.
+/// A strip whose windows show the given foreign surfaces under the given titles, so sharing
+/// disclosure can name them.
 fn shared_windows(surfaces: &[(u64, &str)]) -> Strip {
     let mut strip = Strip::new(tilo_desktop_model::StripId(2), "Main");
     for (surface, title) in surfaces {
@@ -2302,8 +2291,7 @@ fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
         "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
     );
     assert_eq!(TOPBAR_HEIGHT_PX, 32.0);
-    // Every control is a bar control, centred: the same air above and
-    // below.
+    // Every control is a bar control, centred: the same air above and below.
     let inset = (f64::from(TOPBAR_HEIGHT_PX) - BAR_CONTROL_PX) / 2.0;
     for (label, rect) in [
         ("workspace", bar.ws_pill_rect),
@@ -2320,8 +2308,8 @@ fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
     assert!(!bar.tray_pill_rect.contains(Point::new(799.0, 1.0)));
 }
 
-/// Both states asserted together, since a stack that's empty (or
-/// full) in both cases would pass only half.
+/// Both states asserted together, since a stack that's empty (or full) in both cases would pass
+/// only half.
 #[test]
 fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
     let empty = DesktopTree {
@@ -2365,8 +2353,7 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
         "one peer is not an overflow",
     );
 
-    // Invited but not redeemed: an avatar here would falsely claim
-    // they are in the workspace.
+    // Invited but not redeemed: an avatar here would falsely claim they are in the workspace.
     let mut asked = empty.clone();
     asked.workspaces[0].collaborators = vec![
         tilo_desktop_model::Collaborator::new("peer@11895642303397647149", "Bob").as_invited(),
@@ -2434,7 +2421,7 @@ fn every_reading_the_machine_has_draws_its_own_glyph() {
     assert!(bar.tray_pill_rect.width() < known.width());
 }
 
-/// A display of `monitor` at `x`, 1280 by 800, as the desk knows one.
+/// A display of `monitor` at `x` , 1280 by 800, as the desk knows one.
 fn display(id: u32, monitor: &str, x: f64) -> tilo_desktop_model::Display {
     tilo_desktop_model::Display {
         id,
@@ -2447,9 +2434,8 @@ fn display(id: u32, monitor: &str, x: f64) -> tilo_desktop_model::Display {
     }
 }
 
-/// One place per display, each on its own display's rectangle: the display
-/// in use full, the others compact, and the displays a fullscreen window
-/// owns named by their monitor.
+/// One place per display, each on its own display's rectangle: the display in use full, the others
+/// compact, and the displays a fullscreen window owns named by their monitor.
 #[test]
 fn the_placement_gives_every_display_a_place_of_its_own() {
     let mut tree = DesktopTree::default();
@@ -2489,8 +2475,8 @@ fn the_placement_gives_every_display_a_place_of_its_own() {
     );
 }
 
-/// A desk of one display needs no placing: the bar's own layout stands it
-/// across the desk, and a window covering that display is the one bar's.
+/// A desk of one display needs no placing: the bar's own layout stands it across the desk, and a
+/// window covering that display is the one bar's.
 #[test]
 fn one_display_needs_no_places() {
     let mut tree = DesktopTree::default();

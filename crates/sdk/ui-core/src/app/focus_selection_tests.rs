@@ -17,7 +17,6 @@ fn target(app: &App, id: &str) -> NodeId {
 
 #[test]
 fn native_focus_and_selection_follow_only_the_semantic_target() {
-    // Case `selection_adopts_focus_only_when_the_semantic_target_acquires_it`.
     {
         let root = Column::new()
             .push(Box::new(TextInput::local().with_id("body")))
@@ -51,7 +50,6 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
         assert!(app.state.doc.base_heads().is_empty());
     }
 
-    // Case `anonymous_native_focus_is_rediscovered_without_stale_node_or_state_transfer`.
     {
         use crate::widget::layout::AnonymousFocusProbe;
         let mut app = App::new_with_controlled_inputs(
@@ -75,7 +73,6 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
         );
     }
 
-    // Case `anonymous_native_rediscovery_refuses_disabled_or_unrelated_focused_widgets`.
     {
         use crate::widget::layout::AnonymousFocusProbe;
         for disabled in [false, true] {

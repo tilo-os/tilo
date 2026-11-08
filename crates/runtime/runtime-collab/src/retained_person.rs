@@ -51,8 +51,6 @@ fn uuid(value: &str) -> bool {
         })
 }
 impl RetainedLaunchBinding {
-    /// # Errors
-    /// Refuses malformed or unbounded frozen launch context.
     pub fn validate(&self) -> io::Result<()> {
         if !uuid(&self.operation_id)
             || !uuid(&self.room)
@@ -84,8 +82,6 @@ pub struct RetainedPersonClaims {
     pub execution_id: String,
 }
 impl RetainedPersonClaims {
-    /// # Errors
-    /// Refuses malformed claims or a message exceeding the fixed bound.
     pub fn signing_bytes(&self) -> io::Result<Vec<u8>> {
         self.binding.validate()?;
         if !uuid(&self.execution_id)
@@ -121,10 +117,6 @@ pub struct VerifiedRetainedPersonEpoch {
 }
 #[cfg(all(target_os = "linux", feature = "client"))]
 impl VerifiedRetainedPersonEpoch {
-    /// # Errors
-    /// Refuses a retired epoch, changed execution/certificate, or a fresh reply
-    /// failing actual kernel/installed custody and signature verification.
-    /// Every failure permanently retires this epoch.
     pub fn revalidate(
         &self,
         proof: &SignedRetainedPersonProof,
@@ -152,9 +144,6 @@ impl VerifiedRetainedPersonEpoch {
         }
         checked
     }
-    /// # Errors
-    /// Refresh a daemon verification of the SAME genuinely executing retained
-    /// helper recipient. Failure latches exactly like ordinary epoch refresh.
     pub fn revalidate_for_retained_helper(
         &self,
         proof: &SignedRetainedPersonProof,
@@ -196,8 +185,6 @@ impl VerifiedRetainedPersonEpoch {
     }
 }
 impl SignedRetainedPersonProof {
-    /// # Errors
-    /// Refuses malformed claims, signature length or oversized wire bytes.
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         self.claims.signing_bytes()?;
         if self.signature.len() != 64 {
@@ -209,8 +196,6 @@ impl SignedRetainedPersonProof {
         }
         Ok(bytes)
     }
-    /// # Errors
-    /// Refuses oversized, unknown-field or malformed proof messages.
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.is_empty() || bytes.len() > MAX_PROOF_BYTES {
             return Err(refused());
@@ -223,9 +208,6 @@ impl SignedRetainedPersonProof {
     /// independently QPE1-pinned Shell task. A verified reply is not a launch
     /// permit: retain the live channel and request a fresh proof at each actual
     /// source/launch boundary. The root actor still checks A and accepted policy.
-    /// # Errors
-    /// Refuses stale kernel custody, replay, changed context, untrusted/expired/
-    /// revoked certificate, or an invalid native-device signature.
     #[cfg(all(target_os = "linux", feature = "client"))]
     pub fn verify(
         &self,
@@ -251,10 +233,6 @@ impl SignedRetainedPersonProof {
             revoked: std::sync::atomic::AtomicBool::new(false),
         })
     }
-    /// # Errors
-    /// The recipient is an opaque actual installed helper role, never a root
-    /// PID/UID/program label supplied by a wire request. This does not grant
-    /// source access or replace daemon Author/installed enrollment checks.
     #[cfg(all(target_os = "linux", feature = "client"))]
     pub fn verify_for_retained_helper(
         &self,
@@ -292,8 +270,6 @@ impl SignedRetainedPersonProof {
     /// Authenticate revocations for a daemon receiving a genuinely delegated
     /// helper-bound proof. The actual installed helper role remains the signed
     /// binding's recipient; no serialized PID can substitute for its custody.
-    /// # Errors
-    /// Refuses a retired helper or invalid fresh proof/context/certificate.
     #[cfg(all(target_os = "linux", feature = "client"))]
     pub fn authenticated_revocations_for_retained_helper(
         &self,
@@ -323,8 +299,6 @@ impl SignedRetainedPersonProof {
     /// merge entries monotonically, then run final verify/epoch.revalidate using
     /// the refreshed root list. An embedded revocation of this signer prevents
     /// final admission even though its valid root statement can be retained.
-    /// # Errors
-    /// Refuses invalid kernel/context/challenge/certificate/proof/entry custody.
     #[cfg(all(target_os = "linux", feature = "client"))]
     pub fn authenticated_revocations(
         &self,

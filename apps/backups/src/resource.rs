@@ -122,9 +122,6 @@ impl ResourceApp for BackupsShell {
 }
 
 /// What showing the search anchor `anchor` is: the snapshot it names.
-///
-/// # Errors
-/// Refuses an anchor that names no snapshot.
 pub(crate) fn opened(anchor: &str) -> Result<BackupsEffect, ui::tilo_resource::Refusal> {
     anchor
         .strip_prefix("backups.snapshot:")

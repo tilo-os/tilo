@@ -290,10 +290,10 @@ pub(crate) struct Used {
 /// substring match.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Matching {
-    /// [`MatchTier::Spanning`]: every whitespace-separated word of the query
+    /// [`MatchTier::Spanning`] — every whitespace-separated word of the query
     /// occurs in some field.
     pub spanning: bool,
-    /// [`MatchTier::Typo`]: every word of the query matches a title word
+    /// [`MatchTier::Typo`] — every word of the query matches a title word
     /// within a small edit distance, the last one as a prefix.
     pub typos: bool,
 }

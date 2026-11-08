@@ -36,6 +36,10 @@ struct Sample {
 pub struct Smoother {
     tab: Option<u64>,
     samples: VecDeque<Sample>,
+    /// When this pointer was last said, a rest included: a member restates
+    /// what did not change on every keepalive, and a surface takes a pointer
+    /// nobody has said lately for one whose person went quiet.
+    spoken: Option<f64>,
     /// How far apart the points are said, smoothed, in ms.
     interval: f64,
     /// How far behind the fastest arrival each point came, smoothed, in ms.
@@ -45,6 +49,7 @@ pub struct Smoother {
 impl Smoother {
     /// `(tab, x, y)` was heard at `now_ms`, in the tab's own logical pixels.
     pub fn heard(&mut self, tab: u64, x: f64, y: f64, now_ms: f64) {
+        self.spoken = Some(now_ms);
         if self.tab != Some(tab) {
             // Another tab's points are in other coordinates: nothing to
             // interpolate between.
@@ -85,10 +90,19 @@ impl Smoother {
         }
     }
 
+    /// The same place was said again at `now_ms`: the pointer rests, and
+    /// saying so is what keeps it drawn.
+    pub fn restated(&mut self, now_ms: f64) {
+        if !self.samples.is_empty() {
+            self.spoken = Some(now_ms);
+        }
+    }
+
     /// The pointer left: nothing of it is drawn.
     pub fn left(&mut self) {
         self.tab = None;
         self.samples.clear();
+        self.spoken = None;
     }
 
     /// The tab the pointer is over, if it is over one.
@@ -103,10 +117,10 @@ impl Smoother {
         self.samples.is_empty()
     }
 
-    /// When this pointer was last heard.
+    /// When this pointer was last said, a rest included.
     #[must_use]
     pub fn heard_at(&self) -> Option<f64> {
-        self.samples.back().map(|sample| sample.at_ms)
+        self.spoken
     }
 
     /// The newest point heard: the tab it is over and where it is, before

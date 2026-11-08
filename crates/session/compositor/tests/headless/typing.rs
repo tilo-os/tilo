@@ -1,6 +1,5 @@
-//! Typing with the person's keyboard: the layout they chose, and the dead
-//! keys and Compose key sequences that type characters their keys do not
-//! carry themselves.
+//! Typing with the person's keyboard: the layout they chose, and the dead keys and Compose key
+//! sequences that type characters their keys do not carry themselves.
 
 use super::*;
 use smithay::input::keyboard::keysyms;
@@ -41,8 +40,7 @@ fn the_keyboard_types_in_the_persons_layout() {
     assert_eq!(compositor.keyboard_layout().as_deref(), Some("German"));
 }
 
-/// A hosted surface with the keyboard on it, in `layout`, recording the
-/// keys it types.
+/// A hosted surface with the keyboard on it, in `layout` , recording the keys it types.
 fn typing_field(compositor: &mut Compositor, layout: &KeyboardLayout) -> Rc<RefCell<HostLog>> {
     let log = Rc::new(RefCell::new(HostLog::default()));
     compositor.add_host(Box::new(Square::new(
@@ -55,7 +53,7 @@ fn typing_field(compositor: &mut Compositor, layout: &KeyboardLayout) -> Rc<RefC
     log
 }
 
-/// Press and let go of the key `keycode`.
+/// Press and let go of the key `keycode` .
 fn tap(compositor: &mut Compositor, keycode: u32) {
     for pressed in [true, false] {
         compositor
@@ -75,7 +73,7 @@ fn a_dead_key_and_the_key_it_accents_type_one_character() {
         },
     );
 
-    // The accent key right of zero, then `e`.
+    // The accent key right of zero, then `e` .
     tap(&mut compositor, KEY_EQUAL);
     tap(&mut compositor, KEY_E);
     let keys = log.borrow().keys.clone();
@@ -99,7 +97,7 @@ fn the_compose_key_types_a_sequence_of_keys_as_one() {
         },
     );
 
-    // Menu is the Compose key here: Compose, `o`, `c` is the copyright sign.
+    // Menu is the Compose key here: Compose, `o` , `c` is the copyright sign.
     tap(&mut compositor, KEY_COMPOSE);
     tap(&mut compositor, KEY_O);
     tap(&mut compositor, KEY_C);
@@ -145,8 +143,7 @@ fn a_key_outside_a_sequence_types_its_own_character() {
 
 #[test]
 fn a_chord_on_a_cyrillic_layout_names_the_latin_key() {
-    // Russian types, with US behind it in the same keymap: what a shortcut
-    // is named by.
+    // Russian types, with US behind it in the same keymap: what a shortcut is named by.
     let mut compositor = headless(Box::new(StackPolicy));
     let log = typing_field(
         &mut compositor,
@@ -170,8 +167,8 @@ fn a_chord_on_a_cyrillic_layout_names_the_latin_key() {
         "the Russian letter's own keysym"
     );
 
-    // Under Ctrl it is still Ctrl+C: the letter the US arrangement puts on
-    // that key names the chord.
+    // Under Ctrl it is still Ctrl+C: the letter the US arrangement puts on that key names the
+    // chord.
     compositor
         .input(InputEvent::Key {
             keycode: KEY_LEFTCTRL,

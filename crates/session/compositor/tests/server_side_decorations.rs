@@ -1,19 +1,14 @@
 //! Who draws the title bar.
-//!
-//! The desktop draws each window's frame itself — the tab is the frame — so
-//! an app that also draws one draws a second bar inside the first. Both
-//! decoration protocols have to say so, because a toolkit speaks whichever
-//! of the two it knows: `xdg-decoration` for most, the older
+//! The desktop draws each window's frame itself — the tab is the frame — so an app that also draws
+//! one draws a second bar inside the first. Both decoration protocols have to say so, because a
+//! toolkit speaks whichever of the two it knows: `xdg-decoration` for most, the older
 //! `org_kde_kwin_server_decoration` for Qt5 and some GTK and Wine builds.
-//!
-//! Not only cosmetic: a client that keeps its own title bar keeps it out of
-//! the size it was configured — configured 670x668 it commits 670x633 and
-//! never commits again, leaving a 35px dead band of empty tab and stranding
-//! the presentation gate.
-//!
-//! The frame belongs to the desktop rather than to the window's state, so
-//! it is the same frame focused or not: what is checked is that neither
-//! protocol changes its answer when another window takes the keyboard.
+//! Not only cosmetic: a client that keeps its own title bar keeps it out of the size it was
+//! configured — configured 670x668 it commits 670x633 and never commits again, leaving a 35px dead
+//! band of empty tab and stranding the presentation gate.
+//! The frame belongs to the desktop rather than to the window's state, so it is the same frame
+//! focused or not: what is checked is that neither protocol changes its answer when another window
+//! takes the keyboard.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -64,11 +59,9 @@ struct Seen {
     kde_manager: Option<OrgKdeKwinServerDecorationManager>,
     /// Whether the toplevel's first configure arrived.
     configured: bool,
-    /// Every mode the compositor configured through `xdg-decoration`, in
-    /// order.
+    /// Every mode the compositor configured through `xdg-decoration` , in order.
     xdg_modes: Vec<XdgMode>,
-    /// The KDE manager's `default_mode`: what it tells a client that asks
-    /// for nothing.
+    /// The KDE manager's `default_mode` : what it tells a client that asks for nothing.
     kde_default: Option<KdeDefaultMode>,
     /// Every mode the compositor stated through the KDE protocol, in order.
     kde_modes: Vec<KdeMode>,
@@ -111,8 +104,8 @@ impl Client {
         self.connection.flush().expect("flush");
     }
 
-    /// Create a surface and its toplevel, and commit it: the compositor
-    /// answers with the first configure.
+    /// Create a surface and its toplevel, and commit it: the compositor answers with the first
+    /// configure.
     fn open_window(&mut self, app_id: &str) -> XdgToplevel {
         let qh = self.queue.handle();
         let surface = self
@@ -134,8 +127,7 @@ impl Client {
         toplevel
     }
 
-    /// Ask for the frame to be drawn by the client, which is the request
-    /// the desktop refuses.
+    /// Ask for the frame to be drawn by the client, which is the request the desktop refuses.
     fn ask_for_client_side(&self) {
         let qh = self.queue.handle();
         let manager = self
@@ -178,8 +170,7 @@ impl Client {
         self.surface.as_ref().expect("surface").commit();
     }
 
-    /// Attach a buffer of one colour (RGBA) and commit it with a frame
-    /// callback.
+    /// Attach a buffer of one colour (RGBA) and commit it with a frame callback.
     fn show(&self, width: i32, height: i32, rgba: [u8; 4]) {
         let qh = self.queue.handle();
         let stride = width * 4;
@@ -466,8 +457,8 @@ fn a_kde_client_that_asks_to_draw_its_own_frame_is_told_server() {
     client.open_window("kde-frame");
     client.ask_for_client_frame_kde();
     client.commit();
-    // Each pump lets several requests and their replies cross: an exchange
-    // that feeds itself shows up as one more mode per round.
+    // Each pump lets several requests and their replies cross: an exchange that feeds itself shows
+    // up as one more mode per round.
     for _ in 0..4 {
         pump(&mut compositor, &mut [&mut client], |_, _| true);
     }
@@ -486,8 +477,8 @@ fn a_client_that_asks_for_no_frame_of_its_own_is_told_server() {
     let mut compositor = headless(Box::<Columns>::default());
     let mut client = connected(&mut compositor);
 
-    // Binding the manager is what asks for the default, so it is one
-    // exchange after the registry has been read.
+    // Binding the manager is what asks for the default, so it is one exchange after the registry
+    // has been read.
     pump(&mut compositor, &mut [&mut client], |_, clients| {
         clients[0].seen.kde_default.is_some()
     });
@@ -543,8 +534,8 @@ fn the_frame_does_not_change_when_another_window_takes_focus() {
         |compositor, _| compositor.windows().len() == 2,
     );
 
-    // The right window stands at (300, 0) and has the focus; a press on the
-    // left one moves it there.
+    // The right window stands at (300, 0) and has the focus; a press on the left one moves it
+    // there.
     assert_eq!(
         compositor
             .focused_window()
@@ -579,8 +570,8 @@ fn the_frame_does_not_change_when_another_window_takes_focus() {
         },
     );
 
-    // Focus moved, and the frame stayed where it was: the desktop's in
-    // every case, so there is nothing for the focus to change.
+    // Focus moved, and the frame stayed where it was: the desktop's in every case, so there is
+    // nothing for the focus to change.
     assert_eq!(
         left.seen.xdg_modes, answer,
         "the decoration mode changed when another window took focus; the \

@@ -1,12 +1,9 @@
-//! The person's screens as their devices say they stand: this device's
-//! outputs offered to the others, and every device's screens read back as the
-//! shared arrangement lays them out.
-//!
+//! The person's screens as their devices say they stand: this device's outputs offered to the
+//! others, and every device's screens read back as the shared arrangement lays them out.
 //! The display sheet and Settings read the published view
-//! ([`settings_store::person_displays::PersonDisplays`]); the session
-//! publishes it in memory and on disk whenever what the person's devices show
-//! changed, so a screen that appears on the tablet or the desktop appears in
-//! the arrangement without either device asking.
+//! ([`settings_store::person_displays::PersonDisplays`]); the session publishes it in memory and on
+//! disk whenever what the person's devices show changed, so a screen that appears on the tablet or
+//! the desktop appears in the arrangement without either device asking.
 
 use settings_store::hardware::{DisplayHardwareSnapshot, DisplaySet};
 use settings_store::person_displays::{
@@ -17,12 +14,10 @@ use tilo_network_actor::fabric::{
     DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect,
 };
 
-/// Where this device's outputs stand and what their hardware says, as the
-/// person's other devices hear it: the plane they make, and one entry per
-/// output with the place it holds on it. The plane is in the device's own
-/// logical coordinates, so it is said at 1:1 while each output carries the
-/// scale it runs at. `None` when the compositor published no display to
-/// offer.
+/// Where this device's outputs stand and what their hardware says, as the person's other devices
+/// hear it: the plane they make, and one entry per output with the place it holds on it. The plane
+/// is in the device's own logical coordinates, so it is said at 1:1 while each output carries the
+/// scale it runs at. `None` when the compositor published no display to offer.
 pub(crate) fn observation(
     snapshot: Option<&DisplayHardwareSnapshot>,
 ) -> Option<(
@@ -38,8 +33,8 @@ pub(crate) fn observation(
     Some((plane, 1000, connectors, outputs))
 }
 
-/// The plane this device's outputs make: the rectangle that holds all of
-/// them, in the device's own logical coordinates.
+/// The plane this device's outputs make: the rectangle that holds all of them, in the device's own
+/// logical coordinates.
 fn plane(snapshot: &DisplayHardwareSnapshot) -> Option<DisplayRect> {
     let mut bounds: Option<(i32, i32, i32, i32)> = None;
     for placement in &snapshot.layout {
@@ -64,8 +59,7 @@ fn plane(snapshot: &DisplayHardwareSnapshot) -> Option<DisplayRect> {
     })
 }
 
-/// Where each of this device's outputs stands, as the compositor laid them
-/// out.
+/// Where each of this device's outputs stands, as the compositor laid them out.
 fn connectors(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayConnectorPlacement> {
     snapshot
         .layout
@@ -97,8 +91,8 @@ fn connectors(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayConnectorPlaceme
         .collect()
 }
 
-/// What the hardware behind each of this device's outputs says: the monitor's
-/// name, the mode it runs at and where it stands among the others.
+/// What the hardware behind each of this device's outputs says: the monitor's name, the mode it
+/// runs at and where it stands among the others.
 fn outputs(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutputObservation> {
     if snapshot.outputs.len() > settings_store::person_displays::MAX_DEVICE_OUTPUTS {
         return Vec::new();
@@ -151,16 +145,16 @@ fn outputs(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutputObservation> 
         .collect()
 }
 
-/// Keeps the person's published devices as this session last wrote them, so
-/// a pass over unchanged screens writes nothing.
+/// Keeps the person's published devices as this session last wrote them, so a pass over unchanged
+/// screens writes nothing.
 #[derive(Default)]
 pub(crate) struct Publisher {
     seen: Option<Vec<PersonDevice>>,
 }
 
 impl Publisher {
-    /// Offer this device's displays, and publish the person's devices as the
-    /// fabric now has them: once per change, on the pass that saw it.
+    /// Offer this device's displays, and publish the person's devices as the fabric now has them:
+    /// once per change, on the pass that saw it.
     pub(crate) fn follow(
         &mut self,
         fabric: &SharedLink,
@@ -197,9 +191,9 @@ impl Publisher {
     }
 }
 
-/// The person's devices and the arrangement they make, as Settings and this
-/// session last published them. `None` when no device of theirs published a
-/// view, which is every session that takes part as nobody.
+/// The person's devices and the arrangement they make, as Settings and this session last published
+/// them. `None` when no device of theirs published a view, which is every session that takes part
+/// as nobody.
 pub(crate) fn person() -> Option<(PersonDisplays, Layout)> {
     let view = PersonDisplays::published()
         .map(|view| view.as_ref().clone())
@@ -217,8 +211,7 @@ mod tests {
         OutputDescriptor, OutputMode,
     };
 
-    /// One of this device's outputs at `x`, built-in when `builtin`, at
-    /// `scale`.
+    /// One of this device's outputs at `x` , built-in when `builtin` , at `scale` .
     fn output(
         connector: &str,
         make: &str,
@@ -339,8 +332,8 @@ mod tests {
         )
     }
 
-    /// What this device shows is published for the shared arrangement: its
-    /// own device, with the screens it shows, once per change.
+    /// What this device shows is published for the shared arrangement: its own device, with the
+    /// screens it shows, once per change.
     #[test]
     fn this_device_s_screens_are_published_for_the_arrangement() {
         let _home = tilo_test_env::TestHome::new().expect("a home");

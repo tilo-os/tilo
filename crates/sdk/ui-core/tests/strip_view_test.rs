@@ -3,7 +3,6 @@ use tilo_ui::widget::{STRIP_COOLDOWN_MS, StripView};
 
 #[test]
 fn wheel_pagination_respects_cooldown_and_bounds() {
-    // Case `wheel_paginate_cooldown_blocks_second_call`.
     {
         let mut v = StripView::new(vec!["a".into(), "b".into(), "c".into()], 0);
         assert!(v.try_paginate(1, Duration::from_millis(0)));
@@ -19,7 +18,6 @@ fn wheel_pagination_respects_cooldown_and_bounds() {
         assert_eq!(v.active_index(), 2);
     }
 
-    // Case `wheel_paginate_negative_wraps_none`.
     {
         let mut v = StripView::new(vec!["a".into(), "b".into()], 0);
         assert!(!v.try_paginate(-1, Duration::from_millis(0)));

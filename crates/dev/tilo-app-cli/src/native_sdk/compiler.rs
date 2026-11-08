@@ -66,9 +66,6 @@ struct Inputs {
 
 /// The source SDK's canonical declarations, captured once by its producer.
 /// Consumers read the signed result and never resolve these dependencies.
-///
-/// # Errors
-/// Fails if the locked SDK graph or its source declarations cannot be read.
 pub fn capture_resources(repo: &Path) -> Result<Vec<String>> {
     let app = repo.join("crates/sdk/tilo-app");
     let output = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))

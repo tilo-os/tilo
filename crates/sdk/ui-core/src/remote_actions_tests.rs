@@ -303,8 +303,7 @@ fn stale_catalogue_restarts_share_the_global_page_bound() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());
     for page in 0..MAX_CATALOGUE_PAGES {
-        let correlation =
-            catalogue_correlation(&mut actions, "catalogue request for a stale page");
+        let correlation = catalogue_correlation(&mut actions, "catalogue request for a stale page");
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::CatalogueResponse {
                 correlation,

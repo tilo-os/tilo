@@ -663,10 +663,6 @@ impl Engine {
     }
 
     /// Output size of a render, validated against the pixel budget.
-    ///
-    /// # Errors
-    ///
-    /// Unknown document or page, or a render over the budget.
     pub fn render_size(&self, id: u64, page: usize, options: &RenderOptions) -> Result<(u32, u32)> {
         let doc = self.doc(id)?;
         let geometry = doc
@@ -955,10 +951,6 @@ impl Engine {
     }
 
     /// Link areas of a page.
-    ///
-    /// # Errors
-    ///
-    /// Unknown document or page.
     pub fn links(&self, id: u64, page: usize) -> Result<Vec<Link>> {
         const MAX_LINKS: usize = 10_000;
         let doc = self.doc(id)?;
@@ -998,10 +990,6 @@ impl Engine {
     }
 
     /// The document outline.
-    ///
-    /// # Errors
-    ///
-    /// Unknown document.
     pub fn outline(&self, id: u64) -> Result<Vec<OutlineEntry>> {
         const MAX_ENTRIES: usize = 10_000;
         let doc = self.doc(id)?;
@@ -1088,10 +1076,6 @@ impl Engine {
     }
 
     /// Annotations present on a page, in display space.
-    ///
-    /// # Errors
-    ///
-    /// Unknown document or page.
     #[allow(
         clippy::too_many_lines,
         reason = "one pass reading every property of each annotation"
@@ -1229,10 +1213,6 @@ impl Engine {
     }
 
     /// The document's form fields with their widgets, grouped by name.
-    ///
-    /// # Errors
-    ///
-    /// Unknown document.
     #[allow(
         clippy::too_many_lines,
         reason = "one pass reading every widget property"
@@ -1347,10 +1327,6 @@ impl Engine {
     /// become standard annotation objects with generated appearances, form
     /// values become real field values. The result is an incremental update
     /// of the source bytes and is deterministic for the same inputs.
-    ///
-    /// # Errors
-    ///
-    /// Unknown documents, out-of-range references, or engine failures.
     pub fn export(&self, id: u64, edits: &Edits, imports: &[u64]) -> Result<Vec<u8>> {
         let source = self.doc(id)?;
         let Backing::Mapped(map) = &source.backing else {

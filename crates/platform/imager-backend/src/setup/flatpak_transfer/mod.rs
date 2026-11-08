@@ -78,8 +78,6 @@ pub struct Inventory {
 /// account whose *user* installation is queried or modified.
 pub trait Runner {
     /// Review collection bindings and offline suitability without source writes.
-    /// # Errors
-    /// Refuses unavailable or changed metadata and unsupported extra-data.
     #[cfg(target_os = "linux")]
     fn review_offline_subset(
         &self,
@@ -89,9 +87,6 @@ pub trait Runner {
     }
     fn run(&self, home: &Path, arguments: &[String]) -> Result<String, String>;
     /// Independently check object integrity and ref bindings in the target repository.
-    ///
-    /// # Errors
-    /// Refuses missing verification support or corrupt repository objects.
     fn verify_repository(&self, _home: &Path) -> Result<(), String> {
         Err("This runner cannot independently verify repository objects".into())
     }

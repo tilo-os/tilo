@@ -157,9 +157,6 @@ pub trait ServiceAuthority: Send + Sync {
 
     /// Protected original controller's actual reopened per-volume table. Ordinary
     /// authorities and caller-authored metadata confer no mounted read authority.
-    ///
-    /// # Errors
-    /// Refuses unavailable or retired original mounted authority.
     fn original_mounted_binding(&self) -> io::Result<Option<OriginalMountedBinding>> {
         Ok(None)
     }
@@ -727,8 +724,6 @@ pub struct ServiceCustody {
 impl ServiceEndpoint {
     /// Observe exact retained init pidfd readiness even after cancellation or
     /// authority revocation. This is stop evidence, never a successful exit.
-    /// # Errors
-    /// Refuses non-root observers or unavailable kernel evidence.
     pub fn observed_stopped(&self) -> io::Result<bool> {
         if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -769,8 +764,6 @@ impl ServiceEndpoint {
     }
     /// Open a separate authenticated stream to this one provider. No protocol
     /// byte is sent before peer namespace, ownership and live authority match.
-    /// # Errors
-    /// Refuses retired custody, missing endpoints and another namespace's peer.
     pub fn connect(&self) -> io::Result<UnixStream> {
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {

@@ -580,10 +580,6 @@ impl Recoverable {
     }
 
     /// Put the entry `id` back at `path`.
-    ///
-    /// # Errors
-    ///
-    /// The path now holds something else, or the entry is gone.
     pub fn restore(&self, id: &str, path: &Path) -> Result<(), ActionError> {
         let slot = self.slot(id)?;
         let kept = slot.join("payload");
@@ -831,10 +827,6 @@ pub fn invoke(
 
 /// Carry out every task `replica`'s record holds for `device`, oldest
 /// first, each under the record's grants as they stand, and settle it.
-///
-/// # Errors
-///
-/// A record that cannot be read, or a settlement it refuses.
 pub fn drain(
     replica: &mut Replica<Environment>,
     device: &str,

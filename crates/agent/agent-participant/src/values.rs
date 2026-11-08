@@ -95,11 +95,6 @@ pub(crate) const CELLS_APP: &str = "sheets";
 /// Runs the reads references name.
 pub(crate) trait Reads {
     /// What `view` answers, whole.
-    ///
-    /// # Errors
-    ///
-    /// Why it was not read: no such app or record, an operation that is
-    /// not a read the agent may run, or the record's refusal.
     fn read(&mut self, view: &ViewRef) -> Result<serde_json::Value, String>;
 }
 

@@ -15,12 +15,6 @@ impl PeerWorkspaceMut<'_> {
     /// by the proof of a device of theirs signed in this workspace
     /// ([`crate::workspace::proven_saver`]): the same rule admission holds every
     /// writer to. Answers whether the workspace changed.
-    ///
-    /// # Errors
-    ///
-    /// A caller that is not current admitted evidence or may not change the
-    /// workspace, a key that is not the caller's, a saver without proof, a full
-    /// workspace, or removing a shortcut the workspace does not hold.
     pub fn apply_shortcut_change(
         self,
         caller: &tilo_user_identity::DeviceCert,

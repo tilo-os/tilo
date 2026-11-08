@@ -43,9 +43,6 @@ impl ApplicationRecord {
     /// A record the host keeps itself, which no installed package declares:
     /// a workspace's shared desktop. Only host code names one; nothing an
     /// app sends reaches this.
-    ///
-    /// # Errors
-    /// The route is not a valid record route.
     pub fn host(app: &str, record: &str) -> Result<Self, String> {
         if app.is_empty()
             || app.len() > 256
@@ -70,11 +67,6 @@ impl NativeWorkspaceOwner {
     /// revision, admitted and published like any other write of it. The
     /// governor's signature never covers member-supplied bytes. Answers the
     /// revision this device's committed view then holds.
-    ///
-    /// # Errors
-    /// Refuses governor or changed custody, a changed revision, malformed or
-    /// oversized data, a change the workspace does not let this member make, or
-    /// failed publication.
     pub fn initialize_application_record_as_member(
         &self,
         workspace: WorkspaceId,
@@ -140,11 +132,6 @@ impl NativeWorkspaceOwner {
     /// as every receiver admits it. Existing records remain byte-identical.
     /// Publication is durable before this returns; the caller may only then
     /// admit the creator's channel.
-    ///
-    /// # Errors
-    /// The creator is not this device, the workspace does not let them create
-    /// the record, or the same native owner publication barrier cannot
-    /// commit the candidate.
     pub fn prepare_application_record(
         &self,
         workspace: WorkspaceId,
@@ -193,7 +180,6 @@ impl NativeWorkspaceOwner {
             now,
         )?;
         let outgoing = publication::prepare(&publication::request(&message)?)?;
-        publication::reserve(&candidate, &outgoing)?;
         publication::append_local(&mut candidate, outgoing)?;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = candidate

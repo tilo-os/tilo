@@ -56,8 +56,6 @@ const MAX_SNAPSHOT_PATH_BYTES: usize = 1024;
 pub trait HttpsTransport {
     /// Validate a transfer pin. The default production transport accepts HTTPS
     /// only; the explicit developer transport also accepts offline receipts.
-    /// # Errors
-    /// Rejects invalid or unsupported artifact identities.
     fn validate_pin(&self, artifact: &PinnedArtifact) -> Result<(), ServiceError> {
         validate_artifact(artifact)
     }
@@ -871,10 +869,6 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// Install the accepted, verified runtime before placing the model, so an
     /// `Installed` model never fails Start merely because its runtime bytes
     /// were omitted from the operation.
-    ///
-    /// # Errors
-    /// Returns an error when the runtime is not accepted, the license is not
-    /// accepted, or fetching, importing or installing fails.
     pub fn install_with_runtime(
         &mut self,
         runtime: &SignedRuntime,
@@ -1034,9 +1028,6 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// release. This is separate from UI state and survives a
     /// transient worker restart, while a changed catalog release must be
     /// confirmed again.
-    ///
-    /// # Errors
-    /// Returns an error when the state cannot be persisted.
     pub fn record_license_acceptance(
         &mut self,
         model: &LocalModelRelease,

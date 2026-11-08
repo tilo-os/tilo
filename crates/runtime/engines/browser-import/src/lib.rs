@@ -40,9 +40,6 @@ pub use tilo_browser_sessions;
 ///
 /// The engine's check binary calls it, so a release proves the library loads
 /// and runs against the runtime it ships with.
-///
-/// # Errors
-/// Names the step that failed or what the capture read wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use browser_continuity::sources::{GrantedProfile, parse_chromium_history};

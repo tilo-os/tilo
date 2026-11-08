@@ -23,8 +23,6 @@ impl AccountsForm {
     /// Authenticate offline suggestions without authorizing or signing in.
     /// The fresh selection/read generation is separate from the artifact's
     /// fixed ciphertext binding, so re-selecting the same export rejects late results.
-    /// # Errors
-    /// Rejects invalid ciphertext, passwords, hints or a stale source selection.
     pub fn accept_password_hints(
         &self,
         source: &str,

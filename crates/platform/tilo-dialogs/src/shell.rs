@@ -377,10 +377,6 @@ impl Drop for LinkInner {
 impl ShellLink {
     /// Talk to the shell over `stream`, a connection the launcher opened and
     /// named.
-    ///
-    /// # Errors
-    /// The connection cannot be duplicated for its reader thread, or the
-    /// thread cannot start.
     pub fn connect(stream: UnixStream) -> std::io::Result<Self> {
         let reader = stream.try_clone()?;
         let connection = Arc::new(Connection {

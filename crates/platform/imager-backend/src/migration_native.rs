@@ -777,8 +777,6 @@ fn native_unsupported() -> io::Error {
 }
 
 /// Copies through a newly authenticated, administrator-selected native session.
-/// # Errors
-/// Refuses unsafe grants, unavailable durability or journal persistence failures.
 pub fn copy_native_selected(
     selection: impl Into<NativeSelection>,
     destination: &Path,
@@ -803,8 +801,6 @@ pub fn copy_native_selected(
     }
 }
 /// Resume requires a fresh authenticated selection; saved receipts never reconnect.
-/// # Errors
-/// Refuses changed selection, journal location, output or persistence.
 pub fn resume_native_selected(
     selection: impl Into<NativeSelection>,
     journal: &Path,

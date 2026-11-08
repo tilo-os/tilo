@@ -1,11 +1,9 @@
-//! A hosted sheet is what the session shows and what its control socket
-//! names: the frame a snapshot writes has the sheet's own pixels in it, and
-//! `list_targets` lists the controls the sheet is pressed by — the same way
-//! an app's window is listed and pressed.
-//!
-//! A sheet is drawn by a hosted surface of the session's own, not by a
-//! client's window, so both halves are the session's to answer: what it
-//! composited, and what it lends a tool that presses by name.
+//! A hosted sheet is what the session shows and what its control socket names: the frame a snapshot
+//! writes has the sheet's own pixels in it, and `list_targets` lists the controls the sheet is
+//! pressed by — the same way an app's window is listed and pressed.
+//! A sheet is drawn by a hosted surface of the session's own, not by a client's window, so both
+//! halves are the session's to answer: what it composited, and what it lends a tool that presses by
+//! name.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -23,30 +21,21 @@ mod common;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::workspace_settings::Tab;
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-
-/// A headless session on one display, its control socket at `socket`.
+/// A headless session on one display, its control socket at `socket` .
 fn session(socket: &Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            test_control: Some(socket.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        test_control: Some(socket.to_path_buf()),
+        ..Options::default()
+    })
 }
 
-/// Invoke `action` of `resource`, as the person's own choice.
+/// Invoke `action` of `resource` , as the person's own choice.
 fn invoke(session: &mut Session, resource: &str, action: &str) {
     session
         .invoke(resource, action, &serde_json::Map::new())
@@ -82,8 +71,8 @@ fn targets(session: &mut Session, socket: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Where `after` differs from `before`: what the sheet changed, and how much
-/// of the display that is.
+/// Where `after` differs from `before` : what the sheet changed, and how much of the display that
+/// is.
 fn differed(before: &image::RgbaImage, after: &image::RgbaImage) -> (u32, u32, u32, u32, u32) {
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
     let mut changed: u32 = 0;
@@ -116,8 +105,8 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
         "the sheet the person opened is up"
     );
 
-    // The next frame is the sheet's: the display changed where the sheet
-    // stands, over a large part of it.
+    // The next frame is the sheet's: the display changed where the sheet stands, over a large part
+    // of it.
     let sheet = snapshot(&mut session, &socket, &root.path().join("sheet.png"));
     let (x0, y0, x1, y1, changed) = differed(&desk, &sheet);
     assert!(
@@ -130,8 +119,8 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
          between ({x0}, {y0}) and ({x1}, {y1})"
     );
 
-    // And the desk names the controls the sheet is pressed by, as it names
-    // an app's window's: the tabs it switches with, by what they say.
+    // And the desk names the controls the sheet is pressed by, as it names an app's window's: the
+    // tabs it switches with, by what they say.
     let people = tilo_desktop_surface::i18n::t("workspace-settings-tab-people");
     let agents = tilo_desktop_surface::i18n::t("workspace-settings-tab-agents");
     let listed = targets(&mut session, &socket);
@@ -142,8 +131,8 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
         );
     }
 
-    // A press on one of them through the socket reaches the sheet: its tabs
-    // switch as they do under a person's press.
+    // A press on one of them through the socket reaches the sheet: its tabs switch as they do under
+    // a person's press.
     let pressed = common::control(
         &mut session,
         &socket,
@@ -169,8 +158,8 @@ fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
     let mut session = session(&socket);
 
     let desk = snapshot(&mut session, &socket, &root.path().join("desk.png"));
-    // The empty desk's launchpad is what the person presses to invite
-    // someone: the sheet it opens is the session's own, drawn over the desk.
+    // The empty desk's launchpad is what the person presses to invite someone: the sheet it opens
+    // is the session's own, drawn over the desk.
     let invite = tilo_desktop_surface::i18n::t("invite-title");
     let pressed = common::control(
         &mut session,

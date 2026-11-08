@@ -32,9 +32,6 @@ impl Keychain for NativeKeychain {
 }
 impl Connector {
     /// Read one owner-selected native Nextcloud HTTP credential into sealed Tilo custody.
-    ///
-    /// # Errors
-    /// Refuses changed/foreign source configuration, unsupported custody or missing credentials.
     pub fn import_nextcloud(
         &self,
         roots: &SourceRoots,

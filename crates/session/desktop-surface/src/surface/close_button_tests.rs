@@ -1,10 +1,8 @@
 //! A window's close button closes exactly that window.
-//!
-//! Three windows stand in one strip, and later two windows of one app. Each
-//! shows its own close control at the trailing end of its own bar. A press
-//! there is the window's, not the strip's or a sibling's: the window that
-//! leaves is the one whose control was pressed and its neighbours stay, and
-//! that holds at the display's scale as at 1.
+//! Three windows stand in one strip, and later two windows of one app. Each shows its own close
+//! control at the trailing end of its own bar. A press there is the window's, not the strip's or a
+//! sibling's: the window that leaves is the one whose control was pressed and its neighbours stay,
+//! and that holds at the display's scale as at 1.
 
 use super::*;
 use crate::navigation::DeskEffect;
@@ -22,8 +20,7 @@ impl TileSource for Notices {
     }
 }
 
-/// A desk of `windows` windows, each an app of its own, and the frame that
-/// draws it at `scale`.
+/// A desk of `windows` windows, each an app of its own, and the frame that draws it at `scale` .
 pub(super) fn desk_at(windows: usize, scale: f64) -> (ui::headless::FrameHarness, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs: Vec<Tab> = (0..windows)
@@ -57,8 +54,7 @@ pub(super) fn desk_at(windows: usize, scale: f64) -> (ui::headless::FrameHarness
     (frame, handle)
 }
 
-/// The windows the desk holds, in strip order: each window's id and the tab
-/// it shows in front.
+/// The windows the desk holds, in strip order: each window's id and the tab it shows in front.
 pub(super) fn windows(frame: &ui::headless::FrameHarness) -> Vec<(GroupId, TabId)> {
     frame
         .root::<DesktopSurface>()
@@ -70,8 +66,8 @@ pub(super) fn windows(frame: &ui::headless::FrameHarness) -> Vec<(GroupId, TabId
         .collect()
 }
 
-/// Where `group`'s own close control is drawn, in the desk's logical pixels:
-/// the control a person presses to close that window.
+/// Where `group` 's own close control is drawn, in the desk's logical pixels: the control a person
+/// presses to close that window.
 pub(super) fn close_of(frame: &ui::headless::FrameHarness, group: GroupId) -> Point {
     let bounds = frame
         .root::<DesktopSurface>()
@@ -88,16 +84,15 @@ pub(super) fn close_of(frame: &ui::headless::FrameHarness, group: GroupId) -> Po
         .center()
 }
 
-/// Click at logical `at` as the person does: the pointer moves there and the
-/// left button goes down and up over it. `FrameHarness::click_at` speaks the
-/// desk's logical pixels and scales them to the display, as the compositor
-/// hands a press to the desk that stands on it.
+/// Click at logical `at` as the person does: the pointer moves there and the left button goes down
+/// and up over it. `FrameHarness::click_at` speaks the desk's logical pixels and scales them to the
+/// display, as the compositor hands a press to the desk that stands on it.
 pub(super) fn click(frame: &mut ui::headless::FrameHarness, at: Point) {
     frame.click_at(at.x, at.y);
 }
 
-/// The frames a close takes to drop the window from the desk: the window
-/// fades out on the clock it animates by, then the row prunes it.
+/// The frames a close takes to drop the window from the desk: the window fades out on the clock it
+/// animates by, then the row prunes it.
 pub(super) fn settle(frame: &mut ui::headless::FrameHarness) {
     let mut now = ui::time::now();
     for _ in 0..40 {
@@ -106,8 +101,8 @@ pub(super) fn settle(frame: &mut ui::headless::FrameHarness) {
     }
 }
 
-/// Three windows in one strip, each its own app: pressing the second's close
-/// button leaves the first and the third, and only the second goes.
+/// Three windows in one strip, each its own app: pressing the second's close button leaves the
+/// first and the third, and only the second goes.
 #[test]
 fn the_second_windows_close_button_closes_only_that_window() {
     let _settled = ui::motion::testing::settled();
@@ -141,8 +136,8 @@ fn the_second_windows_close_button_closes_only_that_window() {
     );
 }
 
-/// The same press on a 2 display: the control is where its window's bar laid
-/// it out, so a press at its centre closes that window and no other.
+/// The same press on a 2 display: the control is where its window's bar laid it out, so a press at
+/// its centre closes that window and no other.
 #[test]
 fn a_windows_close_button_closes_only_that_window_at_scale_two() {
     let _settled = ui::motion::testing::settled();
@@ -176,8 +171,8 @@ fn a_windows_close_button_closes_only_that_window_at_scale_two() {
     );
 }
 
-/// Closing by the desk's own action names the window it closes: `close-tab`
-/// with one tab's id takes that window and no other.
+/// Closing by the desk's own action names the window it closes: `close-tab` with one tab's id takes
+/// that window and no other.
 #[test]
 fn closing_by_the_action_with_a_window_id_closes_only_that_window() {
     let _settled = ui::motion::testing::settled();
@@ -205,8 +200,8 @@ fn closing_by_the_action_with_a_window_id_closes_only_that_window() {
     );
 }
 
-/// A window of an app that has a second window closes alone: two windows of
-/// one app are two windows of the desk, and closing one leaves the other.
+/// A window of an app that has a second window closes alone: two windows of one app are two windows
+/// of the desk, and closing one leaves the other.
 #[test]
 fn closing_a_window_of_an_app_with_two_windows_leaves_the_other() {
     let _settled = ui::motion::testing::settled();
@@ -263,11 +258,10 @@ fn closing_a_window_of_an_app_with_two_windows_leaves_the_other() {
     );
 }
 
-/// The close button's target is the control, not the window's whole chrome:
-/// a press at the bar's leading end, where the tab's own pill begins, leaves
-/// every window where it was. The strip reveals a pressed window, so the
-/// press aims at the geometry the frame shows then, as the pointer the
-/// person aims does.
+/// The close button's target is the control, not the window's whole chrome: a press at the bar's
+/// leading end, where the tab's own pill begins, leaves every window where it was. The strip
+/// reveals a pressed window, so the press aims at the geometry the frame shows then, as the pointer
+/// the person aims does.
 #[test]
 fn a_press_beside_the_close_button_does_not_close_a_window() {
     let _settled = ui::motion::testing::settled();

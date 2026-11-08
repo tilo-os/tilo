@@ -69,9 +69,6 @@ impl CookieProfile {
     }
     /// Count selected service cookies and origins without reading any value.
     /// A cookie count is website data, never an authenticated account count.
-    ///
-    /// # Errors
-    /// Refuses changed or unsafe source authority and unsupported cookie schemas.
     pub fn counts(
         &self,
         service: browser_continuity::sessions::Service,

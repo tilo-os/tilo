@@ -79,8 +79,6 @@ pub fn review_selected_dependencies(
 /// re-attested repository grant. Commands contain no shell interpolation.
 pub trait OfflineRunner: Runner {
     /// Export an independently reviewed subset without changing its source.
-    /// # Errors
-    /// Refuses source changes, missing native review or invalid destination grants.
     fn export_offline_subset(&self, _grant: &SubsetExportGrant<'_>) -> Result<bool, String> {
         Ok(false)
     }
@@ -88,8 +86,6 @@ pub trait OfflineRunner: Runner {
     /// Refuses unavailable OSTree, invalid repositories or failed verification.
     fn ostree(&self, repository: &Path, arguments: &[String]) -> Result<String, String>;
     /// Verify retained raw extra-data against exact signed commit metadata.
-    /// # Errors
-    /// Refuses missing, malformed or changed original download blobs.
     fn verify_extra_data(&self, _repository: &Path, _commit: &str) -> Result<u64, String> {
         Ok(0)
     }
@@ -535,8 +531,6 @@ impl PortableFlatpakSource {
     }
     /// Review exactly selected user or system refs and their app data after explicit
     /// app inclusion consent. Whole-Home callers must use the legacy no-state review.
-    /// # Errors
-    /// Refuses missing selections, changed source data or signing authority.
     pub fn review_selected_state(
         runner: &impl Runner,
         home: &Path,

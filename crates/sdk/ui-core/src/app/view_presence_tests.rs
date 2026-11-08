@@ -79,7 +79,6 @@ fn app_with_root(root: ViewRoot) -> App {
 
 #[test]
 fn application_launch_receipts_are_bounded_terminal_and_admitted() {
-    // Case `application_launch_receipts_are_terminal_once_and_late_replies_are_inert`.
     {
         use tilo_actions::remote::{InvocationReceipt, ReceiptStatus, RemoteActionMessage};
         let mut app = app_with_root(ViewRoot::new());
@@ -149,7 +148,6 @@ fn application_launch_receipts_are_bounded_terminal_and_admitted() {
         }
     }
 
-    // Case `disconnected_application_launches_are_bounded_and_failed_once`.
     {
         let mut app = app_with_root(ViewRoot::new());
         let invocation = tilo_actions::InvocationId::new();
@@ -169,7 +167,6 @@ fn application_launch_receipts_are_bounded_terminal_and_admitted() {
         assert!(!app.actions.directed_invocations.contains_key(&invocation));
     }
 
-    // Case `application_launch_admission_refuses_a_full_receipt_queue`.
     {
         let mut app = app_with_root(ViewRoot::new());
         for request_id in 0..MAX_PENDING_APPLICATION_LAUNCHES as u64 {
@@ -195,7 +192,6 @@ fn application_launch_receipts_are_bounded_terminal_and_admitted() {
 
 #[test]
 fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
-    // Case `generic_continuation_restores_view_for_apps_without_custom_metadata`.
     {
         let mut sender = app_with_root(ViewRoot {
             scroll: vec![48.0, 12.0],
@@ -224,7 +220,6 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         assert!(receiver.continuation.pending_view.is_none());
     }
 
-    // Case `generic_continuation_never_serializes_path_or_widget_ephemeral_state`.
     {
         let portable = PortableContinuationView::capture(crate::view::View {
             scroll: vec![1.0],
@@ -243,7 +238,6 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         assert_eq!(restored.focus.unwrap().ephemeral, "");
     }
 
-    // Case `custom_semantics_cannot_replace_framework_view_fidelity`.
     {
         let view = crate::view::View {
             scroll: vec![81.0, 13.0],
@@ -281,7 +275,6 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         assert!(!metadata.bytes.windows(7).any(|window| window == b"private"));
     }
 
-    // Case `unsafe_custom_semantics_are_stripped_without_losing_the_view`.
     {
         let metadata = compose_structural_continuation_metadata(
             crate::view::View {
@@ -308,7 +301,6 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         assert!(!sanitized.windows(6).any(|window| window == b"opaque"));
     }
 
-    // Case `oversized_custom_semantics_cannot_suppress_framework_view_fidelity`.
     {
         let metadata = compose_structural_continuation_metadata(
             crate::view::View {
@@ -329,7 +321,6 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         assert!(!facets.semantic());
     }
 
-    // Case `structural_continuation_restores_framework_view_before_layout`.
     {
         let metadata = compose_structural_continuation_metadata(
             crate::view::View {
@@ -355,7 +346,6 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
 
 #[test]
 fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
-    // Case `view_subset_broadcasts_through_real_presence_path`:
     // Asserted on both the frame that leaves the sender (via the broadcast
     // sink) and the frame the receiver applies.
     {
@@ -433,7 +423,6 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
         );
     }
 
-    // Case `follow_binds_local_viewport_and_unfollow_releases`.
     {
         fn deliver(app: &mut App, peer: &str, scroll: Vec<f64>, mode: &str) {
             let subset = ViewSubset {
@@ -487,7 +476,6 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
         );
     }
 
-    // Case `following_absent_peer_is_a_noop`.
     {
         let mut app = app_with_root(ViewRoot {
             scroll: vec![7.0],

@@ -621,9 +621,6 @@ impl ModemManager {
     }
 
     /// `ModemManager` on the system bus.
-    ///
-    /// # Errors
-    /// When the system bus cannot be reached.
     pub async fn system() -> Result<Self, ModemError> {
         zbus::Connection::system()
             .await

@@ -13,6 +13,7 @@
 //! |---|---|---|---|
 //! | list | [`list_date`] | `16:02`, `Yesterday`, `Sun`, `Jun 30`, `Jun 30, 2025` | `16:02`, `Gestern`, `So.`, `30. Juni`, `30. Juni 2025` |
 //! | day fact | [`day_fact`], [`Formats::day_fact`] | `Overdue`, `Today`, `Tomorrow`, `Thursday`, `Jun 29`; `Today 09:00`, `Thu 14:30` | `Überfällig`, `Heute`, `Morgen`, `Donnerstag`, `29. Juni`; `Heute 09:00`, `Do. 14:30` |
+//! | moment fact | [`moment_fact`], [`Formats::moment_fact`] | `15:00`, `Sat 09:00`, `Jun 29 09:00` | `15:00`, `Sa. 09:00`, `29. Juni 09:00` |
 //! | timestamp | [`timestamp`] | `Jun 30, 2026, 13:42` (or ISO `2026-06-30 13:42`, …) | `30.06.2026, 13:42` |
 //! | date | [`date`] | `Jun 30, 2026` (or ISO, US, EU, `30 Jun 2026`) | `30.06.2026` (or `30. Juni 2026`, Long) |
 //! | time | [`time`] | `13:42` or `1:42 PM` | `13:42` |
@@ -793,6 +794,15 @@ pub fn day_fact(day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> Da
 #[must_use]
 pub fn day_fact_today(day: NaiveDate, time: Option<NaiveTime>) -> DayFact {
     day_fact(day, time, crate::clock::today())
+}
+
+/// The **moment fact** style for a moment: a time of day, with the short weekday before it when
+/// it is not today. See [`Formats::moment_fact`].
+#[must_use]
+pub fn moment_fact(at: &impl Moment) -> String {
+    at.local().map_or_else(String::new, |at| {
+        Formats::current().moment_fact(at, crate::clock::today())
+    })
 }
 
 /// [`Formats::day_done`] against `today`: the heading over what was done on `day`, in the

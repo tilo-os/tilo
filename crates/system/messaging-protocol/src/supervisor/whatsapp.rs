@@ -54,8 +54,6 @@ impl crate::whatsapp_store::StateAuthority for StateGrant {
 impl WhatsappBootstrap {
     /// Build with the original protected account key and grant before SDK I/O.
     /// No key, permission, account or network connection is created here.
-    /// # Errors
-    /// Refuses revoked authority, unsafe paths or unusable encrypted SDK state.
     pub async fn open_profile(
         root: &std::path::Path,
         owner: crate::journal::Owner,
@@ -80,8 +78,6 @@ impl WhatsappBootstrap {
     }
     /// Open existing OS-keychain custody on the native supervisor worker.
     /// No key is provisioned and no weaker store or ambient account is used.
-    /// # Errors
-    /// Refuses missing/locked custody, invalid paths and unusable SDK state.
     pub async fn open_system(
         root: &std::path::Path,
         owner: crate::journal::Owner,

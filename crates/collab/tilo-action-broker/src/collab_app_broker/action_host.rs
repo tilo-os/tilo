@@ -1178,13 +1178,6 @@ impl AppBrokerState {
                         record_id: String::new(),
                         browsable: true,
                     });
-                    // A step marked for turns is a turn's own for an agent, as an app action
-                    // is: listed for the agent working a turn and for no agent outside one. The
-                    // person at this seat is offered it as they are their other steps: the REPL
-                    // types what the agent would, and it runs as the person (shell.md §8.1).
-                    if steps.for_turns() && policy.is_agent() && policy.turn().is_none() {
-                        continue;
-                    }
                     if scope.wants(steps.provider()) && scope.wants_app(steps.app_id()) {
                         Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
                     }
@@ -3058,11 +3051,6 @@ impl AppBrokerState {
 
     /// Close `app_id`'s windows in `workspace` and record the terminal
     /// outcome as an invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not change the application or
-    /// the host cannot close applications.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the dispatch permit is spent here: taken by value, a caller cannot complete it twice"
@@ -3177,8 +3165,8 @@ impl AppBrokerState {
 
     /// `Self::action_next_change` counting only changes after this call:
     /// the `next_change` of a host whose waiter asks before it observes, so a
-    /// change between the two still wakes it. Authorized exactly as
-    /// [`Self::action_observe`]: `None` for an invocation `caller` did not
+    /// change between the two still wakes it. Authorized exactly
+    /// as [`Self::action_observe`]: `None` for an invocation `caller` did not
     /// admit.
     pub fn action_next_change_after_now(
         &self,

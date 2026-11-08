@@ -6,8 +6,8 @@
 //! [`HEARTBEAT`](tilo_relay_protocol::voice::HEARTBEAT) and after every
 //! reconnect, joins afresh once when the host forgot the participation
 //! (a reconnect after [`PARTICIPATION_TTL`](tilo_relay_protocol::voice::PARTICIPATION_TTL)),
-//! and leaves. Each grant the host sends is handed on as a
-//! [`VoiceEvent::Granted`]: this participation's directions in the call and
+//! and leaves. Each grant the host sends is handed on as
+//! a [`VoiceEvent::Granted`]: this participation's directions in the call and
 //! its roster, which the host refreshes whenever either changes.
 
 use std::collections::HashMap;

@@ -1,8 +1,7 @@
-//! The tilolang shell on the native session (headless backend), its whole
-//! screen under the windows: its bar shows the desk the session publishes on
-//! its door (the time, the workspace and strip in front, the person, the
-//! unread notifications), switching workspace from it brings that workspace to
-//! the front, and with nothing changing it does no work.
+//! The tilolang shell on the native session (headless backend), its whole screen under the windows:
+//! its bar shows the desk the session publishes on its door (the time, the workspace and strip in
+//! front, the person, the unread notifications), switching workspace from it brings that workspace
+//! to the front, and with nothing changing it does no work.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -77,9 +76,8 @@ fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
     common::until(session, "the shell's answer", done);
 }
 
-/// Whether the bar says `words`: a control's label carries what it shows and
-/// what it opens ("Show strips, now on Main", "Pat (you): your profile"), so
-/// naming the words is what the bar does.
+/// Whether the bar says `words` : a control's label carries what it shows and what it opens ("Show
+/// strips, now on Main", "Pat (you): your profile"), so naming the words is what the bar does.
 fn says(session: &Session, words: &str) -> bool {
     session
         .accessible_labels()
@@ -87,16 +85,15 @@ fn says(session: &Session, words: &str) -> bool {
         .any(|label| label.contains(words))
 }
 
-/// Keep the screen as `name.png` where `TL_SHELL_SHOTS` names, and its
-/// bar's band as `name-bar.png`.
+/// Keep the screen as `name.png` where `TL_SHELL_SHOTS` names, and its bar's band as `name-bar.png`
+/// .
 fn keep(session: &mut Session, name: &str) -> tilo_compositor::Screenshot {
     let shot = session.compositor().screenshot("HEADLESS-1").unwrap();
     save(&shot, name);
     shot
 }
 
-/// Write `shot` as `name.png` where `TL_SHELL_SHOTS` names, and its bar's
-/// band as `name-bar.png`.
+/// Write `shot` as `name.png` where `TL_SHELL_SHOTS` names, and its bar's band as `name-bar.png` .
 fn save(shot: &tilo_compositor::Screenshot, name: &str) {
     if let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") {
         let dir = std::path::PathBuf::from(dir);
@@ -121,8 +118,8 @@ fn save(shot: &tilo_compositor::Screenshot, name: &str) {
     }
 }
 
-/// How many pixels of `after` differ from `before` by more than a shade: what a person sees
-/// change on the screen.
+/// How many pixels of `after` differ from `before` by more than a shade: what a person sees change
+/// on the screen.
 fn changed(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screenshot) -> usize {
     assert_eq!(
         (before.width, before.height),
@@ -226,8 +223,7 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
             && says(session, &desk.workspace)
     });
     let second = desk(&session).workspace;
-    // The workspace's control opens the workspaces; choosing the first
-    // brings it to the front.
+    // The workspace's control opens the workspaces; choosing the first brings it to the front.
     press(&mut session, &second);
     until(&mut session, |session| {
         session.shell_control(&first.workspace).is_some()
@@ -248,8 +244,8 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
     assert_eq!(desk(&session).workspace, first.workspace);
 }
 
-/// A menu the person opened stands while the desk changes under it: a workspace made while they
-/// are choosing one lists itself there, instead of the menu vanishing under the pointer.
+/// A menu the person opened stands while the desk changes under it: a workspace made while they are
+/// choosing one lists itself there, instead of the menu vanishing under the pointer.
 #[test]
 fn the_workspaces_menu_stands_while_the_desk_changes_under_it() {
     let _settled = ui::motion::testing::settled();
@@ -361,9 +357,9 @@ fn with_nothing_changing_the_bar_does_no_work() {
     );
 }
 
-/// The whole session frame for a change the bar shows: a new workspace, the frames the session
-/// runs to bring it to the front, at the median. The tool that compares the tilolang bar to the
-/// Rust bar holds this number.
+/// The whole session frame for a change the bar shows: a new workspace, the frames the session runs
+/// to bring it to the front, at the median. The tool that compares the tilolang bar to the Rust bar
+/// holds this number.
 #[test]
 fn a_new_workspace_frame_is_measured() {
     let _settled = ui::motion::testing::settled();
@@ -610,8 +606,8 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
         );
     }
     keep(&mut session, "shell-overview");
-    // Picking a window's place goes to it. (Its place may not be on screen until the
-    // overlay has been drawn, so the press comes once it is.)
+    // Picking a window's place goes to it. (Its place may not be on screen until the overlay has
+    // been drawn, so the press comes once it is.)
     let notes = desk(&session)
         .windows
         .iter()
@@ -712,8 +708,8 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
     }
 }
 
-/// The overview's search crosses the workspaces: a window the person left in another
-/// workspace is found, named with the workspace it is in, and choosing it goes there.
+/// The overview's search crosses the workspaces: a window the person left in another workspace is
+/// found, named with the workspace it is in, and choosing it goes there.
 #[test]
 fn the_overviews_search_finds_a_window_of_another_workspace() {
     let _settled = ui::motion::testing::settled();
@@ -802,8 +798,8 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
         )
         .unwrap();
     until(&mut session, |session| here(session) == "launcher");
-    // The launcher's doors are what it draws: the surface being up says where
-    // the desk is, and its labels are the doors a person sees.
+    // The launcher's doors are what it draws: the surface being up says where the desk is, and its
+    // labels are the doors a person sees.
     common::wait_for(&mut session, "the launcher's doors", |session| {
         (says(session, "Overview") && says(session, "Notifications")).then_some(())
     });
@@ -859,9 +855,9 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
     until(&mut session, |session| desk(session).notices.is_empty());
 }
 
-/// The centre's own Dismiss, pressed in the shell's view: the action the view runs is the
-/// desk's `dismiss-notice` on the notice the row is for, so the shell's surfaces and an agent
-/// dismiss the same way.
+/// The centre's own Dismiss, pressed in the shell's view: the action the view runs is the desk's
+/// `dismiss-notice` on the notice the row is for, so the shell's surfaces and an agent dismiss the
+/// same way.
 #[test]
 fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
     let _settled = ui::motion::testing::settled();
@@ -872,8 +868,8 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
             .with_app_name("Settings"),
     );
     until(&mut session, |session| !desk(session).notices.is_empty());
-    // A notice that arrives is unread: the desk's own count says so, the same number the bar's
-    // bell shows.
+    // A notice that arrives is unread: the desk's own count says so, the same number the bar's bell
+    // shows.
     until(&mut session, |session| desk(session).unread == 1);
     assert!(!desk(&session).notices[0].read, "a fresh notice is unread");
     session
@@ -887,13 +883,13 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
         )
         .unwrap();
     until(&mut session, |session| says(session, "Backup finished"));
-    // The centre opened, so the person saw them: every notice is read, and the desk's count
-    // the bell shows is none.
+    // The centre opened, so the person saw them: every notice is read, and the desk's count the
+    // bell shows is none.
     until(&mut session, |session| {
         desk(session).unread == 0 && desk(session).notices.iter().all(|notice| notice.read)
     });
-    // The view draws each notice with its Dismiss; pressing it runs the desk's
-    // `dismiss-notice` on that notice, as any action on the desk runs.
+    // The view draws each notice with its Dismiss; pressing it runs the desk's `dismiss-notice` on
+    // that notice, as any action on the desk runs.
     press(&mut session, "Dismiss");
     until(&mut session, |session| desk(session).notices.is_empty());
     assert!(
@@ -1002,7 +998,7 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     );
 }
 
-/// Alt+Tab's press on the desk's door: the walk `steps` windows on, in `scope`.
+/// Alt+Tab's press on the desk's door: the walk `steps` windows on, in `scope` .
 fn walk(session: &mut Session, steps: i64, scope: &str) {
     session
         .invoke(
@@ -1019,8 +1015,8 @@ fn walk(session: &mut Session, steps: i64, scope: &str) {
         .unwrap_or_else(|why| panic!("the walk starts: {why:?}"));
 }
 
-/// The window the switcher lifts, as the desk reads it: the one the walk reached while the
-/// panel shows, and the window in front while the panel is down.
+/// The window the switcher lifts, as the desk reads it: the one the walk reached while the panel
+/// shows, and the window in front while the panel is down.
 fn reached(session: &Session) -> tilo_surface_host::shell_part::WindowReading {
     desk(session)
         .windows
@@ -1034,9 +1030,9 @@ fn lifted(session: &Session) -> String {
     reached(session).key
 }
 
-/// A flick past Alt+Tab switches windows and flashes nothing: the desk draws the same screen
-/// until the walk outlasts the reveal delay, and then the panel comes up on its own — the one
-/// deadline the session hands the shell — with the window the walk reached lifted in it.
+/// A flick past Alt+Tab switches windows and flashes nothing: the desk draws the same screen until
+/// the walk outlasts the reveal delay, and then the panel comes up on its own — the one deadline
+/// the session hands the shell — with the window the walk reached lifted in it.
 #[test]
 fn a_flick_shows_no_panel_and_holding_the_walk_outlasts_its_delay() {
     let _settled = ui::motion::testing::settled();
@@ -1149,8 +1145,8 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
     walk(&mut session, 1, "app");
     assert_eq!(reached(&session).key, first.key);
 
-    // The workspace's walk crosses into the other app, within three presses: the app in front
-    // holds only two of the desk's four windows.
+    // The workspace's walk crosses into the other app, within three presses: the app in front holds
+    // only two of the desk's four windows.
     let mut crossed = None;
     for press in 1..=3 {
         walk(&mut session, 1, "workspace");
@@ -1180,8 +1176,8 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
 }
 
 /// Who is here is one button of faces — up to three, then a face counting the rest — whose name
-/// names the people, so no words take the bar's room at any width; pressing it calls the
-/// session's own `toggle-collaborators`, and the roster opens and lists them.
+/// names the people, so no words take the bar's room at any width; pressing it calls the session's
+/// own `toggle-collaborators` , and the roster opens and lists them.
 #[test]
 fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let _settled = ui::motion::testing::settled();
@@ -1210,8 +1206,8 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         "the face has no control of its own beside a chip: {:?}",
         session.accessible_labels()
     );
-    // Three here: three faces. And a fourth: three faces and a count, which is narrower than
-    // one face more.
+    // Three here: three faces. And a fourth: three faces and a count, which is narrower than one
+    // face more.
     let mut widths = vec![one.2];
     for (count, label) in [
         (2, "Mia Clayton and Sam Okafor are here"),
@@ -1347,9 +1343,9 @@ impl media::audio::GraphControl for Card {
     }
 }
 
-/// An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app
-/// in the workspace in front, as the launcher's row of it does. (The press making that call is
-/// `tilo-surface-host`'s `a_press_on_a_dock_app_asks_the_session_to_open_it`.)
+/// An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app in the
+/// workspace in front, as the launcher's row of it does. (The press making that call is
+/// `tilo-surface-host` 's `a_press_on_a_dock_app_asks_the_session_to_open_it` .)
 #[test]
 fn an_apps_open_the_shell_calls_starts_it() {
     let _settled = ui::motion::testing::settled();
@@ -1409,17 +1405,16 @@ fn speaker() -> tilo_audio_service::sound::SoundService {
     sound
 }
 
-/// A session of `width` by `height` with the shell's bar, the person's settings and a sound
-/// card: what the quick settings read and change.
+/// A session of `width` by `height` with the shell's bar, the person's settings and a sound card:
+/// what the quick settings read and change.
 fn session_with_devices(width: i32, height: i32) -> Session {
     session_with_services(width, height, Vec::new())
 }
 
-/// The devices session of the desk's own chrome, with quick settings' app
-/// installed: the panel the chrome shows, started as a process of the session
-/// and standing where the stack places the slot, over the bar's status. The
-/// screen shell draws its own quick settings (`quick.tl`), so the panel's app
-/// is the desk's.
+/// The devices session of the desk's own chrome, with quick settings' app installed: the panel the
+/// chrome shows, started as a process of the session and standing where the stack places the slot,
+/// over the bar's status. The screen shell draws its own quick settings (`quick.tl`), so the
+/// panel's app is the desk's.
 fn session_with_the_panel(width: i32, height: i32) -> Session {
     Session::headless(
         Options {
@@ -1448,8 +1443,8 @@ fn session_with_services(
     session_where(width, height, extra, Vec::new())
 }
 
-/// A session serving `extra` beside the settings and the sound, with the
-/// surface apps in `surfaces` installed.
+/// A session serving `extra` beside the settings and the sound, with the surface apps in `surfaces`
+/// installed.
 fn session_where(
     width: i32,
     height: i32,
@@ -1484,7 +1479,7 @@ fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bo
     });
 }
 
-/// A press on the dock's launcher calls the desk's own `show-surface`: the launcher comes up.
+/// A press on the dock's launcher calls the desk's own `show-surface` : the launcher comes up.
 #[test]
 fn a_press_on_the_docks_launcher_shows_the_launcher() {
     let _settled = ui::motion::testing::settled();
@@ -1497,9 +1492,9 @@ fn a_press_on_the_docks_launcher_shows_the_launcher() {
     until(&mut session, |session| desk(session).here == "launcher");
 }
 
-/// Press the control named `name` once the bar stands still: what the services report while
-/// the session starts (the workspace, who is here) adds controls beside it and moves it, and a
-/// person presses the control where they see it at rest.
+/// Press the control named `name` once the bar stands still: what the services report while the
+/// session starts (the workspace, who is here) adds controls beside it and moves it, and a person
+/// presses the control where they see it at rest.
 fn press_at_rest(session: &mut Session, name: &str) {
     until_settled(session, |session| {
         let before = (
@@ -1525,9 +1520,9 @@ fn appearance_mode(session: &Session) -> serde_json::Value {
         .unwrap_or_default()
 }
 
-/// The bar's status is the device's own reading: the sound's level, from the same `sound`
-/// resource the quick settings read and change — a change of the resource moves the bar's
-/// number, never a copy of it.
+/// The bar's status is the device's own reading: the sound's level, from the same `sound` resource
+/// the quick settings read and change — a change of the resource moves the bar's number, never a
+/// copy of it.
 #[test]
 fn the_bars_status_shows_the_sounds_published_level() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -1547,9 +1542,9 @@ fn the_bars_status_shows_the_sounds_published_level() {
     keep(&mut session, "shell-bar-status-louder");
 }
 
-/// The bar's status opens the quick settings over the desk, and the panel's Dark mode tile runs
-/// the appearance settings' own published action: the published mode turns from what it was to
-/// the other, as Settings and an agent turn it.
+/// The bar's status opens the quick settings over the desk, and the panel's Dark mode tile runs the
+/// appearance settings' own published action: the published mode turns from what it was to the
+/// other, as Settings and an agent turn it.
 fn dark_mode_from_quick_settings_at(width: i32, height: i32) {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
@@ -1597,8 +1592,8 @@ fn quick_settings_dark_mode_changes_the_published_appearance_on_a_phone() {
     dark_mode_from_quick_settings_at(390, 844);
 }
 
-/// The volume slider shows the sound's published volume, and pressing its track runs the
-/// sound's own `set-volume`: the published volume follows.
+/// The volume slider shows the sound's published volume, and pressing its track runs the sound's
+/// own `set-volume` : the published volume follows.
 #[test]
 fn quick_settings_volume_slider_sets_the_published_volume() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -1645,16 +1640,14 @@ fn quick_settings_volume_slider_sets_the_published_volume() {
     );
 }
 
-/// The panel the desktop shows: the bar's status opens quick settings' own
-/// app over the desk, the panel says at a glance which radios are on, and
-/// each tile's chevron opens its own details in place under the tiles and
-/// closes them again — the networks this laptop knows and the devices it is
-/// paired with — in both appearance modes. Each resting panel is kept for the
-/// capture that shows it (`TL_SHELL_SHOTS`).
-/// The bar's status opens the panel over the desk, and what draws it is the
-/// panel's own app: the session starts it where the stack placed the slot.
-/// Escape closes the panel, and the desk comes back; the app stays running
-/// for the session's life, hidden, so the next press shows it at once.
+/// The panel the desktop shows: the bar's status opens quick settings' own app over the desk, the
+/// panel says at a glance which radios are on, and each tile's chevron opens its own details in
+/// place under the tiles and closes them again — the networks this laptop knows and the devices it
+/// is paired with — in both appearance modes. Each resting panel is kept for the capture that shows
+/// it (`TL_SHELL_SHOTS`). The bar's status opens the panel over the desk, and what draws it is the
+/// panel's own app: the session starts it where the stack placed the slot. Escape closes the panel,
+/// and the desk comes back; the app stays running for the session's life, hidden, so the next press
+/// shows it at once.
 #[test]
 fn the_bars_status_opens_the_panel_as_its_own_app() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -1662,8 +1655,8 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
     let mut session = session_with_the_panel(WIDTH, HEIGHT);
     until_settled(&mut session, |session| says(session, &desk(session).clock));
     let desk_only = keep(&mut session, "quick-settings-closed");
-    // The press is the chrome's own verb: it takes the stack's slot, and the
-    // session starts the panel's app where the stack placed it.
+    // The press is the chrome's own verb: it takes the stack's slot, and the session starts the
+    // panel's app where the stack placed it.
     session
         .invoke(
             tilo_surface_host::shell_part::CHROME_RESOURCE,
@@ -1713,8 +1706,7 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
         session.surfaces().names(),
         session.quick_settings_open()
     );
-    // Escape closes the panel; its app keeps running, hidden, and stands
-    // ready to be shown again.
+    // Escape closes the panel; its app keeps running, hidden, and stands ready to be shown again.
     press_escape(&mut session);
     until_settled(&mut session, |session| !session.quick_settings_open());
     assert!(
@@ -1738,9 +1730,9 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
     save(&closed, "quick-settings-closed-again");
 }
 
-/// Escape goes back a page inside the panel before it closes it: with a page
-/// of the panel's own up, Escape leaves it for the controls and the panel
-/// stays open — only the controls, which have nothing behind them, close it.
+/// Escape goes back a page inside the panel before it closes it: with a page of the panel's own up,
+/// Escape leaves it for the controls and the panel stays open — only the controls, which have
+/// nothing behind them, close it.
 #[test]
 fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -1758,8 +1750,8 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
         session.quick_settings_open() && session.surfaces().running(quick_settings::SURFACE)
     });
     let controls = drawn(&mut session);
-    // A page of the panel's own, over the controls: what plays on this
-    // machine, which is what the person reads after picking Sound.
+    // A page of the panel's own, over the controls: what plays on this machine, which is what the
+    // person reads after picking Sound.
     let page = common::wait_for(&mut session, "the panel's page", |session| {
         session
             .surfaces()
@@ -1782,8 +1774,8 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
         (common::changed(&controls, &frame) > 1000).then_some(frame)
     });
     save(&page, "quick-settings-page");
-    // Escape goes back to the controls: the panel answers that it had a page
-    // behind it and stays up to be closed from there.
+    // Escape goes back to the controls: the panel answers that it had a page behind it and stays up
+    // to be closed from there.
     press_escape(&mut session);
     for _ in 0..30 {
         session.settle_services();
@@ -1813,12 +1805,12 @@ fn press_escape(session: &mut Session) {
 /// The Escape key, as the compositor names it.
 const KEY_ESCAPE: u32 = 1;
 
-/// A pixel of the panel's column, clear of the rows that move with the pointer:
-/// where the panel's own ground shows over the desk's.
+/// A pixel of the panel's column, clear of the rows that move with the pointer: where the panel's
+/// own ground shows over the desk's.
 const PROBE: (u32, u32) = (1100, 200);
 
-/// Run the session at its display's refresh until the screen stops changing:
-/// the panel has drawn the frame its last action asked for.
+/// Run the session at its display's refresh until the screen stops changing: the panel has drawn
+/// the frame its last action asked for.
 fn drawn(session: &mut Session) -> tilo_compositor::Screenshot {
     let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
     let deadline = tilo_test_env::hang_deadline();
@@ -1904,8 +1896,8 @@ fn in_front(session: &Session, tab: u64) -> bool {
         .any(|window| window.focused && window.key == tab.to_string())
 }
 
-/// Name the strip in front `first`, and add a strip `second` beside it holding a window of
-/// `app`, its tab's id.
+/// Name the strip in front `first` , and add a strip `second` beside it holding a window of `app` ,
+/// its tab's id.
 fn second_strip(session: &mut Session, first: &str, second: &str, app: &str) -> u64 {
     let handle = session.handle().clone();
     let mut tree = handle.read(Clone::clone);
@@ -2001,8 +1993,8 @@ fn a_press_on_a_launcher_door_shows_that_surface() {
     );
 }
 
-/// What the launcher holds no window for, Search everywhere hands the desk's search: it opens
-/// with what was typed.
+/// What the launcher holds no window for, Search everywhere hands the desk's search: it opens with
+/// what was typed.
 #[test]
 fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query() {
     let _settled = ui::motion::testing::settled();
@@ -2055,7 +2047,7 @@ fn closing_a_window_from_the_overview_takes_it_off_the_desk() {
 }
 
 /// A window carried to another strip from the overview stands on it: the chrome's
-/// `move-tab-to-strip`.
+/// `move-tab-to-strip` .
 #[test]
 fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
     let _settled = ui::motion::testing::settled();
@@ -2093,7 +2085,7 @@ fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
     );
 }
 
-/// A window carried to another workspace from the overview is in it: the chrome's `move-tab`.
+/// A window carried to another workspace from the overview is in it: the chrome's `move-tab` .
 #[test]
 fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
     let _settled = ui::motion::testing::settled();
@@ -2150,7 +2142,7 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
     );
 }
 
-/// The centre's Clear all empties it: the desk's `clear-notices`.
+/// The centre's Clear all empties it: the desk's `clear-notices` .
 #[test]
 fn a_press_on_the_centres_clear_all_empties_the_desks_notices() {
     let _settled = ui::motion::testing::settled();
@@ -2179,8 +2171,8 @@ fn a_press_on_the_centres_clear_all_empties_the_desks_notices() {
     );
 }
 
-/// A workspace named in the workspaces surface is made and in front: the chrome's
-/// `new-workspace` with its name.
+/// A workspace named in the workspaces surface is made and in front: the chrome's `new-workspace`
+/// with its name.
 #[test]
 fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
     let _settled = ui::motion::testing::settled();
@@ -2232,7 +2224,7 @@ fn set_here(session: &Session, count: usize) {
         .set_members(None, Some(here));
 }
 
-/// Where the bar's control whose name holds `words` stands, logical `(x, y, w, h)`.
+/// Where the bar's control whose name holds `words` stands, logical `(x, y, w, h)` .
 fn bar_control(session: &Session, words: &str) -> Option<(f64, f64, f64, f64)> {
     session
         .accessible_labels()
@@ -2241,8 +2233,8 @@ fn bar_control(session: &Session, words: &str) -> Option<(f64, f64, f64, f64)> {
         .find_map(|label| session.shell_control(&label))
 }
 
-/// Every control the shell shows, by the name assistive technology hears, with where it
-/// stands: the bar's and the dock's.
+/// Every control the shell shows, by the name assistive technology hears, with where it stands: the
+/// bar's and the dock's.
 fn bar_controls(session: &Session) -> Vec<(String, (f64, f64, f64, f64))> {
     session
         .accessible_labels()
@@ -2251,15 +2243,15 @@ fn bar_controls(session: &Session) -> Vec<(String, (f64, f64, f64, f64))> {
         .collect()
 }
 
-/// The bar's band, logical `(x, y, w, h)`: the shell's own bar, as tall as the theme and the
-/// text scale make it.
+/// The bar's band, logical `(x, y, w, h)` : the shell's own bar, as tall as the theme and the text
+/// scale make it.
 fn bar_band(session: &Session) -> (f64, f64, f64, f64) {
     // The bar's own ground, as assistive technology names it.
     if let Some(rect) = session.shell_control("Top bar") {
         return rect;
     }
-    // The band the bar holds at the top of the output it stands on, when the ground has no
-    // bounds of its own; the bar's controls stand inside it, and nothing of the desk does.
+    // The band the bar holds at the top of the output it stands on, when the ground has no bounds
+    // of its own; the bar's controls stand inside it, and nothing of the desk does.
     session
         .shell_parts()
         .first()
@@ -2341,7 +2333,7 @@ fn device_session(width: i32, height: i32) -> Session {
     device_session_over(width, height, Device { charging: true })
 }
 
-/// The same session over `device`.
+/// The same session over `device` .
 fn device_session_over(width: i32, height: i32, device: Device) -> Session {
     let mut session = Session::headless(
         Options {
@@ -2362,8 +2354,8 @@ fn device_session_over(width: i32, height: i32, device: Device) -> Session {
     session
 }
 
-/// Turn the person's dark mode on or off, as the quick settings' tile does: the settings'
-/// own published action.
+/// Turn the person's dark mode on or off, as the quick settings' tile does: the settings' own
+/// published action.
 fn set_appearance(session: &mut Session, dark: bool) {
     session
         .invoke(
@@ -2374,9 +2366,8 @@ fn set_appearance(session: &mut Session, dark: bool) {
         .expect("the appearance changes");
 }
 
-/// How many pixels of `after` differ from `before` by more than a shade, inside `rect` and
-/// outside every rect of `allowed`: what changed where the test points, and what changed
-/// anywhere else.
+/// How many pixels of `after` differ from `before` by more than a shade, inside `rect` and outside
+/// every rect of `allowed` : what changed where the test points, and what changed anywhere else.
 fn changed_near(
     before: &tilo_compositor::Screenshot,
     after: &tilo_compositor::Screenshot,
@@ -2386,8 +2377,8 @@ fn changed_near(
     changed_by(before, after, rect, allowed, 8)
 }
 
-/// The same, for a change of more than `shade` in a channel: a material's tint can move the
-/// bar by a level or two and still be another material.
+/// The same, for a change of more than `shade` in a channel: a material's tint can move the bar by
+/// a level or two and still be another material.
 fn changed_by(
     before: &tilo_compositor::Screenshot,
     after: &tilo_compositor::Screenshot,
@@ -2429,8 +2420,8 @@ fn changed_by(
     (inside, outside)
 }
 
-/// How many pixels of `after` differ from `before` by more than a shade, inside `rect` and
-/// outside it.
+/// How many pixels of `after` differ from `before` by more than a shade, inside `rect` and outside
+/// it.
 fn changed_in(
     before: &tilo_compositor::Screenshot,
     after: &tilo_compositor::Screenshot,
@@ -2439,8 +2430,8 @@ fn changed_in(
     changed_near(before, after, rect, &[rect])
 }
 
-/// The count's badge stands wholly inside the bell's face, which stands inside the bar: what
-/// the person sees when a notification arrives, and where.
+/// The count's badge stands wholly inside the bell's face, which stands inside the bar: what the
+/// person sees when a notification arrives, and where.
 #[test]
 fn the_bells_count_stands_inside_the_bar() {
     let _settled = ui::motion::testing::settled();
@@ -2462,17 +2453,16 @@ fn the_bells_count_stands_inside_the_bar() {
         bell.1 >= band.1 && bell.1 + bell.3 <= band.1 + band.3 + 0.5,
         "the bell stands inside the bar's band: {bell:?} of {band:?}"
     );
-    // The count sits on the bell's corner, inside the bell's own bounds: a badge is clamped
-    // inside the control it counts, so a bell standing inside the bar's band carries no pixel
-    // of its count over the screen's top edge. (What the notice itself draws on the desk is
-    // not the bar's; the pixels below the bar change with it.)
+    // The count sits on the bell's corner, inside the bell's own bounds: a badge is clamped inside
+    // the control it counts, so a bell standing inside the bar's band carries no pixel of its count
+    // over the screen's top edge. (What the notice itself draws on the desk is not the bar's; the
+    // pixels below the bar change with it.)
     let (inside, _) = changed_in(&before, &after, bell);
     assert!(inside > 20, "the count shows: {inside} pixels");
 }
 
-/// The bar's trailing group, in order: who is here, the device's status, the bell and the
-/// person's own face, with a gap between who is here and the status, and the person's face at
-/// the far end.
+/// The bar's trailing group, in order: who is here, the device's status, the bell and the person's
+/// own face, with a gap between who is here and the status, and the person's face at the far end.
 #[test]
 fn the_trailing_group_stands_in_order_and_ends_with_the_persons_face() {
     let _settled = ui::motion::testing::settled();
@@ -2534,9 +2524,9 @@ fn the_bar_draws_the_material_of_the_style_the_person_chose() {
     until_settled(&mut session, |session| says(session, &desk(session).clock));
     set_here(&session, 2);
     until_settled(&mut session, |session| says(session, "are here"));
-    // The desk's first frames draw every translucent body before the compositor has handed
-    // it what stands below it; let the session reach its rest before the frame is kept, as
-    // the captures after a setting change do.
+    // The desk's first frames draw every translucent body before the compositor has handed it what
+    // stands below it; let the session reach its rest before the frame is kept, as the captures
+    // after a setting change do.
     settle(&mut session);
     let calm = keep(&mut session, "shell-bar-calm");
     session
@@ -2546,10 +2536,9 @@ fn the_bar_draws_the_material_of_the_style_the_person_chose() {
     let glass = keep(&mut session, "shell-bar-glass");
     let band = bar_band(&session);
     // The theme's glass lets the ground through it: over the desk's flat backdrop it moves the
-    // whole band by a level rather than by a shade, so every pixel of the band that differs at
-    // all counts as the other material.
-    // The ground paints the bar's whole body, the Chrome's padding around the controls
-    // included: what changes outside the controls' bounds is still the bar.
+    // whole band by a level rather than by a shade, so every pixel of the band that differs at all
+    // counts as the other material. The ground paints the bar's whole body, the Chrome's padding
+    // around the controls included: what changes outside the controls' bounds is still the bar.
     let ground = (band.0 - 8.0, band.1 - 8.0, band.2 + 16.0, band.3 + 16.0);
     let (in_bar, under) = changed_by(
         &calm,
@@ -2578,8 +2567,8 @@ fn the_bar_draws_the_material_of_the_style_the_person_chose() {
     assert_eq!(outside, 0, "the same style draws the same bar");
 }
 
-/// The charge's control is the power service's own state: a pack taking charge shows the
-/// charging battery, a pack that drains the plain one, and the bar says which.
+/// The charge's control is the power service's own state: a pack taking charge shows the charging
+/// battery, a pack that drains the plain one, and the bar says which.
 #[test]
 fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
     let _settled = ui::motion::testing::settled();
@@ -2594,17 +2583,15 @@ fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
     let people = bar_control(&taking, "People").expect("who is here");
     let plain_people = bar_control(&draining, "People").expect("who is here, draining");
     let pack = bar_control(&taking, "61%, charging").expect("the charge");
-    // The trailing group is laid out from the width its readings take: the longer charge
-    // moves everyone who stands at its leading side over, so what differs is the trailing
-    // group and nothing before it — not the clock, the tabs or the launcher.
+    // The trailing group is laid out from the width its readings take: the longer charge moves
+    // everyone who stands at its leading side over, so what differs is the trailing group and
+    // nothing before it — not the clock, the tabs or the launcher.
     let (_, _, _, band) = bar_band(&taking);
     let from = people.0.min(plain_people.0);
-    // The two frames are of two sessions, kept seconds apart: the clock may
-    // turn its minute between them, and its digits are not the charge.
-    //
-    // The reading is the minute's, and the pass that draws it comes after the
-    // minute the desk now says: wait for the bar to show it rather than take
-    // the minute the last frame drew.
+    // The two frames are of two sessions, kept seconds apart: the clock may turn its minute between
+    // them, and its digits are not the charge.
+    // The reading is the minute's, and the pass that draws it comes after the minute the desk now
+    // says: wait for the bar to show it rather than take the minute the last frame drew.
     let drawn_clock = |session: &mut Session| bar_control(session, &desk(session).clock);
     let clock = common::wait_for(&mut taking, "the bar's clock", drawn_clock);
     let plain_clock = common::wait_for(&mut draining, "the bar's clock, draining", drawn_clock);
@@ -2625,9 +2612,9 @@ fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
     );
 }
 
-/// A compact bar keeps what a glance needs — the clock, the connection, the charge, the bell
-/// and the person's own face — and gives way on who is here and the sound: nothing stands past
-/// the screen's edge, however much the device reads.
+/// A compact bar keeps what a glance needs — the clock, the connection, the charge, the bell and
+/// the person's own face — and gives way on who is here and the sound: nothing stands past the
+/// screen's edge, however much the device reads.
 #[test]
 fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
     let _settled = ui::motion::testing::settled();
@@ -2679,8 +2666,8 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
     }
 }
 
-/// The bar at 1280, 390 and 320 wide, in both styles, light and dark, with nobody, one person
-/// and four here: what a person sees, and that nothing overflows any of them.
+/// The bar at 1280, 390 and 320 wide, in both styles, light and dark, with nobody, one person and
+/// four here: what a person sees, and that nothing overflows any of them.
 #[test]
 fn the_bar_draws_inside_every_width_style_and_appearance() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -2688,8 +2675,8 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
     let roomy = |width: i32| width >= 600;
     for (width, height) in [(1280, 800), (390, 844), (320, 568)] {
         for count in [0, 1, 4] {
-            // Who is here first, on a bar of the plain theme: a person is told who is here
-            // before they change how the bar looks, and the frames kept are that bar.
+            // Who is here first, on a bar of the plain theme: a person is told who is here before
+            // they change how the bar looks, and the frames kept are that bar.
             let mut session = device_session(width, height);
             until_settled(&mut session, |session| says(session, &desk(session).clock));
             set_here(&session, count);
@@ -2750,10 +2737,9 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
     }
 }
 
-/// The panel's own tile works at the display's scale: at 2 a press at the
-/// centre of "Dark mode" turns the published appearance, as it does at 1.
-/// A control reported at half its size put a press at its centre past it, so
-/// a click did nothing.
+/// The panel's own tile works at the display's scale: at 2 a press at the centre of "Dark mode"
+/// turns the published appearance, as it does at 1. A control reported at half its size put a press
+/// at its centre past it, so a click did nothing.
 #[test]
 fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -2780,8 +2766,8 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
             )
             .unwrap();
         until_settled(&mut session, |session| says(session, "Dark mode"));
-        // The tile as the session publishes it, in the desk's logical pixels:
-        // a press at its centre is the one the person makes.
+        // The tile as the session publishes it, in the desk's logical pixels: a press at its centre
+        // is the one the person makes.
         until_settled(&mut session, |session| {
             session
                 .controls()

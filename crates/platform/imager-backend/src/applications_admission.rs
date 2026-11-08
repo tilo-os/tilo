@@ -36,8 +36,6 @@ impl ConsumerCapability {
 }
 /// Schema1 system archives preserve their established admission. Selected app data
 /// requires its own selected authenticated image proof, never a Home proof.
-/// # Errors
-/// Refuses missing or incompatible selected consumers.
 pub fn require(capability: Option<&ConsumerCapability>, required: Option<u32>) -> io::Result<()> {
     if let Some(required) = required {
         let capability = capability.ok_or_else(|| {
@@ -58,8 +56,6 @@ pub fn require(capability: Option<&ConsumerCapability>, required: Option<u32>) -
 }
 /// Authenticate the actual installed consumer proof before target custody writes.
 /// The check re-executes the installed probes and compares the image receipt.
-/// # Errors
-/// Refuses old/missing consumers, untrusted artifacts, or failed native checks.
 #[cfg(target_os = "linux")]
 pub fn installed() -> io::Result<ConsumerCapability> {
     use crate::installed_consumers::data;

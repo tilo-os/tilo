@@ -5,9 +5,8 @@ use super::TileSource;
 use tilo_desktop_model::{Tab, Workspace};
 use ui::widget::{TabDescriptor, TileContent, TileHost};
 
-/// `tab`'s content from `tiles`, its application named to a panic hook
-/// while it is built and whenever it runs, and bound to the host's
-/// `controls` when the host already bound the surface.
+/// `tab` 's content from `tiles` , its application named to a panic hook while it is built and
+/// whenever it runs, and bound to the host's `controls` when the host already bound the surface.
 pub(super) fn build_tile(
     tiles: &mut dyn TileSource,
     controls: Option<&ui::ControlDomain>,

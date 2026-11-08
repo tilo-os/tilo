@@ -446,6 +446,15 @@ struct Harness {
     _queue: client::EventQueue<Host>,
 }
 
+/// A harness whose connection has entered and fenced the surface: the prologue
+/// of every test that only needs a live selection.
+fn focused_harness() -> Harness {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+    harness
+}
+
 #[test]
 fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
     let _system = crate::tests::SYSTEM.lock();
@@ -1045,9 +1054,7 @@ fn production_deadline_closes_both_pipes_without_focus_or_selection_changes() {
 
 #[test]
 fn image_copy_acknowledgement_follows_server_selection() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
 
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
@@ -1134,9 +1141,7 @@ fn copy_acknowledgement_waits_for_already_sent_keyboard_focus() {
 
 #[test]
 fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
     harness.query(|state| {
         state.hold_flush = true;
         state.leave(0);
@@ -1179,9 +1184,7 @@ fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
 #[test]
 fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
     for published in [false, true] {
-        let mut harness = Harness::new();
-        harness.enter(0, 0);
-        harness.fence();
+        let mut harness = focused_harness();
         harness.query(move |state| {
             state.hold_flush = !published;
             state.hold_flush_after_selection = published;
@@ -1287,9 +1290,7 @@ fn input_after_a_copy_does_not_publish_it_again() {
 
 #[test]
 fn expired_copy_does_not_publish_on_current_or_later_focus() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
     let (reply, result) = mpsc::channel();
     assert!(harness.backend().send_publication(publish(
         PublicationPayload::Text(b"expired".to_vec()),
@@ -1365,9 +1366,7 @@ fn explicit_plain_paste_is_revoked_on_keyboard_leave() {
 
 #[test]
 fn a_secret_copy_pastes_as_plain_text_and_carries_the_history_markers() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
 
     assert!(harness.backend().set_secret_text("hunter2"));
     let mimes = harness.selection_mimes();
@@ -1412,9 +1411,7 @@ fn a_secret_copy_pastes_as_plain_text_and_carries_the_history_markers() {
 /// that prefers text pastes, so the person would get the old text instead.
 #[test]
 fn an_image_copy_replaces_the_text_copied_before_it() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
 
     assert!(
         harness
@@ -1453,9 +1450,7 @@ fn an_image_copy_replaces_the_text_copied_before_it() {
 /// copy" would leave a secret on the clipboard with no clear scheduled.
 #[test]
 fn a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let gate = SelectionGate {
@@ -1492,9 +1487,7 @@ fn a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms() {
 /// The copy is reported as failed and must then never become the selection.
 #[test]
 fn a_copy_reported_as_failed_never_becomes_the_selection() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
     // The focus check's answer is held until the copy gave up on it.
     harness.query(|state| state.hold_flush = true);
     let started = Instant::now();
@@ -1517,9 +1510,7 @@ fn a_copy_reported_as_failed_never_becomes_the_selection() {
 /// once, and its outcome settles when the compositor has confirmed it.
 #[test]
 fn a_copy_settles_once_the_compositor_answers_and_not_before() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
     // Nothing the compositor says reaches the app until released. The copy's
     // deadline outlasts the test, so only the compositor's answer settles it.
     harness.query(|state| state.hold_flush = true);
@@ -1551,9 +1542,7 @@ fn a_copy_settles_once_the_compositor_answers_and_not_before() {
 /// it, and never becomes the selection later.
 #[test]
 fn an_unanswered_copy_settles_as_failed_at_its_deadline() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
     harness.query(|state| state.hold_flush = true);
     let copy = harness.backend().copy(crate::CopyContent::Text("too late"));
     harness.wait(|| copy.outcome().is_some(), "the copy's deadline");
@@ -1568,9 +1557,7 @@ fn an_unanswered_copy_settles_as_failed_at_its_deadline() {
 
 #[test]
 fn a_rich_copy_offers_its_html_and_its_words() {
-    let harness = Harness::new();
-    harness.enter(0, 0);
-    harness.fence();
+    let harness = focused_harness();
 
     let html = "<p>plain <b>bold</b></p>";
     assert!(harness.backend().set_rich_text(html, "plain bold"));

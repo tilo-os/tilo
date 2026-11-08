@@ -195,10 +195,6 @@ impl<R: Resource> Replica<R> {
     /// Invoke a published action exactly as a control, the palette, an
     /// agent or a script does: through the door, which refuses one that
     /// asks for confirmation ([`Self::apply_confirmed`]).
-    ///
-    /// # Errors
-    /// Returns the door's refusal: unknown, unavailable, invalid arguments,
-    /// confirmation required, or the action's own refusal.
     pub fn apply(&mut self, invoke: impl Into<Invoke<R>>) -> Result<&ActionEnvelope, DoorError> {
         self.invoke(invoke.into(), false)
     }

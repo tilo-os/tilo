@@ -49,9 +49,6 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 }
 
 /// Parses JSON as `json.loads` did, refusing what it refused.
-///
-/// # Errors
-/// Invalid JSON.
 pub fn loads(bytes: &[u8]) -> Result<Value> {
     serde_json::from_slice(bytes).map_err(|error| Error::new(error.to_string()))
 }
@@ -439,9 +436,6 @@ fn check_blobs(layout: &Path, refs: &[Value]) -> Result<()> {
 }
 
 /// The lowercase hex SHA-256 of the file at `path`, streamed.
-///
-/// # Errors
-/// The file unreadable.
 pub fn file_sha256(path: &Path) -> Result<String> {
     use sha2::Digest as _;
     use std::io::Read as _;

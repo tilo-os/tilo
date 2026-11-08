@@ -158,11 +158,6 @@ pub struct CertifiedJoinIdentity {
 
 impl CertifiedJoinIdentity {
     /// Encode with the reserved version prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns postcard's serialization error if the presentation cannot be
-    /// encoded.
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
         let encoded = postcard::to_stdvec(self)?;
         let mut bytes = Vec::new();
@@ -173,11 +168,6 @@ impl CertifiedJoinIdentity {
 
     /// Decode a certified presentation. `Ok(None)` means the bytes do not
     /// carry the certified prefix and must be rejected by the broker.
-    ///
-    /// # Errors
-    ///
-    /// Returns postcard's deserialization error for malformed certified
-    /// payloads.
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, postcard::Error> {
         let Some(encoded) = bytes.strip_prefix(CERTIFIED_JOIN_PREFIX) else {
             return Ok(None);
@@ -205,9 +195,6 @@ pub struct TaskAgentJoinIdentity {
 
 impl TaskAgentJoinIdentity {
     /// Encode with [`TASK_AGENT_JOIN_PREFIX`].
-    ///
-    /// # Errors
-    /// Postcard's serialization error.
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
         let mut bytes = TASK_AGENT_JOIN_PREFIX.to_vec();
         bytes.extend_from_slice(&postcard::to_stdvec(self)?);
@@ -216,9 +203,6 @@ impl TaskAgentJoinIdentity {
 
     /// Decode a task agent's presentation. `Ok(None)` means the bytes are
     /// not one.
-    ///
-    /// # Errors
-    /// Postcard's deserialization error for a malformed one.
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, postcard::Error> {
         let Some(encoded) = bytes.strip_prefix(TASK_AGENT_JOIN_PREFIX) else {
             return Ok(None);
@@ -264,26 +248,17 @@ impl TaskAgentCredentials {
     }
 
     /// Encode for the file the agent reads.
-    ///
-    /// # Errors
-    /// Postcard's serialization error.
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
         postcard::to_stdvec(self)
     }
 
     /// Decode [`Self::encode`] output.
-    ///
-    /// # Errors
-    /// Postcard's deserialization error.
     pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
         postcard::from_bytes(bytes)
     }
 
     /// The presentation the agent joins with, given the task key's
     /// signature `proof` over the workspace's join bytes.
-    ///
-    /// # Errors
-    /// Postcard's serialization error.
     pub fn presentation(&self, proof: [u8; 64]) -> Result<Vec<u8>, postcard::Error> {
         TaskAgentJoinIdentity {
             workspace_id: self.workspace_id.clone(),
@@ -1055,8 +1030,8 @@ pub struct PresenceEvent {
     pub payload: PresencePayload,
 }
 
-/// Roster + local permissions snapshot delivered on
-/// [`ContextStream`]: one context change, the rest left at their defaults.
+/// Roster + local permissions snapshot delivered
+/// on [`ContextStream`]: one context change, the rest left at their defaults.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelContext {
     pub collaborators: Vec<collab_types::presence::Collaborator>,
@@ -1252,8 +1227,6 @@ impl LocalDocumentActionReport {
     /// Bind the complete immutable report, except the invocation address itself.
     /// Generate `capture_id` once; finalize this address only after mutation hashes
     /// are known and preserve both identities across transport retries.
-    /// # Errors
-    /// Returns an error if the report cannot be encoded.
     pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
         // Match the broker's journal request digest, including recursively sorted
         // object members even when serde_json's preserve_order feature is enabled.
@@ -1308,8 +1281,6 @@ impl LocalDocumentActionReport {
 
     /// Closed, bounded encoding shared with the authenticated local endpoint.
     /// Custody is recovery provenance, never caller-selected authority.
-    /// # Errors
-    /// Refuses invalid addresses, noncanonical hash sets and oversized reports.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         if self.version != 1 || self.invocation.is_nil() || self.capture_id.is_nil() {
             return Err("invalid local document report version or invocation".into());

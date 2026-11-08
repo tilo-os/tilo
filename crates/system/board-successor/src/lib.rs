@@ -100,9 +100,6 @@ pub fn require(condition: bool, message: impl Into<String>) -> Result<()> {
 
 /// `json.loads(bytes)`: the encoding detected as Python detects it (UTF-8,
 /// with or without a BOM, UTF-16 or UTF-32), then strict JSON.
-///
-/// # Errors
-/// Undecodable bytes or invalid JSON.
 pub fn json_loads_bytes(bytes: &[u8]) -> Result<Value> {
     let invalid = |e: String| Error::Value(e);
     let utf16 = |data: &[u8], big: bool| -> Result<String> {

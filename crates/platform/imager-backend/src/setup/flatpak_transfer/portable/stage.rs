@@ -57,9 +57,6 @@ impl PortableFlatpakSource {
     /// Stage only actual selected apps and create-usb's exported runtime/extension
     /// closure. The caller owns this explicitly granted temporary directory and
     /// must remove it after delivery/cancellation. Partial output is never ready.
-    /// # Errors
-    /// Refuses nonprivate/overlapping stages, missing dependencies, unsigned
-    /// origins, insufficient allocation and source changes.
     pub fn stage(
         self: &Arc<Self>,
         runner: &impl OfflineRunner,
@@ -287,8 +284,6 @@ impl StagedApplications {
     }
     /// Seal the reviewed subset outside plaintext staging. The authenticated
     /// expectation must enter the small prepared setup before media publication.
-    /// # Errors
-    /// Refuses changed sources, allocation, password or incomplete encryption.
     pub fn seal(
         &self,
         package: &Path,

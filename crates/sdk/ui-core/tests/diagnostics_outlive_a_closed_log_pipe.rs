@@ -170,7 +170,6 @@ fn with_stderr_pointed_at<R>(writer_fd: i32, body: impl FnOnce() -> R) -> R {
 
 #[test]
 fn diag_delivers_whole_lines_when_stderr_works() {
-    // Case `diag_writes_the_line_when_stderr_works`.
     {
         use std::io::Read;
 
@@ -187,7 +186,6 @@ fn diag_delivers_whole_lines_when_stderr_works() {
         assert_eq!(&buf[..n], b"[app] recv document 64B\n");
     }
 
-    // Case `a_diagnostic_line_reaches_the_pipe_whole`.
     // Not tidiness: the compositor's relay decodes this stderr as UTF-8, and a
     // line torn between two halves of a multi-byte character fails that decode
     // — a relay that stops on a decode error closes the reading end, which is

@@ -25,8 +25,6 @@ impl CredentialOwner {
     /// Prepare a new private profile key in this original system vault. This
     /// creates no credential permission. An existing scope is refused rather
     /// than re-keyed; callers must use their retained existing item instead.
-    /// # Errors
-    /// Refuses a foreign scope, weaker custody, duplicate scope or failed save.
     pub fn prepare_profile_key(
         &self,
         scope: &CredentialScope,
@@ -73,8 +71,6 @@ impl CredentialOwner {
         })?
     }
     /// Prepare the original native vault lazily, without opening/provisioning it.
-    /// # Errors
-    /// Refuses malformed person or SDK-device labels.
     pub fn deferred(
         principal: &str,
         device: &str,
@@ -92,8 +88,6 @@ impl CredentialOwner {
         })
     }
     /// Retain an already owned broker; no second vault snapshot is opened.
-    /// # Errors
-    /// Refuses malformed person or SDK-device labels.
     pub fn from_broker(
         principal: &str,
         device: &str,
@@ -194,8 +188,6 @@ impl CredentialOwner {
             .clone())
     }
     /// Password-manager reads through the same owner; nothing is serialized.
-    /// # Errors
-    /// Refuses unavailable or poisoned custody.
     pub fn read<T>(&self, read: impl FnOnce(&SecretStore) -> T) -> Result<T, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
@@ -203,8 +195,6 @@ impl CredentialOwner {
         Ok(read(&current.store))
     }
     /// Password-manager edits through the same owner. Apps are not lent this door.
-    /// # Errors
-    /// Refuses unavailable or poisoned custody.
     pub fn edit<T>(&self, edit: impl FnOnce(&mut SecretStore) -> T) -> Result<T, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
@@ -229,8 +219,6 @@ impl CredentialOwner {
             .map(|broker| broker.revision.saturating_add(self.requests.revision()))
     }
     /// Current grants include the original broker's session permissions.
-    /// # Errors
-    /// Refuses unavailable or poisoned custody.
     pub fn grants(&self) -> Result<Vec<CredentialGrant>, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
@@ -238,8 +226,6 @@ impl CredentialOwner {
         Ok(current.current_grants())
     }
     /// Revoke through the real broker, including its current session grant.
-    /// # Errors
-    /// Refuses unavailable custody or a failed durable revocation.
     pub fn revoke_grant(&self, grant: &CredentialGrant) -> Result<bool, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;

@@ -28,8 +28,7 @@ impl Session {
 
         /// The view's surface name, whatever view draws it.
         const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
-        /// The app whose view the session shows the menu through until the
-        /// person binds another.
+        /// The app whose view the session shows the menu through until the person binds another.
         const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
         // Nothing to draw or to watch until the session publishes the menu.
         let Some(reading) = self.read(mount::shell::WINDOW_MENU) else {
@@ -40,24 +39,21 @@ impl Session {
             .get("rows")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|rows| !rows.is_empty());
-        // A menu belongs to its window: one the reading holds for a window
-        // that is gone — closed under it, or offering nothing any more —
-        // closes, as it does when its row is chosen, rather than standing
-        // over the desk with nothing to say and holding the keyboard.
+        // A menu belongs to its window: one the reading holds for a window that is gone — closed
+        // under it, or offering nothing any more — closes, as it does when its row is chosen,
+        // rather than standing over the desk with nothing to say and holding the keyboard.
         if for_a_window && !has_rows {
             self.close_window_menu();
         }
         let up = for_a_window && has_rows;
-        // The view drawing the slot is a program of its own, and one can end:
-        // a record of it that outlives the process would leave the next menu
-        // up with nobody to draw it.
+        // The view drawing the slot is a program of its own, and one can end: a record of it that
+        // outlives the process would leave the next menu up with nobody to draw it.
         if self.slots.running(VIEW).is_some() && !self.slot_view_runs(VIEW) {
             self.slots.forget(VIEW);
         }
-        // The view is put up once, with the session, and shown or hidden as
-        // the reading opens and closes the menu. One that ended is started
-        // again when a menu next opens, rather than on every pass of a menu
-        // that is down: an app that will not stay up then costs one start an
+        // The view is put up once, with the session, and shown or hidden as the reading opens and
+        // closes the menu. One that ended is started again when a menu next opens, rather than on
+        // every pass of a menu that is down: an app that will not stay up then costs one start an
         // opening, and not the session.
         if up || !self.slots.stood(VIEW) {
             let settings = self.read(mount::slots::BINDINGS);
@@ -66,8 +62,8 @@ impl Session {
                 Mount::Stop => self.stop_slot_view(VIEW),
                 Mount::Start { view, restart } => {
                     if restart {
-                        // The person bound another view: the one that drew the
-                        // slot goes before the new one takes it.
+                        // The person bound another view: the one that drew the slot goes before the
+                        // new one takes it.
                         self.stop_slot_view(VIEW);
                     }
                     match view {
@@ -83,16 +79,16 @@ impl Session {
         if self.slot_views.running(VIEW) {
             self.slot_views.publish(VIEW, &reading);
         }
-        // The view stands over the desk only while the reading says a menu is
-        // up: hidden, its surface draws nothing, takes no input and keeps no
-        // room, and the opening that shows it costs nothing.
+        // The view stands over the desk only while the reading says a menu is up: hidden, its
+        // surface draws nothing, takes no input and keeps no room, and the opening that shows it
+        // costs nothing.
         let namespace = surfaces::namespace(VIEW);
         if self.compositor.layer_shown(&namespace) != Some(up) {
             self.compositor.show_layer(&namespace, up);
         }
     }
 
-    /// Start the program `program` that draws `slot`, over what lies under it.
+    /// Start the program `program` that draws `slot` , over what lies under it.
     fn start_program_slot(&mut self, slot: &str, program: std::path::PathBuf, restart: bool) {
         if restart {
             self.surfaces.stop(slot);
@@ -114,14 +110,14 @@ impl Session {
         }
     }
 
-    /// Whether something draws `slot` now: the program the session started
-    /// for it, or the package view running here.
+    /// Whether something draws `slot` now: the program the session started for it, or the package
+    /// view running here.
     fn slot_view_runs(&self, slot: &str) -> bool {
         self.surfaces.running(slot) || self.slot_views.running(slot)
     }
 
-    /// Close the window menu through the verb it publishes: the same path a
-    /// press outside the menu and the person's own Escape take.
+    /// Close the window menu through the verb it publishes: the same path a press outside the menu
+    /// and the person's own Escape take.
     fn close_window_menu(&mut self) {
         if let Err(error) = self.invoke(mount::shell::WINDOW_MENU, "close", &serde_json::Map::new())
         {
@@ -129,9 +125,9 @@ impl Session {
         }
     }
 
-    /// Run the view `view` of the tilolang package in `dir` for `slot`, over
-    /// the reading the session publishes for it now. A package that is no view
-    /// for the slot leaves it to the view the session ships with.
+    /// Run the view `view` of the tilolang package in `dir` for `slot` , over the reading the
+    /// session publishes for it now. A package that is no view for the slot leaves it to the view
+    /// the session ships with.
     fn start_package_slot(
         &mut self,
         slot: &'static str,
@@ -176,15 +172,14 @@ impl Session {
         }
     }
 
-    /// Stop what draws `slot`, whichever kind of view it is.
+    /// Stop what draws `slot` , whichever kind of view it is.
     fn stop_slot_view(&mut self, slot: &str) {
         self.slot_views.stop(slot);
         self.surfaces.stop(slot);
     }
 
-    /// A press away from what a slot's tilolang view drew closes the slot, as
-    /// a press outside a menu does, and what else the view asked runs through
-    /// the session's door.
+    /// A press away from what a slot's tilolang view drew closes the slot, as a press outside a
+    /// menu does, and what else the view asked runs through the session's door.
     pub(crate) fn follow_slot_views(&mut self) -> Result<(), Error> {
         /// The one slot a person can bind a view to today.
         const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
@@ -192,8 +187,7 @@ impl Session {
             return Ok(());
         };
         if self.slot_views.take_pressed_outside(VIEW) {
-            // The slot's own verb, through the same door the view's presses
-            // go through.
+            // The slot's own verb, through the same door the view's presses go through.
             if let Err(error) = self.invoke(&state.id, "close", &serde_json::Map::new()) {
                 tracing::warn!(%error, "a press outside the slot's view did not close it");
             }
@@ -223,16 +217,14 @@ impl Session {
         Ok(())
     }
 
-    /// Where the control the slot's view shows as `name` stands, logical
-    /// `(x, y, w, h)`: what a test presses it by, and where the person's press
-    /// on it lands.
+    /// Where the control the slot's view shows as `name` stands, logical `(x, y, w, h)` : what a
+    /// test presses it by, and where the person's press on it lands.
     #[must_use]
     pub fn slot_control(&self, slot: &str, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.slot_views.control(slot, name)
     }
 
-    /// What the slot's view says, as assistive technology hears it: the
-    /// labels of what it draws.
+    /// What the slot's view says, as assistive technology hears it: the labels of what it draws.
     #[must_use]
     pub fn slot_labels(&self, slot: &str) -> Vec<String> {
         self.slot_views.labels(slot)

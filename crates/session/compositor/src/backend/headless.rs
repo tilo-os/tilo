@@ -55,37 +55,34 @@ use crate::state::State;
 
 struct HeadlessOutput {
     output: Output,
-    /// The place its configuration asked for; `None` while the layout puts
-    /// it beside the others.
+    /// The place its configuration asked for; `None` while the layout puts it beside the others.
     place: Option<(i32, i32)>,
     damage: OutputDamageTracker,
     target: GlesTexture,
-    /// Whether the target holds the previous frame (the damage tracker's
-    /// buffer age is then 1, else 0).
+    /// Whether the target holds the previous frame (the damage tracker's buffer age is then 1, else
+    /// 0).
     drawn: bool,
-    /// The vertical blank the simulated display next shows a frame at: the
-    /// grid its mode's refresh sets.
+    /// The vertical blank the simulated display next shows a frame at: the grid its mode's refresh
+    /// sets.
     next_blank: Instant,
-    /// When that frame is built: one lead before its blank, the lead being
-    /// the worst recent cost of building a frame plus a margin. Building at
-    /// the blank instead misses every commit and input event of the refresh
-    /// the frame is for, and shows it a whole refresh late.
+    /// When that frame is built: one lead before its blank, the lead being the worst recent cost of
+    /// building a frame plus a margin. Building at the blank instead misses every commit and input
+    /// event of the refresh the frame is for, and shows it a whole refresh late.
     due: Instant,
     /// What the frames have cost, for the lead.
     pacing: Pacing,
     /// Switched off: nothing is drawn, the image goes black.
     dark: bool,
-    /// The gamma ramp the simulated display engine applies to what it
-    /// shows (screenshots), not to what is drawn (captures).
+    /// The gamma ramp the simulated display engine applies to what it shows (screenshots), not to
+    /// what is drawn (captures).
     gamma: Option<crate::gamma::Ramp>,
-    /// What the panel is configured to show, as a real sink's EDID and
-    /// signal would say.
+    /// What the panel is configured to show, as a real sink's EDID and signal would say.
     colour: tilo_color_pipeline::hdr_display::DisplayCapabilities,
 }
 
-/// The vertical blank after `blank` that is still ahead of `drawn`: one
-/// refresh on, or the first one after a frame that took longer than a
-/// refresh missed its blanks instead of bursting to catch up on them.
+/// The vertical blank after `blank` that is still ahead of `drawn` : one refresh on, or the first
+/// one after a frame that took longer than a refresh missed its blanks instead of bursting to catch
+/// up on them.
 fn blank_after(blank: Instant, interval: Duration, drawn: Instant) -> Instant {
     let mut next = blank.checked_add(interval).unwrap_or(drawn);
     while next <= drawn {
@@ -97,8 +94,8 @@ fn blank_after(blank: Instant, interval: Duration, drawn: Instant) -> Instant {
     next
 }
 
-/// The blank the frame after `built` is shown at, and the point one `lead`
-/// before it where it is built.
+/// The blank the frame after `built` is shown at, and the point one `lead` before it where it is
+/// built.
 fn next_frame(
     blank: Instant,
     interval: Duration,
@@ -118,25 +115,22 @@ impl HeadlessOutput {
         refresh_interval(self.output.current_mode().map_or(0, |mode| mode.refresh))
     }
 
-    /// This display showed the frame whose build began at `started`: the
-    /// next blank is one refresh on, on the grid its mode keeps, and the
-    /// next frame is built one lead before it, the lead being how long
-    /// building one takes.
+    /// This display showed the frame whose build began at `started` : the next blank is one refresh
+    /// on, on the grid its mode keeps, and the next frame is built one lead before it, the lead
+    /// being how long building one takes.
     fn showed(&mut self, started: Instant) {
         let interval = self.interval();
         let built = Instant::now();
         self.pacing.queued(started, built, interval);
-        // This display has no blank to report: the image holds the frame as
-        // soon as it is built, and `next_blank` is the grid that keeps
-        // frames to one per refresh.
+        // This display has no blank to report: the image holds the frame as soon as it is built,
+        // and `next_blank` is the grid that keeps frames to one per refresh.
         self.pacing.shown(built, interval, false);
         self.pacing.log(&self.output.name(), built, interval);
         (self.next_blank, self.due) =
             next_frame(self.next_blank, interval, self.pacing.lead(interval), built);
     }
 
-    /// What changed shows at once: the next blank is now, and the frame for
-    /// it is built now.
+    /// What changed shows at once: the next blank is now, and the frame for it is built now.
     fn restart_grid(&mut self) {
         self.next_blank = Instant::now();
         self.due = self.next_blank;
@@ -161,10 +155,9 @@ impl HeadlessBackend {
         // terminates either.
         let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }
             .map_err(|error| failed("EGL display", error))?;
-        // The GPU the display renders on: clients are told to allocate their
-        // dma-bufs there, so the buffers they hand over are the ones this
-        // renderer imports. A machine with no GPU (a software rasterizer)
-        // has no node, and its clients render through shared memory.
+        // The GPU the display renders on: clients are told to allocate their dma-bufs there, so the
+        // buffers they hand over are the ones this renderer imports. A machine with no GPU (a
+        // software rasterizer) has no node, and its clients render through shared memory.
         let node = EGLDevice::device_for_display(&display)
             .ok()
             .and_then(|device| device.try_get_render_node().ok().flatten());
@@ -235,9 +228,8 @@ impl HeadlessBackend {
     }
 }
 
-/// The composited frame of an output that shows HDR layers: the scene drawn
-/// twice with the layers replaced by black and by their channel colours, and
-/// the two composited at each layer's signal.
+/// The composited frame of an output that shows HDR layers: the scene drawn twice with the layers
+/// replaced by black and by their channel colours, and the two composited at each layer's signal.
 fn composite_hdr(
     renderer: &mut GlesRenderer,
     state: &State,
@@ -279,8 +271,8 @@ fn composite_hdr(
     Ok(crate::hdr::composite(&first, &second, size, layers))
 }
 
-/// The composited frame as the one element the output draws: every pixel of
-/// it, in the output's physical size.
+/// The composited frame as the one element the output draws: every pixel of it, in the output's
+/// physical size.
 fn frame_element(
     renderer: &mut GlesRenderer,
     rgba: &[u8],
@@ -326,10 +318,9 @@ fn window_frame_pixels(value: f64) -> i32 {
     pixels
 }
 
-/// What one frame costs to compose, per layer: the pixels its damage asks
-/// for, and how much of that area each element drawn over them is painted
-/// in. A layer that paints a bar in a frame the size of a display is its
-/// bar here, and a layer that shows nothing is not in the list at all.
+/// What one frame costs to compose, per layer: the pixels its damage asks for, and how much of that
+/// area each element drawn over them is painted in. A layer that paints a bar in a frame the size
+/// of a display is its bar here, and a layer that shows nothing is not in the list at all.
 fn trace_passes<E: smithay::backend::renderer::element::Element>(
     elements: &[E],
     damage: &[Rectangle<i32, Physical>],
@@ -388,8 +379,8 @@ impl Backend for HeadlessBackend {
     }
 
     fn add_output(&mut self, state: &mut State, config: &OutputConfig) -> Result<(), BackendError> {
-        // Right of the outputs already here until the layout places it: a
-        // connector lit for the first time never lands on one showing.
+        // Right of the outputs already here until the layout places it: a connector lit for the
+        // first time never lands on one showing.
         let beside = self
             .outputs
             .iter()
@@ -492,9 +483,9 @@ impl Backend for HeadlessBackend {
             if output.dark {
                 continue;
             }
-            // The display shows one frame per refresh: what changed is built
-            // one lead before the blank that shows it, so a frame it is not
-            // yet time to build leaves what it owes still owed.
+            // The display shows one frame per refresh: what changed is built one lead before the
+            // blank that shows it, so a frame it is not yet time to build leaves what it owes still
+            // owed.
             let started = Instant::now();
             if started < output.due {
                 continue;

@@ -314,6 +314,10 @@ thread_local! {
     /// Messages resolved without variables, under the manager and revision
     /// they were resolved at ([`I18nManager::lookup`]).
     static PLAIN_LOOKUPS: std::cell::RefCell<PlainLookups> = std::cell::RefCell::default();
+    /// The words resolved from a catalogue in another language than the
+    /// window's, `(key, locale)`, each key once ([`I18nManager::foreign_words`]).
+    static FOREIGN_WORDS: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     // Shared controls remain readable even when an app installs only its own
     // catalog. App translations always take precedence over this source.
     static TOOLKIT_SOURCE: Result<Bundle, I18nError> =
@@ -578,6 +582,21 @@ fn report_unformatted(key: &str) {
             "a message was shown with a placeable unfilled: its caller passed no value for a variable it names"
         );
     }
+}
+
+/// Note that `key` showed in `locale`, when that is a language other than the window's
+/// (`speaking`): one window speaks one language, and every other is a word it should not say
+/// ([`I18nManager::foreign_words`]).
+fn record_foreign(key: &str, locale: &LanguageIdentifier, speaking: &LanguageIdentifier) {
+    if locale.language == speaking.language {
+        return;
+    }
+    FOREIGN_WORDS.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        if !seen.iter().any(|(held, _)| held == key) {
+            seen.push((key.to_owned(), locale.to_string()));
+        }
+    });
 }
 
 /// Formats a message through a chain of bundles. The first bundle that
@@ -938,6 +957,25 @@ impl I18nManager {
         })
     }
 
+    /// The words this thread resolved from a catalogue in a language other than the window's
+    /// ([`Self::window_locale`]), `(message key, catalogue locale)` in the order they were
+    /// first shown, and each key once.
+    ///
+    /// A window speaks one language: a word it shows from another catalogue is either the
+    /// person's translation missing (the source language standing in) or the wrong catalogue
+    /// read. `tilolang layout-check` reports each as a `mixed-language` finding, and a test
+    /// reads them to hold a window to one language. A lookup the toolkit cached before
+    /// the record was cleared is not recorded again until the catalogues or the language move.
+    #[must_use]
+    pub fn foreign_words() -> Vec<(String, String)> {
+        FOREIGN_WORDS.with(|seen| seen.borrow().clone())
+    }
+
+    /// Forget the words [`Self::foreign_words`] holds, for a check that starts a new window.
+    pub fn clear_foreign_words() {
+        FOREIGN_WORDS.with(|seen| seen.borrow_mut().clear());
+    }
+
     /// The language this thread's window resolves in: the selected locale when
     /// the window's own catalogues are in it, the source language otherwise
     /// (the rule of [`I18nManager::speaking_locale`]). Dates, numbers and
@@ -1103,6 +1141,7 @@ impl I18nManager {
                 .get(locale)
                 .and_then(|loaded| resolution.attempt(&loaded.bundle))
             {
+                record_foreign(resolution.key, locale, current);
                 return Some(value);
             }
         }
@@ -1131,11 +1170,19 @@ impl I18nManager {
                     bundle,
                 });
             }
-            return cached
+            let said = cached
                 .as_ref()
                 .and_then(|localized| resolution.attempt(&localized.bundle));
+            if said.is_some() {
+                record_foreign(resolution.key, &self.source_locale, current);
+            }
+            return said;
         }
-        resolution.attempt(&source.bundle)
+        let said = resolution.attempt(&source.bundle);
+        if said.is_some() {
+            record_foreign(resolution.key, &self.source_locale, current);
+        }
+        said
     }
 
     /// Resolve a message without variables. This function-shaped form is
@@ -1775,6 +1822,54 @@ mod tests {
             "Add date",
             "the toolkit's own words follow the window's language"
         );
+    }
+
+    /// A word a window shows from a catalogue in another language is recorded, so a check can
+    /// hold a window to one language: a translation the app lacks (its source language standing
+    /// in), or a catalogue of used package read in the wrong language. A word its own language
+    /// holds is not recorded.
+    #[test]
+    fn a_word_from_another_languages_catalogue_is_recorded() {
+        let _restore = RestoreLookupState::capture();
+        install_plain(
+            "en-US",
+            "de-DE",
+            &[
+                (
+                    "en-US",
+                    "probe = Probe\nprobe-only-english = English only\n",
+                ),
+                ("de-DE", "probe = Sonde\n"),
+            ],
+        );
+        I18nManager::clear_foreign_words();
+        assert_eq!(I18nManager::window_locale(), "de-DE");
+        assert_eq!(I18nManager::lookup_plain("probe"), "Sonde");
+        assert_eq!(
+            I18nManager::foreign_words(),
+            Vec::<(String, String)>::new(),
+            "a word the window's own language holds is no foreign word"
+        );
+        assert_eq!(
+            I18nManager::lookup_plain("probe-only-english"),
+            "English only"
+        );
+        assert_eq!(
+            I18nManager::foreign_words(),
+            vec![("probe-only-english".to_owned(), "en-US".to_owned())],
+            "the source language stood in for the missing translation"
+        );
+        assert_eq!(
+            I18nManager::lookup_plain("probe-only-english"),
+            "English only"
+        );
+        assert_eq!(
+            I18nManager::foreign_words().len(),
+            1,
+            "each word is recorded once"
+        );
+        I18nManager::clear_foreign_words();
+        assert!(I18nManager::foreign_words().is_empty());
     }
 
     #[test]

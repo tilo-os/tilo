@@ -5,83 +5,8 @@
 
 use super::FrameHarness;
 use crate::host_core::HostCore as _;
-use crate::widget::{AppKind, TaffyTreeExt as _, TileContent, TileHost, Widget};
-use std::collections::HashMap;
-use vello::kurbo::{Point, Rect};
-
-/// Two windows side by side, as the desktop's strip lays them out.
-struct TwoWindows {
-    tiles: [TileHost; 2],
-    rect: Rect,
-}
-
-impl Widget for TwoWindows {
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
-        node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        let mut nodes = Vec::new();
-        for tile in &mut self.tiles {
-            let node = tile.build_layout(taffy, theme, node_map);
-            let mut style = taffy.style(node).unwrap().clone();
-            style.size = taffy::Size {
-                width: taffy::Dimension::length(400.0),
-                height: taffy::Dimension::length(300.0),
-            };
-            style.flex_grow = 0.0;
-            style.flex_shrink = 0.0;
-            taffy.set_style(node, style).unwrap();
-            nodes.push(node);
-        }
-        taffy.parent_node(
-            taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &nodes,
-        )
-    }
-
-    fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
-        self.rect = rect;
-        let children = taffy.children(node).unwrap();
-        for (tile, child) in self.tiles.iter_mut().zip(children) {
-            tile.apply_layout(taffy, child, Point::new(rect.x0, rect.y0));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.tiles.iter().map(|tile| tile as &dyn Widget).collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.tiles
-            .iter_mut()
-            .map(|tile| tile as &mut dyn Widget)
-            .collect()
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn name(&self) -> &'static str {
-        "TwoWindows"
-    }
-}
-
-fn stub(label: &str) -> TileHost {
-    TileHost::new(TileContent::Stub {
-        kind: AppKind::Editor,
-        label: label.into(),
-    })
-}
+use crate::testing::TwoWindows;
+use vello::kurbo::Rect;
 
 /// A confirmation a press asked for stands over the window pressed in, not
 /// over the whole surface; after a key it no longer follows that press.
@@ -90,10 +15,7 @@ fn a_confirmation_a_press_asked_for_stands_over_the_window_pressed_in() {
     let _settled = crate::motion::testing::settled();
     let mut harness = FrameHarness::new(
         crate::State::new(),
-        Box::new(TwoWindows {
-            tiles: [stub("Chat"), stub("Slides")],
-            rect: Rect::ZERO,
-        }),
+        Box::new(TwoWindows::new(["Chat", "Slides"])),
         (800, 300),
     );
     harness.relayout();

@@ -47,9 +47,6 @@ pub(crate) fn find_pages(pages: &[PageMeta], title: &str) -> serde_json::Value {
 
 /// The note titled `title`: the exact title first, else the one equal
 /// ignoring case. Agents name notes by the titles a read showed them.
-///
-/// # Errors
-/// Returns that no note, or several, carry the title.
 pub(crate) fn page_titled(pages: &[PageMeta], title: &str) -> Result<PageId, String> {
     let wanted = title.trim();
     if let Some(page) = pages.iter().find(|page| page.title == wanted) {

@@ -128,9 +128,6 @@ impl EndPolicy {
     }
 
     /// Whether a process of `uid` in cgroup `cgroup` may be ended.
-    ///
-    /// # Errors
-    /// Why it may not.
     pub fn check(
         &self,
         pid: u32,

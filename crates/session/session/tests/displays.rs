@@ -1,8 +1,7 @@
-//! The native session across two displays, with real Wayland clients: each
-//! display holds its own windows, new windows open on the display with
-//! focus, focus and windows move between displays through the desk's
-//! published actions, a mirror is one display, and dialogs float over the
-//! window they belong to instead of taking a tab.
+//! The native session across two displays, with real Wayland clients: each display holds its own
+//! windows, new windows open on the display with focus, focus and windows move between displays
+//! through the desk's published actions, a mirror is one display, and dialogs float over the window
+//! they belong to instead of taking a tab.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -32,11 +31,10 @@ use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
 const WIDTH: i32 = 1000;
 const HEIGHT: i32 = 700;
 
-/// The colour the compositor paints the test windows' pixels, read back as
-/// RGBA.
+/// The colour the compositor paints the test windows' pixels, read back as RGBA.
 const WINDOW: [u8; 3] = [40, 40, 200];
 
-/// A session on `outputs`, each `WIDTH` x `HEIGHT` at its place.
+/// A session on `outputs` , each `WIDTH` x `HEIGHT` at its place.
 fn session(places: &[(i32, i32)]) -> Session {
     let outputs: Vec<OutputConfig> = places
         .iter()
@@ -45,15 +43,13 @@ fn session(places: &[(i32, i32)]) -> Session {
             OutputConfig::new(format!("HEADLESS-{}", index + 1), WIDTH, HEIGHT).at(place.0, place.1)
         })
         .collect();
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &outputs,
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).unwrap();
     session
 }
@@ -72,8 +68,7 @@ fn client(session: &mut Session) -> Client {
     client
 }
 
-/// Open a window of `app_id` and draw it, set up by `before` before its first
-/// commit.
+/// Open a window of `app_id` and draw it, set up by `before` before its first commit.
 fn map(
     session: &mut Session,
     client: &mut Client,
@@ -89,7 +84,7 @@ fn tab(session: &mut Session, client: &mut Client, app_id: &str) -> usize {
     map(session, client, app_id, (300, 200), |_| {})
 }
 
-/// The window of `app` and its rectangle `(x, y, w, h)`.
+/// The window of `app` and its rectangle `(x, y, w, h)` .
 fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i32))> {
     window_of(compositor, app)
 }
@@ -98,8 +93,7 @@ fn rect(session: &mut Session, app: &str) -> (i32, i32, i32, i32) {
     window(session.compositor(), app).expect("mapped").1
 }
 
-/// Which display (0 left, 1 right) the window of `app` starts on; `None`
-/// while it is out of sight.
+/// Which display (0 left, 1 right) the window of `app` starts on; `None` while it is out of sight.
 fn display_of(session: &mut Session, app: &str) -> Option<i32> {
     let (x, y, _, _) = rect(session, app);
     (x >= 0 && y >= 0).then(|| x.div_euclid(WIDTH))
@@ -139,7 +133,7 @@ fn desk_name(app: &str) -> String {
     tilo_desktop_search::names::window_name(app, app)
 }
 
-/// Invoke `action` of `resource`, then let the session run a few frames.
+/// Invoke `action` of `resource` , then let the session run a few frames.
 fn invoke(
     session: &mut Session,
     client: &mut Client,
@@ -186,9 +180,8 @@ fn shown_strips(session: &Session) -> Vec<(u32, String)> {
     })
 }
 
-/// Each strip group's width as the model holds it, with the display it lives
-/// on and the window it shows: a display's windows keep their width whatever
-/// opens on another.
+/// Each strip group's width as the model holds it, with the display it lives on and the window it
+/// shows: a display's windows keep their width whatever opens on another.
 fn widths(session: &Session) -> Vec<(u32, WindowWidth, Option<String>)> {
     session.desktop().with_policy(|policy| {
         policy.handle().read(|tree| {
@@ -215,8 +208,8 @@ fn focused(session: &mut Session) -> Option<String> {
         .and_then(|info| info.app_id)
 }
 
-/// How many pixels of `output` show the test windows' colour: what a person
-/// sees of the windows on that display.
+/// How many pixels of `output` show the test windows' colour: what a person sees of the windows on
+/// that display.
 fn painted(session: &mut Session, output: &str) -> usize {
     session
         .compositor()
@@ -228,9 +221,8 @@ fn painted(session: &mut Session, output: &str) -> usize {
         .count()
 }
 
-/// Each display keeps the strip it shows: making another strip and stepping
-/// strips moves the focused display's own strip, and the other display keeps
-/// its strip and its windows throughout.
+/// Each display keeps the strip it shows: making another strip and stepping strips moves the
+/// focused display's own strip, and the other display keeps its strip and its windows throughout.
 #[test]
 fn each_display_keeps_the_strip_it_shows() {
     let _settled = ui::motion::testing::settled();
@@ -243,8 +235,8 @@ fn each_display_keeps_the_strip_it_shows() {
         painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
     });
 
-    // The person works on the left display: the new strip shows there, and
-    // the right display keeps the strip it shows, window and all.
+    // The person works on the left display: the new strip shows there, and the right display keeps
+    // the strip it shows, window and all.
     focus_display(&mut session, &mut client, 0);
     invoke(
         &mut session,
@@ -278,8 +270,8 @@ fn each_display_keeps_the_strip_it_shows() {
         painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
     });
 
-    // The person goes on to the right display and steps on there: that
-    // display moves to the other strip, the left one stays where it is.
+    // The person goes on to the right display and steps on there: that display moves to the other
+    // strip, the left one stays where it is.
     focus_display(&mut session, &mut client, 1);
     invoke(
         &mut session,
@@ -306,9 +298,8 @@ fn each_display_keeps_the_strip_it_shows() {
     assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
 }
 
-/// A window opening on one display leaves the windows of the other display
-/// the size they are: two displays are two strips' worth of room, so nothing
-/// is shared across the seam.
+/// A window opening on one display leaves the windows of the other display the size they are: two
+/// displays are two strips' worth of room, so nothing is shared across the seam.
 #[test]
 fn a_window_opening_beside_one_display_leaves_the_other_alone() {
     let _settled = ui::motion::testing::settled();
@@ -374,8 +365,8 @@ fn new_windows_open_on_the_display_with_focus() {
     assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
 }
 
-/// The displays' own arrangement action moves the pictures: mirrored, the
-/// display beside the one with the window shows that window too.
+/// The displays' own arrangement action moves the pictures: mirrored, the display beside the one
+/// with the window shows that window too.
 #[test]
 fn an_arrangement_action_mirrors_the_other_display() {
     let _settled = ui::motion::testing::settled();
@@ -568,15 +559,13 @@ fn a_question_opens_on_the_display_of_the_window_in_focus() {
         OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).at(0, 0),
         OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT).at(WIDTH, 0),
     ];
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             questions: Some(questions.clone()),
             ..Options::default()
         },
-        &outputs,
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).unwrap();
     let mut client = client(&mut session);
     tab(&mut session, &mut client, "org.example.Left");

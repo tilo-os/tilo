@@ -26,9 +26,6 @@ pub const MKFS_ARGS: &[&str] = &[
     "desc_size=64,num_backup_sb=2,lazy_itable_init=0,lazy_journal_init=0,nodiscard",
 ];
 /// Conservative fresh filesystem free bytes for exactly `MKFS_ARGS`.
-///
-/// # Errors
-/// Refuses small filesystems, arithmetic overflow or metadata exceeding extent.
 pub fn available_bytes(extent: u64) -> io::Result<u64> {
     let fail = || io::Error::other("Migration ext4 extent cannot cover fixed format metadata");
     if extent < 64 * 1024 * 1024 {

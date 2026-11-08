@@ -107,11 +107,6 @@ impl StatePeer {
     /// sealed history is opened through the embedding owner's already-held
     /// channel keys, once that history is known to cover every admitted
     /// write.
-    ///
-    /// # Errors
-    /// Refuses a non-member, denied access, an absent record, incomplete
-    /// admission coverage, unavailable epoch keys, invalid mutations or an
-    /// exceeded byte limit.
     pub fn capture_document(
         &self,
         reader: [u8; 32],

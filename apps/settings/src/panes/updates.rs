@@ -304,22 +304,10 @@ pub trait UpdateControl: Send + Sync {
     /// a state it did not read is the defect being fixed here.
     fn timer_enabled(&self) -> Option<bool>;
     /// Turn the update timer on or off, now and across reboots.
-    ///
-    /// # Errors
-    /// Returns an error if the timer could not be changed — e.g. the
-    /// underlying `systemctl` call is unavailable, refused by polkit, or
-    /// reports failure — with that failure's reason.
     fn set_timer(&self, on: bool) -> Result<(), String>;
     /// What this machine can go back to: `(entry label, image reference)`.
-    ///
-    /// # Errors
-    /// Returns why the deployments could not be read.
     fn rollback_target(&self) -> Result<Option<String>, String>;
     /// Make the next boot the previous deployment.
-    ///
-    /// # Errors
-    /// Returns an error if the rollback could not be started or reports
-    /// failure, with that failure's reason.
     fn roll_back(&self) -> Result<(), String>;
     fn schedule(&self) -> Option<String> {
         None

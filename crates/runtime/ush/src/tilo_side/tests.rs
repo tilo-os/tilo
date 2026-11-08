@@ -303,6 +303,95 @@ fn cd_home_reaches_the_workspace_folder() {
     );
 }
 
+/// An environment opened in a workspace other than the primary one has
+/// that workspace's own files as `~` — its tree of the device's files, made
+/// on first open — and its shell reads none of another workspace's files,
+/// nor of the files folder around them, and cannot be granted them.
+#[test]
+fn a_workspace_environment_has_its_own_files_as_home_and_none_of_anothers() {
+    const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    const W2: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let files = root.join("files");
+    let w2_tree = files.join(".workspaces").join(W2);
+    std::fs::create_dir_all(&w2_tree).unwrap();
+    std::fs::write(w2_tree.join("secret.txt"), "w2's secret\n").unwrap();
+    std::fs::create_dir_all(files.join("Documents")).unwrap();
+    std::fs::write(files.join("Documents/private.txt"), "the device's\n").unwrap();
+    let store = crate::store::Store::at(root.join("store"))
+        .with_workspace(&files)
+        .for_workspace(&crate::workspace::WorkspaceId::parse(Some(W1)).unwrap());
+
+    // The records the supervisor opens for the workspace.
+    let mut state = crate::broker::tests::state(&root);
+    let records = crate::records::Records::of(&store);
+    let made = records
+        .create(&state.environment.key, &state.environment.current())
+        .unwrap();
+    assert_eq!(made.workspace, W1);
+    state.environment.records = records;
+    let environment = crate::home::with_home(
+        &state.environment.records,
+        &store,
+        &state.environment.key,
+        state.environment.current(),
+    )
+    .unwrap();
+    let w1_tree = files.join(".workspaces").join(W1);
+    assert_eq!(Path::new(&environment.home_dir), w1_tree);
+    assert!(
+        w1_tree.is_dir(),
+        "the workspace's tree is made on first open"
+    );
+    let home = crate::home::home_of(&environment, &crate::guest::GuestUser::current());
+    assert_eq!(home, w1_tree);
+
+    // Asked from inside the guest, the other workspace's files and the
+    // folder holding every workspace's are refused.
+    for path in [w2_tree.clone(), files.clone(), files.join("Documents")] {
+        let answer = state.handle(crate::broker::Request::TrustDir { path: path.clone() });
+        assert!(
+            matches!(answer, crate::broker::Response::Denied { .. }),
+            "{path:?}: {answer:?}"
+        );
+    }
+
+    let state = Arc::new(Mutex::new(state));
+    let env = vec![
+        ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+        ("HOME".to_owned(), home.display().to_string()),
+    ];
+    let (_guest, mut shell, out, err) = session_shell(&state, env, root);
+    let status = shell.run_script("cd ~ && echo x > f && pwd");
+    let shown = String::from_utf8_lossy(&err.take()).into_owned();
+    assert_eq!(status, 0, "{shown}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.take()),
+        format!("{}\n", w1_tree.display())
+    );
+    assert_eq!(std::fs::read_to_string(w1_tree.join("f")).unwrap(), "x\n");
+
+    for denied in [
+        w2_tree.join("secret.txt"),
+        files.join("Documents/private.txt"),
+    ] {
+        let status = shell.run_script(&format!("cat {}", denied.display()));
+        let printed = String::from_utf8_lossy(&out.take()).into_owned();
+        let shown = String::from_utf8_lossy(&err.take()).into_owned();
+        assert_ne!(status, 0, "{denied:?} was read: {printed}");
+        assert!(
+            !printed.contains("secret") && !printed.contains("device"),
+            "{printed}"
+        );
+        assert!(shown.contains("not granted"), "{shown}");
+    }
+    let status = shell.run_script(&format!("ls {}", files.join(".workspaces").display()));
+    assert_ne!(status, 0, "every workspace's tree listed");
+    assert!(!String::from_utf8_lossy(&out.take()).contains(W2));
+    let _ = err.take();
+}
+
 /// An environment from before `~` was the workspace's folder gets it
 /// without losing anything: its tools and grants stay, and what its old
 /// home in the store holds stays where it was, readable there.

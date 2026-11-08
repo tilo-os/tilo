@@ -35,7 +35,6 @@ fn group(width: WindowWidth, usable: f64) -> WindowGroup {
 
 #[test]
 fn width_tiers_are_ordered_shares_of_every_display() {
-    // Case `named_tiers_are_the_same_share_of_every_display`.
     // Every named tier is the *same share* of the strip on every display, not a
     // flat pixel count (which would be a different fraction of each one).
     {
@@ -60,7 +59,6 @@ fn width_tiers_are_ordered_shares_of_every_display() {
         }
     }
 
-    // Case `tiers_are_ordered_and_bounded_on_every_display`.
     // The tiers step upward and stay inside the strip on every display —
     // the property that makes cycling a window through them useful.
     {
@@ -79,7 +77,6 @@ fn width_tiers_are_ordered_shares_of_every_display() {
         }
     }
 
-    // Case `a_launched_window_is_a_dominant_share_of_every_display`.
     // A launched app defaults to `Normal`, which must be a dominant share of
     // the screen on every display, and on a big one a width that still reads
     // well rather than a mostly empty pane.
@@ -96,7 +93,6 @@ fn width_tiers_are_ordered_shares_of_every_display() {
         }
     }
 
-    // Case `the_widest_setting_reaches_the_edge_of_every_display`.
     // The widest setting must actually reach the screen edge, on any display —
     // including a large one, where a pixel-clamped width could never fill it.
     {
@@ -114,7 +110,6 @@ fn width_tiers_are_ordered_shares_of_every_display() {
 
 #[test]
 fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
-    // Case `a_manual_resize_round_trips_across_displays_as_a_share`.
     // A manual resize is recorded as the fraction it landed on, so replaying
     // it onto a different display gives the same share, not the same pixel count.
     {
@@ -150,7 +145,6 @@ fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
         }
     }
 
-    // Case `the_resize_floor_scales_with_the_display_but_never_goes_unusable`.
     // The only resize floor is an absolute pixel one, so no display yields an
     // unusable sliver and none forces a share-sized minimum.
     {
@@ -163,7 +157,6 @@ fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
         assert_eq!(g.width_limits().min, min_group_px(1600.0));
     }
 
-    // Case `window_group_drag_right_edge_resizes`.
     // An edge drag tracks the pointer 1:1 in pixels — the fraction is a
     // storage representation, not a snapping grid.
     {

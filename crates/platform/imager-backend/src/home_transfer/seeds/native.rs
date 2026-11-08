@@ -94,8 +94,6 @@ fn read_at(path: &Path, home: &File) -> io::Result<Option<Authority>> {
 }
 
 /// Capture the exact native file stamp used by firstboot proof records.
-/// # Errors
-/// Refuses timestamps outside the protocol's nanosecond range.
 pub fn stamp(metadata: &std::fs::Metadata) -> io::Result<Stamp> {
     fn ns(seconds: i64, fraction: i64) -> io::Result<i64> {
         seconds

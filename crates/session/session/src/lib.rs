@@ -135,6 +135,7 @@ mod questions;
 pub mod quick_settings;
 mod record_index;
 mod records;
+mod remote_door;
 pub mod recovery;
 mod rotation;
 pub mod run;
@@ -547,6 +548,8 @@ struct Shared {
     /// What a connection of any door asks of the session's own doors: answered
     /// on the loop's pass, the only place that may touch them.
     session_doors: std::sync::Arc<agent_door::SessionDoors>,
+    /// The agent door toward the person's other devices.
+    remote: std::sync::Arc<remote_door::Remote>,
     /// The installed folder importer's side of this login, once the session
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.
@@ -1168,11 +1171,14 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
+        // The agent door toward the person's other devices: answered on this device's
+        // endpoint, and served by the agent door once it opens.
+        let remote = remote_door::Remote::new(options.wake.handle());
         let sync = start_collaboration(
             &options,
             continuity.clone(),
             engine.clone(),
-            beside,
+            (beside, &remote),
             Some(sync::PeerDocuments::new(
                 std::sync::Arc::clone(&channels_broker),
                 std::sync::Arc::clone(&channels_fanout),
@@ -1659,12 +1665,14 @@ impl Session {
             .as_deref()
             .and_then(|control| compositor.serve_liveness(control, agent_door::bind_private));
         let agent_door = door.map(|door| {
-            door.serve(
+            let mut door = door.serve(
                 action_plane.as_ref().and_then(Plane::agent_broker),
                 action_plane
                     .as_ref()
                     .map(|plane| std::sync::Arc::clone(&plane.desk)),
-            )
+            );
+            door.hear_remote(std::sync::Arc::clone(&remote));
+            door
         });
         let automation = automation::Automation::new(
             options.state.as_deref(),
@@ -1887,6 +1895,7 @@ impl Session {
             asker,
             agent_door: RefCell::new(agent_door),
             session_doors,
+            remote: std::sync::Arc::clone(&remote),
             folder_import: RefCell::new(None),
             sync,
             engine,
@@ -2418,6 +2427,17 @@ impl Session {
     /// `(x, y, width, height)`, bottom first. Empty while the overview is
     /// away, and before a window on the desk has a picture.
     #[must_use]
+    pub fn remote_door(
+        &self,
+        devices: std::sync::Arc<dyn tilo_runtime::remote_door::PersonsDevices>,
+    ) -> tilo_runtime::remote_door::RemoteDoor {
+        self.shared.remote.door(devices)
+    }
+
+    /// The windows the overview pictures as the compositor draws them now: each window's id and
+    /// the rect its picture rests at, logical `(x, y, width, height)` , bottom first. Empty while
+    /// the overview is away, and before a window on the desk has a picture.
+    #[must_use]
     pub fn overview_pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
         match self.shell.as_ref() {
             Some(shell) => shell.pictures(),
@@ -2467,6 +2487,14 @@ impl Session {
 
     /// What the windows ask of the workspace's activity and follow, as this
     /// session serves it: the same door the desk's own pane reads through.
+    #[must_use]
+    pub fn conversation_runs(&self) -> std::sync::Arc<dyn tilo_action_broker::services::TrackerRuns>
+    {
+        self.shared.conversations.runs()
+    }
+
+    /// What the windows ask of the workspace's activity and follow, as this session serves it: the
+    /// same door the desk's own pane reads through.
     #[must_use]
     pub fn activity(&self) -> tilo_desktop_surface::session::ActivityRequests {
         self.shared.activity.requests()

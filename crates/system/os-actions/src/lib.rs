@@ -205,9 +205,6 @@ pub enum RadioChange {
 
 impl RadioChange {
     /// Execute the exact typed operation using this dispatcher's authority.
-    ///
-    /// # Errors
-    /// Returns the dispatcher's original radio-operation refusal.
     pub fn execute(self, dispatcher: &dyn Dispatcher) -> Result<(), String> {
         match self {
             Self::Wifi(enabled) => dispatcher.set_wifi(enabled),
@@ -217,9 +214,6 @@ impl RadioChange {
 
     /// Execute it and read the radios back: see
     /// [`Dispatcher::apply_radio_change`].
-    ///
-    /// # Errors
-    /// Returns the dispatcher's original radio-operation refusal.
     pub fn run(self, dispatcher: &dyn Dispatcher) -> Result<Option<RadioState>, String> {
         dispatcher.apply_radio_change(self)
     }
@@ -227,9 +221,6 @@ impl RadioChange {
     /// Whether `radios`, read after this change, show it happened; if not,
     /// why. A dispatcher that reported success may still have left a radio
     /// held off by a switch.
-    ///
-    /// # Errors
-    /// Returns the reason the radios are not in the requested state.
     pub fn outcome(self, radios: &RadioState) -> Result<(), String> {
         match self {
             Self::Wifi(enabled) => network::wifi_change_outcome(enabled, radios),
@@ -246,19 +237,10 @@ impl RadioChange {
 /// (Shell call sites historically named this trait `QsActions`; a type-alias preserves it.)
 pub trait Dispatcher {
     /// Set the display backlight to `pct` percent (0–100).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the backlight control is unavailable or the underlying
-    /// call fails.
     fn set_brightness(&self, pct: f32) -> Result<(), String>;
     /// Set one monitor, named by its DRM connector (`eDP-1`, `DP-2`), to
     /// `pct` percent (0–100): the panel's backlight or an external monitor
     /// over DDC/CI. Applied in the background; returns once queued.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if that monitor's brightness cannot be set.
     fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
         if brightness::BrightnessService::global().set(connector, pct) {
             Ok(())
@@ -267,17 +249,8 @@ pub trait Dispatcher {
         }
     }
     /// Set the default audio sink volume to `pct` percent (0–100).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn set_volume(&self, pct: f32) -> Result<(), String>;
     /// Enable or disable the Wi-Fi radio.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the network manager is unavailable or the underlying call
-    /// fails.
     fn set_wifi(&self, enabled: bool) -> Result<(), String>;
     /// Prepare an owned radio operation without starting it. Explicit legacy
     /// dispatchers may return `None` and retain their synchronous contract;
@@ -288,10 +261,6 @@ pub trait Dispatcher {
     /// Make a radio change and read the radios back afterwards. A dispatcher
     /// that cannot read them returns `None`, and its caller reads them
     /// separately.
-    ///
-    /// # Errors
-    ///
-    /// Returns the dispatcher's refusal of the change.
     fn apply_radio_change(&self, change: RadioChange) -> Result<Option<RadioState>, String> {
         match change {
             RadioChange::Wifi(enabled) => self.set_wifi(enabled),
@@ -301,11 +270,6 @@ pub trait Dispatcher {
     }
 
     /// Enable or disable the Bluetooth radio.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the Bluetooth stack is unavailable or the underlying call
-    /// fails.
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String>;
     /// Connect an accessory that is already paired on this machine.
     ///
@@ -326,10 +290,6 @@ pub trait Dispatcher {
         bluez::disconnect_address(address)
     }
     /// Look for Bluetooth devices in reach, or stop looking.
-    ///
-    /// # Errors
-    ///
-    /// An adapter that cannot be reached.
     fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
         bluetooth::scan_bluetooth(on)
     }
@@ -351,65 +311,30 @@ pub trait Dispatcher {
         bluetooth::forget_bluetooth(address)
     }
     /// Enable or disable wired (ethernet) networking.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error by default, since not every dispatcher backs a wired connection;
-    /// implementors that do should override this.
     fn set_wired(&self, enabled: bool) -> Result<(), String> {
         let _ = enabled;
         Err("wired networking is not supported by this dispatcher".into())
     }
     /// Enable or disable airplane mode (all radios off).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the network manager is unavailable or the underlying call
-    /// fails.
     fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
         network::set_airplane_mode(enabled)
     }
     /// Enable or disable the Wi-Fi hotspot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the network manager is unavailable or the underlying call
-    /// fails.
     fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
         network::set_hotspot(enabled)
     }
     /// Enable or disable mobile broadband.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the network manager is unavailable or the underlying call
-    /// fails.
     fn set_mobile_broadband(&self, enabled: bool) -> Result<(), String> {
         network::set_mobile_broadband(enabled)
     }
     /// Enable or disable the named VPN connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if `name` does not match a known connection or the underlying
-    /// call fails.
     fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
         network::set_vpn_connection(name, enabled)
     }
     /// Connect to `ssid`, using `password` for secured networks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the network is unreachable, the credentials are rejected, or
-    /// the underlying call fails.
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
     /// Connect to `ssid`, which broadcasts no name, using `password` for
     /// secured networks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the credentials are rejected or the
-    /// underlying call fails.
     fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
         let _ = (ssid, password);
         Err("joining a network with a hidden name is not supported by this dispatcher".into())
@@ -435,53 +360,27 @@ pub trait Dispatcher {
         Err("saved network autoconnect is not supported by this dispatcher".into())
     }
     /// Switch the active power profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if `power-profiles-daemon` is unavailable or the underlying call
-    /// fails.
     fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String>;
     /// Toggle the default audio sink mute state. Default impl delegates to
     /// [`default_node::toggle_mute`]; has a default body so existing shell-crate impls keep compiling.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn toggle_mute(&self) -> Result<(), String> {
         default_node::toggle_mute(DefaultNode::Sink)
     }
     /// Set the sink mute state explicitly. Distinct from [`Self::toggle_mute`] because the
     /// volume-up key needs to *clear* mute regardless of prior state — toggling could silence an
     /// already-audible sink. Default body, same reason as above.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn set_mute(&self, muted: bool) -> Result<(), String> {
         default_node::set_mute(DefaultNode::Sink, muted)
     }
     /// Read the display backlight as a `0.0..=1.0` fraction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message when the machine has no backlight the session can read.
     fn brightness(&self) -> Result<f32, String> {
         display::get_brightness()
     }
     /// Read the keyboard backlight.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message when the machine has no keyboard backlight.
     fn keyboard_backlight(&self) -> Result<KeyboardBacklight, String> {
         keyboard_backlight::get_keyboard_backlight()
     }
     /// Set the keyboard backlight to a raw hardware level.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message when the machine has no keyboard backlight or the write is
-    /// refused.
     fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
         keyboard_backlight::set_keyboard_backlight(level)
     }

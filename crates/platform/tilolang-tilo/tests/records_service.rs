@@ -291,7 +291,7 @@ fn a_reminder_writes_the_notice_of_its_person_at_its_moment_once() {
         .invoke(
             &call,
             &action_id(&meta, "remind_at"),
-            &args(json!({ "after": { "some": 3600 } })),
+            &args(json!({ "when": "2026-10-27T10:00:00Z" })),
         )
         .unwrap();
     assert_eq!(

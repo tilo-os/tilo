@@ -20,9 +20,6 @@ impl AppBrokerState {
     /// Resolve a native seat's projected Person through protected host custody.
     /// `None` means this broker has no native seat (and grants no certificate
     /// custody); a configured service's refusal is never a compatibility fallback.
-    ///
-    /// # Errors
-    /// Refuses retired executions, non-native callers and stale native custody.
     pub fn native_local_person_certificate(
         &self,
         caller: &Caller,
@@ -184,11 +181,6 @@ impl AppBrokerState {
 
     /// Bind one host-issued execution to an existing signed, workspace-bound presentation.
     /// The verifier, not the caller's labels or UUID, establishes authority.
-    ///
-    /// # Errors
-    ///
-    /// Refuses missing clocks, ended sessions, invalid/currently unadmitted evidence,
-    /// and any caller principal, workspace or device mismatch. Does not enroll a device.
     pub fn certified_local_action_host(
         self: &Arc<Self>,
         caller: &Caller,
@@ -199,9 +191,6 @@ impl AppBrokerState {
 
     /// Preserve native physical intent without dropping the signed session.
     /// Network, app and delegated-agent doors never select this entrypoint.
-    ///
-    /// # Errors
-    /// Refuses missing or replaced protected seat custody and invalid admission.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the checked host is a value moved into the answer, not a guard"
@@ -369,9 +358,6 @@ impl CertifiedActionLifecycle {
 
     /// Answered once the request is durable: blocks the calling thread for
     /// that write, so never call it on the broker's loop.
-    ///
-    /// # Errors
-    /// Refuses revoked custody, foreign ownership and non-cancellable jobs.
     pub fn cancel(&self, id: u64) -> Result<(), String> {
         self.status(id)
             .ok_or("the invocation is unavailable in this session")?;
@@ -441,9 +427,6 @@ impl CertifiedPersonContext {
     pub fn device(&self) -> &str {
         &self.device
     }
-    /// # Errors
-    /// Refuses an ended/revoked session, unavailable original clock or changed
-    /// certificate/admission. Must be called at the actual native I/O boundary.
     pub fn revalidate(&self) -> Result<(), String> {
         self.checked
             .check(&self.checked.caller)
@@ -454,9 +437,6 @@ impl CertifiedPersonContext {
 impl AppBrokerState {
     /// Project only an already admitted person's own room on a non-foreign
     /// device. This does not delegate account credentials or mint permissions.
-    /// # Errors
-    /// Refuses forged labels, agents/apps, other workspaces/devices, expired or
-    /// revoked certificate/admission, ended execution and missing policy clocks.
     pub fn certified_person_context(
         self: &Arc<Self>,
         caller: &Caller,

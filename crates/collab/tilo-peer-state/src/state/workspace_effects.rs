@@ -6,9 +6,6 @@ use tilo_desktop_model::WorkspaceEffectReceipt;
 
 impl PeerWorkspace<'_> {
     /// Decode the canonical, bounded broker terminal audit payload.
-    ///
-    /// # Errors
-    /// Rejects private or extra facets, malformed identifiers and noncanonical encoding.
     pub fn validate_workspace_effect_receipt_encoding(
         invocation: uuid::Uuid,
         redacted: &[u8],
@@ -30,9 +27,6 @@ impl PeerWorkspace<'_> {
         Ok(receipt)
     }
     /// Authenticate a historical reader against exact current certificate evidence.
-    ///
-    /// # Errors
-    /// Revoked, stale or substituted certificate, or current route read refusal.
     pub fn check_checkpoint_reader(
         self,
         caller: &tilo_user_identity::DeviceCert,
@@ -52,8 +46,6 @@ impl PeerWorkspace<'_> {
             .check_document_read(caller.device_public_key, app, record, now)
     }
     /// Require current workspace undoable-write permission for checkpoint capture and naming.
-    /// # Errors
-    /// Refuses substituted certificates or revoked/missing current undoable-write permission.
     pub fn check_checkpoint_namer(
         self,
         caller: &tilo_user_identity::DeviceCert,
@@ -80,16 +72,10 @@ impl PeerWorkspace<'_> {
         Ok(())
     }
     /// Check current native checkpoint governor signing custody, including retries.
-    ///
-    /// # Errors
-    /// Stale certificate, revoked writer or mismatching governor key.
     pub fn check_checkpoint_writer(self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         self.peer.require_governance_writer(key, now)
     }
     /// Read the native checkpoint content anchor, never treating corruption as absence.
-    ///
-    /// # Errors
-    /// Missing workspace or malformed anchor.
     pub fn workspace_checkpoint_root(self) -> Result<Option<[u8; 32]>, String> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let doc = self
@@ -116,9 +102,6 @@ impl PeerWorkspace<'_> {
     }
     /// The anchor of `device`'s archived effect receipts, in its person's
     /// slice of the workspace.
-    ///
-    /// # Errors
-    /// A malformed anchor must not be mistaken for an empty index.
     pub fn workspace_effect_history_root(
         self,
         device: &tilo_user_identity::DeviceCert,
@@ -169,12 +152,6 @@ impl PeerWorkspaceMut<'_> {
     /// ([`crate::workspace::effect_slices_kept`]). The actor is the device's
     /// person, or an agent acting for them. This creates no application
     /// record or capability. Answers whether the workspace changed.
-    ///
-    /// # Errors
-    /// Refuses a caller that is not current admitted evidence or cannot
-    /// read the workspace, a key that is not the caller's, another's receipt, a
-    /// malformed encoding, a conflicting terminal outcome or a failed CRDT
-    /// write.
     pub fn apply_own_effect_receipt(
         self,
         caller: &tilo_user_identity::DeviceCert,
@@ -256,9 +233,6 @@ impl PeerWorkspaceMut<'_> {
     }
 
     /// Anchor retained checkpoint content under current governor signing custody.
-    ///
-    /// # Errors
-    /// Invalid custody or failed document write.
     pub fn set_workspace_checkpoint_root(
         self,
         root: [u8; 32],
@@ -288,9 +262,6 @@ impl PeerWorkspaceMut<'_> {
 
     /// Anchor `caller`'s archived effect receipts at `root`, in its
     /// person's slice of the workspace, signed by `key`, the device's own.
-    ///
-    /// # Errors
-    /// A caller that may not record receipts here, or a failed CRDT write.
     pub fn set_workspace_effect_history_root(
         self,
         caller: &tilo_user_identity::DeviceCert,

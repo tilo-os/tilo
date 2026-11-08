@@ -637,10 +637,6 @@ impl IdentityRegistryStore {
     /// restore: the active record's public key (its hex is the fingerprint),
     /// or `None` when the account has no identity yet and any words will do.
     /// Reads public metadata only.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity directory exists but cannot be read.
     pub fn recovery_expected_identity(&self) -> io::Result<Option<[u8; 32]>> {
         runtime_identity::recovery_expected_identity(&self.identity_dir)
     }
@@ -675,10 +671,6 @@ pub fn selected_principal_id_prompt(workspace: &str) -> io::Result<Option<String
 
 /// The identity this device presents in `workspace`, for shell chrome, apps
 /// and the session's own services.
-///
-/// # Errors
-///
-/// The identity directory or the registry in it could not be read.
 pub fn identity_for_workspace(workspace: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;

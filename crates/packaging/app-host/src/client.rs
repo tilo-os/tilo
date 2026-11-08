@@ -257,10 +257,6 @@ pub struct BlockingClient {
 
 impl BlockingClient {
     /// Claim the pre-connected descriptor the launcher granted to this app.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the runtime or launcher-issued service cannot be opened.
     #[cfg(unix)]
     pub fn from_service() -> Result<Self, String> {
         use std::os::fd::FromRawFd as _;
@@ -279,10 +275,6 @@ impl BlockingClient {
     }
 
     /// Open an explicitly owned connection (a test host).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the runtime cannot start or `fd` is no socket.
     #[cfg(unix)]
     pub fn from_connected_fd(fd: std::os::fd::OwnedFd) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -377,28 +369,16 @@ impl BlockingClient {
 
     /// List the packages the host service can launch: the user's, and the
     /// read-only system packages they do not shadow.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the service request or an installed manifest cannot be read.
     pub fn list(&self) -> Result<Vec<ListedPackage>, String> {
         self.complete(self.begin_list())
     }
 
     /// Launch an installed package.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the host service cannot launch the package.
     pub fn launch(&self, id: PackageId) -> Result<String, String> {
         text(self.invoke(Action::Launch { id: *id.as_bytes() })?)
     }
 
     /// Update the retention pin for an installed package.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the host service cannot update the package pin.
     pub fn pin(&self, id: PackageId, pinned: bool) -> Result<(), String> {
         self.invoke(Action::SetPinned {
             id: *id.as_bytes(),
@@ -408,19 +388,11 @@ impl BlockingClient {
     }
 
     /// Remove an installed package.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the host service cannot remove the package.
     pub fn remove(&self, id: PackageId) -> Result<(), String> {
         self.invoke(Action::Remove { id: *id.as_bytes() }).map(drop)
     }
 
     /// Run a Flatpak lifecycle operation through the host service.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the host service rejects or cannot run the operation.
     pub fn flatpak(
         &self,
         action: FlatpakAction,
@@ -439,19 +411,12 @@ impl BlockingClient {
     }
 
     /// The person's app repositories, as `app repo list --json` prints them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the host service cannot read them.
     pub fn repositories(&self) -> Result<String, String> {
         self.complete(self.begin_repositories())
     }
 
     /// Read verified metadata from an enabled repository configured by this person.
     /// The host retains the durable antirollback checkpoint outside the app sandbox.
-    ///
-    /// # Errors
-    /// Returns why the configured repository cannot be verified or read.
     pub fn registry_catalogue(&self, registry: &str) -> Result<String, CatalogueError> {
         self.complete(self.begin_registry_catalogue(registry))
     }
@@ -478,9 +443,6 @@ impl BlockingClient {
     }
 
     /// Read cached app metadata from one configured Flatpak repository.
-    ///
-    /// # Errors
-    /// Returns why the repository cannot be read on this device.
     pub fn flatpak_catalogue(
         &self,
         remote: &str,
@@ -504,9 +466,6 @@ impl BlockingClient {
     }
 
     /// Read host Flatpak state without executing tools in the app sandbox.
-    ///
-    /// # Errors
-    /// Returns why the host installation cannot be read.
     pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
         self.complete(self.begin_flatpak_status())
     }
@@ -525,10 +484,6 @@ impl BlockingClient {
     }
 
     /// Add or remove a user Flatpak remote through the host service.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the host service rejects or cannot run the operation.
     pub fn remote(&self, add: bool, name: &str, url: Option<&str>) -> Result<String, String> {
         text(self.invoke(Action::Remote {
             verb: if add {

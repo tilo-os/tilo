@@ -1,13 +1,11 @@
 //! The arrangement a build before this one kept beside the desk.
-//!
 //! A session used to keep the person's arrangement in a document of its own
-//! (`tilo/arrangement.automerge`): a workspace, a row, a strip and a place
-//! each as an entry under its own id, and nothing in the desk's document was
-//! what the person saw. The desk's one document holds all of it now, so the
-//! first start on this build reads what the document holds that the desk does
-//! not ([`adopt`]) and the file goes. A window it kept as a live surface that
-//! did not open again comes back as the app it showed, as the desk keeps every
-//! window ([`Tab::relaunchable`]).
+//! (`tilo/arrangement.automerge`): a workspace, a row, a strip and a place each as an entry under
+//! its own id, and nothing in the desk's document was what the person saw. The desk's one document
+//! holds all of it now, so the first start on this build reads what the document holds that the
+//! desk does not ([`adopt`]) and the file goes. A window it kept as a live surface that did not
+//! open again comes back as the app it showed, as the desk keeps every window
+//! ([`Tab::relaunchable`]).
 
 use std::collections::btree_map::Entry;
 use std::path::Path;
@@ -21,19 +19,17 @@ use tilo_desktop_model::{
 /// The arrangement file a build before this one kept beside the desk.
 const FILE: &str = "arrangement.automerge";
 
-/// What the kept arrangement gives the desk it is adopted into: the desk with
-/// the rows, strips and places it kept, and the record each of its windows
-/// shows by tab.
+/// What the kept arrangement gives the desk it is adopted into: the desk with the rows, strips and
+/// places it kept, and the record each of its windows shows by tab.
 pub(crate) struct Adopted {
     pub(crate) desk: DesktopTree,
     pub(crate) shows: Vec<(TabId, String)>,
 }
 
-/// The desk `desk`, with what the arrangement the old file under `state` holds
-/// that the desk does not: the rows, strips and places it describes, each by
-/// its id, and the record each of those windows shows, by tab. `None` when
-/// this device kept no arrangement, or kept one this build cannot read: the
-/// desk this device holds is the one its person sees.
+/// The desk `desk` , with what the arrangement the old file under `state` holds that the desk does
+/// not: the rows, strips and places it describes, each by its id, and the record each of those
+/// windows shows, by tab. `None` when this device kept no arrangement, or kept one this build
+/// cannot read: the desk this device holds is the one its person sees.
 pub(crate) fn adopt(state: &Path, desk: &DesktopTree) -> Option<Adopted> {
     let path = state.join("tilo").join(FILE);
     let bytes = std::fs::read(&path).ok()?;
@@ -52,8 +48,8 @@ pub(crate) fn adopt(state: &Path, desk: &DesktopTree) -> Option<Adopted> {
     Some(Adopted { desk, shows })
 }
 
-/// The record each window the old arrangement kept showed, by tab: what the
-/// desk keeps beside its windows, so a place comes back showing its record.
+/// The record each window the old arrangement kept showed, by tab: what the desk keeps beside its
+/// windows, so a place comes back showing its record.
 fn windows_of(doc: &impl ReadDoc) -> Vec<(TabId, String)> {
     let mut shows: Vec<(TabId, String)> = entries(doc, "places")
         .into_iter()
@@ -66,11 +62,10 @@ fn windows_of(doc: &impl ReadDoc) -> Vec<(TabId, String)> {
     shows
 }
 
-/// `desk` with the rows, strips and places of `kept` that it does not hold: a
-/// window the arrangement kept is open again, and nothing the desk holds is
-/// moved or dropped. A workspace the desk no longer has stays gone: which
-/// workspaces a desk has is the desk's, and one of them may be another device's
-/// to add.
+/// `desk` with the rows, strips and places of `kept` that it does not hold: a window the
+/// arrangement kept is open again, and nothing the desk holds is moved or dropped. A workspace the
+/// desk no longer has stays gone: which workspaces a desk has is the desk's, and one of them may be
+/// another device's to add.
 fn merge(desk: &DesktopTree, kept: &DesktopTree) -> DesktopTree {
     let mut merged = desk.clone();
     for workspace in &kept.workspaces {
@@ -113,8 +108,8 @@ fn merge(desk: &DesktopTree, kept: &DesktopTree) -> DesktopTree {
     merged
 }
 
-/// The desk the old arrangement's document describes: its workspaces, their
-/// rows, strips and places, each as the entry says it.
+/// The desk the old arrangement's document describes: its workspaces, their rows, strips and
+/// places, each as the entry says it.
 fn as_desk(doc: &impl ReadDoc) -> DesktopTree {
     let mut tree = DesktopTree::default();
     let mut workspaces: Vec<(f64, u64, String)> = entries(doc, "workspaces")
@@ -213,8 +208,8 @@ fn as_desk(doc: &impl ReadDoc) -> DesktopTree {
     tree
 }
 
-/// The tab the place entry `place` describes, in the form the desk opens it
-/// again; `None` for a place naming no app to open.
+/// The tab the place entry `place` describes, in the form the desk opens it again; `None` for a
+/// place naming no app to open.
 fn tab_of(doc: &impl ReadDoc, id: u64, place: &ObjId) -> Option<Tab> {
     let title = text(doc, place, "title").unwrap_or_default();
     let shows = text(doc, place, "shows").unwrap_or_default();
@@ -247,7 +242,7 @@ fn workspace_of(doc: &impl ReadDoc, entry: &ObjId) -> u64 {
     parse(doc, entry, "workspace").unwrap_or_default()
 }
 
-/// Every entry of the map at `ROOT[key]`, by id.
+/// Every entry of the map at `ROOT[key]` , by id.
 fn entries(doc: &impl ReadDoc, key: &str) -> Vec<(u64, ObjId)> {
     // ignored-failure: a document holding no map under this key held no entry this build reads
     let Some((Value::Object(ObjType::Map), container)) = doc.get(&ROOT, key).ok().flatten() else {
@@ -296,8 +291,7 @@ fn number(doc: &impl ReadDoc, obj: &ObjId, key: &str) -> Option<f64> {
     }
 }
 
-/// A numeric id held as text: the whole `u64`, not a float that loses its
-/// low bits past 2^53.
+/// A numeric id held as text: the whole `u64` , not a float that loses its low bits past 2^53.
 fn parse(doc: &impl ReadDoc, obj: &ObjId, key: &str) -> Option<u64> {
     // ignored-failure: a field the old build wrote as something other than a number names no id
     text(doc, obj, key)?.parse().ok()

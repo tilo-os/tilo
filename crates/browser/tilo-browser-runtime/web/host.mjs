@@ -12,7 +12,6 @@ import {semanticBridge,applySemanticsPatch} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
 import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
-import {createLiveCursors} from './live-cursors.mjs';
 import {createHere} from './here.mjs';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
 import {createPresentedSource} from './panorama.mjs';
@@ -160,7 +159,7 @@ export async function mountDesktop(target,options={}) {
   // The workspace directory's door granted this person a workspace: only the page joins with it.
   delete config.onJoinGranted;
   let unsubscribeDesktopCommits;
-  let liveOverlay,liveCursors,liveCarets,here,livePlace=null;
+  let here,livePlace=null,livePointer=null;
   // The workspace's live layer as this mount publishes through it (a certified
   // peer's `live` view: only the mount acted in last speaks), else the peer's.
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
@@ -254,7 +253,7 @@ export async function mountDesktop(target,options={}) {
     nativeCatalogue.pump();
     for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
-    if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
+    if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.
     if('liveWave' in state)liveLayer()?.publishPresence({wave:state.liveWave});
     if('liveFollowing' in state)liveLayer()?.publishPresence({following:state.liveFollowing});
@@ -288,7 +287,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_tile(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;const layer=liveLayer();if(!livePointer&&layer){livePointer=followOwnPointer(layer,()=>id,surface,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -400,7 +399,7 @@ export async function mountDesktop(target,options={}) {
       capture.close();semanticPresentation.close();
       crashListeners.delete(onCrash);
       if(globalThis.__tiloForgetCrashedWindow===forgetCrashed)delete globalThis.__tiloForgetCrashedWindow;
-      nativeCatalogue.dispose();media?.close();liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;here?.stop();here=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      nativeCatalogue.dispose();media?.close();livePointer?.();livePointer=null;here?.stop();here=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
     },
@@ -605,7 +604,7 @@ export async function mountDesktop(target,options={}) {
       // The picture `user` (root key, hex) chose, as a `data:` URL, shown on their avatars now; `null` takes it away.
       setPersonPhoto:(user,url)=>{photos.chose(user,url);return showPhoto(user,url);},
       // On a desktop with no workspace (the person's own), who it shows as its person (`{user, label}`): a workspace's peer names its own.
-      setOwnPerson:({user,label})=>{if(active()&&!options.peer&&runtime.desktop_set_people)runtime.desktop_set_people(id,JSON.stringify({own:{publisher:'own',kind:'person',label:String(label??''),user},members:null}));},
+      setOwnPerson:({user,label})=>{if(active()&&!options.peer&&runtime.desktop_set_people)runtime.desktop_set_people(id,JSON.stringify({own:{publisher:'own',kind:'person',label:String(label??''),user}}));},
       // What the page just did out of sight, said in passing ("Link copied").
       acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
       // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.
@@ -640,24 +639,21 @@ async function settleBeforeGpu(){
   await new Promise(resolve=>setTimeout(resolve,1500));
   await new Promise(resolve=>(globalThis.requestIdleCallback??(f=>setTimeout(f,0)))(resolve,{timeout:1500}));
 }
-// Members' carets and selections, with their names, into the mount's
-// editors. Only a changed selection or participant crosses into the runtime.
-function followRemoteCarets(layer,mountId,active){
-  const last=new Map();
-  const apply=({publisher,frame})=>{
+// This person's pointer, said over the tab it is on: a point in that tab's
+// logical pixels, which every member's view of the tab places. The mount
+// draws the members' pointers from the board; this only says where this
+// page's is.
+function followOwnPointer(layer,mountId,surface,active){
+  const move=event=>{
     if(!active())return;
-    const participant=frame.participant??last.get(publisher)?.participant??null;
-    const key=JSON.stringify([frame.selection,participant]);
-    if(last.get(publisher)?.key===key)return;
-    last.set(publisher,{key,participant});
-    runtime.remote_presence(mountId(),publisher,participant?.label??'',participant?.kind??'person',frame.selection?.anchor,frame.selection?.head);
+    const rect=surface.getBoundingClientRect();
+    const at=runtime.pointer_tile(mountId(),event.clientX-rect.left,event.clientY-rect.top);
+    layer.publishPresence({pointer:at?JSON.parse(at):null});
   };
-  const stops=[layer.onPresence(apply),layer.onMember(({publisher,active:present})=>{
-    if(present||!last.delete(publisher)||!active())return;
-    runtime.remote_presence_gone(mountId(),publisher);
-  })];
-  for(const remote of layer.remoteState())apply({publisher:remote.publisher,frame:remote});
-  return ()=>{for(const stop of stops)stop();};
+  const leave=()=>layer.publishPresence({pointer:null});
+  surface.addEventListener('pointermove',move,{passive:true});
+  surface.addEventListener('pointerleave',leave,{passive:true});
+  return ()=>{surface.removeEventListener('pointermove',move);surface.removeEventListener('pointerleave',leave);};
 }
 export function pendingRecoveryCount(){return recoveryJobs.size;}
 export async function retryPendingRecovery(){for(const retry of [...recoveryJobs])await retry();}

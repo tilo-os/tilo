@@ -70,6 +70,12 @@ pub struct Environment {
     /// Empty until the first device that opens the environment gives it
     /// one ([`Environment::SET_HOME`]), which also grants it.
     pub home_dir: String,
+    /// The workspace the environment belongs to, by id: the one whose room
+    /// keeps the record and whose files are its home. Written when the
+    /// record is made and changed by no action. Empty for an environment
+    /// made before environments belonged to a workspace: it is the primary
+    /// workspace's.
+    pub workspace: String,
     /// File actions, each settled by the device that carried it out with
     /// what it changed.
     pub files: Outbox<FileTask, Vec<UndoEntry>>,
@@ -708,9 +714,6 @@ impl Environment {
 
     /// Write this environment as the whole of a fresh record document — how
     /// a record is created; every later change is an action.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     pub fn write_record(&self, doc: &mut tilo_resource::Doc) -> Result<(), ModelError> {
         tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)?;
         // A fresh record is at today's storage version; without the stamp it
@@ -808,9 +811,6 @@ pub fn same_packages(a: &[String], b: &[String]) -> bool {
 }
 
 /// Parse an image id as the record stores it.
-///
-/// # Errors
-/// Returns the reason when `id` is not a `tapp:<hex>` id.
 pub fn parse_image(id: &str) -> Result<PackageId, String> {
     PackageId::from_str(id).map_err(|e| format!("{id:?} is not an image id: {e}"))
 }
@@ -908,11 +908,6 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
 /// is accepted and written that way). Lower-case, no trailing dot. The
 /// grammar is [`collab_types::caps::NetHostPattern`]'s, the one apps' grants
 /// are read with too.
-///
-/// # Errors
-/// Returns the reason when `host` is not a host name: empty, an address
-/// (egress is decided by name, so a literal would bypass the resolver that
-/// decides), or characters DNS names do not carry.
 pub fn normalize_host(host: &str) -> Result<String, String> {
     collab_types::caps::NetHostPattern::parse(host)
         .map(|pattern| pattern.to_string())
@@ -1200,6 +1195,39 @@ mod tests {
             evolution::check_version::<Environment>(&old).is_ok()
                 && evolution::stored_version(&old) == 3,
             "the migrated environment is marked as version 3"
+        );
+    }
+
+    /// An environment written before environments belonged to a workspace
+    /// reads as naming none (the primary workspace's), and no action names
+    /// one: a record's workspace is written when it is made.
+    #[test]
+    fn an_environment_from_before_workspaces_names_none_and_no_action_sets_one() {
+        use tilo_resource::Slot;
+        let mut r = replica();
+        let root = tilo_resource::__private::ROOT;
+        let doc = r.doc_mut();
+        Slot::Key(&root, "workspace").remove(doc).unwrap();
+        doc.commit();
+        assert_eq!(r.state().unwrap().workspace, "");
+        r.apply(Environment::RENAME.with("Renamed")).unwrap();
+        r.apply(Environment::SET_HOME.with("/var/workspace/.workspaces/w1"))
+            .unwrap();
+        assert_eq!(r.state().unwrap().workspace, "", "no action names one");
+
+        let mut doc = tilo_resource::Doc::new();
+        Environment {
+            workspace: "w1".into(),
+            ..Environment::new("Work", "2026.10", "x86_64", &image(1))
+        }
+        .write_record(&mut doc)
+        .unwrap();
+        doc.commit();
+        assert_eq!(
+            <Environment as tilo_resource::Resource>::read(&doc)
+                .unwrap()
+                .workspace,
+            "w1"
         );
     }
 

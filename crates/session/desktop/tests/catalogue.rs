@@ -1,5 +1,5 @@
-//! What the desktop publishes: one verb vocabulary per resource, every verb
-//! declared once, and every row offering a verb of its resource's.
+//! What the desktop publishes: one verb vocabulary per resource, every verb declared once, and
+//! every row offering a verb of its resource's.
 
 #![allow(clippy::unwrap_used, clippy::panic, reason = "a test's assertions")]
 
@@ -16,9 +16,8 @@ use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
 use tilo_desktop_surface::window;
 use tilo_resource::Effect;
 
-/// Every resource the desktop publishes: the chrome over the windows, the
-/// desk under them with its windows, a display and the open search, and the
-/// launchpad.
+/// Every resource the desktop publishes: the chrome over the windows, the desk under them with its
+/// windows, a display and the open search, and the launchpad.
 fn published() -> Vec<ResourceSpec> {
     let windows = [
         tilo_desktop::desk_verbs::Shown {
@@ -54,8 +53,8 @@ fn published() -> Vec<ResourceSpec> {
     ]
 }
 
-/// The resources the desktop publishes, each with the verbs it offers, as
-/// one text a change to the catalogue shows in review.
+/// The resources the desktop publishes, each with the verbs it offers, as one text a change to the
+/// catalogue shows in review.
 fn catalogue() -> String {
     let mut catalogue = String::new();
     for resource in published() {
@@ -64,8 +63,8 @@ fn catalogue() -> String {
     catalogue
 }
 
-/// One resource of the catalogue: its address, its kind and its label, then
-/// every verb it offers as `id label`, then its children, indented.
+/// One resource of the catalogue: its address, its kind and its label, then every verb it offers as
+/// `id label` , then its children, indented.
 fn write_resource(catalogue: &mut String, resource: &ResourceSpec, depth: usize) {
     let indent = "  ".repeat(depth);
     let _ = writeln!(
@@ -108,8 +107,8 @@ fn no_verb_is_declared_twice() {
 
 #[test]
 fn a_resource_offers_each_verb_once() {
-    // A resource names a verb by its id: two rows of one resource offering
-    // the same id leaves the second one unaddressable.
+    // A resource names a verb by its id: two rows of one resource offering the same id leaves the
+    // second one unaddressable.
     for resource in published() {
         let mut seen = BTreeSet::new();
         for action in &resource.actions {
@@ -159,10 +158,10 @@ fn every_row_offers_a_verb_of_the_desktop() {
 
 #[test]
 fn the_launchpad_cards_are_its_controls_for_scripts() {
-    // A card submits the launchpad verb for what the empty desk shows, and a
-    // script or an agent invokes the same verb by the row this resource
-    // publishes. People reach the verbs through their host actions, which is
-    // what the palette lists, so this resource is never the palette's door.
+    // A card submits the launchpad verb for what the empty desk shows, and a script or an agent
+    // invokes the same verb by the row this resource publishes. People reach the verbs through
+    // their host actions, which is what the palette lists, so this resource is never the palette's
+    // door.
     let launchpad = launchpad_resource();
     assert!(
         !launchpad.children.is_empty(),
@@ -186,9 +185,9 @@ fn the_launchpad_cards_are_its_controls_for_scripts() {
     }
 }
 
-/// A window this session does not run — another desktop's — is read and
-/// pictured through the desk, and nothing acts on it: the two verbs it adds
-/// only read, and reach agents, who have no other way to see it.
+/// A window this session does not run — another desktop's — is read and pictured through the desk,
+/// and nothing acts on it: the two verbs it adds only read, and reach agents, who have no other way
+/// to see it.
 #[test]
 fn a_foreign_window_offers_the_two_reads_and_nothing_that_acts() {
     let desk = published()

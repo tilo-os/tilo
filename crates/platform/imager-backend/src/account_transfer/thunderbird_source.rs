@@ -165,9 +165,6 @@ impl ThunderbirdSelection {
 
     /// Structural checks that need no live source. The manifest uses this
     /// before the exact reviewed selection is available again.
-    ///
-    /// # Errors
-    /// Refuses an empty, oversized or duplicate selection shape.
     pub fn validate_shape(&self) -> Result<(), ConnectionError> {
         if self.accounts.is_empty() || self.accounts.len() > MAX_ACCOUNTS {
             return Err(ConnectionError::InvalidConfiguration);
@@ -221,9 +218,6 @@ impl SealedThunderbird {
     }
 
     /// Parse only the envelope framing. Authentication happens on import.
-    ///
-    /// # Errors
-    /// Refuses an oversized or malformed envelope.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectionError> {
         if bytes.len() > MAX_SEALED {
             return Err(ConnectionError::InvalidConfiguration);
@@ -263,9 +257,6 @@ impl PasswordSealedThunderbird {
     }
 
     /// Read one already-granted private artifact with bounded/no-follow access.
-    ///
-    /// # Errors
-    /// Refuses redirected, oversized or non-private inputs.
     pub fn read(path: &Path) -> Result<Self, ConnectionError> {
         read_artifact(path).map_err(|_| ConnectionError::StorageUnavailable)
     }
@@ -413,10 +404,6 @@ fn binding(binding: &[u8]) -> Result<Vec<u8>, ConnectionError> {
 /// Export exactly the reviewed selection under a fresh caller-owned transport
 /// key. The source files are re-read through their pinned profile handles and
 /// the profile is revalidated before the artifact is produced.
-///
-/// # Errors
-/// Refuses an invalid selection, a changed source, unavailable local files or
-/// a bundle beyond the transport bound.
 pub fn seal_selected(
     reviewed: &ReviewedThunderbird,
     selection: &ThunderbirdSelection,

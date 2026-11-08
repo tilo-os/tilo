@@ -1,8 +1,7 @@
-//! Painting the overview: the panel of workspaces (recorded once and kept
-//! while it shows the same thing), and the picture's names, titles and
-//! selection over it. The windows' pictures themselves are the host's to
-//! draw where it holds them ([`crate::window_flight`]); a host that holds
-//! none gets each window's app mark here.
+//! Painting the overview: the panel of workspaces (recorded once and kept while it shows the same
+//! thing), and the picture's names, titles and selection over it. The windows' pictures themselves
+//! are the host's to draw where it holds them ([`crate::window_flight`]); a host that holds none
+//! gets each window's app mark here.
 
 use std::collections::HashMap;
 
@@ -24,20 +23,18 @@ use crate::overview_picture::{Tile, draw_empty_strip, draw_strip_name, draw_tile
 use crate::window_flight::WindowPicture;
 use crate::window_switcher::{PreviewWell, WindowApp, draw_preview_well};
 
-/// A pictured window carried to another workspace is left this faint in
-/// its place.
+/// A pictured window carried to another workspace is left this faint in its place.
 pub(super) const CARRIED_ALPHA: f32 = 0.35;
 
-/// How much of their own colour an away member's face keeps, the rest being
-/// the panel behind it.
+/// How much of their own colour an away member's face keeps, the rest being the panel behind it.
 const FACE_AWAY_ALPHA: f32 = 0.55;
 
 /// Most faces drawn before the rest collapse into a "+N" disc.
 const FACES_MAX: usize = 4;
 
 impl OverviewPanel {
-    /// Shadow falloff plus the rise, so one clip covers every frame of the
-    /// panel's fade without leaving its last place behind.
+    /// Shadow falloff plus the rise, so one clip covers every frame of the panel's fade without
+    /// leaving its last place behind.
     fn shadow_outset(theme: &Theme) -> f64 {
         let token = &theme.tokens.elevation.floating;
         ui::surface::std_dev_for(token.blur) * 2.5 + f64::from(token.offset_y) + 2.0
@@ -54,8 +51,8 @@ impl OverviewPanel {
         }
     }
 
-    /// The panel of workspaces, at `(alpha, dy, scale)` of its arrival:
-    /// recorded once and replayed while it shows the same thing.
+    /// The panel of workspaces, at `(alpha, dy, scale)` of its arrival: recorded once and replayed
+    /// while it shows the same thing.
     pub(super) fn paint_panel_at(
         &mut self,
         scene: &mut Scene,
@@ -80,8 +77,8 @@ impl OverviewPanel {
         let Some((_, recorded)) = self.cache.as_ref() else {
             return;
         };
-        // The scale's pivot is the panel's centre, so it settles in place
-        // wherever the layout put it.
+        // The scale's pivot is the panel's centre, so it settles in place wherever the layout put
+        // it.
         let pivot = self.panel_rect().center();
         let placed = if (scale - 1.0).abs() > f64::EPSILON || dy.abs() > f64::EPSILON {
             let scaled = Affine::translate((pivot.x, pivot.y + dy))
@@ -221,8 +218,8 @@ impl OverviewPanel {
         ui::chrome::shell::paint_panel_edge(scene, transform, panel, m.panel_radius, theme);
     }
 
-    /// "Where you are": the current workspace's faces, name, "You are here" chip
-    /// and access line, or a plain statement that no workspace is marked current.
+    /// "Where you are": the current workspace's faces, name, "You are here" chip and access line,
+    /// or a plain statement that no workspace is marked current.
     fn paint_here_section(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -280,8 +277,8 @@ impl OverviewPanel {
 
         self.paint_here_selection(scene, transform, theme, content, here_rect, hi);
 
-        // Faces claim the right edge, centred on the name line; the name
-        // elides against what they leave.
+        // Faces claim the right edge, centred on the name line; the name elides against what they
+        // leave.
         let faces_left = paint_face_stack(
             &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             Point::new(content.x1, here_rect.y0 + m.name_lh / 2.0),
@@ -289,8 +286,8 @@ impl OverviewPanel {
             self.colors(),
             ground,
         );
-        // "You are here" says which of these workspaces you are in: a quiet
-        // neutral chip. Your colour is for your focus and presence.
+        // "You are here" says which of these workspaces you are in: a quiet neutral chip. Your
+        // colour is for your focus and presence.
         let here_label = t("overview-you-are-here");
         let chip_w = ChipFace::intrinsic_width(&here_label, ChipLead::None, false, text, theme);
         let anchor = (faces_left - m.s4, here_rect.y0 + m.name_lh / 2.0);
@@ -353,8 +350,8 @@ impl OverviewPanel {
             return;
         }
         let s2 = self.metrics.s2;
-        // It stands `s2` off the block's text and stops short of the
-        // block's bottom air, so it does not run into the caption beneath.
+        // It stands `s2` off the block's text and stops short of the block's bottom air, so it does
+        // not run into the caption beneath.
         let sel = Rect::new(
             content.x0 - s2,
             here_rect.y0 - s2,
@@ -382,8 +379,7 @@ impl OverviewPanel {
         }
     }
 
-    /// What leaves this workspace: the share list, or nothing when it shares
-    /// nothing.
+    /// What leaves this workspace: the share list, or nothing when it shares nothing.
     fn paint_shares_section(&self, ctx: &mut ui::paint::PaintCtx<'_>, content: Rect) {
         let Some(card) = self.here_card().filter(|card| !card.shares.is_empty()) else {
             return;
@@ -435,8 +431,7 @@ impl OverviewPanel {
         }
     }
 
-    /// Where else you can go: one row per workspace, skipping those panned out
-    /// of the band.
+    /// Where else you can go: one row per workspace, skipping those panned out of the band.
     fn paint_go_to_list(&self, ctx: &mut ui::paint::PaintCtx<'_>, band: Rect) {
         // A carried window shows the workspace it would land in as chosen.
         let drop_target = self.drop_target();
@@ -468,8 +463,8 @@ impl OverviewPanel {
         }
     }
 
-    /// One workspace in the "go to" list; `trailing` is kept free at its end for
-    /// a control of its own (a site workspace's Leave).
+    /// One workspace in the "go to" list; `trailing` is kept free at its end for a control of its
+    /// own (a site workspace's Leave).
     fn paint_workspace_row(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -485,16 +480,16 @@ impl OverviewPanel {
         let ground = ui::chrome::shell::panel_ground(theme);
         let hover = self.cursor.is_some_and(|c| rect.contains(c));
         let m = self.metrics;
-        // A workspace row is a control you press: which one is chosen is the
-        // shared selection tier, not an accent.
+        // A workspace row is a control you press: which one is chosen is the shared selection tier,
+        // not an accent.
         ui::chrome::selection_tier(
             theme,
             ui::chrome::SelectionState::new(selected, hover, false),
         )
         .paint(scene, transform, rect, m.row_radius);
         if !selected && !hover {
-            // The whole row is the target: a derived hairline keeps it
-            // legible without giving it a body of its own.
+            // The whole row is the target: a derived hairline keeps it legible without giving it a
+            // body of its own.
             ui::chrome::shell::paint_hairline_outline(
                 scene,
                 transform,
@@ -523,8 +518,8 @@ impl OverviewPanel {
         let name = text.elide_to_width_style(&card.name, f32_of_f64(text_w), &name_style);
         let (_, name_h) = text.measure_style(&name, None, &name_style);
         let sub_style = tokens.typography.style(TextRole::Caption);
-        // Who is in the workspace now outranks who could be; access is what the
-        // line says when it is empty.
+        // Who is in the workspace now outranks who could be; access is what the line says when it
+        // is empty.
         let mut sub = self.desk.sites.get(&card.id).cloned().unwrap_or_else(|| {
             crate::overview::workspace_presence_label(card)
                 .unwrap_or_else(|| crate::overview::workspace_access_label(card))
@@ -566,8 +561,8 @@ impl OverviewPanel {
         }
     }
 
-    /// "New workspace" or "Join a workspace…": a row of the list like any
-    /// workspace, since making or joining one is somewhere else to go.
+    /// "New workspace" or "Join a workspace…": a row of the list like any workspace, since making
+    /// or joining one is somewhere else to go.
     fn paint_list_row(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -611,8 +606,8 @@ impl OverviewPanel {
             return Vec::new();
         }
         let p = progress.clamp(0.0, 1.0);
-        // In flight the windows cross the whole display; at rest they keep
-        // to where the picture can be seen.
+        // In flight the windows cross the whole display; at rest they keep to where the picture can
+        // be seen.
         let clip = if p < 1.0 { self.rect } else { self.grid_clip() };
         scene.push_clip_layer(Fill::NonZero, transform, &clip);
         // Names, titles and controls arrive once the windows mostly have.
@@ -707,8 +702,8 @@ impl OverviewPanel {
         pictures
     }
 
-    /// Where the window being carried is drawn: centred under the pointer
-    /// or finger, its picture's size.
+    /// Where the window being carried is drawn: centred under the pointer or finger, its picture's
+    /// size.
     fn carried_picture(&self, picture: &Picture) -> Option<WindowPicture> {
         let press = self
             .press
@@ -731,8 +726,8 @@ impl OverviewPanel {
         })
     }
 
-    /// Where `picture` is drawn at `progress`: flying from where its window
-    /// stands when the host says, else resting where it ends.
+    /// Where `picture` is drawn at `progress` : flying from where its window stands when the host
+    /// says, else resting where it ends.
     pub(super) fn flown(&self, picture: &WindowPicture, progress: f64) -> (Rect, f32) {
         let source = (picture.flies && !self.reduce_motion)
             .then(|| {
@@ -753,8 +748,8 @@ impl OverviewPanel {
         }
     }
 
-    /// One pictured window's selection at rest, its picture when the host
-    /// draws none, and its title flying with it.
+    /// One pictured window's selection at rest, its picture when the host draws none, and its title
+    /// flying with it.
     fn paint_tile(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -836,8 +831,7 @@ impl OverviewPanel {
         }
     }
 
-    /// Strip `si`'s name line: its name (or the field while it is typed)
-    /// and its controls.
+    /// Strip `si` 's name line: its name (or the field while it is typed) and its controls.
     fn paint_strip_label(
         &mut self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -941,8 +935,8 @@ impl OverviewPanel {
     }
 }
 
-/// The colour person `id` wears: their cursor's, from `colors_for`, else
-/// the one their id gives them.
+/// The colour person `id` wears: their cursor's, from `colors_for` , else the one their id gives
+/// them.
 pub(super) fn face_colour(colors_for: &HashMap<String, (u8, u8, u8)>, id: &str) -> Color {
     let (r, g, b) = colors_for
         .get(id)
@@ -951,10 +945,9 @@ pub(super) fn face_colour(colors_for: &HashMap<String, (u8, u8, u8)>, id: &str) 
     Color::from_rgb8(r, g, b)
 }
 
-/// An overlapping stack of member faces, right-aligned at `anchor.x` and
-/// centred on `anchor.y`, on `ground` (the separator ring is a hole punched
-/// in the face below). An absent member stays at reduced strength rather
-/// than disappearing. Returns the stack's left edge.
+/// An overlapping stack of member faces, right-aligned at `anchor.x` and centred on `anchor.y` , on
+/// `ground` (the separator ring is a hole punched in the face below). An absent member stays at
+/// reduced strength rather than disappearing. Returns the stack's left edge.
 fn paint_face_stack(
     ctx: &mut ui::paint::PaintCtx<'_>,
     anchor: Point,
@@ -977,8 +970,8 @@ fn paint_face_stack(
     for (idx, person) in people.iter().take(shown).enumerate() {
         let cx = right - f64_of_usize(slots.saturating_sub(1).saturating_sub(idx)) * step;
         let fill = face_colour(colors_for, &person.id);
-        // Mixed toward the ground rather than made translucent: the
-        // monogram picks its ink from the fill it is drawn on.
+        // Mixed toward the ground rather than made translucent: the monogram picks its ink from the
+        // fill it is drawn on.
         let fill = if person.present {
             fill
         } else {
@@ -1007,9 +1000,9 @@ fn paint_face_stack(
     right - f64_of_usize(slots.saturating_sub(1)) * step - r
 }
 
-/// Marks of the apps open in a workspace, ending at `right` and centred on
-/// `center_y`, so a workspace is recognisable by what is in it. Returns the left
-/// edge of what was drawn (`right` when the workspace is empty).
+/// Marks of the apps open in a workspace, ending at `right` and centred on `center_y` , so a
+/// workspace is recognisable by what is in it. Returns the left edge of what was drawn (`right`
+/// when the workspace is empty).
 fn paint_app_marks(
     scene: &mut Scene,
     transform: Affine,

@@ -108,7 +108,6 @@ fn containers_forward_update_to_children() {
         assert_forwards(label, wrap(child), &updates);
     }
 
-    // Case `update_reaches_through_nested_containers`.
     // Forwarding has to reach through nesting — the shell's top bar is two
     // containers deep — and a quiet child must not be reported as a change.
     let (child, updates) = probe();
@@ -119,7 +118,6 @@ fn containers_forward_update_to_children() {
     assert!(root.update(&doc, &ROOT));
     assert_eq!(updates.get(), 1);
 
-    // Case `a_widget_that_only_exposes_children_forwards_by_default`.
     // A widget need not implement `update` to pass it on: exposing its
     // children is enough.
     let (child, updates) = probe();

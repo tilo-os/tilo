@@ -30,10 +30,6 @@ impl PowerProfilesMonitor {
     }
 
     /// Switch to `profile` (`power-saver`, `balanced` or `performance`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the daemon refuses the profile or cannot be reached.
     pub async fn set_active_profile(&self, profile: &str) -> zbus::Result<()> {
         Ok(self.proxy.set_property("ActiveProfile", profile).await?)
     }

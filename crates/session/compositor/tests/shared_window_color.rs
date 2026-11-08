@@ -1,7 +1,6 @@
-//! A shared window's stream is told what the window's content is in: the
-//! image description its client commits reaches the share session that
-//! carries the window's frames, and unsetting it gives the configured colour
-//! back.
+//! A shared window's stream is told what the window's content is in: the image description its
+//! client commits reaches the share session that carries the window's frames, and unsetting it
+//! gives the configured colour back.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -49,8 +48,8 @@ impl ShareStream for Tells {
     }
 }
 
-/// What `session` would announce to its viewers now, as `(colour, mastering
-/// volume)`: the same report a stream start carries.
+/// What `session` would announce to its viewers now, as `(colour, mastering volume)` : the same
+/// report a stream start carries.
 fn announced(session: &SharedFlatpakSession) -> (Option<Colorimetry>, Option<Hdr10Metadata>) {
     match session.stream_start_msg() {
         NeighbourMsg::SurfaceStreamStart {
@@ -72,8 +71,8 @@ fn hdr10_pq() -> Colorimetry {
     }
 }
 
-/// A share of `window` that encodes nothing: the colour is decided before any
-/// byte reaches an encoder, so no encoder is needed to see what it announces.
+/// A share of `window` that encodes nothing: the colour is decided before any byte reaches an
+/// encoder, so no encoder is needed to see what it announces.
 fn shared(compositor: &mut Compositor, window: u64) -> Arc<SharedFlatpakSession> {
     let config = FlatpakShareConfig {
         max_bitrate_kbps: 8000,
@@ -89,8 +88,8 @@ fn shared(compositor: &mut Compositor, window: u64) -> Arc<SharedFlatpakSession>
     session
 }
 
-/// The client attaches a parametric BT.2020 PQ description to its window, as
-/// it would once it starts playing HDR video.
+/// The client attaches a parametric BT.2020 PQ description to its window, as it would once it
+/// starts playing HDR video.
 fn attach_hdr10_pq(
     compositor: &mut Compositor,
     client: &mut TestClient,
@@ -117,8 +116,8 @@ fn a_shared_windows_stream_reports_the_colour_its_client_commits_and_loses_it_wh
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "colour", (200, 100), [255, 0, 0, 255]);
     let window = compositor.windows().first().expect("the window").0.id;
-    // Shared while its client has said nothing about its colour: the share
-    // reports the colour it was set up with.
+    // Shared while its client has said nothing about its colour: the share reports the colour it
+    // was set up with.
     let session = shared(&mut compositor, window);
     assert_eq!(announced(&session), (Some(Colorimetry::sdr_bt709()), None));
 
@@ -134,8 +133,8 @@ fn a_shared_windows_stream_reports_the_colour_its_client_commits_and_loses_it_wh
         "PQ content carries the volume it was mastered for"
     );
 
-    // The client unsets it, as a player does when it stops the film: the
-    // configured colour applies again.
+    // The client unsets it, as a player does when it stops the film: the configured colour applies
+    // again.
     color_surface.unset_image_description();
     client.surface.as_ref().expect("surface").commit();
     pump(&mut compositor, &mut [&mut client], |_, _| {
@@ -154,8 +153,8 @@ fn a_share_that_starts_after_its_client_said_its_colour_announces_it_at_once() {
         compositor.window_color(window).is_some()
     });
 
-    // The window was playing HDR before anyone shared it: its share must not
-    // wait for the next commit to say so — a still film may not make one.
+    // The window was playing HDR before anyone shared it: its share must not wait for the next
+    // commit to say so — a still film may not make one.
     let session = shared(&mut compositor, window);
     assert_eq!(announced(&session).0, Some(hdr10_pq()));
 }

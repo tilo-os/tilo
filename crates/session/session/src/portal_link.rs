@@ -56,24 +56,23 @@ enum Ask {
     Start(StreamRequest, Reply<Stream>),
     Stop(u32),
     Inject(RemoteInput),
-    /// The desktop's selection as `mime`.
+    /// The desktop's selection as `mime` .
     Read(String, Reply<Vec<u8>>),
-    /// The portal's app owns the selection, offering `mimes`; their bytes
-    /// follow through [`Ask::Write`].
+    /// The portal's app owns the selection, offering `mimes` ; their bytes follow through
+    /// [`Ask::Write`].
     Offer(Vec<String>),
     Write(String, Vec<u8>),
     Clear,
 }
 
-/// What both sides share: the session's answers to the portal's questions
-/// about itself, which need no round trip.
+/// What both sides share: the session's answers to the portal's questions about itself, which need
+/// no round trip.
 struct Shared {
     /// The session answered at least once: the compositor is running.
     serving: AtomicBool,
     /// The outputs and windows that can be shared now.
     sources: Mutex<Vec<CaptureSource>>,
-    /// Whether the outputs and windows changed since the portal last read
-    /// them.
+    /// Whether the outputs and windows changed since the portal last read them.
     sources_changed: AtomicBool,
     /// The desktop's selection: how often it changed hands and its types.
     selection: Mutex<(u64, Vec<String>)>,
@@ -97,8 +96,7 @@ impl Shared {
     }
 }
 
-/// The portal's side: the handles the backend is given, and what the
-/// desktop services watch.
+/// The portal's side: the handles the backend is given, and what the desktop services watch.
 #[derive(Clone)]
 pub struct PortalSide {
     shared: Arc<Shared>,
@@ -135,17 +133,15 @@ impl PortalSide {
         self.shared.workspaces.lock_recover().get(app_id).cloned()
     }
 
-    /// Whether app `app_id` runs in one of the launcher's own sandboxes, as
-    /// this session started it: only such an app's mount namespace holds the
-    /// documents store its files are chosen into.
+    /// Whether app `app_id` runs in one of the launcher's own sandboxes, as this session started
+    /// it: only such an app's mount namespace holds the documents store its files are chosen into.
     #[must_use]
     pub fn sandboxed(&self, app_id: &str) -> bool {
         self.shared.sandboxed.lock_recover().contains(app_id)
     }
 
-    /// What the desk's workspaces grant standing in for the person's
-    /// answer: a workspace already granting an app what a portal asks of
-    /// it needs no sheet.
+    /// What the desk's workspaces grant standing in for the person's answer: a workspace already
+    /// granting an app what a portal asks of it needs no sheet.
     #[must_use]
     pub fn grants(&self) -> WorkspaceGrants {
         let shared = Arc::clone(&self.shared);
@@ -163,8 +159,8 @@ impl PortalSide {
         )
     }
 
-    /// Wake `watch` with the desktop's selection types whenever it changes
-    /// hands, so the apps holding a portal clipboard hear of it.
+    /// Wake `watch` with the desktop's selection types whenever it changes hands, so the apps
+    /// holding a portal clipboard hear of it.
     pub fn follow_selection(&self, watch: impl Fn(Vec<String>) + Send + 'static) {
         let shared = Arc::clone(&self.shared);
         let mut seen = shared.selection.lock_recover().0;
@@ -182,8 +178,7 @@ impl PortalSide {
     }
 }
 
-/// The session's side: answers what the portal asked for and feeds it what
-/// it publishes.
+/// The session's side: answers what the portal asked for and feeds it what it publishes.
 pub struct SessionLink {
     shared: Arc<Shared>,
     producer: Option<Producer>,
@@ -193,8 +188,7 @@ pub struct SessionLink {
     offered: BTreeMap<String, Vec<u8>>,
     /// Whether the desktop's selection is that offer.
     offering: bool,
-    /// The selection change the session made itself: the portal is not
-    /// told about its own.
+    /// The selection change the session made itself: the portal is not told about its own.
     own_change: Option<u64>,
     /// The inputs the session's screens are fed to.
     captures: Option<InputCaptures>,
@@ -208,8 +202,7 @@ struct Live {
     size: (u32, u32),
 }
 
-/// A portal side and the session side that answers it; `wake` wakes the
-/// session's loop.
+/// A portal side and the session side that answers it; `wake` wakes the session's loop.
 #[must_use]
 pub fn channel(wake: Wake) -> (PortalSide, SessionLink) {
     let shared = Arc::new(Shared {
@@ -242,17 +235,15 @@ pub fn channel(wake: Wake) -> (PortalSide, SessionLink) {
 }
 
 impl SessionLink {
-    /// The input captures the session offers its input to, and where its
-    /// screens are.
+    /// The input captures the session offers its input to, and where its screens are.
     #[must_use]
     pub fn with_captures(mut self, captures: InputCaptures) -> Self {
         self.captures = Some(captures);
         self
     }
 
-    /// What the compositor offers every input before the desktop sees it:
-    /// an input capture takes it while it holds the person's keyboard and
-    /// pointer.
+    /// What the compositor offers every input before the desktop sees it: an input capture takes it
+    /// while it holds the person's keyboard and pointer.
     #[must_use]
     pub fn input_observer(&self) -> Arc<dyn Fn(ObservedInput) -> bool + Send + Sync> {
         let Some(captures) = self.captures.clone() else {
@@ -278,11 +269,10 @@ impl SessionLink {
         })
     }
 
-    /// Answer everything the portal asked for since the last pass, feed it
-    /// what changed, and push the frames of the streams. `documents_served`
-    /// says whether the session serves the files people choose for apps as
-    /// a filesystem, which is what makes a path in it mean anything to the
-    /// app the chooser hands it to.
+    /// Answer everything the portal asked for since the last pass, feed it what changed, and push
+    /// the frames of the streams. `documents_served` says whether the session serves the files
+    /// people choose for apps as a filesystem, which is what makes a path in it mean anything to
+    /// the app the chooser hands it to.
     pub fn serve(
         &mut self,
         compositor: &mut Compositor,
@@ -303,8 +293,7 @@ impl SessionLink {
         self.watch_selection(compositor);
     }
 
-    /// Tell the portal where the outputs and windows are, and which can be
-    /// shared.
+    /// Tell the portal where the outputs and windows are, and which can be shared.
     fn publish_sources(&self, compositor: &Compositor) {
         let mut sources: Vec<CaptureSource> = compositor
             .outputs()
@@ -322,8 +311,7 @@ impl SessionLink {
                 .shareable_windows()
                 .into_iter()
                 .map(|(id, app_id, title)| CaptureSource {
-                    // A window with neither title nor app is named by its
-                    // identifier.
+                    // A window with neither title nor app is named by its identifier.
                     label: if title.is_empty() {
                         app_id.clone().unwrap_or_else(|| id.clone())
                     } else {
@@ -347,10 +335,9 @@ impl SessionLink {
         }
     }
 
-    /// Tell the portal which of the apps it serves run with the session's
-    /// documents store bound into them: the ones a file the person chooses
-    /// can be answered with a path in that store. None of them, while the
-    /// store is not served: the path would name nothing in their sandbox.
+    /// Tell the portal which of the apps it serves run with the session's documents store bound
+    /// into them: the ones a file the person chooses can be answered with a path in that store.
+    /// None of them, while the store is not served: the path would name nothing in their sandbox.
     fn publish_launches(&self, launched: &Launches, documents_served: bool) {
         let apps: BTreeSet<String> = if documents_served {
             launched.sandboxed_apps().into_iter().collect()
@@ -360,9 +347,9 @@ impl SessionLink {
         *self.shared.sandboxed.lock_recover() = apps;
     }
 
-    /// Tell the portal which workspace each app runs in, and what those
-    /// workspaces grant their apps: the desk's own answer stands for the
-    /// person's where it already covers what a portal asks.
+    /// Tell the portal which workspace each app runs in, and what those workspaces grant their
+    /// apps: the desk's own answer stands for the person's where it already covers what a portal
+    /// asks.
     fn publish_desk(&self, desk: &DesktopHandle) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -380,8 +367,8 @@ impl SessionLink {
                             else {
                                 continue;
                             };
-                            // A workspace is named to the portal by its id:
-                            // the same workspace on every device.
+                            // A workspace is named to the portal by its id: the same workspace on
+                            // every device.
                             workspaces.insert(app_id.clone(), workspace.id().to_string());
                         }
                     }
@@ -467,8 +454,8 @@ impl SessionLink {
         }
     }
 
-    /// The desktop's selection as `mime`, read off the loop: a client
-    /// writes its bytes while the session runs.
+    /// The desktop's selection as `mime` , read off the loop: a client writes its bytes while the
+    /// session runs.
     fn read_selection(compositor: &mut Compositor, mime: &str, reply: Reply<Vec<u8>>) {
         let reader = match compositor.receive_selection(Selection::Clipboard, mime) {
             Ok(reader) => reader,
@@ -534,9 +521,8 @@ impl SessionLink {
         }
     }
 
-    /// When the streams next need the picture the desktop shows: after the
-    /// frame a shared screen last went out with, while an app is watching one
-    /// and the screen is not locked.
+    /// When the streams next need the picture the desktop shows: after the frame a shared screen
+    /// last went out with, while an app is watching one and the screen is not locked.
     pub(crate) fn next_deadline(&self, locked: bool) -> Option<Instant> {
         if self.live.is_empty() || locked {
             return None;
@@ -545,9 +531,8 @@ impl SessionLink {
             .and_then(|pushed| pushed.checked_add(frame_interval()))
     }
 
-    /// Feed every stream the frame the desktop shows, at most
-    /// [`FRAMERATE`] a second. A screen being shared is never the lock
-    /// screen: nothing is pushed while the session is locked.
+    /// Feed every stream the frame the desktop shows, at most [`FRAMERATE`] a second. A screen
+    /// being shared is never the lock screen: nothing is pushed while the session is locked.
     fn push_frames(&mut self, compositor: &mut Compositor) {
         let Some(producer) = &self.producer else {
             return;
@@ -568,8 +553,7 @@ impl SessionLink {
         for (node, live) in &self.live {
             match compositor.read_back(&live.target) {
                 Ok(shot) => producer.push(*node, shot.width, shot.height, shot.rgba.into()),
-                // The stream waits for a session that is locked or an
-                // output that is off.
+                // The stream waits for a session that is locked or an output that is off.
                 Err(tilo_compositor::Error::Backend(_)) if !compositor.locked() => gone.push(*node),
                 Err(error) => {
                     tracing::warn!(%error, node, "a shared window's frame could not be read");
@@ -582,8 +566,8 @@ impl SessionLink {
         }
     }
 
-    /// Tell the desktop services what the desktop's selection is now, so
-    /// the apps holding a portal clipboard hear of it.
+    /// Tell the desktop services what the desktop's selection is now, so the apps holding a portal
+    /// clipboard hear of it.
     fn watch_selection(&mut self, compositor: &Compositor) {
         let changes = compositor.selection_changes(Selection::Clipboard);
         let mimes = compositor.selection_formats(Selection::Clipboard);
@@ -602,7 +586,7 @@ impl SessionLink {
         self.shared.selection_changed.notify_one();
     }
 
-    /// What the seat does for `input`.
+    /// What the seat does for `input` .
     fn event(&self, compositor: &mut Compositor, input: RemoteInput) -> Option<InputEvent> {
         Some(match input {
             RemoteInput::PointerMotion { dx, dy } => InputEvent::PointerMotionRelative { dx, dy },
@@ -636,8 +620,8 @@ impl SessionLink {
         })
     }
 
-    /// Where a point of stream `stream` is in the layout: the stream shows
-    /// an output at its place, or a window where it is.
+    /// Where a point of stream `stream` is in the layout: the stream shows an output at its place,
+    /// or a window where it is.
     fn absolute(&self, compositor: &Compositor, stream: u32, x: f64, y: f64) -> (f64, f64) {
         let Some(live) = self.live.get(&stream) else {
             return (x, y);
@@ -651,8 +635,8 @@ impl SessionLink {
                 .find(|output| &output.name == name)
                 .and_then(|output| output.rect),
             Target::Window(identifier) => compositor.shareable_window_rect(identifier),
-            // A pointer's own image sits where the pointer is, not on the
-            // layout: only an output or a window a stream shows is placed.
+            // A pointer's own image sits where the pointer is, not on the layout: only an output or
+            // a window a stream shows is placed.
             Target::Cursor(_) => None,
         };
         let Some((left, top, w, h)) = place else {
@@ -757,8 +741,8 @@ impl Clipboard for ClipboardLink {
     }
 }
 
-/// The desk's name for what a portal asks of an app: reading the screen
-/// and driving the seat are one grant each, however they are asked.
+/// The desk's name for what a portal asks of an app: reading the screen and driving the seat are
+/// one grant each, however they are asked.
 fn desk_scope(capability: &str) -> Option<&'static str> {
     match capability {
         "camera" => Some("camera"),

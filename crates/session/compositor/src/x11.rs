@@ -1,23 +1,17 @@
 //! X11 displays, one per workspace.
-//!
-//! X11 isolates no clients of a display from each other: any client of `:3`
-//! reads every other client's input, windows and clipboard. One X server
-//! therefore never spans two workspaces. A workspace gets its own display
-//! number the first time the session starts an app in it, and only that
-//! workspace's apps are told the number ([`X11Displays::display_for`]).
-//!
-//! A display with no client runs no server. The compositor binds the
-//! display's sockets and leaves them listening: a client that connects waits
-//! in the queue until a server accepts it, and only then does Xwayland start
-//! ([`XWayland::spawn_on`]). A workspace that never runs an X11 app never
+//! X11 isolates no clients of a display from each other: any client of `:3` reads every other
+//! client's input, windows and clipboard. One X server therefore never spans two workspaces. A
+//! workspace gets its own display number the first time the session starts an app in it, and only
+//! that workspace's apps are told the number ([`X11Displays::display_for`]).
+//! A display with no client runs no server. The compositor binds the display's sockets and leaves
+//! them listening: a client that connects waits in the queue until a server accepts it, and only
+//! then does Xwayland start ([`XWayland::spawn_on`]). A workspace that never runs an X11 app never
 //! runs an X server, and an app's display costs nothing until it connects.
-//!
-//! A server stops a couple of seconds after its last window goes, or after
-//! its last app client does when its clients never showed a window; the
-//! display stays, and the next client starts a fresh server on the same
-//! number. Displays outlive the
-//! workspaces they served, so the display of a workspace that has not run an
-//! app for the longest gives up its number when the session runs out of them.
+//! A server stops a couple of seconds after its last window goes, or after its last app client does
+//! when its clients never showed a window; the display stays, and the next client starts a fresh
+//! server on the same number. Displays outlive the workspaces they served, so the display of a
+//! workspace that has not run an app for the longest gives up its number when the session runs out
+//! of them.
 
 use std::cell::RefCell;
 use std::os::unix::net::UnixStream;
@@ -33,39 +27,33 @@ use smithay::xwayland::{X11Surface, XWayland, XWaylandEvent, XWaylandListener};
 use crate::LoopData;
 use crate::state::State;
 
-/// How long a server with no window keeps running after its last client
-/// goes: also how often a display without a window is looked at. Wine and
-/// similar runtimes leave the X socket behind once their window is gone; two
-/// seconds is long enough for a legitimate re-map and short enough that the
-/// process does not sit around.
+/// How long a server with no window keeps running after its last client goes: also how often a
+/// display without a window is looked at. Wine and similar runtimes leave the X socket behind once
+/// their window is gone; two seconds is long enough for a legitimate re-map and short enough that
+/// the process does not sit around.
 const WINDOWLESS: Duration = Duration::from_secs(2);
-/// How long a server may take to become ready, and how long a display must go
-/// without an app before it gives up its number. Long enough that an app
-/// restarting itself (an installer, a launcher that execs) finds its server
-/// still up.
+/// How long a server may take to become ready, and how long a display must go without an app before
+/// it gives up its number. Long enough that an app restarting itself (an installer, a launcher that
+/// execs) finds its server still up.
 const NO_CLIENTS: Duration = Duration::from_secs(60);
-/// How long a stopped server may take to report its exit before its display
-/// is served again anyway: a server that does not report back must not take
-/// its workspace's X11 with it.
+/// How long a stopped server may take to report its exit before its display is served again anyway:
+/// a server that does not report back must not take its workspace's X11 with it.
 const STOPPING: Duration = Duration::from_secs(5);
-/// The clients every display has that are not apps: Xwayland's own
-/// connection for the window manager's socket, the window manager's, the one
-/// [`crate::x11_windows::X11Windows`] reads window properties on, and
-/// [`crate::xdnd_bridge::XdndBridge`]'s. Any besides them are apps.
+/// The clients every display has that are not apps: Xwayland's own connection for the window
+/// manager's socket, the window manager's, the one [`crate::x11_windows::X11Windows`] reads window
+/// properties on, and [`crate::xdnd_bridge::XdndBridge`]'s. Any besides them are apps.
 const OWN_CLIENTS: usize = 4;
 
 /// The displays of this session, by workspace.
-///
-/// The app launcher holds one ([`crate::Compositor::x11_displays`]) and is
-/// the only thing that asks for a display; the compositor starts and stops
-/// the servers on the displays that exist.
+/// The app launcher holds one ([`crate::Compositor::x11_displays`]) and is the only thing that asks
+/// for a display; the compositor starts and stops the servers on the displays that exist.
 #[derive(Clone)]
 pub struct X11Displays {
     inner: Rc<RefCell<Displays>>,
 }
 
-/// What the handles share: the loop that runs the servers, the Wayland
-/// display they connect to, and the workspaces' displays.
+/// What the handles share: the loop that runs the servers, the Wayland display they connect to, and
+/// the workspaces' displays.
 struct Displays {
     handle: LoopHandle<'static, LoopData>,
     display: DisplayHandle,
@@ -80,31 +68,31 @@ struct Workspace {
     /// The workspace's id, as its launches name it.
     id: String,
     listener: XWaylandListener,
-    /// When this workspace last asked for its display: what decides which
-    /// display gives up its number when none is free.
+    /// When this workspace last asked for its display: what decides which display gives up its
+    /// number when none is free.
     used: Instant,
     /// What watches the display's sockets for a client waiting to connect;
     /// empty while a server starts, runs or stops.
     watching: Vec<RegistrationToken>,
-    /// The Xwayland source between the first client and the server being
-    /// ready, and when it was started.
+    /// The Xwayland source between the first client and the server being ready, and when it was
+    /// started.
     starting: Option<(RegistrationToken, Instant)>,
     running: Option<Running>,
-    /// A stopped server that has not reported its exit yet, and when it was
-    /// stopped: the display's sockets wait for it before serving an app.
+    /// A stopped server that has not reported its exit yet, and when it was stopped: the display's
+    /// sockets wait for it before serving an app.
     stopping: Option<(XwmId, Instant)>,
 }
 
 /// The Xwayland server serving one display.
 struct Running {
-    /// Its loop source. Removing it drops the server, and with it the
-    /// server's Wayland client and process.
+    /// Its loop source. Removing it drops the server, and with it the server's Wayland client and
+    /// process.
     source: RegistrationToken,
     xwm: XwmId,
     /// When the server is looked at again, while no window of it shows.
     check: Option<Instant>,
-    /// One of its clients showed a window, so no window now says its apps
-    /// are gone rather than that they never showed one.
+    /// One of its clients showed a window, so no window now says its apps are gone rather than that
+    /// they never showed one.
     showed_window: bool,
 }
 
@@ -133,9 +121,8 @@ impl X11Displays {
         }
     }
 
-    /// The display of `workspace`, bound on first use: `:N` is what the apps
-    /// started there are told. `None` when this session serves no X11, or
-    /// when no display number is free.
+    /// The display of `workspace` , bound on first use: `:N` is what the apps started there are
+    /// told. `None` when this session serves no X11, or when no display number is free.
     #[must_use]
     pub fn display_for(&self, workspace: &str) -> Option<u32> {
         self.inner.borrow_mut().display_for(workspace)
@@ -158,8 +145,7 @@ impl X11Displays {
             .collect()
     }
 
-    /// When the loop looks at the servers next, for
-    /// [`crate::Compositor::next_wait`].
+    /// When the loop looks at the servers next, for [`crate::Compositor::next_wait`].
     pub(crate) fn next_check(&self) -> Option<Instant> {
         self.inner
             .borrow()
@@ -182,8 +168,8 @@ impl X11Displays {
             .min()
     }
 
-    /// Do what the displays owe at `now`: stop the servers that have been
-    /// idle for their time, and give up on servers that never started.
+    /// Do what the displays owe at `now` : stop the servers that have been idle for their time, and
+    /// give up on servers that never started.
     pub(crate) fn tick(&self, data: &mut LoopData, now: Instant) {
         let mut displays = self.inner.borrow_mut();
         let handle = displays.handle.clone();
@@ -214,9 +200,9 @@ impl X11Displays {
                 running.check = None;
                 continue;
             }
-            // A client that showed no window may be a helper of an app that
-            // still runs: only its last client going stops the server. Apps
-            // that showed windows are gone when the windows are.
+            // A client that showed no window may be a helper of an app that still runs: only its
+            // last client going stops the server. Apps that showed windows are gone when the
+            // windows are.
             let clients = clients_of(&data.state, running.xwm);
             if running.showed_window || clients.is_none_or(|clients| clients == 0) {
                 due.push((index, Due::Stop));
@@ -244,8 +230,7 @@ impl X11Displays {
         }
     }
 
-    /// A window of `xwm` went away: if it was the last one, the server is
-    /// looked at again shortly.
+    /// A window of `xwm` went away: if it was the last one, the server is looked at again shortly.
     pub(crate) fn window_gone(&self, state: &State, xwm: XwmId) {
         if windows_of(state, xwm) > 0 {
             return;
@@ -255,8 +240,8 @@ impl X11Displays {
         }
     }
 
-    /// The server of `xwm` is gone, whatever ended it: what it showed leaves
-    /// the scene, and the display waits for the next client.
+    /// The server of `xwm` is gone, whatever ended it: what it showed leaves the scene, and the
+    /// display waits for the next client.
     pub(crate) fn server_gone(&self, data: &mut LoopData, xwm: XwmId) {
         let mut displays = self.inner.borrow_mut();
         let handle = displays.handle.clone();
@@ -285,7 +270,7 @@ impl X11Displays {
         displays.workspaces.insert(index, workspace);
     }
 
-    /// A client waits on `workspace`'s display: start the server it waits for.
+    /// A client waits on `workspace` 's display: start the server it waits for.
     fn client_waiting(&self, workspace: &str) {
         let mut displays = self.inner.borrow_mut();
         let handle = displays.handle.clone();
@@ -350,8 +335,8 @@ impl X11Displays {
         }
     }
 
-    /// Xwayland `display`'s server is ready: it gets a window manager, which
-    /// is what makes its windows toplevels the desktop places.
+    /// Xwayland `display` 's server is ready: it gets a window manager, which is what makes its
+    /// windows toplevels the desktop places.
     fn ready(
         &self,
         data: &mut LoopData,
@@ -404,8 +389,8 @@ impl X11Displays {
             return;
         };
         let mut entry = displays.workspaces.remove(index);
-        // Its app never got a server: the display goes, and the workspace's
-        // next X11 launch binds a fresh one.
+        // Its app never got a server: the display goes, and the workspace's next X11 launch binds a
+        // fresh one.
         entry.shut(&handle);
     }
 }
@@ -441,10 +426,9 @@ impl Displays {
         Some(number)
     }
 
-    /// Bind a display's sockets on a free number, making one free by giving up
-    /// the display of the workspace that has been idle longest when none is.
-    /// Only a display with no server on it gives up its number: a workspace
-    /// whose apps run keeps its X11.
+    /// Bind a display's sockets on a free number, making one free by giving up the display of the
+    /// workspace that has been idle longest when none is. Only a display with no server on it gives
+    /// up its number: a workspace whose apps run keeps its X11.
     fn prepare(&mut self, now: Instant) -> Option<XWaylandListener> {
         loop {
             match XWaylandListener::prepare(None, true) {
@@ -483,9 +467,8 @@ impl Displays {
 }
 
 impl Workspace {
-    /// Whether this display does nothing now, and has been asked for its
-    /// number long enough ago that no launch into its workspace can still be
-    /// waiting to connect to it.
+    /// Whether this display does nothing now, and has been asked for its number long enough ago
+    /// that no launch into its workspace can still be waiting to connect to it.
     fn idle(&self, now: Instant) -> bool {
         self.starting.is_none()
             && self.running.is_none()
@@ -520,9 +503,8 @@ impl Workspace {
         }
     }
 
-    /// Stop the running server: its windows leave the scene, its process
-    /// exits, and the display waits for the server to report gone before it
-    /// serves the next client.
+    /// Stop the running server: its windows leave the scene, its process exits, and the display
+    /// waits for the server to report gone before it serves the next client.
     fn stop_server(&mut self, data: &mut LoopData, handle: &LoopHandle<'static, LoopData>) {
         let Some(running) = self.running.take() else {
             return;
@@ -541,8 +523,8 @@ impl Workspace {
         self.watch(handle);
     }
 
-    /// The server never became usable: its app gets no display, and the
-    /// workspace's next X11 launch binds a fresh one.
+    /// The server never became usable: its app gets no display, and the workspace's next X11 launch
+    /// binds a fresh one.
     fn give_up(&mut self, data: &mut LoopData, handle: &LoopHandle<'static, LoopData>) {
         if let Some((token, _)) = self.starting.take() {
             // Dropping the source drops the server with it.
@@ -571,12 +553,12 @@ impl Workspace {
     }
 }
 
-/// Whether `since` plus `wait` has come by `now`.
+/// Whether `since` plus `wait` has come by `now` .
 fn due_at(since: Instant, wait: Duration, now: Instant) -> bool {
     since.checked_add(wait).is_some_and(|at| at <= now)
 }
 
-/// How many windows `xwm`'s server shows now.
+/// How many windows `xwm` 's server shows now.
 fn windows_of(state: &State, xwm: XwmId) -> usize {
     state
         .space
@@ -585,8 +567,8 @@ fn windows_of(state: &State, xwm: XwmId) -> usize {
         .count()
 }
 
-/// How many apps are connected to `xwm`'s display besides the session's own
-/// connections; `None` when the display cannot say.
+/// How many apps are connected to `xwm` 's display besides the session's own connections; `None`
+/// when the display cannot say.
 fn clients_of(state: &State, xwm: XwmId) -> Option<usize> {
     let windows = state.x11_server(xwm)?.windows.as_ref()?;
     windows

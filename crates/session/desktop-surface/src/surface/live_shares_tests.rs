@@ -1,5 +1,5 @@
-//! Windows shared live: the desktop lists the windows on a record, offers
-//! to share them from their menus, and draws the views a window embeds.
+//! Windows shared live: the desktop lists the windows on a record, offers to share them from their
+//! menus, and draws the views a window embeds.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -24,9 +24,9 @@ fn plan() -> ResourceView {
     }
 }
 
-/// A test app: the conversation embeds the plan's view in the middle of its
-/// window; the editor declares a bar, so its menu can hold the desktop's
-/// items, unless it is `bare` (a sketch pad that declares none).
+/// A test app: the conversation embeds the plan's view in the middle of its window; the editor
+/// declares a bar, so its menu can hold the desktop's items, unless it is `bare` (a sketch pad that
+/// declares none).
 struct Window {
     embeds: bool,
     bare: bool,
@@ -201,8 +201,7 @@ fn desk(seen: &Seen) -> (ui::headless::FrameHarness, u64) {
     desk_with(seen, "Plan")
 }
 
-/// The conversation and a notes window titled `notes`, and the notes
-/// window's tab.
+/// The conversation and a notes window titled `notes` , and the notes window's tab.
 fn desk_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u64) {
     let mut minter = IdMinter::new(8);
     let mut tabs = Vec::new();
@@ -246,9 +245,8 @@ fn desk_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u64
     (frame, notes)
 }
 
-/// The conversation's window asks for the plan's view: the desktop runs the
-/// plan's app once, lays it out at a window's size and draws it scaled into
-/// the place asked for, and says it shows.
+/// The conversation's window asks for the plan's view: the desktop runs the plan's app once, lays
+/// it out at a window's size and draws it scaled into the place asked for, and says it shows.
 #[test]
 fn a_view_a_window_embeds_is_its_own_app_drawn_scaled_into_its_place() {
     let seen = Seen::default();
@@ -272,9 +270,8 @@ fn a_view_a_window_embeds_is_its_own_app_drawn_scaled_into_its_place() {
     assert_eq!(seen.embedded.get(), 1);
 }
 
-/// A window on a record is listed for the sharing app, and its menu offers
-/// to share it; choosing that asks the sharing app, and once it is shared
-/// the menu offers to stop.
+/// A window on a record is listed for the sharing app, and its menu offers to share it; choosing
+/// that asks the sharing app, and once it is shared the menu offers to stop.
 #[test]
 fn a_window_on_a_record_is_offered_for_sharing_from_its_menu() {
     let seen = Seen::default();
@@ -339,9 +336,9 @@ fn a_window_on_a_record_is_offered_for_sharing_from_its_menu() {
     ui::window_share::set_drawn(false);
 }
 
-/// A window on a record whose app declared no bar is offered for sharing
-/// too: its only slots are the desktop's menu, a button at the end of its
-/// title row, and choosing the item asks the sharing app as from a bar.
+/// A window on a record whose app declared no bar is offered for sharing too: its only slots are
+/// the desktop's menu, a button at the end of its title row, and choosing the item asks the sharing
+/// app as from a bar.
 #[test]
 fn a_window_without_a_bar_is_offered_for_sharing_from_its_title_row() {
     let seen = Seen::default();

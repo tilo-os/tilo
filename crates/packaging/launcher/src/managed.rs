@@ -28,9 +28,6 @@ pub struct PackageTrust {
 
 impl PackageTrust {
     /// Load explicit host-owned paths; absent files mean no additional trust.
-    ///
-    /// # Errors
-    /// Refuses malformed or unreadable files, including a broken revocation file.
     pub fn from_config_paths(attestors: &Path, revoked: &Path) -> Result<Self, String> {
         Ok(Self {
             publishers: Vec::new(),
@@ -430,9 +427,6 @@ impl ManagedRuntime {
     /// Unlike an ordinary developer launch, a managed agent cannot accept an
     /// arbitrary signed publisher or run without its declared runtime.
     /// `sandbox_shim` and `bwrap` are selected by the owning host, not the app.
-    ///
-    /// # Errors
-    /// Refuses missing trust, policy bypasses, or an untrusted/missing runtime.
     #[cfg(target_os = "linux")]
     pub fn from_launch_options(
         manifest: &ManifestView,
@@ -637,10 +631,6 @@ fn verify_bundle(
 /// Implemented only by the installed durable host owner, never by a wire peer.
 pub trait ManagedLaunchAuthority: Send + Sync {
     /// Consume the exact durable host launch permit once. An error never authorizes retry.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the host refuses or cannot record the claim.
     fn claim_launch(&self, binding: &ManagedBinding) -> Result<(), String>;
     /// Check retained binding and current policy without consuming/recreating a claim.
     fn revalidate_launch(&self, binding: &ManagedBinding) -> Result<(), String>;
@@ -1049,10 +1039,6 @@ impl ManagedLauncher {
         failed.map_or(Ok(()), Err)
     }
     /// Managed execution is Linux-only.
-    ///
-    /// # Errors
-    ///
-    /// Always refuses on this platform.
     #[cfg(not(target_os = "linux"))]
     #[expect(
         clippy::needless_pass_by_value,
@@ -1458,10 +1444,6 @@ impl VerifiedManagedProcess {
         })
     }
     /// Managed process custody is Linux-only.
-    ///
-    /// # Errors
-    ///
-    /// Always refuses on this platform.
     #[cfg(not(target_os = "linux"))]
     pub fn facts(&self) -> Result<ChannelProcessFacts, String> {
         Err("managed process custody requires Linux".into())
@@ -1515,10 +1497,6 @@ pub mod channel {
     pub use super::{AdmittedManagedConnection, ChannelProcessFacts, VerifiedManagedProcess};
     pub trait ManagedProcessAuthority {
         /// Durably bind the exact admitted agent process.
-        ///
-        /// # Errors
-        ///
-        /// Returns a description when the binding cannot be made durable.
         fn bind_process(&self, process: &VerifiedManagedProcess) -> Result<(), String>;
     }
 }

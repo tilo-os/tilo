@@ -1,7 +1,6 @@
-//! The desk comes back after a login: its strips, its groups and their
-//! widths, the window that was in front — and the windows the person left
-//! open, each asked for again into the tab it was in. A window whose app is
-//! gone says so in its tab and closes; a desk this build cannot read starts
+//! The desk comes back after a login: its strips, its groups and their widths, the window that was
+//! in front — and the windows the person left open, each asked for again into the tab it was in. A
+//! window whose app is gone says so in its tab and closes; a desk this build cannot read starts
 //! empty and says where the person's own desk still is.
 
 #![cfg(target_os = "linux")]
@@ -23,7 +22,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_action_policy::Role;
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceSlot,
@@ -33,9 +31,6 @@ use tilo_desktop_surface::notifications::NotificationSeverity;
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// The app a test installs: a Tilo package whose window is a tab of the desk.
 const PROBE: &str = "so.tilo.probe";
@@ -107,8 +102,8 @@ fn on_desk(strips: Vec<Strip>) -> DesktopTree {
     tree
 }
 
-/// A desk with two strips of two groups in one workspace, and a second
-/// workspace behind it: each strip and group carrying what the person chose.
+/// A desk with two strips of two groups in one workspace, and a second workspace behind it: each
+/// strip and group carrying what the person chose.
 fn wide_desk() -> DesktopTree {
     let mut writing = Strip::new(StripId(1), "Writing");
     writing.window_groups = vec![
@@ -142,7 +137,7 @@ fn wide_desk() -> DesktopTree {
     tree
 }
 
-/// A desk holding one saved window of `app`, alone in its group.
+/// A desk holding one saved window of `app` , alone in its group.
 fn one_window(app: &str, label: &str) -> DesktopTree {
     let mut strip = Strip::new(StripId(1), "Windows");
     strip.window_groups = vec![group(
@@ -154,23 +149,18 @@ fn one_window(app: &str, label: &str) -> DesktopTree {
     on_desk(vec![strip])
 }
 
-/// A session on the desk this device saved, starting `apps` when its windows
-/// are asked for. `None`: a session that starts nothing at all.
+/// A session on the desk this device saved, starting `apps` when its windows are asked for. `None`
+/// : a session that starts nothing at all.
 fn session_keeping(state: &Path, apps: Option<Rc<Apps>>) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            apps: apps
-                .as_ref()
-                .map(|apps| Rc::clone(apps) as Rc<dyn AppActions>),
-            launch: apps,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        apps: apps
+            .as_ref()
+            .map(|apps| Rc::clone(apps) as Rc<dyn AppActions>),
+        launch: apps,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// The apps this session starts, on its own display.
@@ -185,8 +175,8 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bo
     common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
-/// Every tab of the desk, with the group it sits in: what a second window or
-/// a second tab of a restored one would change.
+/// Every tab of the desk, with the group it sits in: what a second window or a second tab of a
+/// restored one would change.
 fn tabs(session: &Session) -> Vec<(TabId, GroupId)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -243,16 +233,15 @@ fn window(id: u64, app: &str) -> Window {
     }
 }
 
-/// Install [`PROBE`] in `home`'s own app store, and write the launcher the
-/// session starts it through: it records the pid of every start and runs, as
-/// the app would, until the test is over.
+/// Install [`PROBE`] in `home` 's own app store, and write the launcher the session starts it
+/// through: it records the pid of every start and runs, as the app would, until the test is over.
 fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_test_env::StandIn {
     installed_probe_package(home);
     launcher(home, started)
 }
 
-/// The launcher the session starts packages through: it records the pid of
-/// every start and runs, as the app would, until the test is over.
+/// The launcher the session starts packages through: it records the pid of every start and runs, as
+/// the app would, until the test is over.
 fn launcher(home: &tilo_test_env::TestHome, started: &Path) -> tilo_test_env::StandIn {
     tilo_test_env::stand_in(
         home.home().join("tilo-launcher"),
@@ -283,8 +272,7 @@ fn recording_launcher(
     .unwrap()
 }
 
-/// What the last start the launcher recorded was handed for `flag`: the
-/// argument that follows it.
+/// What the last start the launcher recorded was handed for `flag` : the argument that follows it.
 fn handed(arguments: &Path, flag: &str) -> String {
     let recorded = fs::read_to_string(arguments).expect("the launcher recorded its start");
     let arguments: Vec<&str> = recorded
@@ -303,8 +291,8 @@ fn handed(arguments: &Path, flag: &str) -> String {
         .to_string()
 }
 
-/// Install [`PROBE`] in `home`'s own app store: a package whose entrypoint is
-/// the launcher's to start.
+/// Install [`PROBE`] in `home` 's own app store: a package whose entrypoint is the launcher's to
+/// start.
 fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
     let store = home.data().join("tilo-apps");
     let payload = store.join("payload").join(PROBE);
@@ -404,9 +392,8 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     );
 }
 
-/// What a restart brings back is the desk the session itself kept, with no
-/// tree file beside it: a strip renamed in one session is that strip in the
-/// next, at the width it was left.
+/// What a restart brings back is the desk the session itself kept, with no tree file beside it: a
+/// strip renamed in one session is that strip in the next, at the width it was left.
 #[test]
 fn a_restart_brings_back_the_desk_the_session_kept() {
     let _settled = ui::motion::testing::settled();
@@ -487,8 +474,8 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     );
 }
 
-/// The app a saved window's tab opens again into is told which tab it is:
-/// the instance its window is, which what it reports of the window names.
+/// The app a saved window's tab opens again into is told which tab it is: the instance its window
+/// is, which what it reports of the window names.
 #[test]
 fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
     let _settled = ui::motion::testing::settled();
@@ -526,8 +513,7 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
     );
 }
 
-/// How many times the launcher wrote a start down: one line per app the
-/// session started.
+/// How many times the launcher wrote a start down: one line per app the session started.
 fn starts(started: &Path) -> usize {
     fs::read_to_string(started).map_or(0, |written| {
         written
@@ -537,9 +523,8 @@ fn starts(started: &Path) -> usize {
     })
 }
 
-/// A window the person opened in one session opens again in the next: the
-/// desk keeps a running window as the app that opened it, and the next session
-/// opens that app, in the tab it was in.
+/// A window the person opened in one session opens again in the next: the desk keeps a running
+/// window as the app that opened it, and the next session opens that app, in the tab it was in.
 #[test]
 fn a_window_the_person_opened_opens_again_after_a_restart() {
     let _settled = ui::motion::testing::settled();
@@ -548,8 +533,8 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
     let launcher = installed_probe(&mut home, &started);
     let state = state_of(&home);
 
-    // The person opens the app from the desk, the compositor maps its window
-    // into the tab it made, and the session stops with that window open.
+    // The person opens the app from the desk, the compositor maps its window into the tab it made,
+    // and the session stops with that window open.
     let before = {
         let apps = apps_at(&home, Some(launcher.path().to_owned()));
         let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
@@ -582,8 +567,8 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
         tabs(&session)
     };
 
-    // The next session starts on what this one kept, and asks the app for its
-    // window again, into the tab it was in.
+    // The next session starts on what this one kept, and asks the app for its window again, into
+    // the tab it was in.
     let mut next = session_keeping(
         &state,
         Some(apps_at(&home, Some(launcher.path().to_owned()))),
@@ -621,10 +606,9 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
     let state = state_of(&home);
     save_desk(&state, &one_window(PROBE, "Probe"));
 
-    // The session starts on the desk, and the person — or an action reaching
-    // the app from somewhere else — opens it before the restore has asked for
-    // its saved window: that launch starts the app, into the tab the window
-    // was left in.
+    // The session starts on the desk, and the person — or an action reaching the app from somewhere
+    // else — opens it before the restore has asked for its saved window: that launch starts the
+    // app, into the tab the window was left in.
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
     let workspace = session
@@ -641,8 +625,7 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
         starts(&started) == 1
     });
 
-    // Nothing asks for it again, and the window it opens fills the tab the
-    // person left it in.
+    // Nothing asks for it again, and the window it opens fills the tab the person left it in.
     for _ in 0..100 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -669,9 +652,9 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
     let state = state_of(&home);
     save_desk(&state, &one_window(PROBE, "Probe"));
 
-    // The restore asks for the saved window first, and the same app is asked
-    // for again while its window is coming: a record names the process that
-    // already has the app's records, so no second one starts.
+    // The restore asks for the saved window first, and the same app is asked for again while its
+    // window is coming: a record names the process that already has the app's records, so no second
+    // one starts.
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
     until(&mut session, "the restore asks for the window", |_| {
@@ -826,8 +809,8 @@ fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceSlot> {
     })
 }
 
-/// The app's window on the desk of the workspace in front, mapped as the
-/// compositor would have it: what the person is looking at.
+/// The app's window on the desk of the workspace in front, mapped as the compositor would have it:
+/// what the person is looking at.
 fn showing(session: &mut Session, apps: &Apps, started: &Path) -> TabId {
     let workspace = session
         .handle()
@@ -856,9 +839,9 @@ fn showing(session: &mut Session, apps: &Apps, started: &Path) -> TabId {
     tabs(session)[0].0
 }
 
-/// A window the person moves to another workspace runs its app there: the app
-/// is started again in the workspace they carried it to, under that
-/// workspace's grants, and the window it opens takes the tab they moved.
+/// A window the person moves to another workspace runs its app there: the app is started again in
+/// the workspace they carried it to, under that workspace's grants, and the window it opens takes
+/// the tab they moved.
 #[test]
 fn a_window_moved_to_another_workspace_runs_its_app_there() {
     let _settled = ui::motion::testing::settled();
@@ -919,9 +902,9 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
     );
 }
 
-/// Moving a window into a workspace other people are in changes what they can
-/// see: the person is asked first, nothing moves until they answer, and the
-/// app runs in the shared workspace only once they say so.
+/// Moving a window into a workspace other people are in changes what they can see: the person is
+/// asked first, nothing moves until they answer, and the app runs in the shared workspace only once
+/// they say so.
 #[test]
 fn moving_a_window_into_a_shared_workspace_asks_first() {
     let _settled = ui::motion::testing::settled();
@@ -942,10 +925,9 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
 
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
-    // Someone else is in the workspace the person moves the window to: a
-    // workspace's people are its governance's, which this session reads onto
-    // its workspaces once it holds them, and the desk it starts from does not
-    // carry them.
+    // Someone else is in the workspace the person moves the window to: a workspace's people are its
+    // governance's, which this session reads onto its workspaces once it holds them, and the desk
+    // it starts from does not carry them.
     let mut desk = session.handle().read(Clone::clone);
     desk.workspaces
         .iter_mut()

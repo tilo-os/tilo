@@ -116,10 +116,6 @@ impl<'de> Deserialize<'de> for Json {
 }
 
 /// Parses policy text.
-///
-/// # Errors
-/// `duplicate key '…'; the effective rule is ambiguous`, or
-/// `policy is not valid JSON: …`.
 pub fn parse(text: &str) -> Result<Json, String> {
     serde_json::from_str::<Json>(text).map_err(|error| {
         let message = error.to_string();

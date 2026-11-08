@@ -12,19 +12,14 @@
     reason = "integration-test setup and assertions"
 )]
 
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
-
 use app_cli::client::RegistryError;
 use app_cli::config::RegistryConfig;
 use ed25519_dalek::SigningKey;
+use registry_server::Storage;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
-use registry_server::{PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
-use registry_types::{
-    RegistryEntry, RegistryTarget, RegistryVersion, SignedRegistrySnapshot, sign_entry,
-};
+use registry_types::{SignedRegistrySnapshot, sign_entry};
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
 
 struct Registry {
     dir: tempfile::TempDir,
@@ -44,58 +39,38 @@ fn registry(entries: usize) -> Registry {
     let owner_hex = hex::encode(owner.verifying_key().to_bytes());
     let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
     storage
-        .save_identity(&ServerIdentity {
-            owner_pubkey_hex: owner_hex.clone(),
-            name: "test".into(),
-            description: "test".into(),
-            base_url: "http://127.0.0.1".into(),
-        })
+        .save_identity(&crate::support::identity(
+            owner_hex.clone(),
+            "http://127.0.0.1",
+        ))
         .unwrap();
     storage
-        .save_allowlist(&PublisherAllowlist {
-            publishers: vec![PublisherRow {
-                pubkey_hex: publisher_hex.clone(),
-                can_add_new: true,
-                note: String::new(),
-                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
-            }],
-        })
+        .save_allowlist(&crate::support::allowlist(vec![crate::support::publisher(
+            publisher_hex.clone(),
+            true,
+        )]))
         .unwrap();
     for index in 0..entries {
-        let mut entry = RegistryEntry {
-            package_id: format!("so.tilo.test{index}"),
-            kind: registry_types::EntryKind::App,
+        let mut entry = registry_types::RegistryEntry {
             name: "Test".into(),
             description: "A test app with a description long enough to weigh something".into(),
-            tagline: "Test on Tilo OS".into(),
-            images: registry_types::LocalizedImages::english_icon(
-                "https://apps.tilo.so/images/test-icon.svg",
-                "Test icon",
-            ),
-            supported_languages: vec!["en".into()],
             categories: vec!["Test".into()],
-            source_url: None,
-            homepage: None,
-            publisher_pubkey_hex: publisher_hex.clone(),
-            versions: vec![RegistryVersion {
-                version: "1".into(),
-                released_at_unix: 1,
-                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-                    tapp_url: format!("https://apps.tilo.so/artifacts/test{index}.tapp"),
-                    tapp_root_hash_hex: "ab".repeat(32),
-                    tapp_size_bytes: 1,
-                    tapp_blake3_hex: "cd".repeat(32),
-                    target: RegistryTarget {
-                        platform: registry_types::TILO_OS_PLATFORM.into(),
-                        architecture: "x86_64".into(),
-                        isa: "x86_64-v3".into(),
-                        runtime: None,
-                        interfaces: Vec::new(),
-                    },
-                }),
-            }],
-            updated_at_unix: 1,
-            signature_hex: String::new(),
+            versions: vec![crate::support::version(
+                "1",
+                1,
+                crate::support::tapp(
+                    format!("https://apps.tilo.so/artifacts/test{index}.tapp"),
+                    "ab".repeat(32),
+                    1,
+                    "cd".repeat(32),
+                    None,
+                ),
+            )],
+            ..crate::support::entry(
+                format!("so.tilo.test{index}"),
+                publisher_hex.clone(),
+                Vec::new(),
+            )
         };
         sign_entry(&mut entry, &publisher);
         storage.save_entry(&entry).unwrap();
@@ -114,16 +89,18 @@ fn registry(entries: usize) -> Registry {
 }
 
 impl Registry {
-    fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-            .arg("--data-dir")
-            .arg(self.dir.path())
-            .args(args)
-            .arg("--owner-key-file")
-            .arg(&self.key_path)
-            .args(["--valid-for-seconds", "86400"])
-            .output_locked()
-            .unwrap()
+    fn run(&self, arguments: &[&str]) -> std::process::Output {
+        let arguments = [
+            arguments,
+            &[
+                "--owner-key-file",
+                self.key_path.to_str().unwrap(),
+                "--valid-for-seconds",
+                "86400",
+            ],
+        ]
+        .concat();
+        crate::support::server(self.dir.path(), &arguments).unwrap()
     }
 
     fn sign(&self) -> SignedRegistrySnapshot {

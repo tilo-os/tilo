@@ -51,8 +51,6 @@ pub struct MessagingRouter {
 }
 impl MessagingRouter {
     /// Assemble already-authorized services; this creates no account grant.
-    /// # Errors
-    /// Refuses malformed identities, another person or duplicate service/account.
     pub fn new(
         principal: &str,
         services: Vec<(ServiceAccount, MessagingClient)>,

@@ -1231,6 +1231,9 @@ impl Workspaces {
                 .await
                 .map_err(|e| format!("settle: {e}"))?;
             tracing::info!("settled");
+            this.name_own_host(&mut workspace)
+                .await
+                .map_err(|e| format!("hosts: {e}"))?;
             this.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
@@ -1341,7 +1344,10 @@ impl Workspaces {
             .lock()
             .await
             .insert(summary.workspace.clone(), Arc::clone(&workspace));
-        self.settle(&mut *workspace.lock().await).await?;
+        let mut governed = workspace.lock().await;
+        self.settle(&mut governed).await?;
+        self.name_own_host(&mut governed).await?;
+        drop(governed);
         tracing::info!(workspace = %summary.workspace, workspace_id = summary.workspace_id, "governed room created");
         Ok(summary)
     }

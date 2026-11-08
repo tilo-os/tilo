@@ -34,6 +34,69 @@ struct Fixture {
     metrics: Arc<crate::metrics::Metrics>,
     receivers: Vec<mpsc::Receiver<Envelope>>,
 }
+
+/// Whose connection a fixture session answers as.
+#[derive(Clone, Copy)]
+enum Side {
+    Source,
+    Recipient,
+}
+
+impl Fixture {
+    /// What a connection to this fixture's workspace is handled in, answering
+    /// as `side`, with every door a test does not vary left closed.
+    fn ctx<'a>(
+        &'a self,
+        side: Side,
+        state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
+        member_limits: Option<&'a crate::member_limits::MemberLimits>,
+        own_user: Option<&'a [u8; 32]>,
+    ) -> SessionCtx<'a> {
+        let (outbound, disconnect) = match side {
+            Side::Source => (&self.source.tx, &self.source.disconnect),
+            Side::Recipient => (&self.recipient_tx, &self.recipient_disconnect),
+        };
+        SessionCtx {
+            workspaces: &self.registry,
+            autobind: None,
+            outbound,
+            state_outbound,
+            connection_live: None,
+            own_user_public_key: own_user.unwrap_or(&self.source.own_user),
+            own_device_cert: &self.source.peer.cert,
+            own_device_public_key: &self.source.peer.cert.device_public_key,
+            app_serving: None,
+            metrics: &self.metrics,
+            trust_policy: &self.source.policy,
+            disconnect,
+            presence: None,
+            revocations: &self.source.revocations,
+            carried_calls: None,
+            admin: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            member_limits,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
+        }
+    }
+
+    /// A commit from the fixture's source carrying its change `kind`, ordered
+    /// `op`.
+    fn commit(&self, kind: u8, op: [u8; 16]) -> Envelope {
+        let Envelope::Delta { delta, .. } = self.envelope(kind) else {
+            unreachable!("the fixture's envelopes are changes")
+        };
+        Envelope::Commit {
+            workspace_id: 7,
+            op,
+            author_device_public_key: self.source.peer.device_public_key,
+            authored_at_ns: 1,
+            delta,
+        }
+    }
+}
 impl Fixture {
     fn new() -> Self {
         Self::with_delivery_capacity(32)
@@ -217,29 +280,7 @@ impl Fixture {
         crate::persistence::receipt(receipt).await.unwrap();
     }
     async fn write(&self, delivery: StateDelivery, wire: &mut Vec<u8>) {
-        let session = SessionCtx {
-            workspaces: &self.registry,
-            autobind: None,
-            outbound: &self.recipient_tx,
-            state_outbound: None,
-            connection_live: None,
-            own_user_public_key: &self.source.own_user,
-            own_device_cert: &self.source.peer.cert,
-            own_device_public_key: &self.source.peer.cert.device_public_key,
-            app_serving: None,
-            metrics: &self.metrics,
-            trust_policy: &self.source.policy,
-            disconnect: &self.recipient_disconnect,
-            presence: None,
-            revocations: &self.source.revocations,
-            carried_calls: None,
-            agents: Box::leak(Box::default()),
-            positions: None,
-            compactor: None,
-            member_limits: None,
-            resumes: Box::leak(Box::default()),
-            lag: Box::leak(Box::default()),
-        };
+        let session = self.ctx(Side::Recipient, None, None, None);
         write_state_delivery(
             delivery,
             &self.recipient,
@@ -555,39 +596,8 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
     let fixture = Fixture::new();
     let (release, reached) =
         crate::store::test_barrier::install(fixture.store.root(), "state-persist");
-    let session = SessionCtx {
-        workspaces: &fixture.registry,
-        autobind: None,
-        outbound: &fixture.source.tx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &fixture.source.own_user,
-        own_device_cert: &fixture.source.peer.cert,
-        own_device_public_key: &fixture.source.peer.cert.device_public_key,
-        app_serving: None,
-        metrics: &fixture.metrics,
-        trust_policy: &fixture.source.policy,
-        disconnect: &fixture.source.disconnect,
-        presence: None,
-        revocations: &fixture.source.revocations,
-        carried_calls: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
-    let Envelope::Delta { delta, .. } = fixture.envelope(1) else {
-        unreachable!()
-    };
-    let commit = Envelope::Commit {
-        workspace_id: 7,
-        op: [5; 16],
-        author_device_public_key: fixture.source.peer.device_public_key,
-        authored_at_ns: 1,
-        delta,
-    };
+    let session = fixture.ctx(Side::Source, None, None, None);
+    let commit = fixture.commit(1, [5; 16]);
     let mut committing = Box::pin(handle_commit(&fixture.source.peer, &session, &[7], commit));
     tokio::select! {
         _ = &mut committing => panic!("a commit was acknowledged before it was retained"),
@@ -612,39 +622,8 @@ async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
     let fixture = Fixture::new();
     let (release, reached) =
         crate::store::test_barrier::install(fixture.store.root(), "state-persist");
-    let session = SessionCtx {
-        workspaces: &fixture.registry,
-        autobind: None,
-        outbound: &fixture.source.tx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &fixture.source.own_user,
-        own_device_cert: &fixture.source.peer.cert,
-        own_device_public_key: &fixture.source.peer.cert.device_public_key,
-        app_serving: None,
-        metrics: &fixture.metrics,
-        trust_policy: &fixture.source.policy,
-        disconnect: &fixture.source.disconnect,
-        presence: None,
-        revocations: &fixture.source.revocations,
-        carried_calls: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
-    let Envelope::Delta { delta, .. } = fixture.envelope(1) else {
-        unreachable!()
-    };
-    let commit = Envelope::Commit {
-        workspace_id: 7,
-        op: [5; 16],
-        author_device_public_key: fixture.source.peer.device_public_key,
-        authored_at_ns: 1,
-        delta,
-    };
+    let session = fixture.ctx(Side::Source, None, None, None);
+    let commit = fixture.commit(1, [5; 16]);
     let mut first = Box::pin(handle_commit(
         &fixture.source.peer,
         &session,
@@ -687,41 +666,10 @@ async fn two_commits_with_a_burst_of_one(stranger: Option<[u8; 32]>) -> Vec<Opti
             burst: 1,
             ..Default::default()
         });
-    let session = SessionCtx {
-        workspaces: &fixture.registry,
-        autobind: None,
-        outbound: &fixture.source.tx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &own_user,
-        own_device_cert: &fixture.source.peer.cert,
-        own_device_public_key: &fixture.source.peer.cert.device_public_key,
-        app_serving: None,
-        metrics: &fixture.metrics,
-        trust_policy: &fixture.source.policy,
-        disconnect: &fixture.source.disconnect,
-        presence: None,
-        revocations: &fixture.source.revocations,
-        carried_calls: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: Some(&limits),
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
+    let session = fixture.ctx(Side::Source, None, Some(&limits), Some(&own_user));
     let mut answers = Vec::new();
     for (index, op) in [(1, [5; 16]), (2, [6; 16])] {
-        let Envelope::Delta { delta, .. } = fixture.envelope(index) else {
-            unreachable!()
-        };
-        let commit = Envelope::Commit {
-            workspace_id: 7,
-            op,
-            author_device_public_key: fixture.source.peer.device_public_key,
-            authored_at_ns: 1,
-            delta,
-        };
+        let commit = fixture.commit(index, op);
         let answer = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             handle_commit(&fixture.source.peer, &session, &[7], commit),
@@ -1245,6 +1193,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 presence: None,
                 revocations: &source.revocations,
                 carried_calls: None,
+                admin: None,
                 agents: Box::leak(Box::default()),
                 positions: None,
                 compactor: None,
@@ -1334,29 +1283,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         .lock()
         .await
         .remove_subscriber(&fixture.source.peer.device_public_key);
-    let session = SessionCtx {
-        workspaces: &fixture.registry,
-        autobind: None,
-        outbound: &fixture.source.tx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &fixture.source.own_user,
-        own_device_cert: &fixture.source.peer.cert,
-        own_device_public_key: &fixture.source.peer.cert.device_public_key,
-        app_serving: None,
-        metrics: &fixture.metrics,
-        trust_policy: &fixture.source.policy,
-        disconnect: &fixture.source.disconnect,
-        presence: None,
-        revocations: &fixture.source.revocations,
-        carried_calls: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
+    let session = fixture.ctx(Side::Source, None, None, None);
     handle_sync_request(&fixture.source.peer, &session, 7, vec![])
         .await
         .unwrap();
@@ -1470,7 +1397,7 @@ impl Fixture {
         &self,
     ) -> Result<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>), PeerError> {
         let (state_tx, _state_rx) = mpsc::channel(32);
-        let session = self.recipient_session(&state_tx);
+        let session = self.ctx(Side::Recipient, Some(&state_tx), None, None);
         let mut replay = None;
         handle_subscribe(
             &self.recipient,
@@ -1482,35 +1409,6 @@ impl Fixture {
         )
         .await?;
         replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
-    }
-
-    fn recipient_session<'a>(
-        &'a self,
-        state_tx: &'a mpsc::Sender<StateDelivery>,
-    ) -> SessionCtx<'a> {
-        SessionCtx {
-            workspaces: &self.registry,
-            autobind: None,
-            outbound: &self.recipient_tx,
-            state_outbound: Some(state_tx),
-            connection_live: None,
-            own_user_public_key: &self.source.own_user,
-            own_device_cert: &self.source.peer.cert,
-            own_device_public_key: &self.source.peer.cert.device_public_key,
-            app_serving: None,
-            metrics: &self.metrics,
-            trust_policy: &self.source.policy,
-            disconnect: &self.recipient_disconnect,
-            presence: None,
-            revocations: &self.source.revocations,
-            carried_calls: None,
-            agents: Box::leak(Box::default()),
-            positions: None,
-            compactor: None,
-            member_limits: None,
-            resumes: Box::leak(Box::default()),
-            lag: Box::leak(Box::default()),
-        }
     }
 
     async fn subscribe_ticket(&self) -> (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>) {
@@ -1892,29 +1790,7 @@ impl Fixture {
         write: &mut W,
     ) -> Result<mpsc::Receiver<StateDelivery>, PeerError> {
         let (state_tx, state_rx) = mpsc::channel(32);
-        let session = SessionCtx {
-            workspaces: &self.registry,
-            autobind: None,
-            outbound: &self.recipient_tx,
-            state_outbound: Some(&state_tx),
-            connection_live: None,
-            own_user_public_key: &self.source.own_user,
-            own_device_cert: &self.source.peer.cert,
-            own_device_public_key: &self.source.peer.cert.device_public_key,
-            app_serving: None,
-            metrics: &self.metrics,
-            trust_policy: &self.source.policy,
-            disconnect: &self.recipient_disconnect,
-            presence: None,
-            revocations: &self.source.revocations,
-            carried_calls: None,
-            agents: Box::leak(Box::default()),
-            positions: None,
-            compactor: None,
-            member_limits: None,
-            resumes: Box::leak(Box::default()),
-            lag: Box::leak(Box::default()),
-        };
+        let session = self.ctx(Side::Recipient, Some(&state_tx), None, None);
         Box::pin(handle_inbound_frame(
             Envelope::Subscribe {
                 workspace_id: self.store.workspace_id(),

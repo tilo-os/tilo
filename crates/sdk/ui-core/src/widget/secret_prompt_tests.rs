@@ -397,7 +397,7 @@ fn a_finger_gets_touch_targets_and_the_pin_keypad() {
     placed(&mut prompt, phone);
 
     let layout = prompt.layout().clone();
-    assert_eq!(layout.keypad.len(), 12);
+    assert_eq!(layout.keypad.len(), 13, "the phone pad and its letters key");
     for rect in layout
         .fields
         .iter()
@@ -417,11 +417,11 @@ fn a_finger_gets_touch_targets_and_the_pin_keypad() {
         "a phone shows the prompt as a full-window page"
     );
 
-    for digit in [1, 2, 3, 4] {
+    for digit in ['1', '2', '3', '4'] {
         let (_, key) = layout
             .keypad
             .iter()
-            .find(|(key, _)| *key == KeypadKey::Digit(digit))
+            .find(|(key, _)| *key == PasscodeKey::Char(digit))
             .copied()
             .expect("digit key");
         dispatch(&mut prompt, &touch(TouchPhase::Started, 2, key.center()));
@@ -435,7 +435,7 @@ fn a_finger_gets_touch_targets_and_the_pin_keypad() {
     let (_, enter) = layout
         .keypad
         .iter()
-        .find(|(key, _)| *key == KeypadKey::Enter)
+        .find(|(key, _)| *key == PasscodeKey::Enter)
         .copied()
         .expect("enter key");
     dispatch(&mut prompt, &touch(TouchPhase::Started, 3, enter.center()));
@@ -462,7 +462,7 @@ fn a_pin_prompt_raised_while_touch_is_in_use_opens_with_its_keypad() {
     Widget::set_interaction_environment(&mut prompt, touch_in_use);
     assert!(prompt.shows_keypad());
     placed(&mut prompt, phone);
-    assert_eq!(prompt.layout().keypad.len(), 12);
+    assert_eq!(prompt.layout().keypad.len(), 13);
     // The same environment again changes nothing; a keyboard puts it away.
     Widget::set_interaction_environment(&mut prompt, touch_in_use);
     assert!(prompt.shows_keypad());

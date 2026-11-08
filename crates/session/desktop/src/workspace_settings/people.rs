@@ -1,6 +1,5 @@
-//! The People tab's content: how many share the workspace, then one entry per
-//! person with their role and what the viewer may offer them, in the viewer's
-//! words.
+//! The People tab's content: how many share the workspace, then one entry per person with their
+//! role and what the viewer may offer them, in the viewer's words.
 
 use super::{
     CapRole, UserId, Workspace, member_row_name, member_row_offers, members_authority_note,
@@ -33,8 +32,8 @@ pub enum Offers {
     RoleAndRemove,
 }
 
-/// Everything the People tab shows, resolved to the person's words. The
-/// page is rebuilt only when this changes.
+/// Everything the People tab shows, resolved to the person's words. The page is rebuilt only when
+/// this changes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PeopleContent {
     pub count: String,
@@ -49,7 +48,7 @@ pub struct PeopleContent {
     pub note: Option<String>,
 }
 
-/// What the People tab shows of `ws` to `viewer`.
+/// What the People tab shows of `ws` to `viewer` .
 pub fn content(
     ws: &Workspace,
     names: &PeopleNames,
@@ -73,8 +72,7 @@ pub fn content(
                 user: user.clone(),
                 name: member_row_name(names, ws, viewer, user),
                 you: user == viewer,
-                // An owner by role who does not own the workspace reads as
-                // Admin.
+                // An owner by role who does not own the workspace reads as Admin.
                 role: if *role == CapRole::Owner && !owns {
                     t("workspace-settings-role-admin")
                 } else {

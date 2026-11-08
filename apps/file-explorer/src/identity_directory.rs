@@ -27,8 +27,8 @@ pub struct TrustedHuman {
     pub display_name: String,
     /// The human's own devices: what sharing with them encrypts to.
     pub devices: Vec<TrustedDevice>,
-    /// Delegated agents of the human, by their own device. Kept apart from
-    /// [`Self::devices`]: an agent acts only within its delegation, so
+    /// Delegated agents of the human, by their own device. Kept apart
+    /// from [`Self::devices`]: an agent acts only within its delegation, so
     /// sharing with its person never reaches it. Used to name who wrote.
     pub agents: Vec<TrustedAgent>,
 }
@@ -63,11 +63,6 @@ impl TrustedHumanDirectory {
     /// Decode a bounded system projection. Missing projections are an empty
     /// directory; malformed ones are refused wholesale so a partial parse
     /// cannot silently associate a name with the wrong root key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the projection cannot be read within its bound or
-    /// its schema and identity data fail validation.
     pub fn load(path: &Path) -> Result<Self, String> {
         let bytes = match tilo_files::native::bounded::read(path, MAX_TRUSTED_IDENTITIES_BYTES) {
             Ok(Some(bytes)) => bytes,

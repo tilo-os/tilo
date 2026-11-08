@@ -31,11 +31,6 @@ pub fn resolve_dir() -> Option<PathBuf> {
 /// Encode `frame` to `dir` in the requested `format` (a real JPEG or a real
 /// PNG), creating the directory on first use. Returns the written file name
 /// (the capture id) on success.
-///
-/// # Errors
-///
-/// Returns an error if `dir` cannot be created or the file cannot be written
-/// or encoded.
 pub fn write_photo(dir: &Path, frame: &FrameBuf, format: PhotoFormat) -> std::io::Result<String> {
     let (name, bytes) = encode_photo(frame, format)?;
     crate::files::write(&dir.join(&name), &bytes)?;
@@ -44,10 +39,6 @@ pub fn write_photo(dir: &Path, frame: &FrameBuf, format: PhotoFormat) -> std::io
 
 /// Encode `frame` in `format` under a timestamped capture name, for a host
 /// with no directory to write it to.
-///
-/// # Errors
-///
-/// Returns an error if the frame is invalid or cannot be encoded.
 pub fn encode_photo(frame: &FrameBuf, format: PhotoFormat) -> std::io::Result<(String, Vec<u8>)> {
     if !valid_frame(frame) {
         return Err(std::io::Error::new(

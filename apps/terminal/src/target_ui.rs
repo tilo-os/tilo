@@ -196,7 +196,10 @@ impl TerminalWidget {
 
     /// Open sessions through `sessions` — for tests.
     #[cfg(test)]
-    pub(crate) fn set_sessions(&mut self, sessions: crate::sessions::Sessions) {
+    pub(crate) fn set_sessions(&mut self, mut sessions: crate::sessions::Sessions) {
+        if let TerminalWindow::Hosted(window) = &self.life.window {
+            sessions.in_window(Some(window.clone()));
+        }
         self.sessions = sessions;
     }
 

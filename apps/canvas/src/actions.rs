@@ -1796,10 +1796,6 @@ pub(crate) fn set_artwork(
 impl NewArtwork {
     /// The blank artwork this starts: a size and a start resolved, each
     /// overridden by what is given exactly.
-    ///
-    /// # Errors
-    /// Names the size, start, side, texture, colour or medium that is not
-    /// one of the choices.
     pub fn file(&self) -> Result<crate::document::ArtworkFile, Refusal> {
         use crate::document::{self, ArtworkFile, FileLayer};
         let size = match &self.size {

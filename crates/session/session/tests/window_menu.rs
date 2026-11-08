@@ -1,7 +1,6 @@
-//! Super+F10 over the real session: the window in front's menu is the
-//! session's `desktop:window-menu` reading, Escape closes it without
-//! choosing, and choosing a row sends the command that row means — the same
-//! menu a view draws, a script reads and an agent drives.
+//! Super+F10 over the real session: the window in front's menu is the session's
+//! `desktop:window-menu` reading, Escape closes it without choosing, and choosing a row sends the
+//! command that row means — the same menu a view draws, a script reads and an agent drives.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -15,6 +14,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -26,8 +27,7 @@ use tilo_desktop_model::{
 use tilo_session::mount::shell::WINDOW_MENU;
 use tilo_session::{Options, Session};
 
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
 /// What a key sends, evdev codes.
@@ -36,9 +36,10 @@ const KEY_F10: u32 = 68;
 const KEY_LEFT_META: u32 = 125;
 
 /// The rows the desk offers a lone window, in order.
-const ROWS: [&str; 5] = [
+const ROWS: [&str; 6] = [
     "Full screen",
     "Fill the strip",
+    "Float this window",
     "Width",
     "New tab of this app",
     "Close this window",
@@ -97,18 +98,15 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-/// A headless session showing `tree`, with a turn taken so its desk has laid
-/// the windows out.
+/// A headless session showing `tree` , with a turn taken so its desk has laid the windows out.
 fn session_with(tree: DesktopTree) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+    );
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session
@@ -146,8 +144,8 @@ fn menu(session: &Session) -> Value {
         .expect("the session publishes the window menu")
 }
 
-/// The labels of the menu's rows, in order; nothing while it is closed. A
-/// rule between groups is not a row a person reads.
+/// The labels of the menu's rows, in order; nothing while it is closed. A rule between groups is
+/// not a row a person reads.
 fn labels(reading: &Value) -> Vec<String> {
     reading["rows"]
         .as_array()
@@ -158,7 +156,7 @@ fn labels(reading: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The labels under the row `id`, in order.
+/// The labels under the row `id` , in order.
 fn under(reading: &Value, id: &str) -> Vec<String> {
     reading["rows"]
         .as_array()
@@ -175,13 +173,12 @@ fn under(reading: &Value, id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The window's tab as the session publishes it, or `None` while the menu is
-/// closed.
+/// The window's tab as the session publishes it, or `None` while the menu is closed.
 fn menu_tab(reading: &Value) -> Option<String> {
     reading["tab"].as_str().map(str::to_owned)
 }
 
-/// Whether the desk still holds the window `tab`.
+/// Whether the desk still holds the window `tab` .
 fn holds(session: &Session, tab: u64) -> bool {
     session.handle().read(|tree| {
         tree.workspaces
@@ -226,9 +223,8 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
         "every row says what choosing it does and whether it can be"
     );
 
-    // Where the menu stands is the desk's to say: the corner of the window
-    // it is for, drawn nothing else having an opinion, or the place the
-    // person named.
+    // Where the menu stands is the desk's to say: the corner of the window it is for, drawn nothing
+    // else having an opinion, or the place the person named.
     let window = session
         .handle()
         .window_rect(20)
@@ -258,8 +254,8 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
         "where it was asked to stand"
     );
 
-    // Choosing the window's own close does what the same command does from
-    // anywhere: the window is gone and the menu with it.
+    // Choosing the window's own close does what the same command does from anywhere: the window is
+    // gone and the menu with it.
     session
         .invoke(
             WINDOW_MENU,
@@ -402,7 +398,7 @@ fn the_menu_groups_what_it_offers_and_hides_places_there_are_none_of() {
 
     // A rule between groups, never at either end and never two together.
     let groups: Vec<&[Value]> = rows.split(|row| row["separator"] == json!(true)).collect();
-    assert_eq!(groups.len(), 4, "the rows read in groups: {reading}");
+    assert_eq!(groups.len(), 5, "the rows read in groups: {reading}");
     assert!(
         groups.iter().all(|group| !group.is_empty()),
         "a rule stands between groups, not beside one: {reading}"
@@ -416,8 +412,8 @@ fn the_menu_groups_what_it_offers_and_hides_places_there_are_none_of() {
         "each row carries its icon: {reading}"
     );
 
-    // The lone window has nowhere to move to, so the moves are not there at
-    // all rather than there and greyed out.
+    // The lone window has nowhere to move to, so the moves are not there at all rather than there
+    // and greyed out.
     assert!(
         rows.iter().all(|row| {
             let id = row["id"].as_str().unwrap_or_default();
@@ -438,8 +434,7 @@ fn the_menu_groups_what_it_offers_and_hides_places_there_are_none_of() {
     );
 }
 
-/// Every row of `rows` and of the submenus they open that the person cannot
-/// choose.
+/// Every row of `rows` and of the submenus they open that the person cannot choose.
 fn refused(rows: &[Value]) -> Vec<&Value> {
     rows.iter()
         .flat_map(|row| {
@@ -454,8 +449,8 @@ fn refused(rows: &[Value]) -> Vec<&Value> {
         .collect()
 }
 
-/// A program that stands where a surface app would, without a window: what
-/// the session starts for the menu's slot and shows while a menu is up.
+/// A program that stands where a surface app would, without a window: what the session starts for
+/// the menu's slot and shows while a menu is up.
 fn stand_in(root: &std::path::Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt as _;
     let program = root.join("window-menu");

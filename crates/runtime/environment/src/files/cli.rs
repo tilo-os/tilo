@@ -125,11 +125,6 @@ pub fn take_json(args: &[String]) -> (bool, Vec<String>) {
 }
 
 /// Read `args` (the operands and flags after the tool's name) as `tool`.
-///
-/// # Errors
-///
-/// An unimplemented flag, the wrong number of operands, or a size that is not
-/// a number.
 pub fn parse(tool: Tool, args: &[String]) -> Result<FileAction, ParseError> {
     let parsed = Flags::read(tool, args);
     if let Some(flag) = parsed.unsupported.first() {

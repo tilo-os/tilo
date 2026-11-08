@@ -147,7 +147,6 @@ fn caret(app: &App) -> Option<String> {
 
 #[test]
 fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
-    // Case `caret_preserved_across_structure_rebuild`.
     {
         let mut app =
             App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
@@ -185,7 +184,6 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
         assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
     }
 
-    // Case `focus_reset_does_not_restore_caret`.
     {
         let mut app =
             App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));

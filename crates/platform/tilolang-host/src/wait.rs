@@ -26,9 +26,6 @@ pub struct Wake {
 
 impl Wake {
     /// A wake, unwritten.
-    ///
-    /// # Errors
-    /// The socket pair cannot be made, or made non-blocking.
     pub fn new() -> std::io::Result<Self> {
         let (read, write) = UnixStream::pair()?;
         read.set_nonblocking(true)?;
@@ -57,9 +54,6 @@ impl Wake {
     }
 
     /// Take out everything written to it: the wait ends again only when it is written again.
-    ///
-    /// # Errors
-    /// The socket failed.
     pub fn consume(&self) -> std::io::Result<()> {
         let mut drained = [0_u8; 256];
         loop {

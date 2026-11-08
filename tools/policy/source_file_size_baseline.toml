@@ -12,8 +12,8 @@
 "apps/contacts/src/app/tests.rs" = 5000
 "apps/ebook/src/app.rs" = 9000
 "apps/ebook/src/app/interaction_tests.rs" = 5500
-"apps/file-explorer/src/files_app.rs" = 10500
-"apps/file-explorer/src/files_app/tests.rs" = 7000
+"apps/file-explorer/src/files_app.rs" = 10000
+"apps/file-explorer/src/files_app/tests.rs" = 6500
 "apps/file-explorer/src/views/file_view.rs" = 3500
 "apps/imager/src/app.rs" = 6000
 "apps/imager/src/setup/destination/installer_app.rs" = 7000
@@ -94,7 +94,7 @@
 "crates/sdk/ui-core/src/widget/tile_host.rs" = 3500
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
 "crates/sdk/ui-core/src/widget/window_group.rs" = 6000
-"crates/session/desktop-surface/src/activity/pane.rs" = 4000
+"crates/session/desktop-surface/src/activity/pane.rs" = 3500
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/device-fabric/src/lib.rs" = 4500

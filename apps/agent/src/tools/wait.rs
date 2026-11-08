@@ -39,11 +39,6 @@ pub struct Wait {
 /// it names one: absent or null is none. Seconds out of range are brought
 /// within it rather than refused, since the bound is the planner's to keep,
 /// not the model's to know exactly.
-///
-/// # Errors
-///
-/// A `wait_for` that is not an object, lacks whole `seconds` or holds
-/// something other than text where text goes.
 pub fn read_wait(input: &Value) -> Result<Option<Wait>, String> {
     let wait = match input.get(WAIT_FOR) {
         None | Some(Value::Null) => return Ok(None),

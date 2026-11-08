@@ -182,11 +182,6 @@ fn sanitise_component(raw: &str) -> String {
 /// real: an app with nowhere to write loses the user's work on exit, so
 /// a failure here refuses the launch rather than starting something
 /// that cannot save.
-///
-/// # Errors
-///
-/// Returns an error if the app directory or its `XDG_*` subdirectories
-/// cannot be created.
 pub fn prepare_host_app_dir(
     data_home: &Path,
     workspace_id: Option<&str>,
@@ -218,10 +213,6 @@ pub fn prepare_host_app_dir(
 /// Prepare an owner-private service directory in a fresh private working lease.
 /// The native capture host supplies this lease; ordinary app storage preparation
 /// remains independent. Refuse existing contents before resolving descendants.
-///
-/// # Errors
-/// Refuses a redirected, nonprivate, populated or foreign-owned working root,
-/// and any failure to prepare and attest the exact private service directory.
 #[cfg(target_os = "linux")]
 pub fn prepare_private_host_app_dir(
     data_home: &Path,

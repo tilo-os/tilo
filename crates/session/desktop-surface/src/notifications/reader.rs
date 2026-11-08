@@ -17,8 +17,8 @@ pub(super) struct NotificationReader {
     region: ScrollRegion,
     theme: Option<Box<Theme>>,
     back_focused: bool,
-    /// Focus rings show once the keyboard (or assistive technology) moves
-    /// focus, never for a page the pointer opened.
+    /// Focus rings show once the keyboard (or assistive technology) moves focus, never for a page
+    /// the pointer opened.
     focus_visible: bool,
 }
 
@@ -121,8 +121,7 @@ impl NotificationReader {
             .is_some_and(|theme| self.region.needs_animation_frame(theme))
     }
 
-    /// Step a glide after a flick to the frame's time; returns whether the
-    /// page moved.
+    /// Step a glide after a flick to the frame's time; returns whether the page moved.
     pub fn advance(&mut self) -> bool {
         self.region.advance()
     }
@@ -180,8 +179,8 @@ impl NotificationReader {
         let source = notification.sender_name();
         let hidden = (!notification.show_preview).then(|| t("notification-preview-hidden"));
         let body = hidden.as_deref().unwrap_or(&notification.body);
-        // The overflow lane changes wrap width. Measure again after resolving
-        // it so neither the last line nor the scrollbar clips the document.
+        // The overflow lane changes wrap width. Measure again after resolving it so neither the
+        // last line nor the scrollbar clips the document.
         let mut title_h = 0.0;
         let mut source_h = 0.0;
         let mut body_h = 0.0;
@@ -208,9 +207,8 @@ impl NotificationReader {
         }
         self.region
             .paint(scene, transform, theme, |scene, content| {
-                // The title, the source line and the body are the shared text
-                // blocks at the reader's own type roles: no bare run of their
-                // own.
+                // The title, the source line and the body are the shared text blocks at the
+                // reader's own type roles: no bare run of their own.
                 let right = gap + f64::from(width);
                 let title_rect = Rect::new(gap, gap, right, gap + title_h);
                 ui::widget::TextBlockFace::new(&notification.title, &title_style).paint(

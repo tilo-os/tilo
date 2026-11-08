@@ -1,4 +1,4 @@
-//! [`QuickTile`]: a Quick Settings control. Its glyph, name and state line sit on a tile filled
+//! [`QuickTile`] — a Quick Settings control. Its glyph, name and state line sit on a tile filled
 //! with the on colour while the control is on, and a press anywhere on it switches the control.
 //! The name takes one line and the state line up to two, broken after a word and elided only
 //! past that. A tile whose control has a section of its own (the networks under Wi-Fi) gives it a

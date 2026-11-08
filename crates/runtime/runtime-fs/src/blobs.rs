@@ -74,10 +74,6 @@ impl BlobChunks {
 impl BlobChunkSender {
     /// Hand on one piece, waiting while [`BlobChunks::channel`]'s pieces are
     /// all in flight.
-    ///
-    /// # Errors
-    ///
-    /// Returns a refusal when the backend stopped reading.
     pub async fn send(&self, piece: Vec<u8>) -> Result<(), BlobError> {
         self.pieces
             .send(Some(piece))
@@ -86,10 +82,6 @@ impl BlobChunkSender {
     }
 
     /// End the content cleanly; dropping every sender without this abandons it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a refusal when the backend stopped reading.
     pub async fn finish(self) -> Result<(), BlobError> {
         self.pieces
             .send(None)
@@ -172,10 +164,6 @@ pub trait BlobBackend: Send + Sync + 'static {
     /// The session names the agent behind this device's next writes to some
     /// paths ([`BlobClient::attribute_writes`]). Only a session connection
     /// reaches this; a backend without write attribution refuses it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the backend's refusal.
     fn attribute_writes(&self, attribution: WriteAttribution) -> Result<(), BlobError> {
         let _ = attribution;
         Err(BlobError::Refused("write attribution unsupported".into()))
@@ -188,10 +176,6 @@ fn no_public_content() -> BlobError {
 }
 
 /// Serve `listener` on a dedicated thread.
-///
-/// # Errors
-///
-/// Returns an I/O error if the thread cannot be started.
 pub fn spawn_blob_server(
     listener: std::os::unix::net::UnixListener,
     backend: Arc<dyn BlobBackend>,
@@ -242,10 +226,6 @@ pub fn spawn_blob_server(
 
 /// Serve one already-accepted connection: read its handoff, then answer
 /// frames until the peer goes away.
-///
-/// # Errors
-///
-/// Returns an error for a missing or invalid handoff, or a failed connection.
 pub async fn serve_connection(
     mut stream: tokio::net::UnixStream,
     backend: Arc<dyn BlobBackend>,

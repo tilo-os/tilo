@@ -66,9 +66,6 @@ pub trait StateAuthority: Send + Sync {
 
 impl EncryptedBackend {
     /// Look up an existing OS-keychain key. Linking/provisioning is separate.
-    ///
-    /// # Errors
-    /// Refuses missing/locked keys, weaker custody and invalid existing state.
     pub fn open_system(
         root: &Path,
         owner: Owner,
@@ -98,9 +95,6 @@ impl EncryptedBackend {
     }
 
     /// Use a host's existing scoped key without provisioning or fallback.
-    ///
-    /// # Errors
-    /// Refuses wrong key scope, absent custody and unsafe existing state.
     pub fn open_existing_in(
         root: &Path,
         owner: Owner,
@@ -116,9 +110,6 @@ impl EncryptedBackend {
     }
 
     /// Explicit host-supplied key, for hosts and isolated fixtures.
-    ///
-    /// # Errors
-    /// Refuses wrong service/authority, competing writers or corrupt state.
     pub fn open_with_key(root: &Path, owner: Owner, key: VaultKey) -> Result<Self> {
         Self::open_state(root, owner, key, None)
     }
@@ -126,8 +117,6 @@ impl EncryptedBackend {
     /// Open the host's original approved profile key with its original grant.
     /// The grant is installed before any store initialization and retained by
     /// every SDK reader and writer, including clones.
-    /// # Errors
-    /// Refuses revoked authority, competing writers or invalid encrypted state.
     pub fn open_profile(
         root: &Path,
         owner: Owner,

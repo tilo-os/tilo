@@ -44,11 +44,6 @@ pub enum AdmissionOutcome {
 ///
 /// The change is made under `document`'s actor, which the caller sets
 /// ([`crate::workspace_host_actor`]).
-///
-/// # Errors
-///
-/// Returns an error if the invitation does not admit the redemption here, it
-/// conflicts with recorded governance or the document cannot be updated.
 #[expect(
     clippy::too_many_lines,
     reason = "one atomic governance transaction; on error the document stays unchanged"

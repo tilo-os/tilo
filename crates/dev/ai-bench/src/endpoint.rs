@@ -192,10 +192,6 @@ pub fn digest(body: &Value) -> String {
 /// One client for a run's cases: Tilo's own TLS defaults, no retries, and a
 /// whole-request deadline so a hung endpoint fails one case instead of the
 /// run.
-///
-/// # Errors
-///
-/// When the client cannot be built.
 pub fn client() -> Result<reqwest::blocking::Client, String> {
     tilo_net::http::blocking_client()
         .timeout(TIMEOUT)
@@ -304,10 +300,6 @@ impl Endpoints {
     /// The endpoints in `path`: `{"endpoints": [ {…}, … ]}`, one entry per
     /// label. Keys are not read from here — the file is meant to be
     /// reviewable and committed, so it holds no secret.
-    ///
-    /// # Errors
-    ///
-    /// When the file is not this shape, or two entries share a label.
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("{} cannot be read: {error}", path.display()))?;

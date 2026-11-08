@@ -5,8 +5,8 @@
 //! tab of the [`DesktopSurface`]'s strips ([`TileContent::Foreign`], keyed by the
 //! window's id), so windows open beside the focused one, group into tabs, pan with
 //! their strip and move between strips and workspaces through the same widgets and
-//! model the browser desktop runs. After each layout pass the compositor reads
-//! [`DesktopPolicy::layout`]: the windows to show and where, and those to hide.
+//! model the browser desktop runs. After each layout pass the compositor
+//! reads [`DesktopPolicy::layout`]: the windows to show and where, and those to hide.
 //! Dialogs float over the window they belong to ([`floating`]), and across several
 //! displays each display holds its own windows. Nothing here knows Wayland.
 pub mod cards;

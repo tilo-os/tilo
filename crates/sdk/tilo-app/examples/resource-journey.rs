@@ -54,9 +54,6 @@ impl Checklist {
     }
 
     /// Remove a task after confirmation.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
     #[action(destructive)]
     pub fn remove(&mut self, task: &Id) -> Result<(), &'static str> {
         self.tasks

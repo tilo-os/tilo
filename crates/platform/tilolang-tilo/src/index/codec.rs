@@ -16,9 +16,6 @@ pub fn seal(mut bytes: Vec<u8>) -> Vec<u8> {
 }
 
 /// The bytes `sealed` holds, when its checksum checks out.
-///
-/// # Errors
-/// The checksum does not match, or there is none.
 pub fn open(sealed: &[u8]) -> Result<&[u8], Corrupt> {
     let split = sealed.len().checked_sub(4).ok_or(Corrupt)?;
     let (bytes, sum) = sealed.split_at(split);
@@ -220,9 +217,6 @@ pub fn put_value(value: &FieldValue) -> Vec<u8> {
 }
 
 /// The field value `sealed` holds.
-///
-/// # Errors
-/// The bytes are not a value the index wrote.
 pub fn get_value(sealed: &[u8]) -> Result<FieldValue, Corrupt> {
     let mut r = Reader::new(open(sealed)?);
     let tag = r.u8()?;
@@ -276,9 +270,6 @@ pub fn put_text(text: &str) -> Vec<u8> {
 }
 
 /// The short text `sealed` holds.
-///
-/// # Errors
-/// The bytes are not a text the index wrote.
 pub fn get_text(sealed: &[u8]) -> Result<String, Corrupt> {
     let mut r = Reader::new(open(sealed)?);
     let text = r.str()?.to_owned();

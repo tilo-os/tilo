@@ -1,25 +1,21 @@
 //! Pointer and touchpad device policy.
-//!
-//! This module is the decision half: it takes the person's input preferences
-//! ([`InputConfig`]) plus what one libinput device can actually do, and
-//! produces the exact `config_*` values to apply. [`super::libinput`] holds
-//! the thin applier that pushes them onto a real libinput device.
-//!
-//! libinput defaults tapping to *off* because it can't tell a laptop touchpad
-//! from a desk drawing tablet, and a spurious click from a resting palm is
-//! worse than a missing one. On a laptop that reasoning inverts (a trackpad
-//! requiring physical depression per click is the most-reported "this feels
-//! broken" first impression), so the default here is on, with palm detection
-//! and disable-while-typing turned on alongside it to buy back what libinput
-//! was cautious about; the setting remains the person's to flip.
+//! This module is the decision half: it takes the person's input preferences ([`InputConfig`]) plus
+//! what one libinput device can actually do, and produces the exact `config_*` values to apply.
+//! [`super::libinput`] holds the thin applier that pushes them onto a real libinput device.
+//! libinput defaults tapping to *off* because it can't tell a laptop touchpad from a desk drawing
+//! tablet, and a spurious click from a resting palm is worse than a missing one. On a laptop that
+//! reasoning inverts (a trackpad requiring physical depression per click is the most-reported "this
+//! feels broken" first impression), so the default here is on, with palm detection and
+//! disable-while-typing turned on alongside it to buy back what libinput was cautious about; the
+//! setting remains the person's to flip.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::tablet::TabletConfig;
 
-/// Slowest auto-repeat the `key_repeat` slider can select, in keys per
-/// second: below this, holding a key feels broken rather than slow.
+/// Slowest auto-repeat the `key_repeat` slider can select, in keys per second: below this, holding
+/// a key feels broken rather than slow.
 pub const REPEAT_RATE_MIN: u32 = 10;
 /// Fastest auto-repeat the slider can select, in keys per second.
 pub const REPEAT_RATE_MAX: u32 = 50;
@@ -50,9 +46,9 @@ pub enum TouchpadScrollMethod {
     Edge,
 }
 
-/// The person's input preferences, with the defaults applied. The defaults
-/// match the Settings pane's starting values, so a person who never opened
-/// Settings and one who opened it and changed nothing get the same session.
+/// The person's input preferences, with the defaults applied. The defaults match the Settings
+/// pane's starting values, so a person who never opened Settings and one who opened it and changed
+/// nothing get the same session.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -64,19 +60,18 @@ pub struct InputConfig {
     pub mouse_natural_scroll: bool,
     /// Tap the touchpad to click. **On** by default: see the module docs.
     pub tap_to_click: bool,
-    /// Pointer acceleration, `0.0` (slowest) to `1.0` (fastest), `0.5`
-    /// being libinput's neutral profile.
+    /// Pointer acceleration, `0.0` (slowest) to `1.0` (fastest), `0.5` being libinput's neutral
+    /// profile.
     pub pointer_speed: f64,
     pub touchpad_pointer_speed: Option<f64>,
     pub mouse_pointer_speed: Option<f64>,
-    /// Keyboard auto-repeat, `0.0` (slow, long delay) to `1.0` (fast, short
-    /// delay).
+    /// Keyboard auto-repeat, `0.0` (slow, long delay) to `1.0` (fast, short delay).
     pub key_repeat: f64,
     pub key_repeat_delay_ms: Option<u32>,
     pub key_repeat_rate_hz: Option<u32>,
     pub tap_drag: bool,
-    /// A tap-and-drag survives lifting the finger until the next tap, so a
-    /// long drag can be repositioned mid-way. Off by default, as in libinput.
+    /// A tap-and-drag survives lifting the finger until the next tap, so a long drag can be
+    /// repositioned mid-way. Off by default, as in libinput.
     pub tap_drag_lock: bool,
     pub disable_while_typing: bool,
     pub middle_emulation: bool,
@@ -91,8 +86,8 @@ pub struct InputConfig {
     pub touchpad_click_method: TouchpadClickMethod,
     /// Two-finger or edge scrolling on touchpads.
     pub touchpad_scroll_method: TouchpadScrollMethod,
-    /// Multiplier on every scroll distance, wheel and finger alike. Applied
-    /// by the compositor rather than libinput, which has no such setting.
+    /// Multiplier on every scroll distance, wheel and finger alike. Applied by the compositor
+    /// rather than libinput, which has no such setting.
     pub scroll_speed: f64,
     /// Each drawing tablet's settings, by [`device_key`].
     pub tablets: BTreeMap<String, TabletConfig>,
@@ -127,22 +122,21 @@ impl Default for InputConfig {
     }
 }
 
-/// The identity per-device settings are keyed by: USB vendor and product
-/// and the device's name, as Settings stores them.
+/// The identity per-device settings are keyed by: USB vendor and product and the device's name, as
+/// Settings stores them.
 pub fn device_key(vendor: u32, product: u32, name: &str) -> String {
     format!("{vendor:04x}:{product:04x}:{}", name.trim())
 }
 
 impl InputConfig {
-    /// libinput's pointer-acceleration speed for this setting: the slider's
-    /// `0.0 ..= 1.0` mapped onto libinput's `-1.0 ..= 1.0`, so the midpoint
-    /// lands exactly on the untouched default of `0.0`.
+    /// libinput's pointer-acceleration speed for this setting: the slider's `0.0 ..= 1.0` mapped
+    /// onto libinput's `-1.0 ..= 1.0` , so the midpoint lands exactly on the untouched default of
+    /// `0.0` .
     pub fn accel_speed(&self) -> f64 {
         (self.pointer_speed.clamp(0.0, 1.0) * 2.0) - 1.0
     }
 
-    /// [`Self::accel_speed`] with the per-class override for touchpads or
-    /// mice applied.
+    /// [`Self::accel_speed`] with the per-class override for touchpads or mice applied.
     pub fn accel_speed_for(&self, touchpad: bool) -> f64 {
         let speed = if touchpad {
             self.touchpad_pointer_speed.unwrap_or(self.pointer_speed)
@@ -160,10 +154,9 @@ impl InputConfig {
         }
     }
 
-    /// Keyboard auto-repeat as `(delay, rate in keys per second)`. The two
-    /// move together in opposite directions ("faster" means both a shorter
-    /// wait before it starts and a shorter gap between keys), so exposing
-    /// them as one slider is only honest if the mapping does that.
+    /// Keyboard auto-repeat as `(delay, rate in keys per second)` . The two move together in
+    /// opposite directions ("faster" means both a shorter wait before it starts and a shorter gap
+    /// between keys), so exposing them as one slider is only honest if the mapping does that.
     pub fn key_repeat_params(&self) -> (Duration, u32) {
         if let (Some(delay), Some(rate)) = (self.key_repeat_delay_ms, self.key_repeat_rate_hz) {
             return (Duration::from_millis(u64::from(delay)), rate);
@@ -236,8 +229,8 @@ pub enum DeviceKind {
     Other,
 }
 
-/// A libinput send-events mode, independent of the libinput bindings so the
-/// plan stays a pure value.
+/// A libinput send-events mode, independent of the libinput bindings so the plan stays a pure
+/// value.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SendEvents {
     Enabled,
@@ -245,8 +238,7 @@ pub enum SendEvents {
     DisabledOnExternalMouse,
 }
 
-/// A libinput click method, independent of the libinput bindings so the plan
-/// stays a pure value.
+/// A libinput click method, independent of the libinput bindings so the plan stays a pure value.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ClickMethod {
     ButtonAreas,
@@ -261,14 +253,14 @@ pub enum ScrollMethod {
 }
 
 impl DeviceCaps {
-    /// A touchpad is the device class the laptop-specific defaults exist
-    /// for: tapping, disable-while-typing, and two-finger scrolling.
+    /// A touchpad is the device class the laptop-specific defaults exist for: tapping,
+    /// disable-while-typing, and two-finger scrolling.
     pub const fn is_touchpad(&self) -> bool {
         self.supports_tap
     }
 
-    /// The kind this device is. A tablet's pad and pen are checked first:
-    /// both can also report pointer capabilities.
+    /// The kind this device is. A tablet's pad and pen are checked first: both can also report
+    /// pointer capabilities.
     pub const fn kind(&self) -> DeviceKind {
         if self.is_tablet_pad {
             DeviceKind::TabletPad
@@ -288,31 +280,30 @@ impl DeviceCaps {
     }
 }
 
-/// The configuration to push onto one device. `None` means "this device
-/// cannot be told that, so don't ask".
+/// The configuration to push onto one device. `None` means "this device cannot be told that, so
+/// don't ask".
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct DevicePlan {
     pub tap: Option<bool>,
-    /// Tap-and-drag rides with tapping: a person who taps to click expects
-    /// tap-hold-move to drag. Turning tapping on without it produces a
-    /// touchpad that clicks but cannot drag a window.
+    /// Tap-and-drag rides with tapping: a person who taps to click expects tap-hold-move to drag.
+    /// Turning tapping on without it produces a touchpad that clicks but cannot drag a window.
     pub tap_drag: Option<bool>,
-    /// Only ever on while tap-and-drag is: a lock on a drag that cannot
-    /// start would do nothing but confuse the next tap.
+    /// Only ever on while tap-and-drag is: a lock on a drag that cannot start would do nothing but
+    /// confuse the next tap.
     pub tap_drag_lock: Option<bool>,
     pub natural_scroll: Option<bool>,
     pub disable_while_typing: Option<bool>,
     pub middle_emulation: Option<bool>,
-    /// Present as milli-units (`accel_speed * 1000`, rounded) so the plan
-    /// stays `Eq` and comparable in tests; the applier divides it back.
+    /// Present as milli-units (`accel_speed * 1000`, rounded) so the plan stays `Eq` and comparable
+    /// in tests; the applier divides it back.
     pub accel_speed_milli: Option<i32>,
     pub left_handed: Option<bool>,
     pub flat_acceleration: Option<bool>,
-    /// Whether the device sends events. Asked only of touchpads: a mouse or
-    /// keyboard is never switched off by the touchpad key.
+    /// Whether the device sends events. Asked only of touchpads: a mouse or keyboard is never
+    /// switched off by the touchpad key.
     pub send_events: Option<SendEvents>,
-    /// Always a method the device listed; `Default` resolves to the device's
-    /// own default so switching back really undoes an earlier choice.
+    /// Always a method the device listed; `Default` resolves to the device's own default so
+    /// switching back really undoes an earlier choice.
     pub click_method: Option<ClickMethod>,
     pub scroll_method: Option<ScrollMethod>,
 }
@@ -324,9 +315,9 @@ impl DevicePlan {
     }
 }
 
-/// Decide what to configure on a device with `caps`, given `config`: a pure
-/// function of the two, since it is applied on device add and re-applied on
-/// every change (a plan depending on prior state would drift on re-plug).
+/// Decide what to configure on a device with `caps` , given `config` : a pure function of the two,
+/// since it is applied on device add and re-applied on every change (a plan depending on prior
+/// state would drift on re-plug).
 pub fn plan_for(config: &InputConfig, caps: &DeviceCaps) -> DevicePlan {
     DevicePlan {
         tap: caps.supports_tap.then_some(config.tap_to_click),
@@ -341,8 +332,8 @@ pub fn plan_for(config: &InputConfig, caps: &DeviceCaps) -> DevicePlan {
             .then_some(config.natural_scroll_for(caps.is_touchpad())),
         // Disable-while-typing is what makes tap-to-click safe to default on.
         disable_while_typing: caps.supports_dwt.then_some(config.disable_while_typing),
-        // A touchpad with no physical middle button is the norm; without
-        // emulation there's no way to middle-click at all.
+        // A touchpad with no physical middle button is the norm; without emulation there's no way
+        // to middle-click at all.
         middle_emulation: caps
             .supports_middle_emulation
             .then_some(config.middle_emulation),
@@ -354,8 +345,8 @@ pub fn plan_for(config: &InputConfig, caps: &DeviceCaps) -> DevicePlan {
             let milli = (config.accel_speed_for(caps.is_touchpad()) * 1000.0).round() as i32;
             milli
         }),
-        // A pen's orientation is its tablet's own setting, applied when its
-        // coordinates are mapped; the mouse preference must not also turn it.
+        // A pen's orientation is its tablet's own setting, applied when its coordinates are mapped;
+        // the mouse preference must not also turn it.
         left_handed: caps
             .supports_left_handed
             .then_some(config.left_handed && !caps.is_tablet_tool),
@@ -389,8 +380,8 @@ pub fn plan_for(config: &InputConfig, caps: &DeviceCaps) -> DevicePlan {
     }
 }
 
-/// A device the configuration can be pushed onto. libinput devices
-/// implement it in [`super::libinput`]; a test double proves the same path.
+/// A device the configuration can be pushed onto. libinput devices implement it in
+/// [`super::libinput`]; a test double proves the same path.
 pub trait ConfigurableDevice {
     /// What the device can be told.
     fn caps(&self) -> DeviceCaps;
@@ -398,8 +389,8 @@ pub trait ConfigurableDevice {
     fn apply(&mut self, plan: &DevicePlan);
 }
 
-/// Configure one device from `config`: when it is added, and again for each
-/// change. Returns the plan that was applied.
+/// Configure one device from `config` : when it is added, and again for each change. Returns the
+/// plan that was applied.
 pub fn configure<D: ConfigurableDevice + ?Sized>(
     config: &InputConfig,
     device: &mut D,
@@ -409,9 +400,8 @@ pub fn configure<D: ConfigurableDevice + ?Sized>(
     plan
 }
 
-/// Re-apply `config` to every attached device, so a change is felt on the
-/// touchpad under the person's fingers rather than on the next one plugged
-/// in.
+/// Re-apply `config` to every attached device, so a change is felt on the touchpad under the
+/// person's fingers rather than on the next one plugged in.
 pub fn reconfigure_all<D: ConfigurableDevice>(config: &InputConfig, devices: &mut [D]) {
     for device in devices {
         configure(config, device);
@@ -662,8 +652,8 @@ mod tests {
             };
             assert_eq!(plan_for(&config, &touchpad()).click_method, expected);
         }
-        // An Apple-style clickpad defaults to clickfinger; "Default" must
-        // restore that rather than forcing button areas on it.
+        // An Apple-style clickpad defaults to clickfinger; "Default" must restore that rather than
+        // forcing button areas on it.
         let apple = DeviceCaps {
             default_click_method: Some(ClickMethod::Clickfinger),
             ..touchpad()

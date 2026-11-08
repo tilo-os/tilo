@@ -136,12 +136,6 @@ impl PowerHistoryWriter {
 
     /// Record a point for `kind` at `point.unix_minute` when the cadence
     /// allows it; `Ok(true)` when it landed and the file was rewritten.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if there is no private state directory or the file
-    /// cannot be written; the point stays in memory and reaches the disk with
-    /// the next one that lands.
     pub fn record(
         &mut self,
         kind: PowerSourceKind,

@@ -142,11 +142,6 @@ pub(crate) struct Account {
 
 /// The one login account in the installed `/etc/passwd`: a regular UID with
 /// a shell that logs in.
-///
-/// # Errors
-///
-/// Returns an error when the disk has none or several, since the owner's
-/// keys and files would otherwise go to a guess.
 pub(crate) fn login_account(etc: &Path) -> io::Result<Account> {
     let passwd = read_regular(&etc.join("passwd"))?;
     let accounts = passwd

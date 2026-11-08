@@ -514,9 +514,6 @@ pub fn libvirt_tools(facts: &HostFacts) -> Result<Vec<ToolPath>, Missing> {
 }
 
 /// Linux: can this user use KVM? Unknown elsewhere counts as yes.
-///
-/// # Errors
-/// `/dev/kvm` cannot be opened, with the fix.
 pub fn kvm_usable(facts: &HostFacts) -> Result<(), Missing> {
     if facts.kvm == Some(false) {
         return Err(Missing {
@@ -534,9 +531,6 @@ pub fn session_probe() -> String {
 }
 
 /// Does libvirt's rootless session QEMU driver answer? Unprobed counts as yes.
-///
-/// # Errors
-/// virsh's complaint, verbatim, with the fix.
 pub fn session_answers(facts: &HostFacts) -> Result<(), Missing> {
     if let Some(Err(why)) = &facts.session {
         let probe = session_probe();

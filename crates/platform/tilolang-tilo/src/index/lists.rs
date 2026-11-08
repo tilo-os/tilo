@@ -147,9 +147,6 @@ fn put_str(out: &mut Vec<u8>, text: &str) {
 
 impl PageBuf {
     /// The page the index wrote as `sealed`.
-    ///
-    /// # Errors
-    /// The bytes are not a page the index wrote.
     pub fn decode(sealed: &[u8]) -> Result<Self, Corrupt> {
         let mut r = Reader::new(super::codec::open(sealed)?);
         let n = r.u32()?;
@@ -292,22 +289,13 @@ impl PageBuf {
 /// the batch being written.
 pub trait ListSource {
     /// The sealed directory of `list`, if it has one.
-    ///
-    /// # Errors
-    /// The index cannot be read.
     fn dir_bytes(&self, list: &str) -> Result<Option<Vec<u8>>, super::IndexError>;
 
     /// The sealed page `seq` of `list`.
-    ///
-    /// # Errors
-    /// The index cannot be read.
     fn page_bytes(&self, list: &str, seq: u32) -> Result<Option<Vec<u8>>, super::IndexError>;
 }
 
 /// Read the directory of `list`: empty when it has none.
-///
-/// # Errors
-/// The index cannot be read, or what it holds is corrupt.
 pub fn read_dir(source: &impl ListSource, list: &str) -> Result<Dir, super::IndexError> {
     match source.dir_bytes(list)? {
         Some(bytes) => Ok(Dir::decode(&bytes)?),
@@ -316,9 +304,6 @@ pub fn read_dir(source: &impl ListSource, list: &str) -> Result<Dir, super::Inde
 }
 
 /// Read the page `seq` of `list`.
-///
-/// # Errors
-/// The index cannot be read, or the page is missing or corrupt.
 pub fn read_page(
     source: &impl ListSource,
     list: &str,
@@ -361,9 +346,6 @@ impl<S: ListSource> std::fmt::Debug for Pages<S> {
 
 impl<S: ListSource> Pages<S> {
     /// The list `list` of `source`.
-    ///
-    /// # Errors
-    /// The index cannot be read, or its directory is corrupt.
     pub fn open(
         source: Arc<S>,
         list: &str,
@@ -567,17 +549,11 @@ impl ListEdits {
     }
 
     /// The directory of `list` as this batch leaves it.
-    ///
-    /// # Errors
-    /// The index cannot be read, or its directory is corrupt.
     pub fn read(&mut self, source: &impl ListSource, list: &str) -> Result<Dir, super::IndexError> {
         self.dir(source, list).cloned()
     }
 
     /// Every entry of `list`, as this batch leaves it.
-    ///
-    /// # Errors
-    /// The index cannot be read, or what it holds is corrupt.
     pub fn entries(
         &mut self,
         source: &impl ListSource,
@@ -592,9 +568,6 @@ impl ListEdits {
     }
 
     /// Put `(key, id)` in `list` where its order puts it; nothing when it is there.
-    ///
-    /// # Errors
-    /// The index cannot be read, or what it holds is corrupt.
     pub fn insert(
         &mut self,
         source: &impl ListSource,
@@ -666,9 +639,6 @@ impl ListEdits {
     }
 
     /// Take `(key, id)` out of `list`; nothing when it is not there.
-    ///
-    /// # Errors
-    /// The index cannot be read, or what it holds is corrupt.
     pub fn remove(
         &mut self,
         source: &impl ListSource,
@@ -712,9 +682,6 @@ impl ListEdits {
 
     /// Make `entries` (in order) the whole of `list`, dropping what it held: in full pages, as
     /// appending them one by one leaves them ([`Self::insert`]).
-    ///
-    /// # Errors
-    /// The index cannot be read, or what it holds is corrupt.
     pub fn replace(
         &mut self,
         source: &impl ListSource,
@@ -746,9 +713,6 @@ impl ListEdits {
     }
 
     /// Drop `list` and its pages.
-    ///
-    /// # Errors
-    /// The index cannot be read, or its directory is corrupt.
     pub fn drop_list(
         &mut self,
         source: &impl ListSource,

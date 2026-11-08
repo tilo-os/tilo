@@ -58,8 +58,8 @@ pub fn ensure_collaboration_identity(
 
 /// [`ensure_collaboration_identity`] for an identity that already exists,
 /// then whether this device's certificate is valid at the clock's reading.
-/// A certificate refused for the clock alone is reported as a
-/// [`tilo_user_identity::CertificateClockError`]: the identity is intact and
+/// A certificate refused for the clock alone is reported as
+/// a [`tilo_user_identity::CertificateClockError`]: the identity is intact and
 /// the session waits for the clock, whether this device is the identity's
 /// first or one joined later.
 ///

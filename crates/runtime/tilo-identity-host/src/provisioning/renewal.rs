@@ -261,11 +261,6 @@ pub fn joined_device_renewal_due(paths: &IdentityPaths, now_ns: u64) -> Option<D
 /// none of that. The fleet is the one a joined device's identity directory
 /// keeps ([`crate::device_fleet::DeviceFleetStore`]), so the certificate a
 /// host is shown is the one this fleet holds.
-///
-/// # Errors
-///
-/// Returns an error if `renewed` does not renew `held`, or any file cannot
-/// be written.
 pub fn install_renewed_certificate(
     identity_dir: &Path,
     paths: &IdentityPaths,

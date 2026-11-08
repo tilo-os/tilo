@@ -1,4 +1,4 @@
-//! [`DiskIndex`]: a persistent, keyed full-text index on disk.
+//! [`DiskIndex`] — a persistent, keyed full-text index on disk.
 //!
 //! For corpora too large to keep in memory (a home directory's file
 //! contents): each document is a key, a version the owner reconciles
@@ -78,11 +78,6 @@ pub struct DiskIndex {
 
 impl DiskIndex {
     /// Open the index in `dir`, creating it (and `dir`) if absent.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when the directory cannot be opened or holds an
-    /// index of another shape.
     pub fn open_or_create(dir: &Path) -> tantivy::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let (schema, fields) = schema();
@@ -161,10 +156,6 @@ impl DiskIndex {
 
     /// Read the last commit now: for a commit this index's own
     /// [`DiskWriter`] did not make, since the reader does not poll.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when the directory cannot be read.
     pub fn reload(&self) -> tantivy::Result<()> {
         self.reader.reload()
     }
@@ -251,10 +242,6 @@ impl DiskWriter {
 
     /// Make every change searchable: commit, then move the index's reader
     /// onto the new commit, on the writer's thread rather than a search's.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when the commit cannot be written or read back.
     pub fn commit(&mut self) -> tantivy::Result<()> {
         self.writer.commit()?;
         self.reader.reload()

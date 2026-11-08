@@ -1,26 +1,19 @@
-//! The windows this device left open come back: each saved app is asked for
-//! its window again, and the window takes the tab the person left it in.
-//!
-//! A saved window is kept as the app that opens it
-//! ([`tilo_desktop_model::TileContent::LocalApp`]), because a live window's
-//! surface belongs to the compositor that mapped it and means nothing after a
-//! restart. So restoring is asking each of those apps to run again and giving
-//! its window the tab, the group and the strip it was in — the desk is the
-//! same before and after, and no second tab opens beside a saved one.
-//!
-//! One app is asked at a time, the workspace in front's first: started
-//! together after a login, a whole desk of apps fights over CPU, disk and
-//! memory, and each one shows its window several times later than the first
-//! would alone; one after another, the first is up soonest and the next
-//! starts on a quieter machine. The next is asked once the one before has its
-//! window, or could not open one.
-//!
-//! A tab whose app is gone — not installed any more, or it started nothing —
-//! says so where the window would be, naming the app and why, and nothing else
-//! on the desk changes: the person closes it when they are done with it. The
-//! answer stands for as long as the window would have, and the next login asks
-//! again: by then the app may be installed, or the reason it would not start
-//! gone.
+//! The windows this device left open come back: each saved app is asked for its window again, and
+//! the window takes the tab the person left it in.
+//! A saved window is kept as the app that opens it ([`tilo_desktop_model::TileContent::LocalApp`]),
+//! because a live window's surface belongs to the compositor that mapped it and means nothing after
+//! a restart. So restoring is asking each of those apps to run again and giving its window the tab,
+//! the group and the strip it was in — the desk is the same before and after, and no second tab
+//! opens beside a saved one.
+//! One app is asked at a time, the workspace in front's first: started together after a login, a
+//! whole desk of apps fights over CPU, disk and memory, and each one shows its window several times
+//! later than the first would alone; one after another, the first is up soonest and the next starts
+//! on a quieter machine. The next is asked once the one before has its window, or could not open
+//! one.
+//! A tab whose app is gone — not installed any more, or it started nothing — says so where the
+//! window would be, naming the app and why, and nothing else on the desk changes: the person closes
+//! it when they are done with it. The answer stands for as long as the window would have, and the
+//! next login asks again: by then the app may be installed, or the reason it would not start gone.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -32,8 +25,8 @@ use tilo_surface_host::DesktopHost;
 use crate::i18n::t_args;
 use crate::mount::apps::{self, Apps};
 
-/// How long a saved window may take to show itself before its tab says it
-/// did not open: an app that started and never mapped is not coming.
+/// How long a saved window may take to show itself before its tab says it did not open: an app that
+/// started and never mapped is not coming.
 const OPEN_DEADLINE: Duration = Duration::from_secs(15);
 
 /// The saved windows of a desk, asked for again one at a time.
@@ -48,11 +41,10 @@ pub(crate) struct Restore {
 /// A window the person left open, and the app that opens it again.
 struct Saved {
     tab: TabId,
-    /// The app as its windows announce themselves: what the tab holds, and
-    /// what the window that comes is matched by.
+    /// The app as its windows announce themselves: what the tab holds, and what the window that
+    /// comes is matched by.
     app: String,
-    /// The name the person knew it by, for what the tab says when the app
-    /// cannot open.
+    /// The name the person knew it by, for what the tab says when the app cannot open.
     name: String,
     /// How to start it again, when this machine still has it.
     launch: Option<Launch>,
@@ -66,9 +58,8 @@ struct Opening {
 }
 
 impl Restore {
-    /// The windows of `tree` that open again, in the order they are asked:
-    /// the ones on the desk in front first, then the rest in the order the
-    /// person left them.
+    /// The windows of `tree` that open again, in the order they are asked: the ones on the desk in
+    /// front first, then the rest in the order the person left them.
     pub(crate) fn of(tree: &DesktopTree) -> Self {
         let active = tree.active;
         let mut saved: Vec<(WorkspaceSlot, Saved)> = Vec::new();
@@ -116,12 +107,12 @@ impl Restore {
             .and_then(|opening| opening.asked.checked_add(OPEN_DEADLINE))
     }
 
-    /// Ask for the next saved window when the one before has come, or say in
-    /// its tab why it did not.
+    /// Ask for the next saved window when the one before has come, or say in its tab why it did
+    /// not.
     pub(crate) fn follow(&mut self, desktop: &DesktopHost, apps: Option<&Apps>) {
         let Some(apps) = apps else {
-            // This session starts no apps at all, so nothing will come for a
-            // saved window: the tabs stay as they are.
+            // This session starts no apps at all, so nothing will come for a saved window: the tabs
+            // stay as they are.
             return;
         };
         loop {
@@ -143,9 +134,9 @@ impl Restore {
             let Some(saved) = self.waiting.pop_front() else {
                 return;
             };
-            // The person may have opened the app while its saved window was
-            // still waiting: its window comes into that tab now, or came, and
-            // asking for it again would start the app a second time.
+            // The person may have opened the app while its saved window was still waiting: its
+            // window comes into that tab now, or came, and asking for it again would start the app
+            // a second time.
             let coming = desktop.with_policy(|policy| {
                 policy.on_its_way(saved.tab) || !policy.waits_for_window(saved.tab)
             });
@@ -158,8 +149,8 @@ impl Restore {
         }
     }
 
-    /// Ask for `saved`'s window into its own tab. True when an app was asked
-    /// and its window may still come.
+    /// Ask for `saved` 's window into its own tab. True when an app was asked and its window may
+    /// still come.
     fn open(&mut self, desktop: &DesktopHost, apps: &Apps, saved: Saved) -> bool {
         let Some(launch) = saved.launch else {
             let note = not_installed(&saved.name);
@@ -170,10 +161,9 @@ impl Restore {
             // The tab went with the workspace it was in.
             return false;
         };
-        // Whatever the tab said about an earlier start is the past: it waits
-        // for its window now. The place is noted before the app starts, as
-        // any launch into a tab of its own is: the window takes that exact
-        // tab when it maps, in the background, so the window the person had
+        // Whatever the tab said about an earlier start is the past: it waits for its window now.
+        // The place is noted before the app starts, as any launch into a tab of its own is: the
+        // window takes that exact tab when it maps, in the background, so the window the person had
         // in front stays in front.
         desktop.with_policy(|policy| policy.note_in_tab(saved.tab, ""));
         if !desktop.with_policy(|policy| policy.adopt(&saved.app, saved.tab)) {
@@ -208,12 +198,10 @@ impl Restore {
 }
 
 /// `tree` without the places a launch left on it that no window came for.
-///
-/// A place stands for a launch the session asked for a moment ago. The session
-/// that asked is gone by the next start, so nothing is on its way to those any
-/// more: they are not windows the person had open, and a start that kept them
-/// would show the remains of a launch that ended — one more of them with every
-/// restart, since each is written down with the desk.
+/// A place stands for a launch the session asked for a moment ago. The session that asked is gone
+/// by the next start, so nothing is on its way to those any more: they are not windows the person
+/// had open, and a start that kept them would show the remains of a launch that ended — one more of
+/// them with every restart, since each is written down with the desk.
 pub(crate) fn without_unfilled(tree: &mut DesktopTree) {
     let unfilled: Vec<TabId> = tree
         .workspaces
@@ -229,9 +217,8 @@ pub(crate) fn without_unfilled(tree: &mut DesktopTree) {
     }
 }
 
-/// The workspace the tab `tab` stands in, which its app is started
-/// into: the app runs where the person opened it, with that workspace's
-/// grants.
+/// The workspace the tab `tab` stands in, which its app is started into: the app runs where the
+/// person opened it, with that workspace's grants.
 fn workspace_of(desktop: &DesktopHost, tab: TabId) -> Option<String> {
     desktop.with_policy(|policy| {
         policy.handle().read(|tree| {

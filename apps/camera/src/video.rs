@@ -334,11 +334,6 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Persist an encoded clip to `dir` as a timestamped `.avi`, creating the
 /// directory on first use. Returns the written file name.
-///
-/// # Errors
-///
-/// Returns an error if `dir` cannot be created or the clip cannot be
-/// written to it.
 pub fn write_clip(dir: &Path, bytes: &[u8], stamp: &str) -> io::Result<String> {
     let name = format!("VID_{stamp}.avi");
     crate::files::write(&dir.join(&name), bytes)?;

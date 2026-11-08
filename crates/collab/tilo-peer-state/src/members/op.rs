@@ -131,9 +131,6 @@ struct Signed<'a> {
 
 impl SignedMembershipOp {
     /// Write `command` as `device`, on top of the operations `parents`.
-    ///
-    /// # Errors
-    /// The operation cannot be encoded.
     pub fn signed(
         device: &DeviceCert,
         key: &SigningKey,
@@ -157,9 +154,6 @@ impl SignedMembershipOp {
 
     /// The bytes the author device signs: the domain, then the operation
     /// without its signature.
-    ///
-    /// # Errors
-    /// The operation cannot be encoded.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, String> {
         let mut bytes = SIGNING_DOMAIN.to_vec();
         bytes.extend(
@@ -175,17 +169,11 @@ impl SignedMembershipOp {
     }
 
     /// Its id: the BLAKE3 of its stored bytes.
-    ///
-    /// # Errors
-    /// The operation cannot be encoded.
     pub fn id(&self) -> Result<OpId, String> {
         Ok(OpId(*blake3::hash(&self.to_bytes()?).as_bytes()))
     }
 
     /// The bytes a workspace document keeps for it.
-    ///
-    /// # Errors
-    /// The operation cannot be encoded.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
         postcard::to_stdvec(self).map_err(|error| error.to_string())
     }
@@ -193,10 +181,6 @@ impl SignedMembershipOp {
     /// Read the operation `bytes` hold, when they hold one that proves its
     /// writer: its device certificate chain verifies and the signature over
     /// its own bytes is the author device's.
-    ///
-    /// # Errors
-    /// The bytes hold no operation, its certificate chain does not verify, or
-    /// its signature is not its author device's.
     pub fn verified(bytes: &[u8]) -> Result<Self, String> {
         let op: Self = postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
         op.verify()?;
@@ -204,10 +188,6 @@ impl SignedMembershipOp {
     }
 
     /// Whether the operation proves its writer.
-    ///
-    /// # Errors
-    /// Its certificate chain does not verify, or its signature is not its
-    /// author device's.
     pub fn verify(&self) -> Result<(), String> {
         tilo_user_identity::verify_device_cert(&self.author).map_err(|error| error.to_string())?;
         let key = VerifyingKey::from_bytes(&self.author.device_public_key)

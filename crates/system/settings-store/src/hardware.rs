@@ -491,9 +491,6 @@ impl DisplayTransaction {
     /// Construct an admitted request without writing storage. Its identity
     /// stays unique among requests in this process even within one clock tick.
     /// The request becomes effective only after its normal durable save.
-    ///
-    /// # Errors
-    /// Returns an error if the request identity counter is exhausted.
     pub fn prepare_request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static LAST_REQUEST: AtomicU64 = AtomicU64::new(0);
@@ -1247,10 +1244,6 @@ impl DisplayConfig {
     }
 
     /// Remember this as the layout for `set`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the profiles can't be serialised or written.
     pub fn save_for(&self, set: &DisplaySet) -> std::io::Result<()> {
         let mut profiles = DisplayProfiles::load();
         profiles.remember(set, self);
@@ -1952,7 +1945,7 @@ macro_rules! shortcut_actions {
 
 #[rustfmt::skip]
 shortcut_actions! {
-    64;
+    65;
 
     Search => "search", System, Session, None, default_chord(&["Super"], "space");
 
@@ -2085,6 +2078,12 @@ shortcut_actions! {
     DictationToggle => "dictation-toggle", Accessibility, Session, None, default_chord(&["Shift", "Super"], "d");
     DictationFinish => "dictation-finish", Accessibility, Session, None, default_chord(&["Alt", "Super"], "d");
     DictationCancel => "dictation-cancel", Accessibility, Session, None, default_chord(&["Shift", "Super"], "escape");
+
+    // Next to Super+F, which covers the display with the window: this lifts
+    // it out of its strip instead.
+    /// Lift the focused window above the desk, or put it back into its
+    /// strip.
+    ToggleFloat => "toggle-float", Windows, Desk, None, default_chord(&["Shift", "Super"], "f");
 }
 impl ShortcutAction {
     /// The strip position a `FocusGroupN` action selects, counting from 0.
@@ -2233,10 +2232,6 @@ impl QuickSettingsConfig {
     }
 
     /// [`Self::save`] into `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the setting cannot be serialized or persisted.
     pub fn save_in(&self, source: &dyn crate::SettingsSource) -> std::io::Result<()> {
         source.update_section("quick_settings", self.section()?)
     }
@@ -2582,10 +2577,6 @@ impl ShortcutConfig {
     /// Whether `chord` may run the published action `target`: a valid,
     /// unreserved chord that is neither one of the shell's fixed chords, nor
     /// bound to a configurable desktop action, nor running another action.
-    ///
-    /// # Errors
-    ///
-    /// Why the chord cannot be bound.
     pub fn check_action_chord(
         &self,
         chord: &KeyChord,
@@ -2769,20 +2760,11 @@ impl ShortcutConfig {
     }
 
     /// [`Self::save`] into `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `self` can't be serialised or the section can't
-    /// be written.
     pub fn save_in(&self, source: &dyn crate::SettingsSource) -> std::io::Result<()> {
         source.update_section("shortcuts", self.section()?)
     }
 
     /// The `shortcuts` section holding this configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `self` can't be serialised.
     pub fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         Ok(value.as_object().cloned().unwrap_or_default())
@@ -3333,7 +3315,7 @@ mod tests {
         }
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 64);
+            assert_eq!(cfg.bindings.len(), 65);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

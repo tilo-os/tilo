@@ -11,7 +11,6 @@ use tilo_ui::widget::{Button, Widget};
 )]
 #[test]
 fn provider_payloads_enter_and_drop_under_their_originating_component() {
-    // Case `owned_search_provider_methods_and_early_drop_enter_the_originating_component`.
     {
         use crate::support::application::{enable_provider_probe, instantiate_probe};
         let host = ProbeHost::new();
@@ -56,7 +55,6 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         );
     }
 
-    // Case `provider_payload_drops_on_close_even_when_the_proxy_outlives_replacement`.
     {
         use crate::support::application::{enable_provider_probe, existing, instantiate_probe};
         let host = ProbeHost::new();
@@ -104,7 +102,6 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         assert_eq!(observed.borrow().drops.len(), 1);
     }
 
-    // Case `provider_destructor_unwind_keeps_payloads_under_the_closed_owner`.
     {
         use crate::support::application::{enable_provider_probe, instantiate_probe};
         let host = ProbeHost::new();
@@ -140,7 +137,6 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
 )]
 #[test]
 fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
-    // Case `cleared_or_unadmitted_nodes_never_dispatch_as_outer_widgets`.
     {
         let mut root = Button::new("probe", "Probe");
         let mut tree = taffy::TaffyTree::new();
@@ -203,7 +199,6 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         }
     }
 
-    // Case `component_raw_descendants_keep_the_record_and_mount_for_focus_ime_and_actions`.
     {
         let host = ProbeHost::new();
         let mut component = component(&host, 1);
@@ -279,7 +274,6 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         );
     }
 
-    // Case `real_driver_measure_and_focus_walks_capture_only_the_component_mount`.
     {
         let host = ProbeHost::new();
         let mut component = component(&host, 1);
@@ -417,7 +411,6 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         }
     }
 
-    // Case `layout_only_descendant_inherits_the_taffy_boundary_and_two_mounts_stay_independent`.
     {
         let host = ProbeHost::new();
         LAYOUT_ONLY.set(true);
@@ -1036,7 +1029,6 @@ fn component(host: &ProbeHost, instance: u64) -> AppComponent {
 )]
 #[test]
 fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
-    // Case `same_record_reentry_reuses_the_borrow_and_cross_record_reentry_is_refused`.
     {
         let host = ProbeHost::new();
         let first = component(&host, 1);
@@ -1137,7 +1129,6 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         }
     }
 
-    // Case `replacement_cancels_admitted_work_and_refuses_the_old_node_before_dereference`.
     {
         let host = ProbeHost::new();
         let mut tile = TileHost::from_component(component(&host, 1));
@@ -1191,7 +1182,6 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         }
     }
 
-    // Case `driver_retains_both_replacement_failures_and_retries_after_the_last_tile_drops`.
     {
         let host = ProbeHost::new();
         let component = component(&host, 1);
@@ -1280,7 +1270,6 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
     reason = "one table proves the complete root callback ledger against a single mounted instance"
 )]
 fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
-    // Case `root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands`.
     {
         enum Callback {
             DrawPermissions,
@@ -1443,7 +1432,6 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         assert_eq!(COMMAND_CALLS.get(), 1);
     }
 
-    // Case `driver_tile_paint_observes_current_component_permissions`.
     {
         let host = ProbeHost::new();
         let definition = definition(factory);
@@ -1485,7 +1473,6 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         EXPECTED_WRITE.set(false);
     }
 
-    // Case `canonical_fill_geometry_matches_legacy_tile_at_multiple_viewports`.
     {
         for viewport in [(400, 300), (900, 600)] {
             let host = ProbeHost::new();
@@ -1557,7 +1544,6 @@ fn assert_closed_reentry() {
 )]
 #[test]
 fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
-    // Case `cancellation_unwind_and_ordinary_drop_destroy_operation_captures_under_closed_owner`.
     {
         for panic_cancel in [false, true] {
             let host = ProbeHost::new();
@@ -1602,7 +1588,6 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         }
     }
 
-    // Case `terminal_operation_is_removed_before_later_close`.
     {
         let host = ProbeHost::new();
         let mut tile = TileHost::from_component(component(&host, 1));
@@ -1632,7 +1617,6 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         assert_eq!(CANCELLED.get(), 0, "terminal work was cancelled twice");
     }
 
-    // Case `owned_factory_error_restore_error_suspend_and_unwind_keep_drop_captures_closed`.
     {
         let host = ProbeHost::new();
         for create in [
@@ -1676,7 +1660,6 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         assert_eq!(CLOSED_DROPS.get(), 1);
     }
 
-    // Case `capture_unwind_closes_the_lifetime_and_drops_root_before_returning_to_host`.
     {
         let host = ProbeHost::new();
         let mut tile = TileHost::from_component(component(&host, 1));
@@ -1743,7 +1726,6 @@ fn nested_factory(
     reason = "one nested replacement must preserve live parent, independent recovery ownership and durable retry"
 )]
 fn nested_close_replacement_and_mount_failures_report_each_original_once() {
-    // Case `nested_close_transfers_each_original_report_once_before_roots_are_destroyed`.
     {
         let host = ProbeHost::new();
         let child = component(&host, 2);
@@ -1778,7 +1760,6 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         }
     }
 
-    // Case `prepared_runner_nested_mount_failure_retains_each_original_report_once`.
     {
         for native in [false, true] {
             let host = ProbeHost::new();
@@ -1826,7 +1807,6 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         }
     }
 
-    // Case `nested_replacement_reports_reach_driver_while_parent_remains_open`.
     {
         let child_host = ProbeHost::new();
         let child = component(&child_host, 2);
@@ -2180,7 +2160,6 @@ fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     reason = "one, two and zero authorized targets share the same control and outer-history oracle"
 )]
 fn driver_controls_resolve_bound_targets_to_their_record_owner() {
-    // Case `task4_driver_qualified_equal_resource_ids_use_their_record_and_view_owner`.
     {
         use crate::support::application::{action_probe_factory, existing, operation_observations};
         let host = ProbeHost::new();
@@ -2269,7 +2248,6 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         assert_eq!(driver.state_mut().doc.get_heads(), outer);
     }
 
-    // Case `task4_driver_unqualified_control_selects_or_refuses_bound_targets`.
     {
         use crate::support::application::{ProbeAction, action_probe_factory, author};
         use automerge::ReadDoc;

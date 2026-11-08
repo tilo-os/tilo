@@ -1,10 +1,8 @@
-//! Backends: where outputs come from, where frames go and where input
-//! starts.
-//!
-//! A backend owns its renderer and devices. It registers what it listens to
-//! (device descriptors, vblank events, a host window) in the compositor's
-//! event loop when it is created, routes input into the [`State`], and draws
-//! each output's scene ([`crate::render`]) when that output can take a frame.
+//! Backends: where outputs come from, where frames go and where input starts.
+//! A backend owns its renderer and devices. It registers what it listens to (device descriptors,
+//! vblank events, a host window) in the compositor's event loop when it is created, routes input
+//! into the [`State`], and draws each output's scene ([`crate::render`]) when that output can take
+//! a frame.
 
 pub mod drm;
 pub mod headless;
@@ -21,63 +19,56 @@ pub use nested::{HostWindow, NestedBackend, NestedConfig};
 
 /// What a backend does for the compositor.
 pub trait Backend {
-    /// Draw the outputs that can take a frame and tell their clients when
-    /// it was shown.
+    /// Draw the outputs that can take a frame and tell their clients when it was shown.
     fn render(&mut self, state: &mut State) -> Result<(), BackendError>;
 
-    /// Whether a drawn frame is shown only when its page flip retires, so
-    /// its present latency ends at the flip and not at the queue.
+    /// Whether a drawn frame is shown only when its page flip retires, so its present latency ends
+    /// at the flip and not at the queue.
     fn presents_async(&self) -> bool {
         false
     }
 
-    /// When the backend next wants [`Backend::render`] called with no event
-    /// to bring it: an output with something new to show that cannot take a
-    /// frame yet. Nothing owed, nothing due: the compositor sleeps.
+    /// When the backend next wants [`Backend::render`] called with no event to bring it: an output
+    /// with something new to show that cannot take a frame yet. Nothing owed, nothing due: the
+    /// compositor sleeps.
     fn next_deadline(&self, _state: &State) -> Option<std::time::Instant> {
         None
     }
 
-    /// Whether the backend is done (its window was closed): the run loop
-    /// ends.
+    /// Whether the backend is done (its window was closed): the run loop ends.
     fn closed(&self) -> bool {
         false
     }
 
-    /// Apply the person's input preferences to the backend's devices.
-    /// Backends whose input comes already shaped (a host window, a test)
-    /// ignore them.
+    /// Apply the person's input preferences to the backend's devices. Backends whose input comes
+    /// already shaped (a host window, a test) ignore them.
     fn set_input_config(&mut self, _state: &mut State, _config: InputConfig) {}
 
-    /// Apply the person's typing and pointing assists to the backend's
-    /// devices, now and as they are plugged in. Backends whose input comes
-    /// already shaped (a host window, a test) ignore them.
+    /// Apply the person's typing and pointing assists to the backend's devices, now and as they are
+    /// plugged in. Backends whose input comes already shaped (a host window, a test) ignore them.
     fn set_assists(&mut self, _state: &mut State, _assists: &crate::Assists) {}
 
-    /// Keep the person's display configuration for outputs that appear
-    /// later (the compositor applies it to the present ones).
+    /// Keep the person's display configuration for outputs that appear later (the compositor
+    /// applies it to the present ones).
     fn set_display_config(&mut self, _config: &crate::config::DisplayConfig) {}
 
-    /// What each output's sink and the pipeline driving it can do beyond
-    /// what the output reports: a built-in panel, HDR and adaptive sync, the
-    /// colour profiles on offer, why a connected display is dark. Backends
-    /// without hardware of their own have nothing to add.
+    /// What each output's sink and the pipeline driving it can do beyond what the output reports: a
+    /// built-in panel, HDR and adaptive sync, the colour profiles on offer, why a connected display
+    /// is dark. Backends without hardware of their own have nothing to add.
     fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
         Vec::new()
     }
 
-    /// The HDR signal `output` is being driven with, or `None` for an
-    /// ordinary SDR one: colour-managed clients learn it through
-    /// `wp_color_management_output_v1`, so an HDR app knows the volume it
-    /// renders into. Backends that drive no HDR signal have none.
+    /// The HDR signal `output` is being driven with, or `None` for an ordinary SDR one:
+    /// colour-managed clients learn it through `wp_color_management_output_v1` , so an HDR app
+    /// knows the volume it renders into. Backends that drive no HDR signal have none.
     fn output_hdr(&self, _output: &smithay::output::Output) -> Option<crate::config::Hdr> {
         None
     }
 
-    /// What `output`'s panel shows: what its sink accepts and the signal it
-    /// is being driven with, from the sink's EDID and whether it is sent
-    /// HDR. A session tone-maps another device's shared window to it.
-    /// Backends that know nothing of their panels' colour say SDR.
+    /// What `output` 's panel shows: what its sink accepts and the signal it is being driven with,
+    /// from the sink's EDID and whether it is sent HDR. A session tone-maps another device's shared
+    /// window to it. Backends that know nothing of their panels' colour say SDR.
     fn output_colour(
         &self,
         _output: &smithay::output::Output,
@@ -85,14 +76,14 @@ pub trait Backend {
         tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default()
     }
 
-    /// How this backend drives its outputs (`drm-kms`, `headless`), as
-    /// Settings names it when it explains a display.
+    /// How this backend drives its outputs (`drm-kms`, `headless` ), as Settings names it when it
+    /// explains a display.
     fn describe(&self) -> &'static str {
         "unknown"
     }
 
-    /// Add an output the backend simulates. Backends with real outputs find
-    /// them themselves and refuse.
+    /// Add an output the backend simulates. Backends with real outputs find them themselves and
+    /// refuse.
     fn add_output(
         &mut self,
         _state: &mut State,
@@ -104,20 +95,19 @@ pub trait Backend {
         )))
     }
 
-    /// Drop the output named `name` the backend simulates, as pulling its
-    /// cable does: it leaves the layout and clients stop seeing it.
-    /// Backends with real outputs watch for that themselves and refuse.
+    /// Drop the output named `name` the backend simulates, as pulling its cable does: it leaves the
+    /// layout and clients stop seeing it. Backends with real outputs watch for that themselves and
+    /// refuse.
     fn remove_output(&mut self, _state: &mut State, name: &str) -> Result<(), BackendError> {
         Err(BackendError(format!(
             "{name}: this backend's outputs are its devices"
         )))
     }
 
-    /// Apply a display configuration (already checked to name real
-    /// outputs, with usable scales and one output left on), or with `test`
-    /// only say whether it could be applied. All or nothing. Outputs it
-    /// turns off or on are then switched by [`Backend::set_power`] and
-    /// shown or hidden by the compositor.
+    /// Apply a display configuration (already checked to name real outputs, with usable scales and
+    /// one output left on), or with `test` only say whether it could be applied. All or nothing.
+    /// Outputs it turns off or on are then switched by [`Backend::set_power`] and shown or hidden
+    /// by the compositor.
     fn configure(
         &mut self,
         _state: &mut State,
@@ -129,19 +119,18 @@ pub trait Backend {
         ))
     }
 
-    /// Switch the machine to virtual terminal `vt` (numbered from 1), the
-    /// way Ctrl+Alt+F1..F12 does: the way out of a desktop that cannot give
-    /// the machine back. Backends without virtual terminals refuse.
+    /// Switch the machine to virtual terminal `vt` (numbered from 1), the way Ctrl+Alt+F1..F12
+    /// does: the way out of a desktop that cannot give the machine back. Backends without virtual
+    /// terminals refuse.
     fn switch_vt(&mut self, vt: i32) -> Result<(), BackendError> {
         Err(BackendError(format!(
             "this backend has no virtual terminal {vt} to switch to"
         )))
     }
 
-    /// Light the panel of the output named `name` or switch it off (idle
-    /// blanking, a power tool, a configuration that turns it off). An
-    /// output switched off draws nothing until it is lit again. Backends
-    /// without panels have nothing to switch.
+    /// Light the panel of the output named `name` or switch it off (idle blanking, a power tool, a
+    /// configuration that turns it off). An output switched off draws nothing until it is lit
+    /// again. Backends without panels have nothing to switch.
     fn set_power(
         &mut self,
         _state: &mut State,
@@ -151,10 +140,9 @@ pub trait Backend {
         Ok(())
     }
 
-    /// Send the output named `name`'s signal through `ramp` (`None`: no
-    /// ramp), whose size the backend gave
-    /// ([`crate::gamma::Gamma::set_size`]). Backends without ramps carry
-    /// no sizes and are never asked.
+    /// Send the output named `name` 's signal through `ramp` (`None`: no ramp), whose size the
+    /// backend gave ([`crate::gamma::Gamma::set_size`]). Backends without ramps carry no sizes and
+    /// are never asked.
     fn set_gamma(
         &mut self,
         _state: &mut State,
@@ -166,9 +154,9 @@ pub trait Backend {
         )))
     }
 
-    /// Draw and blur what lies below a hosted surface's translucent region
-    /// (see [`crate::backdrop::draw`]); `None` when it did not change.
-    /// Backends that cannot draw outside their frames have none.
+    /// Draw and blur what lies below a hosted surface's translucent region (see
+    /// [`crate::backdrop::draw`]); `None` when it did not change. Backends that cannot draw outside
+    /// their frames have none.
     fn backdrop(
         &mut self,
         _state: &mut State,
@@ -178,10 +166,9 @@ pub trait Backend {
         Ok(None)
     }
 
-    /// Draw what a capture frame copies (part of an output, a window) into
-    /// the client's buffer with the backend's renderer (see
-    /// [`crate::capture::copy`]). Backends that cannot draw outside their
-    /// frames refuse.
+    /// Draw what a capture frame copies (part of an output, a window) into the client's buffer with
+    /// the backend's renderer (see [`crate::capture::copy`]). Backends that cannot draw outside
+    /// their frames refuse.
     fn capture(
         &mut self,
         _state: &mut State,
@@ -193,8 +180,8 @@ pub trait Backend {
     }
 
     /// What `target` shows now, read back as rows of R, G, B, A (see
-    /// [`crate::capture::read_back`]), with what `held` covers: what a share
-    /// stream pushes, or the session's own look at a display.
+    /// [`crate::capture::read_back`]), with what `held` covers: what a share stream pushes, or the
+    /// session's own look at a display.
     fn read_back(
         &mut self,
         _state: &mut State,
@@ -206,9 +193,8 @@ pub trait Backend {
         )))
     }
 
-    /// What `target` shows now, drawn to fit `max` and read back as rows of
-    /// R, G, B, A (see [`crate::capture::read_back_scaled`]): a frame of the
-    /// stream a wireless display is sent.
+    /// What `target` shows now, drawn to fit `max` and read back as rows of R, G, B, A (see
+    /// [`crate::capture::read_back_scaled`]): a frame of the stream a wireless display is sent.
     fn read_back_scaled(
         &mut self,
         _state: &mut State,
@@ -220,7 +206,7 @@ pub trait Backend {
         )))
     }
 
-    /// The last frame drawn on the output named `name`.
+    /// The last frame drawn on the output named `name` .
     fn screenshot(&mut self, _state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
         Err(BackendError(format!(
             "{name}: this backend does not read frames back"
@@ -229,8 +215,8 @@ pub trait Backend {
 }
 
 impl dyn Backend {
-    /// [`Backend::configure`] after the checks every backend shares, then
-    /// the windows laid out on the new arrangement.
+    /// [`Backend::configure`] after the checks every backend shares, then the windows laid out on
+    /// the new arrangement.
     pub(crate) fn configure_checked(
         &mut self,
         state: &mut State,
@@ -256,8 +242,7 @@ impl dyn Backend {
         Ok(())
     }
 
-    /// Write the gamma ramps whose wanted value changed (night light, a
-    /// gamma tool).
+    /// Write the gamma ramps whose wanted value changed (night light, a gamma tool).
     pub(crate) fn sync_gamma(&mut self, state: &mut State) {
         let shown: Vec<String> = state
             .space
@@ -275,8 +260,8 @@ impl dyn Backend {
         }
     }
 
-    /// Switch the panels whose wanted power changed (idle blanking, a power
-    /// tool, a configuration) and tell power tools how they are.
+    /// Switch the panels whose wanted power changed (idle blanking, a power tool, a configuration)
+    /// and tell power tools how they are.
     pub(crate) fn sync_power(&mut self, state: &mut State) {
         let outputs = state.output_states();
         for (name, on) in state.output_power.changes(&outputs) {
@@ -342,7 +327,7 @@ pub(crate) fn refuse_disabling(changes: &[OutputChange]) -> Result<(), BackendEr
     }
 }
 
-/// A [`BackendError`] for `what`, with the underlying error's description.
+/// A [`BackendError`] for `what` , with the underlying error's description.
 pub fn failed(what: &str, error: impl std::fmt::Debug) -> BackendError {
     BackendError(format!("{what}: {error:?}"))
 }

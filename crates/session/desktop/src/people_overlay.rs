@@ -1,30 +1,21 @@
-//! The people overlay: who is here, pinned out of the roster into a small
-//! panel that floats over the windows.
-//!
-//! The roster dropdown ([`crate::collaborators`]) answers "who is here?"
-//! once; pinned, the same rows stay in view while the person works. The
-//! panel rests against an edge of the screen, wherever it was last dragged
-//! to (`dock`, the desk widgets' own edge mechanism), and never takes the keyboard: it only
-//! answers the pointer over it.
-//!
-//! Each row is a face, a name and what the person is doing: their own
-//! words first, else an automatic description of what they did (a
-//! model's, or the host's plain reading), marked as such, with where they
-//! are after it; else only where they are. Agents carry their tag and are
-//! listed after the people.
-//!
-//! The person's own row leads the list (`own_status`): their face beside
-//! a field with what they say they are doing, which they change right
-//! there.
-//!
-//! Resting the pointer on a row (about a quarter second, so passing over
-//! the list opens nothing) opens a peek beside the panel (`peek`): a
-//! picture of their screen built from what their presence says, never a
-//! stream of it, with Follow.
-//!
-//! The host supplies the rows (the roster's own, already filtered by what
-//! each person lets others see) and each person's screen, and applies the
-//! [`PeopleHit`]s: following goes through the host's one follow mechanism.
+//! The people overlay: who is here, pinned out of the roster into a small panel that floats over
+//! the windows.
+//! The roster dropdown ([`crate::collaborators`]) answers "who is here?" once; pinned, the same
+//! rows stay in view while the person works. The panel rests against an edge of the screen,
+//! wherever it was last dragged to (`dock`, the desk widgets' own edge mechanism), and never takes
+//! the keyboard: it only answers the pointer over it.
+//! Each row is a face, a name and what the person is doing: their own words first, else an
+//! automatic description of what they did (a model's, or the host's plain reading), marked as such,
+//! with where they are after it; else only where they are. Agents carry their tag and are listed
+//! after the people.
+//! The person's own row leads the list (`own_status`): their face beside a field with what they say
+//! they are doing, which they change right there.
+//! Resting the pointer on a row (about a quarter second, so passing over the list opens nothing)
+//! opens a peek beside the panel (`peek`): a picture of their screen built from what their presence
+//! says, never a stream of it, with Follow.
+//! The host supplies the rows (the roster's own, already filtered by what each person lets others
+//! see) and each person's screen, and applies the [`PeopleHit`]s: following goes through the host's
+//! one follow mechanism.
 
 mod dock;
 mod own_status;
@@ -48,17 +39,17 @@ use crate::i18n::{t, t_args};
 
 pub use crate::desk_edges::DockEdge;
 
-/// How long the pointer rests on a row before its peek opens: long enough
-/// that passing over the list opens nothing, short enough to feel direct.
+/// How long the pointer rests on a row before its peek opens: long enough that passing over the
+/// list opens nothing, short enough to feel direct.
 pub const HOVER_INTENT: Duration = Duration::from_millis(250);
-/// How long the peek stays after the pointer left the row and the peek, so
-/// a path from one to the other that clips the gap does not close it.
+/// How long the peek stays after the pointer left the row and the peek, so a path from one to the
+/// other that clips the gap does not close it.
 const LEAVE_GRACE: Duration = Duration::from_millis(220);
 /// A face in a row.
 const FACE: f64 = 28.0;
 
-/// What a person's screen looks like, as their presence says: the windows
-/// on the part of their workspace in front of them.
+/// What a person's screen looks like, as their presence says: the windows on the part of their
+/// workspace in front of them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PeerScreen {
     /// The roster id of the person.
@@ -77,12 +68,11 @@ pub struct PeerWindow {
     pub app: String,
     /// The app's name.
     pub app_name: String,
-    /// What it shows, when that is shared with this person: its title.
-    /// `None` for a window on something not shared with them, which shows
-    /// as its app and nothing more.
+    /// What it shows, when that is shared with this person: its title. `None` for a window on
+    /// something not shared with them, which shows as its app and nothing more.
     pub title: Option<String>,
-    /// The window on this device showing the same thing, when there is
-    /// one: its live picture stands for theirs.
+    /// The window on this device showing the same thing, when there is one: its live picture stands
+    /// for theirs.
     pub picture: Option<u64>,
     /// The window in front of them.
     pub focused: bool,
@@ -103,19 +93,19 @@ pub enum Pictured {
     No,
     /// The window as it looks now.
     Live,
-    /// The window as it looked when this device last showed it: it has
-    /// been off screen since, and the peek marks it so.
+    /// The window as it looked when this device last showed it: it has been off screen since, and
+    /// the peek marks it so.
     AsLastSeen,
 }
 
-/// Paints this device's live picture of a window ([`PeerWindow::picture`])
-/// fitted into a rect, and says what it showed.
+/// Paints this device's live picture of a window ([`PeerWindow::picture`]) fitted into a rect, and
+/// says what it showed.
 pub trait PeekPictures {
     fn paint(&mut self, window: u64, scene: &mut Scene, transform: Affine, rect: Rect) -> Pictured;
 }
 
-/// The live pictures the strip keeps of this device's windows, by window
-/// group ([`ui::window_pictures`]): what every host's peek shows.
+/// The live pictures the strip keeps of this device's windows, by window group
+/// ([`ui::window_pictures`]): what every host's peek shows.
 pub struct LivePictures;
 
 impl PeekPictures for LivePictures {
@@ -147,18 +137,17 @@ impl PeekPictures for NoPictures {
 pub struct PeopleOverlayModel<'a> {
     /// The area the overlay floats in: the screen under the bar.
     pub host: Rect,
-    /// What already waits at the edges (desk widgets, a call card): the
-    /// panel steps past them as a widget does.
+    /// What already waits at the edges (desk widgets, a call card): the panel steps past them as a
+    /// widget does.
     pub occupied: &'a [Rect],
     /// The roster's rows, as the dropdown has them.
     pub rows: &'a [RosterRow],
     pub screens: &'a [PeerScreen],
     /// Whom this person follows, by roster id.
     pub followed_id: Option<&'a str>,
-    /// This person, as everyone here reads them (their status their own
-    /// words, or what is said of them automatically): their row leads the
-    /// list, with a field to say what they are doing. `None` lists only
-    /// the others.
+    /// This person, as everyone here reads them (their status their own words, or what is said of
+    /// them automatically): their row leads the list, with a field to say what they are doing.
+    /// `None` lists only the others.
     pub own: Option<&'a RosterRow>,
 }
 
@@ -169,13 +158,12 @@ pub enum PeopleHit {
     ToggleFollow(String),
     /// Close the overlay: the roster goes back to the bar.
     Unpin,
-    /// The panel was dragged to another edge; keep it where the desk
-    /// widgets keep theirs.
+    /// The panel was dragged to another edge; keep it where the desk widgets keep theirs.
     Moved(DockEdge),
     /// Say this in your own words as what you are doing; empty clears it.
     SetStatus(String),
-    /// Open the card of the person with this roster id, beside their row
-    /// (`anchor`): a click on a row, or Enter on it.
+    /// Open the card of the person with this roster id, beside their row (`anchor`): a click on a
+    /// row, or Enter on it.
     ShowPerson { id: String, anchor: Rect },
 }
 
@@ -199,8 +187,7 @@ pub struct PeopleOverlay {
     /// The person the pointer rests on, and since when.
     hover: Option<(String, Instant)>,
     peek: peek::Peek,
-    /// The person's own row: where it is, and the field saying what they
-    /// are doing.
+    /// The person's own row: where it is, and the field saying what they are doing.
     own_row: Rect,
     own_status: own_status::OwnStatus,
     /// When the pointer left the row and peek.
@@ -231,18 +218,18 @@ impl Default for PeopleOverlay {
     }
 }
 
-/// What a row says under a person's name: what they are doing, where they
-/// are when that adds something, and whether software wrote it.
+/// What a row says under a person's name: what they are doing, where they are when that adds
+/// something, and whether software wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowLine {
     /// A call they are in, their own words, else an automatic description;
     /// else only where they are.
     pub doing: String,
-    /// Where they are, under what they are doing: only with a description
-    /// that does not already say it.
+    /// Where they are, under what they are doing: only with a description that does not already say
+    /// it.
     pub place: Option<String>,
-    /// Software wrote `doing` (a model's line or the host's reading), which
-    /// the row marks so it never passes for their own words.
+    /// Software wrote `doing` (a model's line or the host's reading), which the row marks so it
+    /// never passes for their own words.
     pub automatic: bool,
 }
 
@@ -269,9 +256,9 @@ pub fn row_line(row: &RosterRow) -> Option<RowLine> {
     })
 }
 
-/// The line under a person's name: a call they are in, else their own
-/// words, else what a model wrote of what they did, else where they are.
-/// With who wrote it, so a model's line is never shown as their own.
+/// The line under a person's name: a call they are in, else their own words, else what a model
+/// wrote of what they did, else where they are. With who wrote it, so a model's line is never shown
+/// as their own.
 #[must_use]
 pub fn doing(row: &RosterRow) -> Option<(String, LineSource)> {
     if let Some(call) = &row.call {
@@ -381,8 +368,8 @@ impl PeopleOverlay {
         self.dock.is_held() || self.targets.wants_pointer_capture()
     }
 
-    /// Whether anything is moving: the overlay arriving, the panel settling
-    /// on its edge, the peek opening.
+    /// Whether anything is moving: the overlay arriving, the panel settling on its edge, the peek
+    /// opening.
     #[must_use]
     pub fn needs_animation_frame(&self) -> bool {
         let now = ui::motion::frame_now();
@@ -393,8 +380,8 @@ impl PeopleOverlay {
             || (self.peek.person().is_some() && ui::window_pictures::owes_any())
     }
 
-    /// When the overlay next needs drawing without input: a pointer at
-    /// rest on a row opens its peek then, one that left closes it then.
+    /// When the overlay next needs drawing without input: a pointer at rest on a row opens its peek
+    /// then, one that left closes it then.
     #[must_use]
     pub fn next_wake_deadline(&self) -> Option<Instant> {
         let open_at = self
@@ -421,8 +408,8 @@ impl PeopleOverlay {
         self.left_at = None;
     }
 
-    /// Paint the overlay for `model`, `pictures` drawing the live pictures
-    /// of windows shared with this person.
+    /// Paint the overlay for `model` , `pictures` drawing the live pictures of windows shared with
+    /// this person.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -636,8 +623,7 @@ impl PeopleOverlay {
         }
     }
 
-    /// The person's own row: their face beside the field, with room above
-    /// and below it.
+    /// The person's own row: their face beside the field, with room above and below it.
     fn own_height(theme: &Theme, row_h: f64) -> f64 {
         (own_status::height(theme) + 2.0 * f64::from(theme.tokens.spacing.s2)).max(row_h)
     }
@@ -730,8 +716,7 @@ impl PeopleOverlay {
         }
     }
 
-    /// The header: a grip saying the panel moves, how many are here, and
-    /// the way back to the bar.
+    /// The header: a grip saying the panel moves, how many are here, and the way back to the bar.
     fn paint_header(
         &self,
         scene: &mut Scene,
@@ -796,8 +781,7 @@ impl PeopleOverlay {
         );
     }
 
-    /// The person's own row: their face, and the field saying what they
-    /// are doing.
+    /// The person's own row: their face, and the field saying what they are doing.
     fn paint_own(
         &mut self,
         scene: &mut Scene,
@@ -887,13 +871,12 @@ impl PeopleOverlay {
         }
         if let Some(line) = &line {
             face = match &line.place {
-                // Where they are stays a quieter line of its own under
-                // what they are doing.
+                // Where they are stays a quieter line of its own under what they are doing.
                 Some(place) => face.subtitle(&line.doing).secondary(place),
                 None => face.secondary(&line.doing),
             };
-            // Software's words about someone are marked as such: never
-            // shown as if they had said them.
+            // Software's words about someone are marked as such: never shown as if they had said
+            // them.
             if line.automatic {
                 face = face.mark(Icon::Sparkles);
             }
@@ -902,8 +885,8 @@ impl PeopleOverlay {
             &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             place.rect,
         );
-        // Following someone shows on their row without a hover; Follow
-        // itself waits for the pointer, so the list stays quiet.
+        // Following someone shows on their row without a hover; Follow itself waits for the
+        // pointer, so the list stays quiet.
         if place.follow.area() > 0.0 && (hovered || following || peeked) {
             ui::widget::Button::paint(
                 scene,
@@ -938,8 +921,7 @@ impl PeopleOverlay {
         }
     }
 
-    /// The targets this frame painted, for presses and assistive
-    /// technology.
+    /// The targets this frame painted, for presses and assistive technology.
     fn register_targets(&mut self) {
         self.targets.begin_frame();
         self.targets
@@ -997,14 +979,14 @@ impl PeopleOverlay {
         self.targets.end_frame();
     }
 
-    /// Text an input method committed while the field of what this person
-    /// is doing holds the keyboard.
+    /// Text an input method committed while the field of what this person is doing holds the
+    /// keyboard.
     pub fn commit_text(&mut self, text: &str) -> bool {
         self.own_status.commit_text(text)
     }
 
-    /// A key while the field of what this person is doing holds the
-    /// keyboard. `None` when the key is not the overlay's.
+    /// A key while the field of what this person is doing holds the keyboard. `None` when the key
+    /// is not the overlay's.
     pub fn key(
         &mut self,
         key: &Key,
@@ -1020,9 +1002,8 @@ impl PeopleOverlay {
         }
     }
 
-    /// Route `event` (in logical points through `scale`). Marks it handled
-    /// when the pointer is over the overlay; never takes the keyboard
-    /// unless the status field was pressed.
+    /// Route `event` (in logical points through `scale` ). Marks it handled when the pointer is
+    /// over the overlay; never takes the keyboard unless the status field was pressed.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1105,9 +1086,8 @@ impl PeopleOverlay {
         hit
     }
 
-    /// A press at `point`: on the status field it takes the keyboard; on the
-    /// panel it may start a drag; anywhere else it lets go of the field and
-    /// the peek, unless the pointer is on it.
+    /// A press at `point` : on the status field it takes the keyboard; on the panel it may start a
+    /// drag; anywhere else it lets go of the field and the peek, unless the pointer is on it.
     fn press(&mut self, point: Point, handled: &mut bool) -> Option<PeopleHit> {
         if self.own_row.area() > 0.0 && self.own_status.field_contains(point) {
             self.own_status.focus();
@@ -1144,8 +1124,8 @@ impl PeopleOverlay {
         None
     }
 
-    /// The pointer moved to `point`: the row it rests on starts its hover
-    /// intent; leaving the row and peek starts the grace.
+    /// The pointer moved to `point` : the row it rests on starts its hover intent; leaving the row
+    /// and peek starts the grace.
     fn track_hover(&mut self, point: Point, now: Instant) {
         let over_row = self
             .rows
@@ -1195,8 +1175,8 @@ impl PeopleOverlay {
                 return Some(PeopleHit::ToggleFollow(person.to_owned()));
             }
             if let Some(person) = id.strip_prefix("row:") {
-                // A click opens their card, which a touch reaches too (it has
-                // no hover to peek with); the peek gives way to it.
+                // A click opens their card, which a touch reaches too (it has no hover to peek
+                // with); the peek gives way to it.
                 let anchor = self
                     .rows
                     .iter()
@@ -1218,9 +1198,8 @@ impl PeopleOverlay {
         self.targets.accessibility_children()
     }
 
-    /// Carry out what assistive technology asked of one of
-    /// [`Self::accessibility_children`] (its action target), as a press
-    /// on it would: what the host applies, if anything.
+    /// Carry out what assistive technology asked of one of [`Self::accessibility_children`] (its
+    /// action target), as a press on it would: what the host applies, if anything.
     pub fn perform_semantic_action(
         &mut self,
         action: &ui::a11y::Action,

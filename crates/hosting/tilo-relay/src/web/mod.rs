@@ -41,8 +41,8 @@ use hyper::{Method, Request, Response, StatusCode, header};
 use tilo_relay_protocol::certify::CertifyReply;
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
-    API_PREFIX, EventsRequest, HostInfo, MAX_POLL_MS, MAX_REQUEST_BYTES, NodeInfo, SESSION_HEADER,
-    SessionFinish,
+    API_PREFIX, EventsRequest, HostAddress, HostInfo, MAX_POLL_MS, MAX_REQUEST_BYTES, NodeInfo,
+    SESSION_HEADER, SessionFinish,
 };
 use tilo_user_identity::CertificationRequest;
 
@@ -140,7 +140,8 @@ pub struct WebHandle {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     published_origin: Option<Arc<String>>,
-    sessions: Arc<Sessions>,
+    /// The pages' plane: the one account of who is here.
+    presence: Arc<wt::Pages>,
 }
 
 impl WebHandle {
@@ -150,7 +151,11 @@ impl WebHandle {
     /// count is its open pages.
     #[must_use]
     pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
-        self.sessions.online_users()
+        self.presence
+            .participants()
+            .into_iter()
+            .map(|(user, devices)| (user, devices.len()))
+            .collect()
     }
 }
 
@@ -329,6 +334,7 @@ impl Relay {
             let _ = context.relay.carried_calls.set(workspaces.downgrade());
         }
         let host_cert = context.relay.identity.cert.clone();
+        let node_addr = self.node_addr();
         let mut live = wt::Live::start(
             plane,
             &identity,
@@ -346,7 +352,13 @@ impl Relay {
         );
         let web = Arc::new(Web {
             sessions: sessions.clone(),
-            host_info: HostInfo { host_cert },
+            host_info: HostInfo {
+                host_cert,
+                address: Some(HostAddress {
+                    endpoint_addr: node_addr.clone(),
+                    relay_url: node_addr.relay_urls().next().map(ToString::to_string),
+                }),
+            },
             allowed_origins: config.allowed_origins,
             features: self.web_features() | fetch.features(),
             workspaces: self.workspaces().cloned(),
@@ -387,7 +399,7 @@ impl Relay {
             tasks,
             locator_origin: Arc::clone(&self.browser_origin),
             published_origin,
-            sessions,
+            presence: plane.pages.clone(),
         })
     }
 }
@@ -970,7 +982,7 @@ async fn route(
             let finish: SessionFinish = decode(&bytes)?;
             let grant = web
                 .sessions
-                .finish(&finish.handshake, &finish.ack2, finish.background)
+                .finish(&finish.handshake, &finish.ack2)
                 .map_err(|error| session_status(&error))?;
             Ok(match protocol::encode_grant(&grant, web.features) {
                 Ok(bytes) => reply(StatusCode::OK, bytes),
@@ -1032,7 +1044,9 @@ async fn route(
                 std::time::Instant::now(),
                 tilo_clock::unix_now_ms(),
             );
-            here::pair_members(&mut reply, &web.sessions.persons_in(workspace_id));
+            if let Some(live) = web.live.as_ref() {
+                here::pair_members(&mut reply, &live.pages.persons_in(workspace_id));
+            }
             for person in &mut reply.people {
                 person.profile_ms = web.profiles.issued_at(&person.user).unwrap_or(0);
             }
@@ -1065,7 +1079,11 @@ async fn route(
                 .workspaces
                 .as_ref()
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            let online = web.sessions.online_users().into_keys().collect();
+            let online = web
+                .live
+                .as_ref()
+                .map(|live| live.pages.participants().into_keys().collect())
+                .unwrap_or_default();
             Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
                 workspaces: workspaces.directory(&online).await,
             }))

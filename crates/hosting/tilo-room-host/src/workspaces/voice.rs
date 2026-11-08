@@ -89,8 +89,8 @@ struct State {
     watchers: HashMap<String, Vec<Watcher>>,
     /// Workspaces whose call list changed since their watchers were last told.
     changed: std::collections::BTreeSet<String>,
-    /// The calls of each workspace this relay carries but does not govern, by
-    /// [`carried_call_room`]: the policy it would otherwise read from the
+    /// The calls of each workspace this relay carries but does not govern,
+    /// by [`carried_call_room`]: the policy it would otherwise read from the
     /// workspace's governance.
     carried: HashMap<String, WorkspaceMediaV1>,
 }

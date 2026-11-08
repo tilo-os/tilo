@@ -269,9 +269,6 @@ impl Messages {
     /// first; with a conversation (its id, its item address or who it is
     /// with), its latest messages, oldest first; with a message's id, that
     /// message.
-    ///
-    /// # Errors
-    /// When `item` names no conversation or message here.
     pub fn read(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item
             .map(Id::as_str)
@@ -351,9 +348,6 @@ impl Messages {
 
     /// The messages holding every word of `query` (any case) in their
     /// sender, recipient, conversation or text, newest first.
-    ///
-    /// # Errors
-    /// When the query has no words.
     pub fn search(&self, query: &str) -> Result<serde_json::Value, String> {
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
         if words.is_empty() {

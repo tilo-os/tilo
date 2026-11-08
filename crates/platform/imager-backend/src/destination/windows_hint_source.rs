@@ -21,8 +21,6 @@ pub struct Source {
 }
 impl Source {
     /// Reader also used against a held real medium descriptor by native tests.
-    /// # Errors
-    /// Rejects invalid operations, unreadable media or a mismatched expectation.
     pub fn read(
         source: &mut (impl Read + Seek),
         size: u64,
@@ -40,8 +38,6 @@ impl Source {
     }
     /// Loads only the block copied alongside the accepted boot profile. There
     /// is no removable-disk scan and no fallback to another attached export.
-    /// # Errors
-    /// Rejects missing, malformed or mismatched boot blocks and invalid operations.
     pub fn from_boot(expected: &Expectation, operation: &str) -> io::Result<Self> {
         Self::from_extracted(Path::new(BOOT_BLOCK), expected, operation)
     }
@@ -54,8 +50,6 @@ impl Source {
     }
     /// Return review-only suggestions, never tokens, consent or sign-in grants.
     /// The current private operation must match even for the same media digest.
-    /// # Errors
-    /// Rejects stale operations, wrong passwords and mismatched media expectations.
     pub fn unlock(
         &self,
         password: &[u8],

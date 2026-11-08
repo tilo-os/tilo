@@ -107,9 +107,6 @@ pub fn which(name: &str) -> bool {
 pub trait Host {
     /// `rpm -qa` of the base: one `NAME EPOCHNUM:VERSION-RELEASE.ARCH` line
     /// per package.
-    ///
-    /// # Errors
-    /// rpm cannot run or fails.
     fn rpm_query_all(&self, layout: &Layout) -> Result<Vec<String>> {
         let root = layout.root.as_os_str();
         let output = run(
@@ -299,9 +296,6 @@ pub trait Host {
     ///
     /// The sealed image masks it (docs/security/boot-chain.md); the unsealed
     /// development image unmasks it for its own layers.
-    ///
-    /// # Errors
-    /// systemctl cannot run.
     fn sysext_masked(&self) -> Result<bool> {
         let output = run(
             &[

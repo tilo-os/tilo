@@ -35,6 +35,9 @@ mod hint_places;
 pub use hint_places::HintPlaces;
 #[path = "group_row_canvas.rs"]
 mod canvas;
+#[path = "group_row_floats.rs"]
+mod floats;
+pub use floats::FloatAsk;
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -393,6 +396,17 @@ pub struct GroupRow {
     /// A window carried to a new canvas place, for the host to keep
     /// ([`Self::take_pending_canvas_move`]).
     pending_canvas_move: Option<(u64, Rect)>,
+    /// Windows floating above the desk at a rect of their own, by group id,
+    /// in the surface's coordinates ([`floats`]).
+    floats: HashMap<u64, Rect>,
+    /// The rect a floating window was at when its drag began.
+    float_drag_from: Option<Rect>,
+    /// Where a float the person moved or snapped goes, for the host to keep
+    /// ([`Self::take_pending_float`]).
+    pending_float: Option<FloatAsk>,
+    /// How open each floating window is drawn: one lifted fades in over the
+    /// desk, one snapped fades back into its strip.
+    float_fade: HashMap<u64, crate::motion::Presence>,
 }
 
 /// What of a group at `rect` the draw viewport shows across, limited to the group, which its
@@ -1196,6 +1210,10 @@ impl GroupRow {
             canvas: None,
             canvas_drag_from: None,
             pending_canvas_move: None,
+            floats: HashMap::new(),
+            float_drag_from: None,
+            pending_float: None,
+            float_fade: HashMap::new(),
         }
     }
 
@@ -1260,7 +1278,8 @@ impl GroupRow {
         let Some(group) = self.groups.get(i) else {
             return false;
         };
-        if self.canvas.is_some() {
+        // A floating window stands over the strip whatever it holds.
+        if self.is_floating(group.id) || self.canvas.is_some() {
             return false;
         }
         if group.maximized || self.fullscreen_group == Some(group.id) {
@@ -1581,6 +1600,11 @@ impl GroupRow {
     /// The shown group a left press at the remembered cursor lands in;
     /// mouse buttons carry no position of their own.
     pub fn group_under_cursor(&self) -> Option<u64> {
+        // A window lifted over the desk is the one under the press there:
+        // it stands above the strip.
+        if let Some(group) = self.float_group_at(self.last_cursor) {
+            return Some(group);
+        }
         self.groups
             .iter()
             .enumerate()
@@ -2229,8 +2253,8 @@ impl GroupRow {
     }
 
     /// Have the parent's draw skip this row, recording only its transform,
-    /// so its owner draws it into a scene of its own with
-    /// [`Self::draw_apart`]: a presenter that pans each strip on its own
+    /// so its owner draws it into a scene of its own
+    /// with [`Self::draw_apart`]: a presenter that pans each strip on its own
     /// needs each strip's drawing apart from the others'.
     pub fn set_drawn_apart(&mut self, apart: bool) {
         self.drawn_apart = apart;
@@ -3373,6 +3397,13 @@ impl GroupRow {
             self.carry_on_canvas(drag.group_id, self.last_cursor - drag.start);
             return true;
         }
+        if drag.moved && self.floats.contains_key(&drag.group_id) {
+            if lifted && let Some(group) = self.groups.iter_mut().find(|g| g.id == drag.group_id) {
+                group.cancel_press_for_carry();
+            }
+            self.carry_float_drag(drag.group_id, drag.start);
+            return true;
+        }
         if drag.moved {
             let (target, lane) = self.group_insertion_for(self.last_cursor);
             self.group_reorder_target = Some(target);
@@ -3409,6 +3440,17 @@ impl GroupRow {
         }
         if self.canvas.is_some() {
             self.put_down_on_canvas(drag.group_id, commit && drag.moved);
+            return claimed;
+        }
+        if self.float_drag_from.is_some() {
+            self.put_down_float(drag.group_id, commit && drag.moved);
+            self.group_reorder_target = None;
+            self.group_reorder_lane = None;
+            return claimed;
+        }
+        // Let go where the strip is not: the window floats at the hand.
+        if commit && drag.moved && !self.covers(self.last_cursor) {
+            self.lift_from_drag(drag.group_id);
             return claimed;
         }
         let lane = self.group_reorder_lane.take();
@@ -4069,6 +4111,9 @@ impl GroupRow {
     /// rejected: it silently shrinks siblings on every spawn, breaking the infinite-strip
     /// invariant.
     fn group_node_style(&self, plan: &RowPlan, i: usize, own: Style) -> Style {
+        if let Some(style) = self.float_node_style(i, &own) {
+            return style;
+        }
         if let (Some(view), Some(group)) = (&self.canvas, self.groups.get(i)) {
             return Self::canvas_node_style(view, group.id, own);
         }
@@ -4509,11 +4554,15 @@ impl Widget for GroupRow {
             return;
         }
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // A floating window is laid out at its own rect, never in the flow
+        // of a lane or canvas: what the strip measures stays its own.
+        let floating = self.floating_flags();
         // Portable hosts learn their width here. Rebuild provisional widths
         // in the same bounded settlement, including a same-viewport root swap.
         self.structure_dirty |= !self.width_basis_is_current();
         if let Some(view) = self.canvas.clone() {
             self.apply_canvas_layout(taffy, &view);
+            self.apply_float_layout(taffy);
             self.sync_handle_neighbours();
             self.recheck_edge_hover();
             return;
@@ -4556,6 +4605,9 @@ impl Widget for GroupRow {
         let spans_aligned = self.node_ids.len() == self.groups.len();
         let mut spans: Vec<Vec<(u64, f64, f64)>> = vec![Vec::new(); runs];
         for (i, &cn) in self.node_ids.iter().enumerate() {
+            if floating.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             let cl = taffy.layout(cn).copied().unwrap_or_default();
             let k = lane_of
                 .get(i)
@@ -4672,10 +4724,15 @@ impl Widget for GroupRow {
             if hide.get(i).copied().unwrap_or(false) {
                 continue;
             }
+            // A floating window is laid out at its float, not in its lane.
+            if floating.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             let k = lane_of.get(i).copied().unwrap_or(0);
             let origin = origins.get(k).copied().unwrap_or(Point::ORIGIN);
             g.apply_layout(taffy, *child_id, origin);
         }
+        self.apply_float_layout(taffy);
         // Measured on screen, after the pan: a close or insert re-frames
         // the pan in this same pass, and only the drawn position is what
         // must not jump. Only trusted when taffy has a node per group.
@@ -4882,6 +4939,8 @@ impl Widget for GroupRow {
         let kept = &self.pan_kept;
         self.pan_drawings
             .retain(|drawing| kept.contains(&drawing.id));
+        // The windows lifted over the desk, above every strip.
+        self.draw_floats(scene, transform, (tr, theme, presence));
         self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
     }
@@ -5094,8 +5153,9 @@ impl Widget for GroupRow {
         // A wheel-pan changes `scroll_x` without touching the row's rect or any child's dirty bit,
         // so without this the parent's cached scene would keep painting pre-scroll positions. The
         // sibling fade changes what the row paints with no child dirty: a parent's subtree cache
-        // would keep re-emitting the fade's first frame.
-        if self.scroll_dirty || self.sibling_fade_needs_frame() {
+        // would keep re-emitting the fade's first frame. A float fading in or out asks for frames
+        // of its own, on the same cache.
+        if self.scroll_dirty || self.sibling_fade_needs_frame() || self.float_fade_needs_frame() {
             return true;
         }
         // A window just wanted small has no picture until the strip draws
@@ -5158,6 +5218,7 @@ impl Widget for GroupRow {
                 .group_resist_back
                 .is_some_and(|(id, _)| self.group_pull(id).is_some())
             || self.sibling_fade_needs_frame()
+            || self.float_fade_needs_frame()
             || self
                 .groups
                 .iter()
@@ -5382,6 +5443,7 @@ impl GroupRow {
                     let sibling = &mut self.groups[i];
                     if i == max_i
                         || !in_run.get(i).copied().unwrap_or(false)
+                        || self.floats.contains_key(&sibling.id)
                         || self.shown_elsewhere.contains(&sibling.id)
                     {
                         continue;
@@ -5422,6 +5484,10 @@ impl GroupRow {
         });
         for i in 0..self.groups.len() {
             if !in_run.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            // Floating windows are drawn in their own pass, over the strip.
+            if self.floats.contains_key(&self.groups[i].id) {
                 continue;
             }
             let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
@@ -5804,6 +5870,10 @@ impl GroupRow {
     /// which on a wide window is tens of pixels.
     fn group_drag_lift(&self, theme: &Theme) -> Option<Affine> {
         let drag = self.group_drag.filter(|drag| drag.moved && !drag.held)?;
+        // A floating window follows the hand itself: no lifted copy of it.
+        if self.is_floating(drag.group_id) {
+            return None;
+        }
         let progress = if theme.reduce_motion {
             1.0
         } else {
@@ -5999,6 +6069,7 @@ impl GroupRow {
                         !self.layout_hides_group(i) && group.wants_pointer_capture()
                     })
                 })
+                .or_else(|| self.float_under_cursor())
                 .or_else(|| {
                     self.groups.iter().enumerate().position(|(i, group)| {
                         !self.layout_hides_group(i) && group.get_rect().contains(self.last_cursor)
@@ -6789,7 +6860,7 @@ mod tests {
     /// 1200 puts the width tiers on whole hundreds (Narrow 400 / Normal
     /// 800 / Wide 1200), so fraction-based group widths get round pixel
     /// numbers to assert against.
-    const FIXTURE_USABLE_PX: f64 = 1200.0;
+    pub(super) const FIXTURE_USABLE_PX: f64 = 1200.0;
 
     fn one_display(usable: f64) -> Vec<OutputSpan> {
         vec![OutputSpan {
@@ -11027,6 +11098,9 @@ mod drag_tests;
 #[cfg(test)]
 #[path = "group_row_edge_tests.rs"]
 mod edge_tests;
+#[cfg(test)]
+#[path = "group_row_float_tests.rs"]
+mod float_tests;
 #[cfg(test)]
 #[path = "group_row_keyboard_tests.rs"]
 mod keyboard_tests;

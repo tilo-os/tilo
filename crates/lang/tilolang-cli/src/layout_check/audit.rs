@@ -59,13 +59,22 @@ pub enum Kind {
     /// A surface hanging over the window, a popover or a sheet, reaching past the window's
     /// edges: what it says there is cut off or cannot be pressed.
     PastWindow,
-    /// A column's title cut off while the header row beside it keeps room: the title was laid
-    /// out narrower than what it says, and nothing stands there to take the rest.
+    /// A column's header row that broke the row's own rule: a title cut off while the row could
+    /// have given it more (room standing empty beside it, or an action keeping a label it could
+    /// show as its icon), or a row that dropped the app's primary action.
     TitleClippedWithRoom,
+    /// A word the window shows from a catalogue in another language than the one it speaks: a
+    /// window says everything in one language, so a German word in an English window (or the
+    /// source standing in for a translation the window's own catalogues lack) is a fault.
+    MixedLanguage,
+    /// An item standing open where it stands, outside the list that shows it: the row that
+    /// opened it is no row of a list the person sees, or more than one row of one list stands
+    /// open at a time.
+    OpenOutsideList,
 }
 
 impl Kind {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 23] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -87,6 +96,8 @@ impl Kind {
         Self::RepeatedCount,
         Self::PastWindow,
         Self::TitleClippedWithRoom,
+        Self::MixedLanguage,
+        Self::OpenOutsideList,
     ];
 
     pub fn name(self) -> &'static str {
@@ -112,6 +123,8 @@ impl Kind {
             Self::RepeatedCount => "repeated-count",
             Self::PastWindow => "past-window",
             Self::TitleClippedWithRoom => "title-clipped-with-room",
+            Self::MixedLanguage => "mixed-language",
+            Self::OpenOutsideList => "open-outside-list",
         }
     }
 }
@@ -526,6 +539,7 @@ impl Walk<'_> {
         if geometric {
             self.overlaps(node, keys, inner_clip);
             self.counts(node, keys, own, inner_clip);
+            self.header_rows(node, keys);
         }
         for child in &node.children {
             if floats(&child.widget) {
@@ -886,6 +900,21 @@ impl Walk<'_> {
         }
     }
 
+    /// A column's header row as the shell settled it: the row holds its title against its
+    /// actions by one rule at every width and in every language — the actions give way first,
+    /// a label for its icon and then a place in the row for the menu's door, and the row never
+    /// drops the app's primary action.
+    fn header_rows(&mut self, node: &InspectionNode, keys: &[String]) {
+        let Some(ui::widget::LayoutInfo::Headers(rows)) = &node.layout else {
+            return;
+        };
+        for row in rows.rows.iter().flatten() {
+            if let Some(detail) = header_row_problem(row) {
+                self.push(Kind::TitleClippedWithRoom, node, keys, detail);
+            }
+        }
+    }
+
     /// A column's header count that a place beside it, to its left, draws too: the same number
     /// twice on one screen.
     fn repeated_counts(&mut self) {
@@ -988,8 +1017,9 @@ impl Walk<'_> {
 }
 
 /// Text whose widget needs more room than layout gave it: taller at its width than its box, or
-/// with a word wider than its box, or a column's title cut off while its row keeps room. Each
-/// widget measures itself as layout measures it.
+/// with a word wider than its box. Each widget measures itself as layout measures it; a column
+/// header's title, which the shell elides as it paints, is held to its row's rule by
+/// [`header_row_problem`].
 pub fn clipped_text(
     root: &mut dyn Widget,
     text: &mut ui::TextRenderer,
@@ -997,7 +1027,7 @@ pub fn clipped_text(
 ) -> Vec<Problem> {
     let mut out = Vec::new();
     let clip = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
-    measure_walk(root, &mut Vec::new(), clip, f64::INFINITY, text, &mut out);
+    measure_walk(root, &mut Vec::new(), clip, text, &mut out);
     out
 }
 
@@ -1011,6 +1041,37 @@ fn title_cut_with_room(needs: f64, has: f64, free: f64) -> bool {
     needs > has + EPSILON && free > TITLE_ROOM
 }
 
+/// What is wrong with one header row, as the shell laid it out: a title cut off while an action
+/// in the row kept a label it could have shown as its icon, a title cut off with room standing
+/// empty beside it, or a row that kept its menu but not the app's primary action.
+fn header_row_problem(row: &ui::widget::HeaderRow) -> Option<String> {
+    let needs = f64::from(row.title_needs);
+    let has = f64::from(row.title_has);
+    let free = f64::from(row.free_beside_title);
+    if !row.primary_shown {
+        return Some(format!(
+            "the {} column's row keeps its menu but not its primary action",
+            row.column
+        ));
+    }
+    if needs <= has + EPSILON {
+        return None;
+    }
+    if title_cut_with_room(needs, has, free) {
+        return Some(format!(
+            "the {} column's title says {needs:.0} wide, has {has:.0}, with {free:.0} free beside it",
+            row.column
+        ));
+    }
+    row.labelled_action.then(|| {
+        format!(
+            "the {} column's title says {needs:.0} wide, has {has:.0}, beside actions keeping \
+             labels they could show as icons",
+            row.column
+        )
+    })
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "window-space sizes narrowed for taffy; never near f32::MAX"
@@ -1019,7 +1080,6 @@ fn measure_walk(
     widget: &mut dyn Widget,
     keys: &mut Vec<String>,
     clip: Rect,
-    room: f64,
     text: &mut ui::TextRenderer,
     out: &mut Vec<Problem>,
 ) {
@@ -1027,38 +1087,12 @@ fn measure_walk(
         .test_id()
         .map(|id| keys.push(id.to_owned()))
         .is_some();
-    measure_one(widget, keys, clip, room, text, out);
+    measure_one(widget, keys, clip, text, out);
     let inner = widget
         .child_clip_rect()
         .map_or(clip, |child| clip.intersect(child));
-    let edge = widget.get_rect().x1;
-    let rects: Vec<Rect> = widget
-        .children_mut()
-        .iter()
-        .map(|child| child.get_rect())
-        .collect();
-    let mut children = widget.children_mut();
-    for index in 0..rects.len() {
-        let Some(&held) = rects.get(index) else {
-            continue;
-        };
-        // The room a child has beside it: where the next thing in its row starts, or the edge
-        // of the box that holds it.
-        let room = rects
-            .iter()
-            .enumerate()
-            .filter(|(other, beside)| {
-                *other != index
-                    && beside.x0 >= held.x1 - EPSILON
-                    && beside.y1 > held.y0 + EPSILON
-                    && beside.y0 < held.y1 - EPSILON
-            })
-            .map(|(_, beside)| beside.x0)
-            .fold(edge, f64::min);
-        let Some(child) = children.get_mut(index) else {
-            continue;
-        };
-        measure_walk(&mut **child, keys, inner, room, text, out);
+    for child in widget.children_mut() {
+        measure_walk(child, keys, inner, text, out);
     }
     if pushed {
         keys.pop();
@@ -1073,7 +1107,6 @@ fn measure_one(
     widget: &mut dyn Widget,
     keys: &[String],
     clip: Rect,
-    room: f64,
     text: &mut ui::TextRenderer,
     out: &mut Vec<Problem>,
 ) {
@@ -1137,39 +1170,6 @@ fn measure_one(
             });
         }
     }
-    // A column's title is laid out by the shell and elided as it paints: what it says must fit
-    // the width it was given, and what stands empty beside it should have been its room.
-    if widget.name() == "NavShellTitle" && has_area(own) {
-        let needs = widget.measure(
-            Size {
-                width: None,
-                height: None,
-            },
-            Size {
-                width: AvailableSpace::MaxContent,
-                height: AvailableSpace::MaxContent,
-            },
-            text,
-        );
-        let needs = f64::from(needs.width);
-        let free = room - own.x1;
-        if title_cut_with_room(needs, own.width(), free) {
-            let shown = widget
-                .accessibility()
-                .and_then(|access| access.name)
-                .unwrap_or_default();
-            out.push(Problem {
-                kind: Kind::TitleClippedWithRoom,
-                keys: keys.iter().rev().cloned().collect(),
-                widget: widget.name().to_owned(),
-                id: widget.test_id().map(str::to_owned),
-                detail: format!(
-                    "says {needs:.0} wide, has {}, with {free:.0} free beside it ({shown:?})",
-                    size(own)
-                ),
-            });
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1199,6 +1199,72 @@ mod tests {
         assert!(!title_cut_with_room(180.0, 180.0, 77.0));
         assert!(!title_cut_with_room(180.0, 99.0, 8.0));
         assert!(!title_cut_with_room(180.0, 99.0, 24.0));
+    }
+
+    fn header_row(
+        needs: f32,
+        has: f32,
+        free: f32,
+        labelled: bool,
+        primary: bool,
+    ) -> ui::widget::HeaderRow {
+        ui::widget::HeaderRow {
+            column: "content",
+            title_needs: needs,
+            title_has: has,
+            free_beside_title: free,
+            labelled_action: labelled,
+            primary_shown: primary,
+        }
+    }
+
+    /// A header row holds its title against its actions by one rule: a label the row could show
+    /// as its icon gives way before the title is cut, room standing empty beside the title is
+    /// the title's, and the app's primary action never leaves the row.
+    #[test]
+    fn a_header_row_gives_up_its_labels_before_its_title() {
+        assert!(
+            header_row_problem(&header_row(180.0, 180.0, 0.0, true, true)).is_none(),
+            "a title that fits is cut off by nothing"
+        );
+        assert!(
+            header_row_problem(&header_row(180.0, 180.0, 0.0, false, true)).is_none(),
+            "labels stand while the row has room"
+        );
+        let labels = header_row_problem(&header_row(180.0, 99.0, 8.0, true, true))
+            .expect("a title cut beside labels the row could show as icons");
+        assert!(labels.contains("icons"), "{labels}");
+        assert!(
+            header_row_problem(&header_row(180.0, 99.0, 8.0, false, true)).is_none(),
+            "a title cut beside actions with nothing left to give is the row's last resort"
+        );
+        let room = header_row_problem(&header_row(180.0, 99.0, 77.0, false, true))
+            .expect("a title cut with room standing empty beside it");
+        assert!(room.contains("free beside it"), "{room}");
+        let dropped = header_row_problem(&header_row(180.0, 180.0, 0.0, false, false))
+            .expect("a row that keeps its menu and not its primary action");
+        assert!(dropped.contains("primary"), "{dropped}");
+    }
+
+    /// The shell reports how it held each header row, and the check holds it to the rule there.
+    #[test]
+    fn a_header_row_the_shell_reports_is_checked_where_it_stands() {
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+        shell.layout = Some(ui::widget::LayoutInfo::Headers(ui::widget::HeaderRows {
+            rows: [
+                None,
+                Some(header_row(120.0, 120.0, 0.0, false, false)),
+                None,
+                None,
+            ],
+        }));
+        let found: Vec<Problem> = inspect(&shell, (400, 300), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::TitleClippedWithRoom)
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].keys.first().map(String::as_str), Some("shell"));
+        assert!(found[0].detail.contains("primary"), "{}", found[0].detail);
     }
 
     fn overlaps(children: Vec<InspectionNode>) -> Vec<Problem> {

@@ -226,7 +226,7 @@ pub struct SectionCopy {
     pub plain_layers: bool,
 }
 
-/// [`damage_with_copies`]: where a section changed, and the copies that
+/// [`damage_with_copies`] — where a section changed, and the copies that
 /// explain the rest.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SectionDamage {

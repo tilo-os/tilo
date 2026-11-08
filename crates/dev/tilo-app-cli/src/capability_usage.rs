@@ -55,10 +55,6 @@ pub struct Use {
 }
 
 /// Every capability the app's shipped code uses, with the sites that show it.
-///
-/// # Errors
-///
-/// When a manifest or a reachable source file cannot be read or parsed.
 pub fn used(app_dir: &Path) -> Result<BTreeMap<String, Vec<Use>>> {
     let table = table()?;
     let mut uses: BTreeMap<String, Vec<Use>> = BTreeMap::new();

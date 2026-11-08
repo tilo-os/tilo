@@ -18,9 +18,6 @@ pub struct NextcloudCredential {
 }
 impl NextcloudCredential {
     /// Construct the precise key for the selected native account; no wildcard search.
-    ///
-    /// # Errors
-    /// Refuses missing or oversized account fields, unsafe URL forms and controls.
     pub fn new(server: &str, username: &str, account_id: &str) -> Result<Self, SecretError> {
         if !server.starts_with("https://")
             || server.len() > 2048
@@ -44,9 +41,6 @@ impl NextcloudCredential {
     }
     /// Read only this credential from the current owner's Secret Service.
     /// The service may show its own unlock prompt; no collection or item is created.
-    ///
-    /// # Errors
-    /// Refuses ambiguous matches, unavailable/locked custody, or an invalid secret.
     pub fn read_blocking(&self) -> Result<Option<Secret>, SecretError> {
         crate::linux::read_nextcloud(&self.key)
     }

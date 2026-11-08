@@ -1,11 +1,8 @@
-//! Switching to the next keyboard input source: the one the person types in
-//! after it, saved for the keyboard they typed on last, and named in a
-//! readout.
-//!
-//! Sources belong to keyboards, not to the session: a laptop's own keyboard
-//! and a plugged-in one keep their own list and their own active source
-//! ([`settings_store::keyboard_sources`]). The shared list (`all`) is the
-//! fallback both read while neither has its own.
+//! Switching to the next keyboard input source: the one the person types in after it, saved for the
+//! keyboard they typed on last, and named in a readout.
+//! Sources belong to keyboards, not to the session: a laptop's own keyboard and a plugged-in one
+//! keep their own list and their own active source ([`settings_store::keyboard_sources`]). The
+//! shared list (`all`) is the fallback both read while neither has its own.
 
 use settings_store::hardware::{
     INPUT_DEVICE_SECTION, INPUT_SECTION, INPUT_SECTIONS, KeyboardInputSource, RichInputConfig,
@@ -14,19 +11,16 @@ use settings_store::keyboard_sources::{ALL, KeyboardProfile};
 
 use crate::config::Sources;
 
-/// Type with the next input source of the keyboard last typed on: the choice
-/// is saved for that keyboard, and the session types with it from now on.
-///
-/// `None` when that keyboard has a single source: there is nothing else to
-/// type in.
+/// Type with the next input source of the keyboard last typed on: the choice is saved for that
+/// keyboard, and the session types with it from now on.
+/// `None` when that keyboard has a single source: there is nothing else to type in.
 pub(crate) fn next() -> Option<(Sources, String)> {
     let mut base = RichInputConfig::from_section(&settings_store::load_sections(INPUT_SECTIONS));
     let scope = settings_store::keyboard_sources::active_scope();
     let mut config = settings_store::keyboard_sources::effective(&base, &scope);
     config.select_next_source()?;
     let shared = scope == ALL;
-    // The shared sources are the person's everywhere; one keyboard's own are
-    // that device's.
+    // The shared sources are the person's everywhere; one keyboard's own are that device's.
     let mut values = serde_json::Map::new();
     if shared {
         values.insert(
@@ -61,8 +55,8 @@ pub(crate) fn next() -> Option<(Sources, String)> {
     Some((Sources::from_settings(&config), name))
 }
 
-/// What a person calls the source `id`: the engine by its own name, a layout
-/// by the letters it is known by (`DE`, `US INTL`).
+/// What a person calls the source `id` : the engine by its own name, a layout by the letters it is
+/// known by (`DE`, `US INTL` ).
 fn source_name(id: &str) -> String {
     if let Some(engine) = settings_store::hardware::InputMethodEngine::from_source_id(id) {
         return engine.label().to_owned();

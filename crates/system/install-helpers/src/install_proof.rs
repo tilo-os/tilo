@@ -116,9 +116,6 @@ pub struct Request {
 /// behaviour; tests replace them.
 pub trait Host {
     /// A tool's stripped standard output (30 s timeout, nonzero exit refused).
-    ///
-    /// # Errors
-    /// The tool failing, missing or timing out.
     fn command(&self, argv: &[&str]) -> Result<String> {
         crate::process::checked_text(argv, TIMEOUT)
     }
@@ -466,9 +463,6 @@ fn code_override(host: &dyn Host) -> Result<Option<String>> {
 }
 
 /// The proof for `request`.
-///
-/// # Errors
-/// Any identity missing, malformed or differing; a tool failing.
 pub fn build_proof(host: &dyn Host, request: &Request) -> Result<Value> {
     let (composefs, installed_digest, installed_origin) = installed_deployment(request)?;
     let (booted_digest, booted_composefs) = booted_image(host)?;
@@ -544,9 +538,6 @@ pub fn build_proof(host: &dyn Host, request: &Request) -> Result<Value> {
 }
 
 /// Writes `result` to `destination` through a private `.tmp` beside it.
-///
-/// # Errors
-/// A missing or unsafe directory, or a write failing.
 pub fn write(destination: &Path, result: &Value) -> Result<()> {
     require(
         destination.parent().is_some_and(|parent| {

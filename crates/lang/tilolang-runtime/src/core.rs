@@ -105,8 +105,9 @@ pub struct Core {
     /// The words packages and the platform show, in the reader's language: the source words
     /// until the host says (`Runtime::set_words`).
     pub words: RefCell<Box<dyn crate::words::Words>>,
-    /// Every loaded package's catalogues, handed to the words the host sets later too.
-    pub catalogues: RefCell<Vec<(String, String)>>,
+    /// Every loaded package's catalogues and which package of the window they belong to,
+    /// handed to the words the host sets later too.
+    pub catalogues: RefCell<Vec<crate::words::LoadedCatalogues>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The view state of every view, and the platform's own readings.

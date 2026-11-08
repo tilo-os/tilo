@@ -1486,10 +1486,6 @@ fn build_local_runtime_binary(repo: &Path) -> Result<PathBuf, String> {
 
 /// Develop the package in the running session `options.session`, or on this desktop when there
 /// is none, until interrupted.
-///
-/// # Errors
-/// The session is not running, the package does not compile at the start, or a tool of the
-/// session fails.
 pub fn dev(options: &DevOptions) -> Result<(), String> {
     let repo = session::repo_root(options.repo.as_deref(), &options.dir)?;
     let identity = crate::identity_at(&crate::state_dir().join("publisher.json"))?;

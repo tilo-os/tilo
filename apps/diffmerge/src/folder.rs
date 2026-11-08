@@ -112,11 +112,6 @@ pub fn root_label(path: &Path) -> String {
 }
 
 /// Compare the trees under `left` and `right`.
-///
-/// # Errors
-///
-/// The reason a root could not be read: it is missing, or a folder on the
-/// way is not readable.
 pub fn compare(left: &AbsolutePath, right: &AbsolutePath) -> Result<FolderComparison, String> {
     let (left_tree, left_truncated) = walk(left)?;
     let (right_tree, right_truncated) = walk(right)?;

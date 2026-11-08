@@ -33,8 +33,8 @@ pub(crate) use tilo_actions::remote::identity_admin::{
 };
 
 const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
-/// Removing a home server dials it to deliver its decommission; this bounds
-/// a server that never answers.
+/// Removing a home server dials it to deliver its decommission; this bounds a server that never
+/// answers.
 const HOME_PEER_TIMEOUT: Duration = Duration::from_secs(60);
 
 const IDENTITY: ActionParam = ActionParam::required(
@@ -119,10 +119,10 @@ pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     }
 }
 
-/// What `step` may do and answers, the same through every door. Every step
-/// is this device's own identity store. Changing the store is privileged and
-/// asked first. Delivering the home-server removals still pending signs
-/// nothing new — each was signed when it was confirmed — so it asks nothing.
+/// What `step` may do and answers, the same through every door. Every step is this device's own
+/// identity store. Changing the store is privileged and asked first. Delivering the home-server
+/// removals still pending signs nothing new — each was signed when it was confirmed — so it asks
+/// nothing.
 pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec, RetryPolicy,
@@ -183,8 +183,8 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
 /// Where the identity store and this device's identity live.
 #[derive(Clone, Debug)]
 pub(crate) struct Store {
-    /// The person's identity directory: records, root secrets, the active
-    /// selector and the device fleets.
+    /// The person's identity directory: records, root secrets, the active selector and the device
+    /// fleets.
     pub(crate) dir: PathBuf,
     /// This device's collaboration identity: its key and certificates.
     pub(crate) device: tilo_user_identity::IdentityPaths,
@@ -288,8 +288,7 @@ impl IdentityAdmin {
         }
     }
 
-    /// Run the relay administration `command` on a worker thread; the
-    /// answer is what it reported.
+    /// Run the relay administration `command` on a worker thread; the answer is what it reported.
     fn relay_admin(&self, command: HostCommand) -> Result<Pending<Answer>, String> {
         let (completer, answer) = pending();
         let runner = Arc::clone(&self.runner);
@@ -305,8 +304,8 @@ impl IdentityAdmin {
     }
 }
 
-/// The relay command that root-revokes and stops home server `device`
-/// serving through `service`. The identity directory is the session's own.
+/// The relay command that root-revokes and stops home server `device` serving through `service` .
+/// The identity directory is the session's own.
 pub(crate) fn home_peer_remove_command(store: &Store, device: &str, service: &str) -> HostCommand {
     let mut args = relay_args("home-peer-remove", store);
     args.extend(["--device", device, "--service", service].map(OsString::from));
@@ -336,8 +335,8 @@ fn relay_args(command: &str, store: &Store) -> Vec<OsString> {
     ]
 }
 
-/// What a finished relay command reported: its JSON, or an empty object
-/// for one that reports nothing.
+/// What a finished relay command reported: its JSON, or an empty object for one that reports
+/// nothing.
 fn relay_answer(finished: &Finished) -> Answer {
     if !finished.success {
         return Err(command_error(
@@ -392,7 +391,7 @@ fn protect(store: &Store, id: &str) -> Answer {
     Ok(serde_json::json!({ "id": id, "protection": protection }))
 }
 
-/// The devices trusted under `identity`, this one marked current.
+/// The devices trusted under `identity` , this one marked current.
 pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
     let devices = tilo_identity_host::device_admin::trusted_devices(
         &store.fleets(),
@@ -457,7 +456,7 @@ pub(crate) fn authorize(
         .ok_or_else(|| "no identity selected".into())
 }
 
-/// `step`'s fluent label and subtitle keys.
+/// `step` 's fluent label and subtitle keys.
 pub(crate) fn copy_keys(step: &str) -> (&'static str, &'static str) {
     match step {
         LIST => (
@@ -495,7 +494,7 @@ pub(crate) fn copy_keys(step: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// `step`, described for the broker's catalogue.
+/// `step` , described for the broker's catalogue.
 fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
     use tilo_desktop_surface::i18n::t;
     let (label, description) = copy_keys(step);
@@ -522,7 +521,7 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
     }
 }
 
-/// `argument`, in its slot form, bound to `params`.
+/// `argument` , in its slot form, bound to `params` .
 pub(crate) fn bind_slot(
     params: &[ActionParam],
     argument: Option<&str>,
@@ -580,8 +579,8 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
         &self,
         request: &tilo_action_broker::services::HostStepRequest<'_>,
     ) -> Result<Pending<tilo_action_broker::services::HostStepOutcome>, String> {
-        // The identity store is that person's own: an agent or an app acting
-        // for nobody never administers it through here.
+        // The identity store is that person's own: an agent or an app acting for nobody never
+        // administers it through here.
         let person = request
             .actor
             .direct_person()
@@ -607,8 +606,8 @@ mod tests {
     use std::sync::mpsc;
     use tilo_actions::remote::identity_admin::FleetDevice;
 
-    /// An identity store provisioned the way first boot does, in files, with
-    /// the identity its workspace selects.
+    /// An identity store provisioned the way first boot does, in files, with the identity its
+    /// workspace selects.
     struct Provisioned {
         _root: tempfile::TempDir,
         store: Store,
@@ -657,7 +656,7 @@ mod tests {
         }
     }
 
-    /// The admin whose relay commands are recorded and answered with `stdout`.
+    /// The admin whose relay commands are recorded and answered with `stdout` .
     fn recording(stdout: &'static str) -> (IdentityAdmin, Arc<Mutex<Vec<HostCommand>>>) {
         let commands = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&commands);
@@ -674,7 +673,7 @@ mod tests {
 
     #[test]
     fn identity_steps_list_change_and_protect_the_store_without_answering_a_secret() {
-        // The temporary root is bound, not dropped with `..`: it holds the store.
+        // The temporary root is bound, not dropped with `..` : it holds the store.
         let Provisioned {
             _root,
             store,
@@ -732,8 +731,8 @@ mod tests {
         ));
         assert_eq!(protected["id"], summary.id.as_str());
 
-        // Removing needs the person's confirmation, and the store keeps its
-        // last identity whatever the caller confirmed.
+        // Removing needs the person's confirmation, and the store keeps its last identity whatever
+        // the caller confirmed.
         let unconfirmed = admin.start(
             REMOVE,
             &args(
@@ -777,7 +776,7 @@ mod tests {
         );
     }
 
-    /// Enroll a phone under `identity` in `store`; its key, in hex.
+    /// Enroll a phone under `identity` in `store` ; its key, in hex.
     fn enroll_phone(store: &Store, identity: &IdentityProfile) -> String {
         let fleets = store.fleets();
         let issued_at_ns = fleets.load(&identity.id).expect("fleet").certificates[0].issued_at_ns;
@@ -805,7 +804,7 @@ mod tests {
 
     #[test]
     fn devices_are_listed_and_revoked_by_the_host_root_key() {
-        // The temporary root is bound, not dropped with `..`: it holds the store.
+        // The temporary root is bound, not dropped with `..` : it holds the store.
         let Provisioned {
             _root,
             store,
@@ -991,7 +990,7 @@ mod tests {
         );
     }
 
-    /// A desk hosting `workspace`, with nothing else on it.
+    /// A desk hosting `workspace` , with nothing else on it.
     fn desk_with(workspace: tilo_desktop_model::Workspace) -> crate::plane::DeskAuthority {
         let active = workspace.slot;
         crate::plane::DeskAuthority::new(
