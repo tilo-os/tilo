@@ -537,7 +537,7 @@ fn offered_event(prop: &str, index: usize) -> String {
 }
 
 /// One `host.Action` (`label`, `icon`, `role`, `primary`, `destructive`, `on`, `key`,
-/// `params`, `run`, `group`, `frequent`) as its control shows it, and the action reference its
+/// `params`, `run`, `group`) as its control shows it, and the action reference its
 /// event, `event`, runs.
 fn offered_action(action: &Value, event: &str) -> HResult<(Value, Value)> {
     let Value::Tuple(fields) = action else {

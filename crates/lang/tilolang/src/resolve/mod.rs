@@ -396,7 +396,6 @@ impl Env {
                 on: None,
                 key: a.key.clone(),
                 group: a.group.clone(),
-                frequent: a.frequent,
                 did: a.did.clone(),
             };
             add(
@@ -1632,7 +1631,6 @@ impl Resolver<'_> {
             on: None,
             key: None,
             group: None,
-            frequent: false,
             did: None,
         };
         let mut seen: Vec<&str> = Vec::new();
@@ -1710,8 +1708,6 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`group:` takes the run's name in quotes, without `{ }`: `group: \"Reply\"`",
                 ),
-                // `frequent: true`: a command the person reaches for on most things of this
-                // type, which a surface showing the resource's actions draws directly.
                 // `did: "moved this"`: what the action did, said after who did it, so history
                 // reads as people say it ("Ana moved this"). A phrase of the app's own, one
                 // verb for each thing a person does.
@@ -1732,16 +1728,10 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`did:` takes words in quotes, without `{ }`: `did: \"moved this\"`",
                 ),
-                ("frequent", ExprKind::Bool(frequent)) => out.frequent = *frequent,
-                ("frequent", _) => self.err(
-                    "E090",
-                    opt.value.span,
-                    "`frequent:` takes `true` or `false`: `frequent: true`",
-                ),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `frequent:` and `did:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:` and `did:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

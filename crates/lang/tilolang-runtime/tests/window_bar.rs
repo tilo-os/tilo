@@ -624,6 +624,87 @@ view quiet_page(q: Quiet) {
         );
     }
 
+    /// Where an action stands in the bar is read off what the action is, never said by its
+    /// declaration: the primary is the bar's button, a command that toggles a state of what the
+    /// window shows is the control a person flips where they see whether it is on, and every
+    /// other action is a row of the bar's menu.
+    #[test]
+    fn the_bar_places_a_toggle_beside_the_primary_and_the_rest_in_its_menu() {
+        const SHELF: &str = r#"
+app so.tilo.test.shelf "Shelf"
+type Album {
+    title: Text
+}
+type Shelf {
+    title: Text
+    albums: Collection<Album>
+    open: Bool = false
+}
+root Shelf
+default view shelf for Shelf
+primary action add(s: Shelf) -> Album (icon: .plus) {
+    s.albums.insert(Album(title: "Blue"))
+}
+action open_it(s: Shelf, open: Bool = not s.open) (icon: .eye, label: "Show the albums", on: s.open) {
+    s.open = open
+}
+action rename(s: Shelf, title: Text) (icon: .pen_tool) {
+    s.title = title
+}
+view shelf(s: Shelf) {
+    std.browse(s, s.albums) { a ->
+        ui.ListRow(title: a.title)
+    }
+}
+"#;
+        let w = install(SHELF);
+        let root = w.root("Shelf");
+        let window = w.window("shelf", &root);
+        let tree = window.tree();
+        let shell = of_kind(tree, "ui.NavShell")[0];
+        let bar: Vec<&UiNode> = slot(shell, "actions")
+            .into_iter()
+            .filter(|node| node.kind == "ui.Button")
+            .collect();
+        let happened = |label: &str| {
+            bar.iter()
+                .find(|node| node.props.get("label") == Some(&Value::text(label)))
+                .unwrap_or_else(|| panic!("`{label}` stands in the bar:\n{}", dump(tree)))
+        };
+        let add = happened("Add");
+        assert_eq!(add.props.get("role"), Some(&Value::text("primary")));
+        assert!(
+            !add.props.contains_key("in_menu"),
+            "the primary is the bar's button:\n{}",
+            dump(tree)
+        );
+        let toggle = happened("Show the albums");
+        assert!(
+            !toggle.props.contains_key("in_menu"),
+            "a toggle is a control of the bar, not a row of its menu:\n{}",
+            dump(tree)
+        );
+        assert_eq!(toggle.props.get("icon_only"), Some(&Value::Int(1)));
+        assert_eq!(
+            toggle.props.get("toggled"),
+            Some(&Value::Int(0)),
+            "a control says whether the state it toggles is on:\n{}",
+            dump(tree)
+        );
+        let rename = happened("Rename…");
+        assert_eq!(
+            rename.props.get("in_menu"),
+            Some(&Value::Int(1)),
+            "a command with nothing to show stands in the bar's menu:\n{}",
+            dump(tree)
+        );
+        assert_eq!(
+            w.rt.read(&root, "open").unwrap(),
+            Value::Bool(false),
+            "reading the bar wrote nothing"
+        );
+    }
+
     /// No app's views read the actions on what they show back to build chrome of their own: the
     /// host places them where every window keeps them, and a view that read them would draw a
     /// second set beside the bar's.

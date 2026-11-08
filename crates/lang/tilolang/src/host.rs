@@ -134,12 +134,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
                  (`group: \"Reply\"`); empty for one in no run.",
             ),
             (
-                "frequent",
-                "Bool",
-                "Whether it is a command the person reaches for on most things of its type \
-                 (`frequent: true`): a surface showing the resource's actions draws it directly.",
-            ),
-            (
                 "available",
                 "Bool",
                 "Whether it can run on the resource now: the requirements its subject decides \

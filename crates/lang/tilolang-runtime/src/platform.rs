@@ -2188,7 +2188,6 @@ impl Core {
                 .clone()
                 .or_else(|| action.group.clone())
                 .map_or_else(Value::none, |group| Value::some(Value::Text(group))),
-            Value::Bool(action.frequent),
             Value::Bool(available),
             Value::Text(why),
             Value::Bool(applies),

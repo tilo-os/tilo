@@ -234,9 +234,6 @@ pub struct Presentation {
     /// bar — draws the runs in the order the app declared them, so an app decides which
     /// commands read as one without any surface keeping a list of its own.
     pub group: Option<String>,
-    /// `frequent`: a command the person reaches for on most things of this type, which the
-    /// desktop's action bar shows directly rather than behind its menu of the rest.
-    pub frequent: bool,
     /// `did: "moved this"`: what the action did to its subject, as history's sentence reads it
     /// after who did it ("Ana moved this"); empty for one that says nothing, which history then
     /// names by the action and its description.

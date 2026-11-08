@@ -311,7 +311,6 @@ fn published() -> tilolang::PackageMeta {
             toggles: None,
             key: None,
             group: None,
-            frequent: false,
             guard: false,
             invokes: false,
         }],

@@ -631,7 +631,6 @@ impl Reader<'_> {
             toggles: None,
             key: None,
             group: None,
-            frequent: false,
             guard: false,
             applies: false,
             uses: Vec::new(),

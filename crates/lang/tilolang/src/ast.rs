@@ -337,10 +337,12 @@ pub struct Proposal {
 /// `primary`, `destructive` or `migration` before `action`: how the action is, not where a
 /// surface shows it.
 ///
-/// A surface decides placement from what the action offers a person: `frequent: true` earns a
-/// button in the header, every other offered action goes in an item's menu, the header's menu or
-/// the palette. A role never moves an action between those lists — only a migration, which the
-/// platform runs itself, is left out of them.
+/// A surface decides placement from what the action offers a person: one that toggles a state
+/// (`on:`) stands as a control of the header where the person sees whether it is on, every other
+/// offered action goes in an item's menu, the header's menu or the palette, and a view that
+/// places the actions of what it shows says their order and which one leads
+/// (`actions: [check(primary: true), …]`). A role never moves an action between those lists —
+/// only a migration, which the platform runs itself, is left out of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionRole {
     /// The one main action on its subject: the header's Primary button and the empty state's

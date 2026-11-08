@@ -778,7 +778,7 @@ d-w4d7htty = Set bar showing
 d-fdnwo2gt = Set bar size
 
 d-fcxzqnum = Show the top bar
-    .doc = Shows or hides the top bar.
+    .doc = Shows or hides the top bar: the one control that turns it on and off, so a person sees whether it is on where they press it.
 
 d-5l5rmk47 = Dock on
     .doc = Moves the dock to `edge`, keeping how it is built.
@@ -792,7 +792,7 @@ d-iyws3u4w = Set dock showing
 d-quwdhi4n = Set dock size
 
 d-23faedwo = Show the dock
-    .doc = Shows or hides the dock.
+    .doc = Shows or hides the dock: the one control that turns it on and off, so a person sees whether it is on where they press it.
 
 d-exyxrzml = Running apps
     .doc = Whether the dock shows the apps running that nobody pinned.
@@ -897,6 +897,10 @@ d-ymcmc5yv = Canvas entry
 d-ewgdlyyr = Show app menus~present
 
 d-npxnqobp = Reset~present
+
+d-vpc43pes = Show bar~present
+
+d-nn5zjt6d = Show dock~present
 
 d-vedyud4d = Move part~present
 

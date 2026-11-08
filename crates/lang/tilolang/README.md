@@ -72,9 +72,12 @@ control runs — and the same actions stay reachable everywhere a command is lis
 app needs but nobody chooses is a `fn`, which computes from what it is given; an action that
 writes gets a name that says what it does, because a person can choose it too.
 
-Where a surface draws an offered action is not a property of the action's role: `frequent: true`
-puts it in the header row as a button, every other offered action sits in the header's menu
-beside the same commands an item's menu lists.
+Where a surface draws an offered action is not a property of the action's role, and an action
+does not say where it stands: the platform reads that off what the action is. A command that
+toggles a state (`on:`) stands in the header row as the control that shows whether it is on; the
+primary action is the header's Primary button; every other offered action sits in the header's
+menu beside the same commands an item's menu lists. A view that places the actions of what it
+shows (`actions: [check(primary: true), …]`) says their order and which one leads.
 
 To start a package, make a directory next to the others with one file:
 

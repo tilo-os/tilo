@@ -17,9 +17,8 @@ app tilo.std "Standard library"
 /// primary one as the Primary button, the rest behind the bar's one menu; the primary's key is
 /// the entry's at the list's end, so the key and the button lead the person there to type the
 /// item; each item is a row whose actions the host puts on its context menu and its swipe, a
-/// destructive one undone rather than confirmed; a command the app marked `frequent` a button of
-/// its own, never folded into a run. Items whose type has a window of their own open in the next
-/// column; the list follows which one is open.
+/// destructive one undone rather than confirmed. Items whose type has a window of their own
+/// open in the next column; the list follows which one is open.
 ///
 /// The items of a list down a column of rows, each built as it shows: a row with a document of
 /// its own opens into it where it stands — the row grows into the item's page, and pressing it
@@ -304,8 +303,9 @@ view outline<T>(
 /// A window's own controls, before the actions the host puts in the bar: the sort menu, and
 /// `extra`, a page's controls. The window's actions come from what its type declares, and the
 /// host places them after these: its primary action as the labelled Primary button, a command
-/// the app marked `frequent` as a button of its own, and all the rest behind the bar's one
-/// menu, so every action stays reachable at every width without the view having read them.
+/// that toggles a state of the window's resource as a control of its own, and all the rest
+/// behind the bar's one menu, so every action stays reachable at every width without the view
+/// having read them.
 view header<S>(sort: Option<State<S>> = .none, extra: View) {
     if let s = sort {
         ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {

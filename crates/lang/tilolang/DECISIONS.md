@@ -173,17 +173,21 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   itself; every other action is in `actions(r)`, in the host's bar and a window's menus, and in
   an agent's choices. An action is never hidden from people to reserve it for a gesture: a
   helper nobody chooses is a `fn`, and one that writes is a command like any other.
-- **A window's bar shows its primary action and the commands the app marks `frequent` as
-  buttons, and every other action behind the bar's one menu.** The host builds them that way
-  from the declarations of the type the window shows: a button per primary and per `frequent`
-  action, and the remaining actions in the menu, which the shell's own More button holds
-  whatever room the bar has. A view never reads the actions back to draw them: it says what
-  can be done by declaring actions on the type and by placing the typed affordances of the
-  thing itself (a checkbox that completes, an entry that adds, a drag). `actions(r)` is
-  therefore an error in a view (E047); it stays readable to the host, which places the
-  declarations, and to an agent, which chooses among them. Which commands earn a
-  place in the bar is the app's judgement (`frequent: true`), not the window's width, so a
-  narrow window gives way with the menu, never with the one main thing to do.
+- **A window's bar shows its primary action and the commands that toggle a state of what the
+  window shows as buttons, and every other action behind the bar's one menu.** The host builds
+  them that way from what the declarations are: the primary action is the Primary button, an
+  action with an `on:` stands as the control that shows whether it is on (`on: s.bar_shown`, a
+  toggle the person flips where they see it), and the remaining actions are in the menu, which
+  the shell's own More button holds whatever room the bar has. An app does not say where its
+  actions stand: an action declares what it is and does — label, icon, role, the state it
+  toggles, its key, its parameters — and placement follows from that, so no hint can drift from
+  the action, and every surface (menus, palette, agents, history) reads one description. A view
+  that places the actions of what it shows says their order and which one leads
+  (`actions: [check(primary: true), schedule(group: "Plan")]`). A view never reads the actions
+  back to draw them: it says what can be done by declaring actions on the type and by placing
+  the typed affordances of the thing itself (a checkbox that completes, an entry that adds, a
+  drag). `actions(r)` is therefore an error in a view (E047); it stays readable to the host,
+  which places the declarations, and to an agent, which chooses among them.
 - **A window switches only between the views its type declares.** `views project_list,
   project_board for Project` names them, in the order the bar shows them, its default view
   first: the host draws them as the bar's labelled switch and opens the one the person last

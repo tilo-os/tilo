@@ -43,10 +43,10 @@ fn sets_and_maps_of_scalars_are_written_with_boxed_values() {
 }
 
 #[test]
-fn an_action_declares_its_run_and_its_frequency_into_its_metadata() {
+fn an_action_declares_its_run_into_its_metadata() {
     let c = compile_body(
         "type Note {\n    title: Text\n}\n\
-action reply(n: Note) (icon: .reply, group: \"Reply\", frequent: true) {\n    n.title = n.title\n}\n\
+action reply(n: Note) (icon: .reply, group: \"Reply\") {\n    n.title = n.title\n}\n\
 action archive(n: Note) (icon: .archive, group: \"Reply\") {\n    n.title = n.title\n}\n\
 action rename(n: Note) (icon: .pen_tool) {\n    n.title = n.title\n}\n\
 view v(n: Note) {\n    text(n.title)\n}",
@@ -59,9 +59,7 @@ view v(n: Note) {\n    text(n.title)\n}",
             .unwrap_or_else(|| panic!("{name} is declared"))
     };
     assert_eq!(action("reply").group.as_deref(), Some("Reply"));
-    assert!(action("reply").frequent);
     assert_eq!(action("archive").group.as_deref(), Some("Reply"));
-    assert!(!action("archive").frequent);
     assert_eq!(action("rename").group, None);
     // A surface reads the run by the name the app gave it: a group is text in quotes, and a
     // bare one is refused, so a run is never silently another's.
@@ -69,8 +67,14 @@ view v(n: Note) {\n    text(n.title)\n}",
         codes("type N {\n    t: Text\n}\naction a(n: N) (group: Reply) {\n    n.t = n.t\n}"),
         vec!["E090"]
     );
+    // Where an action stands is read off what it is, so a hint at where to put it is not an
+    // option of the language.
     assert_eq!(
-        codes("type N {\n    t: Text\n}\naction a(n: N) (frequent: \"yes\") {\n    n.t = n.t\n}"),
+        codes("type N {\n    t: Text\n}\naction a(n: N) (frequent: true) {\n    n.t = n.t\n}"),
+        vec!["E090"]
+    );
+    assert_eq!(
+        codes("type N {\n    t: Text\n}\naction a(n: N) (toolbar: true) {\n    n.t = n.t\n}"),
         vec!["E090"]
     );
 }
