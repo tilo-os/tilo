@@ -1,7 +1,16 @@
 [Unit]
 Description=Provision the root-owned Tilo machine device identity
-After=systemd-tmpfiles-setup.service
+# Early boot, before sysinit.target: tilo-device-branch.service records which
+# machine the key belongs to right after this mints it, and both precede
+# everything that reads the key. Ordered after sysinit.target, as its default
+# dependencies had it, the two closed a cycle and systemd dropped the branch
+# unit from every boot.
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=sysinit.target
 Before=tilo-firstboot.service greetd.service fs.service
+Conflicts=shutdown.target
+Before=shutdown.target
 # This unit is ordered before login to mint the key, but an established
 # machine should not start a process merely to read the same persistent key on
 # every boot.
