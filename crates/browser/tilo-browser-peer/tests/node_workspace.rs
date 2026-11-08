@@ -50,7 +50,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::RelayConfig;
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::install::{InstallListener, SessionDevice};
-use tilo_relay::web::{LiveConfig, TlsSource, WebConfig};
+use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_protocol::workspaces::{
     JoinReply, JoinStep, PreAdmission, WorkspaceNotice, WorkspaceRole, WorkspacesReply,
     WorkspacesRequest,
@@ -193,7 +193,6 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
-            live: LiveConfig::default(),
         },
         paths.clone(),
         INSTALL_TOKEN,
@@ -283,7 +282,6 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
-            live: LiveConfig::default(),
         })
         .await
         .unwrap();

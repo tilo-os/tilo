@@ -8,7 +8,7 @@
 
 mod support;
 
-use tilo_relay::web::{LiveConfig, TlsSource, WebConfig};
+use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -62,7 +62,6 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
-            live: LiveConfig::default(),
         })
         .await
         .is_err();

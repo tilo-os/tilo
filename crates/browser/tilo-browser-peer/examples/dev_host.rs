@@ -29,7 +29,7 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay::certify::ApproverDecision;
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{LiveConfig, TlsSource, WebConfig};
+use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
@@ -100,7 +100,6 @@ async fn main() {
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
-            live: LiveConfig::default(),
         })
         .await
         .expect("serve browsers");

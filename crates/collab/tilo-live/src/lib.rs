@@ -1,6 +1,6 @@
-//! Native `MoQ` adapters for Tilo calls: the tilo-voice/1
-//! and tilo-video/1 object profiles and, behind `relay`, `moq-lite` relays and clients over
-//! WebTransport (see [`carrier`] for the session layout).
+//! Native `MoQ` adapters for Tilo calls: the tilo-voice/1 and tilo-video/1
+//! object profiles and, behind `relay`, `moq-lite` relays and clients over
+//! iroh (see [`carrier`] for the admission preface every carrier shares).
 
 #![cfg_attr(
     all(target_arch = "wasm32", target_os = "unknown"),
@@ -24,9 +24,6 @@ pub mod roster;
 pub mod video;
 pub mod voice;
 
-#[cfg(feature = "tls")]
-pub mod tls;
-
 #[cfg(feature = "relay")]
 pub mod carrier;
 
@@ -35,8 +32,8 @@ pub mod carrier;
 #[cfg(any(feature = "relay", feature = "iroh"))]
 pub mod grant;
 
-/// The carrier over a direct iroh connection, beside the browser's
-/// WebTransport one.
+/// The carrier over a direct iroh connection: the one every device dials,
+/// a page included.
 #[cfg(feature = "iroh")]
 pub mod native;
 

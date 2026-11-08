@@ -75,8 +75,8 @@ shared
 30
 --web
 127.0.0.1:9781
---web-live
-0.0.0.0:9781
+--packet-relay
+0.0.0.0:9782
 --tls
 dev
 --web-plain
@@ -103,9 +103,9 @@ grep -Fqx -- "--state" "$work/args" || fail "no state flag"
 grep -Fqx -- "$work/state/lounge/relay" "$work/args" || fail "the relay state is not under the workspace"
 grep -Fqx -- "$work/state/lounge/room-id" "$work/args" || fail "the workspace id is not kept with the workspace"
 grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are not published from the workspace"
-# The live plane binds where the ingress forwards; without a named origin the
-# relay derives it from the relay origin and the port it bound.
-grep -Fqx -- --web-live-origin "$work/args" && fail "a live origin was announced without one set"
+# The packet relay binds where the ingress forwards; without a named origin the
+# host advertises the address it bound.
+grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was announced without one set"
 
 # Every setting of a populated deployment reaches the host, and replaces the
 # default it shares a flag with.
@@ -146,8 +146,8 @@ pair() {
 pair --web 127.0.0.1:0 || fail "the HTTPS listener setting did not reach the host"
 pair --web-plain 0.0.0.0:9880 || fail "the plain listener setting did not reach the host"
 pair --public-origin https://eu1.tilo.coffee || fail "the public origin did not reach the host"
-pair --web-live 0.0.0.0:9881 || fail "the live plane's bind address did not reach the host"
-pair --web-live-origin https://live.eu1.tilo.coffee || fail "the live origin did not reach the host"
+pair --packet-relay 0.0.0.0:9881 || fail "the packet relay's bind address did not reach the host"
+pair --packet-relay-url https://live.eu1.tilo.coffee || fail "the published relay URL did not reach the host"
 pair --http 0.0.0.0:8890 || fail "the routes listener setting did not reach the host"
 pair --allowed-origin https://tilo.coffee || fail "a site origin did not reach the host"
 pair --allowed-origin https://tilo.so || fail "a site origin did not reach the host"

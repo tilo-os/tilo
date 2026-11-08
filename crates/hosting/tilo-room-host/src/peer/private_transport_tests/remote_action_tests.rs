@@ -64,6 +64,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         revocations: &revocations,
         carried_calls: None,
         admin: None,
+        here: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
@@ -193,6 +194,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         revocations: &revocations,
         carried_calls: None,
         admin: None,
+        here: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
@@ -366,6 +368,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
         revocations: &revocations,
         carried_calls: None,
         admin: None,
+        here: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
@@ -406,6 +409,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
         app_serving: Some(&abandoning),
         carried_calls: None,
         admin: None,
+        here: None,
         ..session
     };
     assert_eq!(

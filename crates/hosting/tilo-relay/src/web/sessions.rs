@@ -129,11 +129,6 @@ impl Session {
     pub(crate) fn is_open(&self) -> bool {
         !*self.end.borrow() && Instant::now() < self.expires
     }
-
-    /// The token that names this session on every route.
-    pub(crate) fn token(&self) -> [u8; 32] {
-        self.token
-    }
 }
 
 /// Every browser session of one host.

@@ -846,6 +846,8 @@ impl PeerHandle {
             voice: crate::voice::Participations::default(),
             rooms_pending: BTreeMap::new(),
             rooms_next: 0,
+            here_pending: BTreeMap::new(),
+            here_next: 0,
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -1071,8 +1073,7 @@ impl PeerHandle {
         self.send(Command::Barrier(done))
     }
 
-    /// Post this person's own recent actions ([`tilo_relay_client::https::here`]) over
-    /// the current HTTPS session; `done` receives who is here.
+    /// Post this person's own actions and ask who is here; `done` gets the answer.
     pub fn here_then(
         &self,
         request: tilo_relay_protocol::web::HereRequest,
@@ -1081,8 +1082,7 @@ impl PeerHandle {
         self.send(Command::Here(request, done))
     }
 
-    /// Send `request` to the host's workspace administration over the current
-    /// HTTPS session; `done` receives the answer.
+    /// Ask the host's workspace administration `request`; `done` gets the answer.
     pub fn rooms_then(
         &self,
         request: tilo_relay_protocol::workspaces::WorkspacesRequest,
@@ -1392,6 +1392,11 @@ struct Task {
     rooms_pending: BTreeMap<u64, RoomsCompletion>,
     /// The id the next administration request is asked with.
     rooms_next: u64,
+    /// The sessions asked their host who is here and not answered yet, by the
+    /// id they asked with.
+    here_pending: BTreeMap<u64, HereCompletion>,
+    /// The id the next question about who is here is asked with.
+    here_next: u64,
 }
 
 /// An open compaction request: workspace, route and the entries it covers.
@@ -1686,7 +1691,7 @@ impl Task {
                     let exit = self.serve_naming_proxy(client, &mut commands).await;
                     // A request the host had not answered is answered here:
                     // nothing waits on a connection that is gone.
-                    self.rooms_lost();
+                    self.requests_lost();
                     match exit {
                         Exit::Closed => return self.closed(),
                         Exit::Reconnect => continue,
@@ -2092,7 +2097,7 @@ impl Task {
                 self.publish_call_audio(workspace_id, frames);
                 true
             }
-            Command::Here(request, done) => Self::request_here(request, done, client),
+            Command::Here(request, done) => self.request_here(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(workspace, request, op) => {
                 self.voice_call(workspace, request, op, client)
@@ -2253,6 +2258,7 @@ impl Task {
 
     /// Always `true`: the session takes it whatever the answer.
     fn request_here(
+        &mut self,
         request: tilo_relay_protocol::web::HereRequest,
         done: HereCompletion,
         client: Option<&Link>,
@@ -2268,10 +2274,35 @@ impl Task {
                 });
             }
             #[cfg(feature = "iroh")]
-            Some(Link::Iroh { .. }) => done(Err("who is here is served over HTTPS".into())),
+            Some(Link::Iroh { client, .. }) => {
+                let request_id = self.here_next;
+                self.here_next = self.here_next.wrapping_add(1);
+                let frame = match postcard::to_stdvec(&request) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        done(Err(format!("the request does not encode: {error}")));
+                        return true;
+                    }
+                };
+                self.here_pending.insert(request_id, done);
+                if client
+                    .send(Envelope::HereRequest { request_id, frame })
+                    .is_err()
+                    && let Some(done) = self.here_pending.remove(&request_id)
+                {
+                    done(Err("the host's session closed".into()));
+                }
+            }
             None => done(Err("not connected to the host".into())),
         }
         true
+    }
+
+    /// The host answered who is here for request `request_id`.
+    fn here_reply(&mut self, request_id: u64, frame: &[u8]) {
+        if let Some(done) = self.here_pending.remove(&request_id) {
+            done(answered::<Result<_, String>>(frame).and_then(std::convert::identity));
+        }
     }
 
     /// Ask the host `request` of its workspace administration: over the
@@ -2318,22 +2349,19 @@ impl Task {
     }
 
     /// The host answered administration request `request_id`.
-    fn rooms_answered(&mut self, request_id: u64, frame: &[u8]) {
-        let Some(done) = self.rooms_pending.remove(&request_id) else {
-            return;
-        };
-        done(
-            match postcard::from_bytes::<tilo_relay_protocol::workspaces::WorkspacesReply>(frame) {
-                Ok(reply) => Ok(reply),
-                Err(error) => Err(format!("the answer does not decode: {error}")),
-            },
-        );
+    fn rooms_reply(&mut self, request_id: u64, frame: &[u8]) {
+        if let Some(done) = self.rooms_pending.remove(&request_id) {
+            done(answered(frame));
+        }
     }
 
     /// The session ended with requests the host never answered: each is
     /// answered here, so nothing waits on a connection that is gone.
-    fn rooms_lost(&mut self) {
+    fn requests_lost(&mut self) {
         for (_, done) in std::mem::take(&mut self.rooms_pending) {
+            done(Err("the session ended before the host answered".into()));
+        }
+        for (_, done) in std::mem::take(&mut self.here_pending) {
             done(Err("the session ended before the host answered".into()));
         }
     }
@@ -2750,9 +2778,8 @@ impl Task {
                     record,
                 },
             ),
-            Envelope::WorkspacesReply { request_id, frame } => {
-                self.rooms_answered(request_id, &frame);
-            }
+            Envelope::WorkspacesReply { request_id, frame } => self.rooms_reply(request_id, &frame),
+            Envelope::HereReply { request_id, frame } => self.here_reply(request_id, &frame),
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Ok(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
                 self.fail("protocol-rejected", reason.clone());
@@ -3637,6 +3664,12 @@ async fn renewal(after: Option<Duration>) {
 /// renewed: [`RENEW_AHEAD`] before its end, at once when that has passed.
 fn renew_after(expires_at_ns: u64, now_ns: u64) -> Duration {
     Duration::from_nanos(expires_at_ns.saturating_sub(now_ns)).saturating_sub(RENEW_AHEAD)
+}
+
+/// The reply `frame` carries, or the refusal a page shows when it does not
+/// decode.
+fn answered<T: serde::de::DeserializeOwned>(frame: &[u8]) -> Result<T, String> {
+    postcard::from_bytes(frame).map_err(|error| format!("the answer does not decode: {error}"))
 }
 
 /// The session to the host, over whichever carrier reaches it.

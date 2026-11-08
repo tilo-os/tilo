@@ -18,10 +18,11 @@ the workspace through the ingress that forwards the workspace's origin to
 `9780`. The process serves the routes on `8790` and the relay on `9780`, both
 plain HTTP behind that ingress, which ends TLS.
 
-The pages' live plane (live cursors, presence, window streams) is WebTransport
-on UDP, which an ingress publishes on its own: the process binds it on
-`TILO_ROOMS_LIVE` and pages are told to dial `TILO_ROOMS_LIVE_ORIGIN`, so the
-UDP address an ingress forwards to never has to be the HTTPS origin's host.
+The pages' live plane (live cursors, presence, window streams) is reached over
+iroh, which a page reaches through a packet relay over websockets: the process
+runs its own on `TILO_ROOMS_LIVE`, and pages dial it. An ingress that publishes
+it on its own host names that origin in `TILO_ROOMS_LIVE_ORIGIN`, so the
+address it forwards to never has to be the HTTPS origin's host.
 
 ## The deployment's environment
 
@@ -54,8 +55,8 @@ Optional, with these defaults:
 | `TILO_ROOMS_STATE` | `/run/tilo-rooms` | the volume the workspace lives on |
 | `TILO_ROOMS_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
-| `TILO_ROOMS_LIVE` | `0.0.0.0:9781` | the UDP address the live plane binds, as the ingress forwards to it |
-| `TILO_ROOMS_LIVE_ORIGIN` | the relay origin's host on the bound port | the `https://host[:port]` origin pages dial the live plane at; its port is the one pages use (`443` when it names none) |
+| `TILO_ROOMS_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |
+| `TILO_ROOMS_LIVE_ORIGIN` | the address it bound | the `https://host[:port]` origin pages dial the packet relay at |
 | `TILO_ROOMS_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
 | `TILO_ROOMS_FETCH_PROXY` | on | `0` turns the fetch proxy off |
 | `TILO_ROOMS_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |

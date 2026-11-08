@@ -20,6 +20,7 @@ mod delivery;
 mod dispatch;
 mod fanout;
 mod hello;
+mod here;
 mod live;
 mod records;
 mod replay;
@@ -73,6 +74,8 @@ use compaction::handle_compaction;
 use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
 use hello::handle_host_hello;
+pub use here::HereBoard;
+use here::handle_here;
 use live::{
     handle_content_want, handle_live_join, handle_presence, handle_voice, route_record_content,
 };
@@ -202,6 +205,9 @@ pub struct PeerContext {
     /// The governance a device administers its workspaces through, set once
     /// when the host governs them; `None` administers nothing.
     pub admin: Option<Arc<crate::workspaces::Workspaces>>,
+    /// What a device's session answers when it asks who is here; `None`
+    /// keeps no such account.
+    pub here: Option<Arc<dyn HereBoard>>,
 }
 
 /// Agent devices by device key: their verified delegation, or `None` once
@@ -251,6 +257,8 @@ struct SessionCtx<'a> {
     /// What a device administers its workspaces through; `None` administers
     /// nothing.
     admin: Option<&'a crate::workspaces::Workspaces>,
+    /// Who is here, as the host accounts for it; `None` keeps no such account.
+    here: Option<&'a dyn HereBoard>,
 }
 
 impl SessionCtx<'_> {

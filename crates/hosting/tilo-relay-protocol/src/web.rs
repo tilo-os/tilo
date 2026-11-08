@@ -22,7 +22,6 @@
 //! | `/rooms` | [`WorkspacesRequest`](crate::workspaces::RoomsRequest) | [`WorkspacesReply`](crate::workspaces::RoomsReply) |
 //! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
-//! | `/live` ([`LIVE_INFO_PATH`]) | [`LiveRequest`] | [`LiveInfo`]; `403` when the page's device is not admitted |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
 //! `/fetch` is the host's fetch proxy, offered when the session grant
@@ -361,102 +360,6 @@ pub struct EventsPage {
     pub envelopes: Vec<Envelope>,
 }
 
-/// Route of the live plane: how a page learns where the relay's WebTransport
-/// listener is and which certificate to pin for it.
-pub const LIVE_INFO_PATH: &str = "/live";
-
-/// A page's ask to join `workspace_id`'s live plane. The host answers only
-/// when the page's session device is admitted to the workspace now, so the
-/// answer is also the admission the page dials with.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveRequest {
-    /// The workspace as this host numbers it, for the admission decision.
-    pub workspace_id: u64,
-    /// The workspace's own name, which its live namespace carries: the same
-    /// string every device of the workspace names its tracks by. The host
-    /// checks it against [`tilo_relay_protocol::room_workspace_id_matches`].
-    pub workspace: String,
-}
-
-/// Where a page joins the live plane: the relay's WebTransport listener, its
-/// certificate, and the origin to dial it at.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveInfo {
-    /// The UDP port of the relay's WebTransport listener.
-    pub webtransport_port: u16,
-    /// Base64 SHA-256 of the listener's leaf certificate: what a page pins as
-    /// `serverCertificateHashes` (a development or self-signed certificate is
-    /// trusted by no root store).
-    pub certificate_sha256: String,
-    /// `https://<host>:<port>`: the origin the page dials, with the route and
-    /// the `moq-lite` subprotocol added by the page's carrier.
-    pub webtransport_origin: String,
-}
-
-/// The one length of an encoded [`LiveGrant`]: the version, the workspace as
-/// a little-endian `u64`, and the page's session token.
-pub const LIVE_GRANT_BYTES: usize = 1 + 8 + 32;
-
-/// The version an encoded [`LiveGrant`] starts with.
-const LIVE_GRANT_VERSION: u8 = 2;
-
-/// What a page admits itself to the live plane with: the workspace as the host
-/// numbers it, and the token of the page's HTTPS session. The host answers
-/// [`LIVE_INFO_PATH`] only to a device the workspace admits, so the grant is
-/// the admission itself; the WebTransport listener takes it as its proof
-/// because a page holds no device certificate where its network stack runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LiveGrant {
-    /// The workspace as the host numbers it.
-    pub workspace_id: u64,
-    /// The page's HTTPS session token, which every route carries as hex.
-    pub token: [u8; 32],
-}
-
-impl LiveGrant {
-    /// The grant of the page whose HTTPS session token is `session` (hex, as
-    /// the routes carry it) to `workspace_id`'s live plane, or `None` when
-    /// `session` is not a session token.
-    #[must_use]
-    pub fn from_session(workspace_id: u64, session: &str) -> Option<Self> {
-        let mut token = [0_u8; 32];
-        hex::decode_to_slice(session, &mut token).ok()?;
-        Some(Self {
-            workspace_id,
-            token,
-        })
-    }
-
-    /// The grant's bytes: the live carrier's admission proof.
-    #[must_use]
-    pub fn encode(self) -> [u8; LIVE_GRANT_BYTES] {
-        let mut bytes = [0_u8; LIVE_GRANT_BYTES];
-        let fields = [LIVE_GRANT_VERSION]
-            .into_iter()
-            .chain(self.workspace_id.to_le_bytes())
-            .chain(self.token);
-        for (slot, field) in bytes.iter_mut().zip(fields) {
-            *slot = field;
-        }
-        bytes
-    }
-
-    /// The grant `proof` carries, or `None` for any other proof.
-    #[must_use]
-    pub fn decode(proof: &[u8]) -> Option<Self> {
-        let proof = <[u8; LIVE_GRANT_BYTES]>::try_from(proof).ok()?;
-        let (&version, rest) = proof.split_first()?;
-        if version != LIVE_GRANT_VERSION {
-            return None;
-        }
-        let (workspace_id, token) = rest.split_at(core::mem::size_of::<u64>());
-        Some(Self {
-            workspace_id: u64::from_le_bytes(workspace_id.try_into().ok()?),
-            token: token.try_into().ok()?,
-        })
-    }
-}
-
 /// Route of "who is here and what are they doing" in a workspace: a member
 /// posts their own recent semantic actions and gets everyone's line back.
 pub const HERE_PATH: &str = "/here";
@@ -601,33 +504,6 @@ pub struct HerePerson {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_page_grant_names_its_workspace_and_token() {
-        let grant = LiveGrant {
-            workspace_id: 7,
-            token: [9; 32],
-        };
-        assert_eq!(grant.encode().len(), LIVE_GRANT_BYTES);
-        assert_eq!(LiveGrant::decode(&grant.encode()), Some(grant));
-        assert!(LiveGrant::decode(&[]).is_none());
-        assert!(LiveGrant::decode(&[1; LIVE_GRANT_BYTES]).is_none());
-        assert!(LiveGrant::decode(&[2; LIVE_GRANT_BYTES.saturating_add(1)]).is_none());
-    }
-
-    #[test]
-    fn a_session_token_becomes_the_pages_grant() {
-        let session = hex::encode([9; 32]);
-        assert_eq!(
-            LiveGrant::from_session(7, &session),
-            Some(LiveGrant {
-                workspace_id: 7,
-                token: [9; 32],
-            })
-        );
-        assert!(LiveGrant::from_session(7, "9").is_none());
-        assert!(LiveGrant::from_session(7, "zz".repeat(32).as_str()).is_none());
-    }
 
     #[test]
     fn here_requests_past_their_bounds_are_refused() {
