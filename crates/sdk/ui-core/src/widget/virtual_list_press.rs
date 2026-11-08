@@ -33,7 +33,9 @@ impl<M: ListModel> VirtualList<M> {
             self.activate_key(key);
             return;
         }
-        self.apply_selection(key.clone(), toggle, extend, Choosing::ByHand);
+        if self.choosing_on_press {
+            self.apply_selection(key.clone(), toggle, extend, Choosing::ByHand);
+        }
         self.focus_row(key.clone());
         if toggle || extend {
             self.clicks.record(key);
@@ -47,7 +49,8 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Open `key` as Enter or a second click does: through the published view
     /// action when the host bound one, else the activation callback. A list whose
-    /// rows open nothing chooses the row instead, as its click does.
+    /// rows open nothing chooses the row instead, as its click does — unless it is
+    /// no picker, whose rows show nothing chosen.
     pub(super) fn activate_key(&mut self, key: M::Key) {
         // A row that opens where it stands opens there, whether or not anything else listens:
         // the list holds the item open, the row grows into its document, and the host hears
@@ -62,7 +65,9 @@ impl<M: ListModel> VirtualList<M> {
             return;
         }
         if self.opens.is_none() && self.on_activate.is_none() {
-            self.apply_selection(key, false, false, Choosing::ByHand);
+            if self.choosing_on_press {
+                self.apply_selection(key, false, false, Choosing::ByHand);
+            }
             return;
         }
         // Opening the row is one act: the selection it moves onto the way is not

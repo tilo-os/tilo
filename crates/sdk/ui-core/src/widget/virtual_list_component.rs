@@ -833,12 +833,14 @@ fn row_of(
 /// disclosure gutter each, and how far its branch got follows it.
 fn indent_view(view: Element, depth: u32, progress: Option<String>) -> Element {
     let mut line = Row::row().fill_width().align(Align::Center);
-    if depth > 0 {
+    {
+        // The row's own depth, and the step its chevron takes in front of it: a row with
+        // nothing to fold stands there all the same, on the column of its depth.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "logical pixels are bounded far below f32::MAX"
         )]
-        let indent = (f64::from(depth) * TREE_INDENT) as f32;
+        let indent = ((f64::from(depth) + 1.0) * TREE_INDENT) as f32;
         line = line.push(Box::new(Spacer::fixed(indent)));
     }
     let mut slot = Slot::new(view);
@@ -927,7 +929,9 @@ fn bare_row(
                 // A tree indents the row's content one disclosure gutter per depth, its lift
                 // still filling the row; how far its branch got is its trailing figure.
                 if let Some(marks) = tree {
-                    row = row.depth(marks.depth(&key.to_owned()));
+                    // A tree's row keeps the step its chevron takes free, and stands that one
+                    // step in from its depth's column whether or not it has subtasks to fold.
+                    row = row.depth(marks.depth(&key.to_owned())).tree_row();
                     if value_free && let Some(progress) = progress.clone() {
                         row = row.value(progress);
                     }
