@@ -218,8 +218,8 @@ stays reproducible and undoable.
 
 ## 7. Errors that teach
 
-Errors say what's wrong and what's valid ("Thread has no filter `sender`; did you mean
-`from`?"). Tolerance comes from these errors, not from a parser that silently accepts variants.
+Errors say what's wrong and what's valid ("Thread has no filter `snder`; did you mean
+`sender`?"). Tolerance comes from these errors, not from a parser that accepts variants.
 Naming conventions (singular types, verb actions, adjective booleans, past-participle times)
 make first guesses mostly right.
 

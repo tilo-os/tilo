@@ -962,17 +962,18 @@ impl Checker<'_> {
                     return Ex::error();
                 };
                 let Some(f) = info.field(&name.name) else {
+                    let fields = info
+                        .fields
+                        .iter()
+                        .map(|f| (f.name.as_str(), f.doc.as_str()));
+                    let hint = crate::diag::suggestion_about(&name.name, fields);
                     self.err(
                         "E021",
                         name.span,
                         format!(
-                            "`{}` has no field `{}`{}; fields are: {}",
+                            "`{}` has no field `{}`{hint}; fields are: {}",
                             key.name,
                             name.name,
-                            crate::diag::suggestion(
-                                &name.name,
-                                info.fields.iter().map(|f| f.name.as_str())
-                            ),
                             info.field_names()
                         ),
                     );
@@ -1097,7 +1098,7 @@ impl Checker<'_> {
             )
             .collect();
         names.dedup();
-        let hint = crate::diag::did_you_mean(name, names.iter().map(String::as_str))
+        let hint = crate::diag::did_you_mean_about(name, names.iter().map(|n| (n.as_str(), "")))
             .map(|near| format!("; did you mean `{alias}.{near}`?"))
             .unwrap_or_default();
         let actions: Vec<String> = env

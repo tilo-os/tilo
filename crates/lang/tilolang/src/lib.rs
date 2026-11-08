@@ -74,7 +74,7 @@ pub mod types;
 pub mod written;
 
 pub use checker::{RESOURCE_TYPE_NAME, resource_key};
-pub use diag::{Diagnostic, Span, diagnostics_json, did_you_mean};
+pub use diag::{Diagnostic, Span, diagnostics_json, did_you_mean_about};
 pub use host::{
     HOST_APP, INVOCATION_TYPE, LINK_HOW_TYPE, NOTICE_BODY, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE,
     NOTICE_TO, NOTICE_TYPE, RESULT_ERR, RESULT_ERROR, RESULT_OK, RESULT_TYPE, RESULT_VALUE,
