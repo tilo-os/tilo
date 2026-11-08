@@ -69,6 +69,48 @@ fn fixture() -> Fixture {
         device,
     }
 }
+
+impl Fixture {
+    /// The fixture's enrolled device, as this build reviews it.
+    fn review(&self) -> std::io::Result<EnrolledDevice> {
+        EnrolledDevice::review(
+            &self.system,
+            &self.record,
+            self.root,
+            self.device,
+            tilo_clock::unix_now_ns(),
+        )
+    }
+
+    /// [`Self::review`], opened as the transport of `binding`.
+    fn open(&self, sealed: &Path, binding: &str) -> std::io::Result<AuthenticatedEnrolledDevice> {
+        AuthenticatedEnrolledDevice::open(
+            sealed,
+            PASSWORD,
+            binding,
+            self.root,
+            self.device,
+            tilo_clock::unix_now_ns(),
+        )
+    }
+
+    /// The fixture's current device, opened as the transport of `binding`.
+    #[cfg(feature = "native-current-device-qualification")]
+    fn open_current(
+        &self,
+        sealed: &Path,
+        binding: &str,
+    ) -> std::io::Result<AuthenticatedCurrentDeviceReference> {
+        AuthenticatedCurrentDeviceReference::open(
+            sealed,
+            PASSWORD,
+            binding,
+            self.root,
+            self.device,
+            tilo_clock::unix_now_ns(),
+        )
+    }
+}
 fn snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>, u32)> {
     fn walk(path: &Path, root: &Path, out: &mut Vec<(PathBuf, Vec<u8>, u32)>) {
         for entry in std::fs::read_dir(path).unwrap() {
@@ -94,28 +136,13 @@ fn snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>, u32)> {
 fn canonical_enrolled_device_roundtrip_preserves_root_and_exact_device_without_source_changes() {
     let fixture = fixture();
     let source_before = snapshot(fixture.source.path());
-    let enrolled = EnrolledDevice::review(
-        &fixture.system,
-        &fixture.record,
-        fixture.root,
-        fixture.device,
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    let enrolled = fixture.review().unwrap();
     assert_eq!(enrolled.device_label(), "Future laptop");
     let sealed = fixture.output.join("identity.sealed");
     enrolled
         .export_password_sealed(&sealed, PASSWORD, "prepared-operation")
         .unwrap();
-    let authenticated = AuthenticatedEnrolledDevice::open(
-        &sealed,
-        PASSWORD,
-        "prepared-operation",
-        fixture.root,
-        fixture.device,
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    let authenticated = fixture.open(&sealed, "prepared-operation").unwrap();
     let target = tempfile::tempdir().unwrap();
     let system = target.path().join("system");
     let identity = target.path().join("identity");
@@ -158,14 +185,7 @@ fn canonical_enrolled_device_roundtrip_preserves_root_and_exact_device_without_s
 #[test]
 fn enrolled_device_wrong_password_binding_authority_and_target_conflicts_refuse_before_import() {
     let fixture = fixture();
-    let enrolled = EnrolledDevice::review(
-        &fixture.system,
-        &fixture.record,
-        fixture.root,
-        fixture.device,
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    let enrolled = fixture.review().unwrap();
     let sealed = fixture.output.join("identity.sealed");
     enrolled
         .export_password_sealed(&sealed, PASSWORD, "operation")
@@ -193,15 +213,7 @@ fn enrolled_device_wrong_password_binding_authority_and_target_conflicts_refuse_
             .is_err()
         );
     }
-    let authenticated = AuthenticatedEnrolledDevice::open(
-        &sealed,
-        PASSWORD,
-        "operation",
-        fixture.root,
-        fixture.device,
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    let authenticated = fixture.open(&sealed, "operation").unwrap();
     let target = tempfile::tempdir().unwrap();
     let system = target.path().join("system");
     let identity = target.path().join("identity");
@@ -220,16 +232,7 @@ fn enrolled_device_wrong_password_binding_authority_and_target_conflicts_refuse_
     let source = IdentityPaths::under(&fixture.system);
     let human_root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     persist::write_signing_key(&source.user_privkey, &human_root).unwrap();
-    assert!(
-        EnrolledDevice::review(
-            &fixture.system,
-            &fixture.record,
-            fixture.root,
-            fixture.device,
-            tilo_clock::unix_now_ns()
-        )
-        .is_err()
-    );
+    assert!(fixture.review().is_err());
 }
 
 #[test]
@@ -244,15 +247,9 @@ fn current_owner_reference_roundtrip_uses_existing_member_without_exporting_priv
     reviewed
         .export_password_sealed(&sealed, PASSWORD, "current-owner-operation")
         .unwrap();
-    let authenticated = AuthenticatedCurrentDeviceReference::open(
-        &sealed,
-        PASSWORD,
-        "current-owner-operation",
-        fixture.root,
-        fixture.device,
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    let authenticated = fixture
+        .open_current(&sealed, "current-owner-operation")
+        .unwrap();
     let resolved = authenticated
         .resolve_current(&fixture.system, identity)
         .unwrap();
@@ -282,28 +279,8 @@ fn current_owner_reference_roundtrip_uses_existing_member_without_exporting_priv
     assert_eq!(value.as_object().unwrap().len(), 5);
     assert!(value.get("device_seed").is_none());
     assert!(value.get("public_record").is_none());
-    assert!(
-        AuthenticatedEnrolledDevice::open(
-            &sealed,
-            PASSWORD,
-            "current-owner-operation",
-            fixture.root,
-            fixture.device,
-            tilo_clock::unix_now_ns()
-        )
-        .is_err()
-    );
-    assert!(
-        AuthenticatedCurrentDeviceReference::open(
-            &sealed,
-            PASSWORD,
-            "other-operation",
-            fixture.root,
-            fixture.device,
-            tilo_clock::unix_now_ns()
-        )
-        .is_err()
-    );
+    assert!(fixture.open(&sealed, "current-owner-operation").is_err());
+    assert!(fixture.open_current(&sealed, "other-operation").is_err());
     assert!(
         AuthenticatedCurrentDeviceReference::open(
             &sealed,
@@ -328,15 +305,9 @@ fn current_owner_reference_refuses_other_owner_and_changed_current_key_before_ac
     reviewed
         .export_password_sealed(&sealed, PASSWORD, "current-owner-operation")
         .unwrap();
-    let authenticated = AuthenticatedCurrentDeviceReference::open(
-        &sealed,
-        PASSWORD,
-        "current-owner-operation",
-        fixture.root,
-        fixture.device,
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    let authenticated = fixture
+        .open_current(&sealed, "current-owner-operation")
+        .unwrap();
     let paths = IdentityPaths::under(&fixture.system);
     persist::write_public_key(&paths.user_pubkey, &[17; 32]).unwrap();
     let refused_owner = snapshot(fixture.source.path());
@@ -374,15 +345,9 @@ fn current_owner_reference_refuses_changed_original_record_and_never_replaces_it
     reviewed
         .export_password_sealed(&sealed, PASSWORD, "current-owner-operation")
         .unwrap();
-    let authenticated = AuthenticatedCurrentDeviceReference::open(
-        &sealed,
-        PASSWORD,
-        "current-owner-operation",
-        fixture.root,
-        fixture.device,
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    let authenticated = fixture
+        .open_current(&sealed, "current-owner-operation")
+        .unwrap();
     tilo_files::native::atomic::write_with_mode(
         &fixture.record,
         &runtime_identity::public_member_record(
