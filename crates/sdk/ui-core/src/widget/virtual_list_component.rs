@@ -109,10 +109,12 @@ pub struct ListItemProps {
     /// The row: a `ui.ListRow`, or any view.
     #[component(slot(default))]
     pub row: ItemRow,
-    /// The item's document, shown under the row while the row stands open into it, one lead
-    /// in under the row's text: a row with a document opens where it stands in the list when
-    /// it is chosen, and the list's own motion grows the row to hold it. Without one, choosing
-    /// the row opens the item elsewhere (`ui.VirtualList`'s `activate`).
+    /// The item's document, shown in the row's place while the row stands open into it: a row
+    /// with a document opens where it stands in the list when it is chosen, and the list's own
+    /// motion grows the row to hold it. The document opens with the item's own leading control
+    /// and title, in the row's column — the row becomes the item, its title written once — and
+    /// what the item holds follows under them. Without a document, choosing the row opens the
+    /// item elsewhere (`ui.VirtualList`'s `activate`).
     #[component(slot)]
     pub detail: ItemRow,
 }
@@ -179,6 +181,10 @@ pub struct VirtualListProps {
     /// The list is a column's whole body: its rows' text starts where the column's header
     /// starts its title.
     pub in_column: bool,
+    /// The window is too narrow to hold an item under its row: a row that carries an item opens
+    /// it in front of the list, where the window's back leads back to the rows, and a row the
+    /// host held open closes as the window narrows.
+    pub narrow: bool,
     /// The list is read to its end: it opens at its last row and stays there as rows arrive and
     /// settle, unless the person scrolled away ([`VirtualList::following_end`]).
     pub follow_end: bool,
@@ -664,6 +670,8 @@ struct Face {
     name: Option<String>,
     selection_follows_focus: bool,
     in_column: bool,
+    /// The window is too narrow to hold an item under its row.
+    narrow: bool,
     follow_end: bool,
     page_column: bool,
     at_measure: bool,
@@ -685,6 +693,7 @@ impl Face {
             name: props.name.clone(),
             selection_follows_focus: props.selection_follows_focus,
             in_column: props.in_column,
+            narrow: props.narrow,
             follow_end: props.follow_end,
             page_column: props.page_column,
             at_measure: props.at_measure,
@@ -852,6 +861,9 @@ fn declared_shortcuts(
     out
 }
 
+/// The item's document standing in its row's place, `indent` in from the row's leading edge:
+/// the column the row's content stood in, so an opened item keeps the column of the rows
+/// around it.
 /// The row of an item: its list row with the item's presence, or its view; under the swipe
 /// and beside the hover toolbar the item has.
 fn row_of(
@@ -991,20 +1003,23 @@ fn bare_row(
             }
             ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
         };
-        // A row standing open into its item: the item's document under the row, one lead in
-        // under the text the row's leading control leads to, so the row becomes the item where
-        // it stands in the list rather than opening a page of its own.
+        // A row standing open into its item: the item's document takes the row's place, in the
+        // row's own column, so the leading control and the title the document opens with are
+        // the row's own, written once, and what the item holds follows under them.
+        // The document takes the row's place in the very column the row stands in: a view
+        // takes the same step a tree gives a row's view, a list row the same one a tree gives a
+        // row's content, so the item's leading control and title stand where the row's did.
         let row = match (expanded, detail) {
-            (true, ItemRow::View(document)) => {
-                let mut open = Stack::stack().fill_width();
-                open.set_lead(1);
-                Box::new(open.push(row).push(document)) as Element
-            }
+            (true, ItemRow::View(document)) => match tree {
+                Some(marks) => indent_view(document, marks.depth(&key.to_owned()), None),
+                None => document,
+            },
             (true, ItemRow::Row(props)) => {
-                let document = Box::new(ListRow::from_props(key, *props)) as Element;
-                let mut open = Stack::stack().fill_width();
-                open.set_lead(1);
-                Box::new(open.push(row).push(document)) as Element
+                let mut document = ListRow::from_props(key, *props);
+                if let Some(marks) = tree {
+                    document = document.depth(marks.depth(&key.to_owned()));
+                }
+                Box::new(document) as Element
             }
             (true, ItemRow::None) | (false, _) => row,
         };
@@ -1245,7 +1260,7 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     }
     let opens_here = rows
         .index_of(&key)
-        .is_some_and(|index| rows.opens_in_place(index));
+        .is_some_and(|index| list.opens_here(index));
     if let (Some(id), false) = (shown, opens_here) {
         select.fire(Some(Value::Resource(id.0)));
     }
@@ -1262,6 +1277,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             follow_end,
+            narrow,
             page_column,
             at_measure,
             tail_title,
@@ -1345,6 +1361,7 @@ impl Described for DescribedList {
         if follow_end {
             list = list.following_end();
         }
+        list = list.in_place(!narrow);
         if selection_follows_focus {
             list = list.selection_follows_focus();
         }

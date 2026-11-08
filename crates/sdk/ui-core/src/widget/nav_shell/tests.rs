@@ -226,7 +226,13 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
                 );
                 assert!(child_rect(&h, away).is_none(), "one at a time");
                 if name == "files" {
-                    assert!(g.back.width() > 0.0, "{name} {width}: Back to the places");
+                    // The list is the screen the window opened on: a place, left by the
+                    // toggle for the places behind it.
+                    assert_eq!(g.back, Rect::ZERO, "{name} {width}: the list is a place");
+                    assert!(
+                        g.toggle.width() > 0.0,
+                        "{name} {width}: the toggle leads to the places"
+                    );
                 }
             } else {
                 assert_eq!(

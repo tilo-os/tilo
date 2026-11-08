@@ -5,8 +5,8 @@ use vello::kurbo::{Point, Rect, Vec2};
 
 use super::inspector::keep_clear;
 use super::{
-    Column, Inputs, InspectorPlacement, Metrics, NavMode, NavPane, OverviewPlacement, Part,
-    SidebarPlacement, inspector_layout_of, reaches,
+    Column, ContentKind, Inputs, InspectorPlacement, Metrics, NavMode, NavPane, OverviewPlacement,
+    Part, SidebarPlacement, inspector_layout_of, reaches,
 };
 use crate::num::f64_of_usize;
 use crate::tokens::Breakpoint;
@@ -468,9 +468,10 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         Vec::new()
     };
-    // The bar's toggle reaches a sidebar screen; Back drills past the first screen after it (a
-    // list, the empty state) and reaches the sidebar. A shell that declares the bar's slots has no
-    // toggle of its own.
+    // The bar's toggle reaches the sidebar at every width. Back drills past the screen the
+    // window opened on — the content's own list — and reaches the sidebar; a window already on
+    // its opening screen is a place, left by the toggle, with no way back to nothing. A shell
+    // that declares the bar's slots has no toggle of its own.
     let first = usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
@@ -728,7 +729,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         NavPane::Content => Column::Content,
     };
-    let push_back = drills && front > first;
+    let push_back = drills && front > opening_pane(&stack, inputs.kind, first);
     let window_row = Rect::new(0.0, top, w, top + hh);
     let back_column = if push_back {
         Some(front_column)
@@ -742,15 +743,19 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     // and comes back with the first screen. An open drawer keeps its way to close.
     let back_leads =
         back_column.is_some() && g.sidebar != SidebarPlacement::Docked && !sidebar_open;
+    // The toggle reaches the sidebar wherever it stands beside the window or over it; the
+    // sidebar's own screen shows the screen under it instead and keeps no toggle.
+    let toggle_leads = match g.sidebar {
+        SidebarPlacement::Docked | SidebarPlacement::Drawer => true,
+        SidebarPlacement::Screen => front_pane != NavPane::Sidebar,
+        SidebarPlacement::None => false,
+    };
     if hh > 0.0
         && !push_back
         && !back_leads
         && inputs.has_sidebar
         && !inputs.toggle_in_bar
-        && matches!(
-            g.sidebar,
-            SidebarPlacement::Docked | SidebarPlacement::Drawer
-        )
+        && toggle_leads
     {
         // Pinned to the window's top-leading corner, on the sidebar while it shows docked and on
         // the next column otherwise, so it never chases a sliding edge.
@@ -903,6 +908,17 @@ pub(super) fn layout_of(sidebar: SidebarPlacement) -> SplitLayout {
     match sidebar {
         SidebarPlacement::Drawer | SidebarPlacement::Screen => SplitLayout::Overlay,
         SidebarPlacement::Docked | SidebarPlacement::None => SplitLayout::Docked,
+    }
+}
+
+/// The screen a window opens on, which Back drills past: the content's own list where the
+/// content is a list, else the first screen of the stack. A screen at or before it is a place,
+/// reached and left by the sidebar's toggle; only a screen deeper than it has a way back.
+pub(super) fn opening_pane(stack: &[NavPane], kind: ContentKind, first: usize) -> usize {
+    if kind == ContentKind::List {
+        stack_index(stack, NavPane::Content)
+    } else {
+        first.min(stack.len().saturating_sub(1))
     }
 }
 

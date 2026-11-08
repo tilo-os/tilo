@@ -8,6 +8,20 @@ use super::{ListModel, VirtualList};
 const GROWN_EPSILON: f64 = 0.5;
 
 impl<M: ListModel> VirtualList<M> {
+    /// Whether choosing the row at `index` opens the item where the row stands: an item with
+    /// a document of its own, in a list with the room to hold it under the row. A list in a
+    /// window too narrow for that ([`VirtualList::in_place`]) opens the item in front instead,
+    /// where the window's back leads to the list again.
+    pub(super) fn opens_here(&self, index: usize) -> bool {
+        self.in_place && self.model.opens_in_place(index)
+    }
+
+    /// Whether the item at `index` opens when its row is chosen at all, where it stands or in
+    /// front of the list.
+    pub(super) fn opens_item(&self, index: usize) -> bool {
+        self.model.opens_in_place(index)
+    }
+
     /// The row standing open into its item, if one does: the item the person is reading
     /// where it stands, which the row builder draws its document into.
     #[must_use]
@@ -28,7 +42,7 @@ impl<M: ListModel> VirtualList<M> {
         let opened = key.filter(|key| {
             self.model
                 .index_of(key)
-                .is_some_and(|index| self.model.opens_in_place(index))
+                .is_some_and(|index| self.opens_here(index))
         });
         self.open = opened;
         let changed: Vec<M::Key> = closed.into_iter().chain(self.open.clone()).collect();

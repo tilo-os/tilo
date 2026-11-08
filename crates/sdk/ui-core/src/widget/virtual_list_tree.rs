@@ -246,11 +246,11 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The box the row `key`'s disclosure takes: the chevron in its own depth's gutter, centred
-    /// on the row. `None` for a row with no subtasks, or one not placed.
+    /// on the row's own line. `None` for a row with no subtasks, or one not placed.
     #[must_use]
     pub fn disclosure_rect(&self, key: &M::Key) -> Option<Rect> {
         let marks = self.tree.as_ref()?;
-        let row = self.row_rect(key)?;
+        let row = self.line_box(key, self.row_rect(key)?);
         let (gutter, _) = self.chevrons().gutter(marks, key)?;
         let side = self.disclosure;
         let cy = row.center().y;
@@ -260,6 +260,17 @@ impl<M: ListModel> VirtualList<M> {
             gutter + side,
             cy + side / 2.0,
         ))
+    }
+
+    /// The row's own line, where a row that grew into its item still starts: its chevron and
+    /// the way back to the part of it on screen hang on the line, not beside the document the
+    /// row opened into, which may run far below it.
+    pub(super) fn line_box(&self, key: &M::Key, row: Rect) -> Rect {
+        if self.open.as_ref() == Some(key) && row.height() > self.row_line {
+            Rect::new(row.x0, row.y0, row.x1, row.y0 + self.row_line)
+        } else {
+            row
+        }
     }
 
     /// How many rows under its top row `key` stands, as the list's tree shows it.

@@ -107,6 +107,9 @@ impl<M: ListModel> VirtualList<M> {
         // The tree's chevrons are the list's own, over the rows of any view: one place folds.
         let tree = self.tree.clone();
         let chevrons = self.chevrons();
+        // The row that grew into its item keeps its chevron on its own line, where it starts.
+        let open = self.open.clone();
+        let line_height = self.row_line;
         let guide_color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
         let _kept = crate::draw_cull::keep_scope(scene, self.draw_keep(opacity, now));
         let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
@@ -224,17 +227,27 @@ impl<M: ListModel> VirtualList<M> {
                 },
             );
             if let Some(marks) = tree.as_ref() {
+                let line = if open.as_ref() == Some(&row.key) && row_rect.height() > line_height {
+                    Rect::new(
+                        row_rect.x0,
+                        row_rect.y0,
+                        row_rect.x1,
+                        row_rect.y0 + line_height,
+                    )
+                } else {
+                    row_rect
+                };
                 if self.indent_guides {
                     chevrons.paint_guides(
                         marks,
                         scene,
                         transform,
                         &row.key,
-                        row_rect,
+                        line,
                         crate::ColorCompat::with_alpha_factor(guide_color, alpha),
                     );
                 }
-                chevrons.paint(marks, scene, transform, theme, &row.key, row_rect);
+                chevrons.paint(marks, scene, transform, theme, &row.key, line);
             }
             if clipped.is_some() {
                 scene.pop_layer();

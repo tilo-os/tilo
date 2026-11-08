@@ -329,3 +329,32 @@ fn a_row_named_again_closes_when_the_rows_arrive_without_it() {
     assert_eq!(list.open_row(), None);
     assert_eq!(closes.get(), 1);
 }
+
+#[test]
+fn a_list_too_narrow_to_hold_its_item_opens_it_in_front_instead() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut narrow = list(Rc::clone(&opened)).in_place(false);
+    let _ = lay_out(&mut narrow, 300.0);
+    // What a host holds open as the window narrows, and what a press does at that width: the
+    // item opens in front of the list, through the host, never grown into the row.
+    narrow.set_open(Some(0));
+    assert_eq!(
+        narrow.open_row(),
+        None,
+        "a list too narrow for the item keeps no row open"
+    );
+    narrow.activate_key(0);
+    assert_eq!(narrow.open_row(), None);
+    assert_eq!(
+        *opened.borrow(),
+        vec![0],
+        "the press opens the item in front, where the host shows it"
+    );
+    // A list with the room to hold the item opens it where it stands.
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut roomy = list(Rc::clone(&opened));
+    let _ = lay_out(&mut roomy, 300.0);
+    roomy.activate_key(0);
+    assert_eq!(roomy.open_row(), Some(&0));
+    assert!(opened.borrow().is_empty());
+}

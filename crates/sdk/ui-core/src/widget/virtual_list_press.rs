@@ -16,12 +16,13 @@ impl<M: ListModel> VirtualList<M> {
         let toggle = state.control_key() || state.super_key();
         let extend = state.shift_key();
         // A row open into its item opens with a press, as a disclosure does: one gesture
-        // shows what the row holds, without a second press to activate it.
-        let opens_here = self
+        // shows what the row holds, without a second press to activate it. Where the list is
+        // too narrow to hold the item under the row, the press opens it in front instead.
+        let opens = self
             .model
             .index_of(&key)
-            .is_some_and(|index| self.model.opens_in_place(index));
-        if opens_here && !toggle && !extend {
+            .is_some_and(|index| self.opens_item(index));
+        if opens && !toggle && !extend {
             self.focus_row(key.clone());
             self.activate_key(key);
             return;
@@ -55,12 +56,14 @@ impl<M: ListModel> VirtualList<M> {
         if self
             .model
             .index_of(&key)
-            .is_some_and(|index| self.model.opens_in_place(index))
+            .is_some_and(|index| self.opens_here(index))
         {
             self.choose_quietly(key.clone());
             self.open_where_it_stands(key);
             return;
         }
+        // Narrower than a compact window's width the item opens in front of the list, through
+        // the host that shows it, as the code below does for a row that holds no document.
         if self.opens.is_none() && self.on_activate.is_none() {
             self.apply_selection(key, false, false, Choosing::ByHand);
             return;

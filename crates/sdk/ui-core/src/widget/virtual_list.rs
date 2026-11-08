@@ -500,6 +500,12 @@ pub struct VirtualList<M: ListModel> {
     /// The selection lifts the last painted frame drew for its rows, and what those rows show
     /// ([`crate::widget::RowLift`]): an audit holds a lift to the row it selects.
     painted_lifts: Vec<crate::widget::RowLift>,
+    /// Whether a row with an item opens into it where it stands, or the item opens in front of
+    /// the list ([`Self::in_place`]).
+    in_place: bool,
+    /// The height of a row's own line, from the last layout's theme: what a row that grew into
+    /// its item still shows where it starts.
+    row_line: f64,
     /// Where the rows stand between the list's edges ([`Self::flush`], [`Self::in_column`]).
     stance: RowStance,
     /// The space above the first row and below the last ([`Self::with_edges`]).
@@ -715,6 +721,8 @@ impl<M: ListModel> VirtualList<M> {
             ),
             lift: f64::from(crate::tokens::Spacing::BASE.s2),
             painted_lifts: Vec::new(),
+            in_place: true,
+            row_line: f64::from(crate::tokens::Metrics::BASE.row_single),
             stance: RowStance::Bleed,
             edges: None,
             rows_beside_bar: false,
@@ -1829,6 +1837,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         };
         self.lift = crate::chrome::row_bleed(theme);
         self.disclosure = crate::chrome::disclosure_gutter(theme);
+        self.row_line = f64::from(theme.tokens.metrics.row_single);
         // A chevron hangs left of the column so the column never moves: one left edge.
         let gutter = if self.tree.is_some() || self.model.discloses() {
             self.disclosure
@@ -1911,6 +1920,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // A list too narrow for one thing at a time shows the item in front of it, never grown
+        // into the row: the row that stood open closes as the window narrows.
+        if !self.in_place {
+            self.set_open(None);
+        }
         if self.fill_height
             && self.rect.height() > 0.0
             && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
