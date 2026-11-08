@@ -191,7 +191,6 @@ mod presence_clock;
 #[cfg(target_arch = "wasm32")]
 mod replication;
 #[cfg(target_arch = "wasm32")]
-mod scratch;
 #[cfg(target_arch = "wasm32")]
 mod semantics_status;
 #[cfg(target_arch = "wasm32")]

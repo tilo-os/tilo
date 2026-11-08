@@ -389,7 +389,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.deepEqual(handles.map(handle => [handle.device, handle.released]),
     [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [fresh, 0]]);
   assert.equal(vaultStorage.rows.size, 2, 'the new namespace seals its channel state with a vault of its own');
-  assert.equal((await peer.mountDesktop('target', {app: 'scratch'})).device, fresh, 'its desktops mount there too');
+  assert.equal((await peer.mountDesktop('target', {app: 'desktop'})).device, fresh, 'its desktops mount there too');
   await peer.dispose();
 
   // The next visit reconnects there, with no new admission.
@@ -527,7 +527,7 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   assert.equal(runtime.peer.config.displayName, 'Ada');
   assert.ok(values.has('work/laptop/certificate'), 'the certificate is kept in the profile');
 
-  await peer.mountDesktop('target', {app: 'scratch'});
+  await peer.mountDesktop('target', {app: 'desktop'});
   assert.equal(mounts[0].profile, 'work');
   assert.equal(mounts[0].device, 'laptop');
   assert.equal(mounts[0].workspace, WORKSPACE);

@@ -977,7 +977,7 @@ pub fn mount(
 #[wasm_bindgen]
 pub async fn load_application(app: String) -> bool {
     match app.as_str() {
-        "desktop" | "scratch" => true,
+        "desktop" => true,
         app => {
             ui::application::registry::load(app).await.is_some()
                 || crate::desktop::application(app).is_some()
@@ -1072,7 +1072,6 @@ fn definition(
 ) -> Result<Option<&'static ui::application::ApplicationDefinition>, JsValue> {
     match app {
         None | Some("desktop") => Ok(None),
-        Some("scratch") => Ok(Some(crate::scratch::definition())),
         Some(app) => crate::desktop::application(app)
             .map(Some)
             .ok_or_else(|| error("unsupported application")),
@@ -2623,7 +2622,8 @@ impl Mount {
             PresencePayload::Selection { start, end } => (start, end),
             _ => return None,
         };
-        let (anchor, head) = tilo_browser_peer::transport::presence_anchors(&key, start, end)?;
+        let (anchor, head) =
+            tilo_browser_peer::presence_anchors::presence_anchors(&key, start, end)?;
         Some(
             serde_json::json!({"anchor": hex::encode(anchor.cursor), "head": hex::encode(head.cursor)}),
         )

@@ -3566,13 +3566,6 @@ impl Task {
     }
 }
 
-/// Whether `reason` is the host answering "no" about a change it read, as
-/// [`PeerHandle::barrier_then`] carries it. A lost, cancelled or overloaded
-/// session is not an answer: only that leaves the change's outcome unknown.
-pub fn is_refusal(reason: &str) -> bool {
-    reason.trim_start().starts_with(REFUSAL)
-}
-
 /// What this session reports when the host would not take a change it read.
 fn refusal_text(reason: &str) -> String {
     format!("{REFUSAL}: {}", reason.trim())

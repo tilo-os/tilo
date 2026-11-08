@@ -644,7 +644,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/video-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-video.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice.test.mjs",

@@ -23,7 +23,7 @@
 use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
-use tilo_browser_peer::transport::presence_anchors;
+use tilo_browser_peer::presence_anchors::presence_anchors;
 use tilo_relay_protocol::live::LiveAnchor;
 use ui::application::ApplicationDefinition;
 use ui::collaboration::PresencePayload;

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
-description = "The browser as a Tilo peer: relay-mediated device certification, the certified relay session with its commit outbox and reconnect replay, the live presence plane, SessionHealth v1, and a CollabTransport for the toolkit."
+description = "The browser as a Tilo peer: relay-mediated device certification, the certified relay session with its commit outbox and reconnect replay, the live presence plane, and SessionHealth v1."
 repository.workspace = true
 homepage.workspace = true
 

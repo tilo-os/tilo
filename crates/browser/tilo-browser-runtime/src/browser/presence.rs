@@ -380,7 +380,7 @@ fn selection_anchors(selection: Option<&JsSelection>) -> Option<(PresenceKey, us
     let head = tilo_relay_protocol::live::LiveAnchor {
         cursor: hex::decode(&selection.head).ok()?,
     };
-    tilo_browser_peer::transport::read_presence_anchors(&anchor, &head)
+    tilo_browser_peer::presence_anchors::read_presence_anchors(&anchor, &head)
 }
 
 impl Mount {
