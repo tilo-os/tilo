@@ -191,6 +191,20 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
 pub struct HostInfo {
     /// The host's device certificate (pin its device key).
     pub host_cert: tilo_user_identity::DeviceCert,
+    /// Where the host listens on iroh, which is how a page reaches it for
+    /// everything a session and its planes carry. `None` in a host that serves
+    /// no iroh endpoint.
+    pub address: Option<HostAddress>,
+}
+
+/// Where a host's iroh endpoint is dialled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAddress {
+    /// The endpoint's key and the addresses it answers at.
+    pub endpoint_addr: iroh_base::EndpointAddr,
+    /// The packet relay it is reached through, when it names one; a page dials
+    /// the endpoint through it rather than over the network's own relays.
+    pub relay_url: Option<String>,
 }
 
 /// What a node runs beside its relay, for a member's session.

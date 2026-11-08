@@ -808,15 +808,17 @@ fn state_survives_a_restart_and_an_export() {
     let restored =
         ChannelPeer::restore(channel, Box::new(key.clone()), &exported, &vault()).unwrap();
     assert_eq!(restored.gate(), device.peer.gate());
-    assert!(
+    // Another device's state, as a machine copied from this one holds: the
+    // caller tells it apart, drops it and joins as itself.
+    assert!(matches!(
         ChannelPeer::restore(
             channel,
             Box::new(SigningKey::from_bytes(&[2; 32])),
             &exported,
             &vault()
-        )
-        .is_err()
-    );
+        ),
+        Err(channel_crypto::Error::OtherDevice)
+    ));
     assert!(
         ChannelPeer::restore(ChannelId::new(), Box::new(key.clone()), &exported, &vault()).is_err()
     );

@@ -2,37 +2,49 @@
 //!
 //! An environment is a Terminal record (`#[resource(kind = "environment")]`,
 //! see `tilo-environment`), so it lives in Terminal's own records and syncs
-//! with them: `<data home>/tilo-rooms/personal/so.tilo.terminal` is the
-//! directory the launcher gives Terminal, and its `.local/share` is the
-//! data home Terminal's own record store writes under. The supervisor joins
-//! the record's shared writers there, applies actions through the record
-//! layer — so every change carries history and an author — and appends.
+//! with them: `<data home>/tilo-rooms/<workspace>/so.tilo.terminal` is the
+//! directory the launcher gives Terminal opened in a workspace, and its
+//! `.local/share` is the data home Terminal's own record store writes under,
+//! in that workspace's room. The supervisor joins the record's shared
+//! writers there, applies actions through the record layer — so every
+//! change carries history and an author — and appends.
+//!
+//! Each workspace's environments are in its own room
+//! ([`crate::workspace`]); the primary workspace's room is `personal`, where
+//! every environment made before environments belonged to a workspace is,
+//! unmoved.
 //!
 //! An app names a record by key only ([`tilo_environment::is_record_key`]);
-//! the scope and the owning app are fixed here, never taken from a request.
+//! the room and the owning app are fixed here, never taken from a request.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use app_state::{DocStore, FsStore};
+use collab_types::caps::CapOverride;
 use durable_store::{DurableStore, StorageKey};
 use tilo_environment::{DEFAULT_NAME, DEFAULT_RECORD, Environment, OWNER_APP_ID, is_record_key};
 use tilo_resource::{Invoke, Replica, Resource};
 
 use crate::images::Images;
+use crate::workspace::Confinement;
 
-/// The room environment records are kept in.
-pub const ROOM: &str = "personal";
+/// The primary workspace's room ([`crate::workspace::PRIMARY`]).
+pub const ROOM: &str = crate::workspace::PRIMARY;
+
+/// The directory under the user's data home with one directory per
+/// workspace, as the launcher lays them out.
+pub const ROOMS_DIR: &str = "tilo-rooms";
 
 /// The author every change the supervisor makes is attributed to.
 pub const AUTHOR: &str = tilo_environment::RUNTIME_APP_ID;
 
-/// The data home Terminal's records are written under, for a user whose data
-/// home is `data_home`.
-pub fn terminal_data_home(data_home: &Path) -> PathBuf {
+/// The data home Terminal's records in the room `room` are written under,
+/// for a user whose data home is `data_home`.
+pub fn terminal_data_home(data_home: &Path, room: &str) -> PathBuf {
     data_home
-        .join("tilo-rooms")
-        .join(ROOM)
+        .join(ROOMS_DIR)
+        .join(room)
         .join(OWNER_APP_ID)
         .join(".local/share")
 }
@@ -54,19 +66,66 @@ pub enum RecordError {
     NoRuntime(String),
 }
 
-/// The environment records under one data home.
+/// The environment records of one workspace's room under one data home.
 #[derive(Debug, Clone)]
 pub struct Records {
     root: PathBuf,
+    room: String,
+    /// What the room's environments may be granted of the device's files.
+    confinement: Option<Confinement>,
 }
 
 impl Records {
+    /// The primary workspace's records under `root`.
     pub fn at(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            room: ROOM.to_owned(),
+            confinement: None,
+        }
+    }
+
+    /// The records of the workspace `store` is of
+    /// ([`Store::for_workspace`](crate::store::Store::for_workspace)), held
+    /// to its confinement: a grant of another workspace's files is refused,
+    /// and one that reached the record anyway is not read.
+    pub fn of(store: &crate::store::Store) -> Self {
+        Self {
+            root: store.records_root().to_path_buf(),
+            room: store.workspace_id().as_str().to_owned(),
+            confinement: store.confinement(),
+        }
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The room these records are kept in: their workspace's id.
+    pub fn room(&self) -> &str {
+        &self.room
+    }
+
+    /// Refuse what `after` was granted that `before` was not and the
+    /// confinement does not admit.
+    fn confined(&self, before: &[CapOverride], after: &[CapOverride]) -> Result<(), RecordError> {
+        let Some(confinement) = &self.confinement else {
+            return Ok(());
+        };
+        match after
+            .iter()
+            .filter(|grant| !before.contains(grant))
+            .find(|grant| !confinement.admits(grant))
+        {
+            Some(CapOverride {
+                scope: collab_types::caps::Scope::FsPath(path),
+                ..
+            }) => Err(RecordError::Refused(confinement.refusal(path))),
+            Some(_) => Err(RecordError::Refused(
+                "that grant is not this workspace's".into(),
+            )),
+            None => Ok(()),
+        }
     }
 
     /// The directory one record's document lives in.
@@ -75,7 +134,7 @@ impl Records {
     /// Returns [`RecordError::BadKey`] for a key that is not a record key.
     pub fn record_dir(&self, key: &str) -> Result<PathBuf, RecordError> {
         check_key(key)?;
-        DocStore::workspace_record_dir_at(&self.root, OWNER_APP_ID, ROOM, key)
+        DocStore::workspace_record_dir_at(&self.root, OWNER_APP_ID, &self.room, key)
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 
@@ -83,7 +142,7 @@ impl Records {
         check_key(key)?;
         std::fs::create_dir_all(&self.root).map_err(|e| RecordError::Store(e.to_string()))?;
         let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(self.root.clone()));
-        DocStore::shared(store, StorageKey::record(OWNER_APP_ID, ROOM, key))
+        DocStore::shared(store, StorageKey::record(OWNER_APP_ID, &self.room, key))
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 
@@ -115,21 +174,53 @@ impl Records {
         let Some(doc) = Self::load_current(&mut store)? else {
             return Ok(None);
         };
-        Environment::read(&doc)
-            .map(Some)
-            .map_err(|e| RecordError::Model(e.to_string()))
+        let mut environment =
+            Environment::read(&doc).map_err(|e| RecordError::Model(e.to_string()))?;
+        self.check_room(key, &environment)?;
+        // A grant this room may not hold — written by a Tilo that did not
+        // refuse it — is not read, so no session is built with it.
+        if let Some(confinement) = &self.confinement {
+            environment.grants.retain(|grant| confinement.admits(grant));
+        }
+        Ok(Some(environment))
+    }
+
+    /// A record kept in this room that names another workspace is not this
+    /// room's to open. One that names none was made before environments
+    /// belonged to a workspace, and is the room's.
+    fn check_room(&self, key: &str, environment: &Environment) -> Result<(), RecordError> {
+        let named =
+            crate::workspace::WorkspaceId::of_record(environment).map_err(RecordError::Model)?;
+        if environment.workspace.is_empty() || named.as_str() == self.room {
+            Ok(())
+        } else {
+            Err(RecordError::Refused(format!(
+                "the environment {key:?} kept with workspace {}'s belongs to workspace {named}",
+                self.room
+            )))
+        }
     }
 
     /// Make the record `key` holding `env`, unless one exists; returns what
-    /// the record holds afterwards.
+    /// the record holds afterwards. The record is made as this room's: it
+    /// names the room's workspace.
     ///
     /// # Errors
-    /// Returns an error for a bad key or a store that refuses the write.
+    /// Returns an error for a bad key, a grant the room may not hold, or a
+    /// store that refuses the write.
     pub fn create(&self, key: &str, env: &Environment) -> Result<Environment, RecordError> {
         let mut store = self.open(key)?;
-        if let Some(doc) = Self::load_current(&mut store)? {
-            return Environment::read(&doc).map_err(|e| RecordError::Model(e.to_string()));
+        if Self::load_current(&mut store)?.is_some() {
+            drop(store);
+            return self
+                .load(key)?
+                .ok_or_else(|| RecordError::Missing(key.to_owned()));
         }
+        let env = Environment {
+            workspace: self.room.clone(),
+            ..env.clone()
+        };
+        self.confined(&[], &env.grants)?;
         let mut doc = store.new_document();
         env.write_record(&mut doc)
             .map_err(|e| RecordError::Model(e.to_string()))?;
@@ -137,7 +228,7 @@ impl Records {
         store
             .append(&mut doc)
             .map_err(|e| RecordError::Store(e.to_string()))?;
-        Ok(env.clone())
+        Ok(env)
     }
 
     /// Every environment record there is, by key.
@@ -232,16 +323,25 @@ impl Records {
             Self::load_current(&mut store)?.ok_or_else(|| RecordError::Missing(key.to_owned()))?;
         let mut replica = Replica::<Environment>::from_doc(doc).as_author(AUTHOR);
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());
+        let before = replica
+            .state()
+            .map_err(|e| RecordError::Model(e.to_string()))?;
+        self.check_room(key, &before)?;
         // The person asked for this at the shell: that is the confirmation.
         replica
             .apply_confirmed(invoke)
             .map_err(|e| RecordError::Refused(e.to_string()))?;
+        let mut after = replica
+            .state()
+            .map_err(|e| RecordError::Model(e.to_string()))?;
+        self.confined(&before.grants, &after.grants)?;
         store
             .append(replica.doc_mut())
             .map_err(|e| RecordError::Store(e.to_string()))?;
-        replica
-            .state()
-            .map_err(|e| RecordError::Model(e.to_string()))
+        if let Some(confinement) = &self.confinement {
+            after.grants.retain(|grant| confinement.admits(grant));
+        }
+        Ok(after)
     }
 }
 
@@ -296,7 +396,17 @@ impl Records {
             None => replica,
         };
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());
+        let before = replica
+            .state()
+            .map_err(|e| RecordError::Model(e.to_string()))?;
+        self.check_room(key, &before)?;
         let answer = act(&mut replica)?;
+        if self.confinement.is_some() {
+            let after = replica
+                .state()
+                .map_err(|e| RecordError::Model(e.to_string()))?;
+            self.confined(&before.grants, &after.grants)?;
+        }
         store
             .append(replica.doc_mut())
             .map_err(|e| RecordError::Store(e.to_string()))?;
@@ -467,5 +577,174 @@ mod tests {
             records.apply("absent", Environment::RENAME.with("x")),
             Err(RecordError::Missing(_))
         ));
+    }
+
+    const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    const W2: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+    fn workspace_store(root: &Path, files: &Path, id: &str) -> crate::store::Store {
+        crate::store::Store::at(root)
+            .with_workspace(files)
+            .for_workspace(&crate::workspace::WorkspaceId::parse(Some(id)).unwrap())
+    }
+
+    /// Each workspace's environments are in its own room, named by it;
+    /// listing one room lists only its own.
+    #[test]
+    fn a_workspace_keeps_its_environments_in_its_own_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = dir.path().join("files");
+        let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
+        let w2 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W2));
+        assert_eq!(w1.room(), W1);
+
+        let (key, env) = w1.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
+        assert_eq!(env.workspace, W1, "the record names its workspace");
+        assert!(
+            w1.record_dir(&key)
+                .unwrap()
+                .starts_with(w1.root().join(OWNER_APP_ID).join("rooms").join(W1)),
+            "in the workspace's room"
+        );
+        w1.create("env-only-w1", &env).unwrap();
+        assert_eq!(w1.keys().unwrap(), vec!["default", "env-only-w1"]);
+        assert!(
+            w2.keys().unwrap().is_empty(),
+            "another room lists none of them"
+        );
+        assert!(w2.load("env-only-w1").unwrap().is_none());
+        assert!(
+            Records::at(w1.root()).keys().unwrap().is_empty(),
+            "nor does the primary workspace's"
+        );
+
+        // A record moved into another workspace's room is not its to open.
+        let w1_dir = w1.record_dir("env-only-w1").unwrap();
+        let w2_dir = w2.record_dir("env-only-w1").unwrap();
+        // (Asking for it above left an empty directory there.)
+        std::fs::remove_dir_all(&w2_dir).unwrap();
+        std::fs::rename(&w1_dir, &w2_dir).unwrap();
+        assert!(matches!(
+            w2.load("env-only-w1"),
+            Err(RecordError::Refused(_))
+        ));
+        assert!(matches!(
+            w2.apply("env-only-w1", Environment::RENAME.with("mine")),
+            Err(RecordError::Refused(_))
+        ));
+    }
+
+    /// An environment made before environments belonged to a workspace —
+    /// in `personal`, naming none — is the primary workspace's: it opens
+    /// as it did, with everything it held, and is no other workspace's.
+    #[test]
+    fn an_environment_from_before_workspaces_is_the_primary_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = dir.path().join("files");
+        let store = crate::store::Store::at(dir.path().join("ush")).with_workspace(&files);
+        let legacy = Records::at(store.records_root());
+        let mut old = Environment::new("Old", "2026.10", tilo_environment::host_arch(), &image(1));
+        old.grants
+            .push(tilo_environment::dir_grant(Path::new("/var/home/you/src"), true).unwrap());
+        // As an older Tilo wrote it: no workspace.
+        let mut doc_store = legacy.open(DEFAULT_RECORD).unwrap();
+        let mut doc = doc_store.new_document();
+        old.write_record(&mut doc).unwrap();
+        doc.commit();
+        doc_store.append(&mut doc).unwrap();
+        drop(doc_store);
+
+        let primary = Records::of(&store);
+        let (key, env) = primary.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
+        assert_eq!((key.as_str(), env.name.as_str()), (DEFAULT_RECORD, "Old"));
+        assert_eq!(env.workspace, "", "unchanged");
+        assert_eq!(env.grants, old.grants, "everything it held");
+        assert!(
+            crate::workspace::WorkspaceId::of_record(&env)
+                .unwrap()
+                .is_primary()
+        );
+        primary
+            .apply(DEFAULT_RECORD, Environment::RENAME.with("Still mine"))
+            .unwrap();
+
+        let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
+        assert!(w1.keys().unwrap().is_empty());
+        let (_, fresh) = w1.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
+        assert_eq!(fresh.name, DEFAULT_NAME, "a workspace's default is its own");
+        assert_eq!(
+            primary.load(DEFAULT_RECORD).unwrap().unwrap().name,
+            "Still mine"
+        );
+    }
+
+    /// An environment of a workspace is granted its own files and nothing
+    /// else of the device's: a grant of another workspace's tree, or of the
+    /// files folder holding them all, is refused and changes nothing, and
+    /// one that reached the record anyway is not read.
+    #[test]
+    fn a_workspace_environment_is_refused_another_workspaces_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = dir.path().join("files");
+        let tree = |id: &str| files.join(".workspaces").join(id);
+        let store = workspace_store(&dir.path().join("ush"), &files, W1);
+        let records = Records::of(&store);
+        records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
+        let grant =
+            |path: &Path| Environment::GRANT_DIR.with((path.to_string_lossy().into_owned(), true));
+
+        let own = records
+            .apply(DEFAULT_RECORD, grant(&tree(W1).join("src")))
+            .unwrap();
+        assert_eq!(own.grants.len(), 1);
+        for refused in [
+            tree(W2),
+            tree(W2).join("src"),
+            files.clone(),
+            files.join("Documents"),
+        ] {
+            let err = records.apply(DEFAULT_RECORD, grant(&refused)).unwrap_err();
+            assert!(matches!(err, RecordError::Refused(_)), "{refused:?}: {err}");
+        }
+        let err = records
+            .apply(
+                DEFAULT_RECORD,
+                Environment::SET_HOME.with(tree(W2).to_string_lossy().into_owned()),
+            )
+            .unwrap_err();
+        assert!(matches!(err, RecordError::Refused(_)), "{err}");
+        let err = records
+            .act(DEFAULT_RECORD, &Invoker::Person("you".into()), |replica| {
+                replica
+                    .apply_confirmed(grant(&tree(W2)))
+                    .map(drop)
+                    .map_err(|e| RecordError::Refused(e.to_string()))
+            })
+            .unwrap_err();
+        assert!(matches!(err, RecordError::Refused(_)), "{err}");
+        assert_eq!(
+            records.load(DEFAULT_RECORD).unwrap().unwrap().grants,
+            own.grants,
+            "nothing refused was kept"
+        );
+        records
+            .apply(DEFAULT_RECORD, grant(&dir.path().join("elsewhere")))
+            .unwrap();
+
+        // Written past the check (by a Tilo without it), it is not read.
+        let unchecked = Records {
+            confinement: None,
+            ..records.clone()
+        };
+        unchecked.apply(DEFAULT_RECORD, grant(&tree(W2))).unwrap();
+        let read = records.load(DEFAULT_RECORD).unwrap().unwrap();
+        assert!(
+            read.grants.iter().all(|g| {
+                !matches!(&g.scope, collab_types::caps::Scope::FsPath(p) if Path::new(p).starts_with(tree(W2)))
+            }),
+            "{:?}",
+            read.grants
+        );
+        assert_eq!(read.grants.len(), 2);
     }
 }

@@ -62,6 +62,8 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DeviceMeshArea> {
 
 const DEFAULT_CONFIG: &str = "/etc/tilo/relay.toml";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
+/// The row letting agents from the person's other devices in without asking.
+const AGENTS_ACCEPT_KEY: &str = "device_mesh.agents.accept_own_devices";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
 
@@ -1644,6 +1646,7 @@ impl Page<'_> {
         );
         groups.push(section(&t("mesh-roaming-title"), rows(roaming_rows)).into_element());
         groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
+        groups.extend(self.agents_group());
         page_of(groups)
     }
 
@@ -1661,6 +1664,27 @@ impl Page<'_> {
                 &cx.value(ContinuityPrivacy::clone),
                 move |cx, continuity| build(cx, continuity).into_element(),
             )
+        })
+    }
+
+    /// Whether an agent on another of the person's devices works here without
+    /// asking on this one: this device's agent door setting.
+    fn agents_group(&self) -> Option<Element> {
+        let door = self.cx.settings::<crate::prefs::AgentDoorDevice>();
+        self.cx.record(&door, |cx| {
+            section(
+                &t("mesh-agents-title"),
+                rows(vec![
+                    cx.setting(t("mesh-agents-accept"))
+                        .described(t("mesh-agents-accept-desc"))
+                        .id(AGENTS_ACCEPT_KEY)
+                        .toggle_verb(
+                            |door: &crate::prefs::AgentDoorDevice| door.accept_own_devices,
+                            crate::prefs::AgentDoorDevice::SET_ACCEPT_OWN_DEVICES,
+                        ),
+                ]),
+            )
+            .into_element()
         })
     }
 

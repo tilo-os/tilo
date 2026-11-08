@@ -178,7 +178,29 @@ impl Session {
     }
 
     pub(crate) fn records(&self) -> Records {
-        Records::at(self.store.records_root())
+        Records::of(&self.store)
+    }
+
+    /// The environment `key` of this session's workspace, by its id
+    /// ([`crate::workspace::EnvironmentId`]).
+    pub(crate) fn environment_id(&self, key: &str) -> String {
+        format!("{}/{key}", self.store.workspace_id())
+    }
+
+    /// What every program of the session starts with to say where it runs:
+    /// the workspace ([`crate::workspace::WORKSPACE_ENV`]) and the
+    /// environment ([`crate::workspace::ENVIRONMENT_ENV`]).
+    pub(crate) fn workspace_env(&self, key: &str) -> Vec<(String, String)> {
+        vec![
+            (
+                crate::workspace::WORKSPACE_ENV.to_owned(),
+                self.store.workspace_id().to_string(),
+            ),
+            (
+                crate::workspace::ENVIRONMENT_ENV.to_owned(),
+                self.environment_id(key),
+            ),
+        ]
     }
 
     /// The environment this session names, as the record stands now, with
@@ -294,10 +316,16 @@ impl Session {
             home_by_grants,
             user,
             environment: resolved.environment.name.clone(),
-            masked: vec![
-                canonical(self.store.root()),
-                canonical(self.store.records_root()),
-            ],
+            // Every workspace's records with this one's: an environment
+            // granted the user's data home reaches none of them.
+            masked: [
+                Some(canonical(self.store.root())),
+                Some(canonical(self.store.records_root())),
+                self.store.rooms_dir().map(|rooms| canonical(&rooms)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
             grant_root: self.store.grant_root().map(Path::to_path_buf),
@@ -308,7 +336,7 @@ impl Session {
             seccomp_blob,
             command: self.opts.command.clone(),
             term: self.opts.term.clone(),
-            env: Vec::new(),
+            env: self.workspace_env(&resolved.key),
             resolver: None,
             terminal: None,
             control: None,
@@ -701,7 +729,7 @@ struct SessionTransport<'a> {
 fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut raw = stream.try_clone()?;
-    let (caller, carried) = crate::host::read_caller(&mut raw)?;
+    let (caller, launched, carried) = crate::host::read_handoff(&mut raw)?;
     let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
     let mut transport = SessionTransport {
         stream,
@@ -751,7 +779,14 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
             }
             legacy_requests = legacy_requests.saturating_add(1);
         }
-        let served = serve_request(&transport, &mut writer, store, host_root, &caller, &line)?;
+        let served = serve_request(
+            &transport,
+            &mut writer,
+            store,
+            host_root,
+            (&caller, launched.as_deref()),
+            &line,
+        )?;
         if served == Served::Malformed || (!transport.persistent && served == Served::Done) {
             return Ok(());
         }
@@ -796,16 +831,39 @@ fn parse_service_request(
     }
 }
 
+/// The workspace a request line names: its top-level `workspace`, beside
+/// whatever the request is ([`crate::workspace::scope_of`]).
+#[derive(Debug, Default, serde::Deserialize)]
+struct RequestScope {
+    #[serde(default)]
+    workspace: Option<String>,
+}
+
 fn serve_request(
     transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
     store: &Store,
     host_root: &Path,
-    caller: &crate::host::Caller,
+    (caller, launched): (&crate::host::Caller, Option<&str>),
     line: &str,
 ) -> anyhow::Result<Served> {
     let Some(req) = parse_service_request(writer, line)? else {
         return Ok(Served::Malformed);
+    };
+    // Everything below is the workspace's: its records, its environments'
+    // state and its files as their home.
+    let asked = serde_json::from_str::<RequestScope>(line)
+        .unwrap_or_default()
+        .workspace;
+    let store = &match crate::workspace::scope_of(caller, launched, asked.as_deref()) {
+        Ok(workspace) => store.for_workspace(&workspace),
+        Err(reason) => {
+            AuditLog::at(store.audit_dir()).append(
+                &crate::audit::AuditRecord::new("serve", "-", "workspace", false).because(&reason),
+            );
+            reply(writer, &ServeResponse::Denied { reason }, None)?;
+            return Ok(Served::Refused);
+        }
     };
     if matches!(req, ServeRequest::OpenSession { .. }) && session_limit_reached(transport, writer)?
     {
@@ -1112,7 +1170,7 @@ pub fn unbuildable(
     record: Option<&str>,
     images: &dyn Images,
 ) -> Option<(ServeResponse, String)> {
-    match Records::at(store.records_root()).resolvable(record, images) {
+    match Records::of(store).resolvable(record, images) {
         Ok(()) => None,
         Err(crate::records::RecordError::NoRuntime(why)) => {
             let reason = format!("no environment can be built on this device: {why}");
@@ -1157,7 +1215,7 @@ fn allow_host(
 
 /// Answer a request about the environments themselves.
 fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>, String> {
-    let records = Records::at(store.records_root());
+    let records = Records::of(store);
     match req {
         ServeRequest::CreateEnvironment { name } => {
             let name = name.trim();
@@ -1558,6 +1616,14 @@ fn spawn_attached(
         Some(workspace) => cmd.env(crate::store::WORKSPACE_ENV, workspace),
         None => cmd.env_remove(crate::store::WORKSPACE_ENV),
     };
+    match launch.store.files() {
+        Some(files) => cmd.env(crate::store::FILES_ENV, files),
+        None => cmd.env_remove(crate::store::FILES_ENV),
+    };
+    cmd.env(
+        crate::store::WORKSPACE_ID_ENV,
+        launch.store.workspace_id().as_str(),
+    );
     cmd.env("TERM", launch.term);
     match launch.runs {
         Some(key) => cmd.env(crate::runs::KEY_ENV, key),
@@ -2349,6 +2415,95 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// A session in a workspace builds its guest from that workspace's
+    /// record: its own files as `~`, bound by their grant and nothing else
+    /// of the device's files, and its processes told the workspace and the
+    /// environment.
+    #[test]
+    fn a_workspace_session_is_planned_with_its_own_files_and_says_where_it_runs() {
+        const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = session_in(dir.path());
+        let files = dir.path().join("files");
+        std::fs::create_dir_all(files.join(".workspaces/other")).unwrap();
+        let w1 = crate::workspace::WorkspaceId::parse(Some(W1)).unwrap();
+        session.store = session
+            .store
+            .clone()
+            .with_workspace(&files)
+            .for_workspace(&w1);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("SHELL", "/bin/bash");
+
+        let resolved = session.resolve().unwrap();
+        assert_eq!(resolved.environment.workspace, W1);
+        let tree = files.join(".workspaces").join(W1);
+        assert_eq!(Path::new(&resolved.environment.home_dir), tree);
+        let plan = session
+            .plan(
+                &resolved,
+                PathBuf::from("/tmp/b.sock"),
+                PathBuf::from("/tmp/f.bpf"),
+            )
+            .unwrap();
+        assert!(plan.home_by_grants);
+        assert_eq!(plan.home, tree);
+        assert_eq!(plan.trusted_dirs, std::slice::from_ref(&tree));
+        assert!(
+            plan.trusted_dirs
+                .iter()
+                .chain(&plan.readable_dirs)
+                .all(|dir| dir.starts_with(&plan.home) || !dir.starts_with(&files)),
+            "nothing else of the files: {plan:?}"
+        );
+        assert_eq!(
+            plan.var_dir,
+            dir.path()
+                .join("ush/workspaces")
+                .join(W1)
+                .join("environments/default/var")
+        );
+        let argv: Vec<String> = crate::guest::build_argv(&plan, None)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let set = |name: &str| {
+            argv.windows(3)
+                .find(|w| w[0] == "--setenv" && w[1] == name)
+                .map(|w| w[2].clone())
+        };
+        assert_eq!(set(crate::workspace::WORKSPACE_ENV).as_deref(), Some(W1));
+        assert_eq!(
+            set(crate::workspace::ENVIRONMENT_ENV),
+            Some(format!("{W1}/default"))
+        );
+        let id = crate::workspace::EnvironmentId::parse(&format!("{W1}/default")).unwrap();
+        assert_eq!(
+            crate::workspace::environment_workspace(&session.store, &id).unwrap(),
+            w1,
+            "the record says the same"
+        );
+
+        // The primary workspace's session says so too.
+        let primary = session_in(&dir.path().join("primary"));
+        let resolved = primary.resolve().unwrap();
+        let plan = primary
+            .plan(
+                &resolved,
+                PathBuf::from("/tmp/b.sock"),
+                PathBuf::from("/tmp/f.bpf"),
+            )
+            .unwrap();
+        assert!(plan.env.contains(&(
+            crate::workspace::WORKSPACE_ENV.to_owned(),
+            "personal".to_owned()
+        )));
+        assert!(plan.env.contains(&(
+            crate::workspace::ENVIRONMENT_ENV.to_owned(),
+            "personal/default".to_owned()
+        )));
     }
 
     #[test]

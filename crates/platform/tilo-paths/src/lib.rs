@@ -62,6 +62,31 @@ pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
 /// this process has one mounted.
 pub const WORKSPACE_MOUNT: &str = "/var/workspace";
 
+/// The directory, at the root of the device's files, that holds one tree per
+/// workspace: `<files>/.workspaces/<workspace id>`. The device's files are
+/// one namespace (`fs` serves one per device); a workspace's own files are
+/// the tree under its id, so its access checks (`FsPath` grants, which scope
+/// by path prefix) cover each tree as they cover any folder.
+pub const WORKSPACE_TREES_DIR: &str = ".workspaces";
+
+/// The tree of the workspace `id`'s own files under the device's files at
+/// `files`: [`WORKSPACE_TREES_DIR`]`/<id>`. `None` for an id that is not one
+/// path component of `[A-Za-z0-9_-]`, 1 to 128 bytes, so no id names a
+/// directory outside its own tree.
+#[must_use]
+pub fn workspace_tree(files: &std::path::Path, id: &str) -> Option<PathBuf> {
+    is_workspace_tree_id(id).then(|| files.join(WORKSPACE_TREES_DIR).join(id))
+}
+
+/// Whether `id` names a workspace tree ([`workspace_tree`]).
+#[must_use]
+pub fn is_workspace_tree_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// The collaborative workspace mounted for this process, as a native path
 /// ([`AppPaths::workspace_root`] for any app). `None` in a page and when no
 /// workspace is mounted.
@@ -1253,6 +1278,28 @@ XDG_PUBLICSHARE_DIR=\"$HOME/My \\\"Public\\\" \\$hare\"\n";
             (app.runtime(), runtime_dir()),
         ] {
             assert_eq!(joined, base.map(|base| base.join("tilo-example")));
+        }
+    }
+
+    #[test]
+    fn a_workspace_tree_is_one_component_under_the_files_root() {
+        let files = std::path::Path::new("/var/workspace");
+        let id = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        assert_eq!(
+            workspace_tree(files, id),
+            Some(files.join(".workspaces").join(id))
+        );
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "../x",
+            "a.b",
+            "a\0b",
+            &"x".repeat(129),
+        ] {
+            assert_eq!(workspace_tree(files, bad), None, "{bad:?}");
         }
     }
 }

@@ -21,7 +21,7 @@ relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "
 # The carrier over a direct iroh connection, the one every device dials and
 # the page will: the client half only (`plane`), so it builds for the browser.
 # The listening half a device that serves a plane runs is `relay`'s.
-iroh = ["plane", "dep:iroh", "dep:bytes"]
+iroh = ["plane", "dep:iroh", "dep:bytes", "dep:serde_json"]
 
 [dependencies]
 # The scope of a track is a channel of an app's record.

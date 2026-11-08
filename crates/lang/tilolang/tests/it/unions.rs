@@ -51,6 +51,24 @@ fn a_union_holds_any_of_its_types_and_a_match_takes_it_apart_by_type() {
 }
 
 #[test]
+fn flat_map_joins_the_lists_a_lambda_gives_into_one() {
+    // The conversations a page lists: a group holds channels, a channel or a conversation
+    // stands for itself, joined in the order the lists and their items keep. A list of one
+    // type is read as the list of the union: items are read, never written back through it.
+    let kinds = "type TextChannel {\n    name: Text\n}\ntype VoiceChannel {\n    name: Text\n}\ntype Channel = TextChannel | VoiceChannel\ntype Group {\n    name: Text\n    channels: Collection<TextChannel>\n}\ntype Node = Group | TextChannel | VoiceChannel\ntype Conversations {\n    nodes: Collection<Node>\n}\nroot Conversations\ndefault view conversations for Conversations\nview conversations(c: Conversations) {\n    text(\"x\")\n}\n";
+    ok(&format!(
+        "{kinds}fn listed(n: Node) -> List<Channel> {{\n    match n {{\n        g: Group => g.channels.filter(ch -> ch.name != \"\"),\n        t: TextChannel => [t],\n        v: VoiceChannel => [v],\n    }}\n}}\nfn all(c: Conversations) -> List<Channel> {{\n    c.nodes.flat_map(n -> listed(n))\n}}"
+    ));
+    // What the lambda gives is a list to join, not one value.
+    expect(
+        "E020",
+        &format!(
+            "{kinds}fn f(c: Conversations) -> List<Text> {{\n    c.nodes.flat_map(n -> \"x\")\n}}"
+        ),
+    );
+}
+
+#[test]
 fn enum_cases_hold_no_data() {
     ok("enum Order {\n    created\n    title\n}");
     expect("E110", "enum Shape {\n    dot\n    line(len: Int)\n}");

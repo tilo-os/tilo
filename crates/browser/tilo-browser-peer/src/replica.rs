@@ -268,6 +268,38 @@ impl Replicas {
         .flatten()
     }
 
+    /// Where `workspace_id`'s host listens, read off the signed hint the
+    /// workspace's own governance keeps for it: the address a peer dials the
+    /// host at, and the relay it is reached through. `None` until the host's
+    /// bootstrap or a governance message named it.
+    #[cfg(feature = "iroh")]
+    pub(crate) fn host_endpoint(
+        &self,
+        workspace_id: u64,
+    ) -> Option<(iroh_base::EndpointAddr, Option<iroh_base::RelayUrl>)> {
+        let hint = self
+            .with_workspace(workspace_id, |view| {
+                let host = view.workspace_host().device_public_key;
+                Ok(view
+                    .peer()
+                    .governance()
+                    .workspace_hosts()
+                    .into_iter()
+                    .find(|hint| hint.host.device_public_key == host))
+            })?
+            .ok()??;
+        let payload =
+            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::from_transport_hint(
+                &hint,
+            )
+            .ok()?;
+        let relay = match payload.packet_relay_url.as_str() {
+            "iroh:direct" => None,
+            url => Some(url.parse().ok()?),
+        };
+        Some((payload.endpoint_addr, relay))
+    }
+
     /// The devices that may sign and be added to `route`'s group: those
     /// [`Self::policy`] names. `None` while the workspace's governance does
     /// not answer for the route.

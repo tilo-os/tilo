@@ -42,6 +42,7 @@ use crate::Shared;
 use crate::app_names::app_name;
 use crate::launches::Launches;
 use crate::plane::DeskAuthority;
+use crate::remote_door::Remote;
 
 /// The kind of question the door asks the person.
 pub(crate) const KIND: &str = "session.agent-door";
@@ -106,11 +107,20 @@ struct Facts {
     /// The app this session launched that the client descends from: the
     /// terminal it runs in.
     app: Option<String>,
+    /// The other device of the person's it connected from, over iroh
+    /// ([`crate::remote_door`]); `None` for a program of this login.
+    origin: Option<tilo_runtime::remote_door::Origin>,
 }
 
 impl Facts {
     /// The line the person reads first: who asks, and from where.
     fn subject(&self) -> String {
+        if let Some(origin) = &self.origin {
+            return words(
+                "agent-door-client-from-device",
+                &[("client", &self.client), ("device", &origin.name())],
+            );
+        }
         let program = self.exe.as_deref().and_then(Path::file_name).map_or_else(
             || "?".to_owned(),
             |name| name.to_string_lossy().into_owned(),
@@ -129,10 +139,30 @@ impl Facts {
     /// names and the name it gives. `None` without an executable, and such
     /// a client is asked about every time.
     fn key(&self) -> Option<BindingKey> {
+        if let Some(origin) = &self.origin {
+            // A client on another device is remembered by that device and
+            // the name it gives.
+            return Some(BindingKey {
+                exe: PathBuf::new(),
+                client: self.client.clone(),
+                device: Some(hex::encode(origin.key())),
+            });
+        }
         Some(BindingKey {
             exe: self.exe.clone()?,
             client: self.client.clone(),
+            device: None,
         })
+    }
+
+    /// The agent id the client is proposed as: its own name, and the device
+    /// it came from when it is another's.
+    fn proposed(&self) -> String {
+        let own = proposed_agent_id(&self.client);
+        match &self.origin {
+            Some(origin) => tilo_runtime::remote_door::agent_id(&own, &origin.device),
+            None => own,
+        }
     }
 }
 
@@ -169,6 +199,10 @@ struct Waiting {
 struct BindingKey {
     exe: PathBuf,
     client: String,
+    /// The other device of the person's a client connected from, by its key
+    /// in hex; absent for a program of this login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -476,6 +510,9 @@ pub(crate) struct Loop {
     control: Arc<crate::test_control::Door>,
     /// The agents the person admitted, as their desk seats them.
     seats: Arc<Seats>,
+    /// What the person's other devices connect with, and how this one
+    /// reaches theirs ([`crate::remote_door`]).
+    remote: Option<Arc<Remote>>,
 }
 
 impl Mounted {
@@ -600,6 +637,7 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         doors,
         control,
         seats,
+        remote: None,
     };
     Ok(Mounted { door })
 }
@@ -623,6 +661,13 @@ impl Shared {
 }
 
 impl Loop {
+    /// Serve what the person's other devices connect with through `remote`,
+    /// and carry this login's clients to theirs.
+    pub(crate) fn hear_remote(&mut self, remote: Arc<Remote>) {
+        remote.serve();
+        self.remote = Some(remote);
+    }
+
     /// End the loop's wait when a client connects, so it is asked about on the
     /// pass that follows.
     ///
@@ -641,6 +686,7 @@ impl Loop {
     /// front, and the client is served as that agent.
     pub(crate) fn follow(&mut self, handle: &DesktopHandle, person: &str) {
         self.accept();
+        self.accept_remote();
         while let Ok(request) = self.asked.try_recv() {
             self.request(handle, request, person);
         }
@@ -673,14 +719,30 @@ impl Loop {
                     continue;
                 }
             };
-            self.serve(stream, pid);
+            self.serve(stream, From::Login(pid));
+        }
+    }
+
+    /// Accept every connection the person's other devices opened since the
+    /// last pass, each on its own thread, as a connection of this login is.
+    fn accept_remote(&self) {
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        for arrival in remote.take() {
+            if self.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+                refuse(arrival.stream, &PeerRefusal::Busy);
+                continue;
+            }
+            self.serve(arrival.stream, From::Device(Box::new(arrival.origin)));
         }
     }
 
     /// Serve one connection of this account on its own thread: nothing it
     /// asks for runs before the person admits it.
-    fn serve(&self, stream: UnixStream, pid: u32) {
+    fn serve(&self, stream: UnixStream, from: From) {
         let broker = self.broker.clone();
+        let remote = self.remote.clone();
         let session = Arc::clone(&self.doors);
         let requests = self.requests.clone();
         let launches = Arc::clone(&self.launches);
@@ -694,8 +756,8 @@ impl Loop {
             .name("tilo-agent-door".into())
             .spawn(move || {
                 serve_connection(
-                    Opened { stream, pid },
-                    broker,
+                    Opened { stream, from },
+                    (broker, remote),
                     &session,
                     &requests,
                     &launches,
@@ -729,10 +791,16 @@ impl Loop {
             ));
             return;
         };
-        let Some((workspace, name)) = handle.read(|tree| {
-            tree.active_workspace()
-                .map(|held| (held.id().to_string(), held.name.clone()))
-        }) else {
+        if as_person && facts.origin.is_some() {
+            // Only a program of this login may ask to act as the person.
+            let _ = decide.send(Consent::Refuse(word("agent-door-person-from-device")));
+            return;
+        }
+        let asked_for = facts
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.workspace.clone());
+        let Some((workspace, name)) = workspace_for(handle, asked_for.as_deref()) else {
             let _ = decide.send(Consent::Refuse(word("agent-door-no-workspace")));
             return;
         };
@@ -760,6 +828,20 @@ impl Loop {
             .as_ref()
             .and_then(|key| self.session.get(key).or_else(|| self.always.get(key)))
             .cloned();
+        if remembered.is_none() && facts.origin.is_some() && Remote::accepts_own_devices() {
+            // The person lets agents from their other devices in here without
+            // being asked: this device's own setting, made ahead of time.
+            let agent = facts.proposed();
+            tracing::info!(client = %facts.client, %agent, %workspace, "agent door: an agent from another device is let in, as this device's setting says");
+            self.seats.admitted(seat, &agent, &facts.client, &name);
+            let person = person.to_owned();
+            let _ = decide.send(Consent::Admit {
+                workspace,
+                agent,
+                person,
+            });
+            return;
+        }
         if !as_person && let Some(agent) = &remembered {
             // What the person said to remember: this client is that agent,
             // acting for the person whose session it was admitted to.
@@ -771,7 +853,7 @@ impl Loop {
             });
             return;
         }
-        let proposed = remembered.unwrap_or_else(|| proposed_agent_id(&facts.client));
+        let proposed = remembered.unwrap_or_else(|| facts.proposed());
         let details = serde_json::to_value(Admission {
             workspace: name.clone(),
             agent: proposed.clone(),
@@ -921,6 +1003,22 @@ impl Loop {
             }
         });
     }
+}
+
+/// The workspace a client works in, by id and as the person reads it: the one
+/// an agent from another device asked for (`asked`), when this desk holds it;
+/// else the one in front, as for any other client.
+fn workspace_for(handle: &DesktopHandle, asked: Option<&str>) -> Option<(String, String)> {
+    handle.read(|tree| {
+        asked
+            .and_then(|asked| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| !held.id().is_nil() && held.id().to_string() == asked)
+            })
+            .or_else(|| tree.active_workspace())
+            .map(|held| (held.id().to_string(), held.name.clone()))
+    })
 }
 
 /// How long the person's answer is remembered.
@@ -1136,6 +1234,7 @@ fn facts_of(pid: u32, launches: &Launches) -> Facts {
         pid,
         exe: std::fs::read_link(format!("/proc/{pid}/exe")).ok(),
         app: launches.app_of_descendant(pid).map(|app| app_name(&app)),
+        origin: None,
     }
 }
 
@@ -1934,11 +2033,19 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
     }
 }
 
-/// A client the door accepted: its socket, and the pid that opened it, which
-/// is how the door knows whether it is a program inside an app.
+/// A client the door accepted: its socket, and where it came from.
 struct Opened {
     stream: UnixStream,
-    pid: u32,
+    from: From,
+}
+
+/// Where a connection came from.
+enum From {
+    /// A program of this login, by the pid that opened it: how the door knows
+    /// whether it is a program inside an app.
+    Login(u32),
+    /// Another of the person's devices, over iroh ([`crate::remote_door`]).
+    Device(Box<tilo_runtime::remote_door::Origin>),
 }
 
 /// Serve one connection of this account, on its own thread: read what it
@@ -1947,7 +2054,7 @@ struct Opened {
 /// closes.
 fn serve_connection(
     opened: Opened,
-    broker: Option<Arc<AppBrokerState>>,
+    (broker, remote): (Option<Arc<AppBrokerState>>, Option<Arc<Remote>>),
     session: &Arc<SessionDoors>,
     requests: &Sender<Request>,
     launches: &Launches,
@@ -1955,7 +2062,7 @@ fn serve_connection(
     control: &crate::test_control::Door,
     seats: &Seats,
 ) {
-    let Opened { mut stream, pid } = opened;
+    let Opened { mut stream, from } = opened;
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
         Err(error) => {
@@ -1964,6 +2071,47 @@ fn serve_connection(
             return;
         }
     };
+    let pid = match from {
+        From::Login(pid) => pid,
+        From::Device(origin) => {
+            // Another device's agent is served MCP and nothing else: what is
+            // not an `initialize` is refused before anyone is asked.
+            let Some(broker) = broker else {
+                refuse(stream, &PeerRefusal::Unavailable);
+                return;
+            };
+            let facts = Facts {
+                client: String::new(),
+                version: None,
+                pid: 0,
+                exe: None,
+                app: None,
+                origin: Some(*origin),
+            };
+            serve_admitted(
+                stream,
+                first,
+                facts,
+                (broker, remote),
+                session,
+                (requests, wake, seats),
+            );
+            return;
+        }
+    };
+    if let Some(forward) = tilo_runtime::remote_door::forward_request(&first) {
+        // A client of this login asks to be carried to another of the
+        // person's devices, which decides whether it works there.
+        tracing::info!(pid, device = %forward.device, "agent door: a client asks to work on another device");
+        match remote {
+            Some(remote) => remote.forward(stream, &forward),
+            None => tilo_runtime::remote_door::refuse_forward(
+                stream,
+                "this desktop reaches none of your other devices".into(),
+            ),
+        }
+        return;
+    }
     if tilo_runtime::session_door::is_control_request(&first) {
         // Only a program inside an app this session started drives the
         // control protocol: it acts as that app, in the workspace the app was
@@ -1991,6 +2139,26 @@ fn serve_connection(
         return;
     };
     let facts = facts_of(pid, launches);
+    serve_admitted(
+        stream,
+        first,
+        facts,
+        (broker, remote),
+        session,
+        (requests, wake, seats),
+    );
+}
+
+/// Ask the person about one connection whose first line, `first`, opened the
+/// MCP door, and serve it as whom they admit it as, through `broker`.
+fn serve_admitted(
+    stream: UnixStream,
+    first: Vec<u8>,
+    facts: Facts,
+    (broker, remote): (Arc<AppBrokerState>, Option<Arc<Remote>>),
+    session: &Arc<SessionDoors>,
+    (requests, wake, seats): (&Sender<Request>, &Wake, &Seats),
+) {
     let tasks = Arc::new(TaskHosts::new(&session.person, Arc::clone(session)));
     let admitted = Arc::clone(&tasks);
     let seat = seats.joining();
@@ -2001,11 +2169,15 @@ fn serve_connection(
             None
         }
     };
-    let ended = tilo_runtime::session_door::serve_after(
+    let ended = tilo_runtime::session_door::serve_with(
         stream,
         Some(first),
         || Ok(Host::new(Some(broker), Arc::clone(session))),
-        Some(tasks as Arc<dyn tilo_runtime::mcp::TaskHosts>),
+        tilo_runtime::session_door::Beside {
+            tasks: Some(tasks as Arc<dyn tilo_runtime::mcp::TaskHosts>),
+            devices: remote
+                .map(|remote| remote as Arc<dyn tilo_runtime::remote_door::DeviceDirectory>),
+        },
         |hello, connected| {
             let consent = ask(requests, wake, facts, hello, connected, seat);
             if let Consent::Admit { person, .. } | Consent::Person { person, .. } = &consent {

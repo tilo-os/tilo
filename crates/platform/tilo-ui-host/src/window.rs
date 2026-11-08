@@ -273,6 +273,11 @@ pub struct AppWindow {
     /// The space last told the app each lane's view has, in rem.
     root_space: Option<(f32, f32)>,
     detail_space: Option<(f32, f32)>,
+    /// The column the window keeps in front of a narrow window: what a person's tap or the
+    /// app's open brought forward, held while the shell is built anew. A shell built from the
+    /// views starts on the screen a new window opens on; the window itself remembers where the
+    /// person is, so a patch that changes the views' keys does not send them back.
+    front: Option<NavPane>,
     /// A part of a shell rather than a window ([`Self::part`]): the root view shown as it is,
     /// with no window shell around it.
     shape: Shape,
@@ -375,6 +380,7 @@ impl AppWindow {
             rem: 16.0,
             root_space: None,
             detail_space: None,
+            front: None,
             shape: Shape::Window,
             notices: Vec::new(),
             actions: Vec::new(),
@@ -852,6 +858,7 @@ impl AppWindow {
         if let Some(shell) = self.shell() {
             shell.show_from(NavPane::Content, source);
         }
+        self.front = Some(NavPane::Content);
         self.structure_dirty = true;
     }
 
@@ -907,6 +914,12 @@ impl AppWindow {
         });
         let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
         let composed = crate::shell::header_rules(composed);
+        let composed = match self.front {
+            // A shell built anew opens on the screen a new window opens on: the window hands it
+            // the one it shows, so the person stays where they are.
+            Some(front) => with_front(composed, front),
+            None => composed,
+        };
         self.reconcile_into_pane(&composed);
         self.built = Some(composed);
         self.select_shown();
@@ -1996,6 +2009,12 @@ impl AppWindow {
         self.detail.as_ref().map(|view| &view.target)
     }
 
+    /// The resource the root view shows.
+    #[must_use]
+    pub fn root_target(&self) -> Option<&ResourceRef> {
+        self.root.as_ref().map(|view| &view.target)
+    }
+
     /// The keys of the virtual lists in the composed tree.
     #[must_use]
     pub fn lists(&self) -> Vec<String> {
@@ -2078,6 +2097,18 @@ fn composed_key(lane: Lane, key: &str) -> String {
         Lane::Root => key.to_owned(),
         Lane::Detail => format!("{DETAIL}{key}"),
     }
+}
+
+/// The composed shell `shell` showing `pane` in front of a narrow window: the column it opens
+/// on, given as the shell's own state, which a shell built anew has none of.
+fn with_front(mut shell: UiNode, pane: NavPane) -> UiNode {
+    let case = match pane {
+        NavPane::Sidebar => "sidebar",
+        NavPane::Overview => "overview",
+        NavPane::Content => "content",
+    };
+    shell.props.insert("pane".to_owned(), Value::text(case));
+    shell
 }
 
 /// Where the widget for the node `key` of the composed tree is drawn, when it is on screen.
@@ -2506,6 +2537,11 @@ impl ui::widget::Decorator for AppWindow {
     ) {
         self.body.apply_layout(taffy, node, origin);
         self.follow_spaces();
+        // Where the person is stays the window's across the shell being built anew: the column
+        // the narrow stack has in front, as they left it (Back, a place, a row).
+        if let Some(shell) = self.shell() {
+            self.front = Some(shell.front_pane());
+        }
     }
 
     fn inner(&self) -> &(dyn Widget + 'static) {

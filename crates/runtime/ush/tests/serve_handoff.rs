@@ -773,6 +773,273 @@ fn run_handoff() {
     );
 }
 
+const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+const W2: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+/// A supervisor over the fixture images whose device files are `<dir>/files`:
+/// its scoped variables, its store, its socket and the files folder.
+fn serve_with_files(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {
+    let images = dir.join("images");
+    fixture_images(&images);
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_USH_BIN", tilo_test_env::package_binary!("tilo-ush"));
+    env.set("TILO_USH_IMAGES", &images);
+    env.set("SHELL", "/usr/bin/bash");
+    let files = dir.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    let files = files.canonicalize().unwrap();
+    let store = Store::at(dir.join("store")).with_workspace(&files);
+    store.ensure().expect("store");
+    let socket = dir.join("ush.sock");
+    let (serve_socket, serve_store) = (socket.clone(), store.clone());
+    std::thread::spawn(move || {
+        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "the supervisor never bound its socket");
+    (env, store, socket, files)
+}
+
+/// A connection as `tilo-launcher` hands Terminal launched in `workspace`
+/// its `ush` service.
+fn launched_in(socket: &Path, workspace: Option<&str>) -> UnixStream {
+    let stream = UnixStream::connect(socket).expect("connect");
+    (&stream)
+        .write_all(&ush::host::encode_launch_handoff("so.tilo.terminal", workspace).unwrap())
+        .unwrap();
+    stream
+}
+
+/// One request line on `stream`, answered in one line.
+fn ask_line(stream: &UnixStream, request: &serde_json::Value) -> ServeResponse {
+    let mut line = serde_json::to_vec(request).unwrap();
+    line.push(b'\n');
+    (&*stream).write_all(&line).unwrap();
+    let mut reply = String::new();
+    BufReader::new(stream).read_line(&mut reply).unwrap();
+    serde_json::from_str(reply.trim()).unwrap_or_else(|e| panic!("bad reply {reply:?}: {e}"))
+}
+
+fn listed(response: &ServeResponse) -> Vec<String> {
+    match response {
+        ServeResponse::Environments { environments } => {
+            environments.iter().map(|e| e.name.clone()).collect()
+        }
+        other => panic!("not a listing: {other:?}"),
+    }
+}
+
+/// A Terminal opened in a workspace lists and makes that workspace's
+/// environments only, kept in its room; it cannot name another workspace,
+/// and the environments made before workspaces stay the primary
+/// workspace's, listed where no workspace is named.
+#[test]
+fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_env, store, socket, _files) = serve_with_files(dir.path());
+    let legacy = Records::at(store.records_root());
+    legacy
+        .create(
+            "env-from-before",
+            &Environment::new(
+                "From before",
+                "2026.10",
+                tilo_environment::host_arch(),
+                &PackageId::from_bytes(RUNTIME),
+            ),
+        )
+        .unwrap();
+
+    let create = |workspace: Option<&str>, name: &str| {
+        ask_line(
+            &launched_in(&socket, workspace),
+            &serde_json::json!({"op": "create-environment", "name": name}),
+        )
+    };
+    assert_eq!(listed(&create(Some(W1), "Agent one")), vec!["Agent one"]);
+    assert_eq!(listed(&create(Some(W2), "Agent two")), vec!["Agent two"]);
+    let list = serde_json::json!({"op": "list-environments"});
+    assert_eq!(
+        listed(&ask_line(&launched_in(&socket, Some(W1)), &list)),
+        vec!["Agent one"]
+    );
+    // The shell's own process names the workspace on the request.
+    let session = UnixStream::connect(&socket).unwrap();
+    assert_eq!(
+        listed(&ask_line(
+            &session,
+            &serde_json::json!({"op": "list-environments", "workspace": W2})
+        )),
+        vec!["Agent two"]
+    );
+    assert_eq!(
+        listed(&ask_line(&launched_in(&socket, None), &list)),
+        vec!["From before"],
+        "the primary workspace's, unmoved"
+    );
+
+    // Terminal launched in W1 asks for W2's: refused, in words.
+    let refused = ask_line(
+        &launched_in(&socket, Some(W1)),
+        &serde_json::json!({"op": "list-environments", "workspace": W2}),
+    );
+    assert!(
+        matches!(&refused, ServeResponse::Denied { reason } if reason.contains(W2)),
+        "{refused:?}"
+    );
+    let refused = ask_line(&launched_in(&socket, Some("../personal")), &list);
+    assert!(
+        matches!(refused, ServeResponse::Denied { .. }),
+        "{refused:?}"
+    );
+
+    // Each in its own room, naming its workspace.
+    for (workspace, name) in [(W1, "Agent one"), (W2, "Agent two")] {
+        let scoped =
+            store.for_workspace(&ush::workspace::WorkspaceId::parse(Some(workspace)).unwrap());
+        let records = Records::of(&scoped);
+        let keys = records.keys().unwrap();
+        assert_eq!(keys.len(), 1, "{workspace}: {keys:?}");
+        let env = records.load(&keys[0]).unwrap().unwrap();
+        assert_eq!(
+            (env.name.as_str(), env.workspace.as_str()),
+            (name, workspace)
+        );
+        assert!(
+            records.record_dir(&keys[0]).unwrap().starts_with(
+                store
+                    .records_root()
+                    .join("so.tilo.terminal/rooms")
+                    .join(workspace)
+            )
+        );
+    }
+    assert_eq!(legacy.keys().unwrap(), vec!["env-from-before"]);
+}
+
+/// Open the default environment of `workspace`, as Terminal launched there,
+/// running `bash`.
+fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
+    let stream = launched_in(socket, Some(workspace));
+    let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
+        target: Target::default_environment(),
+        cols: 100,
+        rows: 30,
+        term: Some("xterm-256color".into()),
+        command: vec!["bash".into()],
+        requested_by: ush::host::RequestedBy::Person,
+        runs: None,
+        editor_protocol: None,
+        end_report: false,
+    })
+    .unwrap();
+    request.push(b'\n');
+    (&stream).write_all(&request).unwrap();
+    let (payload, fd) = recv_with_fd(&stream).expect("recvmsg");
+    let text = String::from_utf8_lossy(&payload);
+    let response: ServeResponse = serde_json::from_str(text.trim()).unwrap();
+    assert!(
+        matches!(&response, ServeResponse::Session { environment, .. } if environment == DEFAULT_RECORD),
+        "{response:?}"
+    );
+    (
+        stream,
+        fd.expect("no pty descriptor arrived with the reply"),
+    )
+}
+
+/// Two Terminals in two workspaces: two environments running side by side,
+/// each with its own workspace's files as `~`, told which workspace and
+/// environment it is, and unable to read the other's files or the device's
+/// files around them.
+#[test]
+fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_env, _store, socket, files) = serve_with_files(dir.path());
+    let tree = |id: &str| files.join(".workspaces").join(id);
+    std::fs::create_dir_all(files.join("Documents")).unwrap();
+    std::fs::write(files.join("Documents/private.txt"), "DEVICE_FILE\n").unwrap();
+
+    // Both open before either is used: they run at once.
+    let (_one, w1) = open_in_workspace(&socket, W1);
+    let (_two, w2) = open_in_workspace(&socket, W2);
+    for (fd, own, other) in [(&w1, W1, W2), (&w2, W2, W1)] {
+        std::fs::create_dir_all(tree(other)).unwrap();
+        std::fs::write(
+            tree(other).join("secret.txt"),
+            format!("SECRET_OF_{other}\n"),
+        )
+        .unwrap();
+        let script = format!(
+            "printf 'WS_%s_\\n' \"$TILO_WORKSPACE\"; printf 'ENV_%s_\\n' \"$TILO_ENVIRONMENT\"; \
+             printf 'HOME_%s_\\n' \"$HOME\"; echo mine-{own} > ~/mine; \
+             cat {other_secret} 2>/dev/null || printf 'NO_%s\\n' OTHER; \
+             cat {device} 2>/dev/null || printf 'NO_%s\\n' DEVICE; printf 'DO%s\\n' NE\r",
+            other_secret = tree(other).join("secret.txt").display(),
+            device = files.join("Documents/private.txt").display(),
+        );
+        let fd = fd.as_raw_fd();
+        // SAFETY: `fd` is a live pty master.
+        let written =
+            unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
+        assert!(written > 0, "could not write to the pty");
+        let seen = read_until(fd, "DONE", tilo_test_env::hang_bound());
+        assert!(
+            seen.contains("DONE"),
+            "{own}: the shell never finished:\n{seen}"
+        );
+        assert!(seen.contains(&format!("WS_{own}_")), "{own}:\n{seen}");
+        assert!(
+            seen.contains(&format!("ENV_{own}/default_")),
+            "{own}:\n{seen}"
+        );
+        assert!(
+            seen.contains(&format!("HOME_{}_", tree(own).display())),
+            "{own}: ~ is the workspace's own files:\n{seen}"
+        );
+        assert!(
+            seen.contains("NO_OTHER"),
+            "{own} read {other}'s files:\n{seen}"
+        );
+        assert!(
+            !seen.contains(&format!("SECRET_OF_{other}\r")),
+            "{own}:\n{seen}"
+        );
+        assert!(
+            seen.contains("NO_DEVICE"),
+            "{own} read the device's files:\n{seen}"
+        );
+        assert!(!seen.contains("DEVICE_FILE\r"), "{own}:\n{seen}");
+    }
+    for own in [W1, W2] {
+        assert_eq!(
+            std::fs::read_to_string(tree(own).join("mine")).unwrap(),
+            format!("mine-{own}\n"),
+            "written into the workspace's own files"
+        );
+    }
+}
+
 /// A session whose guest cannot be set up writes nothing on its terminal:
 /// the reason is the supervisor's to log, and the app reads on the
 /// session's lease that the guest was not set up, not that a shell exited.

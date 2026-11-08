@@ -204,7 +204,7 @@ fn remind(
     for (action, values) in [
         ("assign", json!({ "who": { "person": "bo" } })),
         ("due_today", json!({})),
-        ("remind_at", json!({ "after": { "some": 3600 } })),
+        ("remind_at", json!({ "when": "2026-10-27T10:00:00Z" })),
     ] {
         service
             .invoke(call, &action_id(meta, action), &args(values))
@@ -297,7 +297,7 @@ fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String
         &mut ada,
         &meta,
         "remind_at",
-        vec![Value::resource(&task), Value::some(Value::Int(3600))],
+        vec![Value::resource(&task), Value::text("2026-10-27T10:00:00Z")],
     );
     (ada, meta, clock)
 }

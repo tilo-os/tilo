@@ -72,6 +72,13 @@ pub enum Error {
     #[error("invalid MLS state: {0}")]
     InvalidState(String),
 
+    /// The kept state is another device's member: this device's key changed
+    /// (a machine copied from another re-keys at boot), and the state still
+    /// names the device it was copied from. It can never act for this device;
+    /// the caller drops it and joins as itself.
+    #[error("peer state belongs to another device")]
+    OtherDevice,
+
     /// AEAD authentication failed, or sealing could not be performed.
     #[error("MLS state cryptography error: {0}")]
     StateCrypto(&'static str),

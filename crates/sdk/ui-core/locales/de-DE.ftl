@@ -968,9 +968,9 @@ change-window = { $count ->
     [one] Eine Änderung von { $who }
    *[other] { $count } Änderungen von { $who }
 }
-change-window-changed = { $who } hat { $count ->
-    [one] { $count } { $one } geändert
-   *[other] { $count } { $noun } geändert
+change-window-changed = Geändert von { $who }: { $count ->
+    [one] { $count } { $one }
+   *[other] { $count } { $noun }
 }
 change-mark-names-two = { $first } und { $second }
 change-mark-names-three = { $first }, { $second } und { $third }
@@ -980,13 +980,13 @@ change-mark-said-more = { $said } und { $count ->
     [one] eine weitere
    *[other] { $count } weitere
 }
-change-window-more = { $who } hat mindestens { $count ->
-    [one] eine Änderung geändert
-   *[other] { $count } Änderungen geändert
-}
-change-window-changed-more = { $who } hat mindestens { $count ->
-    [one] { $count } { $one } geändert
-   *[other] { $count } { $noun } geändert
+change-window-more = Mindestens { $count ->
+    [one] eine Änderung
+   *[other] { $count } Änderungen
+} von { $who }
+change-window-changed-more = Geändert von { $who }: mindestens { $count ->
+    [one] { $count } { $one }
+   *[other] { $count } { $noun }
 }
 
 # One step of an agent's task: the program it ran, what it answered, what it

@@ -206,6 +206,9 @@ impl Pending {
         let texts = self.texts(host);
         let mut ready = true;
         let mut short = true;
+        // A form of one field states what it asks in its title: the field needs no label of
+        // its own beside it.
+        let labelled = self.fields.len() > 1;
         let mut children = Vec::with_capacity(self.fields.len());
         for (field, text) in self.fields.iter().zip(&texts) {
             let read = read(host, &self.meta, field, text);
@@ -217,7 +220,7 @@ impl Pending {
                 inner(&field.field_type),
                 FieldType::Date | FieldType::Time | FieldType::Duration
             );
-            children.push(self.field_node(host, names, field, text, &read));
+            children.push(self.field_node(host, names, field, text, &read, labelled));
         }
         let title = crate::runtime::platform::label_of(&self.action);
         let title = if title.ends_with('…') {
@@ -240,8 +243,24 @@ impl Pending {
                 .flat_map(|(field, text)| field_parts(field, text))
                 .collect(),
             short,
+            answers: self.quick_choice(),
             tree: node("form", KEY, BTreeMap::new(), None, children),
         }
+    }
+
+    /// The control whose choice answers the form at once: the quick choices of a form's one
+    /// field, so a person who picks "Tomorrow morning" is reminded without a second step.
+    fn quick_choice(&self) -> Vec<String> {
+        let [field] = self.fields.as_slice() else {
+            return Vec::new();
+        };
+        matches!(
+            inner(&field.field_type),
+            FieldType::Time | FieldType::Duration
+        )
+        .then(|| format!("{}~quick", field.key))
+        .into_iter()
+        .collect()
     }
 
     /// The field `field` showing `text`: its label and control, and under it why it does not
@@ -253,6 +272,7 @@ impl Pending {
         field: &Field,
         text: &str,
         read: &Result<Value, String>,
+        labelled: bool,
     ) -> ui::Node {
         let label = crate::runtime::platform::sentence(&field.name);
         let optional = matches!(field.field_type, FieldType::Option(_));
@@ -326,7 +346,9 @@ impl Pending {
             ));
         }
         let mut props = BTreeMap::new();
-        props.insert("label".to_owned(), ui::Value::text(&label));
+        if labelled {
+            props.insert("label".to_owned(), ui::Value::text(&label));
+        }
         node(
             "field",
             &format!("{}~field", field.key),
@@ -343,7 +365,7 @@ impl Pending {
     }
 
     /// The quick choices of `field` showing `text`: the few values the type is often given,
-    /// as segments, and none of them when the field may be empty.
+    /// one under the next, and none of them when the field may be empty.
     fn quick_node(
         field: &Field,
         text: &str,
@@ -356,6 +378,7 @@ impl Pending {
         }
         all.extend(cases);
         let mut props = BTreeMap::new();
+        props.insert("list".to_owned(), ui::Value::Bool(true));
         props.insert(
             "cases".to_owned(),
             ui::Value::List(
@@ -501,6 +524,7 @@ fn lengths() -> Vec<(String, String)> {
 fn moments(host: &Host) -> Vec<(String, String)> {
     [
         ("later today", "Later today"),
+        ("this evening", "This evening"),
         ("tomorrow morning", "Tomorrow morning"),
         ("next week 9am", "Next week"),
     ]

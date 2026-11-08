@@ -123,6 +123,9 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         app!("today"),
     ];
     let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
+    // The day the scenarios' data is about, which a capture pins: Tasks' week is dated around
+    // it, and Today's place is what is due on the day it is read.
+    replica.host.set_clock(|| "2026-06-30T10:42:00Z".to_owned());
     replica.host.root_of("so.tilo.lang.today").unwrap();
     replica.commit();
     let mut view = replica.view("so.tilo.lang.today");
@@ -143,15 +146,17 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         replica.commit();
     }
     view.poll_patches().unwrap();
-    // Each card counts what its app's scenario made: the open todos (ten tasks, the three open
-    // subtasks under the launch post, and the three under the landlord call), the pinned notes,
-    // and the conversations at the top of Chat's sidebar — six, its four channels and categories
-    // plus the direct conversation with Leo and the conversation with yourself, the notes, which
-    // Chat's scenario opens.
+    // Each card counts what its app's place holds for the person looking: the open tasks their
+    // Today holds — six, the five the week dates that day, the thirtieth, and the haircut it
+    // dates the day before; the five it dates later and the five it leaves undated and nobody
+    // holds wait elsewhere — the pinned notes, three, and Chat's Unread, the conversations
+    // holding a message the reader has not seen: design, general and the direct conversation
+    // with Leo, three. Not the channels nothing was said in, not the categories, which say
+    // nothing themselves, and not the notes to yourself, whose one message is the reader's own.
     let counts: Vec<String> = format!("{:?}", view.tree())
         .split("\"count\": Int(")
         .skip(1)
         .filter_map(|rest| rest.split(')').next().map(str::to_owned))
         .collect();
-    assert_eq!(counts, ["16", "3", "6"]);
+    assert_eq!(counts, ["6", "3", "3"]);
 }

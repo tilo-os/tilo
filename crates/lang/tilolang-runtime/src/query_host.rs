@@ -265,7 +265,12 @@ impl Core {
         let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
             return trap(format!("filters: type `{ty}` is not declared"));
         };
-        Ok(Value::List(filters_of(declared, &pkg.meta.enums)))
+        let words = &self.words.borrow();
+        Ok(Value::List(filters_of(
+            declared,
+            &pkg.meta.enums,
+            &|key, source| words.word(key, &[], source),
+        )))
     }
 
     /// `filter_lit(ty, key, value)`: one filter of a type as code names it (`Task.today`,
@@ -297,8 +302,10 @@ impl Core {
                     keys.join(", ")
                 ));
             };
-            valued_filter(f, &pkg.meta.enums, &value)
-                .map_err(|why| format!("filter: `{}.{key}`: {why}", declared.name))?
+            valued_filter(&declared.id, f, &pkg.meta.enums, &value, &|key, source| {
+                self.words.borrow().word(key, &[], source)
+            })
+            .map_err(|why| format!("filter: `{}.{key}`: {why}", declared.name))?
         };
         Ok(filter)
     }
@@ -336,15 +343,24 @@ fn filter_value(key: &str, label: &str, icon: Option<&str>, query: String, toggl
 
 /// The filters of `ty` as `Filter<T>` values: a toggle each for a Bool or a named filter, one
 /// per case for an enum, one with no query for a filter whose value is picked.
+///
+/// A label is words the window shows, so `say` reads the message
+/// [`tilolang::messages::filter_key`] names in the reader's language, the filter's own words
+/// standing in when no catalogue of theirs holds it.
 #[must_use]
-pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Value> {
+pub fn filters_of(
+    ty: &TypeMeta,
+    enums: &[tilolang::meta::EnumMeta],
+    say: &dyn Fn(&str, &str) -> String,
+) -> Vec<Value> {
     let mut out = Vec::new();
     for f in &ty.search.filters {
+        let label = say(&tilolang::messages::filter_key(&ty.id, &f.key), &f.label);
         match f.kind {
             FilterKind::Bool | FilterKind::Predicate => {
                 out.push(filter_value(
                     &f.key,
-                    &f.label,
+                    &label,
                     f.icon.as_deref(),
                     format!("is:{}", f.key),
                     true,
@@ -353,23 +369,24 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
             FilterKind::Enum => match enum_of(f, enums) {
                 Some(e) => {
                     for v in &e.variants {
-                        let label = if v.label.is_empty() {
+                        let source = if v.label.is_empty() {
                             &v.name
                         } else {
                             &v.label
                         };
+                        let label = say(&tilolang::messages::key_of(&v.id), source);
                         out.push(filter_value(
                             &f.key,
-                            label,
+                            &label,
                             v.icon.as_deref(),
                             format!("{}:{}", f.key, v.name),
                             true,
                         ));
                     }
                 }
-                None => out.push(filter_value(&f.key, &f.label, None, String::new(), false)),
+                None => out.push(filter_value(&f.key, &label, None, String::new(), false)),
             },
-            _ => out.push(filter_value(&f.key, &f.label, None, String::new(), false)),
+            _ => out.push(filter_value(&f.key, &label, None, String::new(), false)),
         }
     }
     out
@@ -390,28 +407,40 @@ fn enum_of<'a>(f: &FilterMeta, enums: &'a [EnumMeta]) -> Option<&'a EnumMeta> {
 /// `Task.priority(.high)`): the query it asks (`project:<id>`, `priority:high`), the label a
 /// control shows for it, and whether it is a toggle. A filter given a value is none: its
 /// value is what it asks, so no single place is on or off.
-fn valued_filter(f: &FilterMeta, enums: &[EnumMeta], v: &Value) -> Result<Value, String> {
+fn valued_filter(
+    ty: &str,
+    f: &FilterMeta,
+    enums: &[EnumMeta],
+    v: &Value,
+    say: &dyn Fn(&str, &str) -> String,
+) -> Result<Value, String> {
+    let plain = || say(&tilolang::messages::filter_key(ty, &f.key), &f.label);
     let (query, label) = match v {
-        Value::Opt(None) => (format!("is:{}", f.key), f.label.clone()),
+        Value::Opt(None) => (format!("is:{}", f.key), plain()),
         Value::Opt(Some(v)) => {
-            return valued_filter(f, enums, v);
+            return valued_filter(ty, f, enums, v, say);
         }
-        Value::Bool(b) => (format!("{}:{b}", f.key), f.label.clone()),
-        Value::Int(n) => (format!("{}:{n}", f.key), f.label.clone()),
-        Value::Float(n) => (format!("{}:{n}", f.key), f.label.clone()),
-        Value::Text(t) => (format!("{}:{t}", f.key), f.label.clone()),
+        Value::Bool(b) => (format!("{}:{b}", f.key), plain()),
+        Value::Int(n) => (format!("{}:{n}", f.key), plain()),
+        Value::Float(n) => (format!("{}:{n}", f.key), plain()),
+        Value::Text(t) => (format!("{}:{t}", f.key), plain()),
         Value::Enum(e) => {
-            let label = enum_of(f, enums)
-                .and_then(|meta| meta.variants.iter().find(|x| x.name == e.variant))
-                .map(|x| x.label.clone())
-                .filter(|label| !label.is_empty())
-                .unwrap_or_else(|| e.variant.clone());
+            let case = enum_of(f, enums)
+                .and_then(|meta| meta.variants.iter().find(|x| x.name == e.variant));
+            let label = match case {
+                Some(x) => {
+                    let source = if x.label.is_empty() {
+                        &x.name
+                    } else {
+                        &x.label
+                    };
+                    say(&tilolang::messages::key_of(&x.id), source)
+                }
+                None => e.variant.clone(),
+            };
             (format!("{}:{}", f.key, e.variant), label)
         }
-        Value::Ref(r) => (
-            format!("{}:{}", f.key, r.target.id_string()),
-            f.label.clone(),
-        ),
+        Value::Ref(r) => (format!("{}:{}", f.key, r.target.id_string()), plain()),
         other => {
             return Err(format!(
                 "it takes a value of its field's type, not {}",

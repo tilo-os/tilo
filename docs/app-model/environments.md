@@ -6,7 +6,7 @@ makes that place explicit. Every session is bound to a **target**:
 | Target | What it is | Identity and files | Packages |
 |---|---|---|---|
 | **Host** | The machine's own login shell (desktop installs; the owner's shell on Tilo OS) | The real user, the real home | The host's own (rpm-ostree, Flatpak, …) |
-| **Environment** | A sandbox whose `/usr` is a stack of read-only images, on this device or one that takes work | The real uid inside its own namespaces; the workspace's folder as `~` plus directories granted to it | Tool images listed in the environment record |
+| **Environment** | A sandbox whose `/usr` is a stack of read-only images, on this device or one that takes work | The real uid inside its own namespaces; its workspace's own files as `~` plus directories granted to it | Tool images listed in the environment record |
 | **Legacy VM** | One VM per user and guest OS, for software that needs a whole system | A normal user account in the guest; granted directories shared in | Whatever the guest installs (Flatpak, its package manager) |
 
 The terminal never receives a namespace or a VM. It receives a pty from a
@@ -14,6 +14,34 @@ broker. The broker decides where the session runs, so the same Terminal works
 against this device or a VM. This is the boundary `ush` already
 draws (`ServeRequest::OpenSession` → pty over `SCM_RIGHTS`); environments
 extend what is on the other side of it.
+
+## An environment belongs to a workspace
+
+A Terminal is opened in a workspace, and every environment it lists, makes
+and opens is that workspace's. Several coding agents can work on one device
+at once, each in a workspace of its own, each with its own files, shell and
+environment, none seeing another's:
+
+- **Records.** An environment's record is kept in its workspace's room,
+  where Terminal opened there keeps its own records, and names the
+  workspace. Listing environments in a workspace lists only that
+  workspace's.
+- **Files.** Its `~` is the workspace's own files: for a workspace `W`, its
+  tree of the device's files, `/var/workspace/.workspaces/W`. Only that tree
+  is bound into the guest, and the environment is refused any grant of
+  another workspace's tree or of the files folder around them.
+- **Variables.** Its programs start with `TILO_WORKSPACE` (the workspace's
+  id) and `TILO_ENVIRONMENT` (the environment's stable id,
+  `<workspace>/<record>`).
+- **Who says which workspace.** The launcher, for a sandboxed Terminal: it
+  writes the workspace the app was launched in on the `ush` connection
+  before the app holds it, and the app cannot name another. The shell, for
+  a Terminal it hosts: on each request.
+
+Environments made before environments belonged to a workspace are the
+**primary workspace**'s (`personal`), unmoved: they open as before, with the
+device's files folder as `~`, for a Terminal in no workspace. See
+[`ush`](ush.md#workspaces).
 
 ## Cost classes
 
@@ -105,8 +133,8 @@ not persist a publisher policy or bypass signature, revocation or runtime checks
 ## The environment record
 
 An environment is a synced record (`#[resource(kind = "environment")]`,
-declared by the Terminal app), so it follows the user to every device that
-holds the workspace:
+declared by the Terminal app), kept in its workspace's room, so it follows
+the user to every device that holds the workspace:
 
 ```rust
 pub struct Environment {
@@ -115,7 +143,8 @@ pub struct Environment {
     pub tools: Vec<ToolRef>,         // tools built for that release
     pub grants: Vec<CapOverride>,    // FsPath / NetHost grants, Subject::App("so.tilo.ush")
     pub home: HomePolicy,            // Persistent (default) | Ephemeral
-    pub home_dir: String,            // what `~` is: the workspace's folder
+    pub home_dir: String,            // what `~` is: the workspace's own files
+    pub workspace: String,           // the workspace it belongs to; empty: the primary one
 }
 
 pub struct RuntimeRef {
@@ -148,7 +177,7 @@ layer; there is no separate package manifest.
 ```text
 /usr, /etc   overlay (read-only): lowers = [tool images…, env-runtime]
              (--ro-overlay; no writable upper)
-~            the workspace's folder, through its grant (ush.md, "Home")
+~            the workspace's own files, through their grant (ush.md, "Home")
 <grants>     one bind per FsPath grant, at the same path as on the host
 /tmp /run /proc /dev   fresh
 /var         tmpfs, plus the environment's own /var/lib and /var/cache
@@ -258,3 +287,10 @@ Legacy { vm }`). A new tab picks its target (default: the most recently used
 environment); the tab shows a target chip; a session's target is part of its
 synced state, so reopening it on another device re-attaches to the same place
 where possible.
+
+A Terminal's environments are those of the workspace its window is in. A
+Terminal the shell hosts names that workspace (its window's) on every request
+to the supervisor (`"workspace":…`); a Terminal the launcher started is held
+to the workspace it was launched in. Opening Terminal in two workspaces gives
+two environments, each with its own `~`, its own picker list and its own
+default environment.

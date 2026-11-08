@@ -319,7 +319,10 @@ AppleScript as the template VM `Tilo Dev (<name>)`, an aarch64 QEMU guest on
 Apple's hypervisor with UEFI, and clones it. It defaults to 16 GiB of memory
 and 8 CPU cores; `--memory-mb` and `--cpus` override those import settings.
 macOS asks once whether the terminal may control UTM. `--template '<a UTM VM>'` clones one imported
-before. The VM's address comes from `utmctl ip-address` where the guest runs
+before. `tilo-vm vm branch <vm> <new>` clones a set-up dev VM instead
+(`utmctl clone`, copy-on-write on APFS), gives the clone a new MAC over UTM's
+AppleScript, and checks that UTM gave it a new UUID (`tilo-vm guide
+concepts`). The VM's address comes from `utmctl ip-address` where the guest runs
 the QEMU guest agent, else from the lease macOS's DHCP server recorded for the
 VM's MAC address in `/var/db/dhcpd_leases` (UTM's shared network).
 

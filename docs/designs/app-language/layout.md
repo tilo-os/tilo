@@ -89,6 +89,11 @@ selected once, a list offers one add entry, a name a screen reader announces is 
 code identifier, a destructive control says "Delete", a surface holds no surface of its own kind,
 and a narrow window keeps a 16 px gutter.
 
+It also reads the language a screen speaks: a window has one, so every word it says must resolve in
+that language, and a word only another language's catalogue holds is a `mixed-language` finding
+(i18n.md §4). `--locale de-DE` stages the person's language for the check, whose default is `en-US`
+whatever the machine's own locale is, so a check reads the same everywhere.
+
 `--key Tab`, `--key Down`, `--key Space` press keys into a window before it is read, in the order
 given and at the `--dump` size, so a check and a shot show the layout a person reaches by keyboard
 rather than only its first frame.

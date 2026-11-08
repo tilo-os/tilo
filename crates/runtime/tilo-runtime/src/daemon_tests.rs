@@ -585,6 +585,75 @@ fn standalone_is_the_clients_own_explicit_choice_for_connect() {
     assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
 }
 
+/// `--device` carries `--connect` on to another of the person's devices, in
+/// the workspace `--workspace` names there; neither means anything elsewhere.
+#[test]
+fn a_device_and_its_workspace_choose_where_connect_goes() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    let workspace = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    assert_eq!(
+        args(&[
+            "--profile",
+            "/tmp/p",
+            "--connect",
+            "--device",
+            " Build box "
+        ])
+        .unwrap()
+        .forward,
+        Some(crate::remote_door::Forward {
+            device: "Build box".into(),
+            workspace: None
+        })
+    );
+    assert_eq!(
+        args(&[
+            "--profile",
+            "/tmp/p",
+            "--connect",
+            "--device",
+            "b",
+            "--workspace",
+            workspace
+        ])
+        .unwrap()
+        .forward
+        .and_then(|forward| forward.workspace)
+        .as_deref(),
+        Some(workspace)
+    );
+    assert_eq!(
+        args(&["--profile", "/tmp/p", "--connect"]).unwrap().forward,
+        None
+    );
+    for refused in [
+        &["--profile", "/tmp/p", "--daemon", "--device", "b"][..],
+        &["--profile", "/tmp/p", "--connect", "--workspace", workspace],
+        &[
+            "--profile",
+            "/tmp/p",
+            "--connect",
+            "--device",
+            "b",
+            "--workspace",
+            "Studio",
+        ],
+        &["--profile", "/tmp/p", "--connect", "--device", "  "],
+        &["--profile", "/tmp/p", "--connect", "--device"],
+        &[
+            "--profile",
+            "/tmp/p",
+            "--connect",
+            "--device",
+            "a",
+            "--device",
+            "b",
+        ],
+    ] {
+        assert!(args(refused).is_err(), "{refused:?}");
+    }
+}
+
 #[test]
 fn admission_daemon_requires_an_explicit_non_root_owner_and_no_dev_bypass() {
     let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
@@ -739,6 +808,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
             for _ in 0..2 {
                 let (stream, _) = listener.accept().unwrap();
                 super::serve_connection(
+                    stream.try_clone().unwrap(),
                     stream,
                     &std::sync::Arc::new(crate::mcp::McpServer::new(
                         host.clone(),
@@ -792,6 +862,7 @@ fn native_socket_serves_parallel_requests() {
         let host = host.clone();
         std::thread::spawn(move || {
             super::serve_connection(
+                served.try_clone().unwrap(),
                 served,
                 &std::sync::Arc::new(crate::mcp::McpServer::new(
                     host,

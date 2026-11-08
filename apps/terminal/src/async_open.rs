@@ -17,6 +17,7 @@ impl PendingOpen {
         target: SessionTarget,
         requester: Requester,
         attach: Option<String>,
+        workspace: Option<String>,
         waker: Arc<Mutex<ui::WakeHandle>>,
     ) -> Result<Self, OpenError> {
         let worker_attach = attach.clone();
@@ -28,6 +29,7 @@ impl PendingOpen {
                     &target,
                     requester,
                     worker_attach.as_deref(),
+                    workspace.as_deref(),
                     Some(&cancellation),
                 )
             },
@@ -109,9 +111,68 @@ mod tests {
         });
     }
 
+    /// The `open-session` line a hosted tab shown in `window` sends its
+    /// supervisor when it opens, as the supervisor reads it.
+    fn open_request_from(window: &ui::hosted_window::HostedWindow) -> serde_json::Value {
+        // The window bar then lists the environments off the UI thread over
+        // the runtime directory's socket: pin that to an empty directory so
+        // the listing never reaches another test's runtime.
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let (client, server) = UnixStream::pair().unwrap();
+        let supervisor = std::thread::spawn(move || {
+            let mut reader = accept_hello(&server);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            (&server)
+                .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"checked\"}\n")
+                .unwrap();
+            line
+        });
+        let mut widget = tab(client);
+        widget.show_in_window(Some(window.clone()));
+        let doc = automerge::AutoCommit::new();
+        widget.sync(&doc, &automerge::ROOT);
+        finish(&mut widget, &doc);
+        tilo_test_env::wait_until("the window bar's listing", || {
+            widget.sync(&doc, &automerge::ROOT);
+            widget.sessions().directory != crate::sessions::Directory::Unasked
+        });
+        let request = serde_json::from_str(&supervisor.join().unwrap()).unwrap();
+        drop(widget);
+        request
+    }
+
+    #[test]
+    fn an_open_names_the_workspace_the_window_is_in_and_none_when_unknown() {
+        let window = ui::hosted_window::HostedWindow::new();
+        window.set_workspace(Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979".into()));
+        let request = open_request_from(&window);
+        assert_eq!(request["op"], "open-session");
+        assert_eq!(request["workspace"], "e787c8a3-e6d5-4b00-90fe-ff1af708b979");
+
+        // The window moved: the next open names where it is now.
+        window.set_workspace(Some("2b1f6c0e-8d1a-4c5e-9f3b-7a6d5e4c3b2a".into()));
+        let request = open_request_from(&window);
+        assert_eq!(request["workspace"], "2b1f6c0e-8d1a-4c5e-9f3b-7a6d5e4c3b2a");
+
+        // A window in no workspace, or an empty one, names none.
+        for unknown in [None, Some(String::new())] {
+            window.set_workspace(unknown);
+            let request = open_request_from(&window);
+            assert_eq!(request["op"], "open-session");
+            assert!(request.get("workspace").is_none(), "{request}");
+        }
+    }
+
     #[test]
     fn deferred_host_constructs_without_a_socket_and_reports_missing_ush_after_open() {
-        // The ordinary test environment has no desktop service sockets.
+        // A runtime directory with no desktop service sockets, held for the
+        // open so no other test's runtime appears in it meanwhile.
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
         let mut widget = crate::TerminalWidget::spawn_hosted_deferred();
         assert_eq!(widget.inspect_session()["lifecycle"], "unopened");
         assert_eq!(widget.inspect_session()["input_available"], false);
@@ -290,6 +351,7 @@ mod tests {
             Some(HostedProcessServices { ush: Some(client) }),
             SessionTarget::default_environment(),
             Requester::Person,
+            None,
             None,
             Arc::new(Mutex::new(ui::WakeHandle::new())),
         )

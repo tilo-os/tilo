@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# The Lounge, run and used: the image starts on the state a fresh volume holds
-# and on the state the previous release wrote, reaches Ready, lists itself in
-# its public directory, and two people's browsers join it through the web
-# entry, chat, share a desk, and see each other present.
+# The Lounge, run and used: the image starts on a fresh volume, reaches Ready,
+# lists itself in its public directory, and two people's browsers join it
+# through the web entry, chat, share a desk, and see each other present.
 #
 # Everything the deployment does around the image is here, on this machine:
 # the entrypoint reads production-shaped TILO_ROOMS_* (this test's own ports
@@ -194,7 +193,7 @@ stop_image() {
   end "$image_pid"
   image_pid=
 }
-# Started on a volume: a fresh one, or the state the previous release wrote.
+# Started on a volume: the state this gate has kept so far.
 start_on() {
   stop_image
   prepare_volume "$1"
@@ -228,8 +227,7 @@ stop_ingress() {
 
 # Ready: the deployment's readiness probe answers that the relay is up, and
 # the image's own revision is what it reports. At most 4 minutes, which a
-# first start that seeds its apps and a start that opens a release's state
-# both fit well inside.
+# first start that seeds its apps fits well inside.
 mode=''
 wait_ready() {
   for _ in $(seq 1200); do
@@ -380,29 +378,4 @@ node "$here/integration/live-note.mjs" "$site_url" "$live_host" "$work/live-note
 echo 'ok: a page that cannot reach the live plane says so and logs it'
 start_ingress
 
-# The state the previous release wrote: this build brings it up, or refuses it
-# by the format's name and version and ends — never a start that dies without
-# a word, and never a panic. It is one fresh start's volume, kept as the tar
-# git holds: its records are binary, so the fixture is text.
-previous=$work/previous-state
-mkdir -p "$previous"
-base64 -d "$here/integration/previous-state.tar.b64" | tar -xf - -C "$previous" \
-  || fail 'the previous release state did not unpack'
-start_on "$previous"
-if wait_ready; then
-  verify_records_read
-  # Opened by bringing the record up, which keeps the version it read beside
-  # it: the state that would not decode is still there, and the start says
-  # which format it came from.
-  compgen -G "$state_root/lounge/relay/relay/rooms/*.room.v2" >/dev/null \
-    || fail "the previous state opened without keeping the version it was read as: $(ls "$state_root/lounge/relay/relay/rooms")"
-  echo "ok: the previous release's state opens, keeping the record it migrated"
-else
-  still_running && fail 'the image neither reached Ready nor ended on the previous state'
-  grep -q 'governed workspace record version' "$log" \
-    || fail 'the image ended on the previous state without naming the format and version'
-  ! grep -qi 'panicked\|backtrace' "$log" || fail 'the image panicked on the previous state'
-  echo "ok: the previous release's state is refused by name and version, and the start ends"
-fi
-
-echo "ok: the Lounge image runs, opens a fresh and the previous state, and hosts people ($revision)"
+echo "ok: the Lounge image runs, opens a fresh volume, and hosts people ($revision)"

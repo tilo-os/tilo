@@ -134,6 +134,7 @@ impl HostedProcessServices {
         target: &target::SessionTarget,
         requested_by: Requester,
         relay_session: Option<&str>,
+        workspace: Option<&str>,
         cancellation: Option<&runtime_portal::pending_connection::Cancellation>,
     ) -> Result<TerminalBackend, OpenError> {
         let stream = first
@@ -147,17 +148,22 @@ impl HostedProcessServices {
                 .track(&stream)
                 .map_err(|e| OpenError::Failed(e.to_string()))?;
         }
-        crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session)
+        crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session, workspace)
     }
 
-    /// One request to the session's supervisor over a fresh connection;
-    /// returns its one-line answer.
-    pub(crate) fn ask(request: &serde_json::Value) -> Result<String, String> {
+    /// One request to the session's supervisor over a fresh connection, in
+    /// `workspace` when the Terminal knows it; returns its one-line answer.
+    pub(crate) fn ask(
+        request: &serde_json::Value,
+        workspace: Option<&str>,
+    ) -> Result<String, String> {
         use std::io::{BufRead, Write};
         let stream = Self::default()
             .ush
             .ok_or_else(|| "the shell runtime is not running".to_string())?;
-        let mut line = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+        let mut request = request.clone();
+        sessions::with_workspace(&mut request, workspace);
+        let mut line = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         line.push(b'\n');
         (&stream).write_all(&line).map_err(|e| e.to_string())?;
         let mut reply = String::new();
@@ -239,6 +245,7 @@ impl HostedProcessServices {
         _target: &target::SessionTarget,
         _requested_by: Requester,
         _relay_session: Option<&str>,
+        _workspace: Option<&str>,
         _cancellation: Option<&runtime_portal::pending_connection::Cancellation>,
     ) -> Result<TerminalBackend, OpenError> {
         Err(OpenError::NoRuntime(
@@ -246,7 +253,10 @@ impl HostedProcessServices {
         ))
     }
 
-    pub(crate) fn ask(_request: &serde_json::Value) -> Result<String, String> {
+    pub(crate) fn ask(
+        _request: &serde_json::Value,
+        _workspace: Option<&str>,
+    ) -> Result<String, String> {
         Err("environments are managed through Tilo's shell runtime".into())
     }
 }

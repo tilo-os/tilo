@@ -1212,6 +1212,7 @@ impl Session {
                 env.push(((*key).to_owned(), value.to_string_lossy().into_owned()));
             }
         }
+        env.extend(self.workspace_env(&resolved.key));
         env
     }
 

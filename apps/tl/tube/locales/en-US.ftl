@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-tube = YouTube
+
 d-m5wewovo = Channel
     .doc = A channel someone publishes videos on.
     .noun = { $count ->
@@ -74,6 +76,12 @@ d-4mojz3hw = Trending
 
 d-5o5fpqgh = Found for
     .doc = The search that found it, empty for a video a feed or a page brought in.
+
+d-albed4jx-filter-liked = Liked
+
+d-albed4jx-filter-watch_later = Watch later
+
+d-albed4jx-filter-trending = Trending
 
 d-mmzhfe3o = Playlist
     .doc = A playlist: videos in an order its maker chose.
@@ -225,6 +233,10 @@ d-mufcicuu = Feed
     .w-watch-later = Watch later
     .w-liked-videos = Liked videos
     .w-history = History
+    .w-nothing-kept-for-later = Nothing kept for later
+    .w-the-videos-you-keep-are-here = The videos you keep are here
+    .w-nothing-liked-yet = Nothing liked yet
+    .w-the-videos-you-like-are-here = The videos you like are here
     .w-nothing-trending-yet = Nothing trending yet
     .w-ask-youtube-what-is-trending = Ask YouTube what is trending
     .w-no-subscriptions-yet = No subscriptions yet
@@ -265,6 +277,8 @@ d-yh23kjna = Channel page
     .w-videos = { $len } videos
     .w-about = About
     .w-videos-2 = Videos
+    .w-no-videos-here-yet = No videos here yet
+    .w-ask-youtube-for-this-channel-s = Ask YouTube for this channel's videos
 
 d-w7mpbzm4 = Video page
     .w-play = Play
@@ -279,6 +293,8 @@ d-w7mpbzm4 = Video page
 
 d-eijjevst = Playlist page
     .w-videos = { $video_count } videos
+    .w-nothing-here-yet = Nothing here yet
+    .w-the-playlist-s-videos-arrive-when = The playlist's videos arrive when it is opened
 
 d-z642pnnw = Video row
 

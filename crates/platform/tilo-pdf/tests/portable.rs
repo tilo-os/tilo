@@ -15,6 +15,11 @@ fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(Path::new(env!("OUT_DIR")).join(name)).expect("fixture")
 }
 
+/// The portable engine on one of the fixtures.
+fn open(name: &str) -> tilo_pdf::Document {
+    Engine::portable().open_bytes(&fixture(name)).expect("open")
+}
+
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -27,9 +32,7 @@ fn page_text(name: &str) -> String {
 
 #[test]
 fn opens_with_geometry_and_metadata() {
-    let doc = Engine::portable()
-        .open_bytes(&fixture("multipage.pdf"))
-        .unwrap();
+    let doc = open("multipage.pdf");
     assert_eq!(doc.page_count(), 3);
     let size = doc.page_size(0).unwrap();
     assert!(size.width > 100.0 && size.height > 100.0, "{size:?}");
@@ -54,9 +57,7 @@ fn latin_text_copies_exactly() {
 
 #[test]
 fn search_finds_hits_across_pages_with_rects() {
-    let doc = Engine::portable()
-        .open_bytes(&fixture("multipage.pdf"))
-        .unwrap();
+    let doc = open("multipage.pdf");
     let hits = doc.search("needle", SearchOptions::default(), 100).unwrap();
     assert_eq!(hits.iter().map(|h| h.page).collect::<Vec<_>>(), vec![1, 2]);
     let size = doc.page_size(1).unwrap();
@@ -71,9 +72,7 @@ fn search_finds_hits_across_pages_with_rects() {
 
 #[test]
 fn outline_and_links_resolve() {
-    let doc = Engine::portable()
-        .open_bytes(&fixture("multipage.pdf"))
-        .unwrap();
+    let doc = open("multipage.pdf");
     let outline = doc.outline().unwrap();
     let titles: Vec<&str> = outline.iter().map(|e| e.title.as_str()).collect();
     assert_eq!(titles, vec!["First Chapter", "Second Chapter"]);
@@ -91,9 +90,7 @@ fn outline_and_links_resolve() {
 
 #[test]
 fn internal_and_external_links_have_display_space_areas() {
-    let doc = Engine::portable()
-        .open_bytes(&fixture("links.pdf"))
-        .unwrap();
+    let doc = open("links.pdf");
     let size = doc.page_size(0).unwrap();
     let links = doc.links(0).unwrap();
     assert_eq!(links.len(), 2, "{links:?}");
@@ -113,9 +110,7 @@ fn internal_and_external_links_have_display_space_areas() {
 
 #[test]
 fn renders_white_pages_with_ink_and_crops_regions_from_the_full_render() {
-    let doc = Engine::portable()
-        .open_bytes(&fixture("latin.pdf"))
-        .unwrap();
+    let doc = open("latin.pdf");
     let size = doc.page_size(0).unwrap();
     let options = RenderOptions::fit_width(size, 300);
     let full = doc.render(0, &options).unwrap();
@@ -154,9 +149,7 @@ fn renders_white_pages_with_ink_and_crops_regions_from_the_full_render() {
 
 #[test]
 fn an_extra_quarter_turn_swaps_the_render() {
-    let doc = Engine::portable()
-        .open_bytes(&fixture("latin.pdf"))
-        .unwrap();
+    let doc = open("latin.pdf");
     let size = doc.page_size(0).unwrap();
     let options = RenderOptions {
         rotation: Rotation::Cw90,
@@ -169,9 +162,7 @@ fn an_extra_quarter_turn_swaps_the_render() {
 
 #[test]
 fn saving_edits_is_unavailable() {
-    let doc = Engine::portable()
-        .open_bytes(&fixture("latin.pdf"))
-        .unwrap();
+    let doc = open("latin.pdf");
     assert!(matches!(
         doc.export(&tilo_pdf::Edits::default(), &[]),
         Err(Error::Unavailable(_))

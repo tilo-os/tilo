@@ -1460,6 +1460,10 @@ impl Reconciler {
             }
         };
         let label = crate::date::shown(node, "label").unwrap_or_default();
+        if label.is_empty() {
+            // The form's title says what its one field asks: no label stands beside it.
+            return Field::unlabeled(content);
+        }
         Field::custom(label, content)
     }
 
@@ -1523,6 +1527,25 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let names: Vec<String> = cases.iter().map(|case| case.name.clone()).collect();
+        // A form's quick choices stand one under the next, each the width of the field: a
+        // label is never squeezed or elided, and every choice is one press.
+        if flag(node, "list") {
+            let mut list = Stack::stack().fill_width().gap(Rhythm::Tight);
+            for (index, case) in cases.iter().enumerate() {
+                let sink = Rc::clone(&self.sink);
+                let key = node.key.clone();
+                let name = case.name.clone();
+                list = list.push(Box::new(
+                    Button::new(&format!("{}~{index}", node.key), &case.label)
+                        .fill_width()
+                        .toggled(at == Some(index))
+                        .on_click(move || {
+                            sink.push(UiEvent::Fire(key.clone(), format!("pick.{name}"), None));
+                        }),
+                ));
+            }
+            return Box::new(list);
+        }
         // A few cases are segments; more, or people and resources (`menu`), a menu.
         if cases.len() <= 4 && !flag(node, "menu") {
             let segments = cases

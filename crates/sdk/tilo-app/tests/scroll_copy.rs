@@ -31,63 +31,13 @@ use tilo_app::framework::testing::drive_live_window;
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::offscreen::OffscreenRenderer;
 use tilo_app::prelude::*;
+
+use crate::support_checklist;
+use crate::support_checklist::{Checklist, Task};
 use tilo_app::theme::Theme;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
 use tilo_app::winit::event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase};
 use tilo_app::winit::window::CursorIcon;
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", "copy-draft = Next task\ncopy-done = Completed\n")],
-);
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-/// One task.
-pub struct Task {
-    pub title: String,
-    pub done: bool,
-}
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-/// The draft and the tasks.
-pub struct Checklist {
-    pub draft: String,
-    pub tasks: Collection<Task>,
-}
-
-#[resource(kind = "test.scroll-copy-checklist", label = "Checklist")]
-impl Checklist {
-    /// Set the next task's title.
-    #[action]
-    pub fn draft(&mut self, title: String) {
-        self.draft = title;
-    }
-
-    /// Add `count` tasks at the end.
-    #[action]
-    pub fn seed(&mut self, cx: &mut ActionCx, count: u32) {
-        for _ in 0..count {
-            let index = self.tasks.len();
-            self.tasks.push(
-                cx.id(),
-                Task {
-                    title: format!("Task {index}: the quick brown fox jumps over the lazy dog"),
-                    done: index.is_multiple_of(3),
-                },
-            );
-        }
-    }
-
-    /// Mark a task completed or open.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
-    #[action]
-    pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
-        self.tasks.get_mut(task).ok_or("gone")?.done = done;
-        Ok(())
-    }
-}
 
 /// A checklist of 2,000 tasks.
 struct Window;
@@ -98,11 +48,11 @@ impl ResourceApp for Window {
     const TITLE: &'static str = "Checklist";
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&support_checklist::CATALOG)
     }
 
     fn genesis(_: &LaunchInput<'_>) -> Vec<Invoke<Checklist>> {
-        vec![Checklist::SEED.with(2_000)]
+        vec![Checklist::SEED_LONG.with(2_000)]
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
@@ -119,11 +69,11 @@ impl ResourceApp for ShortWindow {
     const TITLE: &'static str = "Checklist";
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&support_checklist::CATALOG)
     }
 
     fn genesis(_: &LaunchInput<'_>) -> Vec<Invoke<Checklist>> {
-        vec![Checklist::SEED.with(30)]
+        vec![Checklist::SEED_LONG.with(30)]
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
@@ -141,7 +91,7 @@ fn checklist(cx: &ViewCx<Checklist>) -> Element {
 
 /// One task: its title and whether it is done.
 fn task_row(row: &mut ViewCx<Checklist, Task>) -> Element {
-    let done = row.checkbox("copy-done", row.paths().done);
+    let done = row.checkbox(support_checklist::DONE, row.paths().done);
     Box::new(tilo_app::row![row.text(|task| task.title.clone()), done])
 }
 

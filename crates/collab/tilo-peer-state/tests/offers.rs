@@ -11,22 +11,21 @@
 )]
 tilo_automerge_isolate::test_worker!();
 
+mod common;
+
+use common::{addr, device, localhost_endpoint, workspace};
+
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
+use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::offer::{Answer, Decline, Power, Query, Route, State, Work};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::TestHost;
-use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane, OFFER_DEADLINE, Offering};
 use tilo_peer_state::direct::Replica;
-use tilo_peer_state::{SeedState, seed_workspace};
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
-    sign_device_cert, sign_revocation_entry,
-};
+use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -71,65 +70,6 @@ async fn asked_about(
     .expect("the round completes")
 }
 
-/// A device key `n` certified by `root` as one of its person's devices.
-fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[n; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{n}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
-}
-
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
-}
-
-/// The workspace `a.1` creates and seeds, with `roster` certified as the
-/// workspace's devices.
-fn workspace(a: &(SigningKey, DeviceCert), roster: &[DeviceCert]) -> StatePeer {
-    let now = SystemTime::now();
-    let mut peer = StatePeer::new(
-        WORKSPACE,
-        a.1.clone(),
-        roster.to_vec(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    peer.select_admission_v5().unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &a.1, roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &a.0,
-        now,
-    )
-    .unwrap();
-    peer
-}
-
 /// A device that answers offers with what the test tells it to say of
 /// itself.
 struct Reported(Answer);
@@ -150,7 +90,7 @@ struct Engine {
 
 impl Engine {
     async fn serving(replica: Replica, key: SigningKey, reported: Option<Answer>) -> Self {
-        let endpoint = endpoint(&key).await;
+        let endpoint = localhost_endpoint(&key).await;
         let plane = ActionPlane::new(key.clone(), Arc::new(TestHost::new()));
         plane.hold(replica);
         if let Some(state) = reported {
@@ -237,14 +177,14 @@ async fn the_device_that_reports_the_lowest_cost_wins_and_the_rest_say_why() {
     let busy = device(&root, 0x53);
     let idle = device(&root, 0x54);
     let roster = vec![here.1.clone(), busy.1.clone(), idle.1.clone()];
-    let peer = workspace(&here, &roster);
+    let peer = workspace(WORKSPACE, &here, &roster);
     let replica = Replica::new(peer);
 
     // The busy device holds the workspace but reports a full pipeline; the
     // idle one holds nothing to do.
     let busy = Engine::serving(replica.clone(), busy.0.clone(), Some(answer(willing(750)))).await;
     let idle = Engine::serving(replica.clone(), idle.0.clone(), Some(answer(willing(0)))).await;
-    let asker = endpoint(&here.0).await;
+    let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
     plane.hold(replica.clone());
     let targets = vec![busy.addr(), idle.addr()];
@@ -285,7 +225,7 @@ async fn nobody_offering_leaves_the_run_where_it_was_asked() {
     let here = device(&root, 0x62);
     let store = device(&root, 0x63);
     let roster = vec![here.1.clone(), store.1.clone()];
-    let peer = workspace(&here, &roster);
+    let peer = workspace(WORKSPACE, &here, &roster);
     let replica = Replica::new(peer);
 
     // The only other device is a store of the workspace: it keeps ciphertext
@@ -293,7 +233,7 @@ async fn nobody_offering_leaves_the_run_where_it_was_asked() {
     let mut store_only = willing(0);
     store_only.store_role = true;
     let store = Engine::serving(replica.clone(), store.0.clone(), Some(answer(store_only))).await;
-    let asker = endpoint(&here.0).await;
+    let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
 
     let choice = asked(&plane, &asker, vec![store.addr()], OFFER_DEADLINE).await;
@@ -319,7 +259,7 @@ async fn a_device_that_is_away_is_ranked_as_away_inside_the_deadline() {
     let here = device(&root, 0x72);
     let away = device(&root, 0x73);
     let roster = vec![here.1.clone(), away.1.clone()];
-    let peer = workspace(&here, &roster);
+    let peer = workspace(WORKSPACE, &here, &roster);
     let replica = Replica::new(peer);
 
     // A device address nothing listens on: the port was bound and closed.
@@ -335,7 +275,7 @@ async fn a_device_that_is_away_is_ranked_as_away_inside_the_deadline() {
                 port,
             )));
 
-    let asker = endpoint(&here.0).await;
+    let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0, Arc::new(TestHost::new()));
     plane.hold(replica);
 
@@ -369,11 +309,11 @@ async fn a_device_asked_from_outside_the_workspace_answers_nothing() {
     let member = device(&root, 0x82);
     let stranger = device(&root, 0x83);
     let roster = vec![member.1.clone()];
-    let peer = workspace(&member, &roster);
+    let peer = workspace(WORKSPACE, &member, &roster);
     let replica = Replica::new(peer);
 
     let answering = Engine::serving(replica, member.0.clone(), Some(answer(willing(0)))).await;
-    let asker = endpoint(&stranger.0).await;
+    let asker = localhost_endpoint(&stranger.0).await;
     let plane = ActionPlane::new(stranger.0.clone(), Arc::new(TestHost::new()));
 
     let choice = asked(&plane, &asker, vec![answering.addr()], OFFER_DEADLINE).await;
@@ -396,7 +336,7 @@ async fn the_devices_a_round_asks_are_the_workspaces_own() {
     let other = device(&root, 0x93);
     let revoked = device(&root, 0x94);
     let roster = vec![here.1.clone(), other.1.clone(), revoked.1.clone()];
-    let peer = workspace(&here, &roster);
+    let peer = workspace(WORKSPACE, &here, &roster);
     let mut entry = RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: revoked.1.device_public_key,
@@ -437,11 +377,11 @@ async fn a_device_with_nothing_to_say_offers_nothing() {
     let here = device(&root, 0xa2);
     let quiet = device(&root, 0xa3);
     let roster = vec![here.1.clone(), quiet.1.clone()];
-    let peer = workspace(&here, &roster);
+    let peer = workspace(WORKSPACE, &here, &roster);
     let replica = Replica::new(peer);
 
     let quiet = Engine::serving(replica, quiet.0.clone(), None).await;
-    let asker = endpoint(&here.0).await;
+    let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
 
     let choice = asked(&plane, &asker, vec![quiet.addr()], OFFER_DEADLINE).await;
@@ -465,7 +405,7 @@ async fn the_jobs_inputs_decide_before_rank_does() {
     let near = device(&root, 0x63);
     let far = device(&root, 0x64);
     let roster = vec![here.1.clone(), near.1.clone(), far.1.clone()];
-    let replica = Replica::new(workspace(&here, &roster));
+    let replica = Replica::new(workspace(WORKSPACE, &here, &roster));
 
     // One big input, and a run here it would have to beat.
     let mut heavy = work();
@@ -480,7 +420,7 @@ async fn the_jobs_inputs_decide_before_rank_does() {
         Some(holding(willing(500), &heavy.inputs)),
     )
     .await;
-    let asker = endpoint(&here.0).await;
+    let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
     plane.hold(replica);
 
@@ -524,7 +464,7 @@ async fn a_job_whose_inputs_move_slower_than_it_runs_stays_here() {
     let here = device(&root, 0x72);
     let other = device(&root, 0x73);
     let roster = vec![here.1.clone(), other.1.clone()];
-    let replica = Replica::new(workspace(&here, &roster));
+    let replica = Replica::new(workspace(WORKSPACE, &here, &roster));
 
     let mut heavy = work();
     heavy.inputs = vec![([7; 32], 64_000_000)];
@@ -532,7 +472,7 @@ async fn a_job_whose_inputs_move_slower_than_it_runs_stays_here() {
     heavy.local_wall_ms = Some(1_000);
 
     let other = Engine::serving(replica, other.0.clone(), Some(answer(willing(0)))).await;
-    let asker = endpoint(&here.0).await;
+    let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
 
     let choice = asked_about(&plane, &asker, vec![other.addr()], &heavy, OFFER_DEADLINE).await;

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::adapter::{SLOT, kind};
+use tilo_render_protocol::patch::local;
 
 #[test]
 fn a_splice_is_where_the_texts_differ() {
@@ -22,12 +23,18 @@ fn a_splice_is_where_the_texts_differ() {
     }
 }
 
-fn send(app: &mut tilo_render_protocol::patch::local::End, batch: &[ToUi]) {
+/// An app and the window that holds its end.
+fn window() -> (local::End, AppWindow) {
+    let (app, end) = local::pair();
+    (app, AppWindow::new(Box::new(end), Vec::new()))
+}
+
+fn send(app: &mut local::End, batch: &[ToUi]) {
     app.send(wire::encode_batch(batch).expect("encodes"))
         .expect("sends");
 }
 
-fn sent(app: &mut tilo_render_protocol::patch::local::End) -> Vec<ToApp> {
+fn sent(app: &mut local::End) -> Vec<ToApp> {
     let mut out = Vec::new();
     while let Some(batch) = app.recv().expect("receives") {
         out.extend(wire::decode_batch::<ToApp>(&batch).expect("a batch"));
@@ -36,7 +43,7 @@ fn sent(app: &mut tilo_render_protocol::patch::local::End) -> Vec<ToApp> {
 }
 
 /// The actions a press asked the page to run.
-fn fired(app: &mut tilo_render_protocol::patch::local::End) -> Vec<ToApp> {
+fn fired(app: &mut local::End) -> Vec<ToApp> {
     sent(app)
         .into_iter()
         .filter(|message| matches!(message, ToApp::Fire { .. }))
@@ -77,7 +84,7 @@ fn titled_page() -> Vec<ToUi> {
 }
 
 /// The spaces the window told the app, as (lane, width, height) in rem.
-fn spaces(app: &mut tilo_render_protocol::patch::local::End) -> Vec<(Lane, f32, f32)> {
+fn spaces(app: &mut local::End) -> Vec<(Lane, f32, f32)> {
     sent(app)
         .into_iter()
         .filter_map(|message| match message {
@@ -93,8 +100,7 @@ fn spaces(app: &mut tilo_render_protocol::patch::local::End) -> Vec<(Lane, f32, 
 
 #[test]
 fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &titled_page());
     window.receive();
     let mut harness =
@@ -133,8 +139,7 @@ fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step()
 
 #[test]
 fn typing_is_sent_as_splices_and_what_the_app_sent_before_it_saw_them_is_not_shown() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &titled_page());
     window.receive();
     assert_eq!(window.bound_value("title"), Some(Value::text("Q3")));
@@ -192,8 +197,7 @@ fn typing_is_sent_as_splices_and_what_the_app_sent_before_it_saw_them_is_not_sho
 
 #[test]
 fn typing_after_a_press_goes_to_the_field_as_the_press_left_it_once_the_app_ran_it() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &titled_page());
     window.receive();
     // A press, and typing at once into the field focused: the typing waits for the press.
@@ -279,8 +283,7 @@ fn opened_note(id: &str, title: &str) -> Vec<ToUi> {
 
 #[test]
 fn typing_into_a_field_put_the_keyboard_in_while_a_press_runs_stays_with_its_note() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &titled_page());
     send(&mut app, &opened_note("a", "Alpha"));
     window.receive();
@@ -325,8 +328,7 @@ fn typing_into_a_field_put_the_keyboard_in_while_a_press_runs_stays_with_its_not
 
 #[test]
 fn typing_after_a_press_in_the_field_that_still_had_the_keyboard_follows_into_what_it_opens() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &titled_page());
     send(&mut app, &opened_note("a", "Alpha"));
     window.receive();
@@ -367,8 +369,7 @@ fn typing_after_a_press_in_the_field_that_still_had_the_keyboard_follows_into_wh
 
 #[test]
 fn typing_between_what_a_press_opened_and_its_took_follows_into_the_opened_field() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &titled_page());
     send(&mut app, &opened_note("a", "Alpha"));
     window.receive();
@@ -394,8 +395,7 @@ fn typing_between_what_a_press_opened_and_its_took_follows_into_the_opened_field
 
 #[test]
 fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     let unknown = vec![ToUi::Open {
         lane: Lane::Root,
         target: ResourceRef {
@@ -435,8 +435,7 @@ fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
 /// replaces the action it holds where it sits, with the key the app gives it now.
 #[test]
 fn a_published_catalogue_is_what_the_windows_palette_offers() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(
         &mut app,
         &[ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
@@ -495,8 +494,7 @@ fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
     let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
     let published = serde_json::to_vec(&tilo_actions::door::survey(&[resource])).expect("encodes");
 
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(
         &mut app,
         &[ToUi::Actions(wire::ActionCatalogue::All(published))],
@@ -545,8 +543,7 @@ fn keyed_menu(key: &str) -> Vec<ToUi> {
 
 #[test]
 fn a_declared_shortcut_runs_the_action_through_its_button() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &keyed_menu("Ctrl+Enter"));
     window.receive();
     assert!(
@@ -596,8 +593,7 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
 /// A plain key is a shortcut too, and a press with any modifier held is another.
 #[test]
 fn a_plain_declared_key_runs_it_alone() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &keyed_menu("e"));
     window.receive();
     let mut harness =
@@ -973,14 +969,8 @@ fn bound_page(kind: &str, props: &[(&str, Value)], value: Value) -> Vec<ToUi> {
 }
 
 /// A window showing `page`, drawn once.
-fn drawn(
-    page: &[ToUi],
-) -> (
-    tilo_render_protocol::patch::local::End,
-    ui::headless::FrameHarness,
-) {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+fn drawn(page: &[ToUi]) -> (local::End, ui::headless::FrameHarness) {
+    let (mut app, mut window) = window();
     send(&mut app, page);
     window.receive();
     let mut harness =
@@ -999,7 +989,7 @@ fn drawn_window(harness: &mut ui::headless::FrameHarness) -> &mut AppWindow {
 }
 
 /// What the window told the app, apart from the space it is drawn in.
-fn told(app: &mut tilo_render_protocol::patch::local::End) -> Vec<ToApp> {
+fn told(app: &mut local::End) -> Vec<ToApp> {
     sent(app)
         .into_iter()
         .filter(|message| !matches!(message, ToApp::Space { .. }))
@@ -1247,6 +1237,11 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
 /// A page whose overview is one list over the rows the app renders, as `std.list` builds it:
 /// the list inside the page an app docks its composer or bar under.
 fn list_page() -> Vec<ToUi> {
+    list_page_keyed("shell")
+}
+
+/// [`list_page`], its shell under `key`: a new key is a shell the window builds anew.
+fn list_page_keyed(key: &str) -> Vec<ToUi> {
     let mut list = UiNode::empty("ui.VirtualList", "list");
     list.props.insert("in_column".to_owned(), Value::Bool(true));
     let mut docked = UiNode::empty("ui.Docked", "docked");
@@ -1256,7 +1251,7 @@ fn list_page() -> Vec<ToUi> {
         .props
         .insert("name".to_owned(), Value::text("overview"));
     overview.children.push(docked);
-    let mut shell = UiNode::empty("ui.NavShell", "shell");
+    let mut shell = UiNode::empty("ui.NavShell", key);
     shell.children.push(overview);
     vec![ToUi::Open {
         lane: Lane::Root,
@@ -1264,6 +1259,32 @@ fn list_page() -> Vec<ToUi> {
         tree: shell,
         front: None,
     }]
+}
+
+/// A shell built anew opens on the screen a new window opens on; the window remembers the
+/// column the person is looking at, and hands it to the shell it builds.
+#[test]
+fn a_window_keeps_the_column_in_front_when_its_shell_is_built_anew() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    send(&mut app, &list_page());
+    window.receive();
+    // The person taps a row: the window shows it in front of the list.
+    send(&mut app, &[ToUi::Front(wire::Front::Input)]);
+    window.receive();
+    assert_eq!(
+        window.shell_ref().map(NavShell::front_pane),
+        Some(NavPane::Content)
+    );
+    // The app's views change key, so the shell is built anew.
+    send(&mut app, &list_page_keyed("again"));
+    window.receive();
+    assert!(window.failed().is_none(), "{:?}", window.failed());
+    assert_eq!(
+        window.shell_ref().map(NavShell::front_pane),
+        Some(NavPane::Content),
+        "the new shell shows the column the person is looking at, not the one a window opens on"
+    );
 }
 
 /// The list of the view's overview.
@@ -1276,8 +1297,7 @@ fn overview_list(window: &mut AppWindow) -> &mut ui::widget::DescribedList {
 
 #[test]
 fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &list_page());
     // The view beside the list opens before the app has rendered any of the list's rows: the
     // list cannot name the row of the view it shows until they come.
@@ -1495,8 +1515,7 @@ fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
 #[test]
 fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
     use ui::widget::ListModel;
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     let mut page = list_page();
     let Some(ToUi::Open { tree, .. }) = page.first_mut() else {
         panic!("the page opens the window");
@@ -1601,7 +1620,7 @@ fn choose_several_page() -> Vec<ToUi> {
 }
 
 /// The choices the app was told of, in order: what each report of the list's selection held.
-fn choices(app: &mut tilo_render_protocol::patch::local::End) -> Vec<Option<Value>> {
+fn choices(app: &mut local::End) -> Vec<Option<Value>> {
     sent(app)
         .into_iter()
         .filter_map(|message| match message {
@@ -1641,8 +1660,7 @@ fn centre_of(harness: &mut ui::headless::FrameHarness, key: &str) -> Option<(f64
 /// the choice grows with it.
 #[test]
 fn a_ctrl_click_then_shift_down_extends_the_choice() {
-    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
-    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let (mut app, mut window) = window();
     send(&mut app, &choose_several_page());
     window.receive();
     let items = [
@@ -1707,7 +1725,7 @@ fn a_ctrl_click_then_shift_down_extends_the_choice() {
 
 /// Answer what the window asked its app for with `items`, as an app renders them: whether it
 /// asked for rows at all.
-fn answer_rows(app: &mut tilo_render_protocol::patch::local::End, items: &[(&str, &str)]) -> bool {
+fn answer_rows(app: &mut local::End, items: &[(&str, &str)]) -> bool {
     let mut asked = false;
     for message in sent(app) {
         if matches!(message, ToApp::Rows { .. }) {

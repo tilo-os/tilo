@@ -674,6 +674,17 @@ pub enum ChromeEffect {
         #[param("The fixed shortcut's id in the shortcut catalogue")]
         action: String,
     },
+
+    /// Lift a window out of its strip, or put it back
+    #[effect(own_device, idempotent)]
+    Float {
+        /// The window group.
+        #[param(decimal, "The window group")]
+        group: String,
+        /// Whether it floats above the desk.
+        #[param("Whether it floats above the desk")]
+        on: bool,
+    },
 }
 
 /// A verb a host page or a surface dispatches, from either resource: the
@@ -843,6 +854,8 @@ pub enum Admitted {
     CloseWindow(RouteIds),
     /// Take back the app's control of the desktop.
     StopDesktopControl(RouteIds),
+    /// Lift the window above the desk, or put it back into its strip.
+    Float(RouteIds, bool),
 }
 
 pub fn scroll_region(route: RouteIds, key: &str) -> String {
@@ -1128,6 +1141,9 @@ fn admit_chrome(
         }
         ChromeEffect::Fullscreen { group, on } => {
             group_route(tree, group).map(|ids| Admitted::Fullscreen(ids, *on))
+        }
+        ChromeEffect::Float { group, on } => {
+            group_route(tree, group).map(|ids| Admitted::Float(ids, *on))
         }
         ChromeEffect::Rename { group, name, .. } => match group {
             Some(group) => named(group_route(tree, group)?, name, tree),

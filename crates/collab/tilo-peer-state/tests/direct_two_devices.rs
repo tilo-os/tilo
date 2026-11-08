@@ -9,54 +9,22 @@
 )]
 tilo_automerge_isolate::test_worker!();
 
+mod common;
+
+use common::{addr, device, localhost_endpoint};
+
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use std::time::Duration;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
-
-/// A device key `n` certified by `root`.
-fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[n; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{n}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
-}
-
-/// A localhost endpoint with no relay whose identity is the device `key`.
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
-}
 
 /// Write `value` into the test record as `key`'s device, and answer the heads
 /// the record holds afterwards.
@@ -131,11 +99,11 @@ async fn two_devices_of_one_person_converge_directly() {
 
     let a = DirectSync::new(a, a_key.clone());
     let b = DirectSync::new(b, b_key.clone());
-    let a_endpoint = endpoint(&a_key).await;
+    let a_endpoint = localhost_endpoint(&a_key).await;
     let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(DIRECT_ALPN, a.clone())
         .spawn();
-    let b_endpoint = endpoint(&b_key).await;
+    let b_endpoint = localhost_endpoint(&b_key).await;
     let link = tokio::spawn({
         let b = b.clone();
         let b_endpoint = b_endpoint.clone();
@@ -171,7 +139,7 @@ async fn two_devices_of_one_person_converge_directly() {
     let c =
         StatePeer::from_join(WORKSPACE, a_cert.clone(), vec![a_cert, c_cert], &[], now).unwrap();
     let c = DirectSync::new(c, c_key.clone());
-    let c_endpoint = endpoint(&c_key).await;
+    let c_endpoint = localhost_endpoint(&c_key).await;
     let refused = c.connect(&c_endpoint, addr(&a_endpoint)).await;
     assert!(refused.is_err(), "a device outside the roster is refused");
     assert!(c.read(|c| c.rows().is_empty()));
@@ -246,11 +214,11 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
 
     let a = DirectSync::new(a, a_key.clone());
     let b = DirectSync::new(b, b_key.clone());
-    let a_endpoint = endpoint(&a_key).await;
+    let a_endpoint = localhost_endpoint(&a_key).await;
     let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(DIRECT_ALPN, a.clone())
         .spawn();
-    let b_endpoint = endpoint(&b_key).await;
+    let b_endpoint = localhost_endpoint(&b_key).await;
     let link = tokio::spawn({
         let b = b.clone();
         let b_endpoint = b_endpoint.clone();

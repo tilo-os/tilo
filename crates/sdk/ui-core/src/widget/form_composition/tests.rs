@@ -265,6 +265,32 @@ fn a_labelled_text_input_is_named_by_its_label() {
     assert_eq!(name("name").as_deref(), Some("Name"));
     assert_eq!(name("email").as_deref(), Some("Email address"));
 }
+/// A form of one question says what it asks in its title: its field stands with no label, so
+/// its control starts at the field's own edge and takes the room the label would leave.
+#[test]
+fn a_one_question_forms_field_stands_without_a_label() {
+    fn control(field: &mut Field, room: f32) -> Rect {
+        solve(field, room, &Theme::dark());
+        field.children()[1].children()[0].get_rect()
+    }
+    let mut alone = Field::unlabeled(Box::new(TextInput::local().with_id("when")));
+    let mut labelled = Field::new("After", TextInput::local().with_id("after"));
+    let lonely = control(&mut alone, 400.0);
+    let beside = control(&mut labelled, 400.0);
+    assert_eq!(
+        labelled.effective_layout().unwrap().resolved_placement,
+        LabelPlacement::Beside,
+        "the field with a label keeps the columns it would stand in"
+    );
+    assert!(
+        lonely.x0 < beside.x0,
+        "the unlabelled control starts left of a labelled one: {lonely:?} {beside:?}"
+    );
+    assert!(
+        lonely.width() > beside.width(),
+        "and takes the room its label would leave: {lonely:?} {beside:?}"
+    );
+}
 /// A field with a validation error marks its control invalid: the control
 /// reports it to assistive technology (and edges itself in danger ink),
 /// while a field without one stays valid.

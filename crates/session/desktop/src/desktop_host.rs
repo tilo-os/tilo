@@ -2354,6 +2354,7 @@ impl DesktopChrome {
                 | ChromeEffect::Equalize { .. }
                 | ChromeEffect::Maximize { .. }
                 | ChromeEffect::Fullscreen { .. }
+                | ChromeEffect::Float { .. }
                 | ChromeEffect::Rename { .. }
                 | ChromeEffect::ReopenClosed
                 | ChromeEffect::ShareWindow { .. }

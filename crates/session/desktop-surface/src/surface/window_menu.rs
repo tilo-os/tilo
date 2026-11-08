@@ -98,6 +98,8 @@ impl DesktopHandle {
 
 pub const REVEAL: &str = "window-reveal";
 pub const FULLSCREEN: &str = "window-fullscreen";
+pub const FLOAT: &str = "window-float";
+pub const SNAP_BACK: &str = "window-snap-back";
 pub const EXIT_FULLSCREEN: &str = "window-exit-fullscreen";
 pub const MAXIMIZE: &str = "window-maximize";
 pub const RESTORE: &str = "window-restore";
@@ -284,6 +286,7 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
             .map(|name| t_args("window-menu-someone-elses", &[("name", name.into())]))
     };
     let fullscreen = tree.fullscreen_group() == Some(group.id);
+    let floating = floating(tree, group.id);
     let renamable = may_rename(tab) && facts.local;
     let mut rows = Vec::new();
     if facts.asking {
@@ -293,6 +296,7 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
         );
     }
     add_group(&mut rows, covering_rows(group, fullscreen));
+    add_group(&mut rows, float_rows(floating));
     // Where the window can go is the tree's to say; carrying it there is the
     // owner's, not a viewer's.
     add_group(
@@ -379,6 +383,32 @@ fn covering_rows(group: &WindowGroup, fullscreen: bool) -> Vec<Row> {
             Icon::Minimize2
         } else {
             Icon::Maximize2
+        }),
+    ]
+}
+
+/// Whether the workspace holds the window `group` floating above the desk.
+fn floating(tree: &DesktopTree, group: GroupId) -> bool {
+    tree.workspaces
+        .iter()
+        .any(|workspace| workspace.arrangement.float_of(group).is_some())
+}
+
+/// What lifting the window offers: over the desk, or back in its strip.
+fn float_rows(floating: bool) -> Vec<Row> {
+    vec![
+        Row::offered(
+            if floating { SNAP_BACK } else { FLOAT },
+            t(if floating {
+                "window-menu-snap-back"
+            } else {
+                "window-menu-float"
+            }),
+        )
+        .with_icon(if floating {
+            Icon::LayoutGrid
+        } else {
+            Icon::Layers
         }),
     ]
 }
@@ -593,6 +623,10 @@ pub fn command(tree: &DesktopTree, route: &RouteIds, id: &str, name: Option<&str
         MAXIMIZE | RESTORE => Verb::Chrome(ChromeEffect::Maximize {
             group: group_id,
             on: id == MAXIMIZE,
+        }),
+        FLOAT | SNAP_BACK => Verb::Chrome(ChromeEffect::Float {
+            group: group_id,
+            on: id == FLOAT,
         }),
         WIDER => Verb::Chrome(ChromeEffect::SetWidth {
             group: group_id,
