@@ -60,6 +60,11 @@ impl Store for TiloStore {
     }
 
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
+        // An index that names the resource answers its type: a window opens over what the index
+        // holds, and reads the record only for a resource it does not name.
+        if let Some(ty) = self.held().named_type(at) {
+            return Ok(ty);
+        }
         let _ = self.load_at(at);
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;

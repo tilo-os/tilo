@@ -625,6 +625,7 @@ fn a_contact_menu_without_a_pointer_opens_under_its_row() {
 /// and delete paths.
 #[test]
 fn the_contact_menu_runs_the_canonical_actions() {
+    let _settled = ui::motion::testing::settled();
     let mut app = synced();
     let grace = id_named(&app, "Grace Hopper");
     let was_favorite = app.store.contact(grace).unwrap().favorite;
@@ -1796,6 +1797,7 @@ fn website_renders_and_opens_through_the_link_widget() {
 )]
 #[test]
 fn context_menu_opens_canonical_contact_actions() {
+    let _settled = ui::motion::testing::settled();
     // --- phase: right_click_row_opens_context_menu_then_delete_opens_confirm ---
     {
         let mut h = Harness::new(1280, 800);

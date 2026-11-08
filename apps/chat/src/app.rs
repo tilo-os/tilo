@@ -99,13 +99,6 @@ pub(crate) struct AttachmentImportPending {
     pub channel: Id,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct AgentConversationDrag {
-    pub(crate) peer: String,
-    pub(crate) channel: Id,
-    pub(crate) origin: Point,
-}
-
 /// How many of `messages`' last `unread` top-level messages mention one of
 /// `me` and were written by someone else.
 pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) -> u32 {
@@ -322,6 +315,10 @@ pub struct ChatApp {
     /// The shell's sidebar: the channels this window shows in it and what
     /// the person does there ([`crate::sidebar`]).
     pub(crate) places: NavFeed,
+    /// What the channels showed when they were last built, so a frame that
+    /// changes who is in a call builds them again
+    /// ([`crate::app::workspace::ChannelRows`]).
+    pub(crate) shown_rows: ChannelRows,
     /// The shell's own controls in the window bar, and its sidebar's
     /// state; `None` outside a shell (a floated conversation, a test).
     pub(crate) bar: Option<WindowBarLink>,
@@ -380,14 +377,7 @@ pub struct ChatApp {
     /// The person's reduced-motion setting, applied to every floating
     /// placement this app owns (`Widget::set_motion_reduced`).
     pub(crate) motion_reduced: bool,
-    pub(crate) agent_surfaces:
-        HashMap<Id, crate::agent_conversation_surface::AgentConversationSurface>,
-    pub(crate) agent_surface_requests: VecDeque<ui::floating_surface::FloatingSurfaceRequest>,
-    pub(crate) focused_agent_surface: Option<String>,
-    pub(crate) input_agent_surface: Option<String>,
-    pub(crate) conversation_surface: bool,
-    pub(crate) conversation_return_requested: bool,
-    pub(crate) agent_conversation_drag: Option<AgentConversationDrag>,
+    pub(crate) input_floating_surface: Option<String>,
 
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
@@ -756,6 +746,7 @@ impl ChatApp {
             presented_call: None,
             floating_surface_bounds: Rect::ZERO,
             places: NavFeed::new(),
+            shown_rows: ChannelRows::default(),
             bar: None,
             bar_entries: crate::window_bar::BarEntries::new(),
             right_flap: Self::detail_drawer(),
@@ -774,13 +765,7 @@ impl ChatApp {
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),
             motion_reduced: false,
-            agent_surfaces: HashMap::new(),
-            agent_surface_requests: VecDeque::new(),
-            focused_agent_surface: None,
-            input_agent_surface: None,
-            conversation_surface: false,
-            conversation_return_requested: false,
-            agent_conversation_drag: None,
+            input_floating_surface: None,
             agent_authors: HashMap::new(),
             workspace_files: crate::record::WorkspaceFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
@@ -1314,26 +1299,6 @@ impl ChatApp {
         }
     }
 
-    /// What the person `public_key` is called here now: the name the open
-    /// conversation with them shows, else the unnamed person's tag. Never
-    /// blank.
-    pub(crate) fn person_display_name(&self, public_key: &str) -> String {
-        self.channels
-            .iter()
-            .find(|row| {
-                row.direct
-                    && row
-                        .participants
-                        .iter()
-                        .filter_map(|key| crate::record::Participant::parse(key))
-                        .any(|participant| participant.id() == public_key)
-            })
-            .map_or_else(
-                || crate::identity::unnamed_label(public_key),
-                |row| row.name.clone(),
-            )
-    }
-
     /// The person this window is talking to in the open conversation, when it
     /// is a direct one: its participant that is not this window's person.
     pub(crate) fn direct_person(&self) -> Option<String> {
@@ -1678,9 +1643,6 @@ impl Widget for ChatApp {
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
         self.call.placement.set_reduce_motion(reduced);
-        for surface in self.agent_surfaces.values_mut() {
-            surface.placement.set_reduce_motion(reduced);
-        }
         for child in self.children_mut() {
             child.set_motion_reduced(reduced);
         }
@@ -1739,25 +1701,9 @@ impl Widget for ChatApp {
         self.set_composer_focus();
     }
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        if let Some(id) = self.focused_agent_surface.as_deref()
-            && let Some(surface) = self
-                .agent_surfaces
-                .values()
-                .find(|surface| surface.id == id)
-        {
-            return surface.view.ime_content();
-        }
         self.host_focused.then_some(ui::ime::InputContent::TEXT)
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        if let Some(id) = self.focused_agent_surface.as_deref()
-            && let Some(surface) = self
-                .agent_surfaces
-                .values()
-                .find(|surface| surface.id == id)
-        {
-            return surface.view.ime_cursor_rect();
-        }
         if !self.host_focused {
             return None;
         }
@@ -2166,21 +2112,6 @@ impl Widget for ChatApp {
         {
             return;
         }
-        let secondary = self
-            .input_agent_surface
-            .as_deref()
-            .or(self.focused_agent_surface.as_deref());
-        if let Some(id) = secondary
-            && let Some(surface) = self
-                .agent_surfaces
-                .values_mut()
-                .find(|surface| surface.id == id)
-        {
-            surface.view.handle_event(event, ctx);
-            self.canonical_dirty |= surface.view.canonical_dirty;
-            self.settle_agent_surface_commands();
-            return;
-        }
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
         let was_handled = *ctx.handled;
@@ -2258,7 +2189,7 @@ impl Widget for ChatApp {
         match hit {
             Hit::Dismiss => None,
             Hit::FocusEmojiSearch => ui::Widget::cursor_shape(&*self.emoji_picker, point),
-            Hit::AgentDragHandle | Hit::CallDragHandle => Some(CursorIcon::Grab),
+            Hit::CallDragHandle => Some(CursorIcon::Grab),
             hit if self.text_field_access(hit).is_some() => Some(CursorIcon::Text),
             _ => Some(CursorIcon::Pointer),
         }
@@ -2480,9 +2411,6 @@ impl Widget for ChatApp {
             || self.speaking.animating
             || self.call.placement.is_dragging()
             || self.call.placement.is_handoff_animating()
-            || self.agent_surfaces.values().any(|surface| {
-                surface.placement.is_dragging() || surface.placement.is_handoff_animating()
-            })
             || !self.images.is_idle()
             // The reader reached the top of what is held, or a message is
             // looked for: the next settle pass opens the part before.
@@ -2518,7 +2446,6 @@ impl Widget for ChatApp {
     fn wants_pointer_capture(&self) -> bool {
         self.right_flap.is_resizing()
             || self.call.placement.is_dragging()
-            || self.agent_conversation_drag.is_some()
             || (self.thread_open.is_some() && self.thread_scroll.wants_pointer_capture())
     }
 
@@ -2847,7 +2774,6 @@ mod identity_on_screen_tests;
 mod sidebar_tests;
 
 mod a11y;
-mod agent_route;
 mod call_chrome_motion;
 mod composer_focus;
 mod document;
@@ -2870,3 +2796,4 @@ pub(crate) use hits::{Hit, PaintedMessage};
 pub(crate) use menus::{ContextMenu, MenuAction, MenuTarget};
 pub use window::ChatWindow;
 pub(crate) use window::SharedChat;
+pub(crate) use workspace::ChannelRows;

@@ -212,8 +212,9 @@ impl Launches {
 
     /// Record that `pid`, a process this session did not start, runs `app` in `workspace` with no
     /// window: an endpoint of the app's records the login runs beside this session, such as the
-    /// Files daemon. Its connections are admitted as the app's and take its actions on its records;
-    /// an `open` is never handed to it. A pid whose process cannot be read is recorded by nothing.
+    /// Files daemon. Its connections are admitted as the app's and take its actions on its records,
+    /// for every workspace it names, since the endpoint serves them all; an `open` is never handed
+    /// to it. A pid whose process cannot be read is recorded by nothing.
     pub fn windowless(&self, pid: u32, app: &str, workspace: &str) {
         let Some(start) = start_time(pid) else {
             tracing::warn!(
@@ -349,10 +350,14 @@ impl Launches {
     }
 
     /// The start time of the process `pid` started and whether that launch runs with no window,
-    /// when that process is the launch of `app` in `workspace` and still runs.
+    /// when that process is the launch of `app` and still runs: in `workspace` for a window, and
+    /// for whichever workspace its connection names when it is the app's windowless endpoint,
+    /// which serves every workspace the session holds.
     fn live_launch(&self, pid: u32, app: &str, workspace: &str) -> Option<(u64, bool)> {
         let (start, windowless) = match self.started.lock_recover().get(&pid) {
-            Some(launch) if launch.app == app && launch.workspace == workspace => {
+            Some(launch)
+                if launch.app == app && (launch.windowless || launch.workspace == workspace) =>
+            {
                 (launch.start, launch.windowless)
             }
             _ => return None,

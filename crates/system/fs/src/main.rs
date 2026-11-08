@@ -1887,6 +1887,7 @@ async fn serve(
             |ticket| ticket.workspace_id().to_string(),
         ),
         credentials.clone(),
+        tilo_paths::xdg::service_socket("collab"),
     );
     let record_materializer = if let Some(records) = record_services.as_mut() {
         let materializer =

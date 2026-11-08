@@ -46,7 +46,6 @@
     )
 )]
 
-mod agent_conversation_surface;
 pub mod agent_stream;
 pub mod app;
 mod attachment_view;

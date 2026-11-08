@@ -898,6 +898,7 @@ impl BrowserShell {
                 app: app.into(),
                 beside: None,
                 background: None,
+                float: None,
             });
         } else {
             self.handle.open_search(ui::search::Scope::Workspace, None);

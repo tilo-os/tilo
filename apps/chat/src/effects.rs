@@ -25,7 +25,7 @@ use crate::resource::Chat;
 pub const RECENT_MESSAGES: usize = 20;
 
 /// The id of the item resource the record publishes for `id` of `field`.
-fn item_row_id(field: &str, id: &str) -> String {
+pub(crate) fn item_row_id(field: &str, id: &str) -> String {
     tilo_resource::items::item_resource_id::<Chat>(field, &tilo_resource::Id::from_raw(id))
 }
 
@@ -109,9 +109,9 @@ pub enum ChatEffect {
     ///
     /// Sends the words and everything they carry to the conversation with
     /// whom it names — people, agents, or a conversation that is already
-    /// there — and opens where it landed. A window sends through this: one
-    /// action posts the message, under the sender's own grants, and shows the
-    /// conversation it reached.
+    /// there — and answers the conversation it landed in, as the item that
+    /// names it: the window that sent it opens there, wherever the desk
+    /// stands it.
     #[effect(returns, kind = "undoable")]
     Send {
         #[param("Who the message goes to")]
@@ -120,8 +120,6 @@ pub enum ChatEffect {
         attached: Vec<tilo_reference::Attached>,
         #[param("The message")]
         text: String,
-        #[param("Where the box stood on the desk, as left, top, right and bottom")]
-        bounds: Option<[f64; 4]>,
     },
     /// Read message
     ///

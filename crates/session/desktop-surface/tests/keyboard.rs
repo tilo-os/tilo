@@ -930,6 +930,7 @@ fn the_window_shown_first_and_a_window_just_opened_take_the_keyboard() {
             app: APP.into(),
             beside: None,
             background: None,
+            float: None,
         })
         .unwrap();
     desk.settle();

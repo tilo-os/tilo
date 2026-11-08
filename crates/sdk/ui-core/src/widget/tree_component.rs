@@ -1263,4 +1263,96 @@ mod tests {
             );
         }
     }
+
+    /// A row with something to fold keeps everything a leaf row keeps: its box and its words
+    /// stand on the column of its depth, and the chevron that folds it stands in its own step
+    /// in front of them, clear of the box.
+    #[test]
+    fn a_branch_row_keeps_its_box_and_words_on_its_depths_column() {
+        use crate::headless::{FrameHarness, InspectionNode};
+        use crate::theme::Theme;
+        use crate::widget::TREE_INDENT;
+        use crate::widget::{LayoutInfo, RowLayout};
+
+        let queue = crate::Intents::default();
+        let boxed = |key: &str, parent: Option<&str>, branch: bool, checked: bool| {
+            let mut props = node(key, parent, branch, &queue);
+            props.row = Some(TreeViewRowProps {
+                checkbox: Some(checked),
+                ..TreeViewRowProps::default()
+            });
+            props
+        };
+        let tree = tree_of(
+            vec![
+                boxed("Find the last service date", None, true, false),
+                boxed("Ask whether Tuesday works", None, false, true),
+                boxed(
+                    "Look up the boiler's year",
+                    Some("Find the last service date"),
+                    false,
+                    false,
+                ),
+            ],
+            true,
+            Event::None,
+        );
+        let harness = FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+        let snapshot = harness.inspection();
+        fn rows(node: &InspectionNode, out: &mut Vec<(String, RowLayout)>) {
+            if let Some(LayoutInfo::Row(row)) = &node.layout {
+                let name = node
+                    .semantics
+                    .as_ref()
+                    .and_then(|access| access.name.clone())
+                    .unwrap_or_default();
+                out.push((name, *row));
+            }
+            for child in &node.children {
+                rows(child, out);
+            }
+        }
+        let mut laid = Vec::new();
+        rows(&snapshot.root, &mut laid);
+        let of = |words: &str| {
+            laid.iter()
+                .find(|(name, _)| name == words)
+                .map(|(_, row)| *row)
+                .unwrap_or_else(|| panic!("the row {words:?} stands in the tree"))
+        };
+        let branch = of("Find the last service date");
+        let leaf = of("Ask whether Tuesday works");
+        assert_eq!(branch.depth, 0, "the branch stands at the top");
+        assert_eq!(leaf.depth, 0, "so does the leaf");
+        assert_eq!(
+            branch.content_left, leaf.content_left,
+            "a branch keeps its box on the column a leaf's stands on: {} against {}",
+            branch.content_left, leaf.content_left
+        );
+        assert_eq!(
+            branch.text_x, leaf.text_x,
+            "and its words: {} against {}",
+            branch.text_x, leaf.text_x
+        );
+
+        // The chevron stands in the step the row keeps free in front of its box, so it is
+        // drawn beside the box rather than over it.
+        let chevron = harness
+            .root::<DescribedTreeView>()
+            .list
+            .disclosure_rect(&"Find the last service date".to_owned())
+            .expect("the branch shows its disclosure");
+        assert!(
+            chevron.x1 <= f64::from(branch.content_left) + 0.5,
+            "the chevron ends before the box begins: {} against {}",
+            chevron.x1,
+            branch.content_left
+        );
+        assert!(
+            chevron.x0 >= f64::from(branch.content_left) - f64::from(TREE_INDENT) - 0.5,
+            "and it hangs inside the step in front of it: {} against {}",
+            chevron.x0,
+            branch.content_left
+        );
+    }
 }

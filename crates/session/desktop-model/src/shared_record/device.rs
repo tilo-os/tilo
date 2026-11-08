@@ -217,7 +217,7 @@ pub fn write(
         })
         .collect();
     // How the workspace is arranged is this device's to say like its
-    // strips: the kind, and the places of the groups it writes.
+    // strips: the kind, and the places and floats of the groups it writes.
     shared.arrangement.kind = workspace.arrangement.kind;
     let written: HashSet<u64> = shared
         .strips
@@ -225,13 +225,8 @@ pub fn write(
         .flat_map(|strip| &strip.window_groups)
         .map(|group| group.id)
         .collect();
-    shared.arrangement.places = workspace
-        .arrangement
-        .places
-        .iter()
-        .filter(|(group, _)| written.contains(group))
-        .map(|(group, place)| (*group, *place))
-        .collect();
+    shared.arrangement.places = of_written(&workspace.arrangement.places, &written);
+    shared.arrangement.floats = of_written(&workspace.arrangement.floats, &written);
     let live = ids_of(&shared);
     if let Some(person) = writer.person {
         for id in live.iter().filter(|id| (writer.mine)(**id)) {
@@ -302,6 +297,15 @@ pub fn withdraw(
     desktop.authors.retain(|id, _| live.contains(id));
     desktop.records.retain(|(tab, _)| live.contains(tab));
     super::write(doc, &desktop)
+}
+
+/// What this device writes of the arrangement's `places` or `floats`: the
+/// entries of the groups whose strip it writes.
+fn of_written<T: Copy>(map: &BTreeMap<u64, T>, written: &HashSet<u64>) -> BTreeMap<u64, T> {
+    map.iter()
+        .filter(|(group, _)| written.contains(group))
+        .map(|(group, value)| (*group, *value))
+        .collect()
 }
 
 /// Every strip and window id `workspace` holds.
@@ -409,6 +413,10 @@ pub struct Kept<'a> {
     /// Whether `id` is this device's to keep to itself: a window it had
     /// open before it joined the workspace is not the workspace's.
     pub private: &'a dyn Fn(u64) -> bool,
+    /// Whether the fold lays down the desk of the device that writes it:
+    /// which of its windows float is then what the write records, so its
+    /// floats stay as this device has them.
+    pub writing: bool,
 }
 
 impl Kept<'_> {
@@ -416,6 +424,7 @@ impl Kept<'_> {
     pub const NOTHING: Kept<'static> = Kept {
         mine: &|_| false,
         private: &|_| false,
+        writing: false,
     };
 
     /// All of this device's is: a writer's, whose own layout the record does
@@ -423,6 +432,7 @@ impl Kept<'_> {
     pub const OWN: Kept<'static> = Kept {
         mine: &|_| true,
         private: &|_| true,
+        writing: true,
     };
 }
 
@@ -491,9 +501,10 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
                 .collect(),
         })
         .collect();
-    keep_apart(&mut strips, &workspace.strips, &ids_of(&record), kept);
-    // The record's arrangement, with the places of what this device keeps
-    // apart from it kept where this device has them.
+    let recorded = ids_of(&record);
+    keep_apart(&mut strips, &workspace.strips, &recorded, kept);
+    // The record's arrangement, with the places and floats of what this
+    // device keeps apart from it kept where this device has them.
     let mut arrangement = record.arrangement;
     let shown: HashSet<u64> = strips
         .iter()
@@ -503,6 +514,22 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
     for (group, place) in &workspace.arrangement.places {
         if shown.contains(group) {
             arrangement.places.entry(*group).or_insert(*place);
+        }
+    }
+    if kept.writing {
+        // A window this device's desk floats still floats in what its write
+        // records, and one it put back in its strip no longer does: the
+        // write carries this device's word either way.
+        arrangement.floats.clone_from(&workspace.arrangement.floats);
+    } else {
+        for (group, float) in &workspace.arrangement.floats {
+            // A window the record does not hold yet is this device's, as its
+            // strip is (`keep_apart`), and so is the float that came with
+            // it: a float the record says nothing about on a window it does
+            // hold is the record's, which said it stands in its strip.
+            if shown.contains(group) && !recorded.contains(group) {
+                arrangement.floats.insert(*group, *float);
+            }
         }
     }
     let mut changed =

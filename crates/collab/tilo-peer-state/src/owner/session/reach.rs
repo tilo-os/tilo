@@ -3,14 +3,12 @@
 //! renews this device's membership with it, through [`Reach`].
 use super::{Connect, DialError};
 use crate::join::TransportHint;
+use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
 use ed25519_dalek::SigningKey;
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_relay_session::{
-    ClientError, RelayClient, RelayCoeditSession,
-    workspace_join::{LocalJoinService, WorkspaceJoinClient},
-};
+use tilo_relay_session::{ClientError, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// This device's own workspace host, running in this process: a workspace placed on

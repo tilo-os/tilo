@@ -333,6 +333,16 @@ pub enum FloatingSurfaceClientMessage {
         background: bool,
         instance: Option<u64>,
     },
+    /// Open another window of this app as a window of the desk, floating
+    /// over it where the box of this window last sent from stood
+    /// ([`Self::SendTo`]), showing `anchor`: the item that send landed in. A
+    /// window of the desk, not a card of the app's: the desk's record keeps
+    /// it where it stands, so every member's desk shows it there.
+    OpenFloated {
+        /// The item the window opens on, as the resource that names it.
+        anchor: String,
+        instance: Option<u64>,
+    },
     /// The slots this app shows in its window's bar
     /// ([`crate::window_toolbar`]), or none: sent whenever they change.
     /// `instance` is the record instance the shell launched this process

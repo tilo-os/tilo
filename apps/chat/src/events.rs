@@ -345,10 +345,6 @@ impl ChatApp {
             self.request_relayout();
             *handled = true;
         }
-        if self.agent_conversation_drag.is_some() {
-            self.update_agent_conversation_drag(self.last_mouse);
-            *handled = true;
-        }
         let hovered = if self.call.placement.is_dragging() {
             None
         } else {
@@ -423,10 +419,6 @@ impl ChatApp {
                 );
                 *handled = true;
             }
-            Some(Hit::AgentDragHandle) => {
-                self.begin_agent_conversation_drag(self.last_mouse);
-                *handled = true;
-            }
             Some(hit) => {
                 let text_input_hit =
                     matches!(hit, Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit);
@@ -458,7 +450,6 @@ impl ChatApp {
         doc: &mut ui::widget::Edits<'_>,
     ) {
         self.call.placement.end_drag(self.desktop_floating_bounds());
-        self.end_agent_conversation_drag();
         // End any composer drag-selection in progress.
         self.forward_pointer_to_text_inputs(event, scale, modifiers, doc);
     }
@@ -746,9 +737,11 @@ impl ChatApp {
     /// call card over the desk. Both frames hold desk coordinates, so the
     /// source is what says which of them a point belongs to.
     fn call_card_owns_input(&self) -> bool {
-        self.input_agent_surface.as_deref().is_some_and(|source| {
-            source.strip_prefix("chat-call:") == Some(self.call.channel.as_str())
-        })
+        self.input_floating_surface
+            .as_deref()
+            .is_some_and(|source| {
+                source.strip_prefix("chat-call:") == Some(self.call.channel.as_str())
+            })
     }
 
     #[allow(
@@ -765,13 +758,6 @@ impl ChatApp {
         self.menu = None;
         match hit {
             Hit::Channel(id) => self.on_hit_channel(id, doc),
-            Hit::AgentWindow => {
-                if self.conversation_surface {
-                    self.conversation_return_requested = true;
-                } else {
-                    self.float_agent_conversation();
-                }
-            }
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
             Hit::AddChannel { category } if self.keeps_layout() => {
@@ -977,10 +963,6 @@ impl ChatApp {
     }
 
     fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
-        let leaving_agent_route = self.direct_person().is_some();
-        if leaving_agent_route {
-            self.leave_floated_agent_route();
-        }
         self.not_sent = None;
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {

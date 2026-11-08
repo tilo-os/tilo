@@ -175,6 +175,7 @@ impl Desktop {
             app: NOTES.into(),
             beside: None,
             background: None,
+            float: None,
         };
         self.handle
             .dispatch(command)

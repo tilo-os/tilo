@@ -744,10 +744,10 @@ impl NavShared {
         }
         if let Some(action) = self.selection_actions.get_mut(&id) {
             let _ = action.emit(());
-        } else if self.view.is_some() {
-            // A list that answers through its view action opens the place
-            // itself: an activation chooses like a press, whether or not the
-            // row was already chosen.
+        } else {
+            // A list that answers through its view action or its selection
+            // stand opens the place itself: an activation chooses like a
+            // press, whether or not the row was already chosen.
             self.choose(key);
         }
     }

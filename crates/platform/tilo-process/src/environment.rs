@@ -198,6 +198,11 @@ pub struct RunnerDiagnostics {
     pub hosted_pump_timing: bool,
 }
 
+/// The variable a launch names the item its window opens on in, for a
+/// process the shell starts for one window: a window door request cannot
+/// reach a window that is already being built.
+pub const REVEAL_ENV: &str = "TILO_WINDOW_REVEAL";
+
 /// Everything the host tells a `ui` process about itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HostEnvironment {
@@ -216,6 +221,10 @@ pub struct HostEnvironment {
     /// Directory of live `ui/*.json` screens. Absent when the app uses the
     /// graph embedded in its binary.
     pub ui_graph_dir: Option<PathBuf>,
+    /// The item the shell opened this process's window on, for a launch it
+    /// started for one window ([`REVEAL_ENV`]): a window asked for over the
+    /// process's door names its own.
+    pub reveal: Option<String>,
 }
 
 static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);

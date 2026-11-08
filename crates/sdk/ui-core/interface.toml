@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 25
+version = 26
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -204,6 +204,9 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::open_app_search.request" = "SearchRequest"
 "FloatingSurfaceClientMessage::open_capture_studio" = "struct"
 "FloatingSurfaceClientMessage::open_capture_studio.mode" = "CaptureStudioProtocolMode"
+"FloatingSurfaceClientMessage::open_floated" = "struct"
+"FloatingSurfaceClientMessage::open_floated.anchor" = "String"
+"FloatingSurfaceClientMessage::open_floated.instance" = "Option<u64> optional"
 "FloatingSurfaceClientMessage::open_search" = "struct"
 "FloatingSurfaceClientMessage::open_search.instance" = "Option<u64> optional"
 "FloatingSurfaceClientMessage::open_search.opening" = "SearchOpening optional"
@@ -758,6 +761,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WindowRequest" = "struct"
 "WindowRequest.collaboration" = "bool optional"
 "WindowRequest.instance" = "u64"
+"WindowRequest.reveal" = "Option<String> optional"
 "WindowRequest.shell_ui" = "bool optional"
 "WindowTarget" = "struct"
 "WindowTarget.actions" = "Vec<TargetAction>"

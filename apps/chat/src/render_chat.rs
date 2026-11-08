@@ -110,9 +110,9 @@ impl ChatApp {
         let width = composer_editor_width(field_w, theme, self.direct_person().is_none());
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
         let area = self.messages_rect();
-        // The timeline paints inside its clip, its grip and fade in the
-        // column above the composer; the composer and the notes under it
-        // below that, to the window's foot.
+        // The timeline paints inside its clip and its top fade in the column
+        // above the composer; the composer and the notes under it below that,
+        // to the window's foot.
         let column = Rect::new(self.center_left(), area.y0, self.center_right(), area.y1);
         let messages_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.messages");
         parts.draw(scene, "chat-messages", column, |scene| {
@@ -121,7 +121,6 @@ impl ChatApp {
                 self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
                 scene.pop_layer();
             }
-            self.draw_conversation_grip(scene, tf, theme, area, hits);
             // Older messages fade at the top edge when more history is above.
             if area.height() > 0.0 && self.scroll_content - self.scroll_viewport - self.scroll > 0.5
             {
@@ -525,32 +524,6 @@ fn square(centre: Point, side: f64) -> Rect {
 }
 
 impl ChatApp {
-    /// The grip a direct conversation is dragged out of the window by, to
-    /// float it over the desktop: at the conversation's top trailing corner,
-    /// over the messages. Its Float action is the window bar's.
-    fn draw_conversation_grip(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        theme: &Theme,
-        area: Rect,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        if self.direct_person().is_none() || self.conversation_surface || area.width() <= 0.0 {
-            return;
-        }
-        let control = ButtonFace::height(ControlSize::Regular, theme);
-        let inset = f64::from(theme.tokens.spacing.s2);
-        let grip = Rect::new(
-            area.x1 - self.chrome.gutter - control,
-            area.y0 + inset,
-            area.x1 - self.chrome.gutter,
-            area.y0 + inset + control,
-        );
-        ui::surface::floating_drag_grip(scene, tf, grip, theme.text_dim);
-        ChatApp::push_hit(hits, grip, Hit::AgentDragHandle);
-    }
-
     // -------------------------------------------------------------- header
     pub(crate) fn header_identity_text(&self) -> HeaderIdentityText {
         let context = if self.sharing_context {

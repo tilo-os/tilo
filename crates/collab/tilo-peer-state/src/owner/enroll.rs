@@ -4,6 +4,7 @@ use crate::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
     TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
 };
+use crate::join_transport::WorkspaceJoinClient;
 use crate::owner::{
     NativeWorkspaceOwner, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
     VerifiedNativeEnrollmentIntent, WorkspaceSlot, enrollment::ns as now_ns,
@@ -11,7 +12,6 @@ use crate::owner::{
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_identity_host::custody::HostIdentity;
-use tilo_relay_session::workspace_join::WorkspaceJoinClient;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn current(identity: &HostIdentity, topic: u64, expected: &DeviceCert) -> Result<(), String> {

@@ -104,6 +104,16 @@ impl TiloStore {
     /// rest as it reaches for them ([`Self::load_short`]), so what a person reaches for in one
     /// of those is read, never missing.
     pub(super) fn load_at(&self, at: &ResourceRef) -> Result<(), StoreError> {
+        // A store that opened without its record reads what its indexes name: a resource no
+        // index names is not one the workspace is known to hold, and reading the record for it
+        // would read the whole workspace to answer nothing. A window shown before its record
+        // shows what the index holds and reads the record for what it names.
+        if !self.held().chunks.has_record()
+            && self.held().apps.values().any(super::AppIndex::answers)
+            && self.held().locate(at).is_err()
+        {
+            return Ok(());
+        }
         self.load_record()?;
         let Some(item) = &at.item else {
             let chunk = self.held().chunks.chunk(&at.doc);

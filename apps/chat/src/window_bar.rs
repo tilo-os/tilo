@@ -2,9 +2,8 @@
 //!
 //! The bar shows the shell's sidebar toggle, the conversation (a channel, a
 //! person or an agent's task) as the window's location, and what can be done
-//! to it: stopping a shared view, floating an agent's conversation, the call
-//! in progress, its microphone and leaving it, the pinned messages and the
-//! people; the host's
+//! to it: stopping a shared view, the call in progress, its microphone and
+//! leaving it, the pinned messages and the people; the host's
 //! model commands and creating a channel in its menu. Search is the bar's
 //! own. Each slot runs the window's own [`Hit`], as a press on the control
 //! the conversation used to draw did. A thread that fills the window is the
@@ -29,17 +28,6 @@ impl ChatApp {
                 crate::i18n::t("chat-context-stop"),
                 Hit::StopSharingLiveContext,
             ));
-        }
-        if self.direct_person().is_some() {
-            let label = crate::i18n::t(if self.conversation_surface {
-                "chat-agent-return"
-            } else {
-                "chat-agent-float"
-            });
-            actions.push(
-                self.bar_entries
-                    .entry("external-link", label, Hit::AgentWindow),
-            );
         }
         // The call in progress, its microphone and leaving it, whatever the
         // window shows and whoever else is in the workspace: someone alone in a

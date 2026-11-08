@@ -165,6 +165,7 @@ impl SharedDesktops {
                 // see.
                 mine: &mine,
                 private: &|_: u64| false,
+                writing: false,
             };
             changed |= device::fold(&doc, workspace, device, &kept);
         }

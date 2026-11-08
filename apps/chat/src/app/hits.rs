@@ -15,8 +15,6 @@ use super::{ChatApp, MenuAction};
 pub(crate) enum Hit {
     HostModel(String),
     Channel(Id),
-    AgentWindow,
-    AgentDragHandle,
     /// Make a channel in a category.
     AddChannel {
         category: Id,
@@ -158,8 +156,6 @@ impl Hit {
     pub(crate) fn semantic_id(&self) -> String {
         match self {
             Self::Channel(id) => format!("chat.channel:{id}"),
-            Self::AgentWindow => "chat.agent-window".into(),
-            Self::AgentDragHandle => "chat.agent-drag".into(),
             Self::AddChannel { category } => format!("chat.add-channel:{category}"),
             Self::AddCategory => "chat.add-category".into(),
             Self::TogglePins => "chat.pins".into(),
@@ -374,15 +370,6 @@ impl ChatApp {
                 let copy = ControlName::copy;
                 let content = ControlName::content;
                 let (name, role, selected) = match hit {
-                    Hit::AgentWindow => (
-                        copy(if self.conversation_surface {
-                            "chat-agent-return"
-                        } else {
-                            "chat-agent-float"
-                        }),
-                        Role::Button,
-                        false,
-                    ),
                     Hit::FocusEdit => (copy("chat-edit-field"), Role::MultilineTextInput, false),
                     Hit::FocusMain => (copy("chat-composer"), Role::MultilineTextInput, false),
                     Hit::FocusThread => (

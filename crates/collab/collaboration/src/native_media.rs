@@ -1,20 +1,16 @@
 //! Bounded control lane on the same admitted channel, independent of document RPCs.
 use super::{CollabEvent, InboundBridge};
-use runtime_collab::native_media::{Command, PICTURES_HOLD, Request, Snapshot, WATCH_HOLD};
+use runtime_collab::native_media::{
+    Command, PICTURES_DEADLINE, REPLY_TIMEOUT, Request, Snapshot, WATCH_DEADLINE,
+};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::sync::Notify;
 
 const MAX_PENDING: usize = 8;
 const MAX_ROUTES: usize = 16;
-const DEADLINE: Duration = Duration::from_secs(2);
-/// A watch is held by the service up to [`WATCH_HOLD`]; past this it is lost.
-const WATCH_DEADLINE: Duration = WATCH_HOLD.saturating_add(DEADLINE);
-/// A pictures collection is held up to [`PICTURES_HOLD`]; past this it is lost.
-const PICTURES_DEADLINE: Duration = PICTURES_HOLD.saturating_add(DEADLINE);
 #[derive(Default)]
 struct RouteFloor {
     intent: u64,
@@ -401,7 +397,7 @@ pub(super) fn start(receiver: Receiver, routes: Routes) -> Worker {
                 } else if pictures {
                     PICTURES_DEADLINE
                 } else {
-                    DEADLINE
+                    REPLY_TIMEOUT
                 };
                 if job.priority
                     && let Some(old) = tasks.0.remove(&(job.route.clone(), 1))

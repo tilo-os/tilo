@@ -191,13 +191,11 @@ impl Authority {
         workspace: u64,
         op: WorkspaceOperation,
     ) -> bool {
-        let workspace = {
-            let workspaces = self.relay.workspaces.lock().await;
-            workspaces.get(&workspace).cloned()
-        };
-        let Some(workspace) = workspace else {
+        let workspaces = self.relay.workspaces.lock().await;
+        let Some(workspace) = workspaces.get(&workspace).cloned() else {
             return false;
         };
+        drop(workspaces);
         let runtime = workspace.lock().await;
         workspace_access::decide(&runtime, &self.relay.trust(), peer, op).admitted()
     }

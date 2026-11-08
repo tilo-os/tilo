@@ -982,20 +982,23 @@ fn a_branch_row_starts_on_the_column_its_neighbours_do() {
         leaf.x0
     );
 
-    // The chevron stands at the row's own leading edge, and the content keeps the step after
-    // it free, so no row starts before the column its neighbours do.
+    // The chevron stands in the step the row keeps free in front of its content: the content
+    // starts after that step, on the column its neighbours' does, so no row starts before the
+    // column of its depth.
     let column = branch.x0 + list.lead;
     let chevron = list
         .disclosure_rect(&0)
         .expect("the branch shows its disclosure");
     assert!(
         (chevron.x0 - column).abs() < 0.5,
-        "the chevron stands at the row's leading edge, not before it: {} against {column}",
+        "the chevron stands at the row's own leading edge, not before it: {} against {column}",
         chevron.x0
     );
     assert!(
         chevron.x1 <= column + TREE_INDENT + 0.5,
-        "it hangs inside the step its content keeps free"
+        "it hangs inside the step its content keeps free: {} past {}",
+        chevron.x1,
+        column + TREE_INDENT
     );
     assert!(
         list.disclosure_rect(&3).is_none(),

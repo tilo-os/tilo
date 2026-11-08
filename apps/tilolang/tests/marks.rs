@@ -68,29 +68,28 @@ fn the_rows_and_the_window_show_what_the_run_did_in_its_colour_and_open_the_run(
     let (mut app, _) = notes_after_a_run();
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
     let listed = rows(&mut app);
-    // Each row the run made is marked, and keeps its height: the mark is inside the row.
+    // Each row the run made is marked, and says what changed under its title: one line taller
+    // than the person's own row, and both of the run's the same.
     let marked: Vec<_> = listed.iter().filter(|(_, _, marked)| *marked).collect();
     let plain: Vec<_> = listed.iter().filter(|(_, _, marked)| !*marked).collect();
     assert_eq!((marked.len(), plain.len()), (2, 1), "{listed:?}");
     let height = plain[0].1[3];
     for (name, rect, _) in &marked {
         assert!(
-            (rect[3] - height).abs() < 0.5,
-            "{name} keeps the row's height"
+            (rect[3] - marked[0].1[3]).abs() < 0.5,
+            "{name} reads as tall as the run's other row: {listed:?}"
         );
-        // The agent's face on the trailing edge, in its colour.
-        let face = [rect[0] + rect[2] - 24.0, rect[1], 24.0, rect[3]];
+        assert!(
+            rect[3] > height,
+            "{name} says what changed under its title, one line taller: {listed:?}"
+        );
+        // Whoever changed it leads the line under its title, in their colour.
+        let face = [rect[0], rect[1] + rect[3] - 24.0, 16.0, 16.0];
         assert!(
             chroma_in(&mut app, face) > ground.saturating_add(24),
-            "{name} shows the agent's face"
+            "{name} shows the agent's face under its title"
         );
     }
-    // And its colour, faintly, under the row; the person's own row is the window's ground.
-    let middle = |rect: [f64; 4]| [rect[0] + rect[2] * 0.6, rect[1] + 2.0, 12.0, 4.0];
-    assert!(
-        chroma_in(&mut app, middle(marked[0].1)) > chroma_in(&mut app, middle(plain[0].1)),
-        "the marked row is tinted"
-    );
     // The window's header says how many, and by whom.
     let header = marks(&mut app);
     assert_eq!(header.len(), 1, "{header:?}");
@@ -103,7 +102,7 @@ fn the_rows_and_the_window_show_what_the_run_did_in_its_colour_and_open_the_run(
     // Pressing the agent's face on a row asks the shell to show the run that made it.
     let rect = marked[0].1;
     app.harness()
-        .click_at(rect[0] + rect[2] - 9.0, rect[1] + rect[3] / 2.0);
+        .click_at(rect[0] + 8.0, rect[1] + rect[3] - 16.0);
     settle(&mut app);
     let mut asked = Vec::new();
     while let Some(intent) = app.harness().take_host_intent() {

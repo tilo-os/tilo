@@ -36,17 +36,21 @@ pub(crate) fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNod
     }
 }
 
-/// The change marks the window shows: each chip that offers to show what someone did, with
-/// its rect.
+/// The window's change marks: the control in its header naming who changed what it shows ("Helper
+/// (agent) changed 2 notes"), with the rect it takes. A window's mark is a button led by the
+/// faces of everyone who changed what it shows, its label saying what they changed and how many.
 pub(crate) fn marks(app: &mut HostedApp) -> Vec<(String, [f64; 4])> {
     let snapshot = app.harness().inspection();
     let mut all = Vec::new();
     walk(&snapshot.root, &mut all);
     all.into_iter()
-        .filter(|node| node.widget == "Chip")
+        .filter(|node| node.widget == "Button" || node.widget == "Chip")
         .filter_map(|node| {
             let name = node.semantics.as_ref()?.name.clone()?;
-            name.starts_with("Show what").then_some((name, node.rect))
+            let says_a_change = [" changed ", " made ", " removed "]
+                .iter()
+                .any(|said| name.contains(said));
+            says_a_change.then_some((name, node.rect))
         })
         .collect()
 }

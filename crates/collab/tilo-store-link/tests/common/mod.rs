@@ -36,12 +36,12 @@ use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
 use tilo_peer_state::join::{self, MemberRole, TransportHint};
 use tilo_peer_state::join_answer::JoinAnswer;
+use tilo_peer_state::join_transport::{WorkspaceJoinClient, WorkspaceJoinProtocol};
 use tilo_peer_state::owner::{
     ApplicationRecord, NativeWorkspaceOwner, OwnerJoinWorkspaces, open_file, testing,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
-use tilo_relay_session::workspace_join::{WorkspaceJoinClient, WorkspaceJoinProtocol};
 use tilo_store_link::{StoreSession, workspace_of};
 use tilo_store_node::{ALPN, Appetite, FixedAccess, Store, StoreNode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};

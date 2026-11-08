@@ -1,6 +1,7 @@
 use tilo_automerge::ApplyIncoming as _;
 
 use super::*;
+use crate::arrangement::{FloatCorner, FloatPlace};
 use crate::ids::StripId;
 use crate::width::WindowWidth;
 
@@ -102,6 +103,7 @@ impl Device {
             &Kept {
                 mine: &|id| id / 1000 == actor,
                 private: &|_| false,
+                writing: false,
             },
         );
     }
@@ -254,6 +256,7 @@ fn a_move_made_while_the_window_s_device_is_offline_sticks_and_applies_on_reconn
         &Kept {
             mine: &|id| id / 1000 == 2,
             private: &|_| false,
+            writing: false,
         },
     );
     assert_eq!(desk.places(), at_desk);
@@ -548,4 +551,127 @@ fn a_window_that_closes_takes_its_note_out_of_the_record() {
     assert!(noted(&desk.doc).is_empty(), "no window, no note");
     laptop.hear(&mut desk);
     assert!(noted(&laptop.doc).is_empty());
+}
+
+/// What the record holds of where a window floats.
+fn float_of(doc: &AutoCommit, group: u64) -> Option<FloatPlace> {
+    crate::shared_record::read(doc, None)
+        .expect("the record")
+        .tree
+        .workspaces
+        .iter()
+        .find_map(|workspace| workspace.arrangement.float_of(group))
+}
+
+/// The desk as `kept` folds `doc` into it.
+fn folded(device: &Device, doc: &AutoCommit, kept: &Kept<'_>) -> Workspace {
+    let mut desk = device.workspace.clone();
+    fold(doc, &mut desk, device.key, kept);
+    desk
+}
+
+#[test]
+fn a_float_is_the_record_s_so_every_device_sees_it_and_snapping_back_clears_it() {
+    let (mut laptop, mut desk) = two_devices();
+    let float = FloatPlace::new(FloatCorner::TopRight, 40, 24, 640, 480);
+
+    // A window the laptop floats is written floating, and the desk hears it
+    // wherever it shows that window.
+    laptop.change(|w| {
+        assert!(w.arrangement.set_float(NOTES_GROUP, Some(float)));
+    });
+    assert_eq!(float_of(&laptop.doc, NOTES_GROUP), Some(float));
+    desk.hear(&mut laptop);
+    assert_eq!(float_of(&desk.doc, NOTES_GROUP), Some(float));
+    assert_eq!(
+        desk.workspace.arrangement.float_of(NOTES_GROUP),
+        Some(float)
+    );
+
+    // Snapped back at the desk: the write says so, and the laptop puts it
+    // back in its strip, as a float the record says nothing about is the
+    // record's to drop.
+    desk.change(|w| {
+        assert!(w.arrangement.set_float(NOTES_GROUP, None));
+    });
+    assert_eq!(float_of(&desk.doc, NOTES_GROUP), None);
+    laptop.hear(&mut desk);
+    assert_eq!(laptop.workspace.arrangement.float_of(NOTES_GROUP), None);
+    assert_eq!(float_of(&laptop.doc, NOTES_GROUP), None);
+}
+
+#[test]
+fn the_fold_a_write_makes_lays_down_the_floats_of_the_device_writing() {
+    let (mut laptop, mut desk) = two_devices();
+    let float = FloatPlace::new(FloatCorner::BottomLeft, 8, 16, 320, 200);
+    laptop.change(|w| {
+        w.arrangement.set_float(NOTES_GROUP, Some(float));
+    });
+    desk.hear(&mut laptop);
+
+    // The laptop floats a window it had in its strip: the fold its write
+    // makes lays the float down, so the write records it, and the desk hears.
+    laptop.workspace.arrangement.set_float(NOTES_GROUP, None);
+    let floated = FloatPlace::new(FloatCorner::TopLeft, 12, 6, 500, 400);
+    laptop.change(|w| {
+        w.arrangement.set_float(EDITOR_GROUP, Some(floated));
+    });
+    let writing = folded(&laptop, &laptop.doc, &Kept::OWN);
+    assert_eq!(writing.arrangement.float_of(EDITOR_GROUP), Some(floated));
+    assert_eq!(float_of(&laptop.doc, EDITOR_GROUP), Some(floated));
+    desk.hear(&mut laptop);
+    assert_eq!(
+        desk.workspace.arrangement.float_of(EDITOR_GROUP),
+        Some(floated)
+    );
+
+    // A viewer folds what the record says: a float it can not account for is
+    // the record's to drop.
+    desk.workspace.arrangement.set_float(EDITOR_GROUP, None);
+    let reading = folded(&desk, &laptop.doc, &Kept::NOTHING);
+    assert_eq!(reading.arrangement.float_of(EDITOR_GROUP), Some(floated));
+    laptop.doc.rollback();
+    laptop.change(|w| {
+        w.arrangement.set_float(EDITOR_GROUP, None);
+    });
+    let reading = folded(&desk, &laptop.doc, &Kept::NOTHING);
+    assert_eq!(reading.arrangement.float_of(EDITOR_GROUP), None);
+}
+
+#[test]
+fn a_window_the_record_does_not_hold_yet_floats_where_the_device_showing_it_put_it() {
+    let (mut laptop, _) = two_devices();
+    let opened = minted(1, 103);
+    let opened_group = minted(1, 13);
+    let float = FloatPlace::new(FloatCorner::BottomLeft, 8, 16, 320, 200);
+    laptop
+        .workspace
+        .strips
+        .get_mut(0)
+        .expect("the main strip")
+        .window_groups
+        .push(group(opened_group, vec![notes(opened)]));
+    assert!(
+        laptop
+            .workspace
+            .arrangement
+            .set_float(opened_group, Some(float))
+    );
+
+    // A device that keeps the window apart from the record — one it had open
+    // before it joined — keeps the float that came with it.
+    let mine = Kept {
+        mine: &|_| false,
+        private: &|id| id == opened,
+        writing: false,
+    };
+    let shown = folded(&laptop, &laptop.doc.clone(), &mine);
+    let kept = shown
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .find(|group| group.id == opened_group)
+        .expect("the window the laptop opened stays");
+    assert!(kept.tabs.iter().any(|tab| tab.id == opened));
+    assert_eq!(shown.arrangement.float_of(opened_group), Some(float));
 }

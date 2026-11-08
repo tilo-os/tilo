@@ -3,12 +3,18 @@
 
 use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth, Workspace};
 
-use super::{RowOp, Shared};
+use super::{RowOp, Shared, floats};
 use crate::TileSource;
 use crate::navigation;
 
-/// Put a window for `app` after the focused one of the shown strip.
-pub(super) fn open(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -> Option<RowOp> {
+/// Put a window for `app` after the focused one of the shown strip, floating
+/// at the place the app that asked for it gave when there is one.
+pub(super) fn open(
+    tiles: &mut dyn TileSource,
+    shared: &mut Shared,
+    app: &str,
+    float: Option<floats::Standing>,
+) -> Option<RowOp> {
     let (tab_id, group_id) = (shared.minter.mint(), shared.minter.mint());
     let slot = shared.tree.active_workspace()?.slot;
     let workspace = shared.tree.workspaces.iter().find(|w| w.slot == slot)?;
@@ -61,6 +67,12 @@ pub(super) fn open(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -
             ..
         } = workspace;
         arrangement.place_missing(strips);
+    }
+    // A window the app that opened it stood over the desk takes the place it
+    // gave, as the record keeps places: by its corner of the work area, so
+    // every member finds it there.
+    if let Some(float) = float {
+        floats::stand(shared, strip, group_id, float);
     }
     shared.tree.set_active_group(strip, group_id);
     shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);

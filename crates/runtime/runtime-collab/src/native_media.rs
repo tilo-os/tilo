@@ -258,6 +258,26 @@ mod base64_bytes {
 /// The longest a [`Command::Watch`] is held before it is answered unchanged.
 pub const WATCH_HOLD: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The longest a command may take to be answered. A page's shell carries the
+/// command on to its host over the relay, so its answer is a network round
+/// trip: a shorter bound answers "timed out" while the host is still working,
+/// and the app gives up on a call that was about to start.
+pub const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Nothing arrived this long after a command was sent, so the app gives it up.
+/// Past [`REPLY_TIMEOUT`]: an app never gives up on what the shell may still
+/// answer.
+pub const REPLY_LOST: std::time::Duration =
+    REPLY_TIMEOUT.saturating_add(std::time::Duration::from_secs(5));
+/// A watch is held up to [`WATCH_HOLD`]; past this the shell's answer is lost.
+pub const WATCH_DEADLINE: std::time::Duration = WATCH_HOLD.saturating_add(REPLY_TIMEOUT);
+/// A watch unanswered this long was lost: an app gives up after the shell.
+pub const WATCH_LOST: std::time::Duration = WATCH_HOLD.saturating_add(REPLY_LOST);
+/// Pictures are collected up to [`PICTURES_HOLD`]; past this the collection
+/// is answered without them.
+pub const PICTURES_DEADLINE: std::time::Duration = PICTURES_HOLD.saturating_add(REPLY_TIMEOUT);
+/// A collection unanswered this long was lost: an app gives up after the shell.
+pub const PICTURES_LOST: std::time::Duration = PICTURES_HOLD.saturating_add(REPLY_LOST);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {

@@ -102,58 +102,14 @@ fn a_tree_changed_here_reaches_the_persons_other_devices() {
     );
 
     // What the laptop's mount changes reaches the phone as the mount makes it.
-    here.lock_recover()
-        .create_file(ROOT_INO, "todo.md", None, 0, 2_000)
-        .expect("a file");
-    wait_for_tree(
-        &mut session,
-        &there,
-        &["Notes", "readme.txt", "todo.md"],
-        "the phone to hold the file the laptop added",
-    );
-    let notes = here
-        .lock_recover()
-        .resolve_path_ino("Notes")
-        .expect("the folder the laptop made");
-    assert!(
-        here.lock_recover()
-            .rename(ROOT_INO, "todo.md", notes, "todo.md", 3_000),
-        "the laptop moves its file into the folder"
-    );
-    wait_for_tree(
-        &mut session,
-        &there,
-        &["Notes", "Notes/todo.md", "readme.txt"],
-        "the phone to hold the move the laptop made",
-    );
-    assert!(
-        here.lock_recover()
-            .rename(notes, "todo.md", notes, "todo-1.md", 4_000),
-        "the laptop renames the file it moved"
-    );
-    wait_for_tree(
-        &mut session,
-        &there,
-        &["Notes", "Notes/todo-1.md", "readme.txt"],
-        "the phone to hold the rename the laptop made",
-    );
-    let moved = here
-        .lock_recover()
-        .resolve_path_ino("Notes/todo-1.md")
-        .expect("the renamed file");
-    assert!(here.lock_recover().remove(moved), "the laptop deletes it");
-    wait_for_tree(
-        &mut session,
-        &there,
-        &["Notes", "readme.txt"],
-        "the phone to hold the deletion the laptop made",
-    );
+    change_tree(&here, |expected, what| {
+        wait_for_tree(&mut session, &there, expected, what);
+    });
 
     // A device that mounts the workspace later is given the tree whole.
     let later = namespace("ada-tablet");
     let _tablet_mount = mount(&later, &cluster, &tablet.paths);
-    let held = tree(&here);
-    let expected: Vec<String> = contents(&held);
+    let expected = contents(&here);
     wait_for_tree(
         &mut session,
         &later,
@@ -177,16 +133,114 @@ fn a_tree_changed_here_reaches_the_persons_other_devices() {
     );
 }
 
-/// `namespace`'s tree as the record reads it: the projection the Files app
-/// renders.
-fn tree(namespace: &Arc<Mutex<Namespace>>) -> Tree {
-    let bytes = namespace.lock_recover().save();
-    let document = automerge::AutoCommit::load(&bytes).expect("the tree's document loads");
-    FilesTree::read(&document).expect("the tree reads")
+/// The tree a person's mount holds reaches their other device over the
+/// record route, as two real sessions of theirs serve them.
+#[test]
+fn a_tree_changed_on_one_device_reaches_the_persons_other_device() {
+    let (site, ada, laptop, phone) = common::people::two_devices_of_one_person_with_files();
+    let installed = package_store::Catalog::at(laptop.store(), None);
+    assert_eq!(
+        app_catalogue::apps::signed_surface_of(&installed, FILES)
+            .expect("the store reads")
+            .as_deref(),
+        Some(SURFACE),
+        "the surface Files' installed package carries"
+    );
+    let cluster = collab_types::personal_cluster(&ada.public).to_string();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for the mounts");
+    let _in_runtime = runtime.enter();
+
+    let here = namespace("ada-laptop");
+    here.lock_recover()
+        .create_dir(ROOT_INO, "Notes", 1_000)
+        .expect("a folder");
+    here.lock_recover()
+        .create_file(ROOT_INO, "readme.txt", None, 5, 1_000)
+        .expect("a file");
+    let _laptop_mount = mount_on(&laptop, &here, &cluster);
+
+    let there = namespace("ada-phone");
+    let _phone_mount = mount_on(&phone, &there, &cluster);
+    wait_held(
+        &site,
+        &[&laptop, &phone],
+        &there,
+        &["Notes", "readme.txt"],
+        "the tree the laptop holds",
+    );
+
+    change_tree(&here, |expected, what| {
+        wait_held(&site, &[&laptop, &phone], &there, expected, what);
+    });
+
+    // What the other device changes reaches the first one the same way.
+    there
+        .lock_recover()
+        .create_file(ROOT_INO, "from-phone.md", None, 0, 5_000)
+        .expect("a file");
+    wait_held(
+        &site,
+        &[&laptop, &phone],
+        &here,
+        &["Notes", "readme.txt", "from-phone.md"],
+        "the file the phone made",
+    );
 }
 
-/// Every path in `tree`, the folders' contents by their folder's path.
-fn contents(tree: &Tree) -> Vec<String> {
+/// What a mount changes in the tree it holds — a file added, moved into
+/// `Notes`, renamed there, and deleted — each held by `held` as it happens.
+fn change_tree(here: &Mounted, mut held: impl FnMut(&[&str], &str)) {
+    here.lock_recover()
+        .create_file(ROOT_INO, "todo.md", None, 0, 2_000)
+        .expect("a file");
+    held(&["Notes", "readme.txt", "todo.md"], "the file added");
+    let notes = here
+        .lock_recover()
+        .resolve_path_ino("Notes")
+        .expect("the folder made");
+    assert!(
+        here.lock_recover()
+            .rename(ROOT_INO, "todo.md", notes, "todo.md", 3_000),
+        "the file moves into the folder"
+    );
+    held(&["Notes", "Notes/todo.md", "readme.txt"], "the move");
+    assert!(
+        here.lock_recover()
+            .rename(notes, "todo.md", notes, "todo-1.md", 4_000),
+        "the file is renamed"
+    );
+    held(&["Notes", "Notes/todo-1.md", "readme.txt"], "the rename");
+    let moved = here
+        .lock_recover()
+        .resolve_path_ino("Notes/todo-1.md")
+        .expect("the renamed file");
+    assert!(here.lock_recover().remove(moved), "the file is deleted");
+    held(&["Notes", "readme.txt"], "the deletion");
+}
+
+/// Wait until `namespace` holds exactly `expected`, naming what was waited for.
+fn wait_held(
+    site: &common::people::Site,
+    devices: &[&common::people::Device],
+    namespace: &Mounted,
+    expected: &[&str],
+    what: &str,
+) {
+    let mut expected: Vec<String> = expected.iter().map(|path| (*path).to_owned()).collect();
+    expected.sort();
+    common::people::waited(what, site, devices, || {
+        let held = contents(namespace);
+        held == expected
+    });
+}
+
+/// Every path `namespace`'s tree holds as the record reads it — the projection
+/// the Files app renders — sorted, each folder's contents by its folder's path.
+fn contents(namespace: &Mounted) -> Vec<String> {
     fn walk(tree: &Tree, parent: &str, prefix: &str, found: &mut Vec<String>) {
         for (id, entry) in tree.children(parent) {
             let name = String::from_utf8_lossy(entry.name.as_bytes()).into_owned();
@@ -201,24 +255,27 @@ fn contents(tree: &Tree) -> Vec<String> {
             }
         }
     }
+    let bytes = namespace.lock_recover().save();
+    let document = automerge::AutoCommit::load(&bytes).expect("the tree's document loads");
+    let tree = FilesTree::read(&document).expect("the tree reads");
     let mut found = Vec::new();
-    walk(tree, ROOT_ID, "", &mut found);
+    walk(&tree, ROOT_ID, "", &mut found);
+    found.sort();
     found
 }
 
+/// A tree document this device mounts, as the daemon serving the mount holds it.
+type Mounted = Arc<Mutex<Namespace>>;
+
 /// A tree document nothing has mounted yet, as a device mounts a workspace it
 /// holds no tree of.
-fn namespace(author: &str) -> Arc<Mutex<Namespace>> {
+fn namespace(author: &str) -> Mounted {
     Arc::new(Mutex::new(Namespace::new(author).expect("a tree document")))
 }
 
 /// Publish `namespace` on `cluster` as `paths`'s device, as the files daemon
 /// serving the mount does.
-fn mount(
-    namespace: &Arc<Mutex<Namespace>>,
-    cluster: &str,
-    paths: &IdentityPaths,
-) -> tokio::task::JoinHandle<()> {
+fn mount(namespace: &Mounted, cluster: &str, paths: &IdentityPaths) -> tokio::task::JoinHandle<()> {
     let now_ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("the clock reads after the epoch")
@@ -230,24 +287,52 @@ fn mount(
     .expect("this device's certificate is valid")
     .into_parts()
     .1;
-    fs::tree_record::spawn(Arc::clone(namespace), cluster.to_owned(), credentials)
+    fs::tree_record::spawn(
+        Arc::clone(namespace),
+        cluster.to_owned(),
+        credentials,
+        tilo_paths::xdg::service_socket("collab"),
+    )
+}
+
+/// Publish `namespace` on `cluster` as `device`'s mount does: the daemon of
+/// that device, on the collaboration socket its session serves.
+fn mount_on(
+    device: &common::people::Device,
+    namespace: &Mounted,
+    cluster: &str,
+) -> tokio::task::JoinHandle<()> {
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock reads after the epoch")
+        .as_nanos();
+    let credentials = fs::identity::load_certified_mount_identity(
+        &device.identity(),
+        u64::try_from(now_ns).expect("the clock reads a time a certificate holds"),
+    )
+    .expect("this device's certificate is valid")
+    .into_parts()
+    .1;
+    fs::tree_record::spawn(
+        Arc::clone(namespace),
+        cluster.to_owned(),
+        credentials,
+        device
+            .directory()
+            .join("runtime")
+            .join("tilo/services/collab.sock"),
+    )
 }
 
 /// Run `session` until this device's tree holds exactly `expected`, failing
 /// with the tree it holds instead.
-fn wait_for_tree(
-    session: &mut Session,
-    namespace: &Arc<Mutex<Namespace>>,
-    expected: &[&str],
-    what: &str,
-) {
+fn wait_for_tree(session: &mut Session, namespace: &Mounted, expected: &[&str], what: &str) {
     let mut expected: Vec<String> = expected.iter().map(|path| (*path).to_owned()).collect();
     expected.sort();
     let held = common::wait_for(session, what, |session| {
         session.settle_services();
         session.step(Duration::from_millis(5)).expect("step");
-        let mut held = contents(&tree(namespace));
-        held.sort();
+        let held = contents(namespace);
         (held == expected).then_some(held)
     });
     assert_eq!(held, expected, "{what}");

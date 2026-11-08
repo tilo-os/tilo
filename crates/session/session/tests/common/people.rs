@@ -602,12 +602,7 @@ pub fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
 /// One person with two devices of their own in one workspace their site hosts, both editors: the
 /// two sessions a person's laptop and their phone run, sharing what they record there.
 pub fn two_devices_of_one_person() -> (Site, Person, Device, Device) {
-    let ada = Person::new("Ada");
-    let site = Site::start(&ada, "Studio");
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
-    let laptop = joined(&site, &ada, "Ada's laptop");
-    let phone = joined(&site, &ada, "Ada's phone");
-    (site, ada, laptop, phone)
+    two_devices_of_one_person_carrying(|_| {})
 }
 
 /// A device of `person`'s, joined to the workspace `site` serves and holding it: what the owner's
@@ -618,6 +613,49 @@ fn joined(site: &Site, person: &Person, label: &str) -> Device {
     device.join(&invitation);
     device.wait_holding(&site.workspace);
     device
+}
+
+/// [`two_devices_of_one_person`] for two devices that carry the Files app: a session reads the apps
+/// it has when it starts, so each device has them before its session does.
+pub fn two_devices_of_one_person_with_files() -> (Site, Person, Device, Device) {
+    two_devices_of_one_person_carrying(Device::install_files)
+}
+
+/// The person's laptop and phone, each carrying what `install` puts in its store: both are made
+/// first, then told of the person's fleet, then started — a session reads the apps and the devices
+/// of the person it has when it starts.
+fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Person, Device, Device) {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
+    let mut laptop = ada.device("Ada's laptop");
+    let mut phone = ada.device("Ada's phone");
+    share_the_fleet(&ada, &[&laptop, &phone]);
+    for device in [&mut laptop, &mut phone] {
+        install(device);
+        let invitation = site.invite(ada.public, WorkspaceRole::Editor);
+        device.join(&invitation);
+        device.wait_holding(&site.workspace);
+    }
+    (site, ada, laptop, phone)
+}
+
+/// Tell each of `devices` about the rest of the person's fleet, as the machine that enrolls a
+/// device does ([`tilo_identity_host::provisioning`]): a device admits what the fleet names, and
+/// dials the siblings it holds, so what the person records reaches their other devices.
+fn share_the_fleet(person: &Person, devices: &[&Device]) {
+    let identity_id = hex::encode(person.public);
+    for device in devices {
+        let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::at(
+            device.directory().join("config/tilo/identity"),
+            device.identity(),
+        );
+        for other in devices {
+            fleet
+                .remember_certificate(&identity_id, other.cert.clone())
+                .expect("the person's device joins their fleet");
+        }
+    }
 }
 
 /// The door a site serves: its entry, the directory of what it lists, and the door of the workspace
@@ -1265,6 +1303,9 @@ impl Device {
             // The session says at info why a join did not land: what a failed step reads.
             .env("RUST_LOG", "info")
             .env("TILO_APP_STDERR_DIR", &logs)
+            // The tests of this process mount the trees this device's session serves, so the
+            // session records this process as the Files endpoint the login's unit would be.
+            .env("TILO_FILES_ENDPOINT_PID", std::process::id().to_string())
             .env_remove("TILO_TEST_CONTROL")
             .env_remove("TILO_AGENT_DOOR")
             .env_remove("TILO_ADMIN_CONTROL")
@@ -1429,6 +1470,31 @@ impl Device {
             ),
         )
         .expect("the store's registry");
+    }
+
+    /// Install the Files app in this device's store as a desktop that carries it has it: the surface
+    /// its package ships, under a signed root. A session reads the records of the person's that an
+    /// installed app keeps from its store, before the app ever runs, and the daemon that serves this
+    /// device's trees is that app's endpoint: a session serves no tree record for an app it cannot
+    /// read as installed.
+    pub fn install_files(&self) {
+        let payload = files_payload();
+        let manifest = payload.join("manifest.toml");
+        let store = self.store();
+        std::fs::create_dir_all(&store).expect("the device's store");
+        let registry = store.join("registry.toml");
+        let mut rows = std::fs::read_to_string(&registry).unwrap_or_default();
+        writeln!(
+            rows,
+            "[[entry]]\nid = \"so.tilo.file-explorer\"\nversion = \"0.1.0\"\n\
+             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n\
+             package_id_hex = \"{package}\"",
+            payload = payload.display(),
+            manifest = manifest.display(),
+            package = files_package(),
+        )
+        .expect("the registry is a string");
+        std::fs::write(&registry, rows).expect("the store's registry");
     }
 
     /// The actions this device publishes now.
@@ -1848,18 +1914,79 @@ fn chat_payload() -> &'static Path {
             let _ = std::fs::remove_file(&to);
             std::fs::hard_link(&from, &to).expect("the program this run built");
         }
-        std::fs::write(payload.join("manifest.toml"), chat_manifest()).expect("the app's manifest");
+        std::fs::write(payload.join("manifest.toml"), manifest_of("chat"))
+            .expect("the app's manifest");
         payload
     })
 }
 
-/// Chat's manifest as one of this machine's stores installs it: the app's own description
-/// (`apps/chat/tilo-app.toml`), without the runtime bundle it names. An installed desktop carries
-/// that bundle; a build runs on the machine it was built on.
-fn chat_manifest() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/chat/tilo-app.toml");
+/// The payload the Files app is installed from: Files' own manifest and the surface its package
+/// ships, with the signed root and collection an install leaves beside them, so a session reads
+/// them as the records the app keeps of the person's. Staged once per test process, in the build's
+/// own directory.
+fn files_payload() -> &'static Path {
+    &files_install().0
+}
+
+/// The digest of [`files_payload`]'s signed root: the package the store's registry names.
+fn files_package() -> &'static str {
+    &files_install().1
+}
+
+/// [`files_payload`] with the digest of its signed root.
+fn files_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        use ed25519_dalek::Signer as _;
+        use tilo_app_package::blobs::{BlobHash, Collection};
+        use tilo_app_package::signed::SignedRoot;
+
+        let build = std::env::current_exe()
+            .expect("the test's own binary")
+            .parent()
+            .and_then(Path::parent)
+            .expect("the build's own directory")
+            .to_path_buf();
+        let payload = build.join(format!("file-explorer-payload-{}", std::process::id()));
+        std::fs::create_dir_all(&payload).expect("the package's payload");
+        let manifest = manifest_of("file-explorer").into_bytes();
+        let surface_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/file-explorer/surface.toml");
+        let surface = std::fs::read(&surface_path).unwrap_or_else(|error| {
+            panic!("Files' surface at {}: {error}", surface_path.display())
+        });
+        std::fs::write(payload.join("manifest.toml"), &manifest).expect("the app's manifest");
+        std::fs::write(payload.join("surface.toml"), &surface).expect("the app's surface");
+        let collection =
+            Collection::from_entries([("surface.toml".to_string(), BlobHash::of(&surface))]);
+        let collection_bytes = collection.encode();
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[19_u8; 32]);
+        let mut signed = SignedRoot::unsigned(
+            BlobHash::of(&manifest),
+            BlobHash::of(&collection_bytes),
+            signing_key.verifying_key().to_bytes(),
+        );
+        // What the root's bytes sign says whether a signature is there, so one is placed before
+        // signing: an installed package's root is signed, and the store reads it as such.
+        signed.signature = Some([0; 64]);
+        signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
+        let signed_bytes = signed.encode();
+        let package = BlobHash::of(&signed_bytes).to_hex();
+        std::fs::write(payload.join("signed-root"), signed_bytes).expect("the package's root");
+        std::fs::write(payload.join("collection.qcl"), &collection_bytes)
+            .expect("the package's collection");
+        (payload, package)
+    })
+}
+
+/// The manifest an app of this repository is installed from as one of this machine's stores
+/// installs it: the app's own description (`apps/<app>/tilo-app.toml`), without the runtime bundle
+/// it names. An installed desktop carries that bundle; a build runs on the machine it was built on.
+fn manifest_of(app: &str) -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../apps/{app}/tilo-app.toml"));
     let manifest = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("Chat's manifest at {}: {error}", path.display()));
+        .unwrap_or_else(|error| panic!("{app}'s manifest at {}: {error}", path.display()));
     let mut kept = String::new();
     let mut isa = false;
     for line in manifest.lines() {

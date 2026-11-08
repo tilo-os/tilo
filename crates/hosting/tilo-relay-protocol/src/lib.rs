@@ -54,7 +54,6 @@ pub mod policy;
 pub mod process_lease;
 pub mod public_avatars;
 pub mod refusal;
-pub mod retention;
 pub mod sealed_invitations;
 pub mod transport;
 pub mod voice;

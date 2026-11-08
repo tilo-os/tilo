@@ -1353,7 +1353,18 @@ impl TiloStore {
 
     /// [`Self::first_text`] as stored.
     fn first_stored(&self, at: &ResourceRef) -> Option<(FieldValue, String)> {
-        // A row the index answers needs no chunk; one it does not is read with its chunk.
+        // A row the index answers needs no chunk: a window names what it shows from the index,
+        // and reads the record only for what the index does not hold.
+        let indexed = {
+            let inner = self.held();
+            let (app, ty) = inner.locate(at).ok()?;
+            let view = inner.view(&app)?;
+            let schema = lookup(&at.ty).or_else(|| lookup(&ty))?;
+            view.first_text(&at.id_string(), schema).ok().flatten()
+        };
+        if let Some(found) = indexed {
+            return Some(found);
+        }
         let _ = self.load_at(at);
         let inner = self.held();
         let (app, ty) = inner.locate(at).ok()?;
@@ -1909,6 +1920,17 @@ impl Inner {
         let ticket = self.next_ticket;
         self.next_ticket = self.next_ticket.wrapping_add(1);
         self.committed.push_back(Committed { ticket, action });
+    }
+
+    /// The type the index names the resource `at` to be, on the index's answer alone: the type
+    /// of a document it lists, or of an item whose row it holds. `None` where the index names
+    /// the resource nowhere, which is where the record is read for it.
+    fn named_type(&self, at: &ResourceRef) -> Option<TypeId> {
+        let (app, ty) = self.locate(at).ok()?;
+        if at.item.is_none() {
+            return Some(ty);
+        }
+        self.view(&app)?.type_of(&at.id_string()).ok().flatten()
     }
 
     fn locate(&self, at: &ResourceRef) -> Result<(AppId, TypeId), StoreError> {

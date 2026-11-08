@@ -3,7 +3,7 @@
 
 use super::tests::desk_with;
 use super::*;
-use crate::navigation::{ChromeEffect, Route};
+use crate::navigation::{ChromeEffect, Route, Standing};
 use ui::widget::{TileContent, TileHost};
 
 /// The apps this desk runs, each opening a tab named by its id.
@@ -77,6 +77,7 @@ fn open_beside(
             app: "so.tilo.notes".into(),
             beside: Some(beside.tab),
             background: Some(background),
+            float: None,
         })
         .unwrap();
     frame.relayout();
@@ -136,6 +137,7 @@ fn a_refused_launch_leaves_no_tab() {
             app: "org.example.other".into(),
             beside: Some(before[0].route.tab.clone()),
             background: None,
+            float: None,
         })
         .unwrap();
     frame.relayout();
@@ -149,4 +151,54 @@ fn a_refused_launch_leaves_no_tab() {
         "an app that opens nothing leaves no tab"
     );
     assert_eq!(handle.snapshot("g", vec![]).entries.len(), before.len());
+}
+
+/// A window an app opens floating stands over the desk where the app that
+/// asked for it said — the place the box a send was written in stood — and it
+/// is the window in front there: every member's record keeps the place.
+#[test]
+fn a_window_an_app_opens_floating_stands_where_it_was_asked_for() {
+    let (mut frame, handle) = mount();
+    let asked = Standing {
+        x: 300.0,
+        y: 200.0,
+        width: 480.0,
+        height: 360.0,
+    };
+    handle
+        .dispatch(ChromeEffect::OpenApp {
+            app: "so.tilo.notes".into(),
+            beside: None,
+            background: None,
+            float: Some(asked),
+        })
+        .unwrap();
+    frame.relayout();
+    let area = frame
+        .widget_mut::<ui::widget::GroupRow>()
+        .map(|row| floats::area_of(row.get_rect()))
+        .expect("the shown strip stands on the desk");
+    let (group, float) = handle
+        .read(|tree| {
+            let workspace = tree.workspaces.first()?;
+            let group = workspace
+                .strips
+                .first()?
+                .window_groups
+                .iter()
+                .find(|group| workspace.arrangement.float_of(group.id).is_some())?;
+            Some((group.id, workspace.arrangement.float_of(group.id)?))
+        })
+        .expect("the window the app opened floats");
+    assert_eq!(
+        handle.snapshot("g", vec![]).active.unwrap().group,
+        group.to_string(),
+        "the conversation a send opened is the window the person works in"
+    );
+    assert_eq!(
+        floats::rect_of(float.resolved(area)),
+        Rect::from_origin_size(ui::kurbo::Point::new(300.0, 200.0), ui::widget::FLOAT_SIZE),
+        "it stands where the app asked, at the size a floating window takes, so the \
+         message and the place it was written are one"
+    );
 }

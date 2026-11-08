@@ -14,7 +14,7 @@ use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::Id;
 
 use crate::app::{ChatApp, Focus};
-use crate::effects::ChatEffect;
+use crate::effects::{ChatEffect, item_row_id};
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
 use crate::record::{Chat, Participant};
@@ -79,7 +79,6 @@ impl ChatApp {
         // here would continue this view's invocation, whose reach is reading,
         // and a write beyond it is the person's to confirm — which nobody
         // asked them.
-        self.restore_attached_agent_surface(&channel);
         self.request_relayout();
     }
 
@@ -141,14 +140,19 @@ impl ChatApp {
 
     /// Send what a window's box held: the words and everything they carry go
     /// to the conversation with whom it names — a person, an agent, several of
-    /// them, or a conversation that is already there — and the window opens
-    /// where the message landed.
+    /// them, or a conversation that is already there — and the conversation
+    /// opens as a window of the desk, floated where the box stood
+    /// ([`ui::shell_tabs::open_floated`]). The window that sent it goes on
+    /// showing what it showed, its box ready for the next message.
+    ///
+    /// # Errors
+    /// The box names nobody this chat knows, a conversation beside other
+    /// recipients, or a message with neither words nor anything to carry.
     pub(crate) fn send_from_box(
-        &mut self,
+        &self,
         to: &[ui::floating_surface::Recipient],
         attached: Vec<tilo_reference::Attached>,
         text: &str,
-        bounds: Option<[f64; 4]>,
         chat: &Chat,
     ) -> Result<Effected, String> {
         if text.trim().is_empty() && attached.is_empty() {
@@ -156,15 +160,16 @@ impl ChatApp {
         }
         let id = self.conversation_named(to, chat)?;
         self.post_to_conversation(&id, text, attached)?;
-        self.open_conversation(&id, chat);
-        // The conversation stands where the box stood: the message the person
-        // wrote and the conversation it landed in are one gesture.
-        if let Some(at) = bounds.and_then(|place| ui::floating_surface::protocol_rect(place).ok()) {
-            self.float_conversation_at(&id.to_string(), at, chat);
-        }
-        Ok(Effected::value(
-            serde_json::json!({"conversation": id.to_string(), "accepted": true}),
-        ))
+        // The conversation stands where the box stood: a window of the desk,
+        // floated over it, that the workspace's record keeps for every
+        // member.
+        let anchor = item_row_id("channels", id.as_str());
+        ui::shell_tabs::open_floated(anchor.clone());
+        Ok(Effected::value(serde_json::json!({
+            "conversation": id.to_string(),
+            "anchor": anchor,
+            "accepted": true,
+        })))
     }
 
     /// The conversation a message to `to` lands in: the one a recipient names,

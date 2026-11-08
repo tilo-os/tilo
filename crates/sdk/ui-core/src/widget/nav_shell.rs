@@ -1335,8 +1335,21 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
     let push_back = drills && front > first;
     let window_row = Rect::new(0.0, top, w, top + hh);
+    let back_column = if push_back {
+        Some(front_column)
+    } else if inputs.content_back && g.content_column.width() > 0.0 {
+        Some(Column::Content)
+    } else {
+        None
+    };
+    // A screen that went somewhere deeper has one way back, at the leading edge: where the
+    // sidebar is no docked column but a drawer of the phone, its toggle stands aside for it,
+    // and comes back with the first screen. An open drawer keeps its way to close.
+    let back_leads =
+        back_column.is_some() && g.sidebar != SidebarPlacement::Docked && !sidebar_open;
     if hh > 0.0
         && !push_back
+        && !back_leads
         && inputs.has_sidebar
         && !inputs.toggle_in_bar
         && matches!(
@@ -1355,13 +1368,6 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             },
         );
     }
-    let back_column = if push_back {
-        Some(front_column)
-    } else if inputs.content_back && g.content_column.width() > 0.0 {
-        Some(Column::Content)
-    } else {
-        None
-    };
     if let Some(column) = back_column
         && inputs.slots_in_bar()
     {

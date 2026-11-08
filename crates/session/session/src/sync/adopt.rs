@@ -44,7 +44,7 @@ pub(super) async fn redeem(
     // enrollment, so there is nothing to pick here.
     identity.current_native_material(topic)?;
     let owner = engine.owner().clone();
-    let client = tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint);
+    let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
     let enrollment = tokio::time::timeout(
         REDEEM_WITHIN,
         tilo_peer_state::owner::enroll::prepare_and_complete(
@@ -119,7 +119,7 @@ pub(super) async fn enter(
     let topic = workspace_topic_id(request.workspace_id);
     identity.current_native_material(topic)?;
     let owner = engine.owner().clone();
-    let client = tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint);
+    let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
     tokio::time::timeout(
         REDEEM_WITHIN,
         tilo_peer_state::owner::enroll::admit_as_member(

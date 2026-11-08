@@ -97,8 +97,6 @@ mod tests {
         "chat-agent-work-show-details",
         "chat-agent-work-hide-details",
         "chat-agent-kind",
-        "chat-agent-float",
-        "chat-agent-return",
         "chat-send",
         "chat-conversation-read-only",
         "chat-direct-unavailable",

@@ -204,7 +204,7 @@ fn joins_with(
             .await
             .map_err(|error| error.to_string())?;
         let enrollment = owner::enroll::prepare_and_complete(
-            tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
+            tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
             identity(cert, key),
             workspace_topic_id(workspace),
             // Her owner holds no copy of the workspace yet: the enrollment makes its own slot for

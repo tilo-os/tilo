@@ -103,6 +103,7 @@ pub fn process_environment() -> super::HostEnvironment {
         },
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
+        reveal: text(super::REVEAL_ENV),
     }
 }
 

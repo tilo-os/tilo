@@ -950,6 +950,7 @@ impl crate::Shared {
                         app: app.into(),
                         beside: None,
                         background: None,
+                        float: None,
                     };
                     if let Err(error) = self.handle.dispatch(launch) {
                         tracing::warn!(%error, app, "launchpad");

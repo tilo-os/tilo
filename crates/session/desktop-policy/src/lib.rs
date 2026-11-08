@@ -21,7 +21,9 @@ use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceSlot,
 };
-use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
+use tilo_desktop_surface::navigation::{
+    ChromeEffect, DeskEffect, RouteIds, Standing, active_route,
+};
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
@@ -486,6 +488,7 @@ impl DesktopPolicy {
             app: format!("{CRASHED_PREFIX}{asked}"),
             beside: None,
             background: None,
+            float: None,
         };
         self.handle.dispatch(launch)
     }
@@ -675,6 +678,7 @@ impl DesktopPolicy {
                 app: launch.clone(),
                 beside: Some(place.beside.tab.to_string()),
                 background: Some(place.background),
+                float: None,
             });
         self.arriving.borrow_mut().insert(id, window);
         let placed = match beside {
@@ -685,12 +689,14 @@ impl DesktopPolicy {
                     app: launch,
                     beside: None,
                     background: None,
+                    float: None,
                 })
             }),
             None => self.handle.dispatch(ChromeEffect::OpenApp {
                 app: launch,
                 beside: None,
                 background: None,
+                float: None,
             }),
         };
         placed.inspect_err(|_| {
@@ -705,6 +711,17 @@ impl DesktopPolicy {
     #[must_use]
     pub fn anchor_for(&self, app: &str) -> Option<(TabId, GroupId, usize)> {
         self.handle.read(|tree| anchor_for(tree, app))
+    }
+
+    /// Where the window of `tab` shows its content, in the desk's own
+    /// pixels, as of the surface's last layout: where a box a window drew
+    /// stands on the desk.
+    #[must_use]
+    pub fn content_rect(&self, tab: TabId) -> Option<Rect> {
+        self.handle
+            .shown_tabs()
+            .into_iter()
+            .find_map(|(shown, rect)| (shown == tab).then_some(rect))
     }
 
     /// Close the tab of `app` a request from it answers to, as the app's own
@@ -797,6 +814,7 @@ impl DesktopPolicy {
             app: launch,
             beside: Some(beside.tab.to_string()),
             background: Some(background),
+            float: None,
         };
         if self.handle.dispatch(command).is_err() {
             return false;
@@ -810,6 +828,38 @@ impl DesktopPolicy {
             .push(HeldTab {
                 tab: None,
                 background,
+            });
+        true
+    }
+
+    /// Open a window of `app` standing over the desk at `at` — the corner of
+    /// its rect is where the window's corner goes, in the desk's own pixels
+    /// — as the tab held for the launch that follows: a conversation a send
+    /// landed in stands where the box that sent it stood. Whether the desk
+    /// took it.
+    pub fn open_floated(&mut self, app: &str, at: [f64; 4]) -> bool {
+        let standing = Standing {
+            x: at[0],
+            y: at[1],
+            width: at[2] - at[0],
+            height: at[3] - at[1],
+        };
+        let command = ChromeEffect::OpenApp {
+            app: format!("{HELD_PREFIX}{app}"),
+            beside: None,
+            background: None,
+            float: Some(standing),
+        };
+        if self.handle.dispatch(command).is_err() {
+            return false;
+        }
+        self.held
+            .borrow_mut()
+            .entry(app.to_owned())
+            .or_default()
+            .push(HeldTab {
+                tab: None,
+                background: false,
             });
         true
     }

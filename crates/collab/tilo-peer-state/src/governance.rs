@@ -206,13 +206,20 @@ pub fn admit_invited_member(
     candidate
         .put(&names, &id, member_display_name(&grant, cert))
         .map_err(|error| error.to_string())?;
-    put_member(
-        &mut candidate,
-        &caps,
-        cert.user_public_key,
-        grant.role.into(),
-    )?;
-    put_member_joined_once(&mut candidate, cert.user_public_key, now_ns / 1_000_000)?;
+    // The workspace's owner is not one of its members: they hold it from its
+    // beginning, whatever role an invitation names, and their device's
+    // certificate is what admits it. A member row for them would be a
+    // membership no operation reproduces ([`crate::members::replay`]), so the
+    // redemption records the device and its receipt alone.
+    if !policy.is_owner(&hex::encode(cert.user_public_key)) {
+        put_member(
+            &mut candidate,
+            &caps,
+            cert.user_public_key,
+            grant.role.into(),
+        )?;
+        put_member_joined_once(&mut candidate, cert.user_public_key, now_ns / 1_000_000)?;
+    }
     candidate.commit();
     crate::workspace::media::refresh_authorization(document, &mut candidate)
         .map_err(|error| error.to_string())?;
