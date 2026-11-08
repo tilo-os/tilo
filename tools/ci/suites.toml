@@ -349,6 +349,7 @@ inputs = [
   "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py",
   "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml",
   "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py",
+  "tools/web/wasm-opt-flags",
 ]
 suites = ["os/tests/containerfile_sources.sh"]
 
@@ -613,8 +614,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",
   "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/qr.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",
@@ -639,13 +638,11 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/image-decode.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
   "crates/browser/tilo-browser-runtime/web/video-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-video.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
@@ -919,7 +916,6 @@ inputs = ["apps/discord/bridge/program.json", "apps/notes/surface.toml"]
 readers = [
   "crates/hosting/tilo-relay/src/room_bots/tests.rs",
   "crates/hosting/tilo-relay/tests/governed_rooms/app_push.rs",
-  "crates/hosting/tilo-relay/tests/surface_content.rs",
 ]
 
 [[cargo]]
@@ -1266,7 +1262,7 @@ inputs = [
   "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
 readers = [
-  "crates/system/fs/src/main.rs", "crates/system/fs/build.rs",
+  "crates/system/fs/src/main.rs",
   "crates/system/fs/tests/exact_share_process_fuse.rs",
   "crates/system/fs/tests/cloud_mount.rs",
   "crates/system/fs/tests/cloud_mount/import.rs",
@@ -1955,10 +1951,6 @@ reason = "runs inside the booted test image"
 [[unrequired]]
 suite = "os/verify-test.sh"
 reason = "boots the test image in a VM"
-
-[[unrequired]]
-suite = "scripts/test-flatpak-share.sh"
-reason = "drives distrobox and host GPU encoders"
 
 [[unrequired]]
 suite = "scripts/test-local.sh"

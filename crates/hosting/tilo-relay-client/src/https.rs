@@ -204,28 +204,6 @@ pub async fn here(
     .await
 }
 
-/// Ask the host where the workspace's live plane listens and which
-/// certificate to pin, for a page that the workspace admits now: the answer
-/// is the admission to dial with.
-///
-/// # Errors
-///
-/// Returns [`LinkError::Refused`] when the workspace does not admit this
-/// session's device.
-pub async fn live(
-    client: &dyn HttpClient,
-    session: &str,
-    request: &tilo_relay_protocol::web::LiveRequest,
-) -> Result<tilo_relay_protocol::web::LiveInfo, LinkError> {
-    call(
-        client,
-        tilo_relay_protocol::web::LIVE_INFO_PATH,
-        Some(session),
-        encode(request)?,
-    )
-    .await
-}
-
 /// Administer the host's workspaces as this session's device (`/rooms`).
 pub async fn workspaces(
     client: &dyn HttpClient,

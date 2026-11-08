@@ -195,6 +195,10 @@ impl VaultFormat {
     /// Browser custody with acknowledged creation, serialized across tabs.
     /// The legacy format's key name and encoding remain authoritative.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[allow(
+        clippy::future_not_send,
+        reason = "the browser's secret store awaits JavaScript promises, which run on the page's single thread"
+    )]
     pub async fn load_or_create_page_key(&self, vault_exists: bool) -> Result<VaultKey, String> {
         let candidate = if vault_exists {
             None

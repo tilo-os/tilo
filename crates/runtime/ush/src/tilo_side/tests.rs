@@ -806,8 +806,8 @@ fn a_program_stopped_in_the_guest_gives_the_prompt_back_and_fg_continues_it() {
 #[test]
 fn ctrl_z_that_reaches_the_shell_stops_the_foreground_program() {
     let p = prompt(&[]);
-    p.type_keys("sh -c 'echo $$ > pid; echo started >&2; sleep 30'\r");
-    p.wait_for("started");
+    p.type_keys("sh -c 'echo $$ > pid; echo up-$((6*7)) >&2; sleep 30'\r");
+    p.wait_for("up-42");
     // SAFETY: the shell's own handler takes it (DevicePlace::install).
     unsafe { libc::kill(libc::getpid(), libc::SIGTSTP) };
     p.wait_for("Stopped");

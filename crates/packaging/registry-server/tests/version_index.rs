@@ -17,8 +17,7 @@ use app_cli::config::RegistryConfig;
 use ed25519_dalek::SigningKey;
 use registry_server::Storage;
 use registry_types::{
-    CompactRegistrySnapshot, RegistryEntry, RegistryTarget, RegistryVersion,
-    SignedRegistrySnapshot, sign_entry,
+    CompactRegistrySnapshot, RegistryEntry, RegistryVersion, SignedRegistrySnapshot, sign_entry,
 };
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -26,23 +25,17 @@ use std::path::{Path, PathBuf};
 const NOTES: &str = "so.tilo.notes";
 
 fn version(number: &str) -> RegistryVersion {
-    RegistryVersion {
-        version: number.into(),
-        released_at_unix: 1,
-        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
-            tapp_url: format!("https://apps.tilo.so/artifacts/notes-{number}.tapp"),
-            tapp_root_hash_hex: "ab".repeat(32),
-            tapp_size_bytes: 1,
-            tapp_blake3_hex: "cd".repeat(32),
-            target: RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-                interfaces: Vec::new(),
-            },
-        }),
-    }
+    crate::support::version(
+        number,
+        1,
+        crate::support::tapp(
+            format!("https://apps.tilo.so/artifacts/notes-{number}.tapp"),
+            "ab".repeat(32),
+            1,
+            "cd".repeat(32),
+            None,
+        ),
+    )
 }
 
 fn entry(package_id: &str, versions: &[&str], updated_at: u64) -> RegistryEntry {

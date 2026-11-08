@@ -6,20 +6,12 @@ use super::*;
 
 #[path = "host_action_lifecycle_tests.rs"]
 mod lifecycle;
-use crate::collab_app_broker::{BrokerChannels, FanoutState, PeerPublisher};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
 fn state(root: &std::path::Path) -> Arc<AppBrokerState> {
-    let (state, _bridge) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        None,
-        None,
-        None,
-        crate::services::HostServices::default(),
-    );
+    let (state, _bridge) =
+        AppBrokerState::test_state(None, crate::services::HostServices::default());
     *state.journal.lock().unwrap() = Ok(Some(
         invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
@@ -72,12 +64,7 @@ impl crate::services::LocalPersonServices for ClosedSeat {
 
 #[test]
 fn configured_native_seat_never_admits_an_unsigned_actor_label() {
-    let (state, _) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        None,
-        None,
+    let (state, _) = AppBrokerState::test_state(
         None,
         crate::services::HostServices {
             local_person: Some(Arc::new(ClosedSeat)),
@@ -113,12 +100,7 @@ impl crate::certificate_authority::CertificateAuthority for ClosedCertificates {
 
 #[test]
 fn configured_certificates_without_a_native_seat_never_admit_unsigned_owners() {
-    let (state, _) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        None,
-        None,
+    let (state, _) = AppBrokerState::test_state(
         None,
         crate::services::HostServices {
             native_certificates: Some(Arc::new(ClosedCertificates)),

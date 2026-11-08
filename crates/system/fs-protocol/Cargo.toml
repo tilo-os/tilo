@@ -17,9 +17,12 @@ path = "src/lib.rs"
 # depends on this crate.
 
 [dependencies]
+automerge.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
-wire-frame = { version = "0.1.0", path = "../wire-frame" }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+tilo-automerge.workspace = true
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+wire-frame = { version = "0.1.0", path = "../wire-frame" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -28,17 +28,42 @@ pub enum Route {
     Standalone,
 }
 
+/// The door of the confined environment this process runs in, when its
+/// environment names one ([`tilo_paths::login::AGENT_SOCKET_ENV`]): an absolute
+/// path, as `ush` sets it.
+#[must_use]
+pub fn environment_door(named: Option<OsString>) -> Option<PathBuf> {
+    named.map(PathBuf::from).filter(|path| path.is_absolute())
+}
+
 /// Choose a `--connect` client's route. `standalone` is the client's own
 /// explicit choice of a profile (`--standalone`, `--profile` or
-/// `TILO_RUNTIME_PROFILE`); `door` is [`agent_socket_path`]'s answer and
+/// `TILO_RUNTIME_PROFILE`); `environment` is [`environment_door`]'s answer,
+/// the door of the confined environment the client runs in, which it uses in
+/// place of the session's own; `door` is [`agent_socket_path`]'s answer and
 /// `exists` whether something is there.
 pub fn route(
     standalone: bool,
+    environment: Option<PathBuf>,
     tilo_login: bool,
     door: Option<PathBuf>,
-    exists: impl FnOnce(&Path) -> bool,
+    exists: impl Fn(&Path) -> bool,
 ) -> io::Result<Route> {
-    if standalone || !tilo_login {
+    if standalone {
+        return Ok(Route::Standalone);
+    }
+    if let Some(path) = environment {
+        return if exists(&path) {
+            Ok(Route::Session(path))
+        } else {
+            Err(missing_door(&format!(
+                "this environment's door, {}, is not there; the desktop opens it as the \
+                 environment starts",
+                path.display()
+            )))
+        };
+    }
+    if !tilo_login {
         return Ok(Route::Standalone);
     }
     match door {
@@ -102,11 +127,19 @@ pub struct Hello {
     /// ([`ACTS_AS`]): a REPL, whose lines the person types. A request, shown to the person who
     /// decides; it is never authority.
     pub as_person: bool,
+    /// The workspace the client asks to work in ([`WORKSPACE`]), by id: a request the person
+    /// decides, admitted only for a workspace they may let an agent into. `None` asks for the
+    /// workspace in front of them.
+    pub workspace: Option<String>,
 }
 
 /// Where a client's `initialize` asks to act as the person (`"person"`) rather than as an
 /// agent: `params.capabilities.experimental["so.tilo"].actsAs`.
 pub const ACTS_AS: &str = "/params/capabilities/experimental/so.tilo/actsAs";
+
+/// Where a client's `initialize` names the workspace it asks to work in, by id:
+/// `params.capabilities.experimental["so.tilo"].workspace`. `--connect --workspace ID` writes it.
+pub const WORKSPACE: &str = "/params/capabilities/experimental/so.tilo/workspace";
 
 /// The provider the session's own resources (its desk, arrangement, windows and notices) are
 /// published under on its doors: what the catalogue lists them under and an invocation names.
@@ -194,6 +227,7 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
             .unwrap_or_else(|| "MCP client".to_owned()),
         client_version: bounded_text(info.and_then(|info| info.get("version"))),
         as_person: request.pointer(ACTS_AS).and_then(serde_json::Value::as_str) == Some("person"),
+        workspace: bounded_text(request.pointer(WORKSPACE)),
         request,
     })
 }
@@ -508,7 +542,7 @@ mod tests {
 
     #[test]
     fn a_login_whose_door_is_missing_says_why_and_how_to_go_on() {
-        let nowhere = route(false, true, None, |_| true).unwrap_err();
+        let nowhere = route(false, None, true, None, |_| true).unwrap_err();
         assert!(
             nowhere
                 .to_string()
@@ -517,6 +551,7 @@ mod tests {
         );
         let down = route(
             false,
+            None,
             true,
             Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock")),
             |_| false,
@@ -557,21 +592,77 @@ mod tests {
     fn a_tilo_login_relays_to_its_door_and_never_falls_back_to_a_standalone_runtime() {
         let door = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
         assert_eq!(
-            route(false, true, Some(door.clone()), |_| true).unwrap(),
+            route(false, None, true, Some(door.clone()), |_| true).unwrap(),
             Route::Session(door.clone())
         );
-        let missing = route(false, true, Some(door.clone()), |_| false).unwrap_err();
+        let missing = route(false, None, true, Some(door.clone()), |_| false).unwrap_err();
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
         assert!(missing.to_string().contains("--standalone"), "{missing}");
-        assert!(route(false, true, None, |_| true).is_err());
+        assert!(route(false, None, true, None, |_| true).is_err());
         assert_eq!(
-            route(true, true, Some(door.clone()), |_| true).unwrap(),
+            route(true, None, true, Some(door.clone()), |_| true).unwrap(),
             Route::Standalone
         );
         assert_eq!(
-            route(false, false, Some(door), |_| true).unwrap(),
+            route(false, None, false, Some(door), |_| true).unwrap(),
             Route::Standalone
         );
+    }
+
+    #[test]
+    fn a_client_in_an_environment_uses_its_environments_door_in_any_login() {
+        let own = PathBuf::from("/run/tilo/agent.sock");
+        let session = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
+        assert_eq!(
+            environment_door(Some(own.clone().into())),
+            Some(own.clone()),
+            "the environment names its door"
+        );
+        assert_eq!(
+            environment_door(Some("run/tilo/agent.sock".into())),
+            None,
+            "only an absolute path names one"
+        );
+        assert_eq!(environment_door(None), None);
+        for login in [true, false] {
+            assert_eq!(
+                route(
+                    false,
+                    Some(own.clone()),
+                    login,
+                    Some(session.clone()),
+                    |_| true
+                )
+                .unwrap(),
+                Route::Session(own.clone()),
+                "an environment's own door, not the session's"
+            );
+        }
+        let gone = route(false, Some(own.clone()), true, Some(session), |path| {
+            path != own.as_path()
+        })
+        .unwrap_err();
+        assert_eq!(gone.kind(), io::ErrorKind::NotFound);
+        assert!(gone.to_string().contains("/run/tilo/agent.sock"), "{gone}");
+        assert_eq!(
+            route(true, Some(own), true, None, |_| true).unwrap(),
+            Route::Standalone,
+            "a client's own choice of a profile still wins"
+        );
+    }
+
+    #[test]
+    fn a_client_names_the_workspace_it_asks_for() {
+        let hello = parse_hello(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"experimental":{"so.tilo":{"workspace":"3f2c"}}},"clientInfo":{"name":"Claude Code"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(hello.workspace.as_deref(), Some("3f2c"));
+        let anywhere = parse_hello(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"Claude Code"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(anywhere.workspace, None, "the workspace in front");
     }
 
     #[test]

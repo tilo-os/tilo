@@ -80,3 +80,19 @@ pub fn name_surface(planned: &Planned) {
         }
     }
 }
+
+/// Name every installed app's signed surface ([`name_surface`] for all of
+/// them), as the session starts: a service that writes an app's person record
+/// joins the person's own store before any window of that app ran — the
+/// filesystem daemon writes the workspace tree as the session starts — so the
+/// surface its package ships must be known without a launch.
+pub fn name_installed_surfaces() {
+    match app_catalogue::apps::signed_surfaces_from_env() {
+        Ok(surfaces) => {
+            for (app, _name, surface) in surfaces {
+                collaboration::app_surface::register_package(&app, &surface);
+            }
+        }
+        Err(error) => tracing::warn!(%error, "the installed apps' surfaces are unreadable"),
+    }
+}

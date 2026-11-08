@@ -127,15 +127,7 @@ fn the_next_policy_change_is_the_first_grant_or_certificate_expiry() {
     )
     .expect("the owner's workspace admits a verified person");
     let authority = Arc::new(Announcing(tree.shared()));
-    let (state, _bridge) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        Some(authority),
-        None,
-        None,
-        HostServices::default(),
-    );
+    let (state, _bridge) = AppBrokerState::test_state(Some(authority), HostServices::default());
     let after = now.saturating_mul(NS);
     assert_eq!(
         state.next_policy_change(after).unwrap(),

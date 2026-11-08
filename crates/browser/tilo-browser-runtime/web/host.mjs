@@ -28,7 +28,7 @@ import {fetchProxyFor,proxiedGet} from './fetch-proxy.mjs';
 // `mountDesktop` passes itself as `peer`: edits are then attributed to its
 // user, and its workspace's live layer shows members' pointers over the surface.
 /** Application ids accepted by `mountDesktop({app})`; omit `app` for the desktop. */
-export const APPLICATIONS=Object.freeze({desktop:'desktop',scratch:'so.tilo.browser-scratch'});
+export const APPLICATIONS=Object.freeze({desktop:'desktop'});
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();

@@ -1651,8 +1651,8 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
     relay.shutdown().await;
 }
 
-/// `windows`, the layout of `workspace` as `member`'s device minting in `salt`
-/// writes it onto `doc`: what it made is its person's.
+/// `windows`, the arrangement of `workspace` as `member`'s device minting in
+/// `salt` writes it onto `doc`: what it made is its person's.
 fn write_windows(
     doc: &mut automerge::AutoCommit,
     workspace: &str,
@@ -1692,7 +1692,7 @@ fn write_windows(
     .unwrap();
 }
 
-/// The window titles `doc`'s layout holds.
+/// The window titles `doc`'s arrangement holds.
 fn titles_in(doc: &automerge::AutoCommit) -> Vec<String> {
     tilo_desktop_model::shared_record::read(doc, None)
         .map(|desktop| {
@@ -1737,8 +1737,8 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
     }]
 }
 
-/// A window a member opens after joining is a change to the workspace's layout,
-/// made by the member's person. The governor takes it in as the workspace's next
+/// A window a member opens after joining is a change to the workspace's
+/// arrangement, made by the member's person. The governor takes it in as the workspace's next
 /// generation, so every other member sees the window; before, only record
 /// writes were taken in and the window reached nobody.
 #[tokio::test]
@@ -1813,8 +1813,7 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
 /// A device of the owner's that is not this host removes a member itself,
 /// in its own replica, and publishes the change: the host takes it in as
 /// the workspace's next generation, and every invitation still waiting for the
-/// person goes with them. Such a change leaves the workspace's layout as it was,
-/// so a listed workspace's door lets it through; a member's windows do not.
+/// person goes with them.
 #[tokio::test]
 async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitations() {
     let dir = tempfile::tempdir().unwrap();
@@ -1857,10 +1856,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
             .remove_member(guest.user_public_key, &writer_key, SystemTime::now())
             .unwrap();
         let changes = written.workspace_changes_since(&heads);
-        let leaves =
-            layout_scope::leaves_layout(governed.peer().admitted_workspace().unwrap(), &changes);
         drop(governed);
-        assert!(leaves, "a removal is no layout");
         postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
             room: workspace.clone(),
             changes,
@@ -1883,20 +1879,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
         "the removed person's invitation went with them"
     );
 
-    let windows = terminals_opened(&workspaces, &workspace, &writer, salt).await;
-    let Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) =
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&windows)
-    else {
-        panic!("windows are a room change");
-    };
-    {
-        let state = workspaces.workspace(&workspace).await.unwrap();
-        let governed = state.lock().await;
-        let leaves =
-            layout_scope::leaves_layout(governed.peer().admitted_workspace().unwrap(), &changes);
-        drop(governed);
-        assert!(!leaves, "opening windows changes the layout");
-    }
+    let _windows = terminals_opened(&workspaces, &workspace, &writer, salt).await;
     drop(workspaces);
     relay.shutdown().await;
 }
@@ -2044,7 +2027,11 @@ async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
     // A topology change is no record's write: it names no route for a verdict.
     let topology = terminals_opened(&workspaces, &workspace, &member, member_salt).await;
     workspaces
-        .publish_refusal(&workspace, &topology, "the workspace's layout is personal")
+        .publish_refusal(
+            &workspace,
+            &topology,
+            "a change of arrangement is no record write",
+        )
         .await
         .unwrap();
     // The same write again keeps the verdict the workspace already holds.
@@ -2071,118 +2058,14 @@ async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
     relay.shutdown().await;
 }
 
-/// Two strangers in a public workspace: A opens two terminals, and B is never
-/// given them, their app or their titles. The door refuses A's change, and
-/// the governor, should it reach it anyway, commits nothing of it.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the workspace and the relay stay held through the assertions; Relay::shutdown consumes the relay"
-)]
-#[tokio::test]
-async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
-    let created = workspaces.create("Lounge").await.unwrap();
-    let workspace = created.workspace.clone();
-    workspaces
-        .set_layout(
-            &workspace,
-            tilo_desktop_model::projection::WorkspaceLayout::Personal,
-        )
-        .await
-        .unwrap();
-    assert!(workspaces.is_personal(&workspace));
-    let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
-    let (_b, _) = admitted_member(&workspaces, &workspace, &key, &cert, 4).await;
-    let generation = workspaces
-        .workspace(&workspace)
-        .await
-        .unwrap()
-        .lock()
-        .await
-        .record
-        .generation;
-
-    let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
-    let refused = workspaces
-        .decide_layout_write(&workspace, a.device_public_key, &body)
-        .await
-        .unwrap_err();
-    assert!(refused.contains("public workspace"), "{refused}");
-
-    workspaces
-        .absorb(&workspace, a.device_public_key, &body)
-        .await
-        .unwrap();
-    {
-        let state = workspaces.workspace(&workspace).await.unwrap();
-        let governed = state.lock().await;
-        assert_eq!(
-            governed.record.generation, generation,
-            "the governor committed nothing of A's windows"
-        );
-        let shared = governed.peer().admitted_workspace().unwrap();
-        assert!(
-            tilo_desktop_model::shared_record::read(shared, None)
-                .into_iter()
-                .flat_map(|desktop| desktop.tree.workspaces)
-                .flat_map(|w| w.strips)
-                .all(|strip| tilo_desktop_model::peer_salt_of(strip.id.0) != a_salt),
-            "no strip of A's reaches B"
-        );
-    }
-    assert!(
-        titles_shared(&workspaces, &workspace).await.is_empty(),
-        "B is given no title of A's"
-    );
-    drop(workspaces);
-    relay.shutdown().await;
-}
-
-/// The workspace's governor writes as its governance writer: in a workspace whose
-/// layout is personal its own windows pass the door that refuses a
-/// member's.
-#[tokio::test]
-async fn the_governors_own_windows_pass_the_door_of_a_personal_room() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
-    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    workspaces
-        .set_layout(
-            &workspace,
-            tilo_desktop_model::projection::WorkspaceLayout::Personal,
-        )
-        .await
-        .unwrap();
-    let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
-    let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
-    assert_eq!(
-        workspaces
-            .decide_layout_write(&workspace, a.device_public_key, &body)
-            .await
-            .unwrap_err(),
-        LAYOUT_REFUSAL
-    );
-    workspaces
-        .decide_layout_write(&workspace, cert.device_public_key, &body)
-        .await
-        .unwrap();
-    drop(workspaces);
-    relay.shutdown().await;
-}
-
-/// In a private workspace the same change is let through and committed, as
-/// before.
+/// A member's windows are the room's: the governor takes the change in, and
+/// every member sees the windows.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
 )]
 #[tokio::test]
-async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
+async fn the_windows_a_member_opens_are_shared_by_the_room() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -2190,11 +2073,6 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
-    assert!(!workspaces.is_personal(&workspace));
-    workspaces
-        .decide_layout_write(&workspace, a.device_public_key, &body)
-        .await
-        .unwrap();
     workspaces
         .absorb(&workspace, a.device_public_key, &body)
         .await
@@ -2206,8 +2084,8 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     relay.shutdown().await;
 }
 
-/// `member`'s change to `workspace`'s layout closing every window it made in its
-/// namespace `salt`, as its device would send it.
+/// `member`'s change to `workspace`'s arrangement closing every window it made
+/// in its namespace `salt`, as its device would send it.
 async fn windows_closed(
     workspaces: &Workspaces,
     workspace: &str,
@@ -2291,12 +2169,6 @@ fn replayed_frame_carries(frame: &crate::transport::Envelope, title: &str) -> bo
     })
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Withdrawal {
-    Closed,
-    LayoutTurnedPersonal,
-}
-
 #[allow(
     clippy::significant_drop_tightening,
     reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
@@ -2304,108 +2176,93 @@ enum Withdrawal {
 #[tokio::test]
 async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     const TITLES: [&str; 2] = ["ssh prod-db", "~/private/taxes"];
-    for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
-        let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
-        let relay = test_host(dir.path(), &key, &cert).await;
-        let workspaces = relay.workspaces().clone();
-        let created = workspaces.create("Team").await.unwrap();
-        let workspace = created.workspace.clone();
-        let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
-        let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
-        workspaces
-            .absorb(&workspace, a.device_public_key, &body)
-            .await
-            .unwrap();
-        assert_eq!(
-            titles_shared(&workspaces, &workspace).await.len(),
-            2,
-            "{withdrawal:?}: the room shares A's terminals while they are open"
-        );
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("Team").await.unwrap();
+    let workspace = created.workspace.clone();
+    let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
+    workspaces
+        .absorb(&workspace, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert_eq!(
+        titles_shared(&workspaces, &workspace).await.len(),
+        2,
+        "the room shares A's terminals while they are open"
+    );
+    let body = windows_closed(&workspaces, &workspace, &a, a_salt).await;
+    workspaces
+        .absorb(&workspace, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert!(
+        titles_shared(&workspaces, &workspace).await.is_empty(),
+        "the room's current state no longer holds A's terminals"
+    );
 
-        match withdrawal {
-            Withdrawal::Closed => {
-                let body = windows_closed(&workspaces, &workspace, &a, a_salt).await;
-                workspaces
-                    .absorb(&workspace, a.device_public_key, &body)
-                    .await
-                    .unwrap();
-            }
-            Withdrawal::LayoutTurnedPersonal => workspaces
-                .set_layout(
-                    &workspace,
-                    tilo_desktop_model::projection::WorkspaceLayout::Personal,
-                )
-                .await
-                .unwrap(),
-        }
+    let (c, c_cert) = guest_device();
+    door_join(&workspaces, &cert, &workspace, (&c, &c_cert), 21).await;
+    // Whatever the workspace published is retained before C's replay is read.
+    workspaces
+        .inner
+        .host
+        .records
+        .retained(created.workspace_id)
+        .await
+        .unwrap();
+    let workspace = workspaces
+        .inner
+        .host
+        .workspaces
+        .lock()
+        .await
+        .get(&created.workspace_id)
+        .cloned()
+        .expect("the relay hosts the room's workspace");
+    let (replayed, archived) = {
+        let runtime = workspace.lock().await;
+        (
+            crate::store::test_support::replay_frames(&runtime.store),
+            archived_bytes(runtime.store.root()),
+        )
+    };
+    assert!(
+        !replayed.is_empty(),
+        "a device joining the room is replayed the room"
+    );
+    for title in TITLES {
         assert!(
-            titles_shared(&workspaces, &workspace).await.is_empty(),
-            "{withdrawal:?}: the room's current state no longer holds A's terminals"
+            !replayed
+                .iter()
+                .any(|frame| replayed_frame_carries(frame, title)),
+            "a member who joins later is replayed {title:?}, \
+             a window withdrawn before they joined"
         );
-
-        let (c, c_cert) = guest_device();
-        door_join(&workspaces, &cert, &workspace, (&c, &c_cert), 21).await;
-        // Whatever the workspace published is retained before C's replay is read.
-        workspaces
-            .inner
-            .host
-            .records
-            .retained(created.workspace_id)
-            .await
-            .unwrap();
-        let workspace = workspaces
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&created.workspace_id)
-            .cloned()
-            .expect("the relay hosts the room's workspace");
-        let (replayed, archived) = {
-            let runtime = workspace.lock().await;
-            (
-                crate::store::test_support::replay_frames(&runtime.store),
-                archived_bytes(runtime.store.root()),
-            )
-        };
         assert!(
-            !replayed.is_empty(),
-            "{withdrawal:?}: a device joining the room is replayed the room"
+            archived.iter().any(|bytes| {
+                crate::frame::decode(bytes.get(4..).unwrap_or_default())
+                    .is_ok_and(|frame| replayed_frame_carries(&frame, title))
+            }),
+            "the relay keeps {title:?} archived for those who held it"
         );
-        for title in TITLES {
-            assert!(
-                !replayed
-                    .iter()
-                    .any(|frame| replayed_frame_carries(frame, title)),
-                "{withdrawal:?}: a member who joins later is replayed {title:?}, \
-                 a window withdrawn before they joined"
-            );
-            assert!(
-                archived.iter().any(|bytes| {
-                    crate::frame::decode(bytes.get(4..).unwrap_or_default())
-                        .is_ok_and(|frame| replayed_frame_carries(&frame, title))
-                }),
-                "{withdrawal:?}: the relay keeps {title:?} archived for those who held it"
-            );
-        }
-        drop(workspaces);
-        relay.shutdown().await;
     }
+    drop(workspaces);
+    relay.shutdown().await;
 }
 
 /// A workspace becomes public in the directory: its arrangement stays what it
-/// was. Open admission is not a layout decision: the room keeps sharing its
-/// members' windows and strips across a restart, exactly as before it was
-/// listed. A governor who wants each member's windows on their own device
-/// says so ([`the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it`]).
+/// was. Open admission is not a decision about the arrangement: the room keeps
+/// sharing its members' windows and strips across a restart, exactly as before
+/// it was listed.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
 )]
 #[tokio::test]
-async fn a_listed_room_keeps_sharing_its_layout_after_a_restart() {
+async fn a_listed_room_keeps_sharing_its_windows_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -2422,7 +2279,7 @@ async fn a_listed_room_keeps_sharing_its_layout_after_a_restart() {
         2,
         "committed while the relay still took members' windows in"
     );
-    // Listed by a relay from before workspaces carried their layout scope.
+    // Listed in the directory: anyone may come in as an editor.
     workspaces
         .inner
         .listings
@@ -2439,107 +2296,15 @@ async fn a_listed_room_keeps_sharing_its_layout_after_a_restart() {
 
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
-    assert!(!workspaces.is_personal(&workspace));
     assert_eq!(
         titles_shared(&workspaces, &workspace).await.len(),
         2,
         "the room still holds its members' windows"
     );
-    {
-        let state = workspaces.workspace(&workspace).await.unwrap();
-        let governed = state.lock().await;
-        assert_eq!(
-            governed.peer().governance().workspace_layout(),
-            tilo_desktop_model::projection::WorkspaceLayout::Shared,
-            "every member's device reads the same arrangement"
-        );
-    }
-    workspaces
-        .decide_layout_write(&workspace, a.device_public_key, &body)
-        .await
-        .unwrap();
     workspaces
         .absorb(&workspace, a.device_public_key, &body)
         .await
         .unwrap();
-    assert_eq!(titles_shared(&workspaces, &workspace).await.len(), 2);
-    drop(workspaces);
-    relay.shutdown().await;
-}
-
-/// The governor decides the layout scope, and the workspace holds to its word
-/// across a restart: made personal, what the workspace committed of a member's
-/// windows goes at once; made shared again, members' windows are taken in
-/// as in any invite-only workspace; and a listed workspace whose governor chose to
-/// share its layout keeps sharing it.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
-)]
-#[tokio::test]
-async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
-    use tilo_desktop_model::projection::WorkspaceLayout;
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
-    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    assert_eq!(
-        workspaces.layout(&workspace),
-        WorkspaceLayout::Shared,
-        "invite-only"
-    );
-    let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
-    let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
-    workspaces
-        .absorb(&workspace, a.device_public_key, &body)
-        .await
-        .unwrap();
-    assert_eq!(titles_shared(&workspaces, &workspace).await.len(), 2);
-
-    workspaces
-        .set_layout(&workspace, WorkspaceLayout::Personal)
-        .await
-        .unwrap();
-    assert!(titles_shared(&workspaces, &workspace).await.is_empty());
-
-    workspaces
-        .set_layout(&workspace, WorkspaceLayout::Shared)
-        .await
-        .unwrap();
-    assert!(!workspaces.is_personal(&workspace));
-    // A's device publishes its windows again, now that the workspace shares them.
-    let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
-    workspaces
-        .decide_layout_write(&workspace, a.device_public_key, &body)
-        .await
-        .unwrap();
-    workspaces
-        .absorb(&workspace, a.device_public_key, &body)
-        .await
-        .unwrap();
-    assert_eq!(titles_shared(&workspaces, &workspace).await.len(), 2);
-    workspaces
-        .inner
-        .listings
-        .set(
-            &workspace,
-            Some(tilo_relay_protocol::directory::Listing {
-                description: "Come in".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
-            }),
-        )
-        .unwrap();
-    drop(workspaces);
-    relay.shutdown().await;
-
-    let relay = test_host(dir.path(), &key, &cert).await;
-    let workspaces = relay.workspaces().clone();
-    assert_eq!(
-        workspaces.layout(&workspace),
-        WorkspaceLayout::Shared,
-        "the governor's choice, not the listing's default"
-    );
     assert_eq!(titles_shared(&workspaces, &workspace).await.len(), 2);
     drop(workspaces);
     relay.shutdown().await;
@@ -2816,13 +2581,7 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
     }
 
     // A change that is not an arrival: the next arrival starts over.
-    workspaces
-        .set_layout(
-            &workspace,
-            tilo_desktop_model::projection::WorkspaceLayout::Personal,
-        )
-        .await
-        .unwrap();
+    workspaces.rename(&workspace, "Lounge II").await.unwrap();
     let (late, late_cert) = guest_device();
     door_join(&workspaces, &cert, &workspace, (&late, &late_cert), 30).await;
     assert!(

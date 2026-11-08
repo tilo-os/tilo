@@ -9,6 +9,18 @@
 //! session is what ends it. Acting as the person is a request, never authority: the person decides
 //! it on the sheet, or ahead of time by naming the program when they start the session
 //! (`--admit-repl PATH`). "Always allow" is kept in this account's private state.
+//!
+//! A confined environment (a `ush` guest) has a door of its own, which its `ush` asks for here
+//! ([`environments`]): a program there works in the environment's workspace, and the person's
+//! answers about it are remembered per environment. A client of the session's own door may ask for
+//! a workspace by id instead of the one in front ([`tilo_runtime::session_door::WORKSPACE`]); it is
+//! admitted there only if the person is one of its people. Every connection the person admits is
+//! an agent of its own (`claude-code@host#2`), so its work is attributed to it, and the person's
+//! Stop ends it alone.
+
+mod environments;
+
+use environments::Origin;
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -100,6 +112,8 @@ struct Facts {
     /// The other device of the person's it connected from, over iroh ([`crate::remote_door`]);
     /// `None` for a program of this login.
     origin: Option<tilo_runtime::remote_door::Origin>,
+    /// The door of this login it came in by: the session's own, or an environment's.
+    entrance: Origin,
 }
 
 impl Facts {
@@ -119,24 +133,35 @@ impl Facts {
             "agent-door-client",
             &[("client", &self.client), ("program", &program)],
         );
-        match &self.app {
+        let who = match &self.app {
             Some(app) => words("agent-door-client-in-app", &[("who", &who), ("app", app)]),
             None => who,
+        };
+        match &self.entrance {
+            Origin::Host => who,
+            Origin::Environment(environment) => words(
+                "agent-door-client-in-environment",
+                &[("who", &who), ("environment", &environment.name)],
+            ),
         }
     }
 
-    /// The remembered identity of this client: the executable the kernel names and the name it
-    /// gives. `None` without an executable, and such a client is asked about every time.
+    /// The remembered identity of this client: the environment it works in (none on the session's
+    /// own door), the executable the kernel names and the name it gives. `None` without an
+    /// executable, and such a client is asked about every time.
     fn key(&self) -> Option<BindingKey> {
         if let Some(origin) = &self.origin {
             // A client on another device is remembered by that device and the name it gives.
             return Some(BindingKey {
+                environment: None,
                 exe: PathBuf::new(),
                 client: self.client.clone(),
                 device: Some(hex::encode(origin.key())),
             });
         }
+        // A program of this login is remembered in the environment it works in, if any.
         Some(BindingKey {
+            environment: self.entrance.environment().map(str::to_owned),
             exe: self.exe.clone()?,
             client: self.client.clone(),
             device: None,
@@ -159,6 +184,8 @@ struct Request {
     facts: Facts,
     /// It asks to act as the person.
     as_person: bool,
+    /// The workspace it asks to work in, by id; `None` for the one in front.
+    workspace: Option<String>,
     /// The seat it is served at, once the person answers.
     seat: u64,
     /// Answered by the loop once the person decided and the agent is a member; dropped by the
@@ -175,7 +202,11 @@ struct Waiting {
     workspace_name: String,
     /// The seat it is served at, once the person answers.
     seat: u64,
+    /// The agent it is remembered as, and the agent of its own it is admitted as
+    /// (`claude-code@host#2`), shown as `shown` on the desk.
+    agent: String,
     proposed: String,
+    shown: String,
     /// The question up for it; dropping it withdraws the question.
     asked: Option<Asked>,
     decide: tokio::sync::oneshot::Sender<Consent>,
@@ -184,6 +215,10 @@ struct Waiting {
 /// What the person's answer remembers: this client, as this agent.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct BindingKey {
+    /// The confined environment a program of this login works in, by its id
+    /// (`<workspace>/<record>`); absent for the session's own door.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    environment: Option<String>,
     exe: PathBuf,
     client: String,
     /// The other device of the person's a client connected from, by its key in hex; absent for a
@@ -313,6 +348,9 @@ struct Connection {
     client: String,
     /// The workspace it works in, by name.
     workspace: String,
+    /// The environment's door it came in by, by number: none for the session's own. It ends with
+    /// that environment.
+    door: Option<u64>,
     /// The connection itself, shut when the person stops its seat.
     stream: Option<UnixStream>,
 }
@@ -324,8 +362,9 @@ impl Seats {
         })
     }
 
-    /// A connection, before the person answers for it: nothing of it shows until it is admitted.
-    fn joining(&self) -> u64 {
+    /// A connection by the environment's door `door` (none for any other), before the person
+    /// answers for it: nothing of it shows until it is admitted.
+    fn joining(&self, door: Option<u64>) -> u64 {
         let mut inner = self.inner.lock_recover();
         inner.next = inner.next.wrapping_add(1);
         let seat = inner.next;
@@ -335,6 +374,7 @@ impl Seats {
                 agent: String::new(),
                 client: String::new(),
                 workspace: String::new(),
+                door,
                 stream: None,
             },
         );
@@ -383,12 +423,23 @@ impl Seats {
     /// End every connection served as `agent` , as the person's Stop on its seat does. Whether
     /// there was one.
     pub(crate) fn stop(&self, agent: &str) -> bool {
+        self.end(|connection| connection.agent == agent)
+    }
+
+    /// End every connection that came in by the environment's door `door`, as that environment
+    /// ends.
+    fn stop_door(&self, door: u64) -> bool {
+        self.end(|connection| connection.door == Some(door))
+    }
+
+    /// End every connection `ending` picks. Whether there was one.
+    fn end(&self, ending: impl Fn(&Connection) -> bool) -> bool {
         let ended: Vec<Connection> = {
             let mut inner = self.inner.lock_recover();
             let seats: Vec<u64> = inner
                 .connections
                 .iter()
-                .filter(|(_, connection)| connection.agent == agent)
+                .filter(|(_, connection)| ending(connection))
                 .map(|(seat, _)| *seat)
                 .collect();
             if seats.is_empty() {
@@ -492,6 +543,46 @@ pub(crate) struct Loop {
     /// What the person's other devices connect with, and how this one reaches theirs
     /// ([`crate::remote_door`]).
     remote: Option<Arc<Remote>>,
+    /// The doors of the confined environments open now, and the instance each agent reached.
+    environments: environments::Doors,
+}
+
+/// What serving one connection takes, on a thread of its own.
+#[derive(Clone)]
+struct Serving {
+    broker: Option<Arc<AppBrokerState>>,
+    remote: Option<Arc<Remote>>,
+    doors: Arc<SessionDoors>,
+    requests: Sender<Request>,
+    launches: Arc<Launches>,
+    wake: Wake,
+    control: Arc<crate::test_control::Door>,
+    seats: Arc<Seats>,
+    /// Connections being served now, against the door's cap.
+    connections: Arc<AtomicUsize>,
+    environments: environments::Opener,
+}
+
+impl Serving {
+    /// Serve one connection of this account, from `from`, on its own thread: nothing it asks for
+    /// runs before the person admits it.
+    fn serve(&self, stream: UnixStream, from: From) {
+        let serving = self.clone();
+        let connections = Arc::clone(&self.connections);
+        connections.fetch_add(1, Ordering::Relaxed);
+        let spawned = std::thread::Builder::new()
+            .name("tilo-agent-door".into())
+            .spawn(move || {
+                serve_connection(Opened { stream, from }, &serving);
+                serving.connections.fetch_sub(1, Ordering::Relaxed);
+                // A question for a client that is gone is withdrawn on the next pass.
+                (serving.wake)();
+            });
+        if let Err(error) = spawned {
+            connections.fetch_sub(1, Ordering::Relaxed);
+            tracing::warn!(%error, "agent door: a connection could not be served");
+        }
+    }
 }
 
 impl Mounted {
@@ -573,6 +664,11 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
     } = doorway;
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
+    let environments = environments::Doors::new(
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(tilo_paths::login::ENVIRONMENT_DOORS_DIR),
+    );
     let bindings_path = state.map(|directory| directory.join(BINDINGS_FILE));
     let (always, lost) = bindings_path
         .as_deref()
@@ -616,6 +712,7 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         control,
         seats,
         remote: None,
+        environments,
     };
     Ok(Mounted { door })
 }
@@ -663,6 +760,7 @@ impl Loop {
     pub(crate) fn follow(&mut self, handle: &DesktopHandle, person: &str) {
         self.accept();
         self.accept_remote();
+        self.environments.follow(handle, person);
         while let Ok(request) = self.asked.try_recv() {
             self.request(handle, request, person);
         }
@@ -717,37 +815,22 @@ impl Loop {
     /// Serve one connection of this account on its own thread: nothing it asks for runs before the
     /// person admits it.
     fn serve(&self, stream: UnixStream, from: From) {
-        let broker = self.broker.clone();
-        let remote = self.remote.clone();
-        let session = Arc::clone(&self.doors);
-        let requests = self.requests.clone();
-        let launches = Arc::clone(&self.launches);
-        let wake = Arc::clone(&self.wake);
-        let control = Arc::clone(&self.control);
-        let seats = Arc::clone(&self.seats);
-        let connections = Arc::clone(&self.connections);
-        connections.fetch_add(1, Ordering::Relaxed);
-        let served = Arc::clone(&connections);
-        let spawned = std::thread::Builder::new()
-            .name("tilo-agent-door".into())
-            .spawn(move || {
-                serve_connection(
-                    Opened { stream, from },
-                    (broker, remote),
-                    &session,
-                    &requests,
-                    &launches,
-                    &wake,
-                    &control,
-                    &seats,
-                );
-                served.fetch_sub(1, Ordering::Relaxed);
-                // A question for a client that is gone is withdrawn on the next pass.
-                wake();
-            });
-        if let Err(error) = spawned {
-            connections.fetch_sub(1, Ordering::Relaxed);
-            tracing::warn!(%error, "agent door: a connection could not be served");
+        self.serving().serve(stream, from);
+    }
+
+    /// What serving a connection of this door takes.
+    fn serving(&self) -> Serving {
+        Serving {
+            broker: self.broker.clone(),
+            remote: self.remote.clone(),
+            doors: Arc::clone(&self.doors),
+            requests: self.requests.clone(),
+            launches: Arc::clone(&self.launches),
+            wake: Arc::clone(&self.wake),
+            control: Arc::clone(&self.control),
+            seats: Arc::clone(&self.seats),
+            connections: Arc::clone(&self.connections),
+            environments: self.environments.opener(),
         }
     }
 
@@ -757,6 +840,7 @@ impl Loop {
         let Request {
             facts,
             as_person,
+            workspace: asked,
             seat,
             decide,
         } = request;
@@ -766,19 +850,14 @@ impl Loop {
             ));
             return;
         };
-        if as_person && facts.origin.is_some() {
-            // Only a program of this login may ask to act as the person.
-            let _ = decide.send(Consent::Refuse(word("agent-door-person-from-device")));
-            return;
-        }
-        let asked_for = facts
-            .origin
-            .as_ref()
-            .and_then(|origin| origin.workspace.clone());
-        let Some((workspace, name)) = workspace_for(handle, asked_for.as_deref()) else {
-            let _ = decide.send(Consent::Refuse(word("agent-door-no-workspace")));
-            return;
-        };
+        let (workspace, name) =
+            match where_it_works(handle, person, &facts, as_person, asked.as_deref()) {
+                Ok(found) => found,
+                Err(reason) => {
+                    let _ = decide.send(Consent::Refuse(reason));
+                    return;
+                }
+            };
         let key = facts.key();
         if as_person {
             // The person named this program when they started the session, or let this client act
@@ -803,32 +882,29 @@ impl Loop {
             .as_ref()
             .and_then(|key| self.session.get(key).or_else(|| self.always.get(key)))
             .cloned();
-        if remembered.is_none() && facts.origin.is_some() && Remote::accepts_own_devices() {
-            // The person lets agents from their other devices in here without being asked: this
-            // device's own setting, made ahead of time.
-            let agent = facts.proposed();
-            tracing::info!(client = %facts.client, %agent, %workspace, "agent door: an agent from another device is let in, as this device's setting says");
-            self.seats.admitted(seat, &agent, &facts.client, &name);
-            let person = person.to_owned();
+        // What the person said ahead of time admits it as a connection of its own: an answer they
+        // remembered for this client, or this device's setting that lets agents from their other
+        // devices in without being asked.
+        let ahead = remembered.clone().filter(|_| !as_person).or_else(|| {
+            (facts.origin.is_some() && Remote::accepts_own_devices()).then(|| facts.proposed())
+        });
+        if let Some(agent) = ahead {
+            let (agent, shown) = self.agent_of(&agent, &facts);
+            tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "agent door: what the person said ahead of time admits this client");
+            self.seats.admitted(seat, &agent, &shown, &name);
             let _ = decide.send(Consent::Admit {
                 workspace,
                 agent,
-                person,
-            });
-            return;
-        }
-        if !as_person && let Some(agent) = &remembered {
-            // What the person said to remember: this client is that agent,
-            // acting for the person whose session it was admitted to.
-            self.seats.admitted(seat, agent, &facts.client, &name);
-            let _ = decide.send(Consent::Admit {
-                workspace,
-                agent: agent.clone(),
                 person: person.to_owned(),
             });
             return;
         }
-        let proposed = remembered.unwrap_or_else(|| facts.proposed());
+        let agent = remembered.unwrap_or_else(|| facts.proposed());
+        let (proposed, shown) = if as_person {
+            (agent.clone(), facts.client.clone())
+        } else {
+            self.agent_of(&agent, &facts)
+        };
         let details = serde_json::to_value(Admission {
             workspace: name.clone(),
             agent: proposed.clone(),
@@ -856,10 +932,41 @@ impl Loop {
             workspace,
             workspace_name: name,
             seat,
+            agent,
             proposed,
+            shown,
             asked: Some(asked),
             decide,
         });
+    }
+
+    /// The agent of its own the client `facts` describes is admitted as, when the person admits it
+    /// as `agent`, and how their desk shows it: its instance among the clients of that agent at its
+    /// place (`claude-code@host#2`, `Claude Code #2`, `Claude Code in dev #2`). An agent from
+    /// another device names its device already (`claude-code@laptop-3f2a`).
+    fn agent_of(&mut self, agent: &str, facts: &Facts) -> (String, String) {
+        let at = if facts.origin.is_some() {
+            agent.to_owned()
+        } else {
+            format!("{agent}@{}", facts.entrance.place())
+        };
+        let (id, instance) = self.environments.instance(&at);
+        let instance = instance.to_string();
+        let shown = match &facts.entrance {
+            Origin::Environment(environment) => words(
+                "agent-door-seat-in-environment",
+                &[
+                    ("client", &facts.client),
+                    ("environment", &environment.name),
+                    ("instance", &instance),
+                ],
+            ),
+            Origin::Host => words(
+                "agent-door-seat",
+                &[("client", &facts.client), ("instance", &instance)],
+            ),
+        };
+        (id, shown)
     }
 
     /// Settle the questions the person answered — or whose client left — and let the admitted
@@ -920,17 +1027,19 @@ impl Loop {
         self.seats.admitted(
             waiting.seat,
             &waiting.proposed,
-            &waiting.facts.client,
+            &waiting.shown,
             &waiting.workspace_name,
         );
+        // What is remembered is the agent, at its place: each later connection the answer admits
+        // is an instance of its own.
         if let Some(key) = waiting.facts.key() {
             match remembered {
                 Memory::Once => {}
                 Memory::Session => {
-                    self.session.insert(key, waiting.proposed.clone());
+                    self.session.insert(key, waiting.agent.clone());
                 }
                 Memory::Always => {
-                    self.always.insert(key, waiting.proposed.clone());
+                    self.always.insert(key, waiting.agent.clone());
                     self.store_always();
                 }
             }
@@ -977,6 +1086,36 @@ impl Loop {
             }
         });
     }
+}
+
+/// Where the client `facts` describes works, by id and as the person reads it, when it may work
+/// here at all: the workspace its device asked for, its environment's, the one it asked for by id,
+/// or the one in front. The reason it may not, as it is told: only a program of this login, and
+/// none inside an environment, acts as the person (`as_person`).
+fn where_it_works(
+    handle: &DesktopHandle,
+    person: &str,
+    facts: &Facts,
+    as_person: bool,
+    asked: Option<&str>,
+) -> Result<(String, String), String> {
+    if as_person && facts.origin.is_some() {
+        return Err(word("agent-door-person-from-device"));
+    }
+    if as_person && matches!(facts.entrance, Origin::Environment(_)) {
+        // A confined environment's programs are agents: none acts as the person, whose authority
+        // reaches past the environment.
+        return Err(word("agent-door-environment-as-person"));
+    }
+    let found = match &facts.origin {
+        Some(origin) => workspace_for(handle, origin.workspace.as_deref())
+            .ok_or_else(|| word("agent-door-no-workspace")),
+        None => environments::workspace_for(handle, person, &facts.entrance, asked),
+    };
+    if let Err(reason) = &found {
+        tracing::info!(client = %facts.client, pid = facts.pid, ?asked, %reason, "agent door: a client's workspace is refused");
+    }
+    found
 }
 
 /// The workspace a client works in, by id and as the person reads it: the one
@@ -1118,6 +1257,8 @@ pub(crate) enum PeerRefusal {
     Unavailable,
     /// As many connections as it takes are being served.
     Busy,
+    /// A connection to an environment's door from a process outside that environment.
+    OutsideEnvironment,
 }
 
 impl PeerRefusal {
@@ -1130,6 +1271,9 @@ impl PeerRefusal {
             Self::Sandboxed => "programs inside a sandboxed app can't connect here",
             Self::Unavailable => "this desktop isn't serving its actions yet; try again shortly",
             Self::Busy => "the agent door is serving as many connections as it takes",
+            Self::OutsideEnvironment => {
+                "this door serves only programs inside the environment it belongs to"
+            }
         }
     }
 }
@@ -1200,8 +1344,8 @@ fn shares_security_namespaces(pid: u32) -> bool {
     same("user") && same("mnt")
 }
 
-/// What the person is shown about the connection from `pid` .
-fn facts_of(pid: u32, launches: &Launches) -> Facts {
+/// What the person is shown about the connection from `pid`, which came in by `entrance`.
+fn facts_of(pid: u32, launches: &Launches, entrance: Origin) -> Facts {
     Facts {
         client: String::new(),
         version: None,
@@ -1209,6 +1353,7 @@ fn facts_of(pid: u32, launches: &Launches) -> Facts {
         exe: std::fs::read_link(format!("/proc/{pid}/exe")).ok(),
         app: launches.app_of_descendant(pid).map(|app| app_name(&app)),
         origin: None,
+        entrance,
     }
 }
 
@@ -2007,6 +2152,9 @@ enum From {
     /// A program of this login, by the pid that opened it: how the door knows whether it is a
     /// program inside an app.
     Login(u32),
+    /// A program inside a confined environment of this login, by its pid, at that environment's
+    /// own door ([`environments`]).
+    Environment(u32, Arc<environments::Environment>),
     /// Another of the person's devices, over iroh ([`crate::remote_door`]).
     Device(Box<tilo_runtime::remote_door::Origin>),
 }
@@ -2014,16 +2162,19 @@ enum From {
 /// Serve one connection of this account, on its own thread: read what it opens with, ask the
 /// person, and only once they admit it answer what it asked. A refusal answers its `initialize`
 /// with a JSON-RPC error and closes.
-fn serve_connection(
-    opened: Opened,
-    (broker, remote): (Option<Arc<AppBrokerState>>, Option<Arc<Remote>>),
-    session: &Arc<SessionDoors>,
-    requests: &Sender<Request>,
-    launches: &Launches,
-    wake: &Wake,
-    control: &crate::test_control::Door,
-    seats: &Seats,
-) {
+fn serve_connection(opened: Opened, serving: &Serving) {
+    let Serving {
+        broker,
+        remote,
+        doors: session,
+        requests,
+        launches,
+        wake,
+        control,
+        seats,
+        ..
+    } = serving;
+    let (broker, remote) = (broker.clone(), remote.clone());
     let Opened { mut stream, from } = opened;
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
@@ -2033,8 +2184,9 @@ fn serve_connection(
             return;
         }
     };
-    let pid = match from {
-        From::Login(pid) => pid,
+    let (pid, entrance) = match from {
+        From::Login(pid) => (pid, Origin::Host),
+        From::Environment(pid, environment) => (pid, Origin::Environment(environment)),
         From::Device(origin) => {
             // Another device's agent is served MCP and nothing else: what is not an `initialize` is
             // refused before anyone is asked.
@@ -2049,6 +2201,7 @@ fn serve_connection(
                 exe: None,
                 app: None,
                 origin: Some(*origin),
+                entrance: Origin::Host,
             };
             serve_admitted(
                 stream,
@@ -2060,6 +2213,10 @@ fn serve_connection(
             );
             return;
         }
+    };
+    let Some(stream) = environments::answer_door_requests(stream, &first, pid, &entrance, serving)
+    else {
+        return;
     };
     if let Some(forward) = tilo_runtime::remote_door::forward_request(&first) {
         // A client of this login asks to be carried to another of the person's devices, which
@@ -2100,7 +2257,7 @@ fn serve_connection(
         refuse(stream, &PeerRefusal::Unavailable);
         return;
     };
-    let facts = facts_of(pid, launches);
+    let facts = facts_of(pid, launches, entrance);
     serve_admitted(
         stream,
         first,
@@ -2123,7 +2280,7 @@ fn serve_admitted(
 ) {
     let tasks = Arc::new(TaskHosts::new(&session.person, Arc::clone(session)));
     let admitted = Arc::clone(&tasks);
-    let seat = seats.joining();
+    let seat = seats.joining(facts.entrance.door());
     let seat_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
         Err(error) => {
@@ -2176,6 +2333,7 @@ fn ask(
     let request = Request {
         facts,
         as_person: hello.as_person,
+        workspace: hello.workspace.clone(),
         seat,
         decide,
     };
@@ -2241,7 +2399,7 @@ mod tests {
         use std::io::Read as _;
         let seats = Seats::new();
         let (served, client) = UnixStream::pair().unwrap();
-        let asked = seats.joining();
+        let asked = seats.joining(None);
         assert!(
             seats.readings().is_empty(),
             "nothing shows before the answer"
@@ -2258,7 +2416,7 @@ mod tests {
         assert!(readings[0].seat, "a seat, not a run's agent");
         // One agent, two connections: the bar shows one presence, and the person's Stop ends both.
         let (second_served, second_client) = UnixStream::pair().unwrap();
-        let other = seats.joining();
+        let other = seats.joining(None);
         seats.admitted(other, "claude-code", "Claude Code", "Studio");
         seats.attached(other, &second_served);
         assert_eq!(seats.readings().len(), 1, "one presence per agent");

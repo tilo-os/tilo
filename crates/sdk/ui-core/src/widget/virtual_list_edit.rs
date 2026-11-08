@@ -155,7 +155,8 @@ impl<M: ListModel> VirtualList<M> {
             return Some(placed);
         }
         let row = self.row_box(index)?;
-        let depth = f64::from(self.tree.as_ref().map_or(0, |marks| marks.depth(key)));
+        // The field stands where the row's content does: past the step its chevron takes.
+        let depth = f64::from(self.tree.as_ref().map_or(0, |marks| marks.depth(key))) + 1.0;
         let x0 = row.x0 + self.lead + depth * self.disclosure;
         Some((
             Rect::new(

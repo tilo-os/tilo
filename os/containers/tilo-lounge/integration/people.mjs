@@ -18,13 +18,10 @@
 // through glyphs: what is drawn is a picture, and what a person can reach is
 // the snapshot.
 //
-// usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST
+// usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR
 // ROLES_FILE
-// LIVE_HOST is the host the live plane's origin names, which the browsers
-// resolve to this machine: pages dial it through the ingress in front of the
-// plane, with the certificate `/live` told them to pin. ROLES_FILE is the file
-// the deployment mounts as the Lounge's roles file, which this run writes the
-// inviter into.
+// ROLES_FILE is the file the deployment mounts as the Lounge's roles file,
+// which this run writes the inviter into.
 // With EARLIER as the seventh argument the run is the other way round: one
 // person, who was not here when the workspace last started, joins and reads the
 // chat message EARLIER — written before it by pages that are gone — and writes
@@ -37,9 +34,9 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
-const [site, relay, origin, out, liveHost, rolesFile, earlier] = process.argv.slice(2);
-if (!site || !relay || !origin || !out || !liveHost || !rolesFile) {
-  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST ROLES_FILE [EARLIER]');
+const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
+if (!site || !relay || !origin || !out || !rolesFile) {
+  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR ROLES_FILE [EARLIER]');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -434,9 +431,6 @@ const nodeValues = tab => tab.evaluate(`JSON.stringify((() => {
 const browserArgs = [
   '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  // The live plane's host is the deployment's, not this machine's: the page
-  // dials it, and here it is this machine's loopback behind the ingress.
-  `--host-resolver-rules=MAP ${liveHost} 127.0.0.1`,
   // A person's call is heard through a microphone and played through a
   // speaker: this machine has no person at it, so the browser carries both —
   // a synthetic microphone the call really encodes and sends, and no prompt
@@ -546,10 +540,11 @@ try {
   await dump(a.tab, '5-a-open');
   await dump(b.tab, '5-b-open');
 
-  // Each page joined the live plane the deployment publishes: its own channel
+  // Each page joined the live plane over the host's own iroh: its channel
   // diagnostics name the plane and the devices it reads. A page whose plane
-  // never opened lists nobody and says so there instead, so this is the pin,
-  // the host and the ingress all read from the page that used them.
+  // never opened lists nobody and says so there instead, so this is the
+  // host's address, its relay and the plane all read from the page that used
+  // them.
   const joinedPlane = async (person, who) => {
     const deadline = Date.now() + 120_000;
     for (;;) {
@@ -566,7 +561,7 @@ try {
     }
   };
   report.planes = {a: await joinedPlane(a, 'A'), b: await joinedPlane(b, 'B')};
-  console.log(`ok: both pages joined the live plane at ${liveHost}`);
+  console.log('ok: both pages joined the live plane');
 
   // Each desk shows the other as here and never itself, with a window of
   // theirs focused: the desktop's People list is what presence is on the

@@ -10,11 +10,6 @@
 //! different: its guests write in it as members do, so they open and close
 //! their own windows, and leave its name and desks to whoever governs it.
 //!
-//! A workspace may share no member's layout at all ([`Standing::layout_shared`]
-//! false): a public workspace keeps each visitor's windows to themselves, so
-//! everything on their desktop is theirs to arrange, and the workspace's
-//! name and desks are its host's alone.
-//!
 //! Commands outside the workspace's topology (shortcuts, grant sets,
 //! receipts, namespace claims) are decided by their own governance checks
 //! and pass here unchanged.
@@ -33,9 +28,6 @@ pub struct Standing<'a> {
     /// Their role in the workspace, as its host answers it or its policy reads;
     /// `None` while not known yet, or for someone the workspace does not list.
     pub role: Option<Role>,
-    /// Whether the workspace shares its members' layout. A public workspace does
-    /// not: what a member arranges stays on their own desktop.
-    pub layout_shared: bool,
     /// The workspace's current members, by person id, when known: what someone
     /// no longer among them made is released, theirs to close and move
     /// ([`crate::ownership::released`]).
@@ -78,9 +70,6 @@ pub enum Refusal {
     Others { id: u64, owner: Option<String> },
     /// They may look at this workspace, not change it.
     ReadOnly,
-    /// The workspace shares no member's layout: only its host names it and sets
-    /// its desks.
-    HostsLayout,
 }
 
 impl std::fmt::Display for Refusal {
@@ -97,7 +86,6 @@ impl std::fmt::Display for Refusal {
             }
             Self::Others { .. } => "Only whoever opened it, or a moderator, can change it",
             Self::ReadOnly => "You can look at this workspace, not change it",
-            Self::HostsLayout => "This public workspace's name and desks are set by its host",
         })
     }
 }
@@ -105,9 +93,7 @@ impl std::fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 fn govern(standing: &Standing<'_>, what: Governed) -> Result<(), Refusal> {
-    if !standing.layout_shared {
-        Err(Refusal::HostsLayout)
-    } else if standing.governs() {
+    if standing.governs() {
         Ok(())
     } else {
         Err(Refusal::Governed(what))
@@ -124,10 +110,6 @@ fn write(standing: &Standing<'_>) -> Result<(), Refusal> {
 
 /// Whether `standing` may close, move or reorder the window `tab`: they
 /// opened it, whoever did has left the workspace, or they govern the workspace.
-/// In a workspace that shares no member's layout every window on their desktop
-/// is theirs to arrange, unless they only look at the workspace (a viewer, a
-/// Viewer): they open nothing, so a window they closed would be gone from
-/// what they watch for good.
 ///
 /// # Errors
 ///
@@ -138,11 +120,7 @@ pub fn may_rearrange_window(
     authors: &Authors,
     tab: u64,
 ) -> Result<(), Refusal> {
-    let looks_only = standing.role.is_some_and(|role| role < Role::Editor);
-    if !standing.layout_shared && looks_only {
-        Err(Refusal::ReadOnly)
-    } else if !standing.layout_shared
-        || standing.governs()
+    if standing.governs()
         || made_by(authors, tab, standing.person)
         || (standing.writes() && released(authors, tab, standing.members))
     {
@@ -166,9 +144,8 @@ pub fn may_manage_strip(
     authors: &Authors,
     strip: u64,
 ) -> Result<(), Refusal> {
-    if standing.layout_shared
-        && (made_by(authors, strip, standing.person)
-            || (standing.writes() && released(authors, strip, standing.members)))
+    if made_by(authors, strip, standing.person)
+        || (standing.writes() && released(authors, strip, standing.members))
     {
         Ok(())
     } else {
@@ -177,8 +154,7 @@ pub fn may_manage_strip(
 }
 
 /// Whether `standing` may add a workspace beside this one: whoever governs it,
-/// as for its desks. A workspace that shares no member's layout keeps adding
-/// workspaces to its host.
+/// as for its desks.
 ///
 /// # Errors
 ///
@@ -255,26 +231,22 @@ mod tests {
     const GUEST: Standing<'static> = Standing {
         person: "guest",
         role: Some(Role::Editor),
-        layout_shared: true,
         members: None,
     };
     const OTHER_GUEST: &str = "other-guest";
     const MEMBER: Standing<'static> = Standing {
         person: "member",
         role: Some(Role::Editor),
-        layout_shared: true,
         members: None,
     };
     const MODERATOR: Standing<'static> = Standing {
         person: "moderator",
         role: Some(Role::Moderator),
-        layout_shared: true,
         members: None,
     };
     const OWNER: Standing<'static> = Standing {
         person: "owner",
         role: Some(Role::Owner),
-        layout_shared: true,
         members: None,
     };
 
@@ -349,7 +321,6 @@ mod tests {
         let unknown = Standing {
             person: "guest",
             role: None,
-            layout_shared: true,
             members: None,
         };
         assert!(asks(&unknown, &rename).is_err());
@@ -461,55 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn in_a_workspace_that_shares_no_layout_a_visitors_desktop_is_their_own() {
-        let visitor = Standing {
-            layout_shared: false,
-            members: None,
-            ..GUEST
-        };
-        let moderator = Standing {
-            layout_shared: false,
-            members: None,
-            ..MODERATOR
-        };
-        // Every window on their desktop is theirs, someone else's included:
-        // what they close or move stays on their own desktop.
-        let theirs = DesktopCommand::CloseTab {
-            location: at(2, 200),
-        };
-        assert_eq!(asks(&visitor, &theirs), Ok(()));
-        // A viewer opens nothing, so it closes and moves nothing either:
-        // what it watches stays whole.
-        let viewer = Standing {
-            role: Some(Role::Viewer),
-            ..visitor
-        };
-        for command in [
-            theirs,
-            DesktopCommand::ReorderGroup {
-                strip: 10,
-                group: 100,
-                before: None,
-            },
-        ] {
-            assert_eq!(asks(&viewer, &command), Err(Refusal::ReadOnly));
-        }
-        // The workspace's name and desks are its host's, even for a moderator.
-        for command in [
-            DesktopCommand::RenameWorkspace {
-                name: "Hacked".into(),
-            },
-            DesktopCommand::CreateStrip {
-                name: "Mine".into(),
-            },
-            DesktopCommand::RemoveStrip { strip: 10 },
-        ] {
-            assert_eq!(asks(&visitor, &command), Err(Refusal::HostsLayout));
-            assert_eq!(asks(&moderator, &command), Err(Refusal::HostsLayout));
-        }
-    }
-
-    #[test]
     fn only_owner_and_moderators_add_workspaces() {
         for standing in [GUEST, MEMBER] {
             assert_eq!(
@@ -519,12 +441,6 @@ mod tests {
         }
         assert_eq!(may_create_workspace(&MODERATOR), Ok(()));
         assert_eq!(may_create_workspace(&OWNER), Ok(()));
-        let visitor = Standing {
-            layout_shared: false,
-            members: None,
-            ..OWNER
-        };
-        assert_eq!(may_create_workspace(&visitor), Err(Refusal::HostsLayout));
     }
 
     #[test]
@@ -538,7 +454,6 @@ mod tests {
         let viewer = Standing {
             person: "viewer",
             role: Some(Role::Viewer),
-            layout_shared: true,
             members: None,
         };
         assert_eq!(asks(&viewer, &open), Err(Refusal::ReadOnly));
@@ -552,7 +467,6 @@ mod tests {
             Refusal::Governed(Governed::Workspaces),
             Refusal::Others { id: 2, owner: None },
             Refusal::ReadOnly,
-            Refusal::HostsLayout,
         ] {
             let text = refusal.to_string();
             assert!(!text.contains('2') && text.ends_with(char::is_alphabetic));

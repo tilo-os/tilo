@@ -1,4 +1,4 @@
-use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
+use super::super::AppBrokerState;
 use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView};
 use crate::test_support::{
     Grants as _, KindSet, Subject, TreePath, Workspace, WorkspaceSlot, WorkspaceTree,
@@ -105,13 +105,8 @@ fn broker(
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
-    let (state, _bridge_rx) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
+    let (state, _bridge_rx) = AppBrokerState::test_state(
         Some(tree.authority()),
-        None,
-        None,
         crate::services::HostServices {
             host_steps: vec![counter],
             ..Default::default()

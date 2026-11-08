@@ -397,7 +397,11 @@ fn a_finger_gets_touch_targets_and_the_pin_keypad() {
     placed(&mut prompt, phone);
 
     let layout = prompt.layout().clone();
-    assert_eq!(layout.keypad.len(), 13, "the phone pad and its letters key");
+    assert_eq!(
+        layout.keypad.len(),
+        12,
+        "the phone pad: digits, delete, enter"
+    );
     for rect in layout
         .fields
         .iter()
@@ -462,7 +466,7 @@ fn a_pin_prompt_raised_while_touch_is_in_use_opens_with_its_keypad() {
     Widget::set_interaction_environment(&mut prompt, touch_in_use);
     assert!(prompt.shows_keypad());
     placed(&mut prompt, phone);
-    assert_eq!(prompt.layout().keypad.len(), 13);
+    assert_eq!(prompt.layout().keypad.len(), 12);
     // The same environment again changes nothing; a keyboard puts it away.
     Widget::set_interaction_environment(&mut prompt, touch_in_use);
     assert!(prompt.shows_keypad());

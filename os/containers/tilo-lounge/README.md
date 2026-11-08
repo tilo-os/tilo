@@ -18,10 +18,11 @@ the workspace through the ingress that forwards the workspace's origin to
 `9780`. The process serves the routes on `8790` and the relay on `9780`, both
 plain HTTP behind that ingress, which ends TLS.
 
-The pages' live plane (live cursors, presence, window streams) is WebTransport
-on UDP, which an ingress publishes on its own: the process binds it on
-`TILO_ROOMS_LIVE` and pages are told to dial `TILO_ROOMS_LIVE_ORIGIN`, so the
-UDP address an ingress forwards to never has to be the HTTPS origin's host.
+The pages' live plane (live cursors, presence, window streams) is reached over
+iroh, which a page reaches through a packet relay over websockets: the process
+runs its own on `TILO_ROOMS_LIVE`, and pages dial it. An ingress that publishes
+it on its own host names that origin in `TILO_ROOMS_LIVE_ORIGIN`, so the
+address it forwards to never has to be the HTTPS origin's host.
 
 ## The deployment's environment
 
@@ -44,7 +45,6 @@ Optional, with these defaults:
 | --- | --- | --- |
 | `TILO_ROOMS_NAME` | the name, capitalized | the name people see |
 | `TILO_ROOMS_DEFAULT_ROLE` | `editor` | the role everyone who joins through the door gets |
-| `TILO_ROOMS_LAYOUT` | `shared` | every member sees the same strips and windows |
 | `TILO_ROOMS_CHAT_CHANNELS` | `general` | comma-separated channels the Chat opens with |
 | `TILO_ROOMS_FEEDBACK_CHANNEL` | none | the channel members report problems to |
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
@@ -54,8 +54,8 @@ Optional, with these defaults:
 | `TILO_ROOMS_STATE` | `/run/tilo-rooms` | the volume the workspace lives on |
 | `TILO_ROOMS_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
-| `TILO_ROOMS_LIVE` | `0.0.0.0:9781` | the UDP address the live plane binds, as the ingress forwards to it |
-| `TILO_ROOMS_LIVE_ORIGIN` | the relay origin's host on the bound port | the `https://host[:port]` origin pages dial the live plane at; its port is the one pages use (`443` when it names none) |
+| `TILO_ROOMS_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |
+| `TILO_ROOMS_LIVE_ORIGIN` | the address it bound | the `https://host[:port]` origin pages dial the packet relay at |
 | `TILO_ROOMS_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
 | `TILO_ROOMS_FETCH_PROXY` | on | `0` turns the fetch proxy off |
 | `TILO_ROOMS_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |
@@ -85,8 +85,9 @@ $TILO_ROOMS_STATE/$TILO_ROOMS_PERSISTENT/
   secrets/       this host's secret store (TILO_SECRETS_DIR), sealed files
 ```
 
-The layout is the one the wrapper this image replaces left on the volume: a
-migrated deployment keeps its workspace, its identity and its bot state.
+The directory layout is the one the wrapper this image replaces left on the
+volume: a migrated deployment keeps its workspace, its identity and its bot
+state.
 
 ## Building
 
@@ -101,14 +102,11 @@ entry from one commit, tests both and publishes `dev-<commit>`.
 
 `test-integration.sh` runs the image the way the deployment does and uses it:
 the entrypoint reads production-shaped `TILO_ROOMS_*` on this machine's own
-ports, the web entry is served beside it, an ingress publishes the live plane
-at a host of its own and forwards to the listener, and two headless Chromium
-contexts open it, join the Lounge through its door as two people, chat, share
-a desk and see each other present through the plane they pinned. With the
-ingress taken away, a page says in its members' place that it cannot reach
-live presence and says it once in its console. It is the gate `publish-site`
-runs before publishing, so a dispatched build publishes nothing a person
-cannot use.
+ports, the web entry is served beside it, and two headless Chromium browsers
+open it, join the Lounge through its door as two people, chat, share a desk
+and place a call they hear each other on, seeing each other present through
+the host's own packet relay. It is the gate `publish-site` runs before
+publishing, so a dispatched build publishes nothing a person cannot use.
 
 ```
 bash os/containers/tilo-lounge/test-integration.sh \

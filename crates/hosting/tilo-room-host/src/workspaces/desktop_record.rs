@@ -1,16 +1,16 @@
-//! The shared desktop record of a workspace this host governs, given to a workspace
-//! made before workspaces held it from the start.
+//! The shared desktop record of a workspace this host governs, given to a
+//! workspace made before every workspace held one from the start.
 
 use super::{GovernedWorkspace, Workspaces};
 
 impl Workspaces {
     /// Give `governed`, a workspace this host governs, its shared desktop record
-    /// when it has none yet, so every member's layout has the record to
+    /// when it has none yet, so every member's arrangement has the record to
     /// land in. A workspace made now holds it from the start
     /// ([`tilo_peer_state::workspace_seed`]); one made before is given it
     /// here. Not in a workspace whose records are its members' sealed channels:
     /// the host writes nothing there.
-    pub(super) async fn prepare_workspace_layout(
+    pub(super) async fn prepare_desktop_record(
         &self,
         governed: &mut GovernedWorkspace,
     ) -> Result<(), String> {

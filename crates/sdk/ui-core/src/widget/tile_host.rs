@@ -1446,6 +1446,18 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(widget) => widget.floating_surface_event(id, event, ctx),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
+        }
+    }
+
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
         match &self.content {
             TileContent::App(widget) => widget.floating_surface_accessibility(id),

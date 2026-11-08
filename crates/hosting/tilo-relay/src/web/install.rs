@@ -497,7 +497,7 @@ async fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::web::{LiveConfig, TlsSource};
+    use crate::web::TlsSource;
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -559,7 +559,6 @@ mod tests {
             limits: crate::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
-            live: LiveConfig::default(),
         }
     }
 

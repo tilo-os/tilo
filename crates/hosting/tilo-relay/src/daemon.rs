@@ -146,7 +146,7 @@ pub struct Relay {
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     /// The relay's live plane, which its browsers serve and its devices dial.
     #[cfg(feature = "web")]
-    pub(crate) plane: Option<crate::web::wt::Plane>,
+    pub(crate) plane: Option<crate::web::plane::Plane>,
     /// Background tasks (revocation refresh, metrics persistence). Aborted
     /// (per-handle) when the `Relay` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -471,6 +471,12 @@ impl Relay {
         let (packet_relay, relay_mode) = match cfg.packet_relay {
             Some(addr) if endpoint.is_none() && relay_mode.is_none() => {
                 let (server, url) = spawn_packet_relay(addr).await?;
+                let url = match &cfg.packet_relay_url {
+                    Some(published) => published.parse().map_err(|error| {
+                        RelayError::Iroh(format!("packet relay URL {published}: {error}"))
+                    })?,
+                    None => url,
+                };
                 tracing::info!(%addr, %url, "running this host's own packet relay");
                 (Some(server), Some(iroh::RelayMode::Custom(url.into())))
             }
@@ -531,11 +537,11 @@ impl Relay {
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
-        // The live plane belongs to the relay: pages reach it over
-        // WebTransport, devices over the relay's own iroh endpoint, and both
+        // The live plane belongs to the relay: every participant, a page
+        // included, reaches it over the relay's own iroh endpoint, and all
         // land in one origin whether or not browsers are served.
         #[cfg(feature = "web")]
-        let mut plane = Some(crate::web::wt::Plane::start(handler.clone()));
+        let mut plane = Some(crate::web::plane::Plane::start(handler.clone()));
         let live_trust_policy = handler.trust_policy.clone();
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),

@@ -142,11 +142,7 @@ pub trait PlotMarks: 'static {
     /// Takes the events the shell's own inspection cannot drive — zoom,
     /// pan, brush, focus loss — before the shell inspects. Whether the
     /// event was consumed.
-    fn event(
-        &mut self,
-        _event: &WindowEvent,
-        _ctx: &mut crate::widget::EventCtx<'_>,
-    ) -> bool {
+    fn event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) -> bool {
         false
     }
     /// Whether a gesture is in flight and must keep receiving the pointer.

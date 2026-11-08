@@ -76,7 +76,7 @@ fn restore_bytes(peer: &StatePeer, bytes: &[u8], now: SystemTime) -> Result<Stat
     )
 }
 
-fn held(peer: &StatePeer) -> Vec<SignedOp> {
+pub(crate) fn held(peer: &StatePeer) -> Vec<SignedOp> {
     peer.core.documents[&Route {
         app: APP.into(),
         record: RECORD.into(),

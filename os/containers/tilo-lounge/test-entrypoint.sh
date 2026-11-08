@@ -69,14 +69,12 @@ https://eu1.tilo.coffee/avatars
 Coffee and tea, and whatever is being made
 --default-role
 editor
---layout
-shared
 --inactive-after-days
 30
 --web
 127.0.0.1:9781
---web-live
-0.0.0.0:9781
+--packet-relay
+0.0.0.0:9782
 --tls
 dev
 --web-plain
@@ -103,9 +101,9 @@ grep -Fqx -- "--state" "$work/args" || fail "no state flag"
 grep -Fqx -- "$work/state/lounge/relay" "$work/args" || fail "the relay state is not under the workspace"
 grep -Fqx -- "$work/state/lounge/room-id" "$work/args" || fail "the workspace id is not kept with the workspace"
 grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are not published from the workspace"
-# The live plane binds where the ingress forwards; without a named origin the
-# relay derives it from the relay origin and the port it bound.
-grep -Fqx -- --web-live-origin "$work/args" && fail "a live origin was announced without one set"
+# The packet relay binds where the ingress forwards; without a named origin the
+# host advertises the address it bound.
+grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was announced without one set"
 
 # Every setting of a populated deployment reaches the host, and replaces the
 # default it shares a flag with.
@@ -116,8 +114,8 @@ lounge \
   TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
   TILO_ROOMS_SEED_APPS='so.tilo.chat,so.tilo.board' \
   TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
+  TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
-  TILO_ROOMS_LAYOUT=personal \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
   TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
   TILO_ROOMS_FETCH_PROXY=0 \
@@ -146,14 +144,16 @@ pair() {
 pair --web 127.0.0.1:0 || fail "the HTTPS listener setting did not reach the host"
 pair --web-plain 0.0.0.0:9880 || fail "the plain listener setting did not reach the host"
 pair --public-origin https://eu1.tilo.coffee || fail "the public origin did not reach the host"
-pair --web-live 0.0.0.0:9881 || fail "the live plane's bind address did not reach the host"
-pair --web-live-origin https://live.eu1.tilo.coffee || fail "the live origin did not reach the host"
+pair --packet-relay 0.0.0.0:9881 || fail "the packet relay's bind address did not reach the host"
+pair --packet-relay-url https://live.eu1.tilo.coffee || fail "the published relay URL did not reach the host"
 pair --http 0.0.0.0:8890 || fail "the routes listener setting did not reach the host"
 pair --allowed-origin https://tilo.coffee || fail "a site origin did not reach the host"
 pair --allowed-origin https://tilo.so || fail "a site origin did not reach the host"
 pair --chat-channel feedback || fail "a chat channel did not reach the host"
 pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
 pair --author-app so.tilo.chat || fail "an authoring app did not reach the host"
+pair --refound so.tilo.browser-desktop/desktop || fail "a refounded record did not reach the host"
+pair --refound so.tilo.chat/ || fail "a refounded record of the app's primary did not reach the host"
 pair --feedback-channel feedback || fail "the feedback channel did not reach the host"
 pair --bot '/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes' \
   || fail "the bridge's bot spec did not reach the host"
@@ -164,11 +164,9 @@ pair --discord-client-id 1559266815148953650 || fail "the Discord client id did 
 pair --discord-client-secret-file /run/secrets/discord-client-secret || fail "the Discord secret did not reach the host"
 pair --discord-redirect-url https://eu1.tilo.coffee/discord/callback || fail "the Discord callback did not reach the host"
 pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
-pair --layout personal || fail "the layout setting did not reach the host"
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
 pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
-grep -Fqx -- shared "$work/args" && fail "the shared layout default was not replaced"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
 grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
 

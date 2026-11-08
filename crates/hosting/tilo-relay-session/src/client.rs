@@ -126,7 +126,9 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         Envelope::PeerRelayHello { .. }
         | Envelope::HostAction { .. }
         | Envelope::WorkspacesRequest { .. }
-        | Envelope::WorkspacesReply { .. } => false,
+        | Envelope::WorkspacesReply { .. }
+        | Envelope::HereRequest { .. }
+        | Envelope::HereReply { .. } => false,
     }
 }
 

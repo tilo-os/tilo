@@ -37,6 +37,25 @@ class GatewayFeaturesTests(unittest.TestCase):
         for binary in manifest["bin"]:
             self.assertIn("server", binary["required-features"])
 
+    def added_flags(self, argv, command):
+        """What the wrapper added after the command a caller gave it.
+
+        Named flags, not positions: with CI set a run that names its packages
+        builds them beside the family's `unify` member, and a test run takes
+        CI's profile and the no-fail-fast the timings need. Features are never
+        added this way; they come through that member's manifest.
+        """
+        self.assertEqual(argv[:len(command)], command)
+        extra = list(argv[len(command):])
+        for flag, value in (("-p", "workspace-unify"), ("--profile", "ci")):
+            if flag in extra:
+                at = extra.index(flag)
+                self.assertEqual(extra[at:at + 2], [flag, value], extra)
+                del extra[at:at + 2]
+        if "--no-fail-fast" in extra:
+            extra.remove("--no-fail-fast")
+        return extra
+
     def test_ci_and_t_wrapper_execute_the_gateway_recipe_without_workspace_features(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -56,15 +75,16 @@ class GatewayFeaturesTests(unittest.TestCase):
             env = {**CI_ENV, "PATH": f"{bin_dir}:{CI_ENV['PATH']}"}
             for package in ("tilo-model-gateway", "chat"):
                 with self.subTest(package=package):
+                    command = ["cargo", "nextest", "run", "--locked", "-p", package,
+                               "-E", "all()"]
                     result = subprocess.run(
-                        ["bash", str(ci / "nextest.sh"), "cargo", "nextest", "run",
-                         "--locked", "-p", package, "-E", "all()"],
+                        ["bash", str(ci / "nextest.sh"), *command],
                         capture_output=True, text=True, check=True, env=env)
                     argv = json.loads(result.stdout)
-                    self.assertEqual(argv[:5], ["cargo", "nextest", "run", "--locked", "-p"])
-                    self.assertEqual(argv[5], package)
+                    self.assertEqual(self.added_flags(argv, command), [])
                     # Its tests' features come through workspace-unify, never as --features.
-                    self.assertEqual(argv[8:10], ["-p", "workspace-unify"])
+                    self.assertIn("workspace-unify", argv[len(command):])
+                    self.assertNotIn("--features", argv)
                     self.assertNotIn("--all-features", argv)
                     self.assertNotIn("--workspace", argv)
             command = ["cargo", "nextest", "run", "--locked", "-p", "chat",
@@ -72,8 +92,7 @@ class GatewayFeaturesTests(unittest.TestCase):
             result = subprocess.run(
                 ["bash", str(ci / "nextest.sh"), *command],
                 capture_output=True, text=True, check=True, env=env)
-            self.assertEqual(json.loads(result.stdout)[:len(command) + 2],
-                             command + ["-p", "workspace-unify"])
+            self.assertEqual(self.added_flags(json.loads(result.stdout), command), [])
             anchor = tomllib.loads((ROOT / "crates/dev/workspace-unify/Cargo.toml").read_text())
             for table in anchor["target"].values():
                 gateway = table.get("dependencies", {}).get("tilo-model-gateway")

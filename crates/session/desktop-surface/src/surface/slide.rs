@@ -181,12 +181,6 @@ impl Slides {
         }
     }
 
-    /// The fingers lifted, or the gesture was cancelled: the strip the hand went to is the change
-    /// asked for, which slides on from here.
-    pub fn end_lift(&mut self) {
-        self.lift = None;
-    }
-
     pub fn is_moving(&self, now: Instant) -> bool {
         self.lift.is_some() || self.running.as_ref().is_some_and(|run| run.is_moving(now))
     }

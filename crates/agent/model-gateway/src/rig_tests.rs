@@ -80,31 +80,42 @@ fn mismatched_tool_results_and_wrong_role_content_are_refused_locally() {
     assert!(neutral_request(ask).is_err());
 }
 
+/// The request `socket` received: its head as sent, and its body.
+pub(super) fn read_request(socket: &mut std::net::TcpStream) -> (String, Vec<u8>) {
+    use std::io::{BufRead as _, Read as _};
+    socket
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    let mut reader = std::io::BufReader::new(socket);
+    let (mut head, mut length) = (String::new(), 0);
+    loop {
+        let mut line = String::new();
+        assert!(
+            reader.read_line(&mut line).unwrap() > 0,
+            "the peer closed before the request ended"
+        );
+        if line == "\r\n" {
+            break;
+        }
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+        head.push_str(&line);
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    (head, body)
+}
+
 fn spawn_anthropic_peer(
     listener: std::net::TcpListener,
     pending_events: Arc<Mutex<Vec<serde_json::Value>>>,
     delta_received: std::sync::mpsc::Receiver<()>,
 ) -> std::thread::JoinHandle<()> {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::Write as _;
     std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let mut reader = std::io::BufReader::new(&mut socket);
-        let mut length = 0;
-        loop {
-            let mut line = String::new();
-            assert!(reader.read_line(&mut line).unwrap() > 0);
-            if line == "\r\n" {
-                break;
-            }
-            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = value.trim().parse().unwrap();
-            }
-        }
-        let mut body = vec![0; length];
-        reader.read_exact(&mut body).unwrap();
+        let (_, body) = read_request(&mut socket);
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["stream"], true);
         write!(
@@ -212,7 +223,7 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::Write as _;
     for (protocol, reply) in [
         (
             ProviderProtocol::OpenAiCompatible,
@@ -228,23 +239,7 @@ async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
         profile.endpoint = format!("http://{}", listener.local_addr().unwrap());
         let peer = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            let mut reader = std::io::BufReader::new(&mut socket);
-            let mut length = 0;
-            loop {
-                let mut line = String::new();
-                assert!(reader.read_line(&mut line).unwrap() > 0);
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap();
-                }
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
+            let _ = read_request(&mut socket);
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
         });
         let mut body = json!({"model":"checked-model", "max_tokens":256, "messages":[{"role":"user","content":"question"}]});
@@ -272,7 +267,7 @@ async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::Write as _;
     for protocol in [
         ProviderProtocol::OpenAiCompatible,
         ProviderProtocol::Anthropic,
@@ -281,25 +276,7 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let peer = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            let mut reader = std::io::BufReader::new(&mut socket);
-            let mut headers = String::new();
-            let mut length = 0;
-            loop {
-                let mut line = String::new();
-                assert!(reader.read_line(&mut line).unwrap() > 0);
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap();
-                }
-                headers.push_str(&line);
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
+            let (headers, body) = read_request(&mut socket);
             let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
             let reply = match protocol {
                 ProviderProtocol::OpenAiCompatible => json!({"id":"reply","object":"chat.completion","created":1,"model":"checked-model","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"count\":2}"}}]}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}),

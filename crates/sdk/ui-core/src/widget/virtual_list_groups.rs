@@ -409,7 +409,7 @@ impl<M: ListModel> VirtualList<M> {
         } else {
             self.rect.x1
         };
-        let top = self.rect.y0 + top;
+        let top = self.shown_top(top);
         Rect::new(self.rect.x0, top, x1, top + self.groups.height)
     }
 
@@ -499,7 +499,7 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         }
         self.bands_in_view();
-        let Some(band) = self.groups.band_at(point.y - self.rect.y0) else {
+        let Some(band) = self.groups.band_at(point.y - self.shown_top(0.0)) else {
             return false;
         };
         self.focused_key = None;
@@ -518,7 +518,7 @@ impl<M: ListModel> VirtualList<M> {
         if !self.rect.contains(point)
             || self
                 .groups
-                .band_at(point.y - self.rect.y0)
+                .band_at(point.y - self.shown_top(0.0))
                 .map(|band| band.heading)
                 != Some(heading.clone())
         {

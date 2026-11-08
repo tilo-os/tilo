@@ -1,9 +1,7 @@
 //! The workspace's name, which its owner and those the workspace lets rename it
 //! write (`workspace::membership`).
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{
-    NeighbourMsg, ROOT, ReadDoc, SigningKey, SystemTime, Transactable, TransportOrigin, err,
-};
+use super::{ROOT, ReadDoc, SigningKey, SystemTime, Transactable, err};
 
 impl PeerGovernance<'_> {
     /// The workspace's name, as its governance document records it.
@@ -42,19 +40,7 @@ impl PeerGovernanceMut<'_> {
         doc.set_actor(self.peer.workspace_actor_of(key));
         doc.put(ROOT, "name", name).map_err(err)?;
         doc.commit();
-        let changes = doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect();
-        self.peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                room: self.peer.core.workspace.clone(),
-                changes,
-            },
-            now,
-        )?;
+        self.peer.write_governance(doc, &before, key, now)?;
         Ok(())
     }
 }

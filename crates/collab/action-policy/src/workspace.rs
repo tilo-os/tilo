@@ -809,10 +809,16 @@ impl WorkspacePolicy {
                 if self.is_owner(person) {
                     return Err(Refusal::Owner);
                 }
-                if !self.members.contains_key(person) {
-                    return Err(Refusal::NotAMember(person.clone()));
+                // A member's removal takes their membership and every grant
+                // naming them. Someone the membership no longer holds, because
+                // the admission an invitation receipt gave them was taken back
+                // first ([`super::super::members`] replay), has only those
+                // grants left to take: removing them is the same change, and
+                // removing them twice changes nothing.
+                if self.members.contains_key(person) {
+                    self.check_reach(actor_person, person, false)?;
                 }
-                self.check_reach(actor_person, person, false)
+                Ok(())
             }
             Change::Ban { person } => {
                 if self.is_banned(person) {

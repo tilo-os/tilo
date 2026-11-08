@@ -19,5 +19,7 @@ mod lifecycle;
 mod runtime_cli;
 #[path = "runtime_package.rs"]
 mod runtime_package;
+#[path = "support.rs"]
+mod support;
 #[path = "trust.rs"]
 mod trust;

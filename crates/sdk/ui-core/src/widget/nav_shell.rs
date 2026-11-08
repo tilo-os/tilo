@@ -420,7 +420,7 @@ struct ColumnFit {
     /// `None` until the first layout decides.
     shown: Option<usize>,
     /// What the last layout settled on for the row, for an audit to read.
-    header: Option<crate::widget::HeaderRow>,
+    header: Option<crate::widget::HeaderRowLayout>,
 }
 
 /// Everything the geometry depends on. Shared with the layout policy the
@@ -4187,7 +4187,7 @@ impl Widget for NavShell {
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
         let inputs = self.inputs.borrow();
         let fit = inputs.fit.borrow();
-        let mut rows: [Option<crate::widget::HeaderRow>; 4] = [None; 4];
+        let mut rows: [Option<crate::widget::HeaderRowLayout>; 4] = [None; 4];
         for (row, slot) in rows.iter_mut().zip(fit.iter()) {
             *row = slot.header;
         }

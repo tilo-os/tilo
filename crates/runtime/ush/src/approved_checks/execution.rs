@@ -781,6 +781,7 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
         resolver: Some(String::new()),
         terminal: None,
         control: None,
+        agent_door: None,
     };
     plan.prepare().map_err(|e| e.to_string())?;
     crate::seccomp::write_guest_filter(&session).map_err(|e| e.to_string())?;

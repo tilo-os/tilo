@@ -187,25 +187,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
     // 1. One consent step: the page asks, the laptop approves the agent
     // together with the delegation of what was asked.
-    let requested = browser
-        .call(
-            SUPERVISOR_RESOURCE,
-            REQUEST_GRANT_ACTION,
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "label": "Writer",
-                    "rooms": [WORKSPACE],
-                    "apps": [NOTES, SHEETS],
-                    "expiresInSecs": 3600,
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    let grant = requested["grant"].as_str().unwrap().to_owned();
+    let (grant, requested) = request_grant(&mut browser, "Writer", &[NOTES, SHEETS]).await;
     assert_eq!(requested["pairingCode"].as_str().unwrap().len(), 6);
     let approved = browser
         .until("the grant to be approved", |status| {
@@ -583,33 +565,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     page.until_sheets(&mut browser, &["Sheet1"]).await;
     browser.durable().await;
 
-    let requested = browser
-        .call(
-            SUPERVISOR_RESOURCE,
-            REQUEST_GRANT_ACTION,
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "label": "Writer",
-                    "rooms": [WORKSPACE],
-                    "apps": [SHEETS],
-                    "expiresInSecs": 3600,
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    let grant = requested["grant"].as_str().unwrap().to_owned();
-    browser
-        .until("the grant to be approved", |status| {
-            status
-                .grants
-                .iter()
-                .any(|g| g.id == grant && g.state == GrantState::Approved)
-        })
-        .await;
+    let grant = approved_grant(&mut browser, "Writer", &[SHEETS]).await;
     browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -712,33 +668,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let mut joined = Page::join(&mut second, &creator).await;
     joined.until_sheets(&mut second, &["Sheet1"]).await;
 
-    let requested = first
-        .call(
-            SUPERVISOR_RESOURCE,
-            REQUEST_GRANT_ACTION,
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "label": "Writer",
-                    "rooms": [WORKSPACE],
-                    "apps": [SHEETS],
-                    "expiresInSecs": 3600,
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    let grant = requested["grant"].as_str().unwrap().to_owned();
-    first
-        .until("the grant to be approved", |status| {
-            status
-                .grants
-                .iter()
-                .any(|g| g.id == grant && g.state == GrantState::Approved)
-        })
-        .await;
+    let grant = approved_grant(&mut first, "Writer", &[SHEETS]).await;
     first
         .call(
             SUPERVISOR_RESOURCE,
@@ -837,28 +767,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     page.until_sheets(&mut browser, &["Sheet1"]).await;
     browser.durable().await;
 
-    let requested = browser
-        .call(
-            SUPERVISOR_RESOURCE,
-            REQUEST_GRANT_ACTION,
-            InvokeArgument::Json(
-                serde_json::json!({"label": "Writer", "rooms": [WORKSPACE], "apps": [SHEETS], "expiresInSecs": 3600})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    let grant = requested["grant"].as_str().unwrap().to_owned();
-    browser
-        .until("the grant to be approved", |status| {
-            status
-                .grants
-                .iter()
-                .any(|g| g.id == grant && g.state == GrantState::Approved)
-        })
-        .await;
+    let grant = approved_grant(&mut browser, "Writer", &[SHEETS]).await;
     browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -1020,33 +929,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let (_endpoint, mut device) = person_device(&hosted.relay, &laptop).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
-    let requested = browser
-        .call(
-            SUPERVISOR_RESOURCE,
-            REQUEST_GRANT_ACTION,
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "label": "Careful",
-                    "rooms": [WORKSPACE],
-                    "apps": [EBOOK],
-                    "expiresInSecs": 3600,
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    let grant = requested["grant"].as_str().unwrap().to_owned();
-    browser
-        .until("the grant to be approved", |status| {
-            status
-                .grants
-                .iter()
-                .any(|g| g.id == grant && g.state == GrantState::Approved)
-        })
-        .await;
+    let grant = approved_grant(&mut browser, "Careful", &[EBOOK]).await;
     browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -1160,9 +1043,13 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
 
 const CHAT: &str = "so.tilo.chat";
 
-/// Ask for a grant labelled `label` covering `apps`, and wait until the
-/// laptop approves it.
-async fn approved_grant(browser: &mut Browser, label: &str, apps: &[&str]) -> String {
+/// Ask for a grant labelled `label` covering `apps`: its id, and what the
+/// page answered with.
+async fn request_grant(
+    browser: &mut Browser,
+    label: &str,
+    apps: &[&str],
+) -> (String, serde_json::Value) {
     let requested = browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -1178,6 +1065,12 @@ async fn approved_grant(browser: &mut Browser, label: &str, apps: &[&str]) -> St
         .await
         .unwrap();
     let grant = requested["grant"].as_str().unwrap().to_owned();
+    (grant, requested)
+}
+
+/// [`request_grant`], waiting until the laptop approves it.
+async fn approved_grant(browser: &mut Browser, label: &str, apps: &[&str]) -> String {
+    let (grant, _) = request_grant(browser, label, apps).await;
     browser
         .until("the grant to be approved", |status| {
             status

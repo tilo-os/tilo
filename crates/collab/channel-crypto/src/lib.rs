@@ -55,6 +55,14 @@
 //! writes the commit that brings the group in line, and every one refuses a
 //! commit the membership does not back ([`peer`]).
 
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        reason = "a page's signer answers through a JavaScript promise, so the futures that await it stay on the page's one thread"
+    )
+)]
+
 pub mod content;
 pub mod crypto;
 pub mod endpoint;

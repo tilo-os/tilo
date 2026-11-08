@@ -62,7 +62,7 @@ typing a sentence, it becomes an ask to the agent with that context. So "rename"
 - **Placing** never moves what is there: a new window takes the free space nearest its anchor
   (`Arrangement::free_place_near`, `free_place_beside`).
 - **Drawing:** `GroupRow` lays its windows out at their places through a camera (pan and zoom);
-  `StripDeck` lays every strip's row over the whole deck while the canvas shows. A client window
+  every strip's row lies at the whole deck while the canvas shows. A client window
   keeps its canvas size and is drawn scaled when zoomed. Pan and zoom are each person's view state, kept
   on their device.
 - **Pointing and answers** are the shell's canvas layer (`overlay_host/canvas.rs`). Every ask goes

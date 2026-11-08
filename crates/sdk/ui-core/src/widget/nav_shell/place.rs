@@ -11,7 +11,7 @@ use super::status_action::place_status_action;
 use super::{Column, Inputs, NavGeometry, Part, at_mut};
 use crate::num::{f32_of_f64, f64_of_usize};
 use crate::widget::WidgetLayoutError;
-use crate::widget::layout_info::HeaderRow;
+use crate::widget::layout_info::HeaderRowLayout;
 use crate::widget::manual::{ManualContext, MeasureConstraint};
 
 /// The layout policy the host runs: place every built part at the rect the
@@ -152,7 +152,7 @@ pub(super) fn measure(
 
 /// What a column's header row settled on, published for an audit, or cleared where the window
 /// folds the row away.
-fn publish(inputs: &Inputs, column: Column, row: Option<HeaderRow>) {
+fn publish(inputs: &Inputs, column: Column, row: Option<HeaderRowLayout>) {
     let mut fits = inputs.fit.borrow_mut();
     at_mut(&mut fits, column).header = row;
 }
@@ -404,7 +404,7 @@ fn place_header(
         publish(
             inputs,
             column,
-            Some(HeaderRow {
+            Some(HeaderRowLayout {
                 column: column.key(),
                 title_needs: f32_of_f64(needs),
                 title_has: f32_of_f64(has),

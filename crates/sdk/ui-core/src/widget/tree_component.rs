@@ -795,6 +795,12 @@ impl DescribedTreeView {
         if single_click {
             list = list.open_on_press();
         }
+        // A view that reports no choice of its nodes is no picker: a press moves the keyboard to
+        // the row and nothing shows as chosen, so a tree shown with nothing chosen stands with
+        // nothing chosen, whatever its rows are pressed for.
+        if select.is_none() && activate.is_none() {
+            list = list.choosing_on_press(false);
+        }
         // Each event carries the resource its row shows.
         if !select.is_none() || !activate.is_none() {
             let reporting = nodes.clone();
@@ -931,7 +937,7 @@ impl Decorator for DescribedTreeView {
 }
 
 /// A branch "Root" over a leaf "Child", as a described component: the rows a headless run
-/// acts on.
+/// acts on. It reports the row a person chooses, so a headless run reads the choice it makes.
 #[cfg(test)]
 pub(crate) fn items_tree(id: &str, name: Option<&str>, open: bool) -> DescribedTreeView {
     let node = |label: &str, item: &str, parent: Option<&str>, branch: bool| TreeViewNodeProps {
@@ -955,6 +961,11 @@ pub(crate) fn items_tree(id: &str, name: Option<&str>, open: bool) -> DescribedT
             } else {
                 Vec::new()
             }),
+            select: Event::View(crate::component::Intent::new(
+                &crate::Intents::default(),
+                id,
+                "select",
+            )),
             ..TreeViewProps::default()
         },
     )
@@ -1224,6 +1235,67 @@ mod tests {
             nodes.folded_at_first(&[]),
             vec!["folder".to_owned()],
             "a view that holds nothing open folds its branch, and the list opens it when read"
+        );
+    }
+
+    /// A tree that reports no choice of its nodes is no picker: pressing a row moves the
+    /// keyboard to it and leaves it unchosen, so a tree shown with nothing chosen stands with
+    /// nothing chosen.
+    #[test]
+    fn a_tree_that_reports_no_choice_shows_nothing_chosen() {
+        use crate::headless::FrameHarness;
+        use crate::theme::Theme;
+
+        let queue = crate::Intents::default();
+        let plain = tree_of(
+            vec![
+                node("a", None, true, &queue),
+                node("b", Some("a"), false, &queue),
+            ],
+            true,
+            Event::None,
+        );
+        let mut harness =
+            FrameHarness::for_root(crate::State::new(), plain, (400, 240), Theme::dark());
+        let row = harness
+            .root::<DescribedTreeView>()
+            .list
+            .row_rect(&"b".to_owned())
+            .expect("the leaf row stands somewhere");
+        harness.click_at(row.center().x, row.center().y);
+        assert!(
+            harness.root::<DescribedTreeView>().selected().is_empty(),
+            "a press on a tree's row chooses nothing where the view reports no choice"
+        );
+
+        // A tree that does report its choice is a picker: the same press chooses the row.
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            DescribedTreeView::from_props(
+                "tree",
+                TreeViewProps {
+                    hide_root: true,
+                    nodes: vec![
+                        node("a", None, true, &queue),
+                        node("b", Some("a"), false, &queue),
+                    ],
+                    select: Event::View(Intent::new(&crate::Intents::default(), "tree", "select")),
+                    ..TreeViewProps::default()
+                },
+            ),
+            (400, 240),
+            Theme::dark(),
+        );
+        let row = harness
+            .root::<DescribedTreeView>()
+            .list
+            .row_rect(&"b".to_owned())
+            .expect("the leaf row stands somewhere");
+        harness.click_at(row.center().x, row.center().y);
+        assert_eq!(
+            harness.root::<DescribedTreeView>().selected(),
+            ["b".to_owned()],
+            "a press chooses the row where the view reports its choice"
         );
     }
 }

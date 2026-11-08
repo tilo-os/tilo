@@ -118,8 +118,11 @@ device's peers:
   The source stays the member it was.
 - **Workspace membership.** The workspaces on the copied desk are held as the
   source's device: a workspace whose governance holds no certificate for this
-  device is entered at its host as the person's further device, and stays on
-  the desk meanwhile.
+  device is entered at its host as the person's further device — at the host
+  the person's list names, or for one joined at someone's site, the host its
+  own state names — and stays on the desk meanwhile, also when an entry does
+  not land. The membership the host answers replaces the source's enrollment
+  the copy held, which was never this device's to act with.
 - **The person's own store.** The store the source kept is set aside beside it
   (`documents.of-<source>`), and the person's records come back from their
   other devices.

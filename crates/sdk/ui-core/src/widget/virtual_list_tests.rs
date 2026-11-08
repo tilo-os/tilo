@@ -1206,6 +1206,42 @@ fn a_columns_rows_start_on_its_content_edge_and_leave_the_bar_its_gutter() {
     assert!((row.x0 - edge).abs() < 0.5 && (row.x1 - (300.0 - edge)).abs() < 0.5);
 }
 
+/// A list that follows its end stands a short list's rows down at its foot; the box the list
+/// draws for a row — the lift a selection takes, the band over a group, the seam a drop lands
+/// on — stands down there with it. A lift at the row's top instead paints a filled block where
+/// the row would have been if the list were full, with nothing in it.
+#[test]
+fn a_list_following_its_end_lifts_the_row_where_it_stands() {
+    let mut list = VirtualList::from_items(
+        (0..3_u32).collect(),
+        40.0,
+        |item| *item,
+        |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+    )
+    .unwrap()
+    .with_viewport_height(200.0)
+    .following_end();
+    let _ = lay_out(&mut list, 300.0);
+    assert!(
+        list.end_slack() > 40.0,
+        "a short list's rows stand at the foot: {}",
+        list.end_slack()
+    );
+    for row in &list.mounted {
+        let stands = row.widget.get_rect();
+        let key = list
+            .model
+            .key_at(row.index)
+            .expect("a mounted row has a key");
+        let lift = list.row_rect(&key).expect("a row in view has a box");
+        assert!(
+            (lift.y0 - stands.y0).abs() < 0.5 && (lift.y1 - stands.y1).abs() < 0.5,
+            "row {} stands at {stands:?} and its lift is drawn at {lift:?}",
+            row.index
+        );
+    }
+}
+
 #[test]
 fn a_filling_list_takes_its_parents_height_as_its_viewport() {
     let mut list = plain_rows(1000).filling();

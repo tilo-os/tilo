@@ -432,26 +432,34 @@ impl Inner {
             .ok_or_else(|| not_found(format!("item `{item}`")))
     }
 
+    /// The chunk the index routes the item at `at` to, and `None` while it names none: no step
+    /// has derived a row of it, so where its map is read from is the record's to say.
+    pub(super) fn routed_chunk(&self, at: &ResourceRef) -> Option<ChunkNo> {
+        let (app, _) = self.locate(at).ok()?;
+        let item = at.item.as_ref()?;
+        let view = self.view(&app)?;
+        let held = view
+            .text(&crate::index::derive::item_path(&at.doc, item), idx::CHUNK)
+            .ok()??;
+        // ignored-failure: a row the index wrote before chunks says no chunk, and the record says where the item is
+        held.parse::<ChunkNo>().ok()
+    }
+
+    /// Whether the chunks the store holds hold the item `item` of the record `doc`, in a run of
+    /// one of its collections.
+    pub(super) fn holds_item(&self, doc: &str, item: &str) -> bool {
+        self.found_item(doc, item).is_ok()
+    }
+
     /// The chunk the resource at `at` is read and written in: of an item, the chunk its map is
     /// stored in (from the index, or the item's own chunk when the index does not name it), else
     /// the chunk the record's manifest places the resource in.
     pub(super) fn at_chunk(&self, at: &ResourceRef) -> Result<ChunkNo, StoreError> {
-        let (app, _) = self.locate(at)?;
         let Some(item) = &at.item else {
             return Ok(self.chunks.chunk(&at.doc));
         };
-        if let Some(view) = self.view(&app)
-            && let Some(held) = view
-                .text(&crate::index::derive::item_path(&at.doc, item), idx::CHUNK)
-                .map_err(backend)?
-        {
-            let chunk = held
-                .parse::<ChunkNo>()
-                // ignored-failure: a row written before chunks names none; the record is asked where the item is
-                .ok();
-            if let Some(chunk) = chunk {
-                return Ok(chunk);
-            }
+        if let Some(chunk) = self.routed_chunk(at) {
+            return Ok(chunk);
         }
         Ok(self.found_item(&at.doc, item)?.chunk)
     }

@@ -9,7 +9,7 @@
 
 use std::cell::Cell;
 
-use crate::widget::scroll_region::ScrollRegion;
+use crate::widget::floating_list::{FloatingList, FloatingRow};
 use crate::widget::{AppModel, EventCtx, ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -17,7 +17,7 @@ use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::{Icon, draw_icon};
+use crate::icons::Icon;
 use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -32,12 +32,14 @@ mod folding;
 mod placement;
 mod published;
 mod query;
+mod rows;
 mod send_to_box;
 
 pub use emoji_row::EmojiRow;
 pub use folding::MenuPick;
 use placement::is_point;
 use query::MenuQuery;
+use rows::MenuRow;
 
 /// What a menu row runs. Menus live on the UI thread with the widgets that
 /// open them, so a row takes the toolkit's usual single-threaded callback:
@@ -504,9 +506,9 @@ pub struct ContextMenu {
     selection: Option<usize>,
     row_height: f64,
     measured_width: f64,
-    /// The rows' scrolling: where they are scrolled to, the bar beside them
-    /// while they overflow, and the wheel over them.
-    scroll: ScrollRegion,
+    /// The rows as the one floating list lays them out: their heights, the
+    /// bar beside them, the armed row and the arrow keys are the engine's.
+    list: FloatingList<MenuRow>,
     /// The theme the geometry was taken from, which the scroll region also
     /// needs between paints (to hit-test and to read a wheel).
     theme: Theme,
@@ -598,7 +600,11 @@ impl ContextMenu {
             selection: None,
             row_height: ROW_HEIGHT,
             measured_width: MENU_WIDTH,
-            scroll: ScrollRegion::vertical().with_overlaid_bars(),
+            list: {
+                let mut list = FloatingList::new();
+                list.set_overlaid_bars();
+                list
+            },
             theme: Theme::dark(),
             active_touch: None,
             text_scale: 1.0,
@@ -643,7 +649,7 @@ impl ContextMenu {
         self.own_rows = None;
         self.submenu = None;
         if self.hovered.is_some_and(|i| i >= self.items.len()) {
-            self.hovered = None;
+            self.set_hover(None);
         }
         self.refilter();
         self.layout_at_position();
@@ -699,10 +705,11 @@ impl ContextMenu {
         };
         if *item_enabled != enabled {
             *item_enabled = enabled;
+            self.sync_rows();
             self.dirty = true;
         }
         if !enabled && self.hovered == Some(index) {
-            self.hovered = None;
+            self.set_hover(None);
             self.move_hover(1);
         }
     }
@@ -726,7 +733,7 @@ impl ContextMenu {
         // Opened at the pointer, the first row under it is armed unless that
         // row takes something away: a stray press should not be the one that
         // does.
-        self.hovered = self
+        let first = self
             .items
             .iter()
             .take(self.own_rows.unwrap_or(self.items.len()))
@@ -737,6 +744,7 @@ impl ContextMenu {
                     .iter()
                     .position(|item| item.is_enabled() && !item.is_destructive())
             });
+        self.set_hover(first);
         self.dirty = true;
     }
 
@@ -747,14 +755,15 @@ impl ContextMenu {
     /// this way, so they are placed by one rule.
     pub fn open_over(&mut self, anchor: Rect) {
         self.prepare_query(anchor.center());
-        self.scroll.set_offset(Vec2::ZERO);
+        self.list.reset_scroll();
         self.open = true;
         self.appear.show(true);
         self.opened_under = is_point(anchor).then_some(anchor.origin());
         self.anchor = Some(anchor);
-        self.hovered = None;
+        self.set_hover(None);
         self.measured_width = MENU_WIDTH * self.text_scale;
         self.row_height = self.row_floor();
+        self.list.set_row_height(Some(self.row_height));
         self.layout_at_position();
         // A menu opened on something carries what is typed into it: the box
         // stands beside it with that subject.
@@ -797,6 +806,7 @@ impl ContextMenu {
             self.text_scale = scale;
             self.measured_width = MENU_WIDTH * scale;
             self.row_height = self.row_floor();
+            self.list.set_row_height(Some(self.row_height));
             self.layout_at_position();
             self.dirty = true;
         }
@@ -841,8 +851,8 @@ impl ContextMenu {
         self.open = true;
         self.appear.show(true);
         self.opened_under = None;
-        self.hovered = None;
-        self.scroll.set_offset(Vec2::ZERO);
+        self.set_hover(None);
+        self.list.reset_scroll();
         self.reanchor(anchor, viewport);
         self.dirty = true;
     }
@@ -941,28 +951,54 @@ impl ContextMenu {
         if measured != (self.measured_width, self.row_height, self.trailing_width) {
             self.dirty = true;
         }
+        self.sync_rows();
         self.layout_at_position();
-        self.ensure_hover_visible();
+        self.set_hover(self.hovered);
     }
 
-    /// Height of one row. Action rows take the measured height once a paint
-    /// has measured the labels (`ROW_HEIGHT` until then, and never less), in
-    /// both the anchored and the point-placed mode — a point-placed menu at
-    /// a large text setting otherwise paints two-line-tall glyphs into
-    /// 28 px rows.
+    /// Feed the rows to the list: the items shown, in the order shown, with
+    /// the trailing text this platform gives them.
+    fn sync_rows(&mut self) {
+        let rows: Vec<MenuRow> = self
+            .shown
+            .iter()
+            .filter_map(|&index| {
+                let item = self.items.get(index)?.clone();
+                let trailing = item.trailing_text(self.platform);
+                Some(MenuRow {
+                    item,
+                    trailing,
+                    trailing_width: self.trailing_width,
+                })
+            })
+            .collect();
+        self.list.set_rows(rows);
+        self.list.set_header(self.query_height());
+        self.list.set_row_height(Some(self.row_height));
+        self.list
+            .set_marked(self.submenu.as_ref().and_then(|(row, _)| self.slot(*row)));
+        self.list
+            .set_highlight(self.hovered.and_then(|index| self.slot(index)));
+        self.place_scroll();
+    }
+
+    /// The row slot of item `index` among the rows shown.
+    fn slot(&self, index: usize) -> Option<usize> {
+        self.shown.iter().position(|&shown| shown == index)
+    }
+
+    /// Arm item `index` (or nothing), which the list draws armed, and keep it
+    /// in view.
+    fn set_hover(&mut self, index: Option<usize>) {
+        self.hovered = index;
+        self.list
+            .set_highlight(index.and_then(|index| self.slot(index)));
+    }
+
+    /// Height of one row.
     fn item_height(&self, index: usize) -> f64 {
-        if !self.shown.contains(&index) {
-            return 0.0;
-        }
-        match self.items.get(index) {
-            Some(MenuItem::Action { .. }) => self.row_height,
-            // A caption is a caption line with an `s1` of air either side,
-            // tighter than a row: it is read with the rows above it.
-            Some(MenuItem::Caption(_)) => (self.row_height * CAPTION_ROW_SHARE).ceil(),
-            Some(MenuItem::Emoji(_)) => (self.row_height * emoji_row::ROW_SHARE).ceil(),
-            Some(MenuItem::Separator) if item_shown(self.owner_items(), index) => SEPARATOR_HEIGHT,
-            Some(MenuItem::Separator) | None => 0.0,
-        }
+        self.slot(index)
+            .map_or(0.0, |slot| self.list.row_height_at(slot))
     }
 
     /// Width of a point-placed (`open_at`) menu: the fixed reference width,
@@ -973,39 +1009,13 @@ impl ContextMenu {
     }
 
     fn content_height(&self) -> f64 {
-        self.shown
-            .iter()
-            .map(|&index| self.item_height(index))
-            .sum()
-    }
-
-    /// Where row `index` starts below the first row shown.
-    fn row_top(&self, index: usize) -> f64 {
-        self.shown
-            .iter()
-            .take_while(|&&shown| shown != index)
-            .map(|&shown| self.item_height(shown))
-            .sum()
-    }
-
-    fn body_rect(&self) -> Rect {
-        let inset = if self.anchor.is_some() {
-            PADDING.min(self.rect.height() / 4.0)
-        } else {
-            PADDING
-        };
-        Rect::new(
-            self.rect.x0,
-            (self.rect.y0 + inset + self.query_height()).min(self.rect.y1 - inset),
-            self.rect.x1,
-            self.rect.y1 - inset,
-        )
+        self.list.content_height()
     }
 
     /// How far the rows are scrolled, in pixels.
     #[cfg(test)]
     fn scroll_offset(&self) -> f64 {
-        self.scroll.offset().y
+        self.list.scroll_offset()
     }
 
     /// Painted (clipped) geometry of an action row, in host coordinates.
@@ -1013,68 +1023,42 @@ impl ContextMenu {
         if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
             return None;
         }
-        let rect = self.row_bounds(index)?.intersect(self.body_rect());
-        (!rect.is_zero_area()).then_some(rect)
+        self.list.row_rect(self.slot(index)?)
     }
 
     /// The box a row occupies in the rows' scrolling, on screen or scrolled past the panel's
     /// edge: where the row is, so a reader of the menu finds it there rather than nowhere.
     pub fn row_bounds(&self, index: usize) -> Option<Rect> {
-        if !self.open || !self.shown.contains(&index) {
+        if !self.open {
             return None;
         }
-        let body = self.body_rect();
-        let top = body.y0 - self.scroll.offset().y + self.row_top(index);
-        Some(Rect::new(
-            body.x0,
-            top,
-            body.x1,
-            top + self.item_height(index),
-        ))
+        self.list.row_bounds(self.slot(index)?)
     }
 
     pub fn focus_item(&mut self, index: usize) -> bool {
+        let Some(slot) = self.slot(index) else {
+            return false;
+        };
         if !matches!(
             self.items.get(index),
             Some(MenuItem::Action { .. } | MenuItem::Emoji(_))
-        ) || !self.shown.contains(&index)
+        ) || !self.list.rows()[slot].pickable()
         {
             return false;
         }
-        self.hovered = Some(index);
+        self.set_hover(Some(index));
         self.dirty = true;
-        self.ensure_hover_visible();
         true
     }
 
     pub fn focus_first_action(&mut self) {
-        self.hovered = None;
+        self.set_hover(None);
         self.dirty = true;
         self.move_hover(1);
     }
 
-    fn ensure_hover_visible(&mut self) {
-        if self.anchor.is_none() {
-            return;
-        }
-        self.place_scroll();
-        let Some(index) = self.hovered else {
-            return;
-        };
-        let top = self.row_top(index);
-        let body_height = self.body_rect().height();
-        // A row taller than the menu shows its top.
-        let bottom = top + self.item_height(index).min(body_height);
-        let offset = self.scroll.offset();
-        self.scroll
-            .scroll_into_view(Rect::new(0.0, top, 0.0, bottom));
-        if self.scroll.offset() != offset {
-            self.dirty = true;
-        }
-    }
-
-    /// Remember the theme the geometry was taken from; the scroll region
-    /// needs it between paints (a wheel, a bar's hover).
+    /// Remember the theme the geometry was taken from; the rows' bar needs
+    /// it between paints (a wheel, a bar's hover).
     fn cache_theme(&mut self, theme: &Theme) {
         if self.theme.tokens != theme.tokens {
             self.theme = theme.clone();
@@ -1082,12 +1066,12 @@ impl ContextMenu {
         }
     }
 
-    /// Hand `event` to the rows' scroll region: a press or drag on its bar,
-    /// a wheel over it, the pointer's hover on it. `ctx.handled` says whether
-    /// a bar gesture took it; the return value is whether the scroll moved.
+    /// Hand `event` to the rows' bar: a press or drag on it, a wheel over
+    /// it, the pointer's hover on it. `ctx.handled` says whether a bar
+    /// gesture took it; the return value is whether the scroll moved.
     fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         self.place_scroll();
-        let moved = self.scroll.handle_event(event, ctx, &self.theme);
+        let moved = self.list.scroll_event(event, ctx);
         if moved {
             self.dirty = true;
         }
@@ -1277,9 +1261,10 @@ impl ContextMenu {
         if keyboard {
             menu.focus_first_action();
         }
-        self.hovered = Some(idx);
-        self.submenu_focused = keyboard;
         self.submenu = Some((idx, Box::new(menu)));
+        self.set_hover(Some(idx));
+        self.list.set_marked(self.slot(idx));
+        self.submenu_focused = keyboard;
         self.dirty = true;
         // Hover opens it without marking the move handled.
         crate::widget::note_resource_presentation_changed();
@@ -1288,6 +1273,7 @@ impl ContextMenu {
     /// Close the nested menu, keeping this one open.
     pub fn close_submenu(&mut self) {
         if self.submenu.take().is_some() {
+            self.list.set_marked(None);
             self.dirty = true;
             // Hover closes it without marking the move handled.
             crate::widget::note_resource_presentation_changed();
@@ -1443,24 +1429,10 @@ impl ContextMenu {
     /// Skips separators. `dir > 0` moves down, `dir < 0` up, through the
     /// rows shown in the order shown, wrapping round.
     fn move_hover(&mut self, dir: i32) {
-        let at = self
-            .hovered
-            .and_then(|hovered| self.shown.iter().position(|&index| index == hovered));
-        let next = crate::widget::autocomplete::step_pickable(
-            self.shown.len(),
-            at,
-            dir > 0,
-            true,
-            |slot| {
-                self.items
-                    .get(self.shown[slot])
-                    .is_some_and(MenuItem::is_enabled)
-            },
-        );
-        if let Some(slot) = next {
-            self.hovered = Some(self.shown[slot]);
+        self.list.move_highlight(dir > 0);
+        if let Some(slot) = self.list.highlight() {
+            self.hovered = self.shown.get(slot).copied();
             self.dirty = true;
-            self.ensure_hover_visible();
         }
     }
 
@@ -1520,10 +1492,6 @@ fn item_shown(items: &[MenuItem], index: usize) -> bool {
 
 impl ContextMenu {
     /// The menu's panel and rows, in the pose's transform.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass over the rows paints each kind in order"
-    )]
     fn paint_menu(
         &mut self,
         scene: &mut Scene,
@@ -1531,240 +1499,9 @@ impl ContextMenu {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // Panel role (HIG §9.1): the floating radius, the one floating
-        // shadow, and the floating material with its derived edge.
-        // One row sits in a panel concentric with it, never a near-pill.
-        let single_row = self.query.is_none()
-            && self
-                .shown
-                .iter()
-                .filter(|&&index| matches!(self.items.get(index), Some(MenuItem::Action { .. })))
-                .count()
-                == 1;
-        let panel_radius = if single_row {
-            floating_surface::single_row_radius(theme)
-        } else {
-            floating_surface::radius(theme)
-        };
-        floating_surface::paint_rounded(scene, transform, self.rect, panel_radius, theme);
-        let ground = crate::chrome::panel_ground(theme);
-        self.paint_query(scene, transform, text_renderer, theme, panel_radius);
-
-        // One style for measuring (`layout_within`) and painting, in both
-        // modes: the point-placed path used to paint the theme's already
-        // text-scaled size through the renderer's own multiplier, so its
-        // glyphs came out at 4× on a 200 % setting while its rows were
-        // measured at 2×.
-        let style = theme.text(TextRole::Body);
-        let label_x = self.rect.x0 + label_inset(theme);
-        // HIG §9.5: a separator inside a Panel is inset `spacing.s3` from
-        // the panel edge, never running into the corner radius.
-        let separator_inset = f64::from(theme.tokens.spacing.s3);
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &self.body_rect(),
-        );
-        let mut y = self.body_rect().y0 - self.scroll.offset().y;
-        let has_leading_gutter = self.has_leading_gutter();
-        for &idx in &self.shown {
-            let Some(item) = self.items.get(idx) else {
-                continue;
-            };
-            let row_height = self.item_height(idx);
-            match item {
-                MenuItem::Action {
-                    icon,
-                    checked,
-                    destructive,
-                    enabled,
-                    submenu,
-                    ..
-                } => {
-                    // The row Enter / a click would activate, painted as every
-                    // menu paints it: the panel's strong lift
-                    // (`floating_surface::armed_row`). A one-step 10 % veneer
-                    // measured only ΔL* ≈ 11 on the dark panel and read as
-                    // "no highlight"; see `tests/menu_highlight_render.rs`.
-                    // The row whose nested menu is open stays armed.
-                    let armed = *enabled
-                        && (self.hovered == Some(idx)
-                            || self.submenu.as_ref().is_some_and(|(row, _)| *row == idx));
-                    // Concentric with the panel it is inset in, as in every
-                    // menu.
-                    let armed_ink = armed.then(|| {
-                        let inset = floating_surface::menu_inset(theme);
-                        floating_surface::paint_armed_row_in(
-                            scene,
-                            transform,
-                            Rect::new(
-                                self.rect.x0 + inset,
-                                y,
-                                self.rect.x1 - inset,
-                                y + row_height,
-                            ),
-                            panel_radius,
-                            inset,
-                            theme,
-                        )
-                    });
-                    let colors = &theme.tokens.colors;
-                    let ink = if !*enabled {
-                        colors
-                            .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
-                            .ink_dim
-                    } else if let Some(ink) = armed_ink {
-                        ink
-                    } else if *destructive {
-                        colors.ink_on_any(
-                            &[ground],
-                            colors.semantic.danger,
-                            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-                        )
-                    } else {
-                        colors.text_primary
-                    };
-                    let label_x = if has_leading_gutter {
-                        let icon_size = f64::from(theme.tokens.metrics.icon_sm);
-                        // A state row shows its state, not its icon: the
-                        // check is what says a toggle is on.
-                        let glyph = match checked {
-                            Some(on) => on.then_some(Icon::Check),
-                            None => *icon,
-                        };
-                        if let Some(icon) = glyph {
-                            draw_icon(
-                                scene,
-                                transform,
-                                Rect::from_origin_size(
-                                    (label_x, y + (row_height - icon_size) / 2.0),
-                                    (icon_size, icon_size),
-                                ),
-                                icon,
-                                ink,
-                                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                            );
-                        }
-                        label_x + icon_size + f64::from(theme.tokens.spacing.s2)
-                    } else {
-                        label_x
-                    };
-                    let shown = item.shown_label().unwrap_or_default();
-                    let label = text_renderer.elide_to_width_style(
-                        &shown,
-                        (self.rect.x1 - label_x - label_inset(theme) - self.trailing_width).max(1.0)
-                            as f32,
-                        &style,
-                    );
-                    let (_, label_height) = text_renderer.measure_style(&label, None, &style);
-                    let label_y = y + (row_height - f64::from(label_height)) / 2.0;
-                    text_renderer.draw_style(
-                        scene,
-                        &label,
-                        ink,
-                        transform.pre_translate(Vec2::new(label_x, label_y)),
-                        None,
-                        &style,
-                    );
-                    // The trailing column: a nested menu's chevron, or the
-                    // shortcut in secondary ink.
-                    let trailing_x1 = self.rect.x1 - label_inset(theme);
-                    if submenu.is_some() {
-                        let size = f64::from(theme.tokens.metrics.icon_sm);
-                        draw_icon(
-                            scene,
-                            transform,
-                            Rect::from_origin_size(
-                                (trailing_x1 - size, y + (row_height - size) / 2.0),
-                                (size, size),
-                            ),
-                            Icon::ChevronRight,
-                            ink,
-                            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                        );
-                    } else if let Some(text) = item.trailing_text(self.platform) {
-                        let (w, _) = text_renderer.measure_style(&text, None, &style);
-                        let dim = if armed {
-                            ink
-                        } else {
-                            theme
-                                .tokens
-                                .colors
-                                .on_surface_at(
-                                    ground,
-                                    crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-                                )
-                                .ink_dim
-                        };
-                        text_renderer.draw_style(
-                            scene,
-                            &text,
-                            dim,
-                            transform.pre_translate(Vec2::new(trailing_x1 - f64::from(w), label_y)),
-                            None,
-                            &style,
-                        );
-                    }
-                    y += row_height;
-                }
-                MenuItem::Caption(text) => {
-                    let caption = theme.text(TextRole::Caption);
-                    let ink = theme
-                        .tokens
-                        .colors
-                        .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
-                        .ink_dim;
-                    let text_x = if has_leading_gutter {
-                        label_x
-                            + f64::from(theme.tokens.metrics.icon_sm)
-                            + f64::from(theme.tokens.spacing.s2)
-                    } else {
-                        label_x
-                    };
-                    let shown = text_renderer.elide_to_width_style(
-                        text,
-                        (self.rect.x1 - text_x - label_inset(theme)).max(1.0) as f32,
-                        &caption,
-                    );
-                    let (_, height) = text_renderer.measure_style(&shown, None, &caption);
-                    text_renderer.draw_style(
-                        scene,
-                        &shown,
-                        ink,
-                        transform.pre_translate(Vec2::new(
-                            text_x,
-                            y + (row_height - f64::from(height)) / 2.0,
-                        )),
-                        None,
-                        &caption,
-                    );
-                    y += row_height;
-                }
-                MenuItem::Emoji(row) => {
-                    self.paint_emoji_row(scene, transform, text_renderer, theme, (idx, row), y);
-                    y += row_height;
-                }
-                MenuItem::Separator if row_height <= 0.0 => {}
-                MenuItem::Separator => {
-                    let sep_y = y + SEPARATOR_HEIGHT / 2.0;
-                    crate::surface::separator(
-                        scene,
-                        transform,
-                        self.rect.x0,
-                        self.rect.x1,
-                        sep_y,
-                        separator_inset,
-                        ground,
-                    );
-                    y += SEPARATOR_HEIGHT;
-                }
-            }
-        }
-        scene.pop_layer();
-        self.scroll.note_shown(transform, theme);
-        self.scroll.paint_bars(scene, transform, theme);
+        self.list.paint(scene, transform, text_renderer, theme);
+        let radius = self.list.panel_radius(theme);
+        self.paint_query(scene, transform, text_renderer, theme, radius);
     }
 
     /// Where the menu comes from: the control, row or point it stands
@@ -1820,6 +1557,8 @@ impl Widget for ContextMenu {
         if self.interaction != environment {
             self.interaction = environment;
             self.row_height = self.row_height.max(self.row_floor());
+            self.list.set_min_row_height(self.row_floor());
+            self.list.set_row_height(Some(self.row_height));
             if let Some((_, menu)) = self.submenu.as_mut() {
                 menu.set_interaction_environment(environment);
             }
@@ -1964,7 +1703,7 @@ impl Widget for ContextMenu {
     fn needs_animation_frame(&self) -> bool {
         self.appear.is_moving()
             || self.send_to.is_moving()
-            || self.scroll.needs_animation_frame(&self.theme)
+            || self.list.needs_animation_frame()
             || self
                 .submenu
                 .as_ref()
@@ -1973,7 +1712,7 @@ impl Widget for ContextMenu {
 
     /// A glide after a flick scrolls the rows as the wheel does.
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        if self.scroll.advance() {
+        if self.list.advance() {
             self.dirty = true;
         }
         false
@@ -2010,7 +1749,7 @@ impl Widget for ContextMenu {
                 self.opened_under = None;
                 let hovered = self.enabled_item_at(self.last_cursor);
                 if self.hovered != hovered {
-                    self.hovered = hovered;
+                    self.set_hover(hovered);
                     self.dirty = true;
                 }
                 self.follow_emoji_cell();
@@ -2042,13 +1781,13 @@ impl Widget for ContextMenu {
                         MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor,
                     };
                     self.place_scroll();
-                    if self.scroll.scroll_by(Vec2::new(0.0, amount)) {
+                    if self.list.scroll_delta(Vec2::new(0.0, amount)) {
                         self.dirty = true;
                     }
                 }
                 let hovered = self.enabled_item_at(self.last_cursor);
                 if self.hovered != hovered {
-                    self.hovered = hovered;
+                    self.set_hover(hovered);
                     self.dirty = true;
                 }
                 *ctx.handled = true;
@@ -2114,13 +1853,7 @@ impl Widget for ContextMenu {
                 // press here may have marked it handled already.
                 let mut on_bar = false;
                 self.place_scroll();
-                self.scroll.handle_window_event(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers.state(),
-                    &mut on_bar,
-                    &self.theme,
-                );
+                self.list.press_bar(event, ctx, &mut on_bar);
                 if on_bar {
                     // The bar under the press draws differently, held.
                     self.dirty = true;
@@ -2151,20 +1884,20 @@ impl Widget for ContextMenu {
                     winit::event::TouchPhase::Started if self.active_touch.is_none() => {
                         self.active_touch = Some(touch.id);
                         self.last_cursor = point;
-                        self.hovered = self.enabled_item_at(point);
+                        self.set_hover(self.enabled_item_at(point));
                         self.dirty = true;
                         *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
                         self.last_cursor = point;
-                        self.hovered = self.enabled_item_at(point);
+                        self.set_hover(self.enabled_item_at(point));
                         self.dirty = true;
                         *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
                         self.active_touch = None;
                         self.last_cursor = point;
-                        self.hovered = self.item_at([point.x, point.y]);
+                        self.set_hover(self.item_at([point.x, point.y]));
                         self.dirty = true;
                         self.follow_emoji_cell();
                         if self.place_query_caret(point) {

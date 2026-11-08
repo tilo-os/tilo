@@ -102,7 +102,7 @@ fn store_allowing(dir: &Path, hosts: &[&str]) -> Store {
 fn run(dir: &Path, store: &Store, script: &str, env: &[(&str, String)]) -> Output {
     let images = dir.join("images");
     if !images.exists() {
-        fixture_images(&images);
+        fixture_images(&images).expect("the guest's fixture images");
     }
     let mut cmd = Command::new(tilo_test_env::package_binary!("tilo-ush"));
     // bash in a guest of its own, as a command session runs it: `-c` would

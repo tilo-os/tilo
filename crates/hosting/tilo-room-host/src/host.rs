@@ -239,6 +239,7 @@ impl HostSessions {
             app_serving: wrap(&workspaces, own_plane.clone()),
             carried_calls: Arc::default(),
             admin: Arc::default(),
+            here: Arc::default(),
             agents: Arc::default(),
             compactor: crate::compaction::Compactor::new(
                 identity.device_signing_key.clone(),
@@ -982,6 +983,9 @@ pub struct RelayProtocol {
     /// Set once when the host governs workspaces: what its sessions answer a
     /// device's workspace administration with.
     pub admin: Arc<std::sync::OnceLock<Arc<crate::workspaces::Workspaces>>>,
+    /// Set once when the host serves browsers: what a device's session answers
+    /// when it asks who is here.
+    pub here: Arc<std::sync::OnceLock<Arc<dyn crate::peer::HereBoard>>>,
     pub agents: crate::peer::AgentRegistry,
     pub compactor: crate::compaction::Compactor,
     pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
@@ -1015,6 +1019,7 @@ impl RelayProtocol {
             app_serving: self.app_serving.clone(),
             carried_calls: self.carried_calls.get().cloned(),
             admin: self.admin.get().cloned(),
+            here: self.here.get().cloned(),
             agents: self.agents.clone(),
             positions: Some(crate::position::PositionIssuer::new(
                 &self.identity.signing_key.to_bytes(),

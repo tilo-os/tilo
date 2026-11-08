@@ -279,6 +279,29 @@ impl Site {
         });
     }
 
+    /// Remove `person` and every device of theirs from the workspace, as its owner does: from now
+    /// on the site hosts nothing of the workspace for them.
+    pub fn remove(&self, person: [u8; 32]) {
+        self.runtime
+            .block_on(self.workspaces.remove_member(
+                &self.workspace,
+                &self.host,
+                tilo_relay::workspaces::RemoveMemberRequest {
+                    request_id: fresh_id(),
+                    user_public_key: person,
+                },
+            ))
+            .expect("the workspace's owner removes a member");
+    }
+
+    /// Wait until the workspace's governance records `person` as removed.
+    pub fn wait_for_removal(&self, person: [u8; 32]) {
+        let person = hex::encode(person);
+        tilo_test_env::wait_until(format!("the site removes {person}"), || {
+            self.members().get(&person).is_some_and(|mark| mark.removed)
+        });
+    }
+
     /// The apps the workspace's governance lets author its records, as its host records them now.
     pub fn authors(&self) -> std::collections::BTreeSet<String> {
         self.runtime
@@ -431,6 +454,170 @@ impl std::fmt::Display for Held<'_> {
         }
         Ok(())
     }
+}
+
+/// How many windows the workspace's shared desk holds, as the site keeps it.
+pub fn windows(site: &Site) -> usize {
+    titles_at(site).len()
+}
+
+/// The key `device` gives the workspace `site` serves, while it holds it.
+fn workspace_key(device: &Device, site: &Site) -> Option<u64> {
+    device.state()["state"]["held_workspaces"]
+        .as_array()?
+        .iter()
+        .find(|workspace| workspace["room"].as_str() == Some(site.workspace.as_str()))
+        .and_then(|workspace| workspace["workspace"].as_u64())
+}
+
+/// Bring the workspace `site` serves to the front on `device`'s desk, so an app it opens is a
+/// window of that workspace's shared desk.
+pub fn show(device: &Device, site: &Site) {
+    tilo_test_env::wait_until(format!("{} holds the workspace", device.label), || {
+        workspace_key(device, site).is_some()
+    });
+    let key = workspace_key(device, site).expect("the device holds the workspace");
+    let shown = device.act(
+        "so.tilo.session",
+        "session:desk\u{1f}switch-workspace",
+        &json!({"workspace": key.to_string()}),
+    );
+    assert!(
+        shown.get("err").is_none(),
+        "{} shows {}: {shown}\n{}",
+        device.label,
+        site.name,
+        device.log()
+    );
+}
+
+/// The window titles `device` shows on the workspace `site` serves: the shared desk it reads out of
+/// the workspace.
+pub fn titles_on(device: &Device, site: &Site) -> Vec<String> {
+    let state = device.state();
+    let tree: tilo_desktop_model::DesktopTree =
+        serde_json::from_value(state["state"]["workspace_tree"].clone()).unwrap_or_else(|error| {
+            panic!("{}'s desk does not read: {error}\n{state}", device.label)
+        });
+    let mut titles: Vec<String> = tree
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.id().to_string() == site.workspace)
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.title.clone())
+        .collect();
+    titles.sort_unstable();
+    titles
+}
+
+/// The window titles the site keeps on the workspace's shared desk.
+pub fn titles_at(site: &Site) -> Vec<String> {
+    site.desktop().map_or_else(Vec::new, |desk| {
+        let mut titles: Vec<String> = desk
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.title.clone())
+            .collect();
+        titles.sort_unstable();
+        titles
+    })
+}
+
+/// Wait until the site keeps a window titled `title` on the workspace's desk and every device in
+/// `devices` shows it: a record a device wrote, read where it has to arrive.
+pub fn wait_shown(site: &Site, devices: &[&Device], title: &str) {
+    waited(
+        &format!("every device to show {title:?}"),
+        site,
+        devices,
+        || {
+            titles_at(site).iter().any(|kept| kept == title)
+                && devices
+                    .iter()
+                    .all(|device| titles_on(device, site).iter().any(|shown| shown == title))
+        },
+    );
+}
+
+/// Wait until `condition` holds, and if it never does, fail with what the site keeps and what the
+/// devices showed and logged: a write that never left its device says why there.
+pub fn waited(what: &str, site: &Site, devices: &[&Device], condition: impl FnMut() -> bool) {
+    let watched = Watched {
+        what,
+        site,
+        devices,
+    };
+    tilo_test_env::wait_until(watched, condition);
+}
+
+/// The step [`waited`] waits for, named on the failure that found it short: what the site keeps,
+/// and what each device shows and logged.
+struct Watched<'a> {
+    what: &'a str,
+    site: &'a Site,
+    devices: &'a [&'a Device],
+}
+
+impl std::fmt::Display for Watched<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}; the site keeps {:?} and refuses: {}\nthe devices:\n",
+            self.what,
+            titles_at(self.site),
+            self.site.refusals_report()
+        )?;
+        for device in self.devices {
+            writeln!(
+                formatter,
+                "{} shows {:?}\n{}",
+                device.label,
+                titles_on(device, self.site),
+                device.diagnostic()
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Two people in one workspace Ada's site hosts, both editors, each at a device of their own: the
+/// site lets its desk author the workspace's records, as a workspace's host does before its people
+/// open windows there.
+pub fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
+    let ada = Person::new("Ada");
+    let bob = Person::new("Bob");
+    let site = Site::start(&ada, "Studio");
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
+    let ada_laptop = joined(&site, &ada, "Ada's laptop");
+    let bob_laptop = joined(&site, &bob, "Bob's laptop");
+    site.wait_for_member(bob.public);
+    (site, ada, bob, ada_laptop, bob_laptop)
+}
+
+/// One person with two devices of their own in one workspace their site hosts, both editors: the
+/// two sessions a person's laptop and their phone run, sharing what they record there.
+pub fn two_devices_of_one_person() -> (Site, Person, Device, Device) {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
+    let laptop = joined(&site, &ada, "Ada's laptop");
+    let phone = joined(&site, &ada, "Ada's phone");
+    (site, ada, laptop, phone)
+}
+
+/// A device of `person`'s, joined to the workspace `site` serves and holding it: what the owner's
+/// invitation admits, as a device redeems it.
+fn joined(site: &Site, person: &Person, label: &str) -> Device {
+    let mut device = person.device(label);
+    let invitation = site.invite(person.public, WorkspaceRole::Editor);
+    device.join(&invitation);
+    device.wait_holding(&site.workspace);
+    device
 }
 
 /// The door a site serves: its entry, the directory of what it lists, and the door of the workspace
@@ -596,6 +783,22 @@ impl Person {
         self.certify_with(paths, label, None)
     }
 
+    /// The configuration home the first use of this machine provisioned the
+    /// person in.
+    pub fn config_home(&self) -> PathBuf {
+        self.identity.path().join("config")
+    }
+
+    /// The identity root holding this machine's device key and certificate.
+    pub fn identity_root(&self) -> PathBuf {
+        self.identity.path().join("system")
+    }
+
+    /// The home the first use of this machine provisioned them in.
+    pub fn home(&self) -> PathBuf {
+        self.identity.path().join("home")
+    }
+
     /// Certify the device key `paths` holds as this person's site: the device a site runs, which
     /// governs the workspaces it hosts and takes part in their channels, so the records it keeps
     /// are sealed ones.
@@ -670,6 +873,176 @@ impl Person {
             home,
             child: None,
         }
+    }
+}
+
+impl Person {
+    /// A machine copied from `source`, one of this person's devices, as
+    /// `tilo-vm vm branch` copies a disk: `source`'s whole directory, taken
+    /// while its session is stopped, after `source` booted once on a build
+    /// that records its machine. The copy boots on a machine of its own, so
+    /// the boot's own re-key ([`branch::settle`]) gives it a device key of
+    /// its own; this person then certifies that key, as one approval on a
+    /// device holding their root does, and the copy installs the certificate
+    /// as a device that joined without the root does.
+    ///
+    /// On a real copy the state sits at the same path. Here the copy is
+    /// elsewhere, and the secret store files the master key of the session's
+    /// channel vault under the vault's path, so that key is filed under the
+    /// copy's path as well: what the copied disk would have found.
+    pub fn branch(&self, source: &Device) -> (Device, tilo_user_identity::branch::Branched) {
+        use sha2::Digest as _;
+        use tilo_user_identity::branch::{self, Branch, Machine, Settled};
+        assert!(
+            source.child.is_none(),
+            "a disk is copied while its machine is off"
+        );
+        let source_machine = Machine::parse("4c4c4544-0042-3510-8048-b4c04f4d3232").unwrap();
+        let branch_machine = Machine::parse("8a1f02d6-91c4-4f0e-9b9a-2d1f5c3e7a10").unwrap();
+        let boot = |paths: &IdentityPaths, machine: &Machine| {
+            branch::settle(
+                paths,
+                Some(machine),
+                &Branch {
+                    // Nothing a test device keeps is sealed to its key: its
+                    // secrets are in the file store `TILO_SECRETS_DIR` names,
+                    // under a key of that store's own.
+                    stores: vec![],
+                    machine: None,
+                    now_ns: tilo_clock::unix_now_ns(),
+                    after: &|_| Ok(()),
+                },
+            )
+            .expect("the boot settles which device this is")
+        };
+        assert!(matches!(
+            boot(&source.identity(), &source_machine),
+            Settled::Recorded
+        ));
+
+        let home = tempfile::tempdir().expect("a directory for the copy");
+        copy_machine(source.directory(), home.path());
+        let vault = |root: &Path| {
+            let root = root.join("state/tilo/collaboration/mls");
+            format!(
+                "mls-master-{}",
+                hex::encode(sha2::Sha256::digest(root.as_os_str().as_encoded_bytes()))
+            )
+        };
+        refile_secret(
+            &home.path().join("secrets"),
+            "so.tilo.collaboration.mls",
+            &vault(source.directory()),
+            &vault(home.path()),
+        );
+
+        let paths = IdentityPaths::under(home.path().join("identity"));
+        let Settled::Branched(branched) = boot(&paths, &branch_machine) else {
+            panic!("the copy did not re-key");
+        };
+        // The copy holds no root: its certificate waits for the person.
+        assert!(matches!(
+            branched.certification,
+            branch::Certification::Pending(_)
+        ));
+        let mut cert = DeviceCert {
+            user_public_key: self.public,
+            device_public_key: branched.device,
+            device_label: branched.label.clone(),
+            capabilities: source.cert.capabilities.clone(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
+            .expect("a device certificate digest");
+        cert.signature = self
+            .root
+            .sign(&digest)
+            .expect("the person's root signs the copy");
+        tilo_user_identity::persist::install_device_cert(&paths, &cert, tilo_clock::unix_now_ns())
+            .expect("the copy installs the certificate its person signed");
+        let control = home.path().join("control.sock");
+        (
+            Device {
+                person: self.name.clone(),
+                label: branched.label.clone(),
+                cert,
+                control,
+                home,
+                child: None,
+            },
+            *branched,
+        )
+    }
+}
+
+/// File the secret `app` keeps under `from` in the file store at `dir` under
+/// `to` as well, as that store seals it: bound to its app and name, under the
+/// store's own key. The store is opened directly because a process opens the
+/// store `TILO_SECRETS_DIR` names once, and this test's is not the copy's.
+fn refile_secret(dir: &Path, app: &str, from: &str, to: &str) {
+    use sha2::Digest as _;
+    use tilo_seal::{Context, Label, SymmetricKey, envelope};
+    let record = |name: &str| [app.as_bytes(), &[0], name.as_bytes()].concat();
+    let file = |record: &[u8]| {
+        dir.join(format!(
+            "{}.secret",
+            hex::encode(sha2::Sha256::digest(record))
+        ))
+    };
+    let key =
+        SymmetricKey::from_slice(&std::fs::read(dir.join("store.key")).expect("the store's key"))
+            .expect("the store's key");
+    let Ok(sealed) = std::fs::read(file(&record(from))) else {
+        return;
+    };
+    let secret = envelope::open(
+        &key,
+        Context::new(Label::FileSecretStore, &record(from)),
+        &sealed,
+    )
+    .expect("the copied secret opens");
+    let resealed = envelope::seal(
+        &key,
+        Context::new(Label::FileSecretStore, &record(to)),
+        &secret,
+    )
+    .expect("the secret seals");
+    let target = file(&record(to));
+    std::fs::write(&target, resealed).expect("the secret is filed");
+    std::fs::set_permissions(
+        &target,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("a mode");
+}
+
+/// Copy a stopped machine's directory as a disk copy carries it: every file
+/// with its mode and every link as a link. What lives only while the machine
+/// runs (its runtime directory, sockets) and this harness's own logs are not
+/// on the disk.
+fn copy_machine(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("a copied directory");
+    for entry in std::fs::read_dir(from).expect("a readable directory") {
+        let entry = entry.expect("a directory entry");
+        let name = entry.file_name();
+        if name == "runtime" || name == "app-logs" {
+            continue;
+        }
+        let target = to.join(&name);
+        let kind = entry.file_type().expect("an entry's kind");
+        if kind.is_dir() {
+            copy_machine(&entry.path(), &target);
+            let mode = std::fs::metadata(entry.path()).expect("a directory's mode");
+            std::fs::set_permissions(&target, mode.permissions()).expect("a mode");
+        } else if kind.is_symlink() {
+            let link = std::fs::read_link(entry.path()).expect("a link");
+            std::os::unix::fs::symlink(link, &target).expect("a copied link");
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target).expect("a copied file");
+        }
+        // A socket or a pipe lives only while the machine runs.
     }
 }
 

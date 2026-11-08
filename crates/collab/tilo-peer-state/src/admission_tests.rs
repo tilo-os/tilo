@@ -529,7 +529,6 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
         verify_join_proof,
     };
-    use automerge::ReadDoc;
 
     let (mut peer, authority_key, other_owner_device, _, now) = seeded();
     let now_ns: u64 = now
@@ -738,39 +737,17 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .contains("already redeemed"),
         "invite A remains spent after invite B updates the same original device"
     );
-    let NeighbourMsg::SyncResp { changes, room } = restored.workspace_message() else {
-        panic!("unexpected fixture shape")
-    };
-    let mut workspace_doc = crate::workspace::candidate(None, &changes).unwrap();
-    let members = workspace_doc.get(ROOT, "members").unwrap().unwrap().1;
-    let before = workspace_doc.get_heads();
-    workspace_doc.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
-    workspace_doc
-        .put(
-            &members,
-            hex::encode(guest_cert.user_public_key),
-            automerge::ScalarValue::Bytes(
-                serde_json::to_vec(&collab_types::Role::Commenter).unwrap(),
-            ),
-        )
-        .unwrap();
-    workspace_doc.commit_edit("fixture", "fixture");
-    restored
-        .receive_from(
-            TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                changes: workspace_doc
-                    .get_changes(&before)
-                    .into_iter()
-                    .map(|change| change.raw_bytes().to_vec())
-                    .collect(),
-                room,
-            },
-            now,
-        )
-        .unwrap();
+    assert!(
+        restored
+            .governance_mut()
+            .set_member_role(
+                guest_cert.user_public_key,
+                MemberRole::Commenter,
+                &authority_key,
+                now
+            )
+            .unwrap()
+    );
     assert_eq!(
         restored
             .permissions(guest_cert.device_public_key, now)
@@ -1109,6 +1086,98 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
                 .contains("already redeemed")
         );
     }
+}
+
+/// A governance change is its writer's role's, not its person's: a member the
+/// workspace makes an administrator writes a host, their device records the
+/// change as the operation naming the rows it wrote, and another receiver takes
+/// it as it takes the owner's. A change the writer's role does not permit is
+/// refused and lands nowhere.
+#[test]
+fn a_members_governance_change_is_its_roles_and_another_receiver_takes_it() {
+    use crate::join::TransportHint;
+    use crate::members::MembershipOpCommand;
+    use crate::workspace::GovernanceRow;
+    use tilo_action_policy::{Subject, roles};
+
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let (editor_key, editor_cert, editor_person) =
+        add_member_with(&mut peer, &authority_key, now, 5, 6);
+    let hint = TransportHint {
+        kind: "iroh".into(),
+        opaque_json: "an address".into(),
+        host: editor_cert.clone(),
+        service_public_key: [3; 32],
+        host_signature: [4; 64],
+    };
+    let held = crate::members::ops(peer.admitted_workspace().unwrap()).len();
+    assert!(
+        peer.governance_mut()
+            .author_workspace_host(&hint, &editor_key, now)
+            .is_err(),
+        "an editor holds no governance grant"
+    );
+    assert!(peer.governance().workspace_hosts().is_empty());
+    assert_eq!(
+        crate::members::ops(peer.admitted_workspace().unwrap()).len(),
+        held,
+        "a refused change lands nowhere"
+    );
+    let person = hex::encode(peer.owner());
+    let workspace = peer.workspace_id().to_owned();
+    assert!(
+        peer.governance_mut()
+            .put_governed_grants(
+                &[roles::administrator_grant(
+                    &workspace,
+                    &hex::encode(editor_person),
+                    Subject::Person(person),
+                )],
+                &authority_key,
+                now,
+            )
+            .unwrap()
+    );
+    let mut receiver = peer.clone();
+    let heads = peer.admitted_workspace().unwrap().clone().get_heads();
+    assert!(
+        peer.governance_mut()
+            .author_workspace_host(&hint, &editor_key, now)
+            .unwrap()
+    );
+    let named = crate::members::ops(peer.admitted_workspace().unwrap())
+        .into_values()
+        .find_map(|op| match &op.command {
+            MembershipOpCommand::Governance { rows } if rows == &[GovernanceRow::Hosts] => {
+                Some(op.person())
+            }
+            _ => None,
+        })
+        .expect("the change names the rows it wrote");
+    assert_eq!(named, hex::encode(editor_person));
+    let changed = peer
+        .admitted_workspace()
+        .unwrap()
+        .clone()
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    receiver
+        .receive_from(
+            TransportOrigin::RelayDelta(editor_cert.device_public_key),
+            NeighbourMsg::SyncResp {
+                changes: changed,
+                room: workspace,
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        receiver.governance().workspace_hosts(),
+        peer.governance().workspace_hosts(),
+        "a receiver takes the member's governance change as it takes the owner's"
+    );
 }
 
 /// Two participants may redeem one invitation at once, each before it holds

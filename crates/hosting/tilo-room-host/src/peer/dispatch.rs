@@ -5,8 +5,8 @@
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_commit, handle_compaction,
-    handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_live_join,
-    handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
+    handle_content_want, handle_delta, handle_here, handle_host_action, handle_host_hello,
+    handle_live_join, handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
     handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces, route_record_content,
 };
 #[cfg(test)]
@@ -146,6 +146,9 @@ pub(super) async fn handle_envelope(
         Envelope::WorkspacesRequest { request_id, frame } => {
             handle_workspaces(peer, session, request_id, &frame).await
         }
+        Envelope::HereRequest { request_id, frame } => {
+            handle_here(peer, session, request_id, &frame).await
+        }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
@@ -166,7 +169,8 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceCallList { .. }
         | Envelope::RecordOpened { .. }
         | Envelope::WorkspaceBootstrap { .. }
-        | Envelope::WorkspacesReply { .. } => Ok(None),
+        | Envelope::WorkspacesReply { .. }
+        | Envelope::HereReply { .. } => Ok(None),
     }
 }
 

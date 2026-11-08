@@ -19,12 +19,12 @@ mod fetch;
 mod here;
 pub mod install;
 mod page_errors;
+pub(crate) mod plane;
 mod sessions;
 mod shelf;
 #[cfg(test)]
 mod tests;
 mod tls;
-pub(crate) mod wt;
 
 pub use fetch::FetchProxySetup;
 use std::convert::Infallible;
@@ -77,25 +77,6 @@ pub struct WebConfig {
     /// The fetch proxy this host serves its members' pages at
     /// [`protocol::FETCH_PATH`], if any.
     pub fetch_proxy: Option<FetchProxySetup>,
-    /// The live plane the pages join, and where they dial it.
-    pub live: LiveConfig,
-}
-
-/// The live plane (WebTransport on UDP): the address its socket binds and the
-/// origin pages are told to dial it at. A proxy that publishes the plane
-/// somewhere other than the host's own origin, on a port of its choosing,
-/// names both.
-#[derive(Clone, Debug, Default)]
-pub struct LiveConfig {
-    /// The UDP address the page carrier binds. An address is the one a proxy
-    /// forwards to, so it binds exactly there or the host stops. Default: the
-    /// HTTPS listener's address and port, reusing the port where UDP allows
-    /// it and letting the kernel pick otherwise.
-    pub listen: Option<SocketAddr>,
-    /// The `https://host[:port]` origin pages dial the page carrier at. The
-    /// port it names is the one pages use, 443 when it names none. Default:
-    /// the relay's own origin's host on the port the socket bound.
-    pub origin: Option<String>,
 }
 
 /// The request header a proxy in front of the host names the client's
@@ -140,8 +121,8 @@ pub struct WebHandle {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     published_origin: Option<Arc<String>>,
-    /// The pages' plane: the one account of who is here.
-    presence: Arc<wt::Pages>,
+    /// The live plane: the one account of who is here.
+    presence: Arc<plane::Authority>,
 }
 
 impl WebHandle {
@@ -176,6 +157,47 @@ impl Drop for WebHandle {
     }
 }
 
+/// The relay's answer to a session asking who is here: the same account its
+/// HTTPS route answers with, read from the live plane and the summaries the
+/// route keeps.
+struct Board {
+    here: Arc<here::Here>,
+    presence: Arc<plane::Authority>,
+    profiles: Arc<envelopes::Envelopes>,
+}
+
+impl crate::peer::HereBoard for Board {
+    fn answer<'a>(
+        &'a self,
+        peer: &'a crate::auth::AuthenticatedPeer,
+        request: protocol::HereRequest,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<protocol::HereReply, String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            request.validate().map_err(ToString::to_string)?;
+            if !self.presence.admits_page(peer, request.workspace_id) {
+                return Err("not admitted to this workspace".into());
+            }
+            let workspace_id = request.workspace_id;
+            let (mut reply, job) = self.here.post(
+                request,
+                peer.device_public_key,
+                peer.user_public_key,
+                std::time::Instant::now(),
+                tilo_clock::unix_now_ms(),
+            );
+            here::pair_members(&mut reply, &self.presence.persons_in(workspace_id));
+            for person in &mut reply.people {
+                person.profile_ms = self.profiles.issued_at(&person.user).unwrap_or(0);
+            }
+            if let Some(job) = job {
+                tokio::spawn(self.here.clone().summarize(job));
+            }
+            Ok(reply)
+        })
+    }
+}
+
 struct Web {
     sessions: Arc<Sessions>,
     host_info: HostInfo,
@@ -186,8 +208,9 @@ struct Web {
     workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' root envelopes, for `/envelope`.
     envelopes: envelopes::Envelopes,
-    /// Members' profiles, for `/profile`.
-    profiles: envelopes::Envelopes,
+    /// Members' profiles, for `/profile`, and for the profile age a session's
+    /// answer to who is here carries.
+    profiles: Arc<envelopes::Envelopes>,
     /// Who is here and what they are doing, for `/here`.
     here: Arc<here::Here>,
     /// [`WebConfig::country`], its header name parsed.
@@ -197,10 +220,8 @@ struct Web {
     )>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
-    /// The pages' live plane: the WebTransport listener they join, and the
-    /// authority that admits their session tokens. `None` in a host that
-    /// serves the browser routes without it.
-    live: Option<Arc<wt::Live>>,
+    /// The live plane: the one account of who is here.
+    presence: Arc<plane::Authority>,
     /// The page errors the door logs.
     page_errors: page_errors::PageErrors,
     /// The sealed invitations this site keeps in place of their clerk: what a
@@ -307,8 +328,7 @@ impl Relay {
     /// # Errors
     ///
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
-    /// certificate cannot be loaded or an address cannot be bound (the live
-    /// plane's included).
+    /// certificate cannot be loaded or an address cannot be bound.
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         checked_origins(&config).map_err(failed)?;
@@ -329,27 +349,11 @@ impl Relay {
             return Err(failed("the relay runs no live plane".into()));
         };
         let sessions = Sessions::with_limits(context.clone(), config.limits);
-        plane.pages.serve_pages(sessions.clone());
         if let Some(workspaces) = self.workspaces() {
             let _ = context.relay.carried_calls.set(workspaces.downgrade());
         }
         let host_cert = context.relay.identity.cert.clone();
         let node_addr = self.node_addr();
-        let mut live = wt::Live::start(
-            plane,
-            &identity,
-            &config,
-            &public_origin
-                .clone()
-                .unwrap_or_else(|| format!("https://{addr}")),
-        )
-        .map_err(failed)?;
-        let live_tasks = std::mem::take(&mut live.tasks);
-        tracing::info!(
-            origin = %live.info.webtransport_origin,
-            udp = %live.bound,
-            "serving the live plane"
-        );
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             host_info: HostInfo {
@@ -363,18 +367,25 @@ impl Relay {
             features: self.web_features() | fetch.features(),
             workspaces: self.workspaces().cloned(),
             envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
-            profiles: envelopes::Envelopes::of(
+            profiles: Arc::new(envelopes::Envelopes::of(
                 envelopes::Kind::Profile,
                 self.state_root().join("profiles"),
-            ),
+            )),
             here: Arc::new(here::Here::new(here::from_env())),
             country: config.country.and_then(country_header),
             fetch: fetch.proxy,
-            live: Some(Arc::new(live)),
+            presence: plane.authority(),
             page_errors: page_errors::PageErrors::default(),
             shelf: shelf::Shelf::default(),
         });
-        let mut tasks = live_tasks;
+        // Sessions ask who is here over their own carrier; the relay answers
+        // with the one account its HTTPS route keeps.
+        let _ = context.relay.here.set(Arc::new(Board {
+            here: Arc::clone(&web.here),
+            presence: Arc::clone(&web.presence),
+            profiles: Arc::clone(&web.profiles),
+        }));
+        let mut tasks = Vec::new();
         tasks.extend(fetch.metrics);
         let mut plain_origin = None;
         if let Some(plain) = config.plain_listen {
@@ -399,7 +410,7 @@ impl Relay {
             tasks,
             locator_origin: Arc::clone(&self.browser_origin),
             published_origin,
-            presence: plane.pages.clone(),
+            presence: plane.authority(),
         })
     }
 }
@@ -677,7 +688,7 @@ fn token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
 }
 
 /// Headers a page may send to the browser routes.
-const ALLOWED_HEADERS: &str = "content-type, x-tilo-session, x-tilo-live-session";
+const ALLOWED_HEADERS: &str = "content-type, x-tilo-session";
 
 /// Whether `path` is part of the public directory: a listing anyone may read,
 /// and a door anyone may ask, from any site.
@@ -750,10 +761,6 @@ fn cors(
     if let Ok(allowed) = header::HeaderValue::from_str(allowed_headers) {
         headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, allowed);
     }
-    headers.insert(
-        header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        header::HeaderValue::from_static("x-tilo-live-session"),
-    );
 }
 
 async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<Body> {
@@ -942,42 +949,6 @@ async fn route(
                 .map(|challenge| encoded(&challenge))
                 .map_err(|error| session_status(&error))
         }
-        "/live" => {
-            let session = authed()?;
-            let request: tilo_relay_protocol::web::LiveRequest = decode(&bytes)?;
-            let live = web
-                .live
-                .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "no live plane"))?;
-            if !tilo_relay_protocol::room_workspace_id_matches(
-                &request.workspace,
-                request.workspace_id,
-            ) {
-                return Err(status(
-                    StatusCode::BAD_REQUEST,
-                    "not a workspace of this relay",
-                ));
-            }
-            if !web
-                .sessions
-                .admits(&session.peer, request.workspace_id)
-                .await
-            {
-                return Err(status(
-                    StatusCode::FORBIDDEN,
-                    "not admitted to this workspace",
-                ));
-            }
-            live.pages.issue(
-                tilo_relay_protocol::web::LiveGrant {
-                    workspace_id: request.workspace_id,
-                    token: session.token(),
-                },
-                &request.workspace,
-                &session.peer,
-            );
-            Ok(encoded(&live.info))
-        }
         "/session/finish" => {
             let finish: SessionFinish = decode(&bytes)?;
             let grant = web
@@ -1044,9 +1015,7 @@ async fn route(
                 std::time::Instant::now(),
                 tilo_clock::unix_now_ms(),
             );
-            if let Some(live) = web.live.as_ref() {
-                here::pair_members(&mut reply, &live.pages.persons_in(workspace_id));
-            }
+            here::pair_members(&mut reply, &web.presence.persons_in(workspace_id));
             for person in &mut reply.people {
                 person.profile_ms = web.profiles.issued_at(&person.user).unwrap_or(0);
             }
@@ -1079,11 +1048,7 @@ async fn route(
                 .workspaces
                 .as_ref()
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            let online = web
-                .live
-                .as_ref()
-                .map(|live| live.pages.participants().into_keys().collect())
-                .unwrap_or_default();
+            let online = web.presence.participants().into_keys().collect();
             Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
                 workspaces: workspaces.directory(&online).await,
             }))

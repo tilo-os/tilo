@@ -22,7 +22,7 @@ behind each binding, and how every transition moves.
 ```
 
 A workspace is a **desk**: its strips stack top to bottom as full-height
-screens (the strip deck, `ui::widget::StripDeck`; one fills the work area at
+screens (the strip deck the desktop surface draws; one fills the work area at
 a time and each keeps its own horizontal pan), a strip's window
 groups run left to right, and each display is a window onto part of that desk
 (every display shows the same workspace and holds its own groups).
@@ -177,7 +177,7 @@ touchscreen gesture on the display the touchscreen is mapped to.
 
 The pinch covers the overview, so four fingers take workspaces and three take
 strips, the same level split as the modifiers. A three-finger vertical swipe
-moves the strip deck with the hand (`ui::widget::StripDeck`) and the release
+moves the strip deck with the hand (`DesktopSurface`) and the release
 decides: past a quarter of the display height, or a flick, commits (a flick
 is one strip, a drag across two is two); less springs back. A gesture during
 the settle catches the motion where it is. Four fingers still step once per

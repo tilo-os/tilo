@@ -123,14 +123,23 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
     assert_eq!(list.viewport.item_height(2), Some(0.0), "the whole chain");
     assert_eq!(list.viewport.item_height(3), Some(row));
 
-    // Its disclosure shows them again, where the person presses: the chevron of the row.
-    press(&mut list, 10.0, 10.0, &taffy, node);
+    // Its disclosure shows them again, where the person presses: the chevron of the row, in
+    // the step its own depth keeps free in front of its content.
+    let chevron = list.chevrons();
+    let first = chevron.x0 + chevron.lead + 10.0;
+    press(&mut list, first, 10.0, &taffy, node);
     let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
     assert!(!list.row_folded(&0), "the press unfolded it");
     assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
 
     // Deeper in, the chevron stands one indent further in, and folds only what is under it.
-    press(&mut list, 16.0 + 10.0, row + 10.0, &taffy, node);
+    press(
+        &mut list,
+        first + chevron.step + 10.0,
+        row + 10.0,
+        &taffy,
+        node,
+    );
     let _ = super::tests::lay_out(&mut list, 300.0);
     assert!(
         list.row_folded(&1) && !list.row_folded(&0),
@@ -952,5 +961,44 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
         "the folded row's chevron stays on its row: {} against {}",
         chevron.center().y,
         row.center().y
+    );
+}
+
+/// The chevron that folds a row stands at the row's own leading edge, inside the step its
+/// content keeps free, so a row with something to fold starts on the column its neighbours do.
+#[test]
+fn a_branch_row_starts_on_the_column_its_neighbours_do() {
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = nested().with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let branch = list.row_rect(&0).expect("the branch row");
+    let leaf = list.row_rect(&3).expect("a leaf at the same depth");
+    assert_eq!(list.row_depth(&0), 0);
+    assert_eq!(list.row_depth(&3), 0);
+    assert!(
+        (branch.x0 - leaf.x0).abs() < 0.5,
+        "rows at one depth stand on one column: {} and {}",
+        branch.x0,
+        leaf.x0
+    );
+
+    // The chevron stands at the row's own leading edge, and the content keeps the step after
+    // it free, so no row starts before the column its neighbours do.
+    let column = branch.x0 + list.lead;
+    let chevron = list
+        .disclosure_rect(&0)
+        .expect("the branch shows its disclosure");
+    assert!(
+        (chevron.x0 - column).abs() < 0.5,
+        "the chevron stands at the row's leading edge, not before it: {} against {column}",
+        chevron.x0
+    );
+    assert!(
+        chevron.x1 <= column + TREE_INDENT + 0.5,
+        "it hangs inside the step its content keeps free"
+    );
+    assert!(
+        list.disclosure_rect(&3).is_none(),
+        "a leaf folds nothing, and still keeps the step free"
     );
 }

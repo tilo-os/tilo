@@ -1466,15 +1466,8 @@ mod tests {
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
-                let state = AppBrokerState::new_configured(
-                    &Arc::new(super::super::FanoutState::new()),
-                    Arc::new(std::sync::Mutex::new(
-                        super::super::BrokerChannels::default(),
-                    )),
-                    super::super::PeerPublisher::disabled(),
+                let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    None,
-                    None,
                     HostServices {
                         workspace_memberships: Some(Arc::new(HostedElsewhereMemberships)),
                         ..Default::default()
@@ -1539,15 +1532,8 @@ mod tests {
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
-                let state = AppBrokerState::new_configured(
-                    &Arc::new(super::super::FanoutState::new()),
-                    Arc::new(std::sync::Mutex::new(
-                        super::super::BrokerChannels::default(),
-                    )),
-                    super::super::PeerPublisher::disabled(),
+                let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    None,
-                    None,
                     HostServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
@@ -1602,15 +1588,8 @@ mod tests {
                     workspace: workspace.clone(),
                     projected: std::sync::atomic::AtomicBool::new(false),
                 });
-                let state = AppBrokerState::new_configured(
-                    &Arc::new(super::super::FanoutState::new()),
-                    Arc::new(std::sync::Mutex::new(
-                        super::super::BrokerChannels::default(),
-                    )),
-                    super::super::PeerPublisher::disabled(),
+                let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    None,
-                    None,
                     HostServices {
                         workspace_memberships: Some(service.clone()),
                         ..Default::default()
@@ -1649,15 +1628,8 @@ mod tests {
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
-                let state = AppBrokerState::new_configured(
-                    &Arc::new(super::super::FanoutState::new()),
-                    Arc::new(std::sync::Mutex::new(
-                        super::super::BrokerChannels::default(),
-                    )),
-                    super::super::PeerPublisher::disabled(),
+                let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    None,
-                    None,
                     HostServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
@@ -2035,15 +2007,8 @@ mod tests {
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
-                let state = AppBrokerState::new_configured(
-                    &Arc::new(super::super::FanoutState::new()),
-                    Arc::new(std::sync::Mutex::new(
-                        super::super::BrokerChannels::default(),
-                    )),
-                    super::super::PeerPublisher::disabled(),
+                let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    None,
-                    None,
                     HostServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()
@@ -2097,15 +2062,8 @@ mod tests {
                     ));
                 let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
                 let tree = tree.shared();
-                let state = AppBrokerState::new_configured(
-                    &Arc::new(super::super::FanoutState::new()),
-                    Arc::new(std::sync::Mutex::new(
-                        super::super::BrokerChannels::default(),
-                    )),
-                    super::super::PeerPublisher::disabled(),
+                let state = AppBrokerState::test_state(
                     Some(tree.authority()),
-                    None,
-                    None,
                     HostServices {
                         workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
                         ..Default::default()

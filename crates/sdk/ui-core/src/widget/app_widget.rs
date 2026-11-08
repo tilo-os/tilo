@@ -481,6 +481,16 @@ mod component_adapter {
             self.in_root_mut(|root| root.on_floating_surface_event_source(id));
         }
 
+        fn floating_surface_event(
+            &mut self,
+            id: &str,
+            event: &winit::event::WindowEvent,
+            ctx: &mut crate::widget::EventCtx<'_>,
+        ) -> bool {
+            self.in_root_mut(|root| root.floating_surface_event(id, event, ctx))
+                .unwrap_or_default()
+        }
+
         fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
             self.in_root(|root| root.floating_surface_accessibility(id))
                 .flatten()

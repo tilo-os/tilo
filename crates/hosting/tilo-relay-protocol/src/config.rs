@@ -74,6 +74,12 @@ pub struct RelayConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packet_relay: Option<SocketAddr>,
 
+    /// The origin pages dial the packet relay at when something terminates TLS
+    /// in front of it (a deployment's ingress publishing `wss://`): the URL the
+    /// host advertises. Without it that is the bind address's own `http://`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet_relay_url: Option<String>,
+
     /// Which peers this relay accepts. Defaults to the matching-
     /// user policy — only peers whose cert chains to the same user
     /// identity as this relay's cert.
@@ -151,6 +157,7 @@ impl Default for RelayConfig {
             home_peer_bundle: default_home_peer_bundle(),
             iroh_listen: default_iroh_listen(),
             packet_relay: None,
+            packet_relay_url: None,
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
             services: default_services(),

@@ -52,6 +52,12 @@ fn history(view: &mut ViewInstance) -> UiNode {
         .unwrap_or_else(|| panic!("the window shows its history: {:#?}", view.tree()))
 }
 
+/// The narrowest of `found`: the innermost entry of history that matches, never the step that
+/// holds it, whose row holds its changes' rows too.
+fn narrowest<'a>(found: Vec<&'a UiNode>) -> Option<&'a UiNode> {
+    found.into_iter().min_by_key(|node| nodes(node).len())
+}
+
 /// Each entry of a history: the avatar that heads it, by who it shows.
 fn entries(section: &UiNode) -> Vec<String> {
     nodes(section)
@@ -220,22 +226,25 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
         "the entry says what was done: {section:#?}"
     );
 
-    // The task's window: the due day before and after, each shown as a day.
+    // The task's window: the due day, shown as a day in the sentence that moved it there, and
+    // not repeated under it.
     let mut page = ada.host.open_resource(&target(&task), None).unwrap();
     let section = history(&mut page);
-    let (label, before, after) = changes(&section)
+    let days: Vec<&UiNode> = nodes(&section)
         .into_iter()
-        .next()
-        .expect("the new due day is shown");
-    assert_eq!(label, "Due");
-    for (node, day) in [(&before, "2026-11-02"), (&after, "2026-11-05")] {
-        assert_eq!(node.props.get("value"), Some(&Value::text(day)), "{node:?}");
-        assert_eq!(
-            node.props.get("value:as"),
-            Some(&Value::text("date")),
-            "{node:?}"
-        );
-    }
+        .filter(|node| node.props.get("value") == Some(&Value::text("2026-11-05")))
+        .collect();
+    assert_eq!(days.len(), 1, "the new day is shown once: {section:#?}");
+    assert_eq!(
+        days[0].props.get("value:as"),
+        Some(&Value::text("date")),
+        "{:?}",
+        days[0]
+    );
+    assert!(
+        !changes(&section).iter().any(|(label, _, _)| label == "Due"),
+        "the sentence says the day, so nothing stands muted under it"
+    );
 }
 
 #[test]
@@ -269,18 +278,22 @@ fn undo_on_an_older_step_takes_back_that_step_alone() {
         .unwrap();
     let section = history(&mut editor);
     // The rename, older than the tag: its own Undo.
-    let rename = nodes(&section)
-        .into_iter()
-        .find(|n| {
-            n.kind == "stack"
-                && n.children.first().is_some_and(|row| {
-                    nodes(row)
-                        .into_iter()
-                        .any(|t| text(t) == Some("changed title"))
-                })
-        })
-        .cloned()
-        .expect("the rename has a row of its own");
+    let rename = narrowest(
+        nodes(&section)
+            .into_iter()
+            .filter(|n| n.kind == "row")
+            .filter(|row| {
+                let held = nodes(row);
+                held.iter().any(|t| text(t) == Some("changed title"))
+                    && held
+                        .iter()
+                        .any(|t| t.kind == "ui.Button" && text(t) == Some("tilolang-undo"))
+            })
+            .collect(),
+    )
+    .cloned()
+    .expect("the rename has a row of its own");
+
     let asked = press_undo(&mut ada, &mut editor, &button(&rename, "tilolang-undo"));
     assert!(matches!(asked, UndoAsk::Step { target, .. } if target == at));
     assert_eq!(
@@ -1125,10 +1138,10 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
 
 /// The Undo button beside the version that says `said`.
 fn undo_saying(section: &UiNode, said: &str) -> String {
-    nodes(section)
+    let found: Vec<&UiNode> = nodes(section)
         .into_iter()
         .filter(|node| node.kind == "row")
-        .find(|row| {
+        .filter(|row| {
             let held = nodes(row);
             held.iter()
                 .any(|child| text(child).is_some_and(|t| t.contains(said)))
@@ -1136,6 +1149,8 @@ fn undo_saying(section: &UiNode, said: &str) -> String {
                     .iter()
                     .any(|child| child.kind == "ui.Button" && text(child) == Some("tilolang-undo"))
         })
+        .collect();
+    narrowest(found)
         .and_then(|row| {
             nodes(row)
                 .into_iter()

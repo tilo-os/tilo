@@ -764,7 +764,9 @@ fn refuse_owner(mut stream: UnixStream, refusal: &PeerRefusal) {
              permissions"
                 .to_owned()
         }
-        PeerRefusal::Unavailable | PeerRefusal::Busy => refusal.message().to_owned(),
+        PeerRefusal::Unavailable | PeerRefusal::Busy | PeerRefusal::OutsideEnvironment => {
+            refusal.message().to_owned()
+        }
     };
     let reply = refusal_json("not_permitted", &message);
     if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(1))) {

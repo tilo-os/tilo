@@ -5,17 +5,10 @@
 //! cells, Enter picks the armed one. The pointer arms the cell under it. Each cell is published
 //! to assistive technology as a menu item of its own, named by the emoji.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Rect;
 
 use super::{ContextMenu, MenuAction, MenuItem};
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::icons::{Icon, draw_icon};
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::floating_surface;
 
 /// An emoji row's height as a share of a command row's: the emoji are drawn larger than a
 /// label, to be told apart at a glance.
@@ -32,7 +25,7 @@ pub struct EmojiRow {
 
 impl EmojiRow {
     /// How many cells it has: one per emoji, and the picker's.
-    fn cells(&self) -> usize {
+    pub(super) fn cells(&self) -> usize {
         self.emoji
             .len()
             .saturating_add(usize::from(self.more.is_some()))
@@ -69,50 +62,14 @@ impl EmojiRow {
 }
 
 impl ContextMenu {
-    /// The rect the row `index` is drawn in, while the menu is open.
-    fn row_rect(&self, index: usize) -> Option<Rect> {
-        if !self.open || !self.shown.contains(&index) {
-            return None;
-        }
-        let body = self.body_rect();
-        let top = body.y0 - self.scroll.offset().y + self.row_top(index);
-        Some(Rect::new(
-            body.x0,
-            top,
-            body.x1,
-            top + self.item_height(index),
-        ))
-    }
-
     /// The cells of the emoji row `index`, side by side across it, each as wide as it is tall
-    /// or as the row allows.
-    fn emoji_cells(&self, index: usize, row: &EmojiRow, theme_inset: f64) -> Vec<Rect> {
-        let Some(rect) = self.row_rect(index) else {
+    /// or as the row allows. The cells run the panel's whole width: they are
+    /// emoji, not a label, and keep the menu's own inset from the edge.
+    fn emoji_cells(&self, index: usize, row: &EmojiRow) -> Vec<Rect> {
+        let Some(rect) = self.row_bounds(index) else {
             return Vec::new();
         };
-        let inner = rect.inset(-theme_inset);
-        let count = row.cells().max(1);
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a menu row holds a handful of emoji"
-        )]
-        let share = inner.width() / count as f64;
-        let side = share.min(inner.height());
-        (0..count)
-            .map(|cell| {
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "a menu row holds a handful of emoji"
-                )]
-                let center_x = inner.x0 + share * (cell as f64 + 0.5);
-                Rect::from_center_size(Point::new(center_x, inner.center().y), (side, side))
-            })
-            .collect()
-    }
-
-    /// The inset the cells keep from the panel's edge: the menu's row inset.
-    fn cell_inset() -> f64 {
-        crate::tokens::Spacing::BASE.s2.into()
+        super::rows::emoji_cells(rect, self.list.row_inset(), row.cells())
     }
 
     /// The armed row's cell under the pointer, when the armed row is an emoji row and the
@@ -124,16 +81,16 @@ impl ContextMenu {
         let Some(MenuItem::Emoji(row)) = self.items.get(index) else {
             return;
         };
-        let cells = self.emoji_cells(index, row, Self::cell_inset());
+        let cells = self.emoji_cells(index, row);
         let point = self.last_cursor;
         let under = cells.iter().position(|cell| {
-            point.x >= cell.x0 - Self::cell_inset() / 2.0
-                && point.x < cell.x1 + Self::cell_inset() / 2.0
+            point.x >= cell.x0 - f64::from(crate::tokens::Spacing::BASE.s2) / 2.0
+                && point.x < cell.x1 + f64::from(crate::tokens::Spacing::BASE.s2) / 2.0
         });
         if let Some(cell) = under
-            && self.emoji_cell != cell
+            && self.list.cell() != cell
         {
-            self.emoji_cell = cell;
+            self.list.set_cell(cell);
             self.dirty = true;
         }
     }
@@ -149,59 +106,22 @@ impl ContextMenu {
         if count == 0 {
             return true;
         }
-        self.emoji_cell = if forward {
-            self.emoji_cell.saturating_add(1) % count
+        let cell = if forward {
+            self.list.cell().saturating_add(1) % count
         } else {
-            self.emoji_cell
+            self.list
+                .cell()
                 .checked_sub(1)
                 .unwrap_or(count.saturating_sub(1))
         };
+        self.list.set_cell(cell);
         self.dirty = true;
         true
     }
 
-    /// Draw the emoji row `index` at `y`.
-    pub(super) fn paint_emoji_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        (index, row): (usize, &EmojiRow),
-        _y: f64,
-    ) {
-        let armed_row = self.hovered == Some(index);
-        let style = theme.text(TextRole::Title);
-        let cells = self.emoji_cells(index, row, Self::cell_inset());
-        let radius = f64::from(theme.tokens.radii.item);
-        for (cell, rect) in cells.iter().enumerate() {
-            let armed = armed_row && self.emoji_cell == cell;
-            let ink = if armed {
-                floating_surface::paint_armed_row_in(scene, transform, *rect, radius, 0.0, theme)
-            } else {
-                theme.tokens.colors.text_dim
-            };
-            if let Some(emoji) = row.emoji.get(cell) {
-                let mut ctx = PaintCtx::new(scene, transform, text, theme);
-                let glyph = rect.inset(-f64::from(theme.tokens.spacing.s1));
-                crate::widget::reaction_strip::paint_emoji(&mut ctx, glyph, emoji, &style, ink);
-            } else {
-                let size = f64::from(theme.tokens.metrics.icon_md);
-                draw_icon(
-                    scene,
-                    transform,
-                    Rect::from_center_size(rect.center(), (size, size)),
-                    Icon::SmilePlus,
-                    ink,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
-            }
-        }
-    }
-
     /// The emoji row `index` for assistive technology: a group of menu items, one per cell.
     pub(super) fn emoji_row_node(&self, index: usize, row: &EmojiRow) -> AccessNode {
-        let cells = self.emoji_cells(index, row, Self::cell_inset());
+        let cells = self.emoji_cells(index, row);
         let count = row.cells();
         let children = (0..count)
             .map(|cell| {
@@ -214,7 +134,7 @@ impl ContextMenu {
                         focusable: true,
                         focused: self.open
                             && self.hovered == Some(index)
-                            && self.emoji_cell == cell,
+                            && self.list.cell() == cell,
                         hidden: !self.open,
                         ..Default::default()
                     })
@@ -222,7 +142,7 @@ impl ContextMenu {
             .collect();
         AccessNode::new(Role::Group)
             .with_name(crate::i18n::widget_format("emoji-bar", &[]))
-            .with_bounds(self.row_rect(index).unwrap_or(Rect::ZERO))
+            .with_bounds(self.row_bounds(index).unwrap_or(Rect::ZERO))
             .with_children(children)
     }
 
@@ -240,8 +160,8 @@ impl ContextMenu {
         if !matches!(self.items.get(row), Some(MenuItem::Emoji(_))) {
             return false;
         }
-        self.hovered = Some(row);
-        self.emoji_cell = cell;
+        self.set_hover(Some(row));
+        self.list.set_cell(cell);
         self.click_item(row);
         true
     }

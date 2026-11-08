@@ -447,10 +447,10 @@ fn nothing_shows_while_nothing_plays() {
 /// bottom edge, no wider than a wide sheet, so its keys stay a thumb's reach
 /// apart. A test duplicates the placement so that a tap lands where a person
 /// sees a key — if the screen moved its keyboard, the taps stop typing.
-fn keyboard_rect(theme: &ui::theme::Theme) -> Rect {
+fn keyboard_rect(theme: &ui::theme::Theme, keyboard: PasscodeKeyboard) -> Rect {
     let key_height = f64::from(theme.tokens.metrics.panel_row_height);
     let gap = f64::from(theme.tokens.spacing.s2);
-    let height = PasscodeKeyboard::height(key_height, gap);
+    let height = keyboard.height(key_height, gap);
     let margin = f64::from(Spacing::BASE.s4);
     let bounds = Rect::new(0.0, 0.0, f64::from(VIEWPORT.0), f64::from(VIEWPORT.1));
     let widest = (bounds.width() - margin * 2.0)
@@ -484,7 +484,7 @@ impl Touch {
         );
         let (_, slot) = self
             .keyboard
-            .layout(keyboard_rect(&theme), key_height, gap)
+            .layout(keyboard_rect(&theme, self.keyboard), key_height, gap)
             .into_iter()
             .find(|(candidate, _)| *candidate == key)
             .unwrap_or_else(|| panic!("the keyboard has no {key:?} key"));

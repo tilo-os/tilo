@@ -50,6 +50,7 @@ mod close_button_tests;
 #[cfg(test)]
 mod close_motion_tests;
 mod displays;
+mod floating;
 mod floats;
 mod history;
 mod hung;
@@ -2292,6 +2293,7 @@ fn find_group(
 impl Widget for DesktopSurface {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::component_lifecycle::ComponentLifecycle
     );
 

@@ -370,7 +370,7 @@ impl<T: Clone> FilterMenu<T> {
             .iter()
             .filter_map(|&i| self.entries.get(i).map(|entry| entry.suggestion(i)))
             .collect();
-        self.list.set_suggestions(rows);
+        self.list.set_rows(rows);
         self.list
             .set_highlight((!self.visible.is_empty()).then_some(0));
         self.sync_list_chrome();

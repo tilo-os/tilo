@@ -137,8 +137,7 @@ enum Readable {
 impl Workspaces {
     /// Decide `author`'s write `body` (a retained document message) to
     /// `workspace`'s shared desktop, with `author`'s own standing in the workspace.
-    /// Anything else, and what the workspace's governor writes, pass untouched
-    /// (see [`Self::decide_layout_write`]).
+    /// Anything else, and what the workspace's governor writes, pass untouched.
     ///
     /// # Errors
     /// Why the workspace refuses it: it closes, moves or renames something its

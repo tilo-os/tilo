@@ -199,13 +199,14 @@ impl Asking {
     /// Ask `ask` beside the loop, and hand what became of it back. A session built without a
     /// workspace engine answers at once that it takes nothing in.
     fn ask(&self, ask: Ask) {
-        let (slot, workspace_id, member, name, missing) = match &ask {
+        let (slot, workspace_id, member, name, missing, held) = match &ask {
             Ask::Invitation(request) => (
                 request.slot,
                 request.workspace_id,
                 false,
                 None,
                 "this session joins no workspaces",
+                false,
             ),
             Ask::Entry(request) => (
                 request.slot,
@@ -213,6 +214,7 @@ impl Asking {
                 true,
                 Some(request.name.clone()),
                 "this session keeps no workspaces",
+                request.held,
             ),
         };
         let landed = self.landed.clone();
@@ -223,6 +225,7 @@ impl Asking {
                 member,
                 name,
                 result: Err(missing.to_owned()),
+                held,
             });
             return;
         };
@@ -263,6 +266,7 @@ impl Asking {
                 member,
                 name,
                 result,
+                held,
             });
         });
     }

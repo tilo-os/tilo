@@ -15,8 +15,8 @@ use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::theme::Theme;
 
 /// One step of a tree's nesting ([`VirtualList::with_tree`]): the disclosure gutter a row's
-/// content stands in by, and where the chevron that folds what stands under it hangs, left of
-/// its own depth's column.
+/// content stands in by, from the leading edge of its own depth, where the chevron that folds
+/// what stands under it hangs.
 pub const TREE_INDENT: f64 =
     (crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related) as f64;
 /// The room a tree row's disclosure marker takes at its leading edge.
@@ -26,7 +26,7 @@ pub const TREE_DISCLOSURE: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
 const TREE_DEPTH_GUARD: u32 = 64;
 
 /// Where a tree's rows stand: `x0` the list's leading edge, `lead` where its rows stand in
-/// from it, and `step` one depth's disclosure gutter.
+/// from it, and `step` the disclosure gutter every depth keeps free in front of its content.
 #[derive(Clone, Copy)]
 pub(super) struct Chevrons {
     pub(super) x0: f64,
@@ -46,8 +46,8 @@ impl<M: ListModel> VirtualList<M> {
 }
 
 impl Chevrons {
-    /// The gutter the row `key`'s chevron hangs in, when it has subtasks: left of its own
-    /// depth's content column, saying whether they show.
+    /// The gutter the row `key`'s chevron hangs in, when it has subtasks: the step its own depth
+    /// keeps free in front of its content, saying whether they show.
     pub(super) fn gutter<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
@@ -56,7 +56,7 @@ impl Chevrons {
         if !marks.is_branch(key) {
             return None;
         }
-        let gutter = self.x0 + self.lead + f64::from(marks.depth(key)) * self.step - self.step;
+        let gutter = self.x0 + self.lead + f64::from(marks.depth(key)) * self.step;
         Some((gutter, marks.is_folded(key)))
     }
 
@@ -463,8 +463,8 @@ impl<M: ListModel> VirtualList<M> {
         if !marks.is_branch(key) {
             return false;
         }
-        // The chevron hangs in the gutter left of the row's content column, at the row's own
-        // depth: the rows stand `lead` in, and step one disclosure gutter per depth.
+        // The chevron hangs in the gutter the row's own depth keeps free in front of its
+        // content: the rows stand `lead` in, and step one disclosure gutter per depth.
         let chevrons = self.chevrons();
         let Some((x0, _)) = chevrons.gutter(marks, key) else {
             return false;
@@ -710,7 +710,9 @@ impl<M: ListModel> VirtualList<M> {
             placement = DropPlacement::Before;
             seam = row.y1;
         }
-        let indent = self.rect.x0 + self.lead + f64::from(depth) * self.disclosure;
+        // Where the rows at that depth begin: a dropped row lands in its own column, clear of
+        // the step its chevron takes.
+        let indent = self.rect.x0 + self.lead + (f64::from(depth) + 1.0) * self.disclosure;
         let right = self.lift_rect(0.0, 0.0).x1;
         let preview = match placement {
             DropPlacement::Inside => Rect::new(indent, row.y0, right, row.y1),

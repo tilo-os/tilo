@@ -18,12 +18,13 @@ use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat as _;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::search::{
     ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
@@ -35,6 +36,7 @@ use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::data_table::{text_band, type_line_height};
+use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 
 #[path = "search_results/command_row.rs"]
 mod command_row;
@@ -63,17 +65,117 @@ fn compose(a: Affine, b: Affine) -> Affine {
     a * b
 }
 
-/// Used by both `draw` and hit-testing so they never disagree.
-struct RowGeom {
-    rect: Rect,
-    flat: usize,
-    gi: usize,
-    ri: usize,
-    /// Where the headers leading the row start: its own top unless it is
-    /// the first row under one, so revealing it brings them along.
-    lead: f64,
-    /// It is the first row under a header: where Tab lands.
-    headed: bool,
+/// One row of the list: the air over a group, its headings, a result, or the
+/// line that says more are coming. Each carries its own band, resolved from
+/// the theme, so the shared list lays them out and the view paints them.
+#[derive(Clone, PartialEq)]
+enum Row {
+    Gap(f64),
+    Header {
+        label: String,
+        count: Option<usize>,
+        level: HeaderLevel,
+        height: f64,
+    },
+    Result {
+        result: SearchResult,
+        flat: usize,
+        /// The first row under its headers: where Tab lands, and revealing
+        /// it brings the headings along.
+        headed: bool,
+        height: f64,
+        /// The query whose words the row sets off where it matches.
+        highlight: String,
+        /// The modifier held now, for the alternative the selected row shows.
+        held: Option<ActivationModifier>,
+    },
+    Loading(f64),
+}
+
+impl Row {
+    fn band(&self) -> f64 {
+        match self {
+            Self::Gap(height)
+            | Self::Loading(height)
+            | Self::Header { height, .. }
+            | Self::Result { height, .. } => *height,
+        }
+    }
+
+    /// The result's flat index, for a result row.
+    fn flat(&self) -> Option<usize> {
+        match self {
+            Self::Result { flat, .. } => Some(*flat),
+            _ => None,
+        }
+    }
+}
+
+impl FloatingRow for Row {
+    type Columns = ();
+
+    fn height(&self, _: &FloatingMetrics) -> f64 {
+        self.band()
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+
+    fn pickable(&self) -> bool {
+        matches!(self, Self::Result { .. })
+    }
+
+    fn reveals_lead(&self) -> bool {
+        matches!(self, Self::Result { .. })
+    }
+
+    /// The rows sit `ROW_INSET` in from the card's sides, `PAD` from its top
+    /// and bottom: the card's own padding, not a floating panel's.
+    fn rows_inset(_: &FloatingMetrics, _: Rect) -> Vec2 {
+        Vec2::new(ROW_INSET, PAD)
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, row: Rect, state: RowState<'_, ()>) -> Option<f64> {
+        match self {
+            Self::Gap(_) => {}
+            Self::Header {
+                label,
+                count,
+                level,
+                ..
+            } => draw_header(ctx, row, label, *count, *level),
+            Self::Result {
+                result,
+                highlight,
+                held,
+                ..
+            } => draw_result(
+                ctx,
+                row,
+                result,
+                state.armed,
+                state.hovered,
+                highlight,
+                *held,
+            ),
+            Self::Loading(_) => {
+                let style = ctx.theme.text(TextRole::Caption);
+                let (_, h) = ctx.text.measure_style("Searching…", None, &style);
+                let y = crate::widget::text::centered_text_top(row.y0, row.height(), f64::from(h));
+                ctx.text.draw_style(
+                    ctx.scene,
+                    "Searching…",
+                    ctx.theme.tokens.colors.text_tertiary,
+                    ctx.transform
+                        .pre_translate(Vec2::new(row.x0 + ROW_TEXT_X, y)),
+                    None,
+                    &style,
+                );
+            }
+        }
+        None
+    }
 }
 
 /// Which header a header band is.
@@ -86,20 +188,6 @@ pub(crate) enum HeaderLevel {
     Section,
     /// A group within a section.
     Subgroup,
-}
-
-struct HeaderGeom {
-    rect: Rect,
-    label: String,
-    count: Option<usize>,
-    level: HeaderLevel,
-}
-
-struct LayoutPlan {
-    headers: Vec<HeaderGeom>,
-    rows: Vec<RowGeom>,
-    /// Where the last row ends.
-    bottom: f64,
 }
 
 /// Row and header bands. The constants are the 1× defaults; `build_layout`
@@ -190,6 +278,134 @@ fn line_count(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
+/// A group's heading: its label on the band's bottom edge, and its count at
+/// the trailing end.
+fn draw_header(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    label: &str,
+    count: Option<usize>,
+    level: HeaderLevel,
+) {
+    let theme = ctx.theme;
+    let transform = ctx.transform;
+    // Section headers: the kind in sentence case as a list section header,
+    // with a trailing count.
+    let header_style = theme.text(TextRole::Subheading);
+    let count_style = theme.text(TextRole::Caption).numeric();
+    let caption_style = theme.text(TextRole::Caption);
+    let header_inset = f64::from(theme.tokens.spacing.s1);
+    // A section's header in the text's own ink; a group within it a caption
+    // under it.
+    let (style, ink) = match level {
+        HeaderLevel::Group => (&header_style, theme.tokens.colors.text_dim),
+        HeaderLevel::Section => (&header_style, theme.tokens.colors.text_primary),
+        HeaderLevel::Subgroup => (&caption_style, theme.tokens.colors.text_dim),
+    };
+    // The label sits on the band's bottom edge, one small step above its
+    // rows, by its measured line box rather than its font size.
+    let (_, label_h) = ctx.text.measure_style(label, None, style);
+    let hy = rect.y1 - f64::from(label_h) - header_inset;
+    ctx.text.draw_style(
+        ctx.scene,
+        label,
+        ink,
+        compose(transform, Affine::translate((rect.x0 + header_inset, hy))),
+        None,
+        style,
+    );
+    let Some(count) = count else {
+        return;
+    };
+    let count_str = count.to_string();
+    let (cw, ch) = ctx.text.measure_style(&count_str, None, &count_style);
+    ctx.text.draw_style(
+        ctx.scene,
+        &count_str,
+        theme.tokens.colors.text_tertiary,
+        compose(
+            transform,
+            Affine::translate((
+                rect.x1 - f64::from(cw) - header_inset,
+                hy + f64::from(label_h - ch),
+            )),
+        ),
+        None,
+        &count_style,
+    );
+}
+
+/// One result row: the lift when it is selected or hovered, then what its app
+/// draws for it.
+fn draw_result(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    result: &SearchResult,
+    selected: bool,
+    hovered: bool,
+    highlight: &str,
+    held: Option<ActivationModifier>,
+) {
+    let theme = ctx.theme;
+    let transform = ctx.transform;
+    let colors = &theme.tokens.colors;
+    // Selection is the panel's strong lift, as the armed row of every menu;
+    // hover is a barely-there veneer, distinct from it.
+    let (armed_fill, selected_ink) = crate::widget::floating_surface::armed_row(theme);
+    let lift = RoundedRect::from_rect(
+        rect.inflate(0.0, -ROW_LIFT_INSET),
+        f64::from(theme.tokens.radii.detail),
+    );
+    if selected {
+        ctx.scene
+            .fill(Fill::NonZero, transform, armed_fill, None, &lift);
+    } else if hovered {
+        // One step off the panel it sits on, polarity chosen the way
+        // `hairline_on` chooses it — the white veneer this replaces was
+        // invisible over a light panel (HIG §9.5).
+        let hover = crate::tokens::colors::Colors::hairline_on(
+            crate::chrome::shell::panel_ground(theme),
+            crate::chrome::shell::HAIRLINE_ALPHA,
+        );
+        ctx.scene.fill(Fill::NonZero, transform, hover, None, &lift);
+    }
+    let state = command_row::RowState {
+        selected,
+        highlight,
+        held,
+    };
+    match &result.row {
+        Some(SearchRow::Command(command)) => {
+            command_row::draw(ctx, rect, result, command, &state);
+        }
+        // An item is the reference its app draws: the generic row until the
+        // row that app draws for it is here.
+        Some(SearchRow::Item { .. }) | None => {
+            command_row::draw(ctx, rect, result, &CommandRow::default(), &state);
+        }
+        Some(template) => {
+            let ink = RowInk {
+                primary: if selected {
+                    selected_ink
+                } else {
+                    colors.text_primary
+                },
+                secondary: if selected {
+                    selected_ink
+                } else {
+                    colors.text_dim
+                },
+                tertiary: if selected {
+                    selected_ink
+                } else {
+                    colors.text_tertiary
+                },
+            };
+            draw_template(ctx.scene, transform, ctx.text, theme, rect, template, ink);
+        }
+    }
+}
+
 /// The results overlay. Populate it with [`set_groups`](Self::set_groups) each
 /// time the query changes, drive selection with the keyboard or pointer, and
 /// drain activations with [`take_activated`](Self::take_activated).
@@ -214,9 +430,12 @@ pub struct SearchResultsView {
     /// The most the overlay may stand: rows past it scroll, under a preview
     /// band that stays put.
     max_height: Option<f64>,
-    /// How far the rows are scrolled up, in logical px.
-    scroll: f64,
-    /// The cursor moved: bring its row into view at the next layout.
+    /// The rows themselves: headings, results and the loading line, laid out
+    /// and scrolled by the shared list.
+    list: FloatingList<Row>,
+    /// Each result's flat index to its row, rebuilt with the rows.
+    slots: Vec<Option<usize>>,
+    /// The cursor moved: bring its row into view.
     reveal: bool,
     /// Space above a group or section header that follows rows.
     group_gap: f64,
@@ -254,7 +473,8 @@ impl SearchResultsView {
             loading: false,
             empty_footer: 0.0,
             max_height: None,
-            scroll: 0.0,
+            list: FloatingList::new(),
+            slots: Vec::new(),
             reveal: false,
             group_gap: 0.0,
             highlight: String::new(),
@@ -275,25 +495,33 @@ impl SearchResultsView {
     pub fn set_group_gap(&mut self, gap: f64) {
         self.dirty = true;
         self.group_gap = gap.max(0.0);
+        self.rebuild();
     }
 
     /// The query whose words command rows mark where they match.
     pub fn set_highlight(&mut self, query: &str) {
         self.dirty = true;
-        query.clone_into(&mut self.highlight);
+        if self.highlight != query {
+            query.clone_into(&mut self.highlight);
+            self.rebuild();
+        }
     }
 
     /// The modifier held now, for the alternative a selected command row
     /// shows.
     pub fn set_held_modifier(&mut self, held: Option<ActivationModifier>) {
         self.dirty = true;
-        self.held = held;
+        if self.held != held {
+            self.held = held;
+            self.rebuild();
+        }
     }
 
     /// The row and header bands from `theme`'s type, as layout resolves
     /// them, for an owner that lays the view out itself.
     pub(crate) fn resolve_metrics(&mut self, theme: &Theme) {
         self.bands = RowBands::resolve(theme);
+        self.rebuild();
     }
 
     /// A one- or two-line row's band.
@@ -349,6 +577,7 @@ impl SearchResultsView {
     pub fn set_loading(&mut self, loading: bool) {
         self.dirty = true;
         self.loading = loading;
+        self.rebuild();
     }
 
     pub fn is_loading(&self) -> bool {
@@ -398,7 +627,7 @@ impl SearchResultsView {
         self.dirty = true;
         self.replace_groups(groups);
         // New results read from their top.
-        self.scroll = 0.0;
+        self.list.reset_scroll();
     }
 
     /// The same rows refreshed (a status, a value): the scroll stays.
@@ -415,7 +644,8 @@ impl SearchResultsView {
         }
         self.reveal = true;
         // Hover no longer maps to a known row until the pointer moves again.
-        self.hover = None;
+        self.set_hover(None);
+        self.rebuild();
     }
 
     /// Buckets by kind in first-seen order, for callers not going through the registry's grouping.
@@ -454,6 +684,7 @@ impl SearchResultsView {
         if !self.flat.is_empty() {
             self.cursor = index.min(self.flat.len().saturating_sub(1));
             self.reveal = true;
+            self.reveal_cursor();
         }
     }
 
@@ -463,7 +694,97 @@ impl SearchResultsView {
         self.dirty = true;
         if !self.flat.is_empty() {
             self.cursor = index.min(self.flat.len().saturating_sub(1));
+            self.reveal_cursor();
         }
+    }
+
+    /// The row the result `flat` is drawn on.
+    fn slot(&self, flat: usize) -> Option<usize> {
+        self.slots.get(flat).copied().flatten()
+    }
+
+    /// Track the pointer's row (a result's flat index), for the hover lift.
+    fn set_hover(&mut self, flat: Option<usize>) {
+        self.hover = flat;
+        self.list.set_hover(flat.and_then(|flat| self.slot(flat)));
+    }
+
+    /// Arm the cursor's row, bringing it into view when the cursor moved.
+    fn reveal_cursor(&mut self) {
+        // Nothing is placed yet: the row is brought into view when the owner
+        // gives the overlay its rect. The flag stays for that placement.
+        if self.rect.width() <= 0.0 {
+            return;
+        }
+        let slot = self.slot(self.cursor);
+        if std::mem::take(&mut self.reveal) {
+            self.list.set_highlight(slot);
+        } else {
+            self.list.set_highlight_in_place(slot);
+        }
+    }
+
+    /// Lay the rows out again from the groups: the gaps, headings, results
+    /// and the line that more are coming, with the flat index to each row.
+    fn rebuild(&mut self) {
+        let offset = self.list.scroll_offset();
+        let mut rows: Vec<Row> = Vec::new();
+        let mut slots = vec![None; self.flat.len()];
+        // The flat index of the next result row.
+        let mut flat = 0usize;
+        let mut section: Option<&str> = None;
+        for group in &self.groups {
+            let opens = group.section.is_some() && group.section.as_deref() != section;
+            section = group.section.as_deref();
+            let mut heads: Vec<(String, Option<usize>, HeaderLevel)> = Vec::new();
+            if let Some(name) = group.section.as_ref().filter(|_| opens) {
+                heads.push((name.clone(), None, HeaderLevel::Section));
+            }
+            if !group.kind.is_empty() {
+                heads.push(if group.section.is_some() {
+                    (group.kind.clone(), None, HeaderLevel::Subgroup)
+                } else {
+                    (
+                        group.kind.clone(),
+                        Some(group.total.unwrap_or(group.results.len())),
+                        HeaderLevel::Group,
+                    )
+                });
+            }
+            let headed = !heads.is_empty();
+            for (label, count, level) in heads {
+                if level != HeaderLevel::Subgroup && !rows.is_empty() {
+                    rows.push(Row::Gap(self.group_gap));
+                }
+                rows.push(Row::Header {
+                    label,
+                    count,
+                    level,
+                    height: self.bands.header,
+                });
+            }
+            for (ri, result) in group.results.iter().enumerate() {
+                slots[flat] = Some(rows.len());
+                rows.push(Row::Result {
+                    result: result.clone(),
+                    flat,
+                    headed: headed && ri == 0,
+                    height: self.row_height(result),
+                    highlight: self.highlight.clone(),
+                    held: self.held,
+                });
+                flat = flat.saturating_add(1);
+            }
+        }
+        if self.loading && !self.flat.is_empty() {
+            rows.push(Row::Loading(self.bands.one_line));
+        }
+        self.list.set_rows(rows);
+        // A rebuild is not a move: only a cursor that moved scrolls the rows.
+        self.list.scroll_px(offset - self.list.scroll_offset());
+        self.slots = slots;
+        self.set_hover(self.hover);
+        self.reveal_cursor();
     }
 
     /// Preserve one exact control across an asynchronous result replacement.
@@ -476,6 +797,7 @@ impl SearchResultsView {
             .position(|&(group, row)| self.groups[group].results[row].action_id == id);
         self.cursor = index.unwrap_or(usize::MAX);
         self.reveal = true;
+        self.reveal_cursor();
         index.is_some()
     }
 
@@ -490,6 +812,7 @@ impl SearchResultsView {
         };
         self.cursor = index;
         self.reveal = true;
+        self.reveal_cursor();
         true
     }
 
@@ -534,6 +857,7 @@ impl SearchResultsView {
         self.reveal = true;
         if self.selected().is_none() {
             self.cursor = 0;
+            self.reveal_cursor();
             return;
         }
         self.cursor = self
@@ -541,6 +865,7 @@ impl SearchResultsView {
             .saturating_add(1)
             .checked_rem(self.flat.len())
             .unwrap_or(0);
+        self.reveal_cursor();
     }
 
     /// Move the highlight up one row, wrapping to the bottom past the top.
@@ -551,6 +876,7 @@ impl SearchResultsView {
         self.reveal = true;
         if self.selected().is_none() {
             self.cursor = self.flat.len() - 1;
+            self.reveal_cursor();
             return;
         }
         self.cursor = self
@@ -559,6 +885,7 @@ impl SearchResultsView {
             .saturating_sub(1)
             .checked_rem(self.flat.len())
             .unwrap_or(0);
+        self.reveal_cursor();
     }
 
     /// No-op when there is no selection.
@@ -576,10 +903,8 @@ impl SearchResultsView {
     /// For a free-floating overlay not driven by the layout pass.
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
-        if std::mem::take(&mut self.reveal) {
-            self.reveal_cursor();
-        }
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        self.list.set_rect(self.list_rect());
+        self.reveal_cursor();
     }
 
     /// The most the overlay may stand, or `None` for as tall as its rows:
@@ -600,18 +925,14 @@ impl SearchResultsView {
         self.max_height.map_or(full, |max| full.min(max.max(least)))
     }
 
-    /// The rows' whole height, padding, headers and loading row included.
+    /// The rows' whole height, padding and the loading line included.
     fn rows_height(&self) -> f64 {
-        let mut h = self.content_height() + PAD * 2.0;
-        if self.loading {
-            h += self.bands.one_line;
-        }
-        h
+        self.content_height() + PAD * 2.0
     }
 
-    /// The headers' and rows' height, without the padding around them.
+    /// The headings' and rows' height, without the padding around them.
     fn content_height(&self) -> f64 {
-        self.plan().bottom - (self.rect.y0 + PAD - self.scroll)
+        self.list.rows().iter().map(Row::band).sum::<f64>()
     }
 
     /// The height the list takes when the most rows that fit in `cap` show,
@@ -623,21 +944,18 @@ impl SearchResultsView {
     pub fn fitted_height(&self, cap: f64) -> f64 {
         let band = self.preview_band();
         let cap = (cap - band - PAD * 2.0).max(0.0);
-        let plan = self.plan();
-        let start = self.rect.y0 + PAD - self.scroll;
-        let mut ends: Vec<(f64, bool)> = plan
-            .headers
-            .iter()
-            .map(|h| (h.rect.y1 - start, true))
-            .chain(plan.rows.iter().map(|r| (r.rect.y1 - start, false)))
-            .collect();
-        ends.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut end = 0.0;
         let mut fitted = 0.0;
-        for (end, header) in ends {
+        for row in self.list.rows() {
+            // The loading line is not room a cap makes: it follows the rows.
+            if matches!(row, Row::Loading(_)) {
+                break;
+            }
+            end += row.band();
             if end > cap + 0.01 {
                 break;
             }
-            if !header {
+            if matches!(row, Row::Result { .. }) {
                 fitted = end;
             }
         }
@@ -659,11 +977,14 @@ impl SearchResultsView {
     pub fn shown_rows(&self) -> std::ops::Range<usize> {
         let (top, bottom) = self.shown_band();
         let shown: Vec<usize> = self
-            .plan()
-            .rows
-            .into_iter()
-            .filter(|r| r.rect.y0 >= top - 0.01 && r.rect.y1 <= bottom + 0.01)
-            .map(|r| r.flat)
+            .list
+            .in_view()
+            .filter_map(|slot| {
+                let rect = self.list.row_bounds(slot)?;
+                (rect.y0 >= top - 0.01 && rect.y1 <= bottom + 0.01)
+                    .then(|| self.list.rows().get(slot)?.flat())
+                    .flatten()
+            })
             .collect();
         match (shown.first(), shown.last()) {
             (Some(&first), Some(&last)) => first..last.saturating_add(1),
@@ -747,23 +1068,25 @@ impl SearchResultsView {
 
     /// The first row under each header, in order: where Tab moves to.
     pub fn group_starts(&self) -> Vec<usize> {
-        self.plan()
-            .rows
-            .into_iter()
-            .filter(|r| r.headed)
-            .map(|r| r.flat)
+        self.list
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Result {
+                    flat, headed: true, ..
+                } => Some(*flat),
+                _ => None,
+            })
             .collect()
     }
 
     /// Where row `flat` is painted, `None` while it is scrolled out of view.
     pub fn row_rect(&self, flat: usize) -> Option<Rect> {
         let (top, bottom) = self.shown_band();
-        self.plan()
-            .rows
-            .into_iter()
-            .find(|r| r.flat == flat)
-            .map(|r| r.rect)
+        self.list
+            .row_bounds(self.slot(flat)?)
             .filter(|rect| rect.y1 > top && rect.y0 < bottom)
+            .map(|rect| rect.intersect(self.list_rect()))
     }
 
     /// The label of the header painted under `p`.
@@ -771,11 +1094,18 @@ impl SearchResultsView {
         if !self.list_rect().contains(p) {
             return None;
         }
-        self.plan()
-            .headers
-            .into_iter()
-            .find(|h| h.rect.contains(p))
-            .map(|h| h.label)
+        self.list
+            .rows()
+            .iter()
+            .enumerate()
+            .find_map(|(slot, row)| match row {
+                Row::Header { label, .. } => self
+                    .list
+                    .row_bounds(slot)?
+                    .contains(p)
+                    .then(|| label.clone()),
+                _ => None,
+            })
     }
 
     /// Where the rows show: the card above its preview band.
@@ -788,41 +1118,12 @@ impl SearchResultsView {
         )
     }
 
-    /// How far the rows can scroll before their end shows.
-    fn max_scroll(&self) -> f64 {
-        (self.rows_height() - self.list_rect().height()).max(0.0)
-    }
-
-    /// Scroll so the cursor's row shows whole, with its group's header when
-    /// it is the group's first row.
-    fn reveal_cursor(&mut self) {
-        let Some(row) = self
-            .plan()
-            .rows
-            .into_iter()
-            .find(|row| row.flat == self.cursor)
-        else {
-            return;
-        };
-        let list = self.list_rect();
-        let top = row.lead;
-        // The plan's rows sit `scroll` above where they would unscrolled;
-        // the band they must show in is the list less its padding.
-        let content = |y: f64| y + self.scroll - (list.y0 + PAD);
-        self.scroll = crate::widget::scroll_region::reveal_offset(
-            self.scroll,
-            (list.height() - 2.0 * PAD).max(0.0),
-            content(top)..content(row.rect.y1),
-            self.max_scroll(),
-        );
-    }
-
     /// Scroll the rows by `dy` logical px (positive moves down the list);
     /// returns whether they moved.
     pub(crate) fn scroll_by(&mut self, dy: f64) -> bool {
-        let before = self.scroll;
-        self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll());
-        (self.scroll - before).abs() > f64::EPSILON
+        let before = self.list.scroll_offset();
+        self.list.scroll_px(dy);
+        (self.list.scroll_offset() - before).abs() > f64::EPSILON
     }
 
     fn row_height(&self, r: &SearchResult) -> f64 {
@@ -841,269 +1142,25 @@ impl SearchResultsView {
         }
     }
 
-    /// The loading row's band, after the last result.
-    fn loading_rect(&self) -> Option<Rect> {
-        if !self.loading || self.flat.is_empty() {
-            return None;
-        }
-        let last = self
-            .plan()
-            .rows
-            .last()
-            .map_or(self.rect.y0 + PAD, |row| row.rect.y1);
-        Some(Rect::new(
-            self.rect.x0 + ROW_INSET,
-            last,
-            self.rect.x1 - ROW_INSET,
-            last + self.bands.one_line,
-        ))
-    }
-
-    /// Single source of truth shared by `draw` and `row_at`, so a click
-    /// always lands on the row that was drawn.
-    ///
-    /// A group opening a section is headed by the section, then by its own
-    /// kind as a caption; a group outside sections by its kind and count; a
-    /// group with no kind runs on under the rows above it.
-    fn plan(&self) -> LayoutPlan {
-        let mut headers: Vec<HeaderGeom> = Vec::new();
-        let mut rows = Vec::new();
-        let x0 = self.rect.x0 + ROW_INSET;
-        let x1 = self.rect.x1 - ROW_INSET;
-        let mut y = self.rect.y0 + PAD - self.scroll;
-        let mut flat = 0usize;
-        let header_h = self.bands.header;
-        let mut section: Option<&str> = None;
-        for (gi, g) in self.groups.iter().enumerate() {
-            let opens_section = g.section.is_some() && g.section.as_deref() != section;
-            section = g.section.as_deref();
-            let mut heads: Vec<(String, Option<usize>, HeaderLevel)> = Vec::new();
-            if let Some(name) = g.section.as_ref().filter(|_| opens_section) {
-                heads.push((name.clone(), None, HeaderLevel::Section));
-            }
-            if !g.kind.is_empty() {
-                heads.push(if g.section.is_some() {
-                    (g.kind.clone(), None, HeaderLevel::Subgroup)
-                } else {
-                    (
-                        g.kind.clone(),
-                        Some(g.total.unwrap_or(g.results.len())),
-                        HeaderLevel::Group,
-                    )
-                });
-            }
-            let mut lead = None;
-            for (label, count, level) in heads {
-                if level != HeaderLevel::Subgroup && (flat > 0 || !headers.is_empty()) {
-                    y += self.group_gap;
-                }
-                lead.get_or_insert(y);
-                headers.push(HeaderGeom {
-                    rect: Rect::new(x0, y, x1, y + header_h),
-                    label,
-                    count,
-                    level,
-                });
-                y += header_h;
-            }
-            for (ri, r) in g.results.iter().enumerate() {
-                let rh = self.row_height(r);
-                let headed = ri == 0 && lead.is_some();
-                rows.push(RowGeom {
-                    rect: Rect::new(x0, y, x1, y + rh),
-                    flat,
-                    gi,
-                    ri,
-                    lead: if ri == 0 { lead.unwrap_or(y) } else { y },
-                    headed,
-                });
-                y += rh;
-                flat = flat.saturating_add(1);
-            }
-        }
-        LayoutPlan {
-            headers,
-            rows,
-            bottom: y,
-        }
-    }
-
+    /// The result row under `p`, `None` off the rows.
     pub fn row_at(&self, p: Point) -> Option<usize> {
-        let (top, bottom) = self.shown_band();
-        if !self.list_rect().contains(p) || p.y < top || p.y >= bottom {
-            return None;
-        }
-        self.plan()
-            .rows
-            .into_iter()
-            .find(|r| r.rect.contains(p))
-            .map(|r| r.flat)
+        self.list
+            .row_at_point(p)
+            .and_then(|slot| self.list.rows().get(slot)?.flat())
     }
 
-    fn draw_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        row: &RowGeom,
-    ) {
-        let colors = &theme.tokens.colors;
-        let Some(result) = self.groups.get(row.gi).and_then(|g| g.results.get(row.ri)) else {
-            return;
-        };
-        let selected = row.flat == self.cursor;
-        let hovered = self.hover == Some(row.flat);
-        // Selection is the panel's strong lift, as the armed row of every
-        // menu; hover is a barely-there veneer, distinct from it.
-        let (armed_fill, selected_ink) = crate::widget::floating_surface::armed_row(theme);
-        let lift = RoundedRect::from_rect(
-            row.rect.inflate(0.0, -ROW_LIFT_INSET),
-            f64::from(theme.tokens.radii.detail),
-        );
-        if selected {
-            scene.fill(Fill::NonZero, transform, armed_fill, None, &lift);
-        } else if hovered {
-            // One step off the panel it sits on, polarity chosen the way
-            // `hairline_on` chooses it — the white veneer this replaces was
-            // invisible over a light panel (HIG §9.5).
-            let hover = crate::tokens::colors::Colors::hairline_on(
-                crate::chrome::shell::panel_ground(theme),
-                crate::chrome::shell::HAIRLINE_ALPHA,
-            );
-            scene.fill(Fill::NonZero, transform, hover, None, &lift);
-        }
-
-        let state = command_row::RowState {
-            selected,
-            highlight: &self.highlight,
-            held: self.held,
-        };
-        match &result.row {
-            Some(SearchRow::Command(command)) => command_row::draw(
-                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
-                row.rect,
-                result,
-                command,
-                &state,
-            ),
-            // An item is the reference its app draws: the generic row until
-            // the row that app draws for it is here.
-            Some(SearchRow::Item { .. }) | None => command_row::draw(
-                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
-                row.rect,
-                result,
-                &CommandRow::default(),
-                &state,
-            ),
-            Some(template) => {
-                let ink = RowInk {
-                    primary: if selected {
-                        selected_ink
-                    } else {
-                        colors.text_primary
-                    },
-                    secondary: if selected {
-                        selected_ink
-                    } else {
-                        colors.text_dim
-                    },
-                    tertiary: if selected {
-                        selected_ink
-                    } else {
-                        colors.text_tertiary
-                    },
-                };
-                draw_template(scene, transform, tr, theme, row.rect, template, ink);
-            }
-        }
-    }
-
-    /// The headers, rows and loading row, cut off at the list's edges: the
+    /// The headers, rows and loading line, cut off at the list's edges: the
     /// list without its card, for an owner that paints the card itself.
     pub(crate) fn draw_list(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let plan = self.plan();
-        // Rows scrolled past the list's padding or under its preview band
-        // are cut off there.
-        let (top, bottom) = self.shown_band();
-        let list = self.list_rect();
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &Rect::new(list.x0, top, list.x1, bottom.max(top)),
-        );
-        // Section headers: the kind in sentence case as a list section
-        // header, with a trailing count.
-        let header_style = theme.text(TextRole::Subheading);
-        let count_style = theme.text(TextRole::Caption).numeric();
-        let header_inset = f64::from(theme.tokens.spacing.s1);
-        let caption_style = theme.text(TextRole::Caption);
-        for header in &plan.headers {
-            let hrect = header.rect;
-            // A section's header in the text's own ink; a group within it a
-            // caption under it.
-            let (style, ink) = match header.level {
-                HeaderLevel::Group => (&header_style, theme.tokens.colors.text_dim),
-                HeaderLevel::Section => (&header_style, theme.tokens.colors.text_primary),
-                HeaderLevel::Subgroup => (&caption_style, theme.tokens.colors.text_dim),
-            };
-            // The label sits on the band's bottom edge, one small step above
-            // its rows, by its measured line box rather than its font size.
-            let (_, label_h) = text_renderer.measure_style(&header.label, None, style);
-            let hy = hrect.y1 - f64::from(label_h) - header_inset;
-            text_renderer.draw_style(
-                scene,
-                &header.label,
-                ink,
-                compose(transform, Affine::translate((hrect.x0 + header_inset, hy))),
-                None,
-                style,
-            );
-            let Some(count) = header.count else {
-                continue;
-            };
-            let count_str = count.to_string();
-            let (cw, ch) = text_renderer.measure_style(&count_str, None, &count_style);
-            text_renderer.draw_style(
-                scene,
-                &count_str,
-                theme.tokens.colors.text_tertiary,
-                compose(
-                    transform,
-                    Affine::translate((
-                        hrect.x1 - f64::from(cw) - header_inset,
-                        hy + f64::from(label_h - ch),
-                    )),
-                ),
-                None,
-                &count_style,
-            );
-        }
-        for row in &plan.rows {
-            self.draw_row(scene, transform, text_renderer, theme, row);
-        }
-        if let Some(band) = self.loading_rect() {
-            let style = theme.text(TextRole::Caption);
-            let (_, h) = text_renderer.measure_style("Searching…", None, &style);
-            let y = crate::widget::text::centered_text_top(band.y0, band.height(), f64::from(h));
-            text_renderer.draw_style(
-                scene,
-                "Searching…",
-                theme.tokens.colors.text_tertiary,
-                compose(transform, Affine::translate((band.x0 + ROW_TEXT_X, y))),
-                None,
-                &style,
-            );
-        }
-        scene.pop_layer();
+        self.list.set_theme(theme);
+        self.list.set_rect(self.list_rect());
+        self.list.paint_rows(scene, transform, text_renderer, theme);
     }
 
     /// Where the empty-state line is set: its left edge, the width it wraps
@@ -1642,7 +1699,7 @@ impl Widget for SearchResultsView {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.bands = RowBands::resolve(theme);
+        self.resolve_metrics(theme);
         // A results overlay's desired height is a small on-screen pixel value
         // (a handful of rows), well inside `f32`'s exact-integer range.
         #[allow(
@@ -1661,7 +1718,13 @@ impl Widget for SearchResultsView {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.set_rect(crate::widget::layout_rect(taffy, node, origin));
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn draw(
         &mut self,
@@ -1708,7 +1771,8 @@ impl Widget for SearchResultsView {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
-                self.hover = self.row_at(self.last_cursor);
+                let hover = self.row_at(self.last_cursor);
+                self.set_hover(hover);
             }
             // A wheel over the rows scrolls them.
             WindowEvent::MouseWheel { delta, .. }
@@ -1721,7 +1785,8 @@ impl Widget for SearchResultsView {
                     winit::event::MouseScrollDelta::PixelDelta(p) => -p.y / ctx.scale_factor,
                 };
                 if self.scroll_by(dy) {
-                    self.hover = self.row_at(self.last_cursor);
+                    let hover = self.row_at(self.last_cursor);
+                    self.set_hover(hover);
                     *ctx.handled = true;
                 }
             }
@@ -1820,11 +1885,17 @@ impl Widget for SearchResultsView {
             vec![empty]
         } else {
             let mut rows: Vec<(Option<&str>, AccessNode)> = Vec::new();
-            for row in self.plan().rows {
-                let Some(group) = self.groups.get(row.gi) else {
+            for (slot, row) in self.list.rows().iter().enumerate() {
+                let Some(flat) = row.flat() else {
                     continue;
                 };
-                let Some(result) = group.results.get(row.ri) else {
+                let Some(&(gi, ri)) = self.flat.get(flat) else {
+                    continue;
+                };
+                let Some(group) = self.groups.get(gi) else {
+                    continue;
+                };
+                let Some(result) = group.results.get(ri) else {
                     continue;
                 };
                 let description = result
@@ -1843,12 +1914,12 @@ impl Widget for SearchResultsView {
                         parts
                     })
                     .join(". ");
-                let selected = row.flat == self.cursor;
+                let selected = flat == self.cursor;
                 let mut node = AccessNode::new(Role::ListItem)
                     .with_name(result.title.clone())
                     .with_action_target(&result.action_id)
-                    .with_bounds(row.rect)
-                    .with_position(row.flat.saturating_add(1), total)
+                    .with_bounds(self.list.row_bounds(slot).unwrap_or(Rect::ZERO))
+                    .with_position(flat.saturating_add(1), total)
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -1930,6 +2001,13 @@ mod tests {
         Some(dir.join(name))
     }
 
+    /// Where result `flat` is laid out, whether or not it shows: the same
+    /// geometry the list paints from.
+    fn laid(view: &SearchResultsView, flat: usize) -> Rect {
+        let slot = view.slot(flat).expect("the result has a row");
+        view.list.row_bounds(slot).expect("the list is placed")
+    }
+
     /// The results panel keeps a **visible derived edge** at 1× on both
     /// presets (HIG §9.1 Panel role, §9.5): before, it was a raised card under
     /// `border_standard`, three shades from the dark preset's raised surface.
@@ -1955,7 +2033,7 @@ mod tests {
             );
             if let Some(png) = ux1x_out(&theme, "search_results.png") {
                 mounted.set_cursor(0);
-                mounted.hover = Some(last);
+                mounted.set_hover(Some(last));
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -1982,7 +2060,7 @@ mod tests {
             v.set_rect(panel);
             // Hover the last row so the veneer is under test too.
             let last = v.len() - 1;
-            v.hover = Some(last);
+            v.set_hover(Some(last));
             let (w, h) = (panel.x1 + margin, panel.y1 + margin);
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
@@ -2015,13 +2093,7 @@ mod tests {
                 theme.name
             );
 
-            let row = v
-                .plan()
-                .rows
-                .into_iter()
-                .find(|r| r.flat == last)
-                .expect("the hovered row is laid out")
-                .rect;
+            let row = v.row_rect(last).expect("the hovered row is laid out");
             let hover = lum(row.x1 - 3.0, row.center().y);
             let beside = lum(panel.x1 - ROW_INSET / 2.0, row.center().y);
             assert!(
@@ -2067,8 +2139,7 @@ mod tests {
         v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
         let band = v.preview_band();
         assert!(band > 0.0);
-        let rows = v.plan().rows;
-        let third = rows[2].rect.y1 - v.rect.y0;
+        let third = laid(&v, 2).y1 - v.rect.y0;
         // Three rows, the list's foot padding and the band: the cap the owner
         // allows. The fitted height is exactly that, so no row is clipped at
         // the card's foot and the band keeps its room.
@@ -2079,9 +2150,8 @@ mod tests {
             "the fitted list keeps its padding and the band's room: {fitted} for {cap}"
         );
         v.set_rect(Rect::new(0.0, 0.0, 360.0, fitted));
-        let rows = v.plan().rows;
         assert!(
-            rows[2].rect.y1 <= v.rect.y1 - band - PAD + 0.01,
+            laid(&v, 2).y1 <= v.rect.y1 - band - PAD + 0.01,
             "the last fitted row is not clipped at the card's foot"
         );
         assert!(v.list_rect().y1 <= v.rect.y1, "the band stays in the card");
@@ -2115,20 +2185,16 @@ mod tests {
         // Up from the top wraps to the last row, which then shows whole.
         v.move_up();
         v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
-        let plan = v.plan();
-        let last = plan.rows.last().unwrap();
-        assert_eq!(last.flat, 29);
-        assert!(last.rect.y1 <= v.list_rect().y1 && last.rect.y0 >= v.list_rect().y0);
-        assert_eq!(v.row_at(last.rect.center()), Some(29));
+        assert_eq!(v.list.rows().last().and_then(Row::flat), Some(29));
+        let last = laid(&v, 29);
+        assert!(last.y1 <= v.list_rect().y1 && last.y0 >= v.list_rect().y0);
+        assert_eq!(v.row_at(last.center()), Some(29));
         assert_eq!(v.list_rect().y1, list.y1, "the band never moves");
 
         // A wheel back up shows the first row again, and stops at the top.
         assert!(v.scroll_by(-10_000.0));
         assert!(!v.scroll_by(-10.0));
-        assert_eq!(
-            v.row_at(v.plan().rows.first().unwrap().rect.center()),
-            Some(0)
-        );
+        assert_eq!(v.row_at(laid(&v, 0).center()), Some(0));
     }
 
     /// Why a confirmation asks is a sentence, and a window may be narrow:
@@ -2284,10 +2350,10 @@ mod tests {
 
         {
             let mut v = view_from("");
-            // The plan is the same geometry draw uses; target the third row (the App).
-            let plan = v.plan();
-            assert_eq!(plan.rows.len(), 3);
-            let target = plan.rows[2].rect.center();
+            // The laid-out rows are the same geometry draw uses; target the
+            // third row (the App).
+            assert_eq!(v.len(), 3);
+            let target = laid(&v, 2).center();
 
             let mut handled = dispatch(
                 &mut v,
@@ -2352,7 +2418,13 @@ mod tests {
             "the loading row takes a row"
         );
         view.set_rect(Rect::new(0.0, 0.0, 480.0, view.desired_height()));
-        assert!(view.loading_rect().is_some());
+        assert!(
+            view.list
+                .rows()
+                .iter()
+                .any(|row| matches!(row, Row::Loading(_))),
+            "the loading line ends the list"
+        );
 
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();

@@ -28,7 +28,6 @@ import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs'
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
-import {qrSvg} from './qr.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';
 import {createReconnect, domReconnectView} from './reconnect.mjs';
@@ -262,6 +261,25 @@ const paragraph = (text, className) => {
 };
 
 /**
+ * The QR code of `link`, as the image the sheet shows: drawn by the runtime
+ * (`qrSvg`), which the sheet's own page has in by the time a person asks to
+ * pair a device.
+ */
+function pairCode(link) {
+  const code = document.createElement('img');
+  Object.assign(code, {className: 'tilo-pair-qr', alt: 'QR code of the pairing link', width: 240, height: 240});
+  void (async () => {
+    try {
+      const runtime = await loadRuntime();
+      code.src = `data:image/svg+xml,${encodeURIComponent(runtime.qrSvg(link))}`;
+    } catch (error) {
+      console.warn('pairing: this link cannot be drawn as a code', error);
+    }
+  })();
+  return code;
+}
+
+/**
  * The sheet that pairs a new device: the link as a QR code for a phone's
  * camera, as text to open or paste, and a Copy button (a click, which the
  * clipboard honours). `copy()` resolves whether the link was copied; where
@@ -270,9 +288,7 @@ const paragraph = (text, className) => {
  */
 function pairLinkSheet({link, copy}) {
   const card = pairCard('pair-link', 'Pair a new device');
-  const code = document.createElement('img');
-  Object.assign(code, {className: 'tilo-pair-qr', alt: 'QR code of the pairing link', width: 240, height: 240,
-    src: `data:image/svg+xml,${encodeURIComponent(qrSvg(link))}`});
+  const code = pairCode(link);
   const input = document.createElement('input');
   Object.assign(input, {name: 'pairing-link', value: link, readOnly: true, spellcheck: false, autocomplete: 'off'});
   input.setAttribute('aria-label', 'Pairing link');

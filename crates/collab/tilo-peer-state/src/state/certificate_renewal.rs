@@ -62,7 +62,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, `renewed`
+    /// Returns an error if the change is not `key`'s device's to make, `renewed`
     /// does not renew the device's certificate, or governance cannot be
     /// updated.
     pub fn renew_member_certificate(
@@ -71,7 +71,6 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
         let Some(held) = self.peer.governance().renewal_of(renewed, now)? else {
             return Ok(false);
         };
@@ -105,7 +104,7 @@ impl PeerGovernanceMut<'_> {
             return Err("the renewed device has no governed identity".into());
         }
         doc.commit();
-        self.peer.apply_governance_doc(doc, &before, key, now)?;
+        self.peer.write_governance(doc, &before, key, now)?;
         Ok(true)
     }
 }

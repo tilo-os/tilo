@@ -101,6 +101,19 @@ fn parse_libraries(output: &str, loader: &Path) -> io::Result<BTreeMap<String, P
     Ok(libraries)
 }
 
+/// Whether a guest can start here: the runtime binary's loader must be one the
+/// helper trusts. A nested test runner that maps the host's root-owned files to
+/// the caller is root-equivalent over them, so the helper refuses every host
+/// loader there and guest tests skip through the `TrustedLoader` capability.
+///
+/// # Errors
+///
+/// Returns the helper's own refusal, or whatever resolving the runtime
+/// binary's closure reports.
+pub fn native_loader_trusted() -> io::Result<()> {
+    HelperRuntime::resolve(&crate::supervisor::runtime_binary()?).map(drop)
+}
+
 /// Read the native ELF64 `PT_INTERP`, with bounded offsets and lengths. Static
 /// helpers need no closure; other executable formats fail closed.
 fn interpreter(binary: &Path) -> io::Result<Option<PathBuf>> {

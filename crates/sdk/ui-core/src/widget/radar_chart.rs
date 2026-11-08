@@ -227,7 +227,11 @@ impl RadarMarks {
             value / axis_spec.max
         };
         let (center, radius) = self.geometry();
-        Some(chart_geometry::polar(center, radius * fraction, self.angle(axis)))
+        Some(chart_geometry::polar(
+            center,
+            radius * fraction,
+            self.angle(axis),
+        ))
     }
     fn polygon(&self, series: &RadarSeries, fraction: f64) -> BezPath {
         let (center, radius) = self.geometry();

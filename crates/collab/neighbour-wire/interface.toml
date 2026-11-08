@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 31
+version = 32
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -205,6 +205,12 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::Delta.delta" = "#3 Vec<u8> with=serde_bytes"
 "Envelope::Delta.signature" = "#4 [u8; 64] with=serde_bytes"
 "Envelope::Delta.workspace_id" = "#0 u64"
+"Envelope::HereReply" = "#43 struct"
+"Envelope::HereReply.frame" = "#1 Vec<u8> with=serde_bytes"
+"Envelope::HereReply.request_id" = "#0 u64"
+"Envelope::HereRequest" = "#42 struct"
+"Envelope::HereRequest.frame" = "#1 Vec<u8> with=serde_bytes"
+"Envelope::HereRequest.request_id" = "#0 u64"
 "Envelope::HostAction" = "#37 struct"
 "Envelope::HostAction.frame" = "#0 Vec<u8> with=serde_bytes"
 "Envelope::LiveLeave" = "#17 struct"
@@ -311,6 +317,12 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::WorkspaceBootstrap" = "#38 struct"
 "Envelope::WorkspaceBootstrap.bootstrap" = "#1 Vec<u8> with=serde_bytes"
 "Envelope::WorkspaceBootstrap.workspace_id" = "#0 u64"
+"Envelope::WorkspacesReply" = "#41 struct"
+"Envelope::WorkspacesReply.frame" = "#1 Vec<u8> with=serde_bytes"
+"Envelope::WorkspacesReply.request_id" = "#0 u64"
+"Envelope::WorkspacesRequest" = "#40 struct"
+"Envelope::WorkspacesRequest.frame" = "#1 Vec<u8> with=serde_bytes"
+"Envelope::WorkspacesRequest.request_id" = "#0 u64"
 "EnvelopeV2" = "enum external"
 "EnvelopeV2::CodedDelta" = "#13 struct"
 "EnvelopeV2::CodedDelta.segments" = "#1 Vec<DeltaSegment>"

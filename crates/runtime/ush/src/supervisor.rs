@@ -73,6 +73,10 @@ pub struct SessionOptions {
     /// supervisor's, and the guest's shell gets this as its own. `None` when
     /// `ush` runs on a terminal of its own.
     pub terminal: Option<Arc<OwnedFd>>,
+    /// The environment's own agent door, which the guest sees at
+    /// [`tilo_paths::login::GUEST_AGENT_SOCKET`] ([`crate::agent_door`]): set
+    /// while the session holds its lease. `None` binds none.
+    pub agent_door: Option<PathBuf>,
 }
 
 impl Default for SessionOptions {
@@ -88,6 +92,7 @@ impl Default for SessionOptions {
                 .filter(|key| crate::runs::valid_key(key)),
             editor: None,
             terminal: None,
+            agent_door: None,
         }
     }
 }
@@ -340,6 +345,7 @@ impl Session {
             resolver: None,
             terminal: None,
             control: None,
+            agent_door: self.opts.agent_door.clone(),
         })
     }
 
@@ -372,9 +378,17 @@ impl Session {
         }
         self.store.ensure()?;
         let resolved = self.resolve()?;
+        // Held for the session's life: the door closes with it.
+        let door = crate::agent_door::open_for(
+            &self.store,
+            &self.environment_id(&resolved.key),
+            &resolved.environment,
+        );
+        self.opts.agent_door = door.as_ref().map(|door| door.path().to_path_buf());
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
         let outcome = self.run_guest(&resolved, &session_dir);
+        drop(door);
         // Holds the generated `/etc`, the broker socket, an ephemeral home.
         crate::guest::remove_dir_all_forced(&session_dir);
         outcome
@@ -2412,6 +2426,109 @@ mod tests {
         );
     }
 
+    /// An environment asks the session for its own agent door by its id,
+    /// naming the workspace its record belongs to (none for the primary
+    /// workspace, which the session knows by no id), and its guest gets the
+    /// door the session answered at the path its variable names.
+    #[test]
+    fn an_environment_asks_for_its_door_in_its_records_workspace_and_binds_it() {
+        use std::io::{BufRead as _, Write as _};
+        const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        crate::require_trusted_loader!();
+        let dir = tempfile::tempdir().unwrap();
+        let door = dir.path().join("agent.sock");
+        let listener = tilo_files::native::socket::bind(&door).unwrap();
+        let session_side = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = Vec::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_until(b'\n', &mut line)
+                    .unwrap();
+                let request =
+                    runtime_portal::environment_door::Request::of(line.trim_ascii_end()).unwrap();
+                let reply = runtime_portal::environment_door::Reply::Opened {
+                    path: PathBuf::from(format!(
+                        "/run/user/1/tilo-session/environments/{}.sock",
+                        asked.len()
+                    )),
+                    workspace: request.workspace.clone().unwrap_or_else(|| "front".into()),
+                };
+                (&stream).write_all(&reply.line()).unwrap();
+                asked.push(request);
+            }
+            asked
+        });
+
+        let files = dir.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let w1 = crate::workspace::WorkspaceId::parse(Some(W1)).unwrap();
+        let mut session = session_in(dir.path());
+        session.store = session
+            .store
+            .clone()
+            .with_workspace(&files)
+            .for_workspace(&w1);
+        let resolved = session.resolve().unwrap();
+        let lease = crate::agent_door::open_at(
+            &door,
+            &session.store,
+            &session.environment_id(&resolved.key),
+            &resolved.environment,
+        )
+        .expect("the session opened a door");
+        assert_eq!(lease.workspace(), W1);
+
+        let primary = session_in(&dir.path().join("primary"));
+        let primary_resolved = primary.resolve().unwrap();
+        let front = crate::agent_door::open_at(
+            &door,
+            &primary.store,
+            &primary.environment_id(&primary_resolved.key),
+            &primary_resolved.environment,
+        )
+        .expect("the session opened a door");
+        assert_eq!(front.workspace(), "front", "the session chose");
+
+        let asked = session_side.join().unwrap();
+        assert_eq!(asked[0].environment, format!("{W1}/default"));
+        assert_eq!(asked[0].workspace.as_deref(), Some(W1));
+        assert_eq!(asked[1].environment, "personal/default");
+        assert_eq!(asked[1].workspace, None);
+
+        session.opts.agent_door = Some(lease.path().to_path_buf());
+        let plan = session
+            .plan(
+                &resolved,
+                PathBuf::from("/tmp/b.sock"),
+                PathBuf::from("/tmp/f.bpf"),
+            )
+            .unwrap();
+        let argv: Vec<String> = crate::guest::build_argv(&plan, None)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv.windows(3).any(|w| w
+                == [
+                    "--bind-try",
+                    "/run/user/1/tilo-session/environments/0.sock",
+                    tilo_paths::login::GUEST_AGENT_SOCKET
+                ]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(3).any(|w| w
+                == [
+                    "--setenv",
+                    tilo_paths::login::AGENT_SOCKET_ENV,
+                    tilo_paths::login::GUEST_AGENT_SOCKET
+                ]),
+            "{argv:?}"
+        );
+    }
+
     /// A session in a workspace builds its guest from that workspace's
     /// record: its own files as `~`, bound by their grant and nothing else
     /// of the device's files, and its processes told the workspace and the
@@ -2419,6 +2536,7 @@ mod tests {
     #[test]
     fn a_workspace_session_is_planned_with_its_own_files_and_says_where_it_runs() {
         const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        crate::require_trusted_loader!();
         let dir = tempfile::tempdir().unwrap();
         let mut session = session_in(dir.path());
         let files = dir.path().join("files");
@@ -2503,6 +2621,7 @@ mod tests {
 
     #[test]
     fn the_plan_comes_from_the_record_its_images_and_its_grants() {
+        crate::require_trusted_loader!();
         let dir = tempfile::tempdir().unwrap();
         let session = session_in(dir.path());
         let mut env = tilo_test_env::ScopedEnv::new();

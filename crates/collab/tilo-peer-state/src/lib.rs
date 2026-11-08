@@ -1,4 +1,11 @@
 //! Shared native/browser neighbour wire and certified state admission.
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::arc_with_non_send_sync,
+        reason = "a page's store and neighbour handles reach JavaScript and stay on the page's one thread"
+    )
+)]
 pub mod governance;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;

@@ -181,6 +181,7 @@ layer; there is no separate package manifest.
 <grants>     one bind per FsPath grant, at the same path as on the host
 /tmp /run /proc /dev   fresh
 /var         tmpfs, plus the environment's own /var/lib and /var/cache
+/run/tilo/agent.sock   the environment's own agent door (below)
 ```
 
 - The guest runs as **the real uid** (a single-uid user namespace mapping), so
@@ -237,6 +238,72 @@ the same supervisor (`ServeRequest::OpenSession { target: Host }`). It is only
 reachable by the Terminal app, only on a device whose owner is the signed-in
 person, and only after the person allowed it once (a `CapOverride` on
 `Scope::Device`). Agents and other apps can never open it.
+
+## Coding agents
+
+Several coding agents (Claude Code, Codex) work on one machine at once, each
+in an environment of its own, each in its own workspace, and each a distinct
+agent the person can tell apart, attribute and stop.
+
+**Two agents in two workspaces.** In the workspace *Studio*, open Terminal in
+the environment *dev* and run `claude`; switch to *Garden*, open Terminal in
+the environment *site* and run `claude` again. Each one's MCP server is
+`tilo-runtime --connect` (`tilo-runtime-mcp --connect`), with nothing else to
+configure:
+
+```json
+{"mcpServers": {"tilo": {"command": "tilo-runtime", "args": ["--connect"]}}}
+```
+
+The first asks to work in *Studio* as `claude-code@dev#1`, the second in
+*Garden* as `claude-code@site#1`. The person allows each on the sheet; the bar
+shows both, each in its workspace, and Stop on one ends that one alone.
+
+**The environment's door.** The session's agent door
+(`$XDG_RUNTIME_DIR/tilo-session/agent.sock`) serves only programs of the login
+outside every sandbox, so nothing in a guest reaches it. When `ush` opens an
+environment it asks the session, on that door, for a door of the
+environment's own, by its `TILO_ENVIRONMENT` id
+(`runtime_portal::environment_door`; the request passes the
+door's kernel peer checks, so it comes from a program of the login outside
+every sandbox). The session binds a fresh socket beside its own
+(`tilo-session/environments/`), answers its path and the workspace it serves,
+and `ush` binds it into the guest alone at `/run/tilo/agent.sock`, naming it in
+`TILO_AGENT_SOCK`, which `tilo-runtime --connect` uses in place of the
+session's door. The connection the request came on is the door's lease: when
+the environment ends (or its `ush` does) the socket is removed and the agents
+it let in are stopped.
+
+- **Workspace.** A program on an environment's door works in the
+  environment's workspace (above: the one its Terminal was opened in, as its
+  record names it, read by `ush::workspace::environment_workspace`), never the
+  one in front, and asking for another is refused. An environment of the
+  primary workspace, which the desk knows by no id, works in the workspace in
+  front of the person when it opened. The session admits the workspace only
+  if the person is one of its people.
+- **Who may use it.** Being reachable only inside the environment is what
+  authenticates a program, and the kernel says so too: only a process of the
+  account that descends from the process holding the lease (the environment's
+  own `ush`) is served there. A program of the login outside it, or one in
+  another environment, is refused before anyone is asked. The session's own
+  door keeps its checks: another account, or a process in other namespaces,
+  is refused there.
+- **The person decides.** Each program is asked about on the sheet, naming
+  the environment; "Always allow" is remembered per environment (its
+  `<workspace>/<record>` id), executable and client name, so allowing Claude Code once in *dev* covers its later
+  sessions there, and only there. A program in an environment works as an
+  agent; it never acts as the person.
+- **An agent per connection.** Each connection the person admits is an agent
+  of its own: the client's name, where it works from (the environment's record
+  key, or `host`) and an instance number, as in `claude-code@dev#2`. Its
+  changes are attributed to that id, the desk lists it as `Claude Code in dev
+  #2`, and the person's Stop ends it alone. Instance numbers count from one in
+  each session of the desktop.
+- **The Host case.** A program in the Host target, or any program of the login
+  outside a sandbox, uses the session's own door and works in the workspace in
+  front. `tilo-runtime --connect --workspace ID` asks for another by id; it is
+  admitted there only when the person is one of that workspace's people (and
+  not blocked in it), and the person still decides on the sheet.
 
 ## Legacy VMs
 

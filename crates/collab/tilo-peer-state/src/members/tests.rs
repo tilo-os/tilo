@@ -622,19 +622,16 @@ fn held_operations_are_kept_and_new_ones_prove_their_writer() {
     assert_eq!(growth(Some(&doc), &start).unwrap(), 1);
     assert_eq!(growth(Some(&start), &start).unwrap(), 0);
 
+    let key = crate::members::op::op_key(genesis.id().unwrap());
     let mut dropped = start.clone();
-    let held = map(&dropped, MEMBERS_KEY);
-    dropped
-        .delete(&held, genesis.id().unwrap().to_key().as_str())
-        .unwrap();
+    dropped.delete(ROOT, key.as_str()).unwrap();
     assert!(growth(Some(&start), &dropped).is_err());
 
     let mut changed = start.clone();
-    let held = map(&changed, MEMBERS_KEY);
     changed
         .put(
-            &held,
-            genesis.id().unwrap().to_key(),
+            ROOT,
+            key.as_str(),
             automerge::ScalarValue::Bytes(b"not an operation".to_vec()),
         )
         .unwrap();

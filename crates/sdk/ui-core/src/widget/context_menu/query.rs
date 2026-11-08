@@ -11,7 +11,7 @@
 use std::cell::Cell;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::{
@@ -148,8 +148,18 @@ impl ContextMenu {
 
     /// Work out [`Self::shown`] for the query: every row of the owner's
     /// without one; else its entries that match, best first (a nested menu's
-    /// row by its own label), and last the row that asks the sentence.
+    /// row by its own label), and last the row that asks the sentence. A
+    /// separator with nothing to set off on either side is not shown: the
+    /// rows the menu draws are the rows listed, one for one.
     pub(super) fn refilter(&mut self) {
+        self.rank_rows();
+        self.shown
+            .retain(|&index| super::item_shown(&self.items, index));
+        self.sync_rows();
+    }
+
+    /// Work out [`Self::shown`] for the query, without showing it.
+    fn rank_rows(&mut self) {
         let owned = self
             .own_rows
             .unwrap_or(self.items.len())
@@ -204,9 +214,9 @@ impl ContextMenu {
         }
         self.close_submenu();
         self.refilter();
-        self.scroll.set_offset(Vec2::ZERO);
+        self.list.reset_scroll();
         self.opened_under = Some(self.last_cursor);
-        self.hovered = if typed {
+        let first = if typed {
             self.shown
                 .iter()
                 .copied()
@@ -214,6 +224,7 @@ impl ContextMenu {
         } else {
             None
         };
+        self.set_hover(first);
         self.layout_at_position();
         self.dirty = true;
         crate::widget::note_resource_presentation_changed();

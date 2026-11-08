@@ -55,10 +55,6 @@ pub(crate) struct CaptureLeases {
     /// The store's owner, woken when the last lease ends so what waited is
     /// collected without waiting for its next job.
     wake: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
-    /// The governor of a workspace whose layout is personal, which this store
-    /// holds: captures leave out every other author's lineages of the workspace's
-    /// layout ([`WorkspaceStore::replay_member_layout`]).
-    layout_governor: std::sync::Mutex<Option<[u8; 32]>>,
     /// What each lineage's current generation held when last listed.
     listed: std::sync::Mutex<ListedLineages>,
     /// How each retained channel's record syncs
@@ -105,25 +101,6 @@ impl WorkspaceStore {
     pub(crate) fn wake_on_capture_release(&self, owner: Arc<tokio::sync::Notify>) {
         *self.capture_leases.wake.lock_recover() = Some(owner);
     }
-    /// From now on, with `Some(governor)`, leave out of every capture what
-    /// members other than `governor` wrote of the workspace's layout: their
-    /// changes to the workspace document (its topology and windows) and to its
-    /// shared desktop record. The workspace's layout is personal, and shares no
-    /// member's windows. They stay retained; no one is replayed them. With
-    /// `None` (the workspace shares its layout) every capture holds them again.
-    pub(crate) fn replay_member_layout(&self, governor: Option<[u8; 32]>) {
-        *self.capture_leases.layout_governor.lock_recover() = governor;
-    }
-
-    /// Whether a capture leaves the retained lineage `name` out because it
-    /// is a member's part of a personal workspace's layout.
-    fn leaves_out_member_layout(&self, name: &std::ffi::OsStr) -> bool {
-        let Some(governor) = *self.capture_leases.layout_governor.lock_recover() else {
-            return false;
-        };
-        member_layout_lineage(name, &governor)
-    }
-
     /// The next entry of the directory a capture lists, past the retained
     /// lineages it leaves out: a workspace keeps far more lineages than a
     /// newcomer is replayed (each author's part of every record, on-demand
@@ -141,9 +118,7 @@ impl WorkspaceStore {
             let entry = entry?;
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
-                if self.leaves_out_member_layout(&name)
-                    || (!every_record && self.leaves_out_on_demand(&name)?)
-                {
+                if !every_record && self.leaves_out_on_demand(&name)? {
                     continue;
                 }
             }
@@ -1607,60 +1582,3 @@ impl WorkReclaimer {
 #[cfg(test)]
 #[path = "replay_tests.rs"]
 mod tests;
-
-/// Whether the retained lineage `name` (`<author>-<channel>`, both hex) is
-/// an author's other than `governor` on a workspace's layout: the workspace document
-/// (`SyncResp`) or the shared desktop record.
-fn member_layout_lineage(name: &std::ffi::OsStr, governor: &[u8; 32]) -> bool {
-    let Some((author, channel)) = name.to_str().and_then(|name| name.split_once('-')) else {
-        return false;
-    };
-    if author == hex::encode(governor) {
-        return false;
-    }
-    let topology = blake3::hash(b"shell-tree");
-    let desktop = neighbour_wire::app_document_channel(
-        tilo_desktop_model::ownership::DESKTOP_APP,
-        tilo_desktop_model::ownership::DESKTOP_RECORD,
-    );
-    channel == hex::encode(topology.as_bytes()) || channel == hex::encode(desktop)
-}
-
-#[cfg(test)]
-mod member_layout_tests {
-    use super::member_layout_lineage;
-
-    /// The lineages a personal workspace replays to nobody: a member's workspace
-    /// document and shared desktop writes, never the governor's, and no
-    /// record's.
-    #[test]
-    fn a_members_layout_lineages_are_told_apart_from_the_governors_and_records() {
-        let governor = [7u8; 32];
-        let member = hex::encode([9u8; 32]);
-        let topology = hex::encode(blake3::hash(b"shell-tree").as_bytes());
-        let desktop = hex::encode(neighbour_wire::app_document_channel(
-            "so.tilo.browser-desktop",
-            "desktop",
-        ));
-        let chat = hex::encode(neighbour_wire::app_document_channel("so.tilo.chat", "home"));
-        let lineage =
-            |author: &str, channel: &str| std::ffi::OsString::from(format!("{author}-{channel}"));
-        assert!(member_layout_lineage(
-            &lineage(&member, &topology),
-            &governor
-        ));
-        assert!(member_layout_lineage(
-            &lineage(&member, &desktop),
-            &governor
-        ));
-        assert!(!member_layout_lineage(&lineage(&member, &chat), &governor));
-        assert!(!member_layout_lineage(
-            &lineage(&hex::encode(governor), &topology),
-            &governor
-        ));
-        assert!(!member_layout_lineage(
-            std::ffi::OsStr::new("CURRENT"),
-            &governor
-        ));
-    }
-}

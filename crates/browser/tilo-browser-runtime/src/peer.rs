@@ -1869,16 +1869,10 @@ impl WasmPeer {
         Ok(())
     }
 
-    /// Seal one encoded live frame of `workspace` (from [`encode_live_presence`]
-    /// and friends) with the channel keys of the record it names, for the
-    /// page's live plane. Resolves to `null` when the frame names no record
-    /// or this device holds none of its keys: such a frame is never sent.
-    ///
-    /// # Errors
-    ///
-    /// Rejects for a malformed workspace or a closed session.
-    #[wasm_bindgen(js_name = sealLive)]
-    pub async fn seal_live(
+    /// Seal one encoded live frame of `workspace` with the channel keys of the
+    /// record it names. `None` when the frame names no record or this device
+    /// holds none of its keys: such a frame is never sent.
+    async fn seal_live(
         &self,
         workspace: String,
         frame: Vec<u8>,
@@ -1890,32 +1884,6 @@ impl WasmPeer {
                 frame,
                 Box::new(move |sealed| {
                     let _ = reply.send(sealed);
-                }),
-            )
-            .map_err(js_error)?;
-        receipt.await.map_err(|_| js_error("peer session closed"))
-    }
-
-    /// Open one sealed live frame of `workspace` the live plane delivered.
-    /// Resolves to the encoded frame for [`decode_live_frame`], or `null`
-    /// when it does not open with keys this device holds.
-    ///
-    /// # Errors
-    ///
-    /// Rejects for a malformed workspace or a closed session.
-    #[wasm_bindgen(js_name = openLive)]
-    pub async fn open_live(
-        &self,
-        workspace: String,
-        frame: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, JsError> {
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .open_live_then(
-                workspace_number(&workspace)?,
-                frame,
-                Box::new(move |opened| {
-                    let _ = reply.send(opened);
                 }),
             )
             .map_err(js_error)?;

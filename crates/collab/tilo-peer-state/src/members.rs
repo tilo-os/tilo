@@ -14,7 +14,7 @@
 //! its operations still sees who is in it.
 pub mod legacy;
 pub mod op;
-mod replay;
+pub(crate) mod replay;
 
 #[cfg(test)]
 mod tests;

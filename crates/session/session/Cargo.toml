@@ -427,6 +427,10 @@ rqrr = { workspace = true, default-features = true }
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 # A display tool speaking `wlr-output-management` to the session's compositor.
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# The mount's own namespace, and the document its tree record is read as: a
+# test runs the files daemon's writer against a session, as a mount does.
+fs = { package = "tilo-fs", path = "../../system/fs", default-features = false, features = ["filesystem"] }
+fs-protocol = { path = "../../system/fs-protocol" }
 # The input method a text field's client runs for the seat, as the person's
 # on-screen keyboard does.
 wayland-protocols-misc = { version = "0.3", features = ["client"] }

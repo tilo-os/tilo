@@ -181,16 +181,6 @@ pub struct PersistentArgs {
     /// An app authored into the workspace at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
-    /// Whether the workspace shares its members' windows and strips: `personal`
-    /// (each member's stay on their device; the workspace shares its records and
-    /// people) or `shared`. Settled at every start.
-    #[arg(
-        long = "layout",
-        value_name = "SCOPE",
-        default_value = "personal",
-        value_parser = parse_layout
-    )]
-    pub layout: tilo_desktop_model::projection::WorkspaceLayout,
     /// An app the workspace's members write through: it authors the workspace's
     /// content, so a member whose role lets them change the workspace (a guest
     /// is an Editor) can talk in its Chat; repeatable. Settled at every
@@ -290,6 +280,14 @@ pub struct PersistentArgs {
     /// oldest go first. `0` keeps none.
     #[arg(long = "attachment-room-mib", default_value_t = 2048)]
     pub attachment_room_mib: u64,
+    /// Refound `APP/RECORD` from what the workspace can still read, at start,
+    /// because its retained history lost the base its deltas were written
+    /// over: the record is published again as the workspace's next checkpoint
+    /// of it, and what its channel retained until now is archived beside the
+    /// replay, never deleted. Repeatable; a record already refounded by an
+    /// earlier start is not founded again.
+    #[arg(long = "refound", value_name = "APP/RECORD", requires = "persistent")]
+    pub refound: Vec<String>,
 }
 
 /// What every part of the persistent workspace works with.
@@ -506,12 +504,6 @@ fn parse_role(role: &str) -> Result<WorkspaceRole, String> {
             "{other:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
         )),
     }
-}
-
-/// `--layout`: `shared` or `personal`.
-fn parse_layout(scope: &str) -> Result<tilo_desktop_model::projection::WorkspaceLayout, String> {
-    tilo_desktop_model::projection::WorkspaceLayout::from_id(scope)
-        .ok_or_else(|| format!("{scope:?} is not a layout scope: say shared or personal"))
 }
 
 fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>> {
@@ -1107,6 +1099,51 @@ fn authored_apps(args: &PersistentArgs) -> Vec<String> {
         .collect()
 }
 
+/// Refound each `APP/RECORD` the operator named, once per start that names it:
+/// a record whose retained history lost the base its deltas were written over
+/// is published again as the workspace's next checkpoint of it, and what its
+/// channel retained until now is archived beside the replay. What was done is
+/// kept in `refounded.json` beside the workspace, so a later start naming the
+/// same record does not found it again.
+async fn refound_records(
+    workspaces: &Workspaces,
+    workspace: &str,
+    named: &[String],
+    state: &Path,
+) -> anyhow::Result<()> {
+    if named.is_empty() {
+        return Ok(());
+    }
+    let done_at = state.join("refounded.json");
+    let done: BTreeMap<String, String> = read_json(&done_at)?;
+    let mut done = done;
+    for entry in named {
+        let (app, record) = entry
+            .split_once('/')
+            .with_context(|| format!("--refound {entry:?} is not APP/RECORD"))?;
+        if done.contains_key(entry) {
+            continue;
+        }
+        let outcome = workspaces
+            .refound_record(workspace, app, record)
+            .await
+            .map_err(|error| anyhow::anyhow!("refound {entry}: {error}"))?;
+        tracing::info!(
+            workspace = %workspace,
+            app = %outcome.app,
+            record = %outcome.record,
+            archived = outcome.archived,
+            "a record was refounded and its old history archived"
+        );
+        done.insert(
+            entry.clone(),
+            format!("archived {} entries", outcome.archived),
+        );
+        write_json(&done_at, &done)?;
+    }
+    Ok(())
+}
+
 /// Make exactly the operator's `apps` authors of the workspace, so its members
 /// write through them, and take authorship back from an app this host made
 /// an author at an earlier start and no longer names (kept in `authored`).
@@ -1361,12 +1398,6 @@ pub(crate) async fn run(
         .list_invitation_only(&workspace, &host_cert, persistent.invitation_only)
         .await
         .map_err(|error| anyhow::anyhow!("settle the workspace's door: {error}"))?;
-    // Whether the workspace shares its members' windows and strips, as the
-    // host configured it. Settled at every start.
-    workspaces
-        .set_layout(&workspace, persistent.layout)
-        .await
-        .map_err(|error| anyhow::anyhow!("settle the workspace's layout scope: {error}"))?;
     seed_apps(
         &workspaces,
         &workspace,
@@ -1404,6 +1435,11 @@ pub(crate) async fn run(
         &state.join("authored-apps.json"),
     )
     .await?;
+    // A record the operator named whose retained history lost the base its
+    // deltas were written over: founded again from what the workspace still
+    // reads, its old history archived beside the replay. Runs once per start
+    // that names it; a record that still reads is left as it is.
+    refound_records(&workspaces, &workspace, &persistent.refound, &state).await?;
     let web = hosted
         .relay
         .serve_web(web_config(&args.web, listen, &state))
@@ -2099,10 +2135,6 @@ mod tests {
     /// workspace's link is no invitation at all. Once it lets anyone in again,
     /// members no longer invite.
     #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one story: the door, an invitation redeeming itself and taking it back"
-    )]
     async fn taking_people_by_invitation_the_invitation_admits_the_guest() {
         let dir = tempfile::tempdir().unwrap();
         let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
@@ -2340,30 +2372,6 @@ mod tests {
             .inactive_after_days;
         assert_eq!(shorter, 7, "the host configures it");
         assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
-    }
-
-    /// A site's workspace lets everyone in through its door: unless its host says
-    /// otherwise, each member's windows stay on their device.
-    #[test]
-    fn a_site_rooms_layout_is_personal_unless_its_host_says_otherwise() {
-        use clap::Parser as _;
-        use tilo_desktop_model::projection::WorkspaceLayout;
-        #[derive(clap::Parser)]
-        struct Args {
-            #[command(flatten)]
-            persistent: PersistentArgs,
-        }
-        assert_eq!(
-            Args::parse_from(["relay"]).persistent.layout,
-            WorkspaceLayout::Personal
-        );
-        assert_eq!(
-            Args::parse_from(["relay", "--layout", "shared"])
-                .persistent
-                .layout,
-            WorkspaceLayout::Shared
-        );
-        assert!(Args::try_parse_from(["relay", "--layout", "public"]).is_err());
     }
 
     #[test]

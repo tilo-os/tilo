@@ -358,6 +358,7 @@ fn toml_encodings_are_pinned() {
         home_peer_bundle: PathBuf::from("/etc/tilo/home-peer.toml"),
         iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
         packet_relay: None,
+        packet_relay_url: None,
         trust_policy: TrustPolicy::AllowList {
             users: vec!["ab".repeat(32)],
         },

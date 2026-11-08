@@ -106,7 +106,7 @@ impl PeerWorkspaceMut<'_> {
         }
         candidate.commit();
         self.peer
-            .apply_governance_doc(candidate.into(), &before, key, now)?;
+            .write_governance(candidate.into(), &before, key, now)?;
         Ok(true)
     }
 }

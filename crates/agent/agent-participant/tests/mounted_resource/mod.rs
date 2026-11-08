@@ -185,33 +185,14 @@ pub async fn run() {
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    chat::demo::apply_as(
+    common::add_channel(&mut doc, &source_author, "general", None);
+    common::add_channel(
         &mut doc,
         &source_author,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .unwrap();
-    chat::demo::apply_as(
-        &mut doc,
-        &source_author,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "Lounge".parse().unwrap(),
-            category: None,
-            kind: Some(chat::model::ChannelKind::Voice),
-            topic: None,
-        }),
-    )
-    .unwrap();
-    let channel = chat::projection::read(&doc)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .unwrap();
+        "Lounge",
+        Some(chat::model::ChannelKind::Voice),
+    );
+    let channel = common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -321,11 +302,7 @@ pub async fn run() {
         }
     })
     .await;
-    let voice_channel = chat::projection::read(&doc)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
-        .unwrap();
+    let voice_channel = common::channel(&doc, chat::model::ChannelKind::Voice);
     if voice_journey {
         use tilo_browser_peer::{PeerEvent, VoiceEvent};
         native

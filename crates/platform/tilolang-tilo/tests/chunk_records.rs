@@ -299,10 +299,15 @@ fn window(
     }
 }
 
-/// The window reads what its record holds: the record's chunk, then the chunks above it.
+/// The window reads what its record holds: the record's chunk, then the chunks above it, a
+/// frame at a time, and derives them off the frame until its index covers the record.
 fn catch_up(window: &mut Window) {
     window.instance.sync_chunks(window.workspace.chunks());
     window.instance.update();
+    if let Some(host) = window.instance.host() {
+        host.wait_index();
+        window.instance.update();
+    }
 }
 
 /// The board's cards, `n` of them in the order they were added, written straight into the chunk

@@ -92,10 +92,7 @@ fn a_menu_that_scrolls_cuts_no_row_in_half() {
     );
     let window = Rect::new(0.0, 0.0, 400.0, 200.0);
     m.open_anchored(Rect::new(10.0, 10.0, 300.0, 30.0), window);
-    assert!(
-        m.scroll.overflows_vertically(),
-        "the rest scrolls into view"
-    );
+    assert!(m.list.overflows(), "the rest scrolls into view");
     assert!(m.get_rect().y1 <= window.y1 + 0.5, "{:?}", m.get_rect());
     let mut shown = 0;
     for index in 0..12 {

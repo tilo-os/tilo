@@ -136,6 +136,10 @@ pub mod thumbs;
 pub mod transaction_coordinator;
 #[cfg(feature = "filesystem")]
 pub mod transport_gate;
+/// The mounted tree as the Files app's person record: the writer on the
+/// session's record route, which only the Linux daemon holds.
+#[cfg(all(feature = "filesystem", target_os = "linux"))]
+pub mod tree_record;
 #[cfg(feature = "filesystem")]
 pub mod unsaved;
 #[cfg(feature = "filesystem")]

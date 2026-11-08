@@ -203,6 +203,54 @@ pub(super) fn publish_changes(
     }
 }
 
+/// Publish `record` of `app` as the workspace's own checkpoint of it, from
+/// `document`, the record as its key holder reads it: sealed with `keys` for a
+/// sealed record, in the clear otherwise. This is what founds a route again
+/// after its retained history lost the base its deltas were written over
+/// ([`Workspaces::refound_record`]): the checkpoint is the whole record, so a
+/// device that joins afterwards reads it and the writes after it.
+///
+/// `document` is admitted as this state's own write and joined to its sealed
+/// history, exactly as [`super::applications`]' authoring path does, so the
+/// replay that follows carries it.
+///
+/// # Errors
+///
+/// The write could not be sealed, signed or admitted.
+#[cfg(feature = "agents")]
+pub(super) fn refound(
+    candidate: &mut StatePeer,
+    keys: Option<&RecordKeys>,
+    (app, record): (&str, &str),
+    document: Vec<u8>,
+    key: &SigningKey,
+    now: SystemTime,
+) -> Result<NeighbourMsg, String> {
+    match keys {
+        None => {
+            let snapshot = collab_types::DocumentMutation::Snapshot(document);
+            let message = candidate.publication_mut().publish_document(
+                app,
+                record,
+                snapshot.data().to_vec(),
+                key,
+                now,
+            )?;
+            Ok(message)
+        }
+        // The record is sealed: the checkpoint is the whole record, sealed as
+        // the workspace's own, and the sealed writer's history keeps it.
+        Some(keys) => candidate.publication_mut().publish_sealed_checkpoint(
+            app,
+            record,
+            document,
+            &mut keys.seal(collab_types::ContentRetention::Checkpoint),
+            key,
+            now,
+        ),
+    }
+}
+
 /// Start `record` of `app` in `candidate` as the workspace's host, signed with
 /// `key` and sealed with `keys`: the checkpoint every record is born from,
 /// which holds nothing, then `changes`, what the record starts with.
