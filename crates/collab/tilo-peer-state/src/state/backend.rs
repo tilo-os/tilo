@@ -22,6 +22,9 @@ pub(super) struct PeerDocument {
     pub(super) doc: CachedDocument,
     pub(super) channel: ChannelState,
     pub(super) encryption_required: bool,
+    /// The highest write of each writer, by its hex key, that this record's
+    /// content carries: the watermarks of a governed checkpoint, and every
+    /// write admitted in the clear, which its own document holds.
     pub(super) covered: BTreeMap<String, u64>,
     pub(super) covered_snapshot: Option<AcceptedCheckpoint>,
     /// Sealed writes this replica admitted but holds no key to open, in

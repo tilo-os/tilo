@@ -2322,6 +2322,10 @@ impl StatePeer {
                 collab_types::WholeDocumentPayload::Cleartext(mutation)
                     if !candidate.encryption_required || retained_replay =>
                 {
+                    // The record's own document holds it (see `covered`), so
+                    // it covers this writer up to it.
+                    let covered = candidate.covered.entry(hex::encode(source)).or_default();
+                    *covered = (*covered).max(envelope.seq);
                     mutation
                 }
                 collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.admission_v5 => {
