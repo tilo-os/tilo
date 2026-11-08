@@ -1145,8 +1145,14 @@ impl Apps {
         let routable =
             planned.kind == Kind::Package && matches!(launch, Launch::Package { open: None, .. });
         let alone = self.start_alone(&planned, &asked, &workspace.id, timed);
-        let reserved =
-            doors.route_or_reserve(&planned.app, &workspace.id, routable, reveal, &alone);
+        let reserved = doors.route_or_reserve(
+            &planned.app,
+            &workspace.id,
+            routable,
+            reveal,
+            &alone,
+            instance,
+        );
         let reservation = match reserved {
             // The process running the app opens this window itself: nothing starts.
             Err(Routed::Opened) => {

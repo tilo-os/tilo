@@ -79,8 +79,26 @@ impl GroupRow {
                 fade
             });
         }
+        let back: Vec<u64> = self
+            .floats
+            .keys()
+            .filter(|id| !floats.contains_key(id))
+            .copied()
+            .collect();
         self.floats = floats;
         self.structure_dirty = true;
+        // A window back in its strip takes its share of it again: the one
+        // that stayed grew into the room the float left, so the two tile
+        // the strip rather than one running off its edge. Every window's
+        // width stands where it now belongs from this frame, rather than
+        // sliding there while the strip shows one of them over the other.
+        if !back.is_empty() {
+            for id in back {
+                self.share_with_neighbour_at_once(id);
+                self.settle_widths.push(id);
+            }
+            self.structure_dirty = true;
+        }
     }
 
     /// The windows floating above the desk, by group id, at their rects.

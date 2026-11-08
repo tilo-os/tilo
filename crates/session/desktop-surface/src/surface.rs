@@ -1990,7 +1990,11 @@ impl DesktopSurface {
             // the window would be laid out past a neighbour still on its way to its width, often
             // off the display, and no frame would show it until it arrived there.
             row.set_motion_source(ui::tokens::MotionSource::Action);
-            row.share_with_neighbour(group);
+            // A window the workspace holds floating takes no run of the strip, so
+            // it shares nothing with what stands there.
+            if !floats::holds(&shared.tree, strip, group) {
+                row.share_with_neighbour(group);
+            }
         }
         self.reveal = Some((strip, group));
         self.structure_dirty = true;

@@ -320,8 +320,8 @@ fn the_float_row_lifts_the_window_over_the_desk_and_puts_it_back() {
     assert!(!floating(&handle), "the record has it back in its strip");
     let back = rect_of(&handle, route.tab);
     assert!(
-        (back.x0 - was.x0).abs() < 0.5 && (back.width() - was.width()).abs() < 0.5,
-        "it takes the place in its strip it had again: {back:?}"
+        (back.x0 - was.x0).abs() < 0.5,
+        "it stands where it stood in the strip again: {back:?}"
     );
     let beside = rect_of(&handle, tab_at(&handle, 1));
     assert!(

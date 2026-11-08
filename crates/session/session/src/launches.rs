@@ -95,9 +95,10 @@ pub struct Launches {
     notes: std::sync::Arc<crate::continuations::Continuations>,
     started: Mutex<BTreeMap<u32, Launch>>,
     windows: Mutex<Vec<Window>>,
-    /// The launch each window's shell-ui connection belongs to, by app, while the connection is
-    /// being made: the shell-ui service reads it for the connection from the session's own process.
-    shell_ui: Mutex<Vec<(String, u32)>>,
+    /// The launch each window's shell-ui connection belongs to, and the tab the window takes, by
+    /// app, while the connection is being made: the shell-ui service reads it for the connection
+    /// from the session's own process.
+    shell_ui: Mutex<Vec<(String, u32, u64)>>,
     /// This device's apps, as the session's lists last read them: what a service asking the
     /// launcher is told of every app it could open.
     applications: Mutex<Option<crate::lists::Lists>>,
@@ -259,21 +260,23 @@ impl Launches {
             .retain(|window| !window.is(app, workspace, instance));
     }
 
-    /// Record that the session is about to connect the shell-ui socket for a window of `app` the
-    /// launch in `launcher` runs: the shell-ui service reads it for a connection from the session's
-    /// own process.
-    pub fn window_shell_ui(&self, app: &str, launcher: u32) {
+    /// Record that the session is about to connect the shell-ui socket for window `instance` of
+    /// `app`, which the launch in `launcher` runs: the shell-ui service reads it for a connection
+    /// from the session's own process.
+    pub fn window_shell_ui(&self, app: &str, launcher: u32, instance: u64) {
         self.shell_ui
             .lock_recover()
-            .push((app.to_owned(), launcher));
+            .push((app.to_owned(), launcher, instance));
     }
 
-    /// The launch a connection from the session's own process for a window of `app` belongs to: the
-    /// one it recorded while making the connection.
-    pub fn take_window_shell_ui(&self, app: &str) -> Option<u32> {
+    /// The launch a connection from the session's own process for a window of `app` belongs to,
+    /// and the tab that window takes: the one it recorded while making the connection.
+    pub fn take_window_shell_ui(&self, app: &str) -> Option<(u32, u64)> {
         let mut pending = self.shell_ui.lock_recover();
-        let index = pending.iter().position(|(asked, _)| asked == app)?;
-        Some(pending.remove(index).1)
+        let index = pending.iter().position(|(asked, ..)| asked == app)?;
+        let (_, launcher, instance) = pending.remove(index);
+        drop(pending);
+        Some((launcher, instance))
     }
 
     /// The apps this session started with the documents store bound into them, and that still run:
@@ -745,8 +748,11 @@ mod tests {
     #[test]
     fn a_window_s_shell_ui_connection_names_its_launch_once() {
         let launches = Launches::default();
-        launches.window_shell_ui("so.tilo.notes", 1234);
-        assert_eq!(launches.take_window_shell_ui("so.tilo.notes"), Some(1234));
+        launches.window_shell_ui("so.tilo.notes", 1234, 99);
+        assert_eq!(
+            launches.take_window_shell_ui("so.tilo.notes"),
+            Some((1234, 99))
+        );
         assert_eq!(
             launches.take_window_shell_ui("so.tilo.notes"),
             None,

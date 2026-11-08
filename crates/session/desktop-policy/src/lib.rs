@@ -93,6 +93,22 @@ pub struct LaunchAsk {
 /// starts each one ([`DesktopPolicy::take_launches`]).
 type Launches = Rc<RefCell<Vec<LaunchAsk>>>;
 
+/// A tab the desk made for a window whose app asked for it: the session starts
+/// that window beside it, so the window takes the tab as its instance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldLaunch {
+    /// The app whose window the tab waits for.
+    pub app: String,
+    /// The tab the window takes when it maps.
+    pub tab: TabId,
+    /// The workspace the tab stands in, where the window's process belongs.
+    pub workspace: String,
+}
+
+/// The tabs the desk made for the windows apps asked it for, oldest first: the
+/// session starts each one ([`DesktopPolicy::take_held_launches`]).
+type HeldLaunches = Rc<RefCell<Vec<HeldLaunch>>>;
+
 /// What each window on this desk shows, as its app holds the record: the
 /// record it is on and the kind of resource that record keeps.
 pub trait WindowNotes {
@@ -177,6 +193,8 @@ struct Windows {
     names: AppNames,
     /// The tabs held for the apps' coming windows.
     held: Held,
+    /// The tabs the desk made for the windows apps asked it for.
+    held_launches: HeldLaunches,
     /// The tabs the person carried to another workspace, which only the
     /// session can move.
     carried: Carried,
@@ -225,7 +243,7 @@ impl TileSource for Windows {
         )))
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(&mut self, workspace: &Workspace, id: TabId, app: &str) -> Option<Tab> {
         let held = app
             .strip_prefix(HELD_BEHIND_PREFIX)
             .map(|app| (app, true))
@@ -243,6 +261,14 @@ impl TileSource for Windows {
                 .iter_mut()
                 .find(|record| record.tab.is_none() && record.background == background)?;
             record.tab = Some(id);
+            drop(held);
+            // The tab is the window's instance: the session starts it now
+            // that the desk holds the place it takes.
+            self.held_launches.borrow_mut().push(HeldLaunch {
+                app: app.to_owned(),
+                tab: id,
+                workspace: workspace.id().to_string(),
+            });
             let tab = self.place(id, app);
             self.titles
                 .borrow_mut()
@@ -368,6 +394,9 @@ pub struct DesktopPolicy {
     names: AppNames,
     /// The tabs held for the apps' coming windows.
     held: Held,
+    /// The tabs the desk made for the windows apps asked it for, waiting for
+    /// the session.
+    held_launches: HeldLaunches,
     /// The tabs the person carried to another workspace, waiting for the
     /// session.
     carried: Carried,
@@ -411,6 +440,7 @@ impl DesktopPolicy {
         let titles = Titles::default();
         let names = AppNames::default();
         let held = Held::default();
+        let held_launches = HeldLaunches::default();
         let carried = Carried::default();
         let notes = Notes::default();
         let (surface, handle) = DesktopSurface::new(
@@ -424,6 +454,7 @@ impl DesktopPolicy {
                 titles: Rc::clone(&titles),
                 names: Rc::clone(&names),
                 held: Rc::clone(&held),
+                held_launches: Rc::clone(&held_launches),
                 carried: Rc::clone(&carried),
                 notes: Rc::clone(&notes),
             }),
@@ -437,6 +468,7 @@ impl DesktopPolicy {
             titles,
             names,
             held,
+            held_launches,
             carried,
             notes,
             places: BTreeMap::new(),
@@ -454,6 +486,13 @@ impl DesktopPolicy {
     /// a repeated notice tab.
     pub fn take_launches(&mut self) -> Vec<LaunchAsk> {
         std::mem::take(&mut *self.launches.borrow_mut())
+    }
+
+    /// The tabs the desk made for windows apps asked for, oldest first: the
+    /// session starts each window beside the tab it takes, so the window is
+    /// that tab's instance.
+    pub fn take_held_launches(&mut self) -> Vec<HeldLaunch> {
+        std::mem::take(&mut *self.held_launches.borrow_mut())
     }
 
     /// Read what each window shows from `notes`, the session's: the desk asks
@@ -711,6 +750,22 @@ impl DesktopPolicy {
     #[must_use]
     pub fn anchor_for(&self, app: &str) -> Option<(TabId, GroupId, usize)> {
         self.handle.read(|tree| anchor_for(tree, app))
+    }
+
+    /// The tab of `app` the window `instance` runs in, when the desk shows it:
+    /// the tab a window is given is the window's instance
+    /// ([`HeldLaunch`], [`LaunchAsk::tab`]).
+    #[must_use]
+    pub fn tab_of_instance(&self, app: &str, instance: u64) -> Option<TabId> {
+        self.handle.read(|tree| {
+            tabs(tree)
+                .find(|tab| {
+                    tab.id == instance
+                        && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .is_some_and(|id| app_ids_match(&id, app))
+                })
+                .map(|tab| tab.id)
+        })
     }
 
     /// Where the window of `tab` shows its content, in the desk's own

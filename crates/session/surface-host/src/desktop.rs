@@ -546,6 +546,12 @@ impl DesktopHost {
         self.with_policy(DesktopPolicy::take_launches)
     }
 
+    /// The tabs the desk made for windows apps asked it for since the last
+    /// call, oldest first: the session starts each window beside its tab.
+    pub fn take_held_launches(&self) -> Vec<tilo_desktop_policy::HeldLaunch> {
+        self.with_policy(DesktopPolicy::take_held_launches)
+    }
+
     /// The desk's widget tree as hosted: what it publishes, its
     /// accessibility tree, the actions it accepts.
     pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {
@@ -636,16 +642,21 @@ impl crate::Published for DesktopHost {
     /// own content ([`ui::window_targets`]): a window's app keeps its widget
     /// tree to itself, so this is the one place they are named.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
-        let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
-            crate::Published::controls(&mut self.desk.borrow_mut().host)
-                .into_iter()
-                .collect();
+        let mut shown = crate::Published::controls(&mut self.desk.borrow_mut().host);
+        let chrome: std::collections::BTreeSet<String> =
+            shown.iter().map(|(name, _)| name.clone()).collect();
         for (name, rect) in self.desk.borrow().policy.handle().window_controls() {
             // A name the desk's own chrome shows keeps meaning there: what a
-            // window adds are the names the desk does not have.
-            shown.entry(name).or_insert(rect);
+            // window adds are the names the desk does not have. Two windows of
+            // an app describe controls by the same names, and each is listed
+            // where it stands, so a window floating over the desk is as
+            // readable as one in its strip: a press by name reaches the first
+            // window that shows it ([`Self::press_action`]).
+            if !chrome.contains(&name) {
+                shown.push((name, rect));
+            }
         }
-        shown.into_iter().collect()
+        shown
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {

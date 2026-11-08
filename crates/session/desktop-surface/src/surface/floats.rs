@@ -47,6 +47,12 @@ fn workspace_with(tree: &DesktopTree, strip: StripId) -> Option<&Workspace> {
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
 }
 
+/// Whether the workspace `strip` is on holds the window `group` floating.
+pub(super) fn holds(tree: &DesktopTree, strip: StripId, group: u64) -> bool {
+    workspace_with(tree, strip)
+        .is_some_and(|workspace| workspace.arrangement.float_of(group).is_some())
+}
+
 /// The windows of the strip `strip` the workspace has floating, each at its rect on the work area
 /// `area` .
 pub(super) fn floats_of(

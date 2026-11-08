@@ -9,7 +9,7 @@
 //! for the compositor that every capture asks, and every connection receives the appearance of its
 //! window's workspace.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufReader, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -88,10 +88,11 @@ impl ServiceLinks {
     }
 
     /// The window's shell-ui connection, attributed to the launch whose process `launcher` is: the
-    /// app and the workspace it runs in, without which what it asks reaches no desk.
-    fn shell_ui(&self, app: &str, launcher: Option<u32>) -> Option<OwnedFd> {
+    /// app and the workspace it runs in, without which what it asks reaches no desk. `instance` is
+    /// the tab the window takes, which is how its asks find it.
+    fn shell_ui(&self, app: &str, launcher: Option<u32>, instance: u64) -> Option<OwnedFd> {
         let launcher = launcher?;
-        self.launches.window_shell_ui(app, launcher);
+        self.launches.window_shell_ui(app, launcher, instance);
         let connected = (|| {
             let mut stream = tilo_files::native::socket::connect(&launcher::services::socket_for(
                 SHELL_UI_SERVICE,
@@ -130,7 +131,7 @@ impl Connects for ServiceLinks {
     ) -> WindowConnections {
         WindowConnections {
             collaboration: self.collaboration(app, workspace, instance, launcher_pid),
-            shell_ui: self.shell_ui(app, launcher_pid),
+            shell_ui: self.shell_ui(app, launcher_pid, instance),
         }
     }
 }
@@ -164,6 +165,16 @@ pub struct AppTabs {
     /// a send ([`FloatingSurfaceClientMessage::OpenFloated`]) stands at.
     boxes: BTreeMap<u64, [f64; 4]>,
     asked: Vec<Asked>,
+    /// The windows apps asked the desk for, by app and in ask order: each is
+    /// started once the desk has made the tab it takes.
+    held: BTreeMap<String, VecDeque<HeldStart>>,
+}
+
+/// A window an app asked the desk for: what starting it launches, and the
+/// workspace and item its launch names.
+struct HeldStart {
+    launch: Launch,
+    reveal: Option<String>,
 }
 
 /// An open shell-ui connection: the app it vouches for, the launch whose
@@ -175,6 +186,9 @@ struct Link {
     /// another window of the same app, and so whether the very window that draws an activity is on
     /// the desk.
     launch: u32,
+    /// The tab the window takes, when the session connected it itself: what its asks about its own
+    /// window are answered for. A window the launcher connected names its tab itself, in each ask.
+    instance: Option<u64>,
     /// Whether this app's launch let it know the network's state; a window never widens that for
     /// itself.
     network_allowed: bool,
@@ -217,6 +231,8 @@ struct Request {
     workspace: String,
     /// The launch the window that speaks on this connection belongs to.
     launch: u32,
+    /// The tab the window takes, when the session connected it itself.
+    instance: Option<u64>,
     /// The connection the ask came in on, which its answer goes back on and which its capture
     /// protection lasts as long as.
     connection: u64,
@@ -258,6 +274,7 @@ impl AppTabs {
             sent: Vec::new(),
             boxes: BTreeMap::new(),
             asked: Vec::new(),
+            held: BTreeMap::new(),
         })
     }
 
@@ -288,7 +305,6 @@ impl AppTabs {
         {
             let mut answered = Answers {
                 desktop,
-                apps,
                 compositor,
                 services,
                 studio,
@@ -299,6 +315,7 @@ impl AppTabs {
                 sent: &mut self.sent,
                 boxes: &mut self.boxes,
                 asked: &mut self.asked,
+                held: &mut self.held,
             };
             for request in self.requests.try_iter() {
                 answered.answer(&mut self.host_shell, request);
@@ -310,6 +327,9 @@ impl AppTabs {
             // drawing that window.
             answered.deliver_target_presses();
         }
+        // The tabs the desk made for the windows the apps asked for this pass: each window starts
+        // now, taking the tab it was held.
+        self.start_held(desktop, apps);
         // What the windows' boxes sent and asked, now that every ask of
         // theirs is answered: a send is one action on the person's behalf,
         // and a search is the desk's own.
@@ -321,6 +341,39 @@ impl AppTabs {
         self.follow_cards(desktop, compositor);
         // The person may have answered a question about the device's own shell since the last pass.
         self.host_shell.settle(services);
+    }
+
+    /// Start the windows the apps asked the desk for, now that it made the tab each takes: the
+    /// window takes that tab as its instance, so what it asks about its own window — the controls
+    /// of its content, its bar, its search — is answered for it, never for another window of the
+    /// same app.
+    fn start_held(&mut self, desktop: &DesktopHost, apps: Option<&Apps>) {
+        let Some(apps) = apps else {
+            return;
+        };
+        let made = desktop.take_held_launches();
+        if made.is_empty() {
+            return;
+        }
+        for made in made {
+            let Some(due) = self.held.get_mut(&made.app).and_then(VecDeque::pop_front) else {
+                // The tab is held, the window it was asked for is gone: the place goes with it.
+                tracing::info!(app = %made.app, "a tab was held for a window nothing asked for");
+                desktop.with_policy(|policy| policy.release_tab(made.tab));
+                continue;
+            };
+            let workspace = apps.workspace_named(&made.workspace);
+            if let Err(error) = apps.start_beside(
+                &due.launch,
+                &workspace,
+                Some(made.tab),
+                due.reveal.as_deref(),
+            ) {
+                desktop.with_policy(|policy| policy.release_tab(made.tab));
+                tracing::warn!(%error, app = %made.app, "a window an app asked for did not start");
+            }
+        }
+        self.held.retain(|_, due| !due.is_empty());
     }
 
     /// Send what the windows' boxes sent, each as one action the person's own grants decide, and
@@ -605,7 +658,6 @@ impl AppTabs {
 /// connections the answers go back on.
 struct Answers<'a> {
     desktop: &'a DesktopHost,
-    apps: Option<&'a Apps>,
     compositor: &'a mut Compositor,
     services: Option<&'a DesktopServices>,
     studio: Option<&'a CaptureStudio>,
@@ -620,6 +672,8 @@ struct Answers<'a> {
     /// Where each window's send-to box last stood, by connection.
     boxes: &'a mut BTreeMap<u64, [f64; 4]>,
     asked: &'a mut Vec<Asked>,
+    /// The windows the apps asked the desk for, by app and in ask order.
+    held: &'a mut BTreeMap<String, VecDeque<HeldStart>>,
 }
 
 /// A message a window's box sent: who it goes to, what it carries, and where it came from, so a
@@ -690,6 +744,7 @@ impl Answers<'_> {
             connection,
             reply,
             ask,
+            instance,
         } = request;
         let message = match ask {
             Ask::Closed => {
@@ -726,6 +781,7 @@ impl Answers<'_> {
                     Link {
                         app,
                         launch,
+                        instance,
                         network_allowed,
                         selection: false,
                         writer: reply,
@@ -736,14 +792,23 @@ impl Answers<'_> {
             }
             Ask::Message(message) => *message,
         };
-        let anchor = self
-            .desktop
-            .with_policy(|policy| policy.anchor_for(&app).map(|(tab, ..)| tab));
+        // The window the ask is about: the tab the session gave the connection, else the tab its
+        // own ask names, and only a window of neither is the app's window in front — never
+        // another window of the same app.
+        let instance = self
+            .links
+            .get(&connection)
+            .and_then(|link| link.instance)
+            .or_else(|| instance_of(&message));
+        let own = self.desktop.with_policy(|policy| match instance {
+            Some(instance) => policy.tab_of_instance(&app, instance),
+            None => policy.anchor_for(&app).map(|(tab, ..)| tab),
+        });
         let name = name_of(&message);
         match message {
             FloatingSurfaceClientMessage::OpenTabBeside {
                 target, background, ..
-            } => self.answer_open_beside(&app, &workspace, target, background, anchor),
+            } => self.answer_open_beside(&app, target, background, own),
             FloatingSurfaceClientMessage::CloseTab { .. } => {
                 self.desktop.with_policy(|policy| policy.close_tab_of(&app));
             }
@@ -756,7 +821,7 @@ impl Answers<'_> {
             }
             FloatingSurfaceClientMessage::PlaceNextWindowBeside { background, .. } => {
                 self.desktop
-                    .with_policy(|policy| policy.place_next_beside(&app, anchor, background));
+                    .with_policy(|policy| policy.place_next_beside(&app, own, background));
             }
             FloatingSurfaceClientMessage::SetCaptureProtection {
                 protected,
@@ -765,7 +830,7 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::Toolbar { toolbar, .. } => {
                 // The slots this app shows in its window's bar, where its window is a tab of the
                 // desktop's.
-                match anchor {
+                match own {
                     Some(tab) => self.desktop.with_policy(|policy| {
                         policy.handle().declare_bar(tab, connection, toolbar);
                     }),
@@ -775,32 +840,32 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::WindowTargets { targets, .. } => {
                 // The controls of the window's own content, where its window is a tab of the
                 // desktop's, so a session names and presses them as it names the bar's.
-                match anchor {
+                match own {
                     Some(tab) => self.desktop.with_policy(|policy| {
                         policy.handle().declare_targets(tab, connection, targets);
                     }),
                     None => refuse(&reply, &app, &name, NO_WINDOW),
                 }
             }
-            FloatingSurfaceClientMessage::EditLocation { .. } => match anchor {
+            FloatingSurfaceClientMessage::EditLocation { .. } => match own {
                 Some(tab) => self
                     .desktop
                     .with_policy(|policy| policy.handle().edit_bar_location(tab)),
                 None => refuse(&reply, &app, &name, NO_WINDOW),
             },
-            FloatingSurfaceClientMessage::WindowOffer { offer, .. } => match anchor {
+            FloatingSurfaceClientMessage::WindowOffer { offer, .. } => match own {
                 Some(tab) => self.desktop.with_policy(|policy| {
                     policy.handle().offer_bar(tab, connection, offer);
                 }),
                 None => refuse(&reply, &app, &name, NO_WINDOW),
             },
-            FloatingSurfaceClientMessage::OpenSearch { opening, .. } => match anchor {
+            FloatingSurfaceClientMessage::OpenSearch { opening, .. } => match own {
                 Some(tab) => self
                     .desktop
                     .with_policy(|policy| policy.handle().open_bar_search(tab, opening)),
                 None => refuse(&reply, &app, &name, NO_WINDOW),
             },
-            FloatingSurfaceClientMessage::OpenAppSearch { request, .. } => match anchor {
+            FloatingSurfaceClientMessage::OpenAppSearch { request, .. } => match own {
                 Some(tab) => self
                     .desktop
                     .with_policy(|policy| policy.handle().search_app(tab, request)),
@@ -906,7 +971,7 @@ impl Answers<'_> {
             // The app's send landed on `anchor`: a window of the desk,
             // floating where its box stood, showing it.
             FloatingSurfaceClientMessage::OpenFloated { anchor, .. } => {
-                self.answer_open_floated(&app, &workspace, &anchor, connection, &reply);
+                self.answer_open_floated(&app, &anchor, connection, &reply, own);
             }
             FloatingSurfaceClientMessage::SearchRecipients { request, query } => {
                 self.asked.push(Asked {
@@ -937,7 +1002,7 @@ impl Answers<'_> {
             // stands in pans by it, as a wheel over the strip's own canvas does. Nothing to answer
             // — the app took what it scrolled with, and this is what it left.
             FloatingSurfaceClientMessage::SidewaysWheel { travel } => {
-                if let Some(tab) = anchor {
+                if let Some(tab) = own {
                     self.desktop
                         .with_policy(|policy| policy.handle().sideways_wheel(tab, travel));
                 }
@@ -951,16 +1016,12 @@ impl Answers<'_> {
     /// Open the place a window of `app` asked for: beside the one that asked, and a launch that
     /// starts nothing takes the place back.
     fn answer_open_beside(
-        &self,
+        &mut self,
         app: &str,
-        workspace: &str,
         target: Option<String>,
         background: bool,
         anchor: Option<u64>,
     ) {
-        let Some(apps) = self.apps else {
-            return;
-        };
         let open = if let Some(target) = target {
             let Some(open) = target_open(app, &target) else {
                 tracing::info!(%app, "an app asked to open an address it does not claim");
@@ -970,22 +1031,24 @@ impl Answers<'_> {
         } else {
             None
         };
-        let launch = Launch::Package {
-            app: app.to_owned(),
-            open,
-        };
-        // The place it opens into is there from this frame; a launch that starts nothing takes it
-        // back.
-        let held = self
+        // The place it opens into is there from this frame; the window starts once the desk has
+        // made its tab, so the tab is the window's instance.
+        if !self
             .desktop
-            .with_policy(|policy| policy.hold_beside(app, anchor, background));
-        if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(workspace), None, None)
+            .with_policy(|policy| policy.hold_beside(app, anchor, background))
         {
-            if held {
-                self.desktop.with_policy(|policy| policy.release_held(app));
-            }
-            tracing::warn!(%error, %app, "a window the app asked for did not start");
+            return;
         }
+        self.hold(
+            app,
+            HeldStart {
+                launch: Launch::Package {
+                    app: app.to_owned(),
+                    open,
+                },
+                reveal: None,
+            },
+        );
     }
 
     /// Float a window of `app` over the desk where the box of `connection`
@@ -996,49 +1059,55 @@ impl Answers<'_> {
     fn answer_open_floated(
         &mut self,
         app: &str,
-        workspace: &str,
         anchor: &str,
         connection: u64,
         reply: &Arc<Mutex<UnixStream>>,
+        tab: Option<u64>,
     ) {
-        let Some(apps) = self.apps else {
-            return;
-        };
         let at = self
             .boxes
             .remove(&connection)
-            .and_then(|bounds| self.box_place(app, bounds));
+            .and_then(|bounds| self.box_place(tab, bounds));
         let Some(at) = at else {
             refuse(reply, app, "open_floated", NO_BOX);
             return;
         };
-        // The place it opens into is there from this frame; a launch that
-        // starts nothing takes it back.
+        // The place it opens into is there from this frame; the window starts once the desk has
+        // made its tab, so the tab is the window's instance.
         if !self
             .desktop
             .with_policy(|policy| policy.open_floated(app, at))
         {
             return;
         }
-        let launch = Launch::Package {
-            app: app.to_owned(),
-            open: None,
-        };
-        let workspace = apps.workspace_named(workspace);
-        if let Err(error) = apps.start_beside(&launch, &workspace, None, Some(anchor)) {
-            self.desktop.with_policy(|policy| policy.release_held(app));
-            tracing::warn!(%error, %app, "a window an app floated did not start");
-        }
+        self.hold(
+            app,
+            HeldStart {
+                launch: Launch::Package {
+                    app: app.to_owned(),
+                    open: None,
+                },
+                reveal: Some(anchor.to_owned()),
+            },
+        );
     }
 
-    /// Where the box `bounds` of a window of `app` stands on the desk, in the
-    /// desk's own pixels: where the content of the app's window is, as of
-    /// this pass's layout. `None` when the desk shows no window of the app.
-    fn box_place(&self, app: &str, bounds: [f64; 4]) -> Option<[f64; 4]> {
-        let content = self.desktop.with_policy(|policy| {
-            let (tab, ..) = policy.anchor_for(app)?;
-            policy.content_rect(tab)
-        })?;
+    /// Hold `start` for the window `app` asked the desk for: it starts once the
+    /// desk has made its tab ([`AppTabs::start_held`]).
+    fn hold(&mut self, app: &str, start: HeldStart) {
+        self.held
+            .entry(app.to_owned())
+            .or_default()
+            .push_back(start);
+    }
+
+    /// Where the box `bounds` of the window in `tab` stands on the desk, in the
+    /// desk's own pixels: where the content of that window is, as of this
+    /// pass's layout. `None` when the desk shows no such window.
+    fn box_place(&self, tab: Option<u64>, bounds: [f64; 4]) -> Option<[f64; 4]> {
+        let content = self
+            .desktop
+            .with_policy(|policy| policy.content_rect(tab?))?;
         Some([
             content.x0 + bounds[0],
             content.y0 + bounds[1],
@@ -1159,6 +1228,23 @@ const SAID: &str = "this connection said its version when it opened";
 #[allow(clippy::cast_possible_truncation, reason = "a card's size on a screen")]
 fn whole(value: f64) -> i32 {
     value.round() as i32
+}
+
+/// The tab the window sending `message` names, when it names one: a window the
+/// launcher connected says which tab it takes in each ask.
+fn instance_of(message: &FloatingSurfaceClientMessage) -> Option<u64> {
+    match message {
+        FloatingSurfaceClientMessage::WindowTargets { instance, .. }
+        | FloatingSurfaceClientMessage::Toolbar { instance, .. }
+        | FloatingSurfaceClientMessage::WindowOffer { instance, .. }
+        | FloatingSurfaceClientMessage::EditLocation { instance }
+        | FloatingSurfaceClientMessage::OpenSearch { instance, .. }
+        | FloatingSurfaceClientMessage::OpenAppSearch { instance, .. }
+        | FloatingSurfaceClientMessage::OpenFloated { instance, .. }
+        | FloatingSurfaceClientMessage::WindowRecord { instance, .. }
+        | FloatingSurfaceClientMessage::Embeds { instance, .. } => *instance,
+        _ => None,
+    }
 }
 
 /// The name `message` is sent under, as an app reads it in
@@ -1420,7 +1506,7 @@ fn serve_connection(
         return;
     }
     let app = handshake.app_id;
-    let Some((workspace, pid)) = launched(launches, peer, &app) else {
+    let Some((workspace, pid, instance)) = launched(launches, peer, &app) else {
         tracing::info!(%app, "a shell-ui connection names no app this session started");
         return;
     };
@@ -1435,6 +1521,7 @@ fn serve_connection(
             app: app.clone(),
             workspace: workspace.clone(),
             launch,
+            instance,
             connection,
             reply: Arc::clone(&reply),
             ask: Ask::Connected {
@@ -1467,6 +1554,7 @@ fn serve_connection(
                 app: app.clone(),
                 workspace: workspace.clone(),
                 launch,
+                instance,
                 connection,
                 reply: Arc::clone(&reply),
                 ask: Ask::Message(Box::new(message)),
@@ -1482,6 +1570,7 @@ fn serve_connection(
         app: app.clone(),
         workspace,
         launch,
+        instance,
         connection,
         reply,
         ask: Ask::Closed,
@@ -1519,16 +1608,23 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
 /// The workspace the app the connection names runs in and the process the window that speaks for it
 /// runs in, when this session started it: the launch the peer's process belongs to, which is the
 /// process the window's activity draws in.
-fn launched(launches: &Launches, peer: Option<u32>, app: &str) -> Option<(String, u32)> {
-    let pid = match peer {
+fn launched(
+    launches: &Launches,
+    peer: Option<u32>,
+    app: &str,
+) -> Option<(String, u32, Option<u64>)> {
+    let (pid, instance) = match peer {
         // The session connects a window it opens in an app's running process itself: what it
-        // recorded for that connection names the launch.
-        Some(pid) if pid == std::process::id() => launches.take_window_shell_ui(app)?,
-        peer => peer?,
+        // recorded for that connection names the launch and the tab the window takes.
+        Some(pid) if pid == std::process::id() => {
+            let (started, instance) = launches.take_window_shell_ui(app)?;
+            (started, Some(instance))
+        }
+        peer => (peer?, None),
     };
     launches
         .workspace_of(pid, app)
-        .map(|workspace| (workspace, pid))
+        .map(|workspace| (workspace, pid, instance))
 }
 
 /// Tell an app speaking another shell-ui version which one this session speaks, so the one behind

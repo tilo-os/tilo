@@ -46,15 +46,16 @@ impl GroupRow {
     pub fn hint_places(&self) -> HintPlaces {
         let viewport = self.viewport();
         let (seen_from, seen_to) = self.visible_canvas_span();
-        let beyond = self.group_canvas_spans().iter().fold(
-            (false, false),
-            |(before, after), (_, x0, x1)| {
+        let beyond = self
+            .group_canvas_spans()
+            .iter()
+            .filter(|(_, x0, x1)| x1 > x0)
+            .fold((false, false), |(before, after), (_, x0, x1)| {
                 (
                     before || *x0 < seen_from - 1.0,
                     after || *x1 > seen_to + 1.0,
                 )
-            },
-        );
+            });
         let shown = |i: usize, group: &&super::WindowGroup| {
             !self.layout_hides_group(i) && !group.get_rect().intersect(viewport).is_zero_area()
         };

@@ -676,6 +676,17 @@ fn a_conversation_opens_floated_where_its_box_stood() {
         .find(|(_, tile)| matches!(tile, TileContent::AppPlaceholder { .. }))
         .map(|(tab, _)| tab)
         .expect("the desk holds the tab the conversation's window takes");
+    let made = policy.take_held_launches();
+    assert_eq!(
+        made.len(),
+        1,
+        "the session starts the window the place waits for"
+    );
+    assert_eq!(made[0].app, "so.tilo.chat");
+    assert_eq!(
+        made[0].tab, tab,
+        "the tab the window takes is the instance it is known by"
+    );
     let groups = groups(&policy);
     let (group, _, active) = groups
         .iter()
@@ -688,8 +699,8 @@ fn a_conversation_opens_floated_where_its_box_stood() {
         .expect("the desk keeps where the conversation stands");
     assert_eq!(
         (float.width, float.height),
-        (480, 360),
-        "the size the box asked for"
+        (640, 480),
+        "a window floating over the desk takes the floating size, where the box stood it"
     );
 
     // The session gives the place up when nothing came to fill it: the tab
