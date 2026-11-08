@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use automerge::AutoCommit;
 use serde_json::Value as Json;
 use serde_json::json;
-use tilo_actions::Action as _;
+use tilo_actions::{ActionContext, ActionInvoker};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Model as _, Segment};
 use tilolang_runtime::Principal;
@@ -46,7 +46,7 @@ fn todo() -> (Meta, String, String) {
 /// Make the `TodoList` `id` in `doc`, titled `title`, as one change.
 fn create(doc: &mut AutoCommit, family: &(Meta, String, String), id: &str, title: &str) {
     let (_, list, title_field) = family;
-    DynAction {
+    let action = DynAction {
         app: APP.to_owned(),
         kind: list.clone(),
         action_id: "create".to_owned(),
@@ -67,10 +67,27 @@ fn create(doc: &mut AutoCommit, family: &(Meta, String, String), id: &str, title
                 ),
             },
         ],
-    }
-    .apply(doc)
-    .unwrap();
+    };
+    apply_recorded(doc, &action);
     doc.commit();
+}
+
+/// Apply `action` to `doc` as the workspace commits one: the change names the action it
+/// recorded, so a replica that receives it reads which action it was
+/// ([`tilo_actions::ActionContext`]).
+fn apply_recorded(doc: &mut AutoCommit, action: &DynAction) {
+    let encoded = action.encode().expect("the action encodes");
+    let context = ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("room"),
+        &action.kind,
+        &action.kind,
+    )
+    .with_app(&action.app, "tilolang")
+    .with_invoker(ActionInvoker::actor("ada"));
+    // The document's own actor writes it: a fork of it is a replica of its own, and two
+    // replicas' changes never share a sequence number.
+    tilo_actions::apply_local_with_context(doc, action, encoded, None, context)
+        .expect("the action applies");
 }
 
 /// The title the store reads of the record `id`.
@@ -234,19 +251,28 @@ impl Docs {
     /// Apply `action` as its edits are addressed: an edit that names no chunk is written where
     /// the record's manifest places its resource.
     pub(crate) fn apply(&mut self, action: &DynAction) {
+        let mut edits: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
         for edit in &action.edits {
             let chunk = edit.chunk().unwrap_or_else(|| {
                 chunk::Placement::read(&self.0[&chunk::FIRST]).chunk(edit.resource())
             });
+            edits
+                .entry(chunk)
+                .or_default()
+                .push(edit.clone().in_chunk(chunk));
+        }
+        // Each document takes the edits addressed to it as one change, as the workspace
+        // commits the action once.
+        for (chunk, edits) in edits {
             let one = DynAction {
                 app: action.app.clone(),
                 kind: action.kind.clone(),
                 action_id: action.action_id.clone(),
                 args: action.args.clone(),
                 authorship: action.authorship.clone(),
-                edits: vec![edit.clone().in_chunk(chunk)],
+                edits,
             };
-            one.apply(self.doc(chunk)).expect("the edit applies");
+            apply_recorded(self.doc(chunk), &one);
         }
         for doc in self.0.values_mut() {
             doc.commit();
@@ -311,7 +337,7 @@ pub(crate) fn board() -> (Host, Docs, Meta, String, String) {
         .clone();
     let root = format!("root-{ty}");
     let mut record = AutoCommit::new();
-    DynAction {
+    let action = DynAction {
         app: BOARD_APP.to_owned(),
         kind: ty.clone(),
         action_id: "create".to_owned(),
@@ -321,9 +347,8 @@ pub(crate) fn board() -> (Host, Docs, Meta, String, String) {
             id: root.clone(),
             record: DynRecord::empty(lookup(&ty).unwrap()).unwrap().to_json(),
         }],
-    }
-    .apply(&mut record)
-    .unwrap();
+    };
+    apply_recorded(&mut record, &action);
     record.commit();
     assert!(
         reads::resource_obj(&record, BOARD_APP, &root).is_some(),

@@ -14,6 +14,7 @@ use super::{
     mirror_of, name_version_changes, note_derived, note_versions, record_splices,
     write_as_a_known_actor,
 };
+use crate::action::DynEdit;
 use crate::chunk::{self, ChunkNo};
 use crate::index::derive::Reached;
 use crate::index::overlay::Overlay;
@@ -23,12 +24,12 @@ use crate::reads::Changed;
 
 impl TiloStore {
     /// Bring the store up to date with the workspace record: when a chunk's heads moved, the
-    /// store's own saved writes to it are dropped from the mirror and the overlay (the record
-    /// holds them now, or will) — the ones an origin derives stay, as the record never holds
-    /// them — the chunk's new changes are applied to the mirror and derived into each index, and
-    /// each subscriber is told which fields of which resources changed. A store without the
-    /// record takes its own chunk from it, and catches each index up from its heads. Returns
-    /// whether any chunk had moved.
+    /// store's own writes the record's new changes hold are dropped from the mirror and the
+    /// overlay — every write they do not hold stays, as the record has not taken it — the chunk's
+    /// new changes are applied to the mirror and derived into each index, and each subscriber is
+    /// told which fields of which resources changed. A store without the record takes its own
+    /// chunk from it, and catches each index up from its heads. Returns whether any chunk had
+    /// moved.
     ///
     /// Every chunk the record holds is taken in, so a write the store routed to any of them
     /// settles as one routed to the record's own: the chunk's change is in the set the sync
@@ -100,11 +101,13 @@ impl TiloStore {
         // and the change that brings it takes no step for it. A reader that did not read since
         // is told the collection and reads its items there.
         let old_overlay = std::mem::take(&mut inner.overlay);
-        // The store's own writes leave the mirror: the items they added, removed or moved are
-        // moved again below, as the record has them. What an origin derives is never the
-        // record's to have, so those writes stay, and are applied again on the record's new
-        // copy below.
-        let mut items = inner.drop_committed_local(chunk);
+        // The store's own writes the record's new changes hold leave the mirror: the items they
+        // added, removed or moved are moved again below, as the record has them. Every write
+        // they do not hold stays — a change that came from elsewhere leaves the edits a person
+        // has here — and is written onto the record's new copy again below, as the rollback took
+        // the whole open transaction out.
+        let committed = committed_edits(doc, inner.chunks.seen(chunk));
+        let mut items = inner.drop_committed_local(chunk, &committed);
         inner.rollback(chunk);
         let (changed, ends, placed) = inner.apply_new_changes(chunk, doc, &before);
         inner.chunks.set_seen(chunk, heads);
@@ -118,10 +121,10 @@ impl TiloStore {
                 inner.chunks.reread_placement();
             }
             inner.rescan();
-            // What an origin derives is not the record's: it is written onto the fresh copy,
-            // and derived again over the indexes the record's changes left, so reads keep the
-            // items it holds where they are.
-            inner.reapply_derived(chunk);
+            // What the record did not take is not the record's: it is written onto the fresh
+            // copy, and derived again over the indexes the record's changes left, so reads keep
+            // the values and items it holds where they are.
+            inner.reapply_kept(chunk);
             let reached = everything(&before, &inner.index);
             inner.derive_all(&reached, None);
             inner.rebuild_overlay();
@@ -136,9 +139,9 @@ impl TiloStore {
             // routes by what it says now.
             inner.chunks.reread_placement();
         }
-        // The record's new changes are on the mirror; what an origin derives is written onto
+        // The record's new changes are on the mirror; what the store still holds is written onto
         // them again, as the rollback took it out.
-        inner.reapply_derived(chunk);
+        inner.reapply_kept(chunk);
         for doc in &changed.nested {
             inner.nested.forget(doc);
         }
@@ -266,6 +269,19 @@ impl Inner {
         }
         out
     }
+}
+
+/// The edits the changes of `source` since `seen` carry, in order: what the store's own writes
+/// are the record's by ([`Inner::drop_committed_local`]). Every change of a tilolang action
+/// records the action it made, and so the edits it wrote; a change that records none — the
+/// record's own genesis, a merge — took none of the store's writes.
+fn committed_edits(source: &Doc, seen: &[automerge::ChangeHash]) -> Vec<DynEdit> {
+    source
+        .committed_document()
+        .get_changes(seen)
+        .iter()
+        .flat_map(idx::reflect::edits_of)
+        .collect()
 }
 
 /// The documents a sync tells those who read the mirror of, per document: the fields the

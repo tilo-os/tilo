@@ -19,15 +19,133 @@ const APP: &str = "so.tilo.todo";
 
 /// Ada's workspace with three items, and Grace's fork of it.
 fn workspace() -> (Replica, Replica, tilolang_runtime::Meta, String) {
+    let (ada, grace, meta, root, _) = workspace_of(3);
+    (ada, grace, meta, root)
+}
+
+/// Ada's workspace with `n` items made in one change, Grace's fork of it, and the package's
+/// ids.
+fn workspace_of(n: usize) -> (Replica, Replica, tilolang_runtime::Meta, String, String) {
+    use tilo_resource::{Collection, Model as _};
+    use tilolang_tilo::record::DynRecord;
+
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
     let todo = packages[0].clone();
+    let meta = todo.meta.clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
-    for text in ["milk", "eggs", "bread"] {
-        add(&mut ada, &todo.meta, &root.doc, text);
+    if n <= 3 {
+        for text in ["milk", "eggs", "bread"].into_iter().take(n) {
+            add(&mut ada, &meta, &root.doc, text);
+        }
+    } else {
+        // Made in one change, as a workspace that holds a thousand items is.
+        let item = meta.types.iter().find(|held| held.name == "Item").unwrap();
+        let schema = tilolang_tilo::schema::lookup(&item.id).unwrap();
+        let mut items = Collection::default();
+        for i in 0..n {
+            let mut record = DynRecord::empty(schema).unwrap();
+            if let Some(DynValue::Text(text)) = record.get_mut(&field_id(&meta, "Item", "text")) {
+                *text = format!("item {i:04}");
+            }
+            items.push(Id::from_raw(format!("item-{i:04}")), record);
+        }
+        let list = meta
+            .types
+            .iter()
+            .find(|held| held.name == "TodoList")
+            .unwrap();
+        let mut made = DynRecord::empty(tilolang_tilo::schema::lookup(&list.id).unwrap()).unwrap();
+        if let Some(DynValue::Collection(slot)) =
+            made.get_mut(&field_id(&meta, "TodoList", "items"))
+        {
+            *slot = items;
+        }
+        ada.apply(&DynAction {
+            app: APP.to_owned(),
+            kind: "tl.so.tilo.todo.TodoList".to_owned(),
+            action_id: "$create".to_owned(),
+            args: Json::Null,
+            authorship: Authorship::default(),
+            edits: vec![DynEdit::Create {
+                id: root.doc.clone(),
+                record: made.to_json(),
+            }],
+        });
     }
     let grace = ada.fork("grace", &[(TODO, &todo.ids)]);
-    (ada, grace, todo.meta, root.doc)
+    (ada, grace, meta, root.doc, todo.ids)
+}
+
+/// A person typing `text` into the item `item`, as a bound control's edit writes it: the store
+/// holds the edit and the host commits it to the record when it next takes what the store
+/// queued.
+fn typed(ada: &Replica, meta: &tilolang_runtime::Meta, root: &str, item: &str, text: &str) {
+    use tilolang_runtime::store::{ChangeNote, Mutation};
+    use tilolang_runtime::value::ResourceRef;
+
+    let at = ResourceRef::root(root, type_id(meta, "TodoList")).item(item, type_id(meta, "Item"));
+    let mut store = ada.host.store().clone();
+    let txn = store.begin().unwrap();
+    store
+        .apply(
+            txn,
+            &at,
+            &Mutation::SetText {
+                field: field_id(meta, "Item", "text"),
+                text: text.to_owned(),
+            },
+        )
+        .unwrap();
+    store
+        .commit(
+            txn,
+            &ChangeNote {
+                action: "$edit".to_owned(),
+                invoker: ada.name.clone(),
+                ..ChangeNote::default()
+            },
+        )
+        .unwrap();
+}
+
+/// What the list's record holds: its title, and its items' texts in order.
+fn listed(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> (String, Vec<String>) {
+    let record = replica.host.store().record(root).unwrap();
+    let title = match record.get(&field_id(meta, "TodoList", "title")) {
+        Some(DynValue::Text(text)) => text.clone(),
+        other => panic!("{other:?}"),
+    };
+    let texts = match record.get(&field_id(meta, "TodoList", "items")) {
+        Some(DynValue::Collection(items)) => items
+            .iter()
+            .map(
+                |(_, item)| match item.get(&field_id(meta, "Item", "text")) {
+                    Some(DynValue::Text(text)) => text.clone(),
+                    other => panic!("{other:?}"),
+                },
+            )
+            .collect(),
+        other => panic!("{other:?}"),
+    };
+    (title, texts)
+}
+
+/// The texts the `main` view renders, in the order it renders them.
+fn shown(tree: &tilolang_runtime::UiNode) -> Vec<String> {
+    fn walk(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Text"
+            && let Some(Value::Text(text)) = node.props.get("value")
+        {
+            out.push(text.clone());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tree, &mut out);
+    out
 }
 
 fn add(replica: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, text: &str) {
@@ -257,6 +375,149 @@ fn what_the_runtime_read_follows_every_change_after() {
     add(&mut ada, &meta, &root, "jam");
     assert_eq!(count(&ada), 5);
     assert_eq!(text(&ada), Value::text("oat milk"));
+}
+
+#[test]
+fn a_peers_change_keeps_every_edit_a_person_has_not_committed_yet() {
+    let (mut ada, mut grace, meta, root, ids_lock) = workspace_of(3);
+    let ids = item_ids(&ada, &meta, &root);
+    let committed = ada.log.len();
+
+    // Ada types into two items and the list's title. The record has none of it: the host has
+    // not taken what the store queued.
+    typed(&ada, &meta, &root, &ids[0], "oat milk");
+    typed(&ada, &meta, &root, &ids[2], "rye");
+    let view = ada.view(APP);
+    let title = field_id(&meta, "TodoList", "title");
+    let input = find_bound(view.tree(), &title).unwrap();
+    view.edit(&input, &Value::text("Groceries")).unwrap();
+    assert_eq!(
+        ada.log.len(),
+        committed,
+        "nothing of it is the record's yet"
+    );
+
+    // Grace's change arrives first: she adds an item and retypes another.
+    add(&mut grace, &meta, &root, "tea");
+    retype(&mut grace, &meta, &root, &ids[1], "eggs, large");
+    ada.sync_with(&mut grace);
+    assert_eq!(ada.log.len(), committed, "still none of it is the record's");
+
+    // Every edit is still what the store answers, and Grace's change is there too.
+    let (held_title, texts) = listed(&ada, &meta, &root);
+    assert_eq!(
+        held_title, "Groceries",
+        "the person's title survived the sync"
+    );
+    assert_eq!(
+        texts,
+        ["oat milk", "eggs, large", "rye", "tea"],
+        "every edit a person made survived the sync, beside the peer's change"
+    );
+    let view = ada.view(APP);
+    assert_eq!(
+        shown(view.tree()),
+        ["oat milk", "eggs, large", "rye", "tea"],
+        "the window shows every edit, and the peer's change"
+    );
+
+    // The host takes what the store queued: the record holds every edit, and a start from it
+    // reads the same.
+    ada.commit();
+    assert_eq!(
+        ada.log.len(),
+        committed + 3,
+        "one change an edit: {}",
+        ada.log.len()
+    );
+    let restarted = Replica::new("ada", ada.doc.fork(), &[(TODO, &ids_lock)]).0;
+    for replica in [&ada, &restarted] {
+        let (held_title, texts) = listed(replica, &meta, &root);
+        assert_eq!(held_title, "Groceries");
+        assert_eq!(texts, ["oat milk", "eggs, large", "rye", "tea"]);
+        let view = replica.view(APP);
+        assert_eq!(
+            shown(view.tree()),
+            ["oat milk", "eggs, large", "rye", "tea"]
+        );
+    }
+}
+
+#[test]
+fn a_sync_of_one_unrelated_change_takes_no_row_of_a_thousand_away() {
+    use tilolang_runtime::Principal;
+    use tilolang_runtime::meta::FieldKind;
+    use tilolang_runtime::store::{FieldSpec, Splice};
+    use tilolang_runtime::value::ResourceRef;
+
+    let (mut ada, mut grace, meta, root, _ids) = workspace_of(1_000);
+    let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
+    let rows = FieldSpec {
+        id: field_id(&meta, "TodoList", "items"),
+        kind: FieldKind::Collection,
+    };
+    let read = |replica: &Replica| -> Vec<String> {
+        let listing = replica.host.store().listing(&list, &rows).unwrap();
+        listing.ids()
+    };
+    let before = read(&ada);
+    assert_eq!(before.len(), 1_000, "a listing of a thousand items");
+
+    // Ada adds three items: the store's writes, which the record does not hold yet.
+    let add = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "add")
+        .unwrap()
+        .id
+        .clone();
+    for text in ["one", "two", "three"] {
+        ada.host
+            .runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    add.as_str(),
+                    vec![Value::resource(&list), Value::text(text)],
+                ),
+            )
+            .unwrap();
+    }
+    let with_hers = read(&ada);
+    assert_eq!(with_hers.len(), 1_003, "her items are what the store shows");
+    let heard = listen(&ada, &root);
+
+    // Grace's one change touches no row's place: one item's text alone.
+    retype(&mut grace, &meta, &root, "item-0500", "retyped");
+    ada.sync_with(&mut grace);
+
+    // Nothing left, nothing moved: the listing reads as it did, and nothing was told as a step.
+    let after = read(&ada);
+    let differs = after
+        .iter()
+        .zip(&with_hers)
+        .position(|(now, then)| now != then);
+    assert!(
+        after == with_hers,
+        "no row of the listing left or moved ({} rows, {} then, first differs at {differs:?}): \
+         her items are still there, where they were",
+        after.len(),
+        with_hers.len()
+    );
+    let heard = heard.borrow();
+    let steps: Vec<&[Splice]> = heard
+        .iter()
+        .filter_map(|summary| {
+            summary.listing(&FieldKey {
+                resource: root.clone(),
+                field: field_id(&meta, "TodoList", "items"),
+            })
+        })
+        .collect();
+    assert!(
+        steps.is_empty(),
+        "a change of one item's text steps no row: {steps:?} of {heard:?}"
+    );
 }
 
 fn type_id(meta: &tilolang_runtime::Meta, name: &str) -> String {

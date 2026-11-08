@@ -284,6 +284,13 @@ pub fn placed_of(change: &automerge::Change) -> Vec<(String, String, String, Opt
     read(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
 }
 
+/// The edits `change` records, when it is a tilolang action's change: what a write the store
+/// made is the record's when the record's change holds the very edit it made.
+#[must_use]
+pub fn edits_of(change: &automerge::Change) -> Vec<DynEdit> {
+    read(change).map_or_else(Vec::new, |(_, action, _)| action.edits)
+}
+
 /// Where each item the `changes` placed is: the record holding its collection, the field and
 /// its type. What a removal in the same batch left, for an index that never held the item.
 pub type Placed = BTreeMap<String, Left>;

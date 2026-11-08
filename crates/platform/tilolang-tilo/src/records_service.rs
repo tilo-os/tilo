@@ -126,16 +126,11 @@ impl RecordService {
                 .map_err(|error| format!("{}'s root {}: {error}", meta.app, root.name))?;
         }
         // The roots are made: what that wrote goes where the package's parts read it, so the
-        // record they draw exists for them too.
+        // record they draw exists for them too, each as the step its authorship names.
         for committed in self.host.take_committed() {
-            use tilo_actions::Action as _;
-            committed
-                .action
-                .apply(&mut self.record)
-                .map_err(|error| error.to_string())?;
+            let invoker = invoker_of(&committed.action);
+            self.commit(&committed.action, &invoker)?;
         }
-        self.record.commit();
-        self.host.sync_from(&self.record);
         *share.records.borrow_mut() = self.record.clone();
         self.shared
             .insert(meta.app.clone(), std::sync::Arc::from(share.wasm));
@@ -318,12 +313,7 @@ impl RecordService {
         if wrote {
             // What the origins wrote is committed to the record this service publishes, as the
             // origins' own changes.
-            for committed in self.host.take_committed() {
-                use tilo_actions::Action as _;
-                let _ = committed.action.apply(&mut self.record);
-            }
-            self.record.commit();
-            self.host.sync_from(&self.record);
+            self.flush();
             self.publications.settle(&self.host, &self.planner);
         }
         wrote
@@ -548,6 +538,17 @@ fn published_refs(json: &mut Json) {
     }
 }
 
+/// Who commits an action the packages committed on their own: the person or agent its
+/// authorship names, or the principal that runs a trigger of its app when it names nobody.
+fn invoker_of(action: &DynAction) -> tilo_actions::ActionInvoker {
+    let actor = if action.authorship.invoker.is_empty() {
+        crate::authority::trigger_principal(&action.app).0
+    } else {
+        action.authorship.invoker.clone()
+    };
+    tilo_actions::ActionInvoker::actor(actor)
+}
+
 impl RecordService {
     /// Run what the packages have due at this device's clock: a trigger runs here whether a
     /// window of its app is open or not, as it does on the device that governs the workspace,
@@ -571,13 +572,7 @@ impl RecordService {
     /// seen — each as the step its authorship names.
     fn flush(&mut self) {
         for committed in self.host.take_committed() {
-            let actor = if committed.action.authorship.invoker.is_empty() {
-                crate::authority::trigger_principal(&committed.action.app).0
-            } else {
-                committed.action.authorship.invoker.clone()
-            };
-            let invoker = tilo_actions::ActionInvoker::actor(actor);
-            if let Err(error) = self.commit(&committed.action, &invoker) {
+            if let Err(error) = self.commit(&committed.action, &invoker_of(&committed.action)) {
                 tracing::warn!(%error, "a change made on its own did not reach the workspace");
             }
         }
