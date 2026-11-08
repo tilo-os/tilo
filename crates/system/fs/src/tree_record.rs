@@ -76,7 +76,7 @@ async fn serve_once(
     credentials: &PeerCredentials,
 ) -> Result<()> {
     let path = socket();
-    let mut stream = std::os::unix::net::UnixStream::connect(&path)
+    let mut stream = tilo_files::native::socket::connect(&path)
         .with_context(|| format!("connect to the session at {}", path.display()))?;
     // The app and workspace, as the first thing on the connection: what the
     // session attests against the launch it recorded for this process.
