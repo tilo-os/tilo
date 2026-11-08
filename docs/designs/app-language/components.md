@@ -141,6 +141,21 @@ The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.List
 groups as `std.list` does: the app names its own grouping, nesting and fold, and `std` adds no
 parameters of its own for them.
 
+A row that carries an item's own document says so with `detail:`, and opens where it stands: the
+press grows the row into the document under it, the list keeps the scroll and lays out around it,
+and the row stays a row of the list it is in. One row stands open at a time, Escape and a press
+outside close it, and a row that leaves the list — a place switched, a filter, a sync — closes
+with it, so the open item is always one of the items on screen. A window re-renders its list as
+its place, its filter or its rows change, and the item stays open across that: `open:` carries
+the item standing open, `opened:` reports the item the person opened, `closed:` that it closed
+(pressing the open row again, Escape, a press beside it, or its item leaving the list), and the
+view keeps it as its own state — `std.list` does that for its person.
+
+A list that opens its rows elsewhere instead — in a pane beside it, a window of its own — leaves
+`detail:` out and answers its `on activate`. Which rows carry one is the list's: `std.list` sets
+it where the view gives one, and `std.browse` puts the pane beside the list when the caller says
+its rows have a window of their own.
+
 ## 4. Customizing a component: a ladder
 
 How deeply a view may make its UI its own, from saying nothing to shipping Rust. Each rung is a
