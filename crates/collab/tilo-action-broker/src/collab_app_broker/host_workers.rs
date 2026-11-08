@@ -173,16 +173,26 @@ impl AppBrokerState {
 }
 
 /// The registration a packaged app's connection holds on a route it joins:
-/// its own when the route is its app's, and the join is its person's.
-/// `worker` is minted when the launcher authenticated the connection, for
-/// the app id the launcher verified.
+/// its own when the route is its app's. `worker` is minted when the launcher
+/// authenticated the connection, for the app id the launcher verified.
+///
+/// A packaged app is the worker of its **own** route whichever principal joins
+/// it — the person posting in Chat, or the workspace's kept agent opening the
+/// very route its package declares. The launcher verified which app it
+/// released and for whom, the same durable admission a host-mounted worker's
+/// private descriptor carries, so a journaled broker admits it there. The
+/// participant's own admission is decided after, and separately: an agent still
+/// joins only through the workspace's record of its agents
+/// ([`super::admit_kept_agent`]), and a host-scope worker still delegates no
+/// agent (the join refuses that). This grants no authority by itself — it only
+/// says which connection speaks for the app's route.
 pub(super) fn packaged_app_registration(
     worker: Option<&(uuid::Uuid, String)>,
     route: &CrdtRoute,
     admitted: &AdmittedJoinIdentity,
 ) -> Option<PrivateWorkerRegistration> {
     let (identity, app_id) = worker?;
-    if route.app_id.is_empty() || &route.app_id != app_id || admitted.agent_id.is_some() {
+    if route.app_id.is_empty() || &route.app_id != app_id {
         return None;
     }
     Some(PrivateWorkerRegistration {
