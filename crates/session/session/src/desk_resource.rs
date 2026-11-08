@@ -56,7 +56,7 @@ pub fn surface() -> tilo_resource::surface::Surface {
 /// The desk's reading as [`surface`] publishes it: a slice of [`DeskReading`], by its keys.
 #[derive(tilo_resource::JsonSchema)]
 struct DeskSurface {
-    /// The surface up over the desk's windows (`none`, `centre` , `quick-settings` , …).
+    /// The surface up over the desk's windows (`none`, `centre`, `quick-settings`, …).
     #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
     here: String,
 }
@@ -76,22 +76,22 @@ pub(crate) enum DeskEffect {
     /// Put the question waiting on the person's avatar off for now
     #[effect(row, label = "Ask me later")]
     PutOffAsk,
-    /// Open or close the running application's tray item `key` : its window, or its menu when the
+    /// Open or close the running application's tray item `key`: its window, or its menu when the
     /// item is one
     #[effect(row, label = "Open")]
     OpenTrayItem { key: String },
-    /// The invitations this device's person made into a workspace that can still be redeemed, in
-    /// the words the workspace's host lists them by
+    /// The invitations this device's person made into a workspace that can still be
+    /// redeemed, in the words the workspace's host lists them by
     Invitations {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
         workspace: Option<String>,
     },
-    /// Make an invitation into a workspace from this device: the link to hand to whoever is being
-    /// invited, which their device joins with
+    /// Make an invitation into a workspace from this device: the link to hand to whoever is
+    /// being invited, which their device joins with
     IssueInvitation {
-        /// The part the invitation brings them in at: `viewer` , `commenter` , `editor` or
-        /// `moderator` ; editor when absent
+        /// The part the invitation brings them in at: `viewer`, `commenter`, `editor` or
+        /// `moderator`; editor when absent
         #[param(
             "The part the invitation brings them in at: `viewer`, `commenter`, `editor` or `moderator`"
         )]
@@ -128,14 +128,14 @@ pub(crate) enum DeskEffect {
         )]
         surface: String,
     },
-    /// End the agent `agent` 's work here: the connection the person admitted closes and its
+    /// End the agent `agent`'s work here: the connection the person admitted closes and its
     /// presence leaves the bar
     #[effect(label = "Stop")]
     StopAgent {
         #[param("The agent, by the key its presence names it")]
         agent: String,
     },
-    /// Close the surface `surface` , when it is the one up.
+    /// Close the surface `surface`, when it is the one up.
     CloseSurface {
         #[param("The surface")]
         surface: String,
@@ -532,7 +532,7 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
     readings
 }
 
-/// The windows the switcher's walk crosses, as their places in `windows` , with the place in them
+/// The windows the switcher's walk crosses, as their places in `windows`, with the place in them
 /// of the window in front: every window of the workspace in front, or the ones the app the front
 /// window shows has. The walk, the mark the reading carries and the commit all count from this one
 /// list.
@@ -570,7 +570,7 @@ fn walked(
     (walked, front)
 }
 
-/// The window the walk has reached, of `windows` : its place among them, where it stands to be
+/// The window the walk has reached, of `windows`: its place among them, where it stands to be
 /// lifted and where Alt let go lands. `None` while no walk is up.
 fn reaching(
     overlays: &crate::overlays::Overlays,
@@ -971,7 +971,7 @@ impl Desk {
 }
 
 impl Desk {
-    /// The id of the desk's workspace `key` , or of the workspace in front when the caller names
+    /// The id of the desk's workspace `key`, or of the workspace in front when the caller names
     /// none.
     fn workspace_id(&self, workspace: Option<&str>) -> Result<WorkspaceId, DoorError> {
         let workspace_id = self.handle.read(|tree| {
@@ -1166,7 +1166,7 @@ fn role_named(name: &str) -> Option<MemberRole> {
 const DEFAULT_INVITE_SECONDS: u64 = 3_600;
 
 impl Desk {
-    /// Open or close the running application's tray item `key` , as a press on its icon does: its
+    /// Open or close the running application's tray item `key`, as a press on its icon does: its
     /// window, or its menu when the item is one.
     fn open_tray_item(&self, key: &str) -> Result<Started, DoorError> {
         let Some(tray) = &self.tray else {
@@ -1190,7 +1190,7 @@ impl Desk {
     }
 }
 
-/// The desk's resource, named `label` : what it publishes, and what the session's package describes
+/// The desk's resource, named `label`: what it publishes, and what the session's package describes
 /// of it ([`crate::session_package`]).
 pub(crate) fn desk_spec(label: String) -> ResourceSpec {
     let mut resource = offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label));
