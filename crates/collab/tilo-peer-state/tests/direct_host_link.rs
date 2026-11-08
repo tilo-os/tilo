@@ -42,10 +42,13 @@ fn workspace_number() -> u64 {
     tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
 }
 
-/// Write `value` into the workspace's record as `key`'s device.
+/// Write `value` into the workspace's record as `key`'s device, making the record
+/// when the replica holds none yet.
 fn edit(peer: &DirectSync, key: &SigningKey, value: &str) {
-    let mut edit =
-        AutoCommit::load(&peer.read(|peer| peer.document(APP, RECORD)).unwrap()).unwrap();
+    let mut edit = match peer.read(|peer| peer.document(APP, RECORD)) {
+        Some(record) => AutoCommit::load(&record).unwrap(),
+        None => AutoCommit::new(),
+    };
     edit.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
@@ -302,6 +305,271 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
     router.shutdown().await.unwrap();
     host_endpoint.close().await;
     a_endpoint.close().await;
+    b_endpoint.close().await;
+    c_endpoint.close().await;
+}
+
+/// This device's owner, kept at `state` as a session keeps it.
+fn owner_at(state: &Path) -> tilo_peer_state::owner::NativeWorkspaceOwner {
+    tilo_peer_state::owner::open_file(&state.join("workspaces.json")).expect("this device's owner")
+}
+
+/// The hint that `certificate`'s device answers `workspace`'s joins at
+/// `endpoint`: what a link hands out so whoever holds it knows where to go.
+fn hint(
+    workspace: tilo_desktop_model::WorkspaceId,
+    endpoint: &iroh::Endpoint,
+    certificate: &tilo_user_identity::DeviceCert,
+    key: &SigningKey,
+) -> tilo_peer_state::join::TransportHint {
+    use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+    let room = workspace.to_string();
+    IrohWorkspaceHostHintV1 {
+        version: 1,
+        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        workspace_id: tilo_peer_state::join::room_workspace_id(&room).unwrap(),
+        room,
+        endpoint_addr: addr(endpoint),
+        host_user_public_key: certificate.user_public_key,
+        host_device_certificate: certificate.clone(),
+        packet_relay_url: "iroh:direct".into(),
+    }
+    .transport_hint(key)
+    .unwrap()
+}
+
+/// The invitation `administrator` issues into `workspace`, as the text a person
+/// hands over.
+fn invitation(
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    administrator: &tilo_user_identity::DeviceCert,
+    key: &SigningKey,
+    transport: tilo_peer_state::join::TransportHint,
+    request_id: [u8; 32],
+) -> String {
+    let issued = owner
+        .issue_invitation(
+            workspace,
+            administrator,
+            tilo_peer_state::join::invitations::IssueInvitationRequest {
+                request_id,
+                role: tilo_peer_state::join::MemberRole::Editor,
+                recipient_user_public_key: None,
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                inviter_name: None,
+            },
+            vec![transport],
+            key,
+            SystemTime::now(),
+        )
+        .expect("the workspace's device issues an invitation");
+    tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
+}
+
+/// A device that redeems `invitation` into a workspace it takes in, answering
+/// it through `service`: what a device does with a link a person hands it.
+async fn joins(
+    state: &Path,
+    cert: &tilo_user_identity::DeviceCert,
+    key: &SigningKey,
+    invitation: String,
+    service: std::sync::Arc<dyn tilo_peer_state::join_transport::LocalJoinService>,
+) -> (
+    tilo_peer_state::owner::NativeWorkspaceOwner,
+    tilo_desktop_model::WorkspaceId,
+) {
+    use tilo_identity_host::custody::HostIdentity;
+    let owner = owner_at(state);
+    let identity = HostIdentity {
+        device_cert: cert.clone(),
+        device_signing_key: key.clone(),
+        workspace_device_certs: std::collections::HashMap::new(),
+        workspace_revocations: std::collections::HashMap::new(),
+        identity_paths: None,
+    };
+    let topic = tilo_peer_state::join::room_workspace_id(WORKSPACE).expect("a workspace topic");
+    let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
+        tilo_peer_state::join_transport::WorkspaceJoinClient::local(
+            service,
+            key.verifying_key().to_bytes(),
+        ),
+        identity,
+        topic,
+        None,
+        invitation,
+        owner.clone(),
+    )
+    .await
+    .expect("the workspace's device admits this one");
+    let workspace = tilo_desktop_model::WorkspaceId::parse(&enrollment.bootstrap().room)
+        .expect("a workspace id");
+    owner
+        .install(&enrollment, SystemTime::now())
+        .expect("the join installs here");
+    (owner, workspace)
+}
+
+/// A device serves the workspace its engine holds: another device joins by
+/// invitation, syncs a document with it, and a device that joins later catches
+/// up from what the serving device kept.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a join, a sync either way, a late joiner catching up and a workspace left unserved"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_serves_the_workspace_its_engine_holds() {
+    use tilo_peer_state::direct::Owning;
+    use tilo_peer_state::join_answer::JoinAnswer;
+    use tilo_peer_state::owner::OwnerJoinWorkspaces;
+
+    let root = SigningKey::from_bytes(&[1; 32]);
+    // A device that holds the workspaces and admits the devices joining them: an always-on
+    // device of a person's fleet.
+    let (host_key, host_cert) = common::device_with(
+        &root,
+        2,
+        DeviceCapabilities {
+            can_own_workspaces: true,
+            can_admit_devices: true,
+            can_act_as_host: true,
+            can_read_all_workspaces: true,
+            foreign: false,
+            can_administer_devices: false,
+        },
+    );
+    let (b_key, b_cert) = device(&root, 3);
+    let (c_key, c_cert) = device(&root, 4);
+    let now = SystemTime::now();
+    let host_endpoint = localhost_endpoint(&host_key).await;
+    let host_state = tempfile::tempdir().unwrap();
+    let host = owner_at(host_state.path());
+    let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
+    let route = hint(workspace, &host_endpoint, &host_cert, &host_key);
+    host.create_workspace(
+        workspace,
+        "Hosted",
+        &host_cert,
+        &host_key,
+        Some(route.clone()),
+        now,
+    )
+    .expect("the workspace is founded here");
+    // Both other devices join through this device's own join exchange.
+    let service: Arc<dyn tilo_peer_state::join_transport::LocalJoinService> = Arc::new(JoinAnswer(
+        OwnerJoinWorkspaces::new(host.clone(), host_key.clone()),
+    ));
+    let frames = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
+    let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store));
+    let router = Router::builder(host_endpoint.clone())
+        .accept(DIRECT_ALPN, serving.clone())
+        .spawn();
+    // What the device holds of the workspace before anyone asks for it: a record the joiner has to
+    // catch up on.
+    host.prepare_application_record(
+        workspace,
+        &host_cert,
+        &host_key,
+        &tilo_peer_state::owner::ApplicationRecord::host(APP, RECORD).unwrap(),
+        now,
+    )
+    .expect("the device starts the record");
+    let held = DirectSync::over(host.replica(workspace).unwrap(), host_key.clone())
+        .owning(host.clone(), workspace)
+        .unwrap();
+    assert!(held.read(|peer| peer.document(APP, RECORD)).is_some());
+
+    let b_state = tempfile::tempdir().unwrap();
+    let (b, joined) = joins(
+        b_state.path(),
+        &b_cert,
+        &b_key,
+        invitation(
+            &host,
+            workspace,
+            &host_cert,
+            &host_key,
+            route.clone(),
+            [7; 32],
+        ),
+        Arc::clone(&service),
+    )
+    .await;
+    assert_eq!(joined, workspace);
+    let b = DirectSync::over(b.replica(workspace).unwrap(), b_key.clone());
+    let b_endpoint = localhost_endpoint(&b_key).await;
+    let b_link = tokio::spawn({
+        let b = b.clone();
+        let b_endpoint = b_endpoint.clone();
+        let host_addr = addr(&host_endpoint);
+        async move { b.connect(&b_endpoint, host_addr).await }
+    });
+    until(&b, "the joiner has the device's record", |peer| {
+        peer.document(APP, RECORD).is_some()
+    })
+    .await;
+
+    // What the joiner writes lands in the serving device's own workspace.
+    edit(&b, &b_key, "from the joiner");
+    let written = b.read(|peer| peer.document_heads(APP, RECORD));
+    assert!(written.is_some());
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while held.read(|peer| peer.document_heads(APP, RECORD)) != written {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the device that holds the workspace admits the joiner's write");
+
+    // A device that joins later catches up from the device that holds the workspace: what it wrote,
+    // and what the joiner wrote through it.
+    let c_state = tempfile::tempdir().unwrap();
+    let (c, _) = joins(
+        c_state.path(),
+        &c_cert,
+        &c_key,
+        invitation(&host, workspace, &host_cert, &host_key, route, [8; 32]),
+        Arc::clone(&service),
+    )
+    .await;
+    let c = DirectSync::over(c.replica(workspace).unwrap(), c_key.clone());
+    let c_endpoint = localhost_endpoint(&c_key).await;
+    let c_link = tokio::spawn({
+        let c = c.clone();
+        let c_endpoint = c_endpoint.clone();
+        let host_addr = addr(&host_endpoint);
+        async move { c.connect(&c_endpoint, host_addr).await }
+    });
+    until(&c, "the late joiner has the joiner's edit", |peer| {
+        peer.document_heads(APP, RECORD) == written
+    })
+    .await;
+
+    // A workspace this device does not hold is refused, rather than answered for.
+    let elsewhere =
+        tilo_desktop_model::WorkspaceId::parse("dddddddd-dddd-4ddd-8ddd-dddddddddddd").unwrap();
+    let stranger = StatePeer::new(
+        &elsewhere.to_string(),
+        c_cert.clone(),
+        vec![c_cert.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let refused = DirectSync::new(stranger, c_key.clone())
+        .connect(&c_endpoint, addr(&host_endpoint))
+        .await;
+    assert!(
+        refused.is_err(),
+        "a device answers no workspace it does not hold: {refused:?}"
+    );
+
+    b_link.abort();
+    c_link.abort();
+    router.shutdown().await.unwrap();
+    host_endpoint.close().await;
     b_endpoint.close().await;
     c_endpoint.close().await;
 }

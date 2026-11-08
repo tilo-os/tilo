@@ -617,6 +617,90 @@ impl ProtocolHandler for Serving {
     }
 }
 
+/// A device answering [`DIRECT_ALPN`] for the workspaces its engine holds.
+///
+/// A device of a workspace that dials this one syncs with the replica held
+/// here and catches up from the history this device kept, whether the
+/// workspace was founded here, joined, or restored at start: a workspace is
+/// served the first time one of its devices asks, so nothing is registered as
+/// workspaces arrive. One this device no longer holds is refused, and its link
+/// let go.
+#[derive(Clone)]
+pub struct Owning {
+    owner: crate::owner::NativeWorkspaceOwner,
+    key: SigningKey,
+    store: Arc<Store>,
+    serving: Serving,
+}
+
+impl std::fmt::Debug for Owning {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Owning")
+            .field("device", &hex::encode(self.key.verifying_key().as_bytes()))
+            .field("serving", &self.serving)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Owning {
+    /// Answer for `owner`'s workspaces as the device whose signing key is
+    /// `key`, keeping the frames of each at `store`.
+    #[must_use]
+    pub fn new(
+        owner: crate::owner::NativeWorkspaceOwner,
+        key: SigningKey,
+        store: Arc<Store>,
+    ) -> Self {
+        Self {
+            owner,
+            key,
+            store,
+            serving: Serving::new(),
+        }
+    }
+
+    /// The link serving `workspace`: this device's replica of it, kept at its
+    /// store, made now when this device holds it and nothing serves it yet.
+    fn link(&self, workspace: u64) -> Result<DirectSync, String> {
+        // The link names the workspace by the transport number its first frame
+        // carries: this device answers for the workspace whose own number that
+        // is.
+        let held = self.owner.workspaces().into_iter().find(|held| {
+            crate::join::room_workspace_id(&held.to_string())
+                .is_ok_and(|number| number == workspace)
+        });
+        let Some(held) = held else {
+            self.serving.release(workspace);
+            return Err("this device holds no such workspace".into());
+        };
+        if let Some(link) = self.serving.link(workspace) {
+            return Ok(link);
+        }
+        let link = DirectSync::over(self.owner.replica(held)?, self.key.clone())
+            .owning(self.owner.clone(), held)?
+            .with_store(Arc::clone(&self.store));
+        self.serving.serve(link.clone())?;
+        Ok(link)
+    }
+}
+
+impl ProtocolHandler for Owning {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let serve = async {
+            let (named, send, recv) = dialed_workspace(&connection).await?;
+            let link = match self.link(named) {
+                Ok(link) => link,
+                Err(reason) => return Err(refuse(&connection, &reason)),
+            };
+            link.link(&connection, false, Control { send, recv }).await
+        };
+        serve
+            .await
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
+    }
+}
+
 pub(crate) fn bump(count: &mut u64) {
     *count = count.wrapping_add(1);
 }

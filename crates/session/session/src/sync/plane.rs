@@ -352,6 +352,9 @@ async fn listening(
                 ),
             ),
         ));
+        // The workspaces this device holds, for their own devices to sync with and catch up from:
+        // the same link every workspace host answers on.
+        served.extend(engine.direct_protocols());
     }
     let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
         endpoint.clone(),
