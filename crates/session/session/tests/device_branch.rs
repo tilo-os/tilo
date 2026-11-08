@@ -4,7 +4,8 @@
 //! and both run as real sessions. What either opens on the workspace's shared
 //! desk — a record sealed under the workspace's channel keys — the other
 //! shows, before and after both restart, and the source stays the member it
-//! was.
+//! was. Before any copy, the same record between two of a person's devices
+//! that were never the same machine.
 //!
 //! The desk's windows are the edits here rather than an app's records: a
 //! window is a change of the workspace's sealed desk record, and opening one
@@ -28,143 +29,11 @@ mod common;
 // is that worker, as the session's own is.
 tilo_automerge_isolate::test_worker!();
 
-use common::people::{Device, Person, Site};
-use serde_json::json;
+use common::people::{Device, Person, Site, show, two_devices_of_one_person, wait_shown};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 /// The app whose window is opened on the desks here.
 const NOTES: &str = "so.tilo.notes";
-
-/// The desk's own action that brings a workspace to the front.
-const SWITCH_WORKSPACE: &str = "session:desk\u{1f}switch-workspace";
-
-/// Bring the site's workspace to the front on `device`'s desk, so a window it
-/// opens is one of that workspace's shared desk.
-fn show(device: &Device, site: &Site) {
-    tilo_test_env::wait_until(format!("{} holds the workspace", device.label), || {
-        workspace_key(device, site).is_some()
-    });
-    let key = workspace_key(device, site).unwrap();
-    let shown = device.act(
-        "so.tilo.session",
-        SWITCH_WORKSPACE,
-        &json!({"workspace": key.to_string()}),
-    );
-    assert!(
-        shown.get("err").is_none(),
-        "{} shows the workspace: {shown}\n{}",
-        device.label,
-        device.log()
-    );
-}
-
-fn workspace_key(device: &Device, site: &Site) -> Option<u64> {
-    device.state()["state"]["held_workspaces"]
-        .as_array()?
-        .iter()
-        .find(|workspace| workspace["room"].as_str() == Some(site.workspace.as_str()))
-        .and_then(|workspace| workspace["workspace"].as_u64())
-}
-
-/// The window titles `device` shows on the site's workspace.
-fn titles_on(device: &Device, site: &Site) -> Vec<String> {
-    let state = device.state();
-    let Ok(tree) = serde_json::from_value::<tilo_desktop_model::DesktopTree>(
-        state["state"]["workspace_tree"].clone(),
-    ) else {
-        return Vec::new();
-    };
-    tree.workspaces
-        .iter()
-        .filter(|workspace| workspace.id().to_string() == site.workspace)
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .map(|tab| tab.title.clone())
-        .collect()
-}
-
-/// The window titles the site keeps on the workspace's shared desk.
-fn titles_at(site: &Site) -> Vec<String> {
-    site.desktop().map_or_else(Vec::new, |desk| {
-        desk.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.title.clone())
-            .collect()
-    })
-}
-
-/// Wait until the site keeps a window titled `title` on the workspace's
-/// desk and every device in `devices` shows it, and say what each showed
-/// and logged if one never does.
-fn wait_shown(site: &Site, devices: &[&Device], title: &str) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        if titles_at(site).iter().any(|kept| kept == title)
-            && devices
-                .iter()
-                .all(|device| titles_on(device, site).iter().any(|shown| shown == title))
-        {
-            return;
-        }
-        if std::time::Instant::now() >= deadline {
-            let report: Vec<String> = devices
-                .iter()
-                .map(|device| {
-                    format!(
-                        "{} shows {:?}\nwhat it said of joining and its channels:\n{}",
-                        device.label,
-                        titles_on(device, site),
-                        excerpt(device)
-                    )
-                })
-                .collect();
-            panic!(
-                "gave up waiting for every device to show {title:?}; the site keeps {:?}: {}\n{}",
-                titles_at(site),
-                site.desk_report(),
-                report.join("\n")
-            );
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-}
-
-/// What `device` logged of joining the workspace, its channels and its
-/// writes, without the noise a machine with no network services makes.
-fn excerpt(device: &Device) -> String {
-    let log = device.log();
-    let lines: Vec<&str> = log
-        .lines()
-        .filter(|line| {
-            [
-                "join_flow",
-                "channel",
-                "workspace",
-                "refus",
-                "admit",
-                "enter",
-                "ERROR",
-                "desktop",
-            ]
-            .iter()
-            .any(|word| line.contains(word))
-                && ![
-                    "live plane",
-                    "QAD varies",
-                    "cpu.weight",
-                    "PersonalHosts",
-                    "EGL",
-                ]
-                .iter()
-                .any(|noise| line.contains(noise))
-        })
-        .collect();
-    lines[lines.len().saturating_sub(120)..].join("\n")
-}
 
 fn start(device: &mut Device, site: &Site) {
     device.start();
@@ -209,6 +78,21 @@ fn laptop_and_its_copy() -> (Site, Person, Device, Device) {
     start(&mut laptop, &site);
     start(&mut copy, &site);
     (site, ada, laptop, copy)
+}
+
+/// What either of a person's two devices writes to the workspace's desk the other reads: two
+/// sessions of their own, on the route the network actor publishes a record on.
+#[test]
+fn an_edit_on_one_device_of_a_person_reaches_the_other() {
+    let (site, _ada, laptop, phone) = two_devices_of_one_person();
+    show(&laptop, &site);
+    show(&phone, &site);
+
+    let _from_laptop = laptop.window(NOTES, "From the laptop");
+    wait_shown(&site, &[&laptop, &phone], "From the laptop");
+
+    let _from_phone = phone.window(NOTES, "From the phone");
+    wait_shown(&site, &[&laptop, &phone], "From the phone");
 }
 
 /// The copy takes the workspace up again as Ada's own further device: the

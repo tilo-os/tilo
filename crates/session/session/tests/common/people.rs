@@ -279,6 +279,29 @@ impl Site {
         });
     }
 
+    /// Remove `person` and every device of theirs from the workspace, as its owner does: from now
+    /// on the site hosts nothing of the workspace for them.
+    pub fn remove(&self, person: [u8; 32]) {
+        self.runtime
+            .block_on(self.workspaces.remove_member(
+                &self.workspace,
+                &self.host,
+                tilo_relay::workspaces::RemoveMemberRequest {
+                    request_id: fresh_id(),
+                    user_public_key: person,
+                },
+            ))
+            .expect("the workspace's owner removes a member");
+    }
+
+    /// Wait until the workspace's governance records `person` as removed.
+    pub fn wait_for_removal(&self, person: [u8; 32]) {
+        let person = hex::encode(person);
+        tilo_test_env::wait_until(format!("the site removes {person}"), || {
+            self.members().get(&person).is_some_and(|mark| mark.removed)
+        });
+    }
+
     /// The apps the workspace's governance lets author its records, as its host records them now.
     pub fn authors(&self) -> std::collections::BTreeSet<String> {
         self.runtime
@@ -431,6 +454,170 @@ impl std::fmt::Display for Held<'_> {
         }
         Ok(())
     }
+}
+
+/// How many windows the workspace's shared desk holds, as the site keeps it.
+pub fn windows(site: &Site) -> usize {
+    titles_at(site).len()
+}
+
+/// The key `device` gives the workspace `site` serves, while it holds it.
+fn workspace_key(device: &Device, site: &Site) -> Option<u64> {
+    device.state()["state"]["held_workspaces"]
+        .as_array()?
+        .iter()
+        .find(|workspace| workspace["room"].as_str() == Some(site.workspace.as_str()))
+        .and_then(|workspace| workspace["workspace"].as_u64())
+}
+
+/// Bring the workspace `site` serves to the front on `device`'s desk, so an app it opens is a
+/// window of that workspace's shared desk.
+pub fn show(device: &Device, site: &Site) {
+    tilo_test_env::wait_until(format!("{} holds the workspace", device.label), || {
+        workspace_key(device, site).is_some()
+    });
+    let key = workspace_key(device, site).expect("the device holds the workspace");
+    let shown = device.act(
+        "so.tilo.session",
+        "session:desk\u{1f}switch-workspace",
+        &json!({"workspace": key.to_string()}),
+    );
+    assert!(
+        shown.get("err").is_none(),
+        "{} shows {}: {shown}\n{}",
+        device.label,
+        site.name,
+        device.log()
+    );
+}
+
+/// The window titles `device` shows on the workspace `site` serves: the shared desk it reads out of
+/// the workspace.
+pub fn titles_on(device: &Device, site: &Site) -> Vec<String> {
+    let state = device.state();
+    let tree: tilo_desktop_model::DesktopTree =
+        serde_json::from_value(state["state"]["workspace_tree"].clone()).unwrap_or_else(|error| {
+            panic!("{}'s desk does not read: {error}\n{state}", device.label)
+        });
+    let mut titles: Vec<String> = tree
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.id().to_string() == site.workspace)
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.title.clone())
+        .collect();
+    titles.sort_unstable();
+    titles
+}
+
+/// The window titles the site keeps on the workspace's shared desk.
+pub fn titles_at(site: &Site) -> Vec<String> {
+    site.desktop().map_or_else(Vec::new, |desk| {
+        let mut titles: Vec<String> = desk
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.title.clone())
+            .collect();
+        titles.sort_unstable();
+        titles
+    })
+}
+
+/// Wait until the site keeps a window titled `title` on the workspace's desk and every device in
+/// `devices` shows it: a record a device wrote, read where it has to arrive.
+pub fn wait_shown(site: &Site, devices: &[&Device], title: &str) {
+    waited(
+        &format!("every device to show {title:?}"),
+        site,
+        devices,
+        || {
+            titles_at(site).iter().any(|kept| kept == title)
+                && devices
+                    .iter()
+                    .all(|device| titles_on(device, site).iter().any(|shown| shown == title))
+        },
+    );
+}
+
+/// Wait until `condition` holds, and if it never does, fail with what the site keeps and what the
+/// devices showed and logged: a write that never left its device says why there.
+pub fn waited(what: &str, site: &Site, devices: &[&Device], condition: impl FnMut() -> bool) {
+    let watched = Watched {
+        what,
+        site,
+        devices,
+    };
+    tilo_test_env::wait_until(watched, condition);
+}
+
+/// The step [`waited`] waits for, named on the failure that found it short: what the site keeps,
+/// and what each device shows and logged.
+struct Watched<'a> {
+    what: &'a str,
+    site: &'a Site,
+    devices: &'a [&'a Device],
+}
+
+impl std::fmt::Display for Watched<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}; the site keeps {:?} and refuses: {}\nthe devices:\n",
+            self.what,
+            titles_at(self.site),
+            self.site.refusals_report()
+        )?;
+        for device in self.devices {
+            writeln!(
+                formatter,
+                "{} shows {:?}\n{}",
+                device.label,
+                titles_on(device, self.site),
+                device.diagnostic()
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Two people in one workspace Ada's site hosts, both editors, each at a device of their own: the
+/// site lets its desk author the workspace's records, as a workspace's host does before its people
+/// open windows there.
+pub fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
+    let ada = Person::new("Ada");
+    let bob = Person::new("Bob");
+    let site = Site::start(&ada, "Studio");
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
+    let ada_laptop = joined(&site, &ada, "Ada's laptop");
+    let bob_laptop = joined(&site, &bob, "Bob's laptop");
+    site.wait_for_member(bob.public);
+    (site, ada, bob, ada_laptop, bob_laptop)
+}
+
+/// One person with two devices of their own in one workspace their site hosts, both editors: the
+/// two sessions a person's laptop and their phone run, sharing what they record there.
+pub fn two_devices_of_one_person() -> (Site, Person, Device, Device) {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
+    let laptop = joined(&site, &ada, "Ada's laptop");
+    let phone = joined(&site, &ada, "Ada's phone");
+    (site, ada, laptop, phone)
+}
+
+/// A device of `person`'s, joined to the workspace `site` serves and holding it: what the owner's
+/// invitation admits, as a device redeems it.
+fn joined(site: &Site, person: &Person, label: &str) -> Device {
+    let mut device = person.device(label);
+    let invitation = site.invite(person.public, WorkspaceRole::Editor);
+    device.join(&invitation);
+    device.wait_holding(&site.workspace);
+    device
 }
 
 /// The door a site serves: its entry, the directory of what it lists, and the door of the workspace
