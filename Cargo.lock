@@ -8042,26 +8042,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-mdns-address-lookup"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cad3dfcaddd5c3681bf0a42606498fc6e8891de793408dfbc46a9fbe76f370b3"
-dependencies = [
- "data-encoding",
- "derive_more",
- "futures-util",
- "iroh",
- "iroh-base",
- "n0-error",
- "n0-future",
- "n0-watcher",
- "swarm-discovery",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
 name = "iroh-metrics"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18739,10 +18719,11 @@ dependencies = [
 name = "tilo-endpoint-reachability"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "iroh",
- "iroh-mdns-address-lookup",
  "iroh-relay",
  "n0-future",
+ "swarm-discovery",
  "tilo-lock",
  "tilo-test-env",
  "tokio",
@@ -27460,7 +27441,6 @@ dependencies = [
  "iroh-blobs",
  "iroh-dns",
  "iroh-io",
- "iroh-mdns-address-lookup",
  "iroh-metrics",
  "iroh-metrics-derive",
  "iroh-relay",
