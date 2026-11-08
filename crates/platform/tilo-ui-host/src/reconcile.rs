@@ -1251,8 +1251,10 @@ impl Reconciler {
             card = card.push_slot(slot);
         }
         if state == "suggested" && flag(node, "can_resolve") {
-            // An ask the authority raised answers as a confirmation.
+            // An ask the authority raised answers as a confirmation, one answer per line when
+            // the card is too narrow for both.
             let choices = Row::row()
+                .wrap()
                 .gap(Rhythm::Related)
                 .push_slot(self.answer(
                     node,
@@ -1300,6 +1302,7 @@ impl Reconciler {
             ))
             .push_slot(self.fixed_text(&format!("{}~by", node.key), &says, TextRole::Body));
         let choices = Row::row()
+            .wrap()
             .gap(Rhythm::Related)
             .push_slot(self.answer(
                 node,
