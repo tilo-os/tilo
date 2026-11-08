@@ -1076,10 +1076,6 @@ pub fn save_sibling(destination: &Path) -> Option<PathBuf> {
 /// Replace the Save destination `destination` with `bytes` atomically:
 /// write [`save_sibling`], flush it to disk, and rename it over the
 /// destination, so a crash leaves the old file or the new one.
-///
-/// # Errors
-///
-/// Writing the sibling or renaming it failed; the destination is untouched.
 pub fn replace_saved(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let sibling = save_sibling(destination).ok_or_else(|| {
@@ -1127,10 +1123,6 @@ pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
 
 /// Bind the type and reparse checks to the opened Windows handle, so a link
 /// cannot be substituted between validation and opening the selected file.
-///
-/// # Errors
-/// Returns when the path cannot be opened, or when the opened handle is not a
-/// regular file (including reparse points).
 #[cfg(windows)]
 pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};

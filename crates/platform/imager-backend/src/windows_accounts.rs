@@ -7,9 +7,6 @@ pub struct WindowsProfile {
 }
 
 /// Read only bounded OneDrive account metadata; never scan profile files.
-///
-/// # Errors
-/// Refuses failed, oversized or malformed registry responses.
 pub fn native_windows_profiles() -> Result<Vec<WindowsProfile>, String> {
     #[cfg(windows)]
     {
@@ -39,9 +36,6 @@ pub fn native_windows_profiles() -> Result<Vec<WindowsProfile>, String> {
 }
 
 /// Decode the bounded registry reader's private metadata response.
-///
-/// # Errors
-/// Rejects unknown fields, oversized responses and invalid identities.
 pub fn parse_profiles(bytes: &[u8]) -> Result<Vec<WindowsProfile>, String> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]

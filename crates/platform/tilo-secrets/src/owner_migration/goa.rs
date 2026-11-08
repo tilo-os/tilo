@@ -55,8 +55,6 @@ pub struct GoaCredential {
 }
 impl GoaCredential {
     /// Construct only after the owner explicitly includes this discovered account.
-    /// # Errors
-    /// Refuses foreign/elevated callers, uncontrolled namespace, or unsafe account IDs.
     pub fn new(
         directory: &File,
         provider: GoaProvider,
@@ -90,8 +88,6 @@ impl GoaCredential {
         })
     }
     /// Read exact current source registration and existing refresh credentials only.
-    /// # Errors
-    /// Refuses changed custody, ambiguous/locked or unavailable credentials, or foreign runtime accounts.
     pub fn read_blocking(&self) -> Result<GoaCredentials, SecretError> {
         let facts = self.directory.metadata().map_err(|_| SecretError::Denied)?;
         if (facts.uid(), facts.dev(), facts.ino()) != self.witness

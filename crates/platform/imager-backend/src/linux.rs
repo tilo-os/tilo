@@ -82,8 +82,6 @@ fn source_name(source: &MountSource) -> Option<String> {
 /// The whole disk holding the running OS: every one of `/sysroot`, `/`,
 /// `/boot` and `/boot/efi` that is a block mount must resolve (through
 /// LUKS, LVM or other dm layers) to the same single disk.
-/// # Errors
-/// Returns a blocker if the system mounts cannot be resolved to one supported disk.
 pub fn resolve_system_disk() -> Result<PathBuf, Blocker> {
     let info =
         std::fs::read_to_string("/proc/self/mountinfo").map_err(|_| Blocker::DiskUnsupported)?;

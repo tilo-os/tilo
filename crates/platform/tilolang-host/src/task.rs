@@ -284,9 +284,6 @@ pub struct Task {
 impl Task {
     /// The task `request`, its programs coming in on `fds.program` and compiled against the
     /// apps in `fds.apps`.
-    ///
-    /// # Errors
-    /// The apps cannot be read or loaded, or the connection is unusable.
     pub fn open(request: &TaskRequest, fds: TaskFds) -> Result<Self, String> {
         Self::open_with(request, fds, None)
     }
@@ -294,9 +291,6 @@ impl Task {
     /// [`Self::open`] for a task whose session another connection joins from the start,
     /// `person`: the person's lines in its run's conversation run in the same session as the
     /// agent's own calls, each on a connection of its own, so they share its `let`s.
-    ///
-    /// # Errors
-    /// The apps cannot be read or loaded, or a connection is unusable.
     pub fn open_with(
         request: &TaskRequest,
         fds: TaskFds,
@@ -355,9 +349,6 @@ impl Task {
 
     /// Let `stream` join this session as a guest: what it sends runs in the same session, one
     /// program at a time, and what the program reads or changes goes back on it.
-    ///
-    /// # Errors
-    /// The stream cannot be taken apart.
     pub fn join(&self, stream: UnixStream) -> Result<(), String> {
         stream
             .set_nonblocking(false)

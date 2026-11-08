@@ -16,11 +16,6 @@ pub trait InstallBackend: Send + Sync {
 
     /// Run the install, streaming each output line to `on_line`. `Ok(true)`
     /// is a verified success, `Ok(false)` a completed failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the install helper cannot be started or its
-    /// output cannot be read.
     fn run_install(
         &self,
         disk: &str,
@@ -31,10 +26,6 @@ pub trait InstallBackend: Send + Sync {
     ) -> std::io::Result<bool>;
 
     /// Read-only check of prepared alongside root, boot, and EFI partitions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the preflight helper cannot be started.
     fn run_alongside_preflight(
         &self,
         disk: &str,
@@ -43,10 +34,6 @@ pub trait InstallBackend: Send + Sync {
     ) -> std::io::Result<bool>;
 
     /// Reboot or power off. On success the machine is already going down.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the power helper cannot be started.
     fn run_power(&self, action: PowerAction) -> std::io::Result<bool>;
 }
 

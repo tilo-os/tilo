@@ -60,9 +60,6 @@ fn mismatch(field: &FieldSchema) -> ModelError {
 
 impl DynRecord {
     /// A record of `schema` whose every field holds its default.
-    ///
-    /// # Errors
-    /// A nested record field whose type is not registered.
     pub fn empty(schema: &'static TypeSchema) -> Result<Self, ModelError> {
         let mut fields = BTreeMap::new();
         for field in &schema.fields {
@@ -89,9 +86,6 @@ impl DynRecord {
     }
 
     /// Set a register field.
-    ///
-    /// # Errors
-    /// The field does not exist or is not a register.
     pub fn set_register(&mut self, id: &str, value: Json) -> Result<(), ModelError> {
         match self.fields.get_mut(id) {
             Some(DynValue::Register(slot)) => {
@@ -127,9 +121,6 @@ impl DynRecord {
     /// The fields of the map `obj` of the record, with each collection field empty: for the
     /// edit that makes the item's copy in another chunk, whose collection items stay where they
     /// are.
-    ///
-    /// # Errors
-    /// A field does not read.
     pub fn read_own_fields(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError> {
         let mut record = Self::read_fields(doc, obj)?;
         let collections: Vec<String> = record

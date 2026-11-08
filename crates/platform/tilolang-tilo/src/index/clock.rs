@@ -26,9 +26,6 @@ use tilolang_runtime::query::{ClockField, NextChange};
 impl Index {
     /// The instant the columns of `ty` that read the clock were written at, and the zone they
     /// read the person's day in, if the index wrote any.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn written_at(&self, ty: &str) -> Result<Option<(i64, i64)>, IndexError> {
         let read = (|| {
             let txn = redb::ReadableDatabase::begin_read(&*self.db)?;
@@ -49,9 +46,6 @@ impl Index {
     /// The types whose columns that read the clock the index wrote, and so has to write again
     /// when the clock they are read at changes: what the host naming a clock makes exact at it
     /// ([`crate::store::TiloStore::set_now`]).
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn recorded(&self) -> Result<Vec<String>, IndexError> {
         let read = (|| {
             let txn = redb::ReadableDatabase::begin_read(&*self.db)?;
@@ -75,9 +69,6 @@ impl Index {
     /// Write again the columns of the filters of `schema` that read the clock, as `clock` has it:
     /// the items whose clock-read field the clock passed since the index last wrote them, and
     /// nothing else. Answers whether it wrote.
-    ///
-    /// # Errors
-    /// The index cannot be written.
     pub fn refresh(
         self: &Arc<Self>,
         schema: &'static TypeSchema,
@@ -122,9 +113,6 @@ impl Index {
     /// after it, so the view that asked wakes when that item comes to count, and not before.
     /// Answering `Unknown` when the index cannot place the field leaves the clock's grain to
     /// wake the view instead, and `Never` when it keeps no later value at all.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn next_change(
         self: &Arc<Self>,
         ty: &str,
@@ -308,9 +296,6 @@ impl Writer<'_> {
     /// write leaves behind hold of their filters from this instant on, so an instant earlier than
     /// the one recorded means a later read has to write them again from there
     /// ([`Index::refresh`]).
-    ///
-    /// # Errors
-    /// The index cannot be written.
     pub fn note_written_at(&mut self, ty: &str, clock: Clock) -> Result<(), IndexError> {
         let key = format!("{META_CLOCK}{ty}");
         let holds = match redb::ReadableTable::get(&self.tables.meta, key.as_str())? {
@@ -328,9 +313,6 @@ impl Writer<'_> {
 
     /// Record the instant the columns of `ty` that read the clock are written at, and the zone
     /// they read the person's day in.
-    ///
-    /// # Errors
-    /// The index cannot be written.
     pub fn set_written_at(&mut self, ty: &str, clock: Clock) -> Result<(), IndexError> {
         let key = format!("{META_CLOCK}{ty}");
         let text = format!("{} {}", clock.now, clock.zone);

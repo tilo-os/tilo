@@ -145,9 +145,6 @@ impl Connector {
 
 /// Inspect a manifest's exact string-valued selection after authenticating its
 /// sealed artifact. No account identifiers or credentials escape.
-///
-/// # Errors
-/// Refuses unreadable artifacts, incorrect passwords, bindings or selections.
 pub fn inspect_prepared_consumer(
     path: &Path,
     password: &[u8],

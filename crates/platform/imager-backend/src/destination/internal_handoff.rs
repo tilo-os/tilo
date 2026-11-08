@@ -27,10 +27,6 @@ pub fn media_profile(
 }
 
 /// Load the published copy. `Ok(None)` is the ordinary USB-media case.
-///
-/// # Errors
-///
-/// Returns an error when the copy exists but cannot be read or validated.
 pub fn load_from(path: &Path) -> Result<Option<Handoff>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,

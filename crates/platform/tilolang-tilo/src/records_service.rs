@@ -105,9 +105,6 @@ impl RecordService {
     /// The package's own record is where its views' roots read: the shell keeps the person's
     /// arrangement and the shell's settings, and both are the person's, synced with their
     /// devices, as an app's record is.
-    ///
-    /// # Errors
-    /// The package's roots cannot be made, or its record does not apply here.
     pub fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {
         use tilo_automerge::ApplyIncoming as _;
         let Some(meta) = crate::runtime::Meta::from_wasm(share.wasm) else {
@@ -152,9 +149,6 @@ impl RecordService {
     /// Take in what the parts of the packages `share`d wrote into the documents they share
     /// since the last call, and publish it: the shell's own parts commit a setting or a place
     /// into the record, and the door offers what it changed. Whether anything was taken in.
-    ///
-    /// # Errors
-    /// The changes do not apply to the record.
     pub fn follow(&mut self) -> Result<bool, String> {
         use tilo_automerge::ApplyIncoming as _;
         let mut took = false;
@@ -219,9 +213,6 @@ impl RecordService {
     }
 
     /// Take in what another replica of the workspace record holds.
-    ///
-    /// # Errors
-    /// The changes do not apply to the record.
     pub fn take_in(&mut self, other: &mut tilo_resource::Doc) -> Result<(), String> {
         use tilo_automerge::ApplyIncoming as _;
         self.record
@@ -246,9 +237,6 @@ impl RecordService {
     /// The connector is the process the session started for the app in the sandbox its
     /// manifest declares for the origin: this service asks through it, never holding the
     /// network or the credentials itself.
-    ///
-    /// # Errors
-    /// The origin is not one this platform has a client for, or the socket cannot be used.
     pub fn connect_origin(
         &mut self,
         origin: &str,

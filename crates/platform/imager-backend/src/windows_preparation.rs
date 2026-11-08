@@ -6,9 +6,6 @@ use std::path::Path;
 pub use account_custody::hints::AccountHint;
 
 /// Copy the reviewed selection and bind sealed suggestions to a durable receipt.
-///
-/// # Errors
-/// Refuses invalid destinations, incomplete copies, sealing or durability failures.
 pub fn export(
     inventory: &Inventory,
     hints: &[account_custody::hints::AccountHint],

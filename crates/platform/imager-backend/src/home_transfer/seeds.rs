@@ -43,8 +43,6 @@ pub struct Authority {
 impl Authority {
     /// Read the installed firstboot proof, bound to the supplied Home handle.
     /// A missing proof or a proof for a different Home is not seed authority.
-    /// # Errors
-    /// Refuses unsafe namespaces, changed files and invalid proof records.
     pub fn read(home: &File) -> io::Result<Option<Self>> {
         #[cfg(target_os = "linux")]
         {
@@ -69,8 +67,6 @@ impl Authority {
             .find(|item| Path::new(&item.path) == path)
     }
     /// Rebind a retained witness to the freshly read installed authority.
-    /// # Errors
-    /// Refuses a digest or record not present in the authenticated proof.
     pub fn verify(&self, digest: &str, generated: &Generated) -> io::Result<()> {
         if self.digest != digest || !self.proof.files.contains(generated) {
             return Err(changed(
@@ -84,8 +80,6 @@ fn changed(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 /// Validate a generated default's relative path without granting target access.
-/// # Errors
-/// Refuses traversal, oversized paths and active Tilo custody namespaces.
 pub fn relative(value: &str) -> io::Result<&Path> {
     let path = Path::new(value);
     if value.is_empty()
@@ -126,8 +120,6 @@ impl Witness {
         Ok(())
     }
     /// Recheck the real installed authority on every recovery/preservation.
-    /// # Errors
-    /// Refuses missing authority or a changed proof digest or generated record.
     pub fn verify_authority(&self, home: &File) -> io::Result<()> {
         let proof = Authority::read(home)?
             .ok_or_else(|| changed("Firstboot seed authority disappeared"))?;

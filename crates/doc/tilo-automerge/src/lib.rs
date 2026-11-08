@@ -176,9 +176,6 @@ impl ApplyIncoming for AutoCommit {
 
 /// Attribute exactly the newly inserted text to an author. Authorship marks do
 /// not expand into text subsequently inserted by another collaborator.
-///
-/// # Errors
-/// Returns the document error if the text object cannot be marked.
 pub fn mark_text_author(
     doc: &mut impl automerge::transaction::Transactable,
     object: &automerge::ObjId,

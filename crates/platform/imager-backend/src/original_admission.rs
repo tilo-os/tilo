@@ -60,9 +60,6 @@ fn digest(value: &str) -> bool {
 impl ConsumerCapability {
     /// Validate bounded closed proof syntax only. The enclosing authenticated
     /// image and actual installed qualification are separate authority checks.
-    ///
-    /// # Errors
-    /// Refuses unsupported protocols, malformed capture pins or inconsistent measured hashes.
     pub fn validate(&self) -> io::Result<()> {
         let pins = &self.capture_pins;
         if self.schema != 1
@@ -155,9 +152,6 @@ impl ConsumerCapability {
 
 /// Check an authenticated selected image declaration, not installed readiness.
 /// No requested original-source operation preserves ordinary legacy installs.
-///
-/// # Errors
-/// Refuses missing or malformed consumer proof or a protocol different from the requested one.
 pub fn require(capability: Option<&ConsumerCapability>, required: Option<u32>) -> io::Result<()> {
     if let Some(protocol) = required {
         let proof = capability.ok_or_else(|| {

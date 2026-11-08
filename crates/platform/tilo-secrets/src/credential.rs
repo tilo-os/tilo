@@ -29,9 +29,6 @@ pub(crate) fn target_name(app: &str, key: &str, part: usize) -> String {
 }
 
 /// `value` as the blobs of its credentials, first part first.
-///
-/// # Errors
-/// The secret needs more parts than the header can count.
 pub(crate) fn split(value: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     let (first, rest) = value.split_at(value.len().min(FIRST_ROOM));
     let rest: Vec<Vec<u8>> = rest.chunks(BLOB_LIMIT).map(<[u8]>::to_vec).collect();

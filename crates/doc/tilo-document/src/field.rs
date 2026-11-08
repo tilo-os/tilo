@@ -107,9 +107,6 @@ pub fn blocks_of_plain(plain: &str) -> Vec<tilo_doc::snapshot::BlockView> {
 /// Turn the field `slot` holding plain text into rich text holding the same words, written as
 /// a recorded change of `doc`: a paragraph per line, no marks. Returns the map the rich text
 /// now lives under.
-///
-/// # Errors
-/// Returns the document's write error.
 pub fn convert_field(doc: &mut Doc, slot: Slot<'_>, plain: &str) -> Result<ObjId, ModelError> {
     let blocks = blocks_of_plain(plain);
     let obj = slot.object(doc, ObjType::Map)?;

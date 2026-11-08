@@ -74,9 +74,6 @@ fn linked_by(value: &FieldValue) -> Vec<String> {
 
 /// Take the links the resource `resource` makes out of the [`linked_list`]s of their targets,
 /// before what it holds goes.
-///
-/// # Errors
-/// The sink cannot be read or written.
 pub(super) fn unlink(sink: &mut impl Sink, resource: &str) -> Result<(), IndexError> {
     if let Some(held) = sink.text(resource, LINKS)? {
         unlink_held(sink, resource, &held)?;
@@ -155,9 +152,6 @@ pub fn split_in(held: &str) -> Option<(&str, &str)> {
 
 /// Where the item at `path` is, as `sink` holds it: the resource holding its collection, the
 /// collection's field and its order key there. `None` for an item in no collection.
-///
-/// # Errors
-/// What it holds cannot be read.
 pub fn placed_in(
     sink: &mut impl Sink,
     path: &str,
@@ -171,15 +165,9 @@ pub fn placed_in(
 /// Where what is derived goes: the index being written, or the store's open writes.
 pub trait Sink {
     /// The value the sink holds of `field` of `resource`.
-    ///
-    /// # Errors
-    /// What it holds cannot be read.
     fn field(&mut self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError>;
 
     /// The type (`$type`) or order key (`$key`) of `resource`.
-    ///
-    /// # Errors
-    /// What it holds cannot be read.
     fn text(&mut self, resource: &str, key: &str) -> Result<Option<String>, IndexError>;
 
     /// # Errors
@@ -197,9 +185,6 @@ pub trait Sink {
 
     /// Drop the text `key` of `resource`: what the index holds there is no more. A sink that
     /// holds this pass's writes over the index keeps the empty text, which reads as none.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn drop_text(&mut self, resource: &str, key: &str) -> Result<(), IndexError> {
         self.put_text(resource, key, "")
     }
@@ -207,32 +192,20 @@ pub trait Sink {
     /// Keep `stamp`'s version as the newest version of `resource`, unless one it holds comes
     /// after it ([`super::Snapshot::newest`]): what a mark of it, or of the document holding
     /// it, reads without the resource's log.
-    ///
-    /// # Errors
-    /// It cannot be read or written.
     fn put_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError>;
 
     /// Drop `resource` and everything inside it: fields, lists, and what search finds them by.
     /// The newest version kept of it stays, as the record's log keeps its versions.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn remove(&mut self, resource: &str) -> Result<(), IndexError>;
 
     /// Drop `resource` and everything inside it to derive it anew: as [`Sink::remove`], but
     /// the versions kept of each ([`reflect`]) stay, as they are not in the record.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn clear(&mut self, resource: &str) -> Result<(), IndexError> {
         self.remove(resource)
     }
 
     /// Drop what is held of the resources within the record `doc` that hold no type: the
     /// versions [`Sink::clear`] kept of items a derivation anew finds in no collection.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn prune(&mut self, doc: &str) -> Result<(), IndexError> {
         let _ = doc;
         Ok(())
@@ -240,9 +213,6 @@ pub trait Sink {
 
     /// That the package's record `doc` is of the type `ty` (else `None`) and stored in the chunk
     /// `chunk`.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn doc(&mut self, doc: &str, ty: Option<&str>, chunk: ChunkNo) -> Result<(), IndexError>;
 
     /// # Errors
@@ -258,28 +228,16 @@ pub trait Sink {
     fn replace(&mut self, list: &str, entries: Vec<Entry>) -> Result<(), IndexError>;
 
     /// Every entry of `list`.
-    ///
-    /// # Errors
-    /// What it holds cannot be read.
     fn entries(&mut self, list: &str) -> Result<Vec<Entry>, IndexError>;
 
     /// How many entries `list` holds.
-    ///
-    /// # Errors
-    /// What it holds cannot be read.
     fn len(&mut self, list: &str) -> Result<usize, IndexError>;
 
     /// Add `delta` to how many entries of the column list `list` hold `value`
     /// ([`columns::counted`]).
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn count(&mut self, list: &str, value: &str, delta: i64) -> Result<(), IndexError>;
 
     /// Drop every list whose name starts with `prefix`.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError>;
 
     /// Whether it keeps filter columns, or (the store's open writes) fields and membership
@@ -290,9 +248,6 @@ pub trait Sink {
     /// ([`super::clock`]), unless the index records one: the first one written is the one every
     /// later one is past. A sink that keeps no columns of its own (`keeps_columns`) records
     /// nothing.
-    ///
-    /// # Errors
-    /// It cannot be written.
     fn set_written_at(&mut self, ty: &str, clock: super::Clock) -> Result<(), IndexError> {
         let _ = (ty, clock);
         Ok(())
@@ -915,9 +870,6 @@ impl<'d> Derive<'d> {
     /// The item `id` of the record `doc` (of `app`, of type `schema`): where the chunks the step
     /// reads hold it, and the index reads it from there, else searched for across the chunks the
     /// store holds, and kept for the items the step names again.
-    ///
-    /// # Errors
-    /// The sink cannot be read, or holds a chunk an item is not in.
     fn item(
         &mut self,
         sink: &mut impl Sink,
@@ -966,9 +918,6 @@ impl<'d> Derive<'d> {
     }
 
     /// Derive every record of `app` into `sink`, which holds none of them.
-    ///
-    /// # Errors
-    /// The sink cannot be written.
     pub fn all(&mut self, sink: &mut impl Sink, app: &str) -> Result<(), IndexError> {
         let records: Vec<(String, TypeId)> = self
             .docs
@@ -992,9 +941,6 @@ impl<'d> Derive<'d> {
     /// `ends` holds of its resources: the first and last of the record's whole log and the
     /// last change of each field ([`reflect::ends_of`]), and the items `removed` holds that
     /// left their collections ([`super::REMOVED`]).
-    ///
-    /// # Errors
-    /// The sink cannot be written.
     pub fn all_with_versions(
         &mut self,
         sink: &mut impl Sink,
@@ -1046,9 +992,6 @@ impl<'d> Derive<'d> {
     /// that removed each, and drop those that came back ([`super::REMOVED`]): what a list shows
     /// struck until the person has seen them go. Called after [`Self::changes`]: what a row is
     /// is where the item is now.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn removed(
         &mut self,
         sink: &mut impl Sink,
@@ -1087,9 +1030,6 @@ impl<'d> Derive<'d> {
     /// removed it are derived: where an item was is in the record the changes take away, and a
     /// record derived anew holds no item it lost. [`Self::removed`] writes the rows afterwards,
     /// when each item's place is read again.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn removed_before(
         &mut self,
         sink: &mut impl Sink,
@@ -1136,9 +1076,6 @@ impl<'d> Derive<'d> {
 
     /// [`Self::removed`], for the collections `moved` names: what a local write's plan placed
     /// and took out, derived into the overlay before the record holds its change.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn removed_of(
         &mut self,
         sink: &mut impl Sink,
@@ -1181,9 +1118,6 @@ impl<'d> Derive<'d> {
     /// the changes themselves were derived: each resource's first version stays unless one
     /// came before it, its last is replaced by a later one, and the columns of the collection
     /// it is in follow.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn versions(
         &mut self,
         sink: &mut impl Sink,
@@ -1613,9 +1547,6 @@ impl<'d> Derive<'d> {
 
     /// Apply what changes to the record reached, of the records of `app`, to `sink`, which
     /// held the record as it was before them.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     pub fn changes(
         &mut self,
         sink: &mut impl Sink,
@@ -2019,9 +1950,6 @@ impl<'d> Derive<'d> {
     /// ([`tilolang_runtime::store::Store::linked`]). The set it made before is kept under
     /// [`LINKS`], so a change takes out of the lists exactly what it no longer links to; a target
     /// whose links moved is told of it, so a view reading them runs again.
-    ///
-    /// # Errors
-    /// The sink cannot be read or written.
     fn links(
         &mut self,
         sink: &mut impl Sink,

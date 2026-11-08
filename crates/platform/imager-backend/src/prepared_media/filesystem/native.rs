@@ -62,10 +62,6 @@ impl MediaFilesystemGrant {
     }
     /// Check an adapter's descriptor against the held canonical directory.
     /// This checks namespace identity; callers must also validate device custody.
-    ///
-    /// # Errors
-    /// Returns an error if the pinned destination changed, descriptor metadata
-    /// cannot be read, or the descriptor identifies a different directory.
     pub fn check_directory_identity(&self, file: &std::fs::File) -> io::Result<()> {
         self.pin.validate_destination()?;
         if !crate::nofollow::same_directory_identity(

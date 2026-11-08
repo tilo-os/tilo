@@ -293,9 +293,6 @@ pub(super) fn start(sized: &Sized<'_>, kept: &CompiledDir) -> Result<Vec<Record>
 const COMPUTE: &str = include_str!("../../bench/compute/app.tl");
 
 /// The compute workload's package (`bench/compute`), compiled.
-///
-/// # Errors
-/// It does not compile.
 pub fn compute_package() -> Result<Compiled, String> {
     tilolang::compile_package_with(COMPUTE, &IdsLock::new(), &[], &mut SeededEntropy(1))
         .map_err(|diagnostics| format!("bench/compute: {diagnostics:?}"))

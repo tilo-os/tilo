@@ -18,31 +18,15 @@ pub type Wake = Arc<dyn Fn() + Send + Sync>;
 /// the installer's decision logic testable without a radio or system bus.
 pub trait NetworkBackend: Send + Sync {
     /// Check the system's connectivity now.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the connectivity state cannot be queried.
     fn connectivity(&self) -> Result<ConnectivityState, String>;
 
     /// Scan for currently visible Wi-Fi networks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when Wi-Fi networks cannot be enumerated.
     fn wifi_networks(&self) -> Result<Vec<WifiNetworkInfo>, String>;
 
     /// Obtain the sign-in URI for the current captive portal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the captive portal URI cannot be determined.
     fn captive_portal_uri(&self) -> Result<String, String>;
 
     /// Connect to `ssid`, using `password` when the network is secured.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the connection attempt cannot be started or completed.
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
 }
 

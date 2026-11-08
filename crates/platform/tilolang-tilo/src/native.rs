@@ -142,9 +142,6 @@ pub trait Calls {
     /// Whether the resource `resource` of `app` answers a read of itself: whether the app's
     /// directory offers a read on it. A resource that does not is read by the record, which
     /// takes it as its `item` — the read a window and `tilo_read` take too.
-    ///
-    /// # Errors
-    /// Why it cannot be asked: the app does not run, the task may not see it.
     fn reads(&self, app: &str, resource: &str) -> Result<bool, String>;
 }
 
@@ -181,10 +178,6 @@ impl<'a> NativeReads<'a> {
     /// them. Answered as [`crate::task::Host::read_values`] answers a read of an app the session
     /// runs: the type's id, every field by its id, or `{"missing": true}` for a resource the app
     /// does not hold.
-    ///
-    /// # Errors
-    /// Why it cannot be read: the task may not, the app does not run, or the item names no
-    /// resource of the type the program was given.
     pub fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String> {
         let record = self.record(app)?;
         let Some((doc, rest)) = split_id(item) else {
@@ -239,9 +232,6 @@ impl<'a> NativeReads<'a> {
     }
 
     /// What the app `app` answers to a program's `request` to read it.
-    ///
-    /// # Errors
-    /// Why it cannot be read, or why the request is none a native app's records answer.
     pub fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
         let request: ReadRequest = serde_json::from_value(request.clone())
             .map_err(|error| format!("the request is not one a program makes: {error}"))?;
@@ -490,9 +480,6 @@ impl<'a> NativeReads<'a> {
     /// Every field of a resource of the type `ty` as the app answered it, by field id. What the
     /// app holds that its surface does not declare is the app's own business; a collection is
     /// read where the app lists it, not as one field.
-    ///
-    /// # Errors
-    /// What the app answered that its own surface does not declare.
     fn fields(&self, ty: &str, content: &Json) -> Result<HashMap<String, FieldValue>, String> {
         let mut out = HashMap::new();
         let Some(schema) = lookup(ty) else {
@@ -649,10 +636,6 @@ fn held(
 /// option as the value or `null`, a list as its array, a case of an enum by its name, a record
 /// as its id — where the runtime holds `{"some": …}`, `{"list": […]}`,
 /// `{"enum": …, "variant": …}` and `{"ref": …}`.
-///
-/// # Errors
-/// What the app answered that `ty` does not hold: a value where an option is absent, a case the
-/// app's enums do not declare.
 fn encoded(ty: &Ty, plain: &Json, meta: &Meta) -> Result<Json, String> {
     Ok(match ty {
         Ty::Option(inner) => json!({"some": encoded(inner, plain, meta)?}),
@@ -740,9 +723,6 @@ fn type_id(key: &TypeKey) -> String {
 }
 
 /// The elements of a set as the app answered it: its members, sorted as a store keeps them.
-///
-/// # Errors
-/// What the app answered that is no set.
 fn elements(answered: &Json) -> Result<Vec<String>, String> {
     let mut keys: Vec<String> = match answered {
         Json::Array(elements) => elements.iter().map(element_key).collect(),
@@ -768,9 +748,6 @@ struct Held<'a> {
 
 impl Held<'_> {
     /// Fill what the app answered of the resource, once.
-    ///
-    /// # Errors
-    /// Why the app could not be read.
     fn fill(&mut self) -> Result<(), String> {
         if self.content.is_some() {
             return Ok(());
@@ -783,9 +760,6 @@ impl Held<'_> {
 
     /// What the app answered a field of the resource holds, or what the field reads as when it
     /// names it not.
-    ///
-    /// # Errors
-    /// Why the app could not be read.
     fn get(&mut self, field: &str) -> Result<FieldValue, String> {
         self.fill()?;
         Ok(self

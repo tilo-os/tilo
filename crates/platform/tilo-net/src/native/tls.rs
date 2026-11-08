@@ -47,10 +47,6 @@ pub fn client_config_with_roots(roots: RootCertStore) -> Result<ClientConfig, ru
 /// Tilo bundle on Linux, the Keychain on macOS, the system store on Android.
 /// This is the verifier reqwest uses, so every Tilo client trusts the same
 /// servers.
-///
-/// # Errors
-/// If the provider supports none of rustls' default protocol versions, or the
-/// platform verifier cannot load the system's trust.
 #[cfg(not(target_os = "android"))]
 pub fn client_config() -> Result<ClientConfig, rustls::Error> {
     use rustls_platform_verifier::BuilderVerifierExt as _;

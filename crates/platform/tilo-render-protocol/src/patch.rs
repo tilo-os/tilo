@@ -287,9 +287,6 @@ pub struct Unapplied;
 
 impl Patch {
     /// Apply this patch to `root`.
-    ///
-    /// # Errors
-    /// The patch names a node `root` does not have.
     pub fn apply(self, root: &mut Node) -> Result<(), Unapplied> {
         match self {
             Self::SetRoot(node) => *root = node,
@@ -745,15 +742,9 @@ pub fn decode_batch<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<Vec<
 /// between processes, `postMessage` between a page and a worker. At most one batch a frame.
 pub trait Transport {
     /// Hand `batch` to the other side.
-    ///
-    /// # Errors
-    /// The other side is gone.
     fn send(&mut self, batch: Vec<u8>) -> Result<(), WireError>;
 
     /// The next batch the other side sent, when one waits.
-    ///
-    /// # Errors
-    /// The other side is gone, or what arrived is no batch.
     fn recv(&mut self) -> Result<Option<Vec<u8>>, WireError>;
 }
 

@@ -579,11 +579,6 @@ impl Core {
     /// one change: one undo takes them all back, and history says how many items it changed.
     /// Each is a call at its own app's door when the action is another app's, which keeps its
     /// own record's changes apart.
-    ///
-    /// # Errors
-    ///
-    /// A malformed `many`, actions of more than one action in it, or anything a single
-    /// invocation fails with.
     fn invoke_many(
         &self,
         invoker: &Principal,

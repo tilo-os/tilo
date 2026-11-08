@@ -1125,10 +1125,6 @@ impl TiloStore {
     /// this one. A migration reads what an older version left, so one that finds nothing of it
     /// changes nothing, and a record made by this version starts with every migration of its
     /// type run.
-    ///
-    /// # Errors
-    /// The workspace record cannot be had, holds no such resource, or the change cannot be
-    /// written.
     pub fn mark_migrated(&self, doc: &str, migration: &str) -> Result<(), StoreError> {
         self.load_record()?;
         let mut inner = self.mutate();
@@ -1157,9 +1153,6 @@ impl TiloStore {
     }
 
     /// Whether the migration `migration` (its action id) ran on the resource `doc`.
-    ///
-    /// # Errors
-    /// The workspace record cannot be had, or holds no such resource.
     pub fn migrated(&self, doc: &str, migration: &str) -> Result<bool, StoreError> {
         self.load_record()?;
         let inner = self.held();
@@ -1177,9 +1170,6 @@ impl TiloStore {
     /// dismisses or opens one, so every device of theirs takes the notification back. The
     /// change sets the notice's `seen` flag, as a bound control's edit of a field does, and
     /// waits for the host to commit it (`Host::take_committed`).
-    ///
-    /// # Errors
-    /// The workspace record cannot be had, holds no such notice, or the change cannot be written.
     pub fn see(&self, doc: &str, person: &str) -> Result<(), StoreError> {
         self.load_record()?;
         let mut inner = self.mutate();
@@ -1244,9 +1234,6 @@ impl TiloStore {
 
     /// The record of the resource `doc`, as the runtime sees it now: read from the workspace
     /// record, which is had first if the store opened without it.
-    ///
-    /// # Errors
-    /// The resource does not exist, its type is not registered, or the record cannot be had.
     pub fn record(&self, doc: &str) -> Result<DynRecord, StoreError> {
         self.load_doc(doc)?;
         let inner = self.held();
@@ -1332,9 +1319,6 @@ impl TiloStore {
 
     /// The record of the resource at `at` (a document or an item in one), as the runtime
     /// sees it now: an item is read without reading its siblings.
-    ///
-    /// # Errors
-    /// The resource does not exist, its type is not registered, or the record cannot be had.
     pub fn record_at(&self, at: &ResourceRef) -> Result<DynRecord, StoreError> {
         self.load_at(at)?;
         let inner = self.held();
@@ -1399,9 +1383,6 @@ impl TiloStore {
     /// How many items of the collection `field` of `at` hold each value of their column
     /// `column` (a toggle's two, an enum's cases), read from the column as the index holds it:
     /// the counts a filter's chips show.
-    ///
-    /// # Errors
-    /// The resource or its type is unknown, or the index cannot be read.
     pub fn facets(
         &self,
         at: &ResourceRef,

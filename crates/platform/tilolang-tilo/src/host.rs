@@ -441,9 +441,6 @@ fn published_roots(meta: &Meta) -> Meta {
 /// it is; a plain enum by its case's name; a principal as the workspace subject it is; an option
 /// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
 /// whole when it holds more than text. `owner` finds the package of an app the type names.
-///
-/// # Errors
-/// A value that is not of `ty`, or names a type no package declares.
 pub fn argument_json(
     owner: &dyn Fn(&str) -> Result<Meta, String>,
     meta: &Meta,
@@ -1167,9 +1164,6 @@ impl Host {
 
     /// Compile `source` against the packages already loaded, register its schemas, load its
     /// module and trust it (a built-in package).
-    ///
-    /// # Errors
-    /// The source does not compile, or the module does not link.
     pub fn load_builtin(&self, source: &str, ids: &str) -> Result<Package, HostError> {
         let lock = IdsLock::parse(ids).map_err(|error| HostError::Compile(error.to_string()))?;
         let imports: Vec<PackageMeta> = self
@@ -1195,9 +1189,6 @@ impl Host {
     /// Load a compiled package and trust it (a built-in package, or the package being developed).
     /// A package of the same app that is already loaded is replaced: its resources keep their
     /// state, and views opened over the old version must be opened again to run the new code.
-    ///
-    /// # Errors
-    /// The module does not link; the loaded version, if any, stays.
     pub fn load_compiled(&self, compiled: &tilolang::Compiled) -> Result<Package, HostError> {
         self.load_module(
             &compiled.wasm,
@@ -1209,9 +1200,6 @@ impl Host {
     /// Load the package an installed app is, after the packages it uses: their views draw and
     /// their actions run on the resources of theirs it holds (a board's todo rows), each
     /// package under its own authority, as if it ran on its own.
-    ///
-    /// # Errors
-    /// A module does not link.
     pub fn load_bundle(&self, bundle: &crate::bundle::Bundle) -> Result<Package, HostError> {
         for import in &bundle.imports {
             self.load_module(&import.wasm, import.meta.clone(), String::new())?;
@@ -1222,9 +1210,6 @@ impl Host {
     /// Load a package from its compiled module alone, with the metadata the module embeds, and
     /// trust it: how a launcher starts a built-in package compiled when Tilo was built, so that
     /// launching compiles no tilolang. The package has no ids lock to write back.
-    ///
-    /// # Errors
-    /// The module embeds no metadata, or does not load.
     pub fn load_wasm(&self, wasm: &[u8]) -> Result<Package, HostError> {
         let meta = PackageMeta::from_wasm(wasm).ok_or_else(|| {
             HostError::Compile("the module embeds no tilolang metadata".to_owned())
@@ -1233,9 +1218,6 @@ impl Host {
     }
 
     /// Load a compiled module with its metadata and trust it; see [`Self::load_compiled`].
-    ///
-    /// # Errors
-    /// The module does not link; the loaded version, if any, stays.
     pub fn load_module(&self, wasm: &[u8], meta: Meta, ids: String) -> Result<Package, HostError> {
         let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
         // The store's table holds this package's schemas, and only this store's: another host on
@@ -1397,18 +1379,12 @@ impl Host {
     /// The package's root resource: the one per-workspace resource of its root type, created the
     /// first time it is wanted: its first root type with a default view, as the launcher opens
     /// an app.
-    ///
-    /// # Errors
-    /// The package declares no root with a default view, or the resource cannot be created.
     pub fn root_of(&self, app: &str) -> Result<ResourceRef, HostError> {
         self.root_of_layer(app, &RootView::default())
     }
 
     /// The root `chosen` names in `app`, created the first time it is wanted
     /// ([`RootView::default`] takes the package's first root).
-    ///
-    /// # Errors
-    /// The package declares no such root, or the resource cannot be created.
     pub fn root_of_layer(&self, app: &str, chosen: &RootView) -> Result<ResourceRef, HostError> {
         let ty = self.root_type_of(app, chosen)?;
         self.root_record(app, &ty)
@@ -1418,9 +1394,6 @@ impl Host {
     /// (`root shell: Shell`) is, by the id the checker gives it, or what
     /// [`Self::root_of_layer`] names. Created the first time it is wanted, as
     /// [`Self::root_of`] does.
-    ///
-    /// # Errors
-    /// The package is not loaded, or the resource cannot be created.
     pub fn root_record(&self, app: &str, ty: &str) -> Result<ResourceRef, HostError> {
         let app_is_loaded = self
             .find_in_packages(|package| (package.meta.app == app).then_some(()))
@@ -1550,9 +1523,6 @@ impl Host {
 
     /// Open the window of `app`'s root resource, through the default view of its type: its
     /// first root type with a default view, as the launcher opens an app.
-    ///
-    /// # Errors
-    /// The package has no root with a default view, or the view does not run.
     pub fn open_main(&self, app: &str) -> Result<ViewInstance, HostError> {
         self.open_layer(app, &RootView::default())
     }
@@ -1560,10 +1530,6 @@ impl Host {
     /// Open the window of the layer `chosen` names in `app`: the root it names and the view it
     /// names ([`RootView::default`] takes the package's first root and that type's default
     /// view).
-    ///
-    /// # Errors
-    /// The package has no such root, the view it names does not exist or does not run, or the
-    /// root's type has no default view when none is named.
     pub fn open_layer(&self, app: &str, chosen: &RootView) -> Result<ViewInstance, HostError> {
         let package = self
             .package(app)
@@ -1588,9 +1554,6 @@ impl Host {
 
     /// Open the window of `resource`, as `open(r)` in a view asks: through `view`, or the default
     /// view of its type.
-    ///
-    /// # Errors
-    /// The type has no default view and none is given, or the view does not run.
     pub fn open_resource(
         &self,
         resource: &ResourceRef,
@@ -1676,9 +1639,6 @@ impl Host {
     /// The argument of the type `ty` (as metadata writes it) of an action of `meta` that
     /// `json` gives, read as the door reads an invocation's arguments: a resource by its id, a
     /// case by its name, a person as the workspace subject they are.
-    ///
-    /// # Errors
-    /// `json` does not read as a value of `ty`, with why.
     pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
         value_of(&self.inner, meta, json, ty)
     }

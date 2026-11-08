@@ -229,10 +229,6 @@ impl Frames {
     }
 
     /// Put a value in the current frame and return its handle.
-    ///
-    /// # Errors
-    ///
-    /// A message when no frame is running or the frame's table is full.
     pub fn alloc(&mut self, v: Value) -> Result<i32, String> {
         let frame = self.top_mut()?;
         let index = u32::try_from(frame.vals.len())

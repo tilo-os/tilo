@@ -16,10 +16,6 @@ pub struct VolumeIdentity {
 
 impl FileIdentity {
     /// Query identity through `file`'s retained handle.
-    ///
-    /// # Errors
-    ///
-    /// Returns the native metadata error if identity cannot be observed.
     pub fn of(file: &File) -> io::Result<Self> {
         native::Identity::of(file).map(|inner| Self { inner })
     }

@@ -1011,10 +1011,6 @@ impl Engine {
     /// Compile (or fetch from the cache) the module with these bytes, whose imports `host`
     /// answers: the `tl` table and, when it names one, the imports of its own ABI
     /// ([`Host::guest_abi`]).
-    ///
-    /// # Errors
-    ///
-    /// Fails when the bytes are not a valid module or do not link against the ABI.
     pub fn compile(&self, bytes: &[u8]) -> Result<ModuleHash, CallError> {
         let hash = ModuleHash::of_bytes(bytes);
         let counted =
@@ -1026,10 +1022,6 @@ impl Engine {
     /// Link `abi`'s imports beside the `tl` table, from now on: the imports a host that runs
     /// modules of its own ABI ([`Host::guest_abi`]) answers ([`Host::guest_import`]). A module
     /// loaded after this links with them; one loaded before is dropped and loaded again.
-    ///
-    /// # Errors
-    ///
-    /// The engine cannot link them.
     pub fn link(&self, abi: &'static [Imports]) -> Result<(), String> {
         on_engine!(&self.pooled, pools => pools.link(abi))
     }

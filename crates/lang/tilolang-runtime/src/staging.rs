@@ -9,10 +9,6 @@ use crate::value::Value;
 
 /// The state of `app` named `state`, as its view declares it; `view.state` names the view where
 /// more than one declares one name.
-///
-/// # Errors
-///
-/// A message when no view of the app declares it, or more than one does and none is named.
 pub fn declared_state(
     meta: &Meta,
     app: &str,
@@ -68,11 +64,6 @@ pub fn declared_state(
 /// The value `text` names as the app's own code writes it, read against the declared type `ty`:
 /// a filter of the type it queries (`Task.today`), a case of an enum (`Side.right`), or the
 /// literal a day, a time, a number, a truth or a text takes.
-///
-/// # Errors
-///
-/// A message when the type takes no such value, or the app declares neither the type the filter
-/// queries nor the enum of the case.
 pub fn state_value(
     reg: &Registry,
     app: &str,

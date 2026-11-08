@@ -499,9 +499,6 @@ impl Runtime {
 
     /// What the written view `source` by `author` is (`tilolang::written`): checked against
     /// every package this runtime holds, so it reads any type the workspace has installed.
-    ///
-    /// # Errors
-    /// Its diagnostics, located in `source`.
     pub fn check_written_view(
         &self,
         source: &str,
@@ -655,10 +652,6 @@ impl Runtime {
 
     /// Invoke an action as `principal`. The action is an [`ActionRef`], or an
     /// `(action id, args)` pair for a call made straight by the principal.
-    ///
-    /// # Errors
-    ///
-    /// An unknown action, arguments that do not fit, or a trap (rolled back).
     pub fn invoke_action(
         &self,
         principal: &Principal,
@@ -725,10 +718,6 @@ impl Runtime {
     /// call carries them — as long as the action's parameters, what the call left out
     /// [`None`] — and `None` when the line names nothing, as an entry's text that is only
     /// space and what other parameters take makes no item.
-    ///
-    /// # Errors
-    ///
-    /// A text naming something the action does not take, or a value that does not fit.
     pub fn fill_entry(
         &self,
         action: &str,
@@ -748,10 +737,6 @@ impl Runtime {
 
     /// The default of the parameter `at` of `action`, computed now over the arguments before
     /// it: what its form starts filled in with. `None` when it has none.
-    ///
-    /// # Errors
-    ///
-    /// A default that traps.
     pub fn default_argument(
         &self,
         action: &str,
@@ -790,10 +775,6 @@ impl Runtime {
     }
 
     /// Open a view for `principal`, in the window of its first resource argument.
-    ///
-    /// # Errors
-    ///
-    /// An unknown view, arguments that do not fit, or a trap.
     pub fn open_view(
         &self,
         principal: &Principal,
@@ -813,10 +794,6 @@ impl Runtime {
     /// Open a view for `principal` in the window `window`: the state it declares is how their
     /// window shows the resource and where they are in it, that person's own, so another person
     /// looking at the same window is not moved by it.
-    ///
-    /// # Errors
-    ///
-    /// An unknown view, arguments that do not fit, or a trap.
     pub fn open_window(
         &self,
         principal: &Principal,
@@ -878,10 +855,6 @@ impl Runtime {
     /// Why the action `action` cannot run on the resource `subject` now, as the requirements its
     /// subject alone decides say: the first that does not hold, in `viewer`'s words. `None` while
     /// it can run, and for an action whose app keeps no requirement the subject decides.
-    ///
-    /// # Errors
-    ///
-    /// A requirement that traps, or answers something else than a text.
     pub fn refusal(
         &self,
         action: &str,
@@ -905,10 +878,6 @@ impl Runtime {
     /// As [`Runtime::refusal`], with what reading the requirement read: the fields it read, each
     /// once, and whether it read more than the workspace holds (the clock, the window's space,
     /// the person's view state), which no change in the workspace moves.
-    ///
-    /// # Errors
-    ///
-    /// A requirement that traps, or answers something else than a text.
     pub fn refusal_reading(
         &self,
         action: &str,
@@ -931,10 +900,6 @@ impl Runtime {
 
     /// As [`Runtime::refusal`], with what a view's offer of the action reads: whether the action
     /// can apply to `subject` where it is offered at all, and the first reason it cannot.
-    ///
-    /// # Errors
-    ///
-    /// The conditions trap, or answer something else than a text.
     pub fn applies_reading(
         &self,
         action: &str,
@@ -1182,10 +1147,6 @@ impl Runtime {
     /// picks there: `text` names the value as the app's own code writes it (`Task.today`,
     /// `Side.right`), read against the state's declared type. A window that reads the state
     /// shows it until its person picks there, and it is no one's change to keep.
-    ///
-    /// # Errors
-    ///
-    /// A message when the app declares no such state, or the state takes no such value.
     pub fn stage_view_state(&self, app: &str, state: &str, text: &str) -> Result<(), String> {
         let (id, value) = {
             let reg = self.core.registry.borrow();

@@ -36,9 +36,6 @@ pub fn dir_from_env() -> Option<PathBuf> {
 
 /// Make `dir` and its parents, private to its owner where the platform has modes: what an app
 /// reads is the tool's own, as a session's launcher keeps its copy.
-///
-/// # Errors
-/// The directory cannot be made.
 pub fn make_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -55,9 +52,6 @@ pub fn make_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// The generation `dir`'s [`CURRENT_FILE`] names, once one was published.
-///
-/// # Errors
-/// A `current` that cannot be read, or that names no generation.
 pub fn current(dir: &Path) -> io::Result<Option<u64>> {
     let path = dir.join(CURRENT_FILE);
     let text = match std::fs::read_to_string(&path) {
@@ -80,10 +74,6 @@ pub fn current(dir: &Path) -> io::Result<Option<u64>> {
 
 /// Publish the payload tree at `payload` as the next generation in `dir`, and name it current;
 /// the generation's number.
-///
-/// # Errors
-/// The directory cannot be made, `payload` cannot be copied, or `current` cannot be read or
-/// replaced.
 pub fn publish(dir: &Path, payload: &Path) -> io::Result<u64> {
     publish_with(dir, |generation| copy_tree(payload, generation))
 }
@@ -92,9 +82,6 @@ pub fn publish(dir: &Path, payload: &Path) -> io::Result<u64> {
 ///
 /// A writer that holds the payload itself (a compiled bundle) writes it straight into the
 /// generation this makes, and nothing is staged or copied.
-///
-/// # Errors
-/// The directory cannot be made, `write` fails, or `current` cannot be read or replaced.
 pub fn publish_with(dir: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<u64> {
     make_dir(dir)?;
     let generation = match current(dir)? {

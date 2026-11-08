@@ -7,8 +7,6 @@ pub const ARM: u32 = 0x4108_7452;
 pub const MAGIC: [u8; 4] = *b"TAS1";
 
 /// A closed raw destination component; no record ID or authority is carried.
-/// # Errors
-/// Refuses empty, escaped or oversized native components.
 pub fn encode(target: &[u8]) -> io::Result<[u8; SIZE]> {
     if target.is_empty()
         || target.len() > 255

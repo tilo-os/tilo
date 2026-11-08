@@ -775,9 +775,6 @@ impl PreparedSetupReview {
     /// installer/first-use importer cannot treat them as finished. There is
     /// deliberately no public-JSON receipt bypass: a future offline consumer
     /// must authenticate the actual completed Home before admitting custody.
-    ///
-    /// # Errors
-    /// Refuses changed setup custody or an unfinished offline export.
     pub fn require_completed_export(&self) -> io::Result<()> {
         self.validate()?;
         if self.manifest.units.offline_home().is_some() || self.pending_applications_export() {
@@ -1045,8 +1042,6 @@ impl PreparedSetupReview {
         }
     }
     /// Reseal explicitly selected website sessions. This does not authenticate a service.
-    /// # Errors
-    /// Refuses changed artifacts, bindings, private target grants or existing custody conflicts.
     pub fn import_service_sessions(&self, config_root: &Path, password: &[u8]) -> io::Result<()> {
         self.require_completed_export()?;
         self.target(config_root)?;
@@ -1071,10 +1066,6 @@ impl PreparedSetupReview {
     /// password authenticates each artifact, the setup binding ties it to this
     /// package, and the authenticated declaration is the exact expected
     /// selection, so a caller cannot widen it.
-    ///
-    /// # Errors
-    /// Refuses changed artifacts, bindings, private target grants, conflicts or
-    /// a selection the authenticated bundle does not match.
     pub fn import_mail(
         &self,
         target_home: &Path,

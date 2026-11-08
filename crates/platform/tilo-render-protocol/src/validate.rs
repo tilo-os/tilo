@@ -67,10 +67,6 @@ impl SceneCost {
     }
 
     /// The first limit this cost breaks.
-    ///
-    /// # Errors
-    ///
-    /// Names the limit that was exceeded.
     pub fn check(&self, limits: &Limits) -> Result<(), WireError> {
         if self.paths > limits.paths {
             return Err(WireError::OverLimit("paths"));

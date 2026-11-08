@@ -252,10 +252,6 @@ impl<'a> FrameWriter<'a> {
 
     /// One layer's change; its content's resources are registered through
     /// `ids`.
-    ///
-    /// # Errors
-    ///
-    /// When a resource cannot be registered or a count does not fit.
     pub fn layer(
         &mut self,
         layer: &LayerUpdate,
@@ -296,10 +292,6 @@ impl<'a> FrameWriter<'a> {
 
     /// Layer `id`'s new content, untransformed, opaque, unclipped: what a
     /// toolkit frame sends for its root layer, without copying the encoding.
-    ///
-    /// # Errors
-    ///
-    /// When a resource cannot be registered or a count does not fit.
     pub fn content(
         &mut self,
         id: LayerId,
@@ -329,10 +321,6 @@ impl<'a> FrameWriter<'a> {
     }
 
     /// A floating surface's backdrop.
-    ///
-    /// # Errors
-    ///
-    /// When a resource cannot be registered or a count does not fit.
     pub fn backdrop(
         &mut self,
         backdrop: &Backdrop,

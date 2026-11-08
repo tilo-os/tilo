@@ -328,9 +328,6 @@ impl Report {
 }
 
 /// The ids an allow-list file names: one per line, `#` starting a comment.
-///
-/// # Errors
-/// The file cannot be read.
 pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(text
@@ -346,9 +343,6 @@ pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
 /// The clock is the one a capture pins ([`ui::clock::freeze_for_capture`]): the app's queries
 /// and the days its window writes read the same instant, and every run lays out the same
 /// dates.
-///
-/// # Errors
-/// An app does not compile, or its window refuses what it sends.
 pub fn check(options: &Options) -> Result<Report, String> {
     let started = std::time::Instant::now();
     // Without the product's catalog this process's text falls back to the host's faces, so
@@ -489,9 +483,6 @@ fn unreached_views(apps: &[App], shown: &[Shown]) -> Vec<Unreached> {
 /// Stage the person the run lays its windows out for, in place of whatever locale this machine
 /// runs in: every window's language is chosen from theirs, so the same sources lay out in the
 /// same words on every machine ([`Options::locale`]).
-///
-/// # Errors
-/// `locale` names no language.
 fn stage_person_locale(locale: &str) -> Result<(), String> {
     let language = tilo_process::environment::parse_posix_locale(locale)
         .ok_or_else(|| format!("--locale {locale}: names no language (write `en-US`)"))?;

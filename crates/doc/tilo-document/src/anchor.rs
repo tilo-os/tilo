@@ -39,10 +39,6 @@ struct Placed {
 impl TextAnchor {
     /// The characters `start..end` of paragraph `block` of `body`, placed
     /// when the record holding the anchor is stored.
-    ///
-    /// # Errors
-    /// Returns why the range cannot be anchored: an empty range, or a body
-    /// that has not been read.
     pub fn new(body: &RichText, block: &str, start: usize, end: usize) -> Result<Self, String> {
         if start >= end {
             return Err("an anchor covers at least one character".into());

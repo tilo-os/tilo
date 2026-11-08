@@ -154,9 +154,6 @@ pub const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args
 
 #[cfg(not(target_os = "linux"))]
 /// Read a bounded helper request on platforms without Linux caller authentication.
-///
-/// # Errors
-/// Returns an error if the request cannot be opened or read.
 pub fn read_helper_request(path: &Path) -> io::Result<Vec<u8>> {
     let mut file = OpenOptions::new().read(true).open(path)?;
     let mut bytes = Vec::new();
@@ -260,10 +257,6 @@ pub fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> 
 /// possessed. `pkexec` preserves stdin, which the unprivileged process opens
 /// on the reviewed image before elevation. The helper therefore never opens a
 /// caller-named source path with root authority.
-///
-/// # Errors
-/// Returns an error unless running as root with a reviewed source identity and
-/// inherited regular-file stdin matching its size and identity, or if inspection fails.
 #[cfg(target_os = "linux")]
 pub fn bind_linux_helper_source(source: &ReviewedSource) -> io::Result<std::path::PathBuf> {
     if rustix::process::geteuid().as_raw() != 0 {
@@ -356,10 +349,6 @@ pub fn run_privileged_helper(
 }
 
 /// Locate the helper executable, preferring a valid Linux `AppImage` override.
-///
-/// # Errors
-/// Returns an error if the current executable path cannot be determined when
-/// no valid override is available.
 pub fn helper_executable() -> io::Result<std::path::PathBuf> {
     #[cfg(target_os = "linux")]
     if let Some(appimage) = std::env::var_os("TILO_IMAGER_APPIMAGE") {
@@ -501,10 +490,6 @@ pub fn relay_cancellation(
 }
 
 /// Construct the platform elevation command without launching it.
-///
-/// # Errors
-/// This platform's command construction is infallible; launch and authorization
-/// errors are reported when the command is spawned or supervised.
 #[cfg(target_os = "linux")]
 #[allow(
     clippy::unnecessary_wraps,
@@ -533,10 +518,6 @@ pub fn elevated_helper_command(
 }
 
 /// Construct the platform elevation command without launching it.
-///
-/// # Errors
-/// This platform's command construction is infallible; launch and authorization
-/// errors are reported when the command is spawned or supervised.
 #[cfg(target_os = "macos")]
 #[allow(
     clippy::unnecessary_wraps,
@@ -571,10 +552,6 @@ end run"#;
 }
 
 /// Construct the platform elevation command without launching it.
-///
-/// # Errors
-/// This platform's command construction is infallible; launch and authorization
-/// errors are reported when the command is spawned or supervised.
 #[cfg(target_os = "windows")]
 #[allow(
     clippy::unnecessary_wraps,
@@ -611,9 +588,6 @@ pub fn elevated_helper_command(
 }
 
 /// Construct an elevation command on other platforms.
-///
-/// # Errors
-/// Always returns an error because raw media writing is unsupported.
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub fn elevated_helper_command(
     _exe: &Path,

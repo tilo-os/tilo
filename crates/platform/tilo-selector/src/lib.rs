@@ -163,10 +163,6 @@ impl Selector {
 
     /// The selector a person (or an agent) typed, in the form
     /// [`Self::to_syntax`] writes.
-    ///
-    /// # Errors
-    /// Why the text is no selector: what was expected where it stopped
-    /// reading.
     pub fn parse(text: &str) -> Result<Self, String> {
         parse::parse(text)
     }

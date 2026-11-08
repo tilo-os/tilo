@@ -8,9 +8,6 @@
 //! without regard to case.
 
 /// The identifier `text` as it is held, `scheme:value`, from a URI or a bare form.
-///
-/// # Errors
-/// A message saying how to write it, when it is neither.
 pub fn normalize(text: &str) -> Result<String, String> {
     let held = written(text, false)?;
     Ok(held)
@@ -18,9 +15,6 @@ pub fn normalize(text: &str) -> Result<String, String> {
 
 /// The pattern `text` as it is matched: an identifier that may hold `*`, a bare form taken as
 /// its scheme's, and `@x.com` as `mailto:*@x.com`.
-///
-/// # Errors
-/// A message saying how to write it, when it is neither an identifier nor a pattern of one.
 pub fn normalize_pattern(text: &str) -> Result<String, String> {
     written(text, true)
 }

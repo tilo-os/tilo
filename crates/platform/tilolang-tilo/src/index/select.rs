@@ -207,9 +207,6 @@ fn run_bounds(
 impl View<'_> {
     /// The items of the collection `field` of `resource` (of the type `schema`) that `pred`
     /// holds of (all of them for none), in `order` (the collection's for none).
-    ///
-    /// # Errors
-    /// The index cannot be read, or `pred` cannot compare what a field holds.
     pub fn query(
         &self,
         (resource, field): (&str, &str),
@@ -383,10 +380,6 @@ impl View<'_> {
     /// names its children, and each child's run the items under it, so what a walk reads is
     /// the subtree it answers, never the collection. `None` when the field is no column of the
     /// type, and the caller's own walk runs instead.
-    ///
-    /// # Errors
-    ///
-    /// The index cannot be read.
     pub fn relatives(
         &self,
         (resource, field): (&str, &str),
@@ -1214,9 +1207,6 @@ impl View<'_> {
     /// The resources of the type `schema` anywhere in the index that `pred` holds of, by
     /// path, in `order` (by path for none). The open writes are read where a resource's fields
     /// are; a resource they made is not found until they are written.
-    ///
-    /// # Errors
-    /// The index cannot be read, or `pred` cannot compare what a field holds.
     pub fn select(
         &self,
         schema: &TypeSchema,
@@ -1314,9 +1304,6 @@ impl View<'_> {
     /// one answer. When one exact run of a column answers the predicate and that column is what
     /// `order` (or no order) keeps the resources by, the first entry of the run is read, and the
     /// rest of the run is not: a query that ends at its first answer costs the pages up to it.
-    ///
-    /// # Errors
-    /// The index cannot be read, or `pred` cannot compare what a field holds.
     pub fn first(
         &self,
         schema: &TypeSchema,
@@ -1387,9 +1374,6 @@ impl View<'_> {
     /// How many items of the collection `field` of `resource` hold each value of the column
     /// `column` whose values are known (a toggle's, an enum's cases), as the index holds them:
     /// the difference of two positions in the column's list.
-    ///
-    /// # Errors
-    /// The index cannot be read.
     pub fn facets(
         &self,
         (resource, field): (&str, &str),

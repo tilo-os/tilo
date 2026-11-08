@@ -101,9 +101,6 @@ impl SealedHome {
     /// verify the admitted tree. Once applications were deployed into the
     /// tree, only their user installation may differ. Returns `None` when
     /// nothing was sealed there yet.
-    ///
-    /// # Errors
-    /// Refuses a changed package, record or admitted tree.
     pub fn reopen(
         workspace: &Path,
         root: &Path,
@@ -119,9 +116,6 @@ impl SealedHome {
 
     /// Reopen the unit after adoption moved its tree from `root`, verifying
     /// every authenticated entry where the adoption journal placed it.
-    ///
-    /// # Errors
-    /// Refuses a missing or changed unit and moved data that differs.
     pub fn reopen_adopted(
         workspace: &Path,
         root: &Path,
@@ -183,9 +177,6 @@ impl SealedHome {
 
     /// Verify the admitted tree against the authenticated package; with
     /// `applications`, deployments into its user installation are allowed.
-    ///
-    /// # Errors
-    /// Refuses changed ciphertext and changed, missing or added entries.
     pub fn verify(&self, applications: bool, cancel: &AtomicBool) -> io::Result<()> {
         let mut review = self
             .review
@@ -243,9 +234,6 @@ fn authenticate(
 
 /// Exclusions that narrow a Home review to the user's Flatpak installation
 /// and app data, the subtrees an applications-only transfer carries.
-///
-/// # Errors
-/// Refuses links or non-folders on the way to those subtrees.
 pub fn application_data_exclusions(home: &Path) -> io::Result<Vec<PathBuf>> {
     let mut excluded = Vec::new();
     for (parent, kept) in [

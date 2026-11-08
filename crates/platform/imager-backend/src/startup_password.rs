@@ -4,9 +4,6 @@
 
 /// The destination's own rule on the live installer, which can attest its
 /// TPM policy: a short TPM PIN when `tpm_pin`, else the strong passphrase.
-///
-/// # Errors
-/// The sentence that says why `secret` is refused.
 pub fn validate_on_destination(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
     tilo_unlock_protocol::startup_secret::validate(secret, tpm_pin)
 }

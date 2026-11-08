@@ -24,9 +24,6 @@ impl ManagedConsumerNamespace {
     }
 
     /// Revalidate the executing helper and exact held kernel namespace.
-    /// # Errors
-    /// Returns an error if helper authentication fails, namespace identity has
-    /// changed, procfs cannot be read, or the mount table is invalid or shared.
     pub fn check(&self) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         {

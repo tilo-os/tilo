@@ -19,9 +19,6 @@ pub struct ProofInterrupt {
 }
 impl ProofInterrupt {
     /// Retain the exact transport solely to interrupt blocked proof IO.
-    /// # Errors
-    /// Returns an error if the transport cannot be duplicated or the host lacks
-    /// native proof-interruption support.
     pub fn observe(stream: &ControlStream) -> io::Result<Self> {
         #[cfg(unix)]
         {

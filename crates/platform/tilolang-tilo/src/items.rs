@@ -436,9 +436,6 @@ impl Items {
 
 /// The item `found` as JSON, for the edit that makes the item's copy in another chunk: every
 /// field of it as stored, without the items of its collections, which stay where they are.
-///
-/// # Errors
-/// The chunk holding it is not held, or a field does not read.
 pub fn item_json(chunks: &Chunks, found: &Found) -> Result<Json, ModelError> {
     let doc = chunks
         .mirror(found.chunk)

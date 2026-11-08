@@ -141,9 +141,6 @@ impl HomeSource {
     /// Review with the person's nested source exclusions. The canonical Home
     /// producer applies them to the inventory, which is what the sealed archive,
     /// its verification and the installed import consume.
-    ///
-    /// # Errors
-    /// Refuses unsafe grants, changed sources and exclusions outside the Home.
     pub fn review_selected(
         home: &Path,
         exclusions: &[std::path::PathBuf],
@@ -196,9 +193,6 @@ impl HomeSource {
         Self::review_media_preparation(home, &[], cancel, None)
     }
     /// The same media review with nested exclusions carried into the plan.
-    ///
-    /// # Errors
-    /// Refuses unsafe grants, changed sources and exclusions outside the Home.
     pub fn review_selected_for_media_preparation(
         home: &Path,
         exclusions: &[std::path::PathBuf],
@@ -695,8 +689,6 @@ impl HomeSource {
     }
     /// Approximate archive footprint, including entry headers and block padding.
     /// Extended attributes can increase it; actual filesystem bounds govern export.
-    /// # Errors
-    /// Refuses an overflowing estimate.
     pub fn archive_estimate(&self) -> io::Result<u64> {
         let entries = u64::try_from(self.entry_count()).map_err(io::Error::other)?;
         super::portable_transfer::stored_bytes(&self.pin, self.inventory()?)?
@@ -710,8 +702,6 @@ impl HomeSource {
     }
     /// Renew a completed package after a later setup-delivery failure without
     /// replacing custody or encrypting another copy.
-    /// # Errors
-    /// Refuses changed grants, source, ciphertext, password or authenticated binding.
     pub fn validate_existing(
         &self,
         media: &MediaGrant,
@@ -977,8 +967,6 @@ impl MediaGrant {
     }
     /// Publish only bounded metadata after the caller's verified export. An
     /// existing identical receipt is reusable; another receipt is never replaced.
-    /// # Errors
-    /// Refuses changed ciphertext, mismatching existing receipts or publication failure.
     pub fn publish_expectation(
         &self,
         expected: &Expectation,
@@ -1029,8 +1017,6 @@ impl MediaGrant {
     }
     /// Publish the exact completed home/setup pairing for installation transport.
     /// This public receipt locates ciphertext; it grants no identity authority.
-    /// # Errors
-    /// Refuses redirected directories, differing existing selections or failed publication.
     pub fn publish_setup_selection(
         &self,
         setup: &super::media_setup::DeliveryReceipt,

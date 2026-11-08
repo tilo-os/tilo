@@ -15,9 +15,6 @@ const OMITTED_INITRAMFS_DRIVERS: &str = "/usr/lib/tilo/initramfs-omitted-drivers
 
 /// Which of [`FILESYSTEMS`] the image's initramfs can mount, from its list of
 /// omitted drivers.
-///
-/// # Errors
-/// Refuses a list with a duplicate or unknown entry.
 pub fn filesystem_support_from_manifest(
     manifest: &str,
 ) -> Result<[bool; FILESYSTEMS.len()], String> {
@@ -48,9 +45,6 @@ pub fn filesystem_support_from_manifest(
 }
 
 /// Which of [`FILESYSTEMS`] this image's initramfs can mount.
-///
-/// # Errors
-/// Refuses a missing, untrusted or invalid driver list.
 pub fn filesystem_support() -> Result<[bool; FILESYSTEMS.len()], String> {
     use std::os::unix::fs::MetadataExt as _;
     let path = std::path::Path::new(OMITTED_INITRAMFS_DRIVERS);
@@ -168,9 +162,6 @@ pub struct SystemProtection;
 impl SystemProtection {
     /// What the destination's TPM2 and its installed target's
     /// measured-boot preflight establish.
-    ///
-    /// # Errors
-    /// Why the destination does not prove what a TPM-sealed PIN needs.
     pub fn probe(&mut self) -> Result<ProtectionReport, String> {
         // A real TPM2 protocol read, not a device-node presence test. The
         // dictionary-attack capability is what makes a short PIN defensible;

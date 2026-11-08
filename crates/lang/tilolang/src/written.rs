@@ -90,10 +90,6 @@ pub fn is_declaration(source: &str) -> bool {
 /// installed app; the host's own package and other written code are left out). Its writer is
 /// part of its package's identity: the same text two people wrote is two packages, each
 /// bounded by its own writer.
-///
-/// # Errors
-/// The diagnostics, located in `source`: a definition that is not one `view` (with functions),
-/// a name no installed app has, or anything a view in an app may not do.
 pub fn compile_view_definition(
     source: &str,
     author: &str,

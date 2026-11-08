@@ -86,9 +86,6 @@ fn verify(package: &Path, receipt: &Expectation) -> io::Result<()> {
 /// Authenticate the delivered package using bounded private stdin, returning
 /// only authenticated public installation choices. A fresh private quarantine
 /// is required; no identity/account import or active identity mutation occurs.
-///
-/// # Errors
-/// Refuses invalid grants, changed ciphertext, invalid expectations or secrets.
 pub fn run(
     args: impl IntoIterator<Item = OsString>,
     input: &mut impl Read,

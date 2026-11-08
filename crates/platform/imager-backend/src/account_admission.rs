@@ -261,9 +261,6 @@ impl ConsumerCapability {
 }
 
 /// Candidate-scoped source admission; never changes installed proof semantics.
-///
-/// # Errors
-/// Refuses invalid consumer proofs or an unauthenticated candidate namespace.
 pub fn source_candidate(required: u32, proof: &ConsumerCapability) -> io::Result<bool> {
     proof.validate()?;
     #[cfg(target_os = "linux")]
@@ -278,9 +275,6 @@ pub fn source_candidate(required: u32, proof: &ConsumerCapability) -> io::Result
 }
 
 /// Receiving admission binds the native authenticated sealed manifest's person.
-///
-/// # Errors
-/// Refuses candidate markers not bound to the measured actor and selected person.
 pub fn receiving_candidate(
     required: u32,
     sdk: &str,
@@ -300,8 +294,6 @@ pub fn receiving_candidate(
 
 /// Authenticate the actual installed consumer proof before target custody writes.
 /// The check re-executes the installed probes and compares the image receipt.
-/// # Errors
-/// Refuses old/missing consumers, untrusted artifacts, or failed native checks.
 #[cfg(target_os = "linux")]
 pub fn installed() -> io::Result<ConsumerCapability> {
     let value = crate::installed_consumers::account::check().map_err(|_| unavailable())?;

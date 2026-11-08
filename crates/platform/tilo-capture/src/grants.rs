@@ -79,10 +79,6 @@ fn invalid(what: &str) -> io::Error {
 
 impl DeviceGrants {
     /// The decisions kept at `path`; none when it does not exist yet.
-    ///
-    /// # Errors
-    ///
-    /// The file cannot be read or holds something other than decisions.
     pub fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
             path: path.to_path_buf(),

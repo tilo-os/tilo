@@ -21,9 +21,6 @@ pub const ORIGIN: &str = "youtube";
 /// Run the YouTube connector this process was started as (`TILO_TILOLANG_CONNECTOR=youtube`),
 /// on the door the launcher handed it, until the session closes the door: every instance that
 /// attaches has its questions answered by `service`.
-///
-/// # Errors
-/// No door to take instances from.
 pub fn run(service: &Arc<dyn Service>) -> Result<(), String> {
     let door = runtime_portal::origin_connector::take_door()
         .ok_or_else(|| "the launcher handed the YouTube connector no door".to_owned())?;

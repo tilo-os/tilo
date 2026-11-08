@@ -107,9 +107,6 @@ pub struct Repeat {
 impl Repeat {
     /// The repeat `text` writes, or why it is none: `FREQ=WEEKLY;INTERVAL=2`, `FREQ=DAILY`
     /// `;X-FROM=DONE`, an `RRULE:` prefix allowed as documents write one.
-    ///
-    /// # Errors
-    /// A message saying how to write it, for text that is no rule this platform expands.
     pub fn parse(text: &str) -> Result<Self, String> {
         let body = strip_rrule_prefix(text.trim());
         let how = |why: &str| {
@@ -376,9 +373,6 @@ pub struct Reminder {
 impl Reminder {
     /// The reminder `text` writes, or why it is none: `-PT15M`, `PT9H`, `P1D`, a leading `+`
     /// allowed and the letters any case.
-    ///
-    /// # Errors
-    /// A message saying how to write it, for text that is no duration.
     pub fn parse(text: &str) -> Result<Self, String> {
         let trimmed = text.trim();
         let how = |why: &str| {

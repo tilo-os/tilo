@@ -52,11 +52,6 @@ fn owned_directory(file: &File) -> io::Result<()> {
 /// Read `home/.local/state/tilo/other-device.json` through held directory
 /// descriptors. A missing descriptor is `None`; a malformed, linked,
 /// outer-owned or public object is an error.
-///
-/// # Errors
-///
-/// Refuses a relative home, a linked or outer-owned state path, a non-regular
-/// or publicly writable descriptor, an oversized file and invalid metadata.
 pub fn read_descriptor(home: &Path) -> io::Result<Option<PublicHandoff>> {
     if !home.is_absolute() {
         return Err(invalid("The other-computer handoff location is invalid"));
