@@ -1,8 +1,9 @@
 //! A simulated browser — the page's session code built natively, its device
-//! key behind the `DeviceSigner` seam — reaches the user's host only over the
-//! browser carriers: HTTPS to a local host with a development certificate
-//! (pinned by SHA-256, as the page pins it) for certification and documents.
-//! The root-holding laptop is an iroh peer of the same host.
+//! key behind the `DeviceSigner` seam — reaches the user's host over iroh, as
+//! a page does, after the HTTPS calls it makes before it has a session
+//! (certification, against a local host with a development certificate that
+//! it pins by SHA-256, as the page pins it). The root-holding laptop is an
+//! iroh peer of the same host.
 
 #![allow(
     clippy::significant_drop_tightening,

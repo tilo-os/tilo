@@ -156,7 +156,7 @@ pub struct Relay {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     /// Atomic filesystem completeness proof shared with the headless replica.
     full_replica: ReplicaProof,
-    /// What the browser carriers need to serve sessions of this relay.
+    /// What the routes a page asks before its session answer with.
     web: Box<WebContext>,
     /// The workspaces this relay governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
@@ -169,7 +169,7 @@ pub struct Relay {
     packet_server: Option<iroh_relay::server::Server>,
 }
 
-/// The relay state the browser carriers serve sessions with.
+/// The relay state the page's pre-session routes answer with.
 #[derive(Clone)]
 pub(crate) struct WebContext {
     pub(crate) relay: RelayProtocol,

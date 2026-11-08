@@ -13,7 +13,8 @@
 //! - [`compaction`] — a member device's coverage statement for a sealed
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
-//! - [`web`] — the browser carriers: HTTPS routes and the live grant;
+//! - [`web`] — the HTTPS routes a page asks a host before it holds a session,
+//!   and the live grant;
 //! - [`workspaces`] — governed workspaces over HTTPS: administration and joining;
 //! - [`directory`] — the public workspaces a host lists, and the door that
 //!   lets anyone in with the owner's default role;

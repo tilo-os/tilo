@@ -34,7 +34,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Path prefix of every browser carrier route.
+/// Path prefix of every route a page asks a host.
 pub const API_PREFIX: &str = "/peer/v1";
 /// Header carrying the session token.
 pub const SESSION_HEADER: &str = "x-tilo-session";
