@@ -220,7 +220,7 @@ impl RecordMaterializer {
             && let Ok(sync) = self.sync.read()
             && let Some(sync) = sync.as_ref()
         {
-            sync.announce_delta(&delta);
+            sync.announce_change();
         }
         projected?;
         // A pull may complete a multi-record transaction.
@@ -314,7 +314,7 @@ impl RecordMaterializer {
             && let Ok(sync) = self.sync.read()
             && let Some(sync) = sync.as_ref()
         {
-            sync.announce_delta(&delta);
+            sync.announce_change();
         }
         if live {
             Ok(BindingPlacement::Live)
@@ -546,7 +546,7 @@ impl RecordMaterializer {
                     && let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.announce_delta(&delta);
+                    sync.announce_change();
                 }
                 Ok(())
             }
@@ -649,7 +649,7 @@ impl RecordMaterializer {
                     && let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.announce_delta(&delta);
+                    sync.announce_change();
                 }
                 report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
                 continue;
@@ -712,11 +712,11 @@ impl RecordMaterializer {
                         .map_err(|_| RecordMaterializerError::TransactionRecoveryUnavailable)?;
                 }
                 let sync = self.sync.clone();
-                let broadcast = move |delta: Vec<u8>| {
+                let broadcast = move |_delta: Vec<u8>| {
                     if let Ok(current) = sync.read()
                         && let Some(current) = current.as_ref()
                     {
-                        current.announce_delta(&delta);
+                        current.announce_change();
                     }
                     Ok(())
                 };
@@ -833,11 +833,11 @@ impl RecordMaterializer {
                         .apply_mutation_transaction(&transaction)
                         .map_err(|_| RecordMaterializerError::TransactionRejected)?
                 };
-                if let Some(delta) = delta
+                if delta.is_some()
                     && let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.announce_delta(&delta);
+                    sync.announce_change();
                 }
             }
             report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
@@ -994,7 +994,7 @@ impl RecordMaterializer {
             && let Ok(sync) = self.sync.read()
             && let Some(sync) = sync.as_ref()
         {
-            sync.announce_delta(&delta);
+            sync.announce_change();
         }
         report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
         Ok(())
@@ -1096,11 +1096,11 @@ impl RecordMaterializer {
             let delta = changed.then(|| namespace.save_incremental());
             drop(projection);
             drop(namespace);
-            if let Some(delta) = delta
+            if delta.is_some()
                 && let Ok(sync) = self.sync.read()
                 && let Some(sync) = sync.as_ref()
             {
-                sync.announce_delta(&delta);
+                sync.announce_change();
             }
             return Ok(());
         }
@@ -1160,13 +1160,13 @@ impl RecordMaterializer {
                 if !changed {
                     return Err(RecordMaterializerError::NamespaceUnavailable);
                 }
-                let delta = namespace.save_incremental();
+                namespace.save_incremental();
                 drop(projection);
                 drop(namespace);
                 if let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.announce_delta(&delta);
+                    sync.announce_change();
                 }
             }
             RecordOperationV1::AppendVersion(version) => {
@@ -1205,13 +1205,13 @@ impl RecordMaterializer {
                 if !namespace.set_content_revision(ino, revision, observed_at_ms) {
                     return Err(RecordMaterializerError::NamespaceUnavailable);
                 }
-                let delta = namespace.save_incremental();
+                namespace.save_incremental();
                 drop(projection);
                 drop(namespace);
                 if let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.announce_delta(&delta);
+                    sync.announce_change();
                 }
             }
             RecordOperationV1::AppendConflict(_) | RecordOperationV1::ResolveConflict { .. } => {

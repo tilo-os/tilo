@@ -9,6 +9,10 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub(super) struct WorkspaceStatus {
     schema_version: u8,
+    /// A signed authority is what initialization, recovery and every owner
+    /// wrote: a mount's tree itself may only arrive with the first mount,
+    /// from the workspace's Files record.
+    saved_authority: bool,
     saved_namespace: bool,
     local_workspace_id: Option<uuid::Uuid>,
     discovered_workspace_id: Option<uuid::Uuid>,
@@ -16,14 +20,10 @@ pub(super) struct WorkspaceStatus {
 }
 
 impl WorkspaceStatus {
-    pub(super) fn can_resume_existing(&self) -> bool {
-        self.can_resume_existing
-    }
-
     pub(super) fn require_existing(&self) -> Result<()> {
         anyhow::ensure!(
             self.can_resume_existing,
-            "no saved Files namespace or discovered remote workspace; recover the existing workspace first, or explicitly initialize a new workspace (not recovered data)"
+            "no saved Files authority or discovered remote workspace; recover the existing workspace first, or explicitly initialize a new workspace (not recovered data)"
         );
         Ok(())
     }
@@ -44,6 +44,7 @@ fn regular_file(path: &Path) -> Result<bool> {
 }
 
 pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
+    let saved_authority = regular_file(&cache.join("workspace-authority.bin"))?;
     let saved_namespace = regular_file(&cache.join("namespace.bin"))?;
     let ticket_path = cache.join("workspace-ticket");
     let local_workspace_id = if regular_file(&ticket_path)? {
@@ -72,14 +73,15 @@ pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
             "saved namespace and discovered workspace disagree; use a separate cache"
         );
     }
-    // A ticket alone cannot restore a local namespace. Discovery, unlike an
+    // A ticket alone cannot restore a local workspace. Discovery, unlike an
     // old host ticket, supplies the authenticated endpoint to bootstrap from.
     Ok(WorkspaceStatus {
         schema_version: 1,
+        saved_authority,
         saved_namespace,
         local_workspace_id,
         discovered_workspace_id,
-        can_resume_existing: saved_namespace || discovered.is_some(),
+        can_resume_existing: saved_authority || saved_namespace || discovered.is_some(),
     })
 }
 
@@ -216,6 +218,32 @@ mod tests {
             serde_json::to_vec(&peers).unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_saved_signed_authority_resumes_a_workspace_with_no_tree_yet() {
+        use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+        let dir = tempfile::tempdir().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let person = root.verifying_key().to_bytes();
+        let workspace = Ticket::workspace_id_for_topic(person);
+        let envelope =
+            WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root).unwrap();
+        WorkspaceAuthority::open(
+            dir.path().join("workspace-authority.bin"),
+            workspace,
+            person,
+            person,
+            Vec::new(),
+        )
+        .unwrap()
+        .apply(envelope)
+        .unwrap();
+        // The tree itself arrives with the first mount, from the workspace's
+        // Files record.
+        assert!(!dir.path().join("namespace.bin").exists());
+        inspect(dir.path()).unwrap().require_existing().unwrap();
+        assert_eq!(inspect(dir.path()).unwrap().discovered_workspace_id, None);
     }
 
     #[test]
