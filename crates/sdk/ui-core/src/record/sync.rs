@@ -3,9 +3,9 @@
 //! A host that replicates an open record itself — a page's window over its
 //! peer, an attached view over its caller — keeps the record's frontier and
 //! sends the record whole the first time, its changes after. Merging a peer's
-//! change advances the frontier over exactly the changes it carried, so
-//! nothing the peer sent is echoed back and this replica's own changes stay
-//! to go out.
+//! change advances the frontier over exactly the changes it carried, so a
+//! route that publishes this replica's own changes never sends it back, and
+//! what this replica made stays to go out.
 
 use automerge::ChangeHash;
 use collab_types::DocumentMutation;
@@ -117,7 +117,8 @@ impl RecordSync {
     }
 
     /// Merge a peer's `mutation` into the open record; whether it changed.
-    /// What the mutation carried is never sent back on this frontier.
+    /// What the mutation carried is noted on the frontier, as this replica's
+    /// peers hold it already.
     ///
     /// # Errors
     /// The bytes are not a valid mutation of this record, or it is not open.
@@ -132,8 +133,9 @@ impl RecordSync {
         Ok(changed)
     }
 
-    /// Move this replica's own changes past the frontier, to send with
-    /// [`Self::take_set_aside`] whenever the caller gets to publish them.
+    /// Move this replica's own changes past the frontier and keep them for
+    /// [`Self::take_set_aside`]: for a caller that publishes on its own
+    /// schedule and cannot take the frontier's heads itself.
     ///
     /// # Errors
     /// The record is not open here or its owner is busy.
