@@ -3,35 +3,13 @@
 //! window is named by its app and a short digest of its record only, which a viewer matches against
 //! the records it holds itself; nothing of the window's content travels.
 
+use collab_types::presence::{ShownLayout as MemberLayout, ShownWindow as MemberWindow};
 use vello::kurbo::Rect;
 
 /// A window's edges are in this many parts of the screen's width or height.
 const UNITS: f64 = 10_000.0;
 /// Most windows a screen shows, as the wire carries at most.
 const MAX_WINDOWS: usize = 8;
-
-/// A member's layout as the page passes it: `{size, windows: [{app, record,
-/// rect, focused}]}`, `record` 16 hex digits, edges in 1/10000 of `size`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct MemberLayout {
-    #[serde(default)]
-    pub size: [u16; 2],
-    #[serde(default)]
-    pub windows: Vec<MemberWindow>,
-}
-
-/// One window of a [`MemberLayout`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct MemberWindow {
-    #[serde(default)]
-    pub app: String,
-    #[serde(default)]
-    pub record: String,
-    #[serde(default)]
-    pub rect: [u16; 4],
-    #[serde(default)]
-    pub focused: bool,
-}
 
 /// Someone's screen: its shape and their windows on it, back to front.
 #[derive(Clone, Debug, PartialEq)]

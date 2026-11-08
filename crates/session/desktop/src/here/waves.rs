@@ -19,13 +19,7 @@ use super::{HereState, LiveMember};
 pub const WAVE_AGAIN_MS: u64 = 60_000;
 
 /// A wave as a member's presence carries it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-pub struct Wave {
-    /// Per-publisher counter; a new value is a new wave.
-    pub seq: u32,
-    /// Whom it is for: their live publisher.
-    pub target: String,
-}
+pub use collab_types::presence::ShownWave as Wave;
 
 /// Someone waved at this person: who, as everyone here sees them.
 #[derive(Clone, Debug, PartialEq, Eq)]
