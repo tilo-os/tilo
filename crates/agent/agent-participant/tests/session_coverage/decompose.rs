@@ -90,12 +90,12 @@ async fn coordinated(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, first) = coordinated(
+    let (mut workspace, ours, task, first) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT],
         "In Chat, post Alpha ready, Bravo ready and Charlie ready",
-    )
+    ))
     .await;
     let request: serde_json::Value = serde_json::from_str(&first).unwrap();
     assert!(request["tools"].to_string().contains("\"adjust\""));
@@ -190,12 +190,12 @@ async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, _ours, task, first) = coordinated(
+    let (mut workspace, _ours, task, first) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT, SHEETS],
         "Write Alpha in the sheet, then post Alpha ready in Chat",
-    )
+    ))
     .await;
     assert!(offers(&first, "set-cells") && offers(&first, "post"));
     answer
@@ -254,12 +254,12 @@ async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, _) = coordinated(
+    let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT],
         "Ask Rae in Chat for the LR-2041 code, then post that you signed in with it",
-    )
+    ))
     .await;
     answer
         .send(plan_call(
@@ -322,12 +322,12 @@ async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, _) = coordinated(
+    let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT],
         "In Chat, post Alpha ready and Bravo ready",
-    )
+    ))
     .await;
     answer
         .send(plan_call(
@@ -453,7 +453,7 @@ fn reply_only(id: &str, reply: &str) -> serde_json::Value {
 async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
     let (url, sent, answer) = answered_model_endpoint();
     let (mut workspace, ours, task, _) =
-        coordinated(&url, &sent, &[CHAT], "In Chat, post Alpha ready").await;
+        Box::pin(coordinated(&url, &sent, &[CHAT], "In Chat, post Alpha ready")).await;
     answer
         .send(plan_call(
             "c1",
@@ -497,13 +497,13 @@ async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, _ours, task, _) = coordinated(
+    let (mut workspace, _ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT, SHEETS],
         "Write Alpha in the sheet, read what Rae requested in Chat, then post which \
              request it was",
-    )
+    ))
     .await;
     answer
         .send(plan_call(
@@ -606,12 +606,12 @@ async fn item_1_fails(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, _) = coordinated(
+    let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT],
         "In Chat, post Alpha ready, then Bravo ready",
-    )
+    ))
     .await;
     let failed = item_1_fails(&mut workspace, &sent, &answer).await;
     assert!(
@@ -674,12 +674,12 @@ async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_items_after_a_failed_one_run_when_the_coordinator_goes_on() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, _) = coordinated(
+    let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT],
         "In Chat, post Alpha ready, then Bravo ready",
-    )
+    ))
     .await;
     item_1_fails(&mut workspace, &sent, &answer).await;
     answer.send(reply_only("c2", "Go on without it.")).unwrap();
@@ -717,12 +717,12 @@ async fn the_items_after_a_failed_one_run_when_the_coordinator_goes_on() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, _) = coordinated(
+    let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT],
         "Wait for Rae's LR-2041 code in Chat and post that you signed in; post Bravo ready",
-    )
+    ))
     .await;
     answer
         .send(plan_call(
@@ -791,12 +791,12 @@ async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_wait_ends_on_what_arrived_before_it_began() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, _) = coordinated(
+    let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT],
         "Post Alpha ready in Chat, wait for Rae's LR-2041 code, then post it",
-    )
+    ))
     .await;
     answer
         .send(plan_call(
@@ -855,12 +855,12 @@ async fn a_held_wait_ends_on_what_arrived_before_it_began() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
     let (url, sent, answer) = answered_model_endpoint();
-    let (mut workspace, ours, task, _) = coordinated(
+    let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
         &[CHAT],
         "In Chat, post Alpha ready and Bravo ready",
-    )
+    ))
     .await;
     answer
         .send(plan_call(

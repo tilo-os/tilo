@@ -17,7 +17,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 use tilo_model_host::ModelService;
 use tube::TubeShell;
 use tube_model::Library;
@@ -55,24 +55,15 @@ impl Host {
         let reading =
             <ModelService as tilo_service::Service>::read(&*self.service.borrow(), LIBRARY)
                 .expect("the session reads the library");
-        reading["subscriptions"]
-            .as_array()
+        reading
+            .get("subscriptions")
+            .and_then(|subs| subs.as_array())
             .map(|subs| {
                 subs.iter()
                     .filter_map(|sub| sub.as_str().map(str::to_owned))
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    fn commit(&self, action: &str, arguments: Map<String, Value>) {
-        <ModelService as tilo_service::Service>::invoke(
-            &mut *self.service.borrow_mut(),
-            LIBRARY,
-            action,
-            &arguments,
-        )
-        .expect("the session commits the library's verb");
     }
 }
 
@@ -109,17 +100,11 @@ fn open(host: &Rc<Host>) -> TestApp<TubeShell> {
 
 #[test]
 fn the_window_shows_the_library_the_session_serves() {
-    // A subscription the session already keeps: the app's process holds no document, and what
-    // the window shows comes from the session's reading.
-    let host = Host::new();
-    let mut arguments = Map::new();
-    arguments.insert("path".to_owned(), Value::String("subscriptions".to_owned()));
-    let _ = arguments;
     // The library is served at genesis with nothing subscribed; the window draws that, over the
     // session's reading.
+    let host = Host::new();
     let mut app = open(&host);
     app.frame();
-    // Nothing is subscribed in the session's record yet.
     assert_eq!(host.subscribed(), Vec::<String>::new());
 }
 

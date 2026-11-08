@@ -2099,10 +2099,6 @@ mod tests {
     /// workspace's link is no invitation at all. Once it lets anyone in again,
     /// members no longer invite.
     #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one story: the door, an invitation redeeming itself and taking it back"
-    )]
     async fn taking_people_by_invitation_the_invitation_admits_the_guest() {
         let dir = tempfile::tempdir().unwrap();
         let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;

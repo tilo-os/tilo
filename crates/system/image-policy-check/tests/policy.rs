@@ -674,9 +674,10 @@ fn the_dev_key_is_accepted_only_in_the_two_dev_repositories_and_only_alone() {
     ] {
         let mut policy = dev_policy();
         policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-vm"] = weaken.clone();
-        if check_developer(&policy.to_string(), &key_trust()).is_ok() {
-            panic!("developer mode accepted {weaken}");
-        }
+        assert!(
+            check_developer(&policy.to_string(), &key_trust()).is_err(),
+            "developer mode accepted {weaken}"
+        );
     }
 }
 

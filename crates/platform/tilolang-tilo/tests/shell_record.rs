@@ -970,14 +970,14 @@ fn banner_line_of(r: &Replica) -> String {
     // A desk with room for the toolkit's banner: the width a display's window has.
     view.set_space("", tilolang_runtime::Space::from_rem(90.0, 50.0));
     view.poll_patches().unwrap();
-    if let Some(banner) = nodes(&view, "ui.Banner").first() {
-        if let Some(Value::Text(message)) = banner.props.get("message") {
-            return message.clone();
-        }
+    if let Some(banner) = nodes(&view, "ui.Banner").first()
+        && let Some(Value::Text(message)) = banner.props.get("message")
+    {
+        return message.clone();
     }
     let row = nodes(&view, "ui.ListRow")
         .into_iter()
-        .find(|row| row.props.get("secondary").is_some())
+        .find(|row| row.props.contains_key("secondary"))
         .unwrap_or_else(|| panic!("the desk shows the notice: {:?}", view.tree()));
     match row.props.get("secondary") {
         Some(Value::Text(secondary)) => secondary.clone(),
