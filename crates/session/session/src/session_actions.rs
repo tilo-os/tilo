@@ -42,16 +42,26 @@ impl SessionActions {
     }
 
     /// Publish the rows the session's own door offers now, as its pass read them: what the
-    /// broker's catalogue lists from here on.
-    pub(crate) fn offer(&self, rows: Vec<tilo_actions::door::PlacedAction>) {
+    /// broker's catalogue lists from here on. Whether they are new: a pass that read the same
+    /// rows again changes nothing, and no catalogue is rebuilt for it.
+    pub(crate) fn offer(&self, rows: Vec<tilo_actions::door::PlacedAction>) -> bool {
         match self.rows.write() {
-            Ok(mut held) => *held = rows,
-            Err(poisoned) => *poisoned.into_inner() = rows,
+            Ok(mut held) if *held == rows => false,
+            Ok(mut held) => {
+                *held = rows;
+                true
+            }
+            Err(poisoned) => {
+                let mut held = poisoned.into_inner();
+                let changed = *held != rows;
+                *held = rows;
+                changed
+            }
         }
     }
 
     /// The rows offered now, as the last pass read them.
-    fn offered(&self) -> Vec<tilo_actions::door::PlacedAction> {
+    pub(crate) fn offered(&self) -> Vec<tilo_actions::door::PlacedAction> {
         match self.rows.read() {
             Ok(held) => held.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),

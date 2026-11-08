@@ -1298,7 +1298,14 @@ mod tests {
             lists,
             tools: None,
             task_programs: None,
-            session_actions: None,
+            session_actions: Some(std::sync::Arc::new(
+                crate::session_actions::SessionActions::new(std::sync::Arc::new(
+                    crate::agent_door::SessionDoors::new(
+                        tilo_service::LoopWake::default().handle(),
+                        "Pat",
+                    ),
+                )),
+            )),
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),

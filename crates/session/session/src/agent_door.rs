@@ -1246,6 +1246,9 @@ pub(crate) struct SessionDoors {
     wake: Wake,
     /// Who sits here: the person a program typed in a conversation runs as.
     person: String,
+    /// The session's own actions, which it hands to a connection's door as they are read on
+    /// its pass: `None` on a session that serves no broker and lists them itself.
+    actions: std::sync::OnceLock<Arc<crate::session_actions::SessionActions>>,
 }
 
 /// How long a connection's thread waits on the session's pass for an answer (its record, a
@@ -1275,7 +1278,18 @@ impl SessionDoors {
             asks: std::sync::Mutex::new(Vec::new()),
             wake,
             person: person.to_owned(),
+            actions: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The session's own actions this door hands a connection, once the session has them.
+    pub(crate) fn keep_actions(&self, actions: Arc<crate::session_actions::SessionActions>) {
+        let _ = self.actions.set(actions);
+    }
+
+    /// The session's own actions, once they are made.
+    pub(crate) fn actions(&self) -> Option<Arc<crate::session_actions::SessionActions>> {
+        self.actions.get().cloned()
     }
 
     fn ask(&self, ask: DoorAsk) {
@@ -1450,6 +1464,9 @@ pub(crate) struct Host {
     session: Arc<SessionDoors>,
     /// What the person's own steps answered, by invocation, for a later look.
     answered: Arc<std::sync::Mutex<Answered>>,
+    /// The session's own actions, when this session serves them: a desktop with no broker
+    /// lists them itself.
+    session_actions: Option<Arc<crate::session_actions::SessionActions>>,
 }
 
 impl Host {
@@ -1459,7 +1476,18 @@ impl Host {
             state,
             session,
             answered: Arc::default(),
+            session_actions: None,
         }
+    }
+
+    /// The same door, listing and answering the session's own actions from `actions` when this
+    /// desktop runs no broker.
+    pub(crate) fn with_session_actions(
+        mut self,
+        actions: Option<Arc<crate::session_actions::SessionActions>>,
+    ) -> Self {
+        self.session_actions = actions;
+        self
     }
 
     /// An invocation the person at this seat made through the seat's own control doors: the
@@ -1493,6 +1521,17 @@ impl Host {
         request: InvokeRequest,
         at_seat: bool,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        // The seat's own doors, and a desktop with no broker at all, reach the session's own
+        // actions on the loop: the broker is the gate for a caller on another's word, and the
+        // person at this seat is nobody's delegate.
+        let own = request.target.provider == wire_provider();
+        if matches!(
+            caller.principal(),
+            tilo_actions::remote::CallerPrincipal::Person(_)
+        ) && (own || self.state.is_none())
+        {
+            return self.invoke_person_step(caller, request);
+        }
         match &self.state {
             Some(state) if at_seat => state.action_invoke_local_person(caller, &request),
             Some(state) => state.action_invoke(caller, None, None, &request),
@@ -1502,8 +1541,26 @@ impl Host {
         }
     }
 
-    /// A person's own step on the session's actions: handed to the loop, which is where they
-    /// run, and answered as the door answers an invocation.
+    /// The session's own actions as rows, as the kind of publisher its own door is, for a
+    /// desktop that runs no broker.
+    fn session_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
+        let rows = match &self.session_actions {
+            Some(actions) => actions.offered(),
+            None => Vec::new(),
+        };
+        rows.into_iter()
+            .map(|placed| {
+                tilo_actions::remote::CatalogueRow::for_placed_action(
+                    wire_provider(),
+                    wire_provider(),
+                    placed,
+                )
+            })
+            .collect()
+    }
+
+    /// A person's own step: handed to the loop, which is where the session's own doors are,
+    /// and answered as the door answers an invocation.
     fn invoke_person_step(
         &self,
         caller: &Caller,
@@ -1557,9 +1614,14 @@ impl ActionHost for Host {
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         match &self.state {
             Some(state) => state.action_query(caller, &query),
-            None => Pending::ready(Err(ActionHostError::Unavailable {
-                reason: "this desktop's actions are not running here".to_owned(),
-            })),
+            // A desktop that runs no broker (a session in a window of another, a test with no
+            // action plane) still publishes its own actions: they are read on the loop and
+            // held here, so the door lists them itself.
+            None => Pending::ready(Ok(CataloguePage::from_rows(
+                String::new(),
+                self.session_rows(),
+                &query,
+            ))),
         }
     }
 
@@ -1573,16 +1635,10 @@ impl ActionHost for Host {
         // through the broker, which decides for an actor on another's word but has no
         // certificate for the person alone. An agent's step is the turn's, and the broker
         // decides it exactly as it decides the agent's app action in that turn.
-        if matches!(
-            caller.principal(),
-            tilo_actions::remote::CallerPrincipal::Person(_)
-        ) && request.target.provider == wire_provider()
-        {
-            return self.invoke_person_step(caller, request);
-        }
         // An admitted connection invokes as itself: the broker decides by its per-action and
         // per-role permissions. Seat custody belongs to the seat's own control doors alone
-        // ([`Host::invoke_at_seat`]).
+        // ([`Host::invoke_at_seat`]), and the person's own steps on the session go to the loop
+        // wherever they come from ([`Host::invoke_within`]).
         self.invoke_within(caller, request, false)
     }
 
@@ -1950,7 +2006,7 @@ fn serve_connection(
     let ended = tilo_runtime::session_door::serve_after(
         stream,
         Some(first),
-        || Ok(Host::new(Some(broker), Arc::clone(session))),
+        || Ok(Host::new(Some(broker), Arc::clone(session)).with_session_actions(session.actions())),
         Some(tasks as Arc<dyn tilo_runtime::mcp::TaskHosts>),
         |hello, connected| {
             let consent = ask(requests, wake, facts, hello, connected, seat);

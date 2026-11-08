@@ -568,9 +568,6 @@ pub struct Session {
     /// The workspace in front, as this pass last read it: a change is a
     /// switch to time.
     active_workspace: Option<u64>,
-    /// Where the session's own actions stood when every agent following the catalogue was last
-    /// handed them: a change of what it offers is a new catalogue.
-    session_actions_seen: std::cell::Cell<Option<u64>>,
     /// The session's own actions, as the broker's steps: what each pass hands the rows it read.
     session_actions: Option<std::sync::Arc<session_actions::SessionActions>>,
     /// When the desk's own bookkeeping last read it.
@@ -1349,6 +1346,7 @@ impl Session {
         let session_actions = std::sync::Arc::new(session_actions::SessionActions::new(
             std::sync::Arc::clone(&session_doors),
         ));
+        session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = agent_door::Seats::new();
         let desk = || desk_resource::Desk {
@@ -1637,10 +1635,13 @@ impl Session {
         // program inside an app this session started is served at it too.
         let control = test_control::Control::open(
             &options,
-            std::sync::Arc::new(agent_door::Host::new(
-                action_plane.as_ref().and_then(Plane::agent_broker),
-                std::sync::Arc::clone(&session_doors),
-            )),
+            std::sync::Arc::new(
+                agent_door::Host::new(
+                    action_plane.as_ref().and_then(Plane::agent_broker),
+                    std::sync::Arc::clone(&session_doors),
+                )
+                .with_session_actions(Some(std::sync::Arc::clone(&session_actions))),
+            ),
         );
         tilo_startup_metrics::mark("control-door-open");
         let door = agent_door::mount_named(
@@ -2085,7 +2086,6 @@ impl Session {
             ended: false,
             first_frame: false,
             active_workspace: None,
-            session_actions_seen: std::cell::Cell::default(),
             session_actions: Some(std::sync::Arc::clone(&session_actions)),
             kept_at: Instant::now(),
             tool_input: std::time::Duration::ZERO,
@@ -2787,41 +2787,19 @@ impl Session {
     /// are the same the REPL lists, so an agent arranging the screen sees what the person's own
     /// door publishes (shell.md §8.1, "Any action").
     fn follow_session_actions(&self) {
-        let Some(plane) = &self.action_plane else {
+        let Some(actions) = &self.session_actions else {
             return;
         };
-        let Some(broker) = plane.action_broker() else {
-            return;
-        };
-        // Where what the session offers stands, as the same reading the door's own listing
-        // takes: a surface that cannot tell names its rows itself, so a listing that moved is
-        // always a new revision.
-        let revision = {
-            use std::hash::{Hash as _, Hasher as _};
-            let mut hasher = std::hash::DefaultHasher::new();
-            match self.shared.doors.revision() {
-                Some(revision) => revision.hash(&mut hasher),
-                None => {
-                    for descriptor in tilo_actions::door::survey(&self.shared.doors.resources()) {
-                        descriptor.address.resource.hash(&mut hasher);
-                        descriptor.address.action.hash(&mut hasher);
-                    }
-                }
+        // The rows read here, on the loop that holds the arrangement: nothing off this thread
+        // reads a place. What is offered is compared with what was offered before — a live
+        // surface's revision moves every pass, and a catalogue rebuilt for it would cost the
+        // loop every frame — so the broker is told only when the rows themselves moved.
+        let rows = tilo_actions::door::survey_placed(&self.shared.doors.resources());
+        if actions.offer(rows) {
+            if let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker) {
+                broker.host_steps_changed();
             }
-            hasher.finish()
-        };
-        if self.session_actions_seen.get() == Some(revision) {
-            return;
         }
-        self.session_actions_seen.set(Some(revision));
-        // The rows are read here, on the loop that holds the arrangement, and handed to the
-        // broker's catalogue: nothing off this thread reads a place.
-        if let Some(actions) = &self.session_actions {
-            actions.offer(tilo_actions::door::survey_placed(
-                &self.shared.doors.resources(),
-            ));
-        }
-        broker.state().host_steps_changed();
     }
 
     /// Keep the workspaces this session takes part in current with the
