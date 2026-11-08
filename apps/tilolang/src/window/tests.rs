@@ -732,6 +732,56 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
     );
 }
 
+/// A change mark lists what a run changed, each item titled by the item: pressing one opens that
+/// item beside the list.
+#[test]
+fn a_change_marks_item_opens_the_note_it_names() {
+    let mut workspace = Workspace::new("notes");
+    let (notebook, new_note) = new_note_on_the_door();
+    workspace
+        .applies_as(Some(task()), &notebook, &new_note, &Json::Null)
+        .unwrap();
+    let item = key_ending(&workspace.composed(), "~change~since-0~item")
+        .expect("the mark lists what the run made");
+    assert_eq!(
+        workspace.window.detail_target(),
+        None,
+        "the mark's item does not open itself"
+    );
+    workspace.fire(&item, "press", None);
+    let opened = workspace
+        .window
+        .detail_target()
+        .cloned()
+        .expect("pressing the mark's item opens it");
+    let host = workspace.window.current_host().unwrap();
+    let root = host.root_of("so.tilo.lang.notes").unwrap();
+    let RtValue::List(notes) = host.runtime().read(&root, "notes").unwrap() else {
+        panic!("the notebook lists its notes");
+    };
+    let notes: Vec<String> = notes
+        .into_iter()
+        .filter_map(|note| match note {
+            RtValue::Ref(note) => Some(note.target.id_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notes.contains(&opened.id_string()),
+        "the mark opened a note of the notebook: {opened:?}, {notes:?}"
+    );
+}
+
+/// The key of the composed node whose key ends with `suffix`.
+fn key_ending(node: &UiNode, suffix: &str) -> Option<String> {
+    if node.key.ends_with(suffix) {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| key_ending(child, suffix))
+}
+
 /// The published id and action id of the notebook's "New note".
 fn new_note_on_the_door() -> (String, String) {
     let descriptor = Workspace::surveyed()

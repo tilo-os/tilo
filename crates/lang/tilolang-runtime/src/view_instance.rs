@@ -629,12 +629,19 @@ impl ViewInstance {
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
-    /// `open(r)`: the host goes to the window of `r`.
+    /// `open(r, view, front)`: the host goes to the window of `r`. The view and whether a narrow
+    /// window brings it in front are left out where a host wires the reference itself (a change
+    /// mark's item), and take what `open` declares for them: the type's default view, in front.
     fn platform_open(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-        let (Some(Value::Ref(r)), Some(view)) = (aref.args.first(), aref.args.get(1)) else {
+        let Some(Value::Ref(r)) = aref.args.first() else {
             return Err(RuntimeError::BadArgs("a malformed `open`".into()));
         };
-        let view = view.as_text().filter(|v| !v.is_empty()).map(str::to_owned);
+        let view = aref
+            .args
+            .get(1)
+            .and_then(Value::as_text)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned);
         let front = !matches!(aref.args.get(2), Some(Value::Bool(false)));
         self.events.borrow_mut().push(ViewEvent::Open {
             target: ResourceRef::clone(&r.target),
