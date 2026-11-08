@@ -23,7 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
 use registry_types::{
     PublisherAuthorization, RegistryEntry, RegistryVersion, SignedRegistrySnapshot, sign_entry,
@@ -32,7 +31,7 @@ use registry_types::{
 use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
-use crate::registry_to_installed::{native_target, scoped_env, tilo_install_bin};
+use crate::registry_to_installed::{Device, native_target, registry_config};
 
 const APP_ID: &str = "so.tilo.linked-e2e";
 
@@ -362,34 +361,15 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         &needed,
     );
 
-    let config = tempfile::tempdir().unwrap();
-    let cache = tempfile::tempdir().unwrap();
-    let apps = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "local".into(),
-                base_url: base.clone(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config.path()),
-        ("TILO_STORE_CACHE_DIR", cache.path()),
-        ("TILO_APPS_DATA_DIR", apps.path()),
-        ("TILO_INSTALL_BIN", &installer),
-        ("TILO_RUNTIME_BUNDLE_DIR", &runtimes),
-        ("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust),
-        ("XDG_DATA_HOME", data.path()),
-    ]);
+    let _device = Device::new(
+        Some(registry_config("local", &base, &owner)),
+        &[
+            ("TILO_RUNTIME_BUNDLE_DIR", &runtimes),
+            ("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust),
+            ("XDG_DATA_HOME", data.path()),
+        ],
+    );
     assert!(app_cli::runtime_installed(&format!(
         "tilo-runtime/{device_version}"
     )));
@@ -781,34 +761,15 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
         None,
     );
     served.put("/entries", serde_json::to_vec(&first).unwrap());
-    let config = tempfile::tempdir().unwrap();
-    let cache = tempfile::tempdir().unwrap();
-    let apps = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    std::fs::write(
-        config.path().join("registries.toml"),
-        toml::to_string_pretty(&RegistriesFile {
-            registries: vec![RegistryConfig {
-                name: "local".into(),
-                base_url: base,
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            }],
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let installer = tilo_install_bin();
-    let _env = scoped_env(&[
-        ("TILO_STORE_CONFIG_DIR", config.path()),
-        ("TILO_STORE_CACHE_DIR", cache.path()),
-        ("TILO_APPS_DATA_DIR", apps.path()),
-        ("TILO_INSTALL_BIN", &installer),
-        ("TILO_RUNTIME_BUNDLE_DIR", &runtimes),
-        ("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust),
-        ("XDG_DATA_HOME", data.path()),
-    ]);
+    let _device = Device::new(
+        Some(registry_config("local", &base, &owner)),
+        &[
+            ("TILO_RUNTIME_BUNDLE_DIR", &runtimes),
+            ("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust),
+            ("XDG_DATA_HOME", data.path()),
+        ],
+    );
     let offer = app_cli::available()
         .apps
         .into_iter()
