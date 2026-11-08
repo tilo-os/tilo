@@ -846,7 +846,7 @@ impl Live {
     /// Run boundary `id` and build its tree, re-running only the view calls inside it that
     /// changed. Returns the tree; the boundary's record is updated.
     fn render(&mut self, core: &Rc<Core>, id: BoundId) -> Result<UiNode, RuntimeError> {
-        let (target, args, depth, key, old_children) = {
+        let (target, args, depth, key, old_children, row) = {
             let b = self
                 .bound(id)
                 .ok_or_else(|| RuntimeError::Package("a vanished boundary".into()))?;
@@ -856,8 +856,18 @@ impl Live {
                 b.depth,
                 b.key.clone(),
                 b.children.clone(),
+                b.lazy.then(|| b.path.clone()),
             )
         };
+        // A row of a `list` that stands a divider where its unseen part starts: the divider
+        // already says which rows are new, so a row there says it no further.
+        let says_new = row
+            .as_deref()
+            .and_then(|path| path.split_last().and_then(|(_, above)| self.node_at(above)))
+            .is_some_and(|list| {
+                crate::view::is_virtual(&list.kind)
+                    && list.props.contains_key(crate::render::UNREAD)
+            });
         let old: HashMap<String, BoundId> = old_children
             .iter()
             .filter_map(|c| self.bound(*c).map(|b| (b.key.clone(), *c)))
@@ -887,6 +897,7 @@ impl Live {
             offer,
             Some(Scoped {
                 prefix,
+                says_new,
                 boundaries: Some(&mut builder),
             }),
         );

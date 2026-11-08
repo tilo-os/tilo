@@ -133,9 +133,31 @@ pub(crate) struct Walk<'a> {
     pub prefix: Option<&'a str>,
     /// Whether the nodes here are the rows of a `list`.
     pub in_list: bool,
+    /// Whether the nodes here are a row of a `list` that stands a divider where its unseen part
+    /// starts (`unread:`), which already says of a row there that it is new.
+    pub says_new: bool,
     /// How many rows that list shows, when it is a card's preview (its `preview` property):
     /// the rows after those are never shown, so they are not built.
     pub preview: Option<usize>,
+}
+
+impl<'a> Walk<'a> {
+    /// The walk of `n`'s children, reached under `key` from `walk`.
+    fn below(walk: Self, n: &'a NodeBuild, key: &'a str) -> Self {
+        // A view call's keys are the same at every call site, so they go under the call's key.
+        let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW) || n.kind == SHOW;
+        let listed = crate::view::is_virtual(&n.kind);
+        Self {
+            level: walk.level.saturating_add(1),
+            prefix: if calls { Some(key) } else { walk.prefix },
+            in_list: listed,
+            says_new: walk.says_new || (listed && n.props.contains_key(UNREAD)),
+            preview: match n.props.get(PREVIEW) {
+                Some(Value::Int(rows)) if n.kind == "list" => usize::try_from(*rows).ok(),
+                _ => None,
+            },
+        }
+    }
 }
 
 /// A view call met while building a tree: the boundary the host renders.
@@ -188,6 +210,9 @@ pub(crate) struct VirtualRows {
 /// How a boundary is rendered: under which key, and who renders its view calls.
 pub(crate) struct Scoped<'p, 'b> {
     pub prefix: Option<&'p str>,
+    /// Whether the tree rendered is a row of a `list` that stands a divider where its unseen
+    /// part starts (`unread:`) (see [`Walk::says_new`]).
+    pub says_new: bool,
     pub boundaries: Option<&'b mut dyn Boundaries>,
 }
 
@@ -336,14 +361,19 @@ impl Core {
             nodes: &state.nodes,
             offer,
         };
-        let (prefix, hook) = match scoped {
-            Some(Scoped { prefix, boundaries }) => (prefix, boundaries),
-            None => (None, None),
+        let (prefix, says_new, hook) = match scoped {
+            Some(Scoped {
+                prefix,
+                says_new,
+                boundaries,
+            }) => (prefix, says_new, boundaries),
+            None => (None, false, None),
         };
         let walk = Walk {
             level: 0,
             prefix,
             in_list: false,
+            says_new,
             preview: None,
         };
         let tree = self.build_node(&cx, root, walk, &mut acc, hook)?;
@@ -495,21 +525,7 @@ impl Core {
                 Err(error) => return Err(error),
             }
         }
-        // A view call's keys are the same at every call site, so they go under the call's key.
-        let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW) || n.kind == SHOW;
-        let below = Walk {
-            level: walk.level.saturating_add(1),
-            prefix: if calls {
-                Some(key.as_str())
-            } else {
-                walk.prefix
-            },
-            in_list: crate::view::is_virtual(&n.kind),
-            preview: match n.props.get(PREVIEW) {
-                Some(Value::Int(rows)) if n.kind == "list" => usize::try_from(*rows).ok(),
-                _ => None,
-            },
-        };
+        let below = Walk::below(walk, n, key.as_str());
         let (mut children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
         let mut props = n.props.clone();
         // A list draws its "New messages" divider where the app said its reader stopped: over
@@ -558,6 +574,7 @@ impl Core {
                 &mut node,
                 (cx.offer.viewer, cx.offer.window),
                 listed.as_deref(),
+                walk,
                 acc,
             )?;
         }
