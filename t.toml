@@ -1658,6 +1658,20 @@ timeout_secs = 5400
 on = ["dispatch"]
 
 [[check]]
+# An agent on one of the person's Tilo boxes steering another of their boxes over MCP, on real
+# VMs: two boxes branched from one set-up box, a third of another person, on one local network.
+name = "e2e-remote"
+run = "bash tools/ci/e2e-remote.sh"
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/e2e-remote/**"]
+cache = false
+git = true
+timeout_secs = 7200
+on = ["dispatch"]
+
+[[check]]
 name = "vm-cohort-x86_64"
 run = "bash tools/ci/vm-cohort.sh produce"
 needs = ["tilo-vm-binary-x86_64", "test-assets", "engine-dev-x86_64"]

@@ -1,0 +1,4 @@
+# What tools/ci/e2e-remote.sh needs beside vm-acceptance.txt: the bridge and taps the boxes'
+# local network is made of.
+iproute
+kmod
