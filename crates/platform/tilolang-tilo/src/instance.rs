@@ -1050,10 +1050,11 @@ impl Instance {
             self.stage_failed = Some(failed.join("; "));
         }
         self.commit_planned();
-        // A scenario that returns a resource shows it, as a primary action shows what it made.
-        // A script opened it, so a narrow window shows it in front at once.
+        // A scenario that returns a resource shows it, as a primary action shows what it made:
+        // in place in the list of the place it belongs to, when the view lists its type. A
+        // script opened it, so a narrow window brings it in front at once.
         if let Some(shown) = shown {
-            self.open_detail(&shown, None, Some(ui::Front::Action));
+            self.show_in_window(&shown, Some(ui::Front::Action));
         }
     }
 
@@ -1189,7 +1190,10 @@ impl Instance {
                     if let Some(target) = plan.target
                         && (target.item.is_some() || plan.app != self.app || plan.view.is_some())
                     {
-                        self.open_detail(&target, plan.view.as_deref(), Some(front));
+                        match plan.view.as_deref() {
+                            None => self.show_in_window(&target, Some(front)),
+                            Some(view) => self.open_detail(&target, Some(view), Some(front)),
+                        }
                     }
                     self.commit_planned();
                 }
@@ -1415,7 +1419,7 @@ impl Instance {
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
                 if let Some(target) = wire::runtime_resource(&resource) {
-                    self.open_detail(&target, None, Some(ui::Front::Input));
+                    self.show_in_window(&target, Some(ui::Front::Input));
                 }
                 Ok(())
             }

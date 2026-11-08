@@ -165,6 +165,9 @@ pub struct Module {
     /// The arguments of actions views apply that compute from view state, after the row views
     /// in `funcs`: the runtime runs each when the control's event fires.
     pub at_event: Vec<AtEventFn>,
+    /// What each view does when the window is asked to show an item (`on show(x: T): ...`), each
+    /// a function returning the action to apply, after the arguments above.
+    pub shows: Vec<ViewShow>,
     /// The words the views show as they wrote them: each a message of the package's catalogue.
     pub words: Vec<crate::meta::WordMeta>,
 }
@@ -183,6 +186,28 @@ pub struct AtEventFn {
     /// them.
     pub params: Vec<crate::resolve::ParamInfo>,
     pub result: Ty,
+}
+
+/// What a view answers when the window is asked to show an item of `ty`: `on show(x: T): ...`
+/// in its body. The runtime runs it with the item, and applies the action it returns, in the
+/// view's own state. Exported as `s_<view id>` ([`show_export`]).
+#[derive(Clone, Debug)]
+pub struct ViewShow {
+    /// The id of the view that answers.
+    pub view: String,
+    /// The id of the declared type of item it answers for: what a resource reference carries.
+    pub ty: String,
+    /// The export of its function ([`show_export`]).
+    pub export: String,
+    /// The item it is run with.
+    pub param: crate::resolve::ParamInfo,
+    /// The index of its function in [`Module::funcs`].
+    pub func: usize,
+}
+
+/// The export of the function a view answers a "show this item" with, by the view's id.
+pub fn show_export(view: &str) -> String {
+    format!("s_{view}")
 }
 
 /// The export of the argument function with id `id` ([`AtEventFn`]).

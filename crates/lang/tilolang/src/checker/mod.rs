@@ -236,6 +236,9 @@ pub(crate) struct Checker<'a> {
     /// The arguments computed from view state made so far ([`ir::AtEventFn`]); their
     /// functions follow the row views'.
     at_event: Vec<(ir::Func, ir::AtEventFn)>,
+    /// What each view answers a request to show an item with ([`ir::ViewShow`]); their functions
+    /// follow the arguments.
+    shows: Vec<(ir::Func, ir::ViewShow)>,
     /// The words the views show as written, each once per view and key.
     words: Vec<crate::meta::WordMeta>,
     /// What each offered action of the module writes, with where it is declared: read once the
@@ -290,6 +293,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         synth_base: declared,
         states: Vec::new(),
         at_event: Vec::new(),
+        shows: Vec::new(),
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
@@ -374,6 +378,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
     c.check_one_command();
     let mut views = Vec::new();
     let mut at_event = Vec::new();
+    let mut shows = Vec::new();
     if funcs.len() == c.synth_base {
         for (f, v) in std::mem::take(&mut c.synth) {
             funcs.push(f);
@@ -383,6 +388,11 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             a.func = funcs.len();
             funcs.push(f);
             at_event.push(a);
+        }
+        for (f, mut show) in std::mem::take(&mut c.shows) {
+            show.func = funcs.len();
+            funcs.push(f);
+            shows.push(show);
         }
     } else if c.diags.is_empty() {
         c.err(
@@ -454,6 +464,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         views,
         states: c.states,
         at_event,
+        shows,
         words: c.words,
     };
     // Every prop a view gives a described component is one that component declares: a name the
@@ -474,6 +485,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         synth_base: 0,
         states: Vec::new(),
         at_event: Vec::new(),
+        shows: Vec::new(),
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
@@ -504,6 +516,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             views: Vec::new(),
             states: Vec::new(),
             at_event: Vec::new(),
+            shows: Vec::new(),
             words: Vec::new(),
         },
         ty,
@@ -523,6 +536,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         synth_base: 0,
         states: Vec::new(),
         at_event: Vec::new(),
+        shows: Vec::new(),
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
@@ -538,6 +552,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             views: Vec::new(),
             states: Vec::new(),
             at_event: Vec::new(),
+            shows: Vec::new(),
             words: Vec::new(),
         },
         ty: Ty::View,
@@ -767,6 +782,13 @@ impl Checker<'_> {
             .and_then(|p| self.lookup(&p.name))
             .filter(|(_, ty)| matches!(ty, Ty::Record(_)));
         let rest = self.view_state(&c.name, &v.body);
+        // What the view answers when the window is asked to show an item of one of its types:
+        // each a function of its own, run with the item, applied in the view's state.
+        let (shows, rest) = Self::view_shows(&rest);
+        for show in &shows {
+            self.run_show(&c.id, &c.name, show, &v.body);
+        }
+        let rest = rest.as_slice();
         let env = self.env;
         let row_of = env
             .row_views

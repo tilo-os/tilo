@@ -265,7 +265,17 @@ d-i2mhsb3h = Home
     .w-projects = Projects
     .w-no-tasks-here = No tasks here
 
-d-6a6pf4ok = Task list
+d-doqleehr = Task item
+    .w-what-to-do = What to do
+    .w-anything-worth-remembering-about-it = Anything worth remembering about it.
+    .w-inbox = Inbox
+    .w-remind = Remind
+    .w-reminder-set = Reminder set
+    .w-remind-me = Remind me…
+    .w-no-reminder = No reminder
+    .w-subtasks = Subtasks
+    .w-no-subtasks-yet = No subtasks yet
+    .w-add-a-subtask = Add a subtask
 
 d-7froalwb = Project list
     .w-new-task-in = New task in { $name }

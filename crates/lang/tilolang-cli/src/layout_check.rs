@@ -1001,18 +1001,15 @@ fn on_layer(scenario: &str, root: Option<&str>) -> String {
     )
 }
 
-/// The views of `meta` the system shows on surfaces of its own: each type's row view and each
-/// action's proposal view, once each.
+/// The views of `meta` the system shows on surfaces of its own: each action's proposal view,
+/// once each. A type's row view is not one: the system shows it as a row of a list (a search
+/// result, a row of an agent's answer), so a page of it would be a surface nobody meets, and a
+/// list of rows lays it out already.
 fn surface_views(meta: &tilolang::PackageMeta) -> Vec<&tilolang::meta::ViewMeta> {
     let ids: BTreeSet<&str> = meta
-        .row_views
+        .actions
         .iter()
-        .map(|row| row.view.as_str())
-        .chain(
-            meta.actions
-                .iter()
-                .filter_map(|action| action.proposal.as_ref().map(|p| p.view.as_str())),
-        )
+        .filter_map(|action| action.proposal.as_ref().map(|p| p.view.as_str()))
         .collect();
     meta.views
         .iter()
