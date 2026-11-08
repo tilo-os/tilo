@@ -445,10 +445,22 @@ impl Staged {
         self.settle()
     }
 
-    /// The resource the window shows after its list: what a row opened.
-    pub fn detail_target(&mut self) -> Option<ResourceRef> {
+    /// The resource the window shows where a person holding it is looking: nothing while the
+    /// sidebar stands in front, and the page the window pushed in front of its list (or opened
+    /// over it) once that does.
+    pub fn front_target(&mut self) -> Option<ResourceRef> {
         let window = self.window()?;
-        window.detail_target().cloned()
+        let sidebar = matches!(
+            window.shell_ref().map(ui::widget::NavShell::front_pane),
+            Some(ui::widget::NavPane::Sidebar | ui::widget::NavPane::Overview)
+        );
+        if sidebar {
+            return None;
+        }
+        window
+            .detail_target()
+            .or_else(|| window.root_target())
+            .cloned()
     }
 
     /// The tree the window composed from what the app sent, as sent: every view that ran is in

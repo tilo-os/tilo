@@ -2009,6 +2009,12 @@ impl AppWindow {
         self.detail.as_ref().map(|view| &view.target)
     }
 
+    /// The resource the root view shows.
+    #[must_use]
+    pub fn root_target(&self) -> Option<&ResourceRef> {
+        self.root.as_ref().map(|view| &view.target)
+    }
+
     /// The keys of the virtual lists in the composed tree.
     #[must_use]
     pub fn lists(&self) -> Vec<String> {

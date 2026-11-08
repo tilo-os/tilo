@@ -298,29 +298,36 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
 }
 
 /// A window held in the hand shows its list; the row a person taps opens what it holds in
-/// front of the list. The run stages every such screen, named after what it shows.
+/// front of the list. The run stages every such screen, named after what it shows — for an app
+/// whose rows open a page over the list (a board's cards) as for one whose window pushes it.
 #[test]
 fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    let notes = manifest().join("../../../apps/tl/notes");
-    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-        .arg("layout-check")
-        .arg(&notes)
-        .args(["--dump", "390x844"])
-        .output_locked()
-        .expect("the check runs");
-    let doc = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(
-        output.status.success(),
-        "the app is laid out: {}",
-        doc.lines().last().unwrap_or_default()
-    );
-    let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
-    for shows in [" in front at 390×844", ", then Back pressed at 390×844"] {
+    for (app, shows) in [
+        ("notes", " in front at 390×844"),
+        // The list stands behind what the app opened, and comes back by its Back chip.
+        ("notes", ", then Back pressed at 390×844"),
+        // A board keeps no detail of its own: the card a finger taps is the page that shows.
+        ("board", "then a card_page in front at 390×844"),
+    ] {
+        let dir = manifest().join("../../../apps/tl").join(app);
+        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+            .arg("layout-check")
+            .arg(&dir)
+            .args(["--dump", "390x844"])
+            .output_locked()
+            .expect("the check runs");
+        let doc = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(
+            output.status.success(),
+            "{app} is laid out: {}",
+            doc.lines().last().unwrap_or_default()
+        );
+        let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
         assert!(
             headers.iter().any(|header| header.contains(shows)),
-            "a phone window shows what `{shows}` names:\n{}",
+            "a phone window shows what `{shows}` names in {app}:\n{}",
             headers.join("\n")
         );
     }

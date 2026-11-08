@@ -1107,19 +1107,37 @@ fn reachable(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool 
         && node.rect[1] < f64::from(viewport.1)
 }
 
+/// Where a finger taps to open a row of a list: the middle of it, drawn where the person
+/// holding the window can reach it.
+fn row_centre(node: &ui::headless::InspectionNode) -> (f64, f64) {
+    (
+        node.rect[0] + node.rect[2] / 2.0,
+        node.rect[1] + node.rect[3] / 2.0,
+    )
+}
+
+/// Whether the window draws `node` as a row of a list: a list item, or a destination of the
+/// tree a sidebar's list is.
+fn is_row(node: &ui::headless::InspectionNode) -> bool {
+    node.semantics.as_ref().is_some_and(|access| {
+        matches!(
+            access.role,
+            ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
+        ) && !access.state.disabled
+    })
+}
+
 /// Where a finger taps to open what the window shows after its list: the middle of the row the
 /// window selects for it, drawn where the person holding the window can reach it. A row a list
 /// selects and the screen shows is the one the person whose window narrowed is looking at;
 /// anything off the window (the places behind the list) is not.
 fn row_opened(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
-    let selected = node.semantics.as_ref().is_some_and(|access| {
-        access.role == ui::a11y::Role::ListItem && access.state.selected && !access.state.disabled
-    });
-    if selected && reachable(node, viewport) {
-        return Some((
-            node.rect[0] + node.rect[2] / 2.0,
-            node.rect[1] + node.rect[3] / 2.0,
-        ));
+    let selected = node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| access.state.selected);
+    if selected && is_row(node) && reachable(node, viewport) {
+        return Some(row_centre(node));
     }
     node.children
         .iter()
@@ -1130,15 +1148,8 @@ fn row_opened(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Opti
 /// row of its list, drawn where the person holding the window can reach it. A list that keeps
 /// no row of its own — the places, which the app keeps — is one a person still picks a row of.
 fn first_row(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
-    let row = node
-        .semantics
-        .as_ref()
-        .is_some_and(|access| access.role == ui::a11y::Role::ListItem && !access.state.disabled);
-    if row && reachable(node, viewport) {
-        return Some((
-            node.rect[0] + node.rect[2] / 2.0,
-            node.rect[1] + node.rect[3] / 2.0,
-        ));
+    if is_row(node) && reachable(node, viewport) {
+        return Some(row_centre(node));
     }
     node.children
         .iter()
@@ -1346,10 +1357,7 @@ impl AppCheck<'_> {
                 unit.scene.root.as_deref(),
                 self.states,
             )?;
-            if staged.detail_target().is_none() {
-                return Ok(());
-            }
-            let layer = on_layer(&unit.scene.scenario, unit.scene.root.as_deref());
+            let mut layer = on_layer(&unit.scene.scenario, unit.scene.root.as_deref());
             staged.lay_out(viewport, first.theme(), first.input(), first.display_scale)?;
             // What the app opened stands in front of the list it came from: a finger goes back
             // to that list before it can tap a row of it.
@@ -1359,7 +1367,7 @@ impl AppCheck<'_> {
                     continue;
                 }
                 staged.press(ui::widget::WINDOW_BACK, true)?;
-                let label = format!("{layer}, then Back pressed");
+                layer = format!("{layer}, then Back pressed");
                 for layout in of_size.iter().copied() {
                     staged.lay_out(
                         (layout.size.width, layout.size.height),
@@ -1367,7 +1375,7 @@ impl AppCheck<'_> {
                         layout.input(),
                         layout.display_scale,
                     )?;
-                    self.audit(&mut staged, layout, &label)?;
+                    self.audit(&mut staged, layout, &layer)?;
                 }
                 tapped = tappable_row(&staged, viewport);
             }
@@ -1376,17 +1384,16 @@ impl AppCheck<'_> {
             let Some(tapped) = tapped else {
                 continue;
             };
+            let before = staged.front_target();
             staged.tap_at(tapped)?;
-            // The tap pushes what its row opens in front of the list; a row whose tap opens
+            // The tap shows what its row opens where the list was; a row whose tap opens
             // nothing leaves the list showing, and the shot's name says so.
-            let label = match (
-                row_opened(&staged.harness().inspection().root, viewport).is_none(),
-                staged.detail_target(),
-            ) {
-                (true, Some(opened)) => {
-                    format!("{layer}, then a {} in front", self.view_opening(&opened))
-                }
-                _ => format!("{layer}, then the row tapped"),
+            let opened = staged
+                .front_target()
+                .filter(|shown| Some(shown) != before.as_ref());
+            let label = match opened {
+                Some(shown) => format!("{layer}, then a {} in front", self.view_opening(&shown)),
+                None => format!("{layer}, then the row tapped"),
             };
             for layout in of_size {
                 staged.lay_out(
