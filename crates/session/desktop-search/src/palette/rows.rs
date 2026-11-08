@@ -259,7 +259,7 @@ pub(super) fn everywhere<'a>(
     if let Some((answers, web)) = &sources.answers {
         all.extend([answers as &dyn Source, web]);
     }
-    all.extend(sources.host.iter().map(|source| &**source as &dyn Source));
+    all.extend(sources.host.iter().map(|source| source as &dyn Source));
     let switches = switches(sources, &all);
     all.retain(|source| sources.preferences.enabled(source.id()));
     (all, switches)

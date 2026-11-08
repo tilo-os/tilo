@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_actions::ResourceSpec;
 use ui::{ActionPalette, CommandEntry};
 
-use crate::model::{Hit, LaunchPlace, SearchStream, Source, Target};
+use crate::model::{Held, Hit, LaunchPlace, SearchStream, Source, Target};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, Captures, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
@@ -74,8 +74,10 @@ pub struct SearchData {
     /// What the host searches beyond these (Settings' pages, the store's
     /// catalogue, files, what apps hold), each over what is published or a
     /// service answers. The search over everything asks them, off the frame
-    /// when their query can move ([`Source::shared`]).
-    pub sources: Vec<Arc<dyn Source>>,
+    /// when their query can move ([`Source::shared`]). A host's source is
+    /// `Send + Sync` so that it can move: the palette hands a worker the
+    /// handle it holds it by ([`Held`]).
+    pub sources: Vec<Held>,
     /// The sources the person switched off, left out whatever they find.
     pub preferences: crate::preferences::SearchPreferences,
 }
@@ -103,7 +105,7 @@ struct Sources {
     answers: Option<(Arc<Answers>, Arc<WebSearch>)>,
     /// The one window searched, when the search is a window's.
     window: Option<WindowSearch>,
-    host: Vec<Arc<dyn Source>>,
+    host: Vec<Held>,
     preferences: crate::preferences::SearchPreferences,
     /// Now, in Unix seconds, as the host said when search opened.
     now: u64,
@@ -334,6 +336,12 @@ impl DesktopSearch {
 
     /// Open over `data` with an empty query.
     pub fn open(&mut self, mut data: SearchData) {
+        // The search's engine is fetched now, as the palette opens, so its code is in by the first
+        // keystroke rather than being fetched on the query that needed it: on a page the engine is
+        // a module of its own, and a search that fetches it has no rows to show until it lands,
+        // and says it is still searching that whole time. Linked in, this is nothing. The rows
+        // built meanwhile are rebuilt when it arrives, which a palette's refresh already asks for.
+        ui::search::prepare_engine();
         self.scope = data.scope.clone();
         let placeholder = data.placeholder.take().unwrap_or_else(placeholder);
         self.palette.set_query_placeholder(placeholder.as_str());
@@ -1030,7 +1038,7 @@ mod tests {
     use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
     use ui::winit::keyboard::ModifiersState;
 
-    fn data() -> SearchData {
+    pub(super) fn data() -> SearchData {
         SearchData {
             applications: vec![
                 AppEntry {
@@ -1116,7 +1124,7 @@ mod tests {
         };
         let mut data = data();
         data.sources
-            .push(Arc::new(Happening::new(false, vec![here])));
+            .push(Held::new(Happening::new(false, vec![here])));
         let mut search = DesktopSearch::new();
         search.open(data);
         settled(&mut search);
@@ -1252,8 +1260,8 @@ mod tests {
             unasked: false,
         });
         data.sources
-            .push(Arc::new(Happening::new(false, vec![here])));
-        data.sources.push(Arc::new(People::new(
+            .push(Held::new(Happening::new(false, vec![here])));
+        data.sources.push(Held::new(People::new(
             "workspace",
             vec![PersonEntry {
                 id: "mara".into(),
@@ -1321,7 +1329,7 @@ mod tests {
             device: None,
         });
         let mut data = data();
-        data.sources.push(Arc::new(continue_source(&recent)));
+        data.sources.push(Held::new(continue_source(&recent)));
         let mut search = DesktopSearch::new();
         search.open(data);
         settled(&mut search);
@@ -1855,7 +1863,7 @@ mod tests {
     /// A search over the desktop and what one host adds.
     fn with_notes(scope: Scope) -> SearchData {
         SearchData {
-            sources: vec![Arc::new(Notes)],
+            sources: vec![Held::new(Notes)],
             scope,
             ..data()
         }
@@ -2745,5 +2753,56 @@ mod tests {
             })
             .expect("windows are listed");
         assert_eq!(window.icon, notes.1.icon);
+    }
+}
+
+#[cfg(all(test, feature = "lazy-engine"))]
+mod engine_fetch_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    static FETCHES: AtomicUsize = AtomicUsize::new(0);
+
+    /// The engine's code is fetched as the palette opens, not on the first query that needs it.
+    ///
+    /// Where the engine is not linked in — the browser desktop fetches it as a module of its own —
+    /// a search that fetches it on its query has nothing to show until the module lands, and says
+    /// it is still searching for that whole time: on a cold page that is the tens of seconds
+    /// between typing and the first row. The palette opening is the moment the person asked for
+    /// search, and the time before their first key is theirs to spend fetching it.
+    ///
+    /// Its own process: the engine's once-only state is global, so the fetch count here is the
+    /// process's.
+    #[test]
+    fn opening_the_palette_fetches_the_search_engine() {
+        ui::search::defer_engine(|| {
+            FETCHES.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(FETCHES.load(Ordering::SeqCst), 0, "nothing asked yet");
+        assert!(
+            ui::search::engine_ready(),
+            "no fetch was asked for, so nothing waits on the engine"
+        );
+
+        let mut search = DesktopSearch::new();
+        search.open(super::tests::data());
+        assert_eq!(
+            FETCHES.load(Ordering::SeqCst),
+            1,
+            "opening the palette fetches the engine, before a key is typed"
+        );
+        assert!(
+            !ui::search::engine_ready(),
+            "the palette opening waits on the engine's code, so the first key is answered with it"
+        );
+
+        // A second open does not fetch again: the loader runs once until the engine is installed.
+        search.open(super::tests::data());
+        assert_eq!(
+            FETCHES.load(Ordering::SeqCst),
+            1,
+            "the engine is asked for once"
+        );
     }
 }

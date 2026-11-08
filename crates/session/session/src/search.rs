@@ -41,7 +41,7 @@ use tilo_desktop_search::providers::records as record_rows;
 use tilo_desktop_search::providers::settings::Settings;
 use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::{
-    DESKTOP_APP, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
+    DESKTOP_APP, Held, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
 };
 use tilo_desktop_surface::{SearchHost, SearchHostFeed};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
@@ -709,38 +709,38 @@ impl SearchHost for SessionSearch {
                 app_name,
             ),
         };
-        let mut sources: Vec<Arc<dyn Source>> = vec![
-            Arc::new(Happening::new(
+        let mut sources: Vec<Held> = vec![
+            Held::new(Happening::new(
                 scope.everywhere(),
                 self.here.borrow().clone(),
             )),
-            Arc::new(settings),
-            Arc::new(catalogue),
-            Arc::clone(&kept.host_apps) as Arc<dyn Source>,
-            Arc::new(Waiting::new(workspace, self.notifications.borrow().clone())),
-            Arc::new(continue_places),
+            Held::new(settings),
+            Held::new(catalogue),
+            Held::from(Arc::clone(&kept.host_apps)),
+            Held::new(Waiting::new(workspace, self.notifications.borrow().clone())),
+            Held::new(continue_places),
         ];
         {
             let downloaded = self.downloaded.borrow();
-            sources.push(Arc::new(Downloaded::new(
+            sources.push(Held::new(Downloaded::new(
                 workspace,
                 downloaded.reading.clone(),
                 &downloaded.published,
             )));
         }
         if let Some(content) = &kept.content {
-            sources.push(Arc::clone(content) as Arc<dyn Source>);
+            sources.push(Held::from(Arc::clone(content)));
         }
         if let Some(files) = &kept.files {
-            sources.push(Arc::clone(files) as Arc<dyn Source>);
+            sources.push(Held::from(Arc::clone(files)));
         }
         if let Some(records) = &self.records {
-            sources.push(Arc::new(record_rows::Records::new(
+            sources.push(Held::new(record_rows::Records::new(
                 workspace,
                 records.held(workspace),
             )));
         }
-        sources.push(Arc::new(crate::search_ask::Ask::new(
+        sources.push(Held::new(crate::search_ask::Ask::new(
             std::sync::Arc::clone(&self.ask),
             workspace,
             self.wake.clone(),
@@ -752,7 +752,7 @@ impl SearchHost for SessionSearch {
             types: self.own_types.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
-            sources.push(Arc::new(Jobs(apps.jobs())));
+            sources.push(Held::new(Jobs(apps.jobs())));
             // A search over one workspace offers that workspace's actions;
             // one that reaches everywhere offers every workspace's.
             published.extend(apps.published(if scope.everywhere() { "" } else { workspace }));

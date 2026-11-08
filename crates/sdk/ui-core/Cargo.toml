@@ -45,6 +45,10 @@ syntax-definitions = ["tilo-highlight-grammars/syntax-definitions"]
 # shared runtime every app maps leaves syntect and the grammars out; any
 # other build links them.
 lazy-highlight = ["dep:tilo-engine-loader"]
+# The search engine's code is not linked in: the host fetches it when something
+# first asks (`tilo-search`'s `lazy-engine`). What the browser desktop builds
+# with, so a surface that searches fetches the engine ahead of its first query.
+lazy-engine = ["tilo-search/lazy-engine"]
 # Clients of the local session daemons: the runtime portal's inherited
 # service descriptors and the runtime identity service with its on-disk
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`

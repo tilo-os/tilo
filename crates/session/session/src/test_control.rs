@@ -1069,7 +1069,13 @@ fn asked_of_desk(
                     })
                 })
                 .collect();
-            json!({"answer": {"query": query, "rows": rows}})
+            // Whether the search still owes rows: a tool timing what a person waits for stops on
+            // the rows being final, not on rows that are about to change under the same query.
+            json!({"answer": {
+                "query": query,
+                "rows": rows,
+                "searching": desk.handle.search_searching(),
+            }})
         }
         Op::ProcessMemory => json!({"answer": tilo_compositor::memory_report::report()}),
         Op::ProfileStart => profile_start(request),

@@ -367,7 +367,7 @@ impl tilo_desktop_search::Source for Plenty {
 impl SearchHost for Many {
     fn feed(&self, _: &str, _: &ui::search::Scope) -> SearchHostFeed {
         SearchHostFeed {
-            sources: vec![std::sync::Arc::new(Plenty)],
+            sources: vec![tilo_desktop_search::Held::new(Plenty)],
             ..SearchHostFeed::default()
         }
     }
@@ -426,7 +426,7 @@ impl SearchHost for Everywhere {
     fn feed(&self, _: &str, scope: &Scope) -> SearchHostFeed {
         self.scopes.borrow_mut().push(scope.clone());
         SearchHostFeed {
-            sources: vec![std::sync::Arc::new(Elsewhere {
+            sources: vec![tilo_desktop_search::Held::new(Elsewhere {
                 every_workspace: scope.everywhere(),
             })],
             ..SearchHostFeed::default()
