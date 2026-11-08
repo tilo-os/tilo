@@ -124,15 +124,22 @@ mod tests {
             );
         }
 
-        // --- phase: fluent_plural_rules_follow_the_active_locale_even_during_english_fallback ---
+        // --- phase: plural_rules_follow_the_language_the_copy_is_written_in ---
         {
             assert_eq!(
                 t_args_for("en-US", "files-keeping-offline", &[arg("count", 21)]),
                 "Keeping 21 items offline"
             );
             assert_eq!(
+                t_args_for("de-DE", "files-keeping-offline", &[arg("count", 21)]),
+                "21 Elemente werden offline verfügbar gehalten"
+            );
+            // A window speaks one language (docs/designs/app-language/i18n.md):
+            // a language Files does not ship leaves it in its own copy, with
+            // that copy's count forms rather than the reader's.
+            assert_eq!(
                 t_args_for("ru-RU", "files-keeping-offline", &[arg("count", 21)]),
-                "Keeping 21 item offline"
+                "Keeping 21 items offline"
             );
         }
     }

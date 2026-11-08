@@ -1066,25 +1066,6 @@ launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what y
 launchpad-subtitle-private = Pick a way to start. Only you see what you make here until you invite someone.
 launchpad-subtitle-public = Pick a way to start. This workspace is public: anyone who joins sees what you make here.
 
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Search emoji
-emoji-picker-groups = Emoji categories
-emoji-picker-recent = Recently used
-emoji-picker-results = Matching emoji
-emoji-picker-no-results = No emoji found
-emoji-picker-tones = Skin tones
-emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
-emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
-
-# An emoji in a skin tone: "thumbs up, medium skin tone".
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = light skin tone
-emoji-picker-tone-medium-light = medium-light skin tone
-emoji-picker-tone-medium = medium skin tone
-emoji-picker-tone-medium-dark = medium-dark skin tone
-emoji-picker-tone-dark = dark skin tone
-
 # The Alt+Tab window switcher.
 window-switcher-title = Switch windows
 window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
@@ -1220,8 +1201,6 @@ activity-morning-command-refused = Request refused
 activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
 
 activity-morning-next = Next chosen source
-
-emoji-picker-hint-tone = Pick a skin tone
 
 workspace-settings-hint-close = Close
 workspace-settings-hint-save = Save

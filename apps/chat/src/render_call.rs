@@ -1844,7 +1844,7 @@ impl ChatApp {
             self.emoji_picker.reopen();
         }
         self.emoji_picker
-            .place_at(self.emoji_anchor, self.rect, theme);
+            .place_at(Some(self.emoji_anchor), self.rect, theme);
         ui::Widget::draw(&mut *self.emoji_picker, scene, tf, tr, theme, presence);
         ChatApp::push_hit(hits, self.emoji_picker.rect(), Hit::FocusEmojiSearch);
         for index in 0.. {

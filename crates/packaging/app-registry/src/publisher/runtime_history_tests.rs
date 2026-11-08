@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
 use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion};
 
-use crate::runtime_history::{MissingRuntime, reconcile};
+use crate::publisher::runtime_history::{MissingRuntime, reconcile};
 
 fn version(value: &str, architecture: &str, build: u8) -> RegistryVersion {
     RegistryVersion {

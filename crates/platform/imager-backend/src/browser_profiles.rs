@@ -253,13 +253,13 @@ pub fn discover(home: &Path, candidates: &[Candidate]) -> io::Result<Vec<Reviewe
     root.validate()?;
     Ok(profiles)
 }
-fn invalid(error: impl std::fmt::Display) -> io::Error {
+pub(crate) fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
-fn storage(pin: &PinnedDirectory) -> io::Result<StorageDirectory> {
+pub(crate) fn storage(pin: &PinnedDirectory) -> io::Result<StorageDirectory> {
     StorageDirectory::from_file(super::migration_durability::readable_directory(&pin.file)?)
 }
-fn components(path: &Path) -> io::Result<Vec<String>> {
+pub(crate) fn components(path: &Path) -> io::Result<Vec<String>> {
     path.components()
         .map(|item| match item {
             Component::Normal(value) => value
@@ -272,7 +272,10 @@ fn components(path: &Path) -> io::Result<Vec<String>> {
         })
         .collect()
 }
-fn walk(root: &Arc<PinnedDirectory>, names: &[String]) -> io::Result<Arc<PinnedDirectory>> {
+pub(crate) fn walk(
+    root: &Arc<PinnedDirectory>,
+    names: &[String],
+) -> io::Result<Arc<PinnedDirectory>> {
     let mut directory = Arc::clone(root);
     for name in names {
         let metadata = metadata_nofollow(&directory.file, Path::new(name))?;
@@ -281,7 +284,7 @@ fn walk(root: &Arc<PinnedDirectory>, names: &[String]) -> io::Result<Arc<PinnedD
     }
     Ok(directory)
 }
-fn regular(directory: &PinnedDirectory, name: &str) -> io::Result<bool> {
+pub(crate) fn regular(directory: &PinnedDirectory, name: &str) -> io::Result<bool> {
     match metadata_nofollow(&directory.file, Path::new(name)) {
         Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => Ok(true),
         Ok(_) => Err(invalid("Browser data must be a regular source file")),
@@ -485,7 +488,7 @@ fn firefox(
     }
     root.validate()
 }
-fn firefox_sections(content: &str) -> io::Result<Vec<(String, String)>> {
+pub(crate) fn firefox_sections(content: &str) -> io::Result<Vec<(String, String)>> {
     let mut output = Vec::new();
     let mut active = false;
     let mut name = None;

@@ -12,16 +12,20 @@
 //!
 //! The host asks too: it keeps a copy of the files members post
 //! ([`ContentKeeper`]), so they stay in the workspace after the member who
-//! posted them leaves. It asks the workspace on its own presence, and the
-//! pieces members answer it with come to it, not to another device.
+//! posted them leaves, and of the app surfaces a change it must decide names
+//! and it lacks ([`super::surfaces`]). It asks the workspace on its own
+//! presence, and the pieces members answer it with come to it, not to another
+//! device.
 
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 
 use neighbour_wire::NeighbourMsg;
+use neighbour_wire::content::ContentWants;
 use tilo_peer_state::peer_handle;
 
 use super::Workspaces;
-use tilo_lock::RwLockRecover as _;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// The bytes of one piece, as members answer.
 const PIECE_BYTES: usize = 192 * 1024;
@@ -83,8 +87,14 @@ pub trait ContentKeeper: Send + Sync {
 /// members answer the host with, once it has them.
 #[derive(Default)]
 pub(super) struct ContentSlot {
-    source: RwLock<Option<Arc<dyn WorkspaceContent>>>,
-    keeper: RwLock<Option<Arc<dyn ContentKeeper>>>,
+    pub(super) source: RwLock<Option<Arc<dyn WorkspaceContent>>>,
+    pub(super) keeper: RwLock<Option<Arc<dyn ContentKeeper>>>,
+    /// The app surfaces this host asked the workspace for, by hash
+    /// ([`Workspaces::ask_surface`]).
+    pub(super) surfaces: Mutex<ContentWants<()>>,
+    /// The surfaces the host lacks and asks for until they arrive, by hash:
+    /// the workspace and app each is of.
+    pub(super) missing: Mutex<HashMap<[u8; 32], (String, String)>>,
 }
 
 impl ContentSlot {
@@ -129,19 +139,70 @@ impl Workspaces {
     }
 
     /// `frame`, a piece of content the member device `from` sent this host
-    /// in `workspace`, to the keeper; dropped when there is none.
+    /// in `workspace`: to the keeper, or, when it is a surface the host asked
+    /// for, into the content plane the host decides with. Dropped when the
+    /// host expects neither.
     pub fn content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
         let keeper = self.inner.content.keeper.read_recover().clone();
-        if let Some(keeper) = keeper {
+        if let Some(keeper) = keeper
+            && keeper.expects(workspace, frame)
+        {
             keeper.piece(workspace, from, frame);
+            return;
+        }
+        // The asker of a surface is this host: a piece is kept when it is
+        // addressed to the host's own device, whoever among the members
+        // answered with it.
+        let device = self.inner.host.cert.device_public_key;
+        let arrived = self
+            .inner
+            .content
+            .surfaces
+            .lock_recover()
+            .piece(&device, frame);
+        if let Some(arrived) = arrived {
+            crate::surfaces::keep(&arrived.hash, &arrived.bytes);
         }
     }
 
-    /// Whether `frame`, a piece of content sent this host in `workspace`,
-    /// answers a request its keeper made ([`ContentKeeper::expects`]).
+    /// Whether `frame`, a piece of content a member sent this host in
+    /// `workspace`, answers a request this host made: its keeper's
+    /// ([`ContentKeeper::expects`]) or its own for a surface.
     pub(crate) fn host_expects(&self, workspace: &str, frame: &[u8]) -> bool {
         let keeper = self.inner.content.keeper.read_recover().clone();
+        let device = self.inner.host.cert.device_public_key;
         keeper.is_some_and(|keeper| keeper.expects(workspace, frame))
+            || self
+                .inner
+                .content
+                .surfaces
+                .lock_recover()
+                .expects(&device, frame)
+    }
+
+    /// Ask `workspace`'s members for the app surface `hash` of `app` this host
+    /// lacks, unless it asked lately ([`ContentWants::ask`]): the changes held
+    /// for it are decided once a member answers with it
+    /// ([`crate::surfaces::arrivals`]). The number of devices it reached.
+    pub async fn ask_surface(&self, workspace: &str, app: &str, hash: &str) -> usize {
+        let device = self.inner.host.cert.device_public_key;
+        let asked = self.inner.content.surfaces.lock_recover().ask(
+            &device,
+            (),
+            (app, workspace),
+            hash,
+            tilo_clock::unix_now_ms(),
+        );
+        let Some(request) = asked else {
+            return 0;
+        };
+        match self.ask_members(workspace, request).await {
+            Ok(reached) => reached,
+            Err(error) => {
+                tracing::debug!(%workspace, %hash, %error, "could not ask the workspace for a surface");
+                0
+            }
+        }
     }
 
     /// Publish `body`, a `NeighbourMsg::RecordContentWant` naming this
@@ -169,9 +230,8 @@ impl Workspaces {
     /// The answer to `body`, a presence `workspace`'s member published, when it
     /// asks for content: the pieces of what this host keeps, or word that
     /// it keeps none, as frames for the member's device alone. Empty for
-    /// any other presence. A request for an app surface this host has not seen
-    /// fetches it from the registry first, so this is called off the async
-    /// threads that serve members.
+    /// any other presence. What it keeps of app surfaces is the workspace's
+    /// content plane, never a registry.
     pub fn content_answer(&self, workspace: &str, body: &[u8]) -> Vec<Vec<u8>> {
         // ignored-failure: presence carries other formats; only a content want is answered
         let Ok(NeighbourMsg::RecordContentWant {
@@ -197,9 +257,9 @@ impl Workspaces {
                     .and_then(|content| content.read(workspace, &app_id, &hash))
             })
             // A record started by an older version of an app reads its writes
-            // with that version's surface, which a host that decided them keeps
-            // ([`crate::surfaces`]).
-            .or_else(|| crate::surfaces::answer(&app_id, &hash))
+            // with that version's surface, which the workspace's content plane
+            // keeps ([`crate::surfaces`]).
+            .or_else(|| crate::surfaces::kept(&app_id, &hash))
             .filter(|bytes| bytes.len() <= MAX_CONTENT_BYTES)
         else {
             return lacks_answer(&self.inner.host.cert.device_public_key, body)

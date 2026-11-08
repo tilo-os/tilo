@@ -782,7 +782,7 @@ impl Panel {
 
     /// Whether this device has the app that holds a person's conversations.
     fn chat_installed() -> bool {
-        tilo_installed_apps::read_one_from_env(&LaunchpadAppAction::message_person("").app_id)
+        app_catalogue::apps::read_one_from_env(&LaunchpadAppAction::message_person("").app_id)
             .is_ok_and(|installed| installed.is_some())
     }
 

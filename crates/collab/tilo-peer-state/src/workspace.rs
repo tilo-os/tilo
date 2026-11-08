@@ -280,15 +280,8 @@ pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<Aut
         return Ok(candidate);
     }
     // A change under a writer's sequence the document already holds is another
-    // branch of that writer, which Automerge reads as one of the two. A record's
-    // body reads the one that reached it first; governance is decided as a
-    // whole, so a batch carrying one is refused instead.
-    if let Some(fork) = tilo_automerge::keeping::fork(&candidate, &storage) {
-        return Err(format!(
-            "duplicate seq {} of writer {}: the workspace holds another change under it",
-            fork.seq, fork.actor
-        ));
-    }
+    // branch of that writer, which Automerge refuses as a whole: governance is
+    // decided as a whole too, so the batch is refused.
     tilo_automerge_isolate::apply(
         &mut candidate,
         &storage,

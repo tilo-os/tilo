@@ -52,7 +52,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 1
+          # The Lounge's image publishes every version of its apps' surfaces
+          # from their history, so this checkout carries it.
+          fetch-depth: 0
           persist-credentials: false
       - name: Trust the checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

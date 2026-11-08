@@ -173,7 +173,7 @@ pub enum App {
     /// (`app.wasm`, `app.ids`, `imports/*.wasm`; [`Module`]).
     Module(Module),
     /// A native app: its package id, the name people call it, and the bytes of its signed
-    /// `surface.toml` (the session reads them with `tilo_installed_apps::signed_surfaces`).
+    /// `surface.toml` (the session reads them with `app_catalogue::apps::signed_surfaces`).
     Surface {
         app: String,
         title: String,

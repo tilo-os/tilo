@@ -1,4 +1,4 @@
-//! Root-owned composition of the selected source service, guarded Capnp relay
+//! Root-owned composition of the selected source service, its guarded relay
 //! and separately confined target FUSE service. No frontend capability is enabled.
 use super::{
     home_capture::TrustedCaptureService,

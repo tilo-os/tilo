@@ -39,7 +39,7 @@ fn every_dev_session_app_is_an_installed_package() {
     let installed = common::dev_apps::install(&store, &runtime);
     home.env().set("TILO_APPS_DATA_DIR", &store);
     for app in installed {
-        let found = tilo_installed_apps::read_one_from_env(&app)
+        let found = app_catalogue::apps::read_one_from_env(&app)
             .ok()
             .flatten()
             .unwrap_or_else(|| panic!("{app} is installed in the session's store"));

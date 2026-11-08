@@ -6100,16 +6100,20 @@ mod sort_selection_tests {
             shift: false,
         });
         assert!(!files.state().selection.is_selected(2));
+        // The anchor stays where the choice began (a, now at the top), while the cursor
+        // is the row the Ctrl-click just took out of the choice (b, now second).
         files.state().toggle_sort_order();
         assert_eq!(files.state().selection.selected(), vec![0]);
-        assert_eq!(files.state().selection.anchor(), Some(1));
+        assert_eq!(files.state().selection.anchor(), Some(0));
         assert_eq!(files.state().selection.primary(), Some(1));
+        // Shift extends from the choice's beginning, so the row the cursor rests on and
+        // everything between come back in rather than a range from it replacing the choice.
         files.state().apply_command(FileCommand::Click {
             index: 3,
             ctrl: false,
             shift: true,
         });
-        assert_eq!(files.state().selection.selected(), vec![1, 2, 3]);
+        assert_eq!(files.state().selection.selected(), vec![0, 1, 2, 3]);
     }
 
     #[test]

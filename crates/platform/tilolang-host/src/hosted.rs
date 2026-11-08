@@ -503,6 +503,9 @@ pub struct Hosted {
     /// The whole of the index being read off the frame: what the publication had moved when it
     /// was read, and the read. The frame after it ends sends it.
     search_index_whole: Option<(u64, tilolang_tilo::search::WholeIndex)>,
+    /// What wakes the host: an index read off the frame wakes it too, and the read is the first
+    /// frame's, before the instance published a surface with a wake of its own.
+    wake: Waker,
     /// The invocation the person's last step ran in, when they asked to undo it: the host takes
     /// the action back in every unit that holds a change of it, all under one commit, whether
     /// this endpoint's logs still remember the action or only the records do.
@@ -565,7 +568,7 @@ impl Hosted {
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
             phrases,
-            wake,
+            wake: Arc::clone(&wake),
             surface: Rc::clone(&surface),
         };
         let mut instance = Instance::new(
@@ -614,6 +617,7 @@ impl Hosted {
             search_entries: std::collections::BTreeMap::new(),
             search_index_build: 0,
             search_index_whole: None,
+            wake,
             undo_ask: None,
             identity: None,
         }
@@ -913,11 +917,15 @@ impl Hosted {
     /// read ends on sends it ([`Self::index_read_off_frame`]).
     fn read_index_whole(&mut self, host: &Host) {
         let publisher = std::mem::take(&mut self.search_index);
-        let wake = self
-            .surface
-            .borrow()
-            .as_ref()
-            .map(|surface| surface.wake.clone());
+        // The instance's surface wakes the host while it runs; before it published one, the
+        // host's own waker does, so a read that ends with nothing else to do still has its frame
+        // taken.
+        let wake = Some(
+            self.surface
+                .borrow()
+                .as_ref()
+                .map_or_else(|| self.wake.clone(), |surface| surface.wake.clone()),
+        );
         let state = self.index_state();
         // The publication as it stands now: what a change from here on moves is published by
         // the frames after the read, not read with it.

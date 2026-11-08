@@ -384,11 +384,11 @@ fn moderation() -> Did {
 
 /// One record carries a writer's repeated sequence and a change the
 /// workspace refuses. Both are dropped on their own: the writer's other
-/// changes, before and after them, are read, and so are the other writers'.
-/// A page ([`StatePeer::decide_relayed_document`]) and a host
-/// ([`StatePeer::receive_from`]) decide the same writes the same way.
+/// changes, before and after them, are read. A page
+/// ([`StatePeer::decide_relayed_document`]) and a host
+/// ([`StatePeer::receive_from`]) refuse the same change the same way.
 #[test]
-fn a_records_repeated_sequence_and_refused_change_leave_the_rest_of_it() {
+fn a_refused_change_leaves_the_rest_of_the_record() {
     let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
     let first = guest_write_at(&peer, &key, comment_on("c1"), comment(), Some("c1"), 1);
     receive(&mut peer, &guest, first).expect("an editor may comment");
@@ -419,16 +419,10 @@ fn a_records_repeated_sequence_and_refused_change_leave_the_rest_of_it() {
     );
     let later = guest_write_at(&peer, &key, comment_on("c2"), comment(), Some("c2"), 5);
     let page = peer.clone();
-    for write in [repeated, later] {
-        page.decide_relayed_document(
-            TransportOrigin::RelayDelta(guest.device_public_key),
-            &write,
-            now(),
-        )
-        .expect("a page reads the record on past a repeated sequence");
-        receive(&mut peer, &guest, write)
-            .expect("the host reads the record on past a repeated sequence");
-    }
+    // A record holds one change under each writer's sequence, so the one the
+    // page wrote under a sequence the record holds is refused.
+    let refused = receive(&mut peer, &guest, repeated).unwrap_err();
+    assert!(refused.contains("duplicate seq"), "{refused}");
     let refused = page
         .decide_relayed_document(
             TransportOrigin::RelayDelta(guest.device_public_key),
@@ -439,6 +433,14 @@ fn a_records_repeated_sequence_and_refused_change_leave_the_rest_of_it() {
     assert!(refused.contains("not granted"), "{refused}");
     let refused = receive(&mut peer, &guest, moderation_write).unwrap_err();
     assert!(refused.contains("not granted"), "{refused}");
+    page.decide_relayed_document(
+        TransportOrigin::RelayDelta(guest.device_public_key),
+        &later,
+        now(),
+    )
+    .expect("a page reads the record on past the refused changes");
+    receive(&mut peer, &guest, later)
+        .expect("the host reads the record on past the refused changes");
 
     let doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
@@ -449,7 +451,7 @@ fn a_records_repeated_sequence_and_refused_change_leave_the_rest_of_it() {
     }
     assert!(
         doc.get(&comments, "c8").unwrap().is_none(),
-        "the change under a sequence the record holds is left out"
+        "the change under a sequence the record holds is refused"
     );
     assert!(
         doc.get(ROOT, "moderation").unwrap().is_none(),

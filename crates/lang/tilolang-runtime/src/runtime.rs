@@ -654,6 +654,24 @@ impl Runtime {
         self.core.invoke_direct(principal, &action.into())
     }
 
+    /// [`Runtime::invoke_action`] as the run `run`: an invocation every replica names the same
+    /// way — a trigger run for a record at an instant, on whichever device comes to run it —
+    /// runs as that run on each of them, so the records it writes and the effects it queues are
+    /// the same, and the workspace holds each of them once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`].
+    pub fn invoke_action_named(
+        &self,
+        run: &RunId,
+        principal: &Principal,
+        action: impl Into<ActionRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        self.core
+            .invoke_direct_named(run, principal, &action.into())
+    }
+
     /// [`Runtime::invoke_action`] made from the resource `from`: what the resources the action
     /// creates were made from, recorded in the change it makes (`created(r)?.from`,
     /// [`crate::Store::linked`]). What a "make from this" menu, or an agent working from

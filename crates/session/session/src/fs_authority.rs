@@ -12,15 +12,16 @@
 //! follow the desk's replica revision, so a role change or a removed member
 //! reaches the daemon in the same pass, never on a timer.
 //!
-//! The daemon signs nothing itself: `fs publish-authority --acl` signs the
-//! list with the workspace governor key and swaps it into the ACL every
-//! mount reads ([`tilo_files`] mount, `WorkspaceAuthority::apply`). Publishing
-//! is therefore the session's whole part, and it is coalesced: a burst of
+//! The daemon signs the list it reads into the ACL every mount enforces
+//! (`WorkspaceAuthority::apply`), so writing the file is the session's whole
+//! part wherever the daemon holds the governor key. A desktop that keeps that
+//! key out of reach — a host install, where only the protected signing
+//! session may use it — names a signer in `TILO_FS_AUTHORITY_PUBLISHER` and
+//! the session runs it after each write. Publishing is coalesced: a burst of
 //! desk changes publishes the newest list, and an unchanged list is neither
 //! rewritten nor published again.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -32,10 +33,9 @@ use collab_types::crypto::Ed25519PublicKey;
 use tilo_desktop_model::DesktopTree;
 use tilo_lock::MutexRecover as _;
 
-/// The program that signs a list and hands it to the daemon. Overridable so
-/// a test can stand in for the Files daemon.
+/// The program that signs a list this desktop cannot sign itself. Absent
+/// where the daemon holds the governor key and signs the list it reads.
 const PUBLISHER_ENV: &str = "TILO_FS_AUTHORITY_PUBLISHER";
-const DEFAULT_PUBLISHER: &str = "/usr/bin/fs";
 /// How long one list is retried while the daemon is not serving yet.
 const RETRY_BUDGET: Duration = Duration::from_secs(60);
 const FIRST_RETRY: Duration = Duration::from_millis(100);
@@ -169,17 +169,20 @@ pub(crate) struct Publisher {
 }
 
 struct Inner {
-    publisher: PathBuf,
+    /// The signer of a list this desktop cannot sign itself, when it names one.
+    signer: Option<Signer>,
     acl: PathBuf,
-    socket_dir: PathBuf,
     state: Mutex<State>,
     /// Signalled when the worker goes idle, so a test (or a session ending)
     /// can wait for what is in flight.
     idle: Condvar,
-    /// Lists handed over, and publications that reached the daemon: what
-    /// tells a retrying publisher from a stuck one.
-    scheduled: AtomicU64,
-    published: AtomicU64,
+}
+
+/// A program that signs a written list and hands it to the daemon's
+/// authority, and the socket directory it reaches that daemon on.
+struct Signer {
+    program: PathBuf,
+    socket_dir: PathBuf,
 }
 
 #[derive(Default)]
@@ -198,29 +201,26 @@ impl Publisher {
     pub(crate) fn for_session() -> Option<Self> {
         let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
         let home = PathBuf::from(var("HOME")?);
-        let runtime = PathBuf::from(var("XDG_RUNTIME_DIR")?);
         let config = var("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
-        let publisher =
-            var(PUBLISHER_ENV).map_or_else(|| PathBuf::from(DEFAULT_PUBLISHER), PathBuf::from);
-        let socket_dir = var("TILO_AUTHORITY_SOCKET_DIR")
-            .map_or_else(|| runtime.join("tilo/files-workspace"), PathBuf::from);
-        Some(Self::at(
-            publisher,
-            config.join("tilo/fs-capabilities.json"),
-            socket_dir,
-        ))
+        let signer = var(PUBLISHER_ENV).and_then(|program| {
+            let runtime = PathBuf::from(var("XDG_RUNTIME_DIR")?);
+            let socket_dir = var("TILO_AUTHORITY_SOCKET_DIR")
+                .map_or_else(|| runtime.join("tilo/files-workspace"), PathBuf::from);
+            Some(Signer {
+                program: PathBuf::from(program),
+                socket_dir,
+            })
+        });
+        Some(Self::at(signer, config.join("tilo/fs-capabilities.json")))
     }
 
-    fn at(publisher: PathBuf, acl: PathBuf, socket_dir: PathBuf) -> Self {
+    fn at(signer: Option<Signer>, acl: PathBuf) -> Self {
         Self {
             inner: Arc::new(Inner {
-                publisher,
+                signer,
                 acl,
-                socket_dir,
                 state: Mutex::new(State::default()),
                 idle: Condvar::new(),
-                scheduled: AtomicU64::new(0),
-                published: AtomicU64::new(0),
             }),
         }
     }
@@ -242,7 +242,6 @@ impl Publisher {
             }
             state.running = true;
         }
-        self.inner.scheduled.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::clone(&self.inner);
         let spawn = std::thread::Builder::new()
             .name("tilo-fs-authority".into())
@@ -305,7 +304,6 @@ fn work(inner: &Inner) {
                     state.in_force = Some(bytes);
                     state.last_error = None;
                     drop(state);
-                    inner.published.fetch_add(1, Ordering::Relaxed);
                     break;
                 }
                 Err(error) => {
@@ -358,21 +356,25 @@ fn take_pending(inner: &Inner) -> Option<Vec<u8>> {
     None
 }
 
-/// Write the list the daemon's `--acl` reads, then have it signed.
+/// Write the list the daemon's `--acl` reads, then have it signed when this
+/// desktop names a signer.
 ///
 /// The write is atomic: the daemon mounts this file and must never read a
 /// half-written list and conclude the person has no permissions.
 fn write_and_publish(inner: &Inner, bytes: &[u8]) -> Result<(), String> {
     write_atomically(&inner.acl, bytes)
         .map_err(|error| format!("write the access list {}: {error}", inner.acl.display()))?;
-    let output = std::process::Command::new(&inner.publisher)
+    let Some(signer) = &inner.signer else {
+        return Ok(());
+    };
+    let output = std::process::Command::new(&signer.program)
         .arg("publish-authority")
         .arg("--acl")
         .arg(&inner.acl)
-        .env("TILO_AUTHORITY_SOCKET_DIR", &inner.socket_dir)
+        .env("TILO_AUTHORITY_SOCKET_DIR", &signer.socket_dir)
         .stdin(std::process::Stdio::null())
         .output()
-        .map_err(|error| format!("run {}: {error}", inner.publisher.display()))?;
+        .map_err(|error| format!("run {}: {error}", signer.program.display()))?;
     if output.status.success() {
         return Ok(());
     }
@@ -380,7 +382,7 @@ fn write_and_publish(inner: &Inner, bytes: &[u8]) -> Result<(), String> {
     let said = said.trim();
     Err(format!(
         "{} publish-authority failed ({}): {}",
-        inner.publisher.display(),
+        signer.program.display(),
         output.status,
         if said.is_empty() {
             "no reason given"
@@ -634,9 +636,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (script, seen) = stand_in(dir.path());
         let publisher = Publisher::at(
-            script,
+            Some(Signer {
+                program: script,
+                socket_dir: dir.path().join("sockets"),
+            }),
             dir.path().join("config/fs-capabilities.json"),
-            dir.path().join("sockets"),
         );
         let tree = tree_with(app_folder_grant());
         let first = list(&tree, PERSON, None, 0);
@@ -663,9 +667,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (script, seen) = stand_in(dir.path());
         let publisher = Publisher::at(
-            script,
+            Some(Signer {
+                program: script,
+                socket_dir: dir.path().join("sockets"),
+            }),
             dir.path().join("config/fs-capabilities.json"),
-            dir.path().join("sockets"),
         );
         let mut tree = tree_with(app_folder_grant());
         publisher.publish(&list(&tree, PERSON, None, 0));
@@ -687,9 +693,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (script, _seen) = stand_in(dir.path());
         let publisher = Publisher::at(
-            script,
+            Some(Signer {
+                program: script,
+                socket_dir: dir.path().join("sockets"),
+            }),
             dir.path().join("config/fs-capabilities.json"),
-            dir.path().join("sockets"),
         );
         // A worker that gave up: the list is not in force and nothing is trying it,
         // so the next change of the desk hands it over again.
@@ -730,9 +738,11 @@ mod tests {
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let publisher = Publisher::at(
-            script,
+            Some(Signer {
+                program: script,
+                socket_dir: dir.path().join("sockets"),
+            }),
             dir.path().join("config/fs-capabilities.json"),
-            dir.path().join("sockets"),
         );
         publisher.publish(&list(&tree_with(app_folder_grant()), PERSON, None, 0));
         // The first attempt is refused before the gate exists: the daemon's own
@@ -763,6 +773,23 @@ mod tests {
                 & 0o777,
             0o600,
             "only this person reads the list"
+        );
+    }
+    #[test]
+    fn a_daemon_that_holds_the_governor_key_needs_no_publisher() {
+        let dir = tempfile::tempdir().unwrap();
+        let acl = dir.path().join("config/fs-capabilities.json");
+        let publisher = Publisher::at(None, acl.clone());
+        let newest = list(&tree_with(app_folder_grant()), PERSON, None, 0);
+        assert!(publisher.publish(&newest));
+        publisher
+            .wait_until_idle(tilo_test_env::hang_bound())
+            .expect("written");
+        let written: FsAuthority = serde_json::from_slice(&std::fs::read(&acl).unwrap()).unwrap();
+        assert_eq!(written.capabilities, newest.capabilities);
+        assert!(
+            !publisher.unpublished(),
+            "the written list is the one the daemon signs itself"
         );
     }
 }

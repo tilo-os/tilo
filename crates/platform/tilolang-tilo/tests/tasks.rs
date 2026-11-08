@@ -2000,8 +2000,10 @@ fn spec_commands() -> Vec<&'static str> {
         "Next week",
         "Pick date…",
         "No date",
-        // It says when the task comes back to the person, once, as they are told of it: it
-        // stands with the commands that say when a task is due, before how much it matters.
+        // It says when the task comes back to the person, once, as they are told of it — the
+        // form it opens asks when, so the command says it has a question — and clears it. They
+        // stand with the commands that say when a task is due, before how much it matters.
+        "Remind me…",
         "Remind",
         "No priority",
         "Low",

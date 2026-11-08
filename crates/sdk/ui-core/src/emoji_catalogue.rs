@@ -339,6 +339,13 @@ impl EmojiRecents {
         });
     }
 
+    /// Forget `emoji`, whatever its spelling: it was not used after all.
+    /// Returns whether it was there.
+    pub fn forget(&mut self, emoji: &str) -> bool {
+        self.items
+            .retain(|item| !identity(item).eq(identity(emoji)))
+    }
+
     /// The emoji, most recent first.
     #[must_use]
     pub fn items(&self) -> &[String] {
@@ -450,10 +457,25 @@ pub fn recents() -> Vec<String> {
 
 /// `emoji` was just used (picked, or reacted with).
 pub fn record_recent(emoji: &str) {
+    change_recent(|recents| {
+        recents.record(emoji);
+    });
+}
+
+/// `emoji` was not used after all — a pick that reached a field keeping its
+/// content secret — so it is not remembered.
+pub fn forget_recent(emoji: &str) {
+    change_recent(|recents| {
+        recents.forget(emoji);
+    });
+}
+
+/// Change the recents and keep what they became.
+fn change_recent(change: impl FnOnce(&mut EmojiRecents)) {
     let items = RECENTS.with(|recents| {
         let mut recents = recents.borrow_mut();
         let recents = recents.get_or_insert_with(EmojiRecents::default);
-        recents.record(emoji);
+        change(recents);
         recents.items().to_vec()
     });
     STORE.with(|store| {
@@ -497,6 +519,21 @@ mod tests {
         assert_eq!(recents.items()[0], ":e39:");
         let restored = EmojiRecents::from_items(recents.items().to_vec());
         assert_eq!(restored, recents, "a kept list reads back in its order");
+    }
+
+    /// A pick that reached a secret field is taken back, like a spelling of
+    /// another tone would be.
+    #[test]
+    fn a_forgotten_emoji_is_gone_in_every_spelling() {
+        let mut recents = EmojiRecents::default();
+        recents.record("👍");
+        recents.record("🎉");
+        recents.record("👍🏽");
+        assert!(recents.forget("👍"), "its other spelling is there");
+        assert_eq!(recents.items(), ["👍🏽", "🎉"], "the newest stays");
+        assert!(recents.forget("👍🏻"), "a tone of it is forgotten too");
+        assert_eq!(recents.items(), ["🎉"]);
+        assert!(!recents.forget("🍕"), "what was never there is no change");
     }
 
     #[test]

@@ -118,7 +118,8 @@ impl RunState {
 
     /// The key the outside effect being queued now is held under: the run's identity and how
     /// many effects it queued before it, so that a device running the same invocation queues each
-    /// effect under the same key as the device that ran it first, and the record holds one.
+    /// effect under the same key as the device that ran it first, and the record holds one. A
+    /// notice a run writes is the record of its key ([`crate::notify`]).
     pub fn next_effect_key(&mut self) -> String {
         let ordinal = self.journal.effects;
         self.journal.effects = ordinal.saturating_add(1);

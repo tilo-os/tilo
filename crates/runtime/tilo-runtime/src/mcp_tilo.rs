@@ -194,12 +194,18 @@ fn literal_id(id: &str) -> bool {
         })
 }
 
-/// How the task's programs call what the apps declare: each action as it is called. Read from
-/// the task host's catalogue, so a listing and a program agree on what to type.
+/// How the task's programs write what the apps declare: each action as it is called, and each
+/// type by its name. Read from the task host's catalogue, so a listing, a path and a program
+/// name a type with one name: [`Self::kind`] says what a listing prints for a resource's kind
+/// (`tasks.Task`), and [`Self::answers`] reads that same name back as its published kind, which
+/// is how a path walks to the resource a listing showed. One table serves both.
 #[derive(Default)]
 pub(crate) struct ProgramForms {
     /// By action id, each app's action of that id.
     actions: BTreeMap<String, Vec<Declared>>,
+    /// `(app, type name)` → `notes.Note`: a published kind's `tl.<app>.<Type>` as a program
+    /// types it, and the only mapping between the two.
+    types: BTreeMap<(String, String), String>,
 }
 
 /// One app's action, as a program calls it and what it acts on.
@@ -226,20 +232,22 @@ impl ProgramForms {
             };
             for signature in app["signatures"].as_array().into_iter().flatten() {
                 let text = |key: &str| signature[key].as_str().map(str::to_owned);
-                // Only an action is called. A type has no form of its own here: a listing
-                // names every resource by the kind its app publishes it under, never by the
-                // word a program types a type with (`crate::mcp_agent`'s listing).
-                let (Some("action"), Some(call)) = (signature["kind"].as_str(), text("call"))
-                else {
+                let (Some(kind), Some(call)) = (signature["kind"].as_str(), text("call")) else {
                     continue;
                 };
-                if let Some(action) = text("id") {
-                    forms.actions.entry(action).or_default().push(Declared {
-                        app: id.to_owned(),
-                        call,
-                        on: text("on"),
-                        at: text("at"),
-                    });
+                match (kind, text("id"), text("name")) {
+                    ("action", Some(action), _) => {
+                        forms.actions.entry(action).or_default().push(Declared {
+                            app: id.to_owned(),
+                            call,
+                            on: text("on"),
+                            at: text("at"),
+                        });
+                    }
+                    ("type", _, Some(name)) => {
+                        forms.types.insert((id.to_owned(), name), call);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -275,6 +283,31 @@ impl ProgramForms {
             &action.address.resource,
             &action.resource_kind,
         )
+    }
+
+    /// How a program names the type of a resource of `kind`, a tilolang app's
+    /// (`tl.<app>.<Type>`), when the task holds that app's package.
+    pub(crate) fn kind(&self, kind: &str) -> Option<&str> {
+        let (app, ty) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
+        self.types
+            .get(&(app.to_owned(), ty.to_owned()))
+            .map(String::as_str)
+    }
+
+    /// Whether `name`, a segment of a path (`tasks.Task`), names the type of a resource of
+    /// `kind`, as a listing prints it ([`Self::kind`]): the same table read backwards, so a name
+    /// read off a row walks back to that resource. `false` for a kind no program types
+    /// (`notes.notebook`), and for one the task holds no package of.
+    pub(crate) fn answers(&self, name: &str, kind: &str) -> bool {
+        let Some((app, ty)) = kind
+            .strip_prefix("tl.")
+            .and_then(|rest| rest.rsplit_once('.'))
+        else {
+            return false;
+        };
+        self.types
+            .get(&(app.to_owned(), ty.to_owned()))
+            .is_some_and(|called| called.trim().eq_ignore_ascii_case(name.trim()))
     }
 }
 
@@ -829,9 +862,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         asked
     }
 
-    /// How the task's programs call what a listing shows, when this door runs programs: each
-    /// action as it is called ([`ProgramForms`]). `None` for a door that runs none, whose
-    /// listing names actions as the door's own tools take them.
+    /// How the task's programs write what a listing shows, when this door runs programs: each
+    /// action as it is called and each type by its name ([`ProgramForms`]). `None` for a door
+    /// that runs none, whose listing names actions as the door's own tools take them.
     pub(super) async fn program_forms(&self) -> Option<ProgramForms> {
         self.task_hosts.as_ref()?;
         // optional-decode: a listing names actions by their ids when the catalogue is not there

@@ -107,7 +107,7 @@ impl RegistryClient {
             .get(&url)
             .header(
                 registry_types::upload::UPLOAD_PUBLISHER_HEADER,
-                crate::key::public_hex(key),
+                crate::publisher::key::public_hex(key),
             )
             .header(
                 registry_types::pending::PENDING_TIME_HEADER,
@@ -149,7 +149,7 @@ impl RegistryClient {
             .put(&url)
             .header(
                 registry_types::upload::UPLOAD_PUBLISHER_HEADER,
-                crate::key::public_hex(key),
+                crate::publisher::key::public_hex(key),
             )
             .header(
                 registry_types::upload::UPLOAD_SIGNATURE_HEADER,

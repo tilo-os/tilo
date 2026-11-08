@@ -20,8 +20,8 @@ use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+use app_registry::publisher::RegistryClient;
 use ed25519_dalek::SigningKey;
-use registry_client::RegistryClient;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
 use registry_server::{
     AppState, PublisherAllowlist, PublisherRow, ServerIdentity, Storage, bind_and_run,
@@ -185,14 +185,14 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             prereleases: MAX_ENTRY_VERSIONS,
         };
 
-        registry_client::publish(&client, &publisher, full, None, None, &keep_all).unwrap();
+        app_registry::publisher::publish(&client, &publisher, full, None, None, &keep_all).unwrap();
         promote(&data_dir, &publisher_hex, &channel_key);
         let entry = client.entry(PACKAGE_ID).unwrap().unwrap();
         assert_eq!(entry.versions.len(), MAX_ENTRY_VERSIONS);
 
         // Release 129: the client drops the oldest version and the server
         // accepts that request, collects it and promotes it.
-        let submitted = registry_client::publish(
+        let submitted = app_registry::publisher::publish(
             &client,
             &publisher,
             std::slice::from_ref(next),
@@ -319,7 +319,7 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
 
         // Under the default retention the next release keeps only the newest
         // versions, and the server accepts and promotes the shorter entry.
-        registry_client::publish(
+        app_registry::publisher::publish(
             &client,
             &publisher,
             std::slice::from_ref(trimmed),

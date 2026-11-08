@@ -1114,7 +1114,7 @@ fn read(workspace: &Workspace, person: &str, earlier: &[String]) -> WorkspaceRea
 
 /// What the person calls `app`, when this machine knows a package by that name.
 fn app_name(app: &str) -> String {
-    tilo_installed_apps::read_one_from_env(app)
+    app_catalogue::apps::read_one_from_env(app)
         .ok()
         .flatten()
         .map(|installed| installed.display_name)

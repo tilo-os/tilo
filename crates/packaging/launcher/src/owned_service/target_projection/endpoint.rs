@@ -158,7 +158,7 @@ impl TargetProjectionEndpoint {
         self.service.custody().map(|_| ())
     }
     /// Available before FUSE initialization. The caller starts the actual root
-    /// Capnp relay on this stream before waiting for `observe_ready()`. The target
+    /// filesystem relay on this stream before waiting for `observe_ready()`. The target
     /// worker completes QPE1 on its connected control stream before first RPC.
     pub fn connect_control(&self) -> io::Result<UnixStream> {
         self.check()?;

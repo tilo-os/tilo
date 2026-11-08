@@ -18,9 +18,14 @@
 //!
 //! Hosts: a retained view puts it in a [`super::Popover`]
 //! ([`EmojiPicker::new`] lays out at its own size); a canvas that paints by
-//! hand frames it ([`EmojiPicker::framed`]), places it with
-//! [`EmojiPicker::open_at`], paints it with [`Widget::draw`] and routes the
-//! window's events to [`Widget::handle_event`] while it is open.
+//! hand frames it ([`EmojiPicker::framed`], or [`EmojiPicker::sheet`] for the
+//! desk's own wider card), places it with [`EmojiPicker::open_at`], paints it
+//! with [`Widget::draw`] and routes the window's events to
+//! [`Widget::handle_event`] while it is open. A framed card is sized by the
+//! viewport it is placed in: on a small display it is narrower, its grid
+//! shorter and its group tabs over several rows, and a display too short for
+//! all of its chrome drops the hint line and then the tabs, so the card
+//! always fits.
 
 use std::collections::HashMap;
 
@@ -28,12 +33,12 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::{AccessNode, AccessState, Politeness, Role};
 use crate::emoji_catalogue::{self, CatalogueGroup};
-use crate::num::{f32_of_f64, f64_of_usize};
+use crate::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
@@ -52,7 +57,7 @@ const SEARCH_RESULTS: usize = 96;
 const LONG_PRESS: Duration = Duration::from_millis(500);
 /// Rows of the grid shown at once.
 const GRID_ROWS: usize = 6;
-/// Columns of the grid.
+/// Columns of a popover's grid.
 const COLUMNS: usize = 8;
 
 /// What the picker asks of its host.
@@ -96,6 +101,8 @@ struct Section {
 struct Tones {
     forms: Vec<String>,
     selected: usize,
+    /// Tones to a row: the arrow keys walk them as they are drawn.
+    columns: usize,
     rect: Rect,
     cells: Vec<Rect>,
 }
@@ -112,6 +119,11 @@ struct Geometry {
     grid: Rect,
     footer: Rect,
     cell: f64,
+    /// Columns of the grid.
+    columns: usize,
+    /// Tabs that share a row of the group strip, and a tab's height.
+    tab_columns: usize,
+    tab_height: f64,
     /// Each item's cell and each heading's top, in grid content
     /// coordinates.
     cells: Vec<Rect>,
@@ -126,9 +138,16 @@ struct Geometry {
 )]
 pub struct EmojiPicker {
     framed: bool,
+    /// Whether a framed card takes a sheet's width instead of a utility
+    /// panel's.
+    sheet: bool,
     open: bool,
     /// The panel, in the host's coordinates.
     rect: Rect,
+    /// The room a framed card is sized and placed in.
+    viewport: Rect,
+    /// The caret a framed card stands beside, when the field reported one.
+    anchor: Option<Rect>,
     search: SearchField,
     query: String,
     group: usize,
@@ -168,8 +187,11 @@ impl EmojiPicker {
     pub fn new() -> Self {
         let mut picker = Self {
             framed: false,
+            sheet: false,
             open: true,
             rect: Rect::ZERO,
+            viewport: Rect::ZERO,
+            anchor: None,
             search: SearchField::new().without_clear(),
             query: String::new(),
             group: 0,
@@ -204,10 +226,30 @@ impl EmojiPicker {
         picker
     }
 
+    /// A framed picker at a sheet's width ([`crate::tokens::Metrics::BASE`]'s
+    /// `panel_width_sheet`): the desk's own card over a whole session, where
+    /// a wider grid shows more emoji before it scrolls.
+    #[must_use]
+    pub fn sheet() -> Self {
+        let mut picker = Self::framed();
+        picker.sheet = true;
+        picker
+    }
+
     /// The panel's size in `theme`.
     #[must_use]
     pub fn size(&self, theme: &Theme) -> (f64, f64) {
-        geometry_of(theme, self.framed).size
+        if self.framed {
+            self.geometry.size
+        } else {
+            geometry_of(theme, false, false, Rect::ZERO, 0).size
+        }
+    }
+
+    /// The caret the card stands beside, when the field reported one.
+    #[must_use]
+    pub fn anchor(&self) -> Option<Rect> {
+        self.anchor
     }
 
     #[must_use]
@@ -216,11 +258,13 @@ impl EmojiPicker {
     }
 
     /// Open beside `anchor` (below it, or above where the window ends
-    /// first), inside `viewport`: search empty and focused, the first group
-    /// chosen.
-    pub fn open_at(&mut self, anchor: Rect, viewport: Rect, theme: &Theme) {
+    /// first), inside `viewport`; centred a fifth of the way down the
+    /// viewport when the field reported no caret. Search empty and focused,
+    /// the first group chosen.
+    pub fn open_at(&mut self, anchor: Option<Rect>, viewport: Rect, theme: &Theme) {
         self.theme = theme.clone();
-        self.place_at(anchor, viewport, theme);
+        self.viewport = viewport;
+        self.anchor = anchor;
         self.open = true;
         self.reset();
     }
@@ -228,24 +272,28 @@ impl EmojiPicker {
     /// Move beside `anchor` inside `viewport`, in `theme`, keeping what is
     /// typed and chosen: a host placing an open picker on every frame, as
     /// its window resizes.
-    pub fn place_at(&mut self, anchor: Rect, viewport: Rect, theme: &Theme) {
-        let size = self.size(theme);
-        let gap = f64::from(theme.tokens.spacing.s1);
-        let room = crate::widget::floating_surface::panel_room(viewport, theme);
-        let (rect, _) = crate::widget::floating_surface::place_anchored(
-            anchor,
-            size,
-            crate::widget::PopoverSide::Below,
-            gap,
-            room,
-        );
-        if rect != self.rect {
-            self.rect = rect;
-            // The grid's scroll viewport and the search field are placed on
-            // screen when laid out: moving without it would leave them where
-            // the picker was.
+    pub fn place_at(&mut self, anchor: Option<Rect>, viewport: Rect, theme: &Theme) {
+        let moved = self.anchor != anchor || self.viewport != viewport || self.theme != *theme;
+        self.anchor = anchor;
+        self.viewport = viewport;
+        self.theme = theme.clone();
+        if moved {
             self.layout();
         }
+    }
+
+    /// Step a glide after a flick to this frame, once per frame: whether the
+    /// open grid moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        if !self.open {
+            return false;
+        }
+        let moved = self.scroll.advance();
+        if moved {
+            self.press = None;
+            self.dirty = true;
+        }
+        moved
     }
 
     /// Open again where it was, as new: search empty and focused, the first
@@ -502,18 +550,47 @@ impl EmojiPicker {
     }
 
     fn layout(&mut self) {
-        let mut geometry = geometry_of(&self.theme, self.framed);
-        // Every group gets an equal share of the row: their icons are all one
-        // glyph wide, and the row never runs past the panel.
+        let mut geometry = geometry_of(
+            &self.theme,
+            self.framed,
+            self.sheet,
+            self.viewport,
+            self.groups.len(),
+        );
+        if self.framed {
+            // A framed card is its host's to place: beside the caret, and
+            // inside the viewport even when it is taller than either side of
+            // it.
+            self.rect = framed_card(
+                self.anchor,
+                geometry.size,
+                self.viewport,
+                f64::from(self.theme.tokens.spacing.s4),
+                f64::from(self.theme.tokens.spacing.s2),
+            );
+        }
+        // Every group gets an equal share of its column: their icons are all
+        // one glyph wide, and the strip never runs past the panel.
         let strip = geometry.tab_strip;
-        let share = strip.width() / f64_of_usize(self.groups.len().max(1));
-        geometry.tabs = (0..self.groups.len())
-            .map(|i| {
-                let x0 = strip.x0 + share * f64_of_usize(i);
-                Rect::new(x0, strip.y0, x0 + share, strip.y1)
-            })
-            .collect();
-        let (cells, headings, height) = self.layout_cells(geometry.cell, &self.theme);
+        let columns = geometry.tab_columns.max(1);
+        let share = strip.width() / f64_of_usize(columns);
+        geometry.tabs = if strip.height() > 0.0 {
+            (0..self.groups.len())
+                .map(|i| {
+                    let column = f64_of_usize(i % columns);
+                    let row = f64_of_usize(i / columns);
+                    let x0 = strip.x0 + share * column;
+                    let y0 = strip.y0 + geometry.tab_height * row;
+                    Rect::new(x0, y0, x0 + share, y0 + geometry.tab_height)
+                })
+                .collect()
+        } else {
+            // A card too short for the tabs keeps none: the keys still walk
+            // the groups.
+            Vec::new()
+        };
+        let (cells, headings, height) =
+            self.layout_cells(geometry.cell, geometry.columns, &self.theme);
         geometry.cells = cells;
         geometry.headings = headings;
         geometry.content_height = height;
@@ -526,7 +603,13 @@ impl EmojiPicker {
         self.dirty = true;
     }
 
-    fn layout_cells(&self, cell: f64, theme: &Theme) -> (Vec<Rect>, Vec<(String, f64)>, f64) {
+    fn layout_cells(
+        &self,
+        cell: f64,
+        per_row: usize,
+        theme: &Theme,
+    ) -> (Vec<Rect>, Vec<(String, f64)>, f64) {
+        let per_row = per_row.max(1);
         let heading_h = f64::from(theme.tokens.metrics.selector_height);
         let mut cells = vec![Rect::ZERO; self.items.len()];
         let mut headings = Vec::new();
@@ -537,8 +620,8 @@ impl EmojiPicker {
                 y += heading_h;
             }
             for (n, index) in (section.start..section.end).enumerate() {
-                let row = f64_of_usize(n / COLUMNS);
-                let col = f64_of_usize(n % COLUMNS);
+                let row = f64_of_usize(n / per_row);
+                let col = f64_of_usize(n % per_row);
                 if let Some(slot) = cells.get_mut(index) {
                     *slot = Rect::new(
                         col * cell,
@@ -548,7 +631,7 @@ impl EmojiPicker {
                     );
                 }
             }
-            y += f64_of_usize((section.end - section.start).div_ceil(COLUMNS)) * cell;
+            y += f64_of_usize((section.end - section.start).div_ceil(per_row)) * cell;
         }
         (cells, headings, y)
     }
@@ -713,26 +796,36 @@ impl EmojiPicker {
             .map_or(0, |tone| usize::from(tone) + 1);
         let cell = self.geometry.cell;
         let pad = f64::from(self.theme.tokens.spacing.s1);
-        let width = cell * f64_of_usize(forms.len()) + pad * 2.0;
-        let height = cell + pad * 2.0;
+        let card = self.rect;
+        // The tones wrap inside the card: on a narrow one they take two rows
+        // rather than running over its edge.
+        let room = (card.width() - pad * 2.0).max(cell);
+        let columns = usize_of_f64((room / cell).floor()).clamp(1, forms.len());
+        let rows = forms.len().div_ceil(columns);
+        let width = cell * f64_of_usize(columns) + pad * 2.0;
+        let height = (cell * f64_of_usize(rows) + pad * 2.0).min(card.height());
         let x0 = (anchor.center().x - width / 2.0)
-            .min(self.rect.x1 - width)
-            .max(self.rect.x0);
-        let y0 = if anchor.y0 - height >= self.rect.y0 {
+            .min(card.x1 - width)
+            .max(card.x0);
+        let y0 = if anchor.y0 - height >= card.y0 {
             anchor.y0 - height
         } else {
             anchor.y1
         };
+        // Above the cell, else below it, and kept on the card either way.
+        let y0 = y0.min(card.y1 - height).max(card.y0);
         let cells = (0..forms.len())
             .map(|i| {
-                let x = x0 + pad + cell * f64_of_usize(i);
-                Rect::new(x, y0 + pad, x + cell, y0 + pad + cell)
+                let x = x0 + pad + cell * f64_of_usize(i % columns);
+                let y = y0 + pad + cell * f64_of_usize(i / columns);
+                Rect::new(x, y, x + cell, y + cell)
             })
             .collect();
         self.selected = index;
         self.tones = Some(Tones {
             forms,
             selected: selected.min(5),
+            columns,
             rect: Rect::new(x0, y0, x0 + width, y0 + height),
             cells,
         });
@@ -785,10 +878,17 @@ impl EmojiPicker {
                 Key::Named(NamedKey::Escape) => self.tones = None,
                 Key::Named(NamedKey::Enter | NamedKey::Space) => self.activate_selected(),
                 Key::Named(NamedKey::ArrowLeft) => {
-                    tones.selected = tones.selected.saturating_sub(1)
+                    tones.selected = tones.selected.saturating_sub(1);
                 }
                 Key::Named(NamedKey::ArrowRight | NamedKey::Tab) => {
                     tones.selected = (tones.selected + 1).min(last);
+                }
+                // The tones are drawn in rows, so up and down follow them.
+                Key::Named(NamedKey::ArrowUp) => {
+                    tones.selected = tones.selected.saturating_sub(tones.columns);
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    tones.selected = (tones.selected + tones.columns).min(last);
                 }
                 Key::Named(NamedKey::Home) => tones.selected = 0,
                 Key::Named(NamedKey::End) => tones.selected = last,
@@ -1265,43 +1365,156 @@ impl EmojiPicker {
     }
 }
 
-/// The picker's geometry in `theme`, before its items are laid out.
-fn geometry_of(theme: &Theme, framed: bool) -> Geometry {
+/// The picker's geometry in `theme`, before its items are laid out: a popover
+/// at its own size, or a framed card fitted to `viewport` — narrower than its
+/// width class when the viewport is, and with a shorter grid when the height
+/// is, so the card always fits the display it opens on.
+fn geometry_of(
+    theme: &Theme,
+    framed: bool,
+    sheet: bool,
+    viewport: Rect,
+    groups: usize,
+) -> Geometry {
     let spacing = &theme.tokens.spacing;
+    let metrics = &theme.tokens.metrics;
     let pad = if framed { f64::from(spacing.s3) } else { 0.0 };
     let gap = f64::from(spacing.s2);
-    let width = f64::from(theme.tokens.metrics.panel_width_utility);
-    let inner = width - pad * 2.0;
     // The overlaid scroll bar gets a lane of its own at the grid's right, so
     // it never covers the last column.
     let lane = f64::from(spacing.s2);
-    let cell = ((inner - lane) / f64_of_usize(COLUMNS)).floor();
+    let edge = f64::from(spacing.s4);
     let field_h = super::ButtonFace::height(ControlSize::Regular, theme);
-    let tabs_h = SegmentedFace::height(ControlSize::Regular, theme);
-    let footer_h = f64::from(theme.tokens.metrics.selector_height);
-    let grid_w = cell * f64_of_usize(COLUMNS);
-    let x0 = pad + (inner - lane - grid_w) / 2.0;
+    let tab_height = SegmentedFace::height(ControlSize::Regular, theme);
+    let hint_h = f64::from(metrics.selector_height);
+    let wanted = f64::from(if sheet {
+        metrics.panel_width_sheet
+    } else {
+        metrics.panel_width_utility
+    });
+    let (width, available) = if framed {
+        (
+            wanted.min((viewport.width() - edge * 2.0).max(0.0)),
+            (viewport.height() - edge * 2.0).max(0.0),
+        )
+    } else {
+        (wanted, f64::INFINITY)
+    };
+    let body = (width - pad * 2.0 - lane).max(1.0);
+    let cell = if framed {
+        f64::from(metrics.panel_row_height).max(1.0)
+    } else {
+        (body / f64_of_usize(COLUMNS)).floor().max(1.0)
+    };
+    let columns = if framed {
+        usize_of_f64((body / cell).floor()).max(1)
+    } else {
+        COLUMNS
+    };
+    let tab_columns = if framed {
+        group_columns(body, groups.max(1), tab_height, wanted)
+    } else {
+        groups.max(1)
+    };
+    let mut tabs_h = tab_height * f64_of_usize(groups.max(1).div_ceil(tab_columns).max(1));
+    let grid_w = cell * f64_of_usize(columns);
+    let chrome = |tabs: f64, footer: f64| pad * 2.0 + field_h + gap + tabs + gap + gap + footer;
+    // A display too short for all of the card's chrome still holds the field
+    // and a row of emoji: the hint line goes first, then the group tabs.
+    let mut footer_h = hint_h;
+    if chrome(tabs_h, footer_h) + cell > available {
+        footer_h = 0.0;
+    }
+    if chrome(tabs_h, footer_h) + cell > available {
+        tabs_h = 0.0;
+    }
+    let fixed = chrome(tabs_h, footer_h);
+    let grid_h = if framed {
+        // One row at least: a display too short for the card's chrome still
+        // shows emoji, and the card scrolls.
+        (cell * f64_of_usize(GRID_ROWS)).min((available - fixed).max(cell))
+    } else {
+        cell * f64_of_usize(GRID_ROWS)
+    };
+    let height = if framed {
+        (fixed + grid_h).min(available)
+    } else {
+        fixed + grid_h
+    };
     let field = Rect::new(pad, pad, width - pad, pad + field_h);
     let tabs_y = field.y1 + gap;
     let grid_y = tabs_y + tabs_h + gap;
-    let grid = Rect::new(
-        x0,
-        grid_y,
-        x0 + grid_w + lane,
-        grid_y + cell * f64_of_usize(GRID_ROWS),
-    );
+    // Never past the card: on a display shorter than the chrome, the grid
+    // holds what is left of it and the person scrolls.
+    let reserved = pad + if footer_h > 0.0 { gap + footer_h } else { 0.0 };
+    let grid_h = grid_h.min((height - grid_y - reserved).max(0.0));
+    let grid_x0 = pad + (body - grid_w) / 2.0;
+    let grid = Rect::new(grid_x0, grid_y, grid_x0 + grid_w + lane, grid_y + grid_h);
     let footer = Rect::new(pad, grid.y1 + gap, width - pad, grid.y1 + gap + footer_h);
     Geometry {
-        size: (width, footer.y1 + pad),
+        size: (width, height),
         field,
         tab_strip: Rect::new(pad, tabs_y, width - pad, tabs_y + tabs_h),
         tabs: Vec::new(),
         grid,
         footer,
         cell,
+        columns,
+        tab_columns,
+        tab_height,
         cells: Vec::new(),
         headings: Vec::new(),
         content_height: 0.0,
+    }
+}
+
+/// How many tabs share a row: all of them while the strip fits the card's
+/// width class, else as many as fit with the rows kept even.
+fn group_columns(room: f64, groups: usize, tab_width: f64, strip_width: f64) -> usize {
+    if room >= strip_width {
+        return groups;
+    }
+    let fits = usize_of_f64((room / tab_width.max(1.0)).floor())
+        .max(1)
+        .min(groups);
+    groups.div_ceil(groups.div_ceil(fits))
+}
+
+/// Where a framed card of `size` stands: its leading edge on `anchor`'s,
+/// `gap` below the caret, or `gap` above it where the viewport ends first;
+/// with no anchor, centred a fifth of the way down the viewport. Either way
+/// the card stays `edge` inside `viewport`, sliding rather than running off
+/// it.
+fn framed_card(
+    anchor: Option<Rect>,
+    (width, height): (f64, f64),
+    viewport: Rect,
+    edge: f64,
+    gap: f64,
+) -> Rect {
+    let (left, right) = (viewport.x0 + edge, viewport.x1 - edge);
+    let (top, bottom) = (viewport.y0 + edge, viewport.y1 - edge);
+    let inside = |y0: f64| y0.min(bottom - height).max(top);
+    if let Some(caret) = anchor {
+        let x0 = caret.x0.min(right - width).max(left);
+        let below = caret.y1 + gap;
+        let above = caret.y0 - gap - height;
+        let y0 = if below + height <= bottom {
+            below
+        } else if above >= top {
+            above
+        } else if bottom - caret.y1 >= caret.y0 - top {
+            bottom - height
+        } else {
+            top
+        };
+        Rect::from_origin_size((x0, inside(y0)), (width, height))
+    } else {
+        let x0 = (viewport.center().x - width / 2.0)
+            .min(right - width)
+            .max(left);
+        let y0 = inside(viewport.y0 + viewport.height() * 0.18);
+        Rect::from_origin_size((x0, y0), (width, height))
     }
 }
 
@@ -1398,7 +1611,9 @@ impl Widget for EmojiPicker {
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         self.paint_grid(&mut ctx);
         let footer = self.on_screen(g.footer);
-        self.paint_footer(&mut ctx, footer);
+        if footer.height() > 0.0 {
+            self.paint_footer(&mut ctx, footer);
+        }
         self.paint_tones(&mut ctx);
     }
 
@@ -1461,6 +1676,37 @@ impl Widget for EmojiPicker {
                 self.search.handle_event(event, ctx);
                 *ctx.handled = true;
             }
+            // A touchscreen presses and picks where a mouse does.
+            WindowEvent::Touch(touch) => {
+                self.cursor = Point::new(
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
+                );
+                match touch.phase {
+                    TouchPhase::Started => {
+                        *ctx.handled |=
+                            self.button(ElementState::Pressed, MouseButton::Left, self.cursor);
+                    }
+                    TouchPhase::Ended => {
+                        *ctx.handled |=
+                            self.button(ElementState::Released, MouseButton::Left, self.cursor);
+                    }
+                    TouchPhase::Cancelled => {
+                        self.press = None;
+                        self.dirty = true;
+                    }
+                    TouchPhase::Moved => {}
+                }
+                if *ctx.handled {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
+            }
+            // A press held when the window lost the keyboard is no press.
+            WindowEvent::Focused(false) => {
+                self.press = None;
+                self.hover = None;
+                self.dirty = true;
+            }
             _ => {}
         }
         if self.search.take_dirty().is_some() {
@@ -1484,6 +1730,11 @@ impl Widget for EmojiPicker {
         self.open
             && (self.scroll.needs_animation_frame(&self.theme)
                 || self.search.needs_animation_frame())
+    }
+
+    /// A glide after a flick scrolls the grid as the wheel does.
+    fn update(&mut self, _state: &crate::widget::AppModel, _path: &ModelPath) -> bool {
+        self.advance_scroll()
     }
 
     fn is_focusable(&self) -> bool {

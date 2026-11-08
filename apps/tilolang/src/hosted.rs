@@ -63,6 +63,9 @@ struct Watch {
     resume: std::sync::mpsc::Sender<()>,
     /// What the thread wakes: the component running the window.
     wake: Arc<Mutex<ui::wake::WakeHandle>>,
+    /// Closed when the window goes: the thread stops waiting on the connection, and lets go of
+    /// the descriptor it holds, so the instance sees its window close and ends.
+    _stop: std::io::PipeWriter,
 }
 
 impl Watch {
@@ -72,22 +75,34 @@ impl Watch {
         let flag = Arc::clone(&signalled);
         let wake = Arc::new(Mutex::new(wake));
         let waking = Arc::clone(&wake);
+        let (stopped, stop) = std::io::pipe().ok()?;
         std::thread::Builder::new()
             .name("tilolang-patches".into())
             .spawn(move || {
                 loop {
-                    let mut poll = libc::pollfd {
-                        fd: fd.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    // SAFETY: one initialized pollfd naming a descriptor this thread owns.
-                    let ready = unsafe { libc::poll(&raw mut poll, 1, -1) };
+                    let mut poll = [
+                        libc::pollfd {
+                            fd: stopped.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: fd.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    // SAFETY: two initialized pollfds naming descriptors this thread owns.
+                    let ready = unsafe { libc::poll(poll.as_mut_ptr(), 2, -1) };
                     if ready < 0 {
                         if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
                         {
                             continue;
                         }
+                        return;
+                    }
+                    // The window went: what the thread holds of the connection goes with it.
+                    if poll[0].revents != 0 {
                         return;
                     }
                     flag.store(true, Ordering::Release);
@@ -96,7 +111,7 @@ impl Watch {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .wake();
                     // The host hung up: the window keeps its last frame.
-                    if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    if poll[1].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                         return;
                     }
                     if resumed.recv().is_err() {
@@ -116,6 +131,7 @@ impl Watch {
             woke: signalled,
             resume,
             wake,
+            _stop: stop,
         })
     }
 

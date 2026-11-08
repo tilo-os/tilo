@@ -21,9 +21,9 @@ fn bin_path() -> PathBuf {
 
 /// Write a publisher key file for `seed` at `path`; returns its public half.
 fn write_key(path: &std::path::Path, seed: u8) -> String {
-    let key = registry_client::key::SigningKey::from_bytes(&[seed; 32]);
-    std::fs::write(path, registry_client::key::encode(&key)).unwrap();
-    registry_client::key::public_hex(&key)
+    let key = app_registry::publisher::key::SigningKey::from_bytes(&[seed; 32]);
+    std::fs::write(path, app_registry::publisher::key::encode(&key)).unwrap();
+    app_registry::publisher::key::public_hex(&key)
 }
 
 /// Tiny manifest fixture — same shape as the tilo-app-package fixtures

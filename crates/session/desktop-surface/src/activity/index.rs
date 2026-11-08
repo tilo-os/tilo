@@ -100,6 +100,14 @@ impl HistoryOrigin {
         }
     }
 
+    /// The record this row came from, if it is not the workspace document.
+    pub fn record(&self) -> Option<&RecordId> {
+        match self {
+            Self::DesktopTree => None,
+            Self::Record { id, .. } | Self::AppRecord { id, .. } => Some(id),
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::DesktopTree => crate::i18n::t("activity-source-workspace"),

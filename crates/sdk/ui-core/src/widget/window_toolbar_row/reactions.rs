@@ -343,7 +343,7 @@ impl ToolbarRow {
             } else {
                 self.row
             };
-            self.reactions.picker.open_at(anchor, area, theme);
+            self.reactions.picker.open_at(Some(anchor), area, theme);
         }
         if self.reactions.picker.is_open() {
             Widget::draw(

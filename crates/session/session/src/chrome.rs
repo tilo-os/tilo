@@ -856,7 +856,7 @@ pub(crate) fn host(
     wiring: ChromeWiring,
     sync: Option<Rc<crate::sync::Client>>,
     overview: &crate::mount::overview::Overview,
-    emoji: &tilo_desktop::emoji_picker::EmojiLink,
+    emoji: &tilo_desktop::emoji::EmojiLink,
     overlays: &Overlays,
     switcher: &tilo_desktop::window_switcher::Switcher,
 ) -> WidgetHost {

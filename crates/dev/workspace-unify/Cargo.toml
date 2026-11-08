@@ -151,9 +151,6 @@ doc = false
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
-"capnp-0_26_2" = { package = "capnp", version = "^0.26.2", default-features = false, features = ["alloc", "default", "std"] }
-"capnp-futures-0_26_1" = { package = "capnp-futures", version = "^0.26.1", default-features = false, features = [] }
-"capnp-rpc-0_26_1" = { package = "capnp-rpc", version = "^0.26.1", default-features = false, features = [] }
 "castaway-0_2_4" = { package = "castaway", version = "^0.2.4", default-features = false, features = ["alloc"] }
 "cbc-0_2_1" = { package = "cbc", version = "^0.2.1", default-features = false, features = ["alloc", "block-padding", "default", "zeroize"] }
 "census-0_4_2" = { package = "census", version = "^0.4.2", default-features = false, features = [] }
@@ -869,7 +866,6 @@ doc = false
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
-"registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
 "registry-server" = { path = "../../../crates/packaging/registry-server", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
@@ -912,7 +908,7 @@ doc = false
 "runtime-fs" = { path = "../../../crates/runtime/runtime-fs", default-features = false, features = [] }
 "runtime-fs-fuse" = { path = "../../../crates/runtime/runtime-fs-fuse", default-features = false, features = [] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
-"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = ["default", "rpc"] }
+"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
 "rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
@@ -1207,7 +1203,7 @@ doc = false
 "tilo-host" = { path = "../../../crates/sdk/tilo-host", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
 "tilo-host-search" = { path = "../../../crates/platform/tilo-host-search", default-features = false, features = [] }
 "tilo-identity-authority" = { path = "../../../crates/session/identity-authority", default-features = false, features = [] }
-"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony" }
+"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-identity-host" = { path = "../../../crates/runtime/tilo-identity-host", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../../crates/platform/tilo-image-codec", default-features = false, features = [] }
@@ -1215,10 +1211,9 @@ doc = false
 "tilo-innertube" = { path = "../../../crates/platform/tilo-innertube", default-features = false, features = [] }
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
-"tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
-"tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "native", "plane", "relay", "tls"] }
+"tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "iroh", "plane", "relay", "tls"] }
 "tilo-liveness" = { path = "../../../crates/session/liveness", default-features = false, features = [] }
 "tilo-locale" = { path = "../../../crates/platform/tilo-locale", default-features = false, features = [] }
 "tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }
@@ -1616,6 +1611,7 @@ doc = false
 "anstyle-parse-1_0_0" = { package = "anstyle-parse", version = "^1.0.0", default-features = false, features = ["default", "utf8"] }
 "anstyle-query-1_1_5" = { package = "anstyle-query", version = "^1.1.5", default-features = false, features = [] }
 "anyhow-1_0_103" = { package = "anyhow", version = "^1.0.103", default-features = false, features = ["default", "std"] }
+"app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "ar_archive_writer-0_5_3" = { package = "ar_archive_writer", version = "^0.5.3", default-features = false, features = [] }
 "arc-swap-1_9_2" = { package = "arc-swap", version = "^1.9.2", default-features = false, features = [] }
 "argon2-0_6_0" = { package = "argon2", version = "^0.6.0", default-features = false, features = ["alloc"] }
@@ -1684,9 +1680,6 @@ doc = false
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
-"capnp-0_26_2" = { package = "capnp", version = "^0.26.2", default-features = false, features = ["alloc", "default", "std"] }
-"capnp-futures-0_26_1" = { package = "capnp-futures", version = "^0.26.1", default-features = false, features = [] }
-"capnp-rpc-0_26_1" = { package = "capnp-rpc", version = "^0.26.1", default-features = false, features = [] }
 "cbc-0_2_1" = { package = "cbc", version = "^0.2.1", default-features = false, features = ["alloc", "block-padding", "default", "zeroize"] }
 "cc-1_2_56" = { package = "cc", version = "^1.2.56", default-features = false, features = ["parallel"] }
 "census-0_4_2" = { package = "census", version = "^0.4.2", default-features = false, features = [] }
@@ -2199,7 +2192,6 @@ doc = false
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
-"registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "renderdoc-sys-1_1_0" = { package = "renderdoc-sys", version = "^1.1.0", default-features = false, features = [] }
 "reqwest-0_13_4" = { package = "reqwest", version = "^0.13.4", default-features = false, features = ["__rustls", "__tls", "blocking", "brotli", "form", "gzip", "json", "rustls-no-provider", "stream"] }
@@ -2215,7 +2207,7 @@ doc = false
 "runtime-bundle" = { path = "../../../crates/packaging/runtime-bundle", default-features = false, features = [] }
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
-"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = ["default", "rpc"] }
+"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
@@ -2743,9 +2735,6 @@ doc = false
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
-"capnp-0_26_2" = { package = "capnp", version = "^0.26.2", default-features = false, features = ["alloc", "default", "std"] }
-"capnp-futures-0_26_1" = { package = "capnp-futures", version = "^0.26.1", default-features = false, features = [] }
-"capnp-rpc-0_26_1" = { package = "capnp-rpc", version = "^0.26.1", default-features = false, features = [] }
 "castaway-0_2_4" = { package = "castaway", version = "^0.2.4", default-features = false, features = ["alloc"] }
 "cbc-0_2_1" = { package = "cbc", version = "^0.2.1", default-features = false, features = ["alloc", "block-padding", "default", "zeroize"] }
 "census-0_4_2" = { package = "census", version = "^0.4.2", default-features = false, features = [] }
@@ -3461,7 +3450,6 @@ doc = false
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
-"registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
 "registry-server" = { path = "../../../crates/packaging/registry-server", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
@@ -3504,7 +3492,7 @@ doc = false
 "runtime-fs" = { path = "../../../crates/runtime/runtime-fs", default-features = false, features = [] }
 "runtime-fs-fuse" = { path = "../../../crates/runtime/runtime-fs-fuse", default-features = false, features = [] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
-"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = ["default", "rpc"] }
+"runtime-portal" = { path = "../../../crates/runtime/runtime-portal" }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
 "rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
@@ -3807,10 +3795,9 @@ doc = false
 "tilo-innertube" = { path = "../../../crates/platform/tilo-innertube", default-features = false, features = [] }
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
-"tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
-"tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "native", "plane", "relay", "tls"] }
+"tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "iroh", "plane", "relay", "tls"] }
 "tilo-liveness" = { path = "../../../crates/session/liveness", default-features = false, features = [] }
 "tilo-locale" = { path = "../../../crates/platform/tilo-locale", default-features = false, features = [] }
 "tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }
@@ -4276,9 +4263,6 @@ doc = false
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
-"capnp-0_26_2" = { package = "capnp", version = "^0.26.2", default-features = false, features = ["alloc", "default", "std"] }
-"capnp-futures-0_26_1" = { package = "capnp-futures", version = "^0.26.1", default-features = false, features = [] }
-"capnp-rpc-0_26_1" = { package = "capnp-rpc", version = "^0.26.1", default-features = false, features = [] }
 "cbc-0_2_1" = { package = "cbc", version = "^0.2.1", default-features = false, features = ["alloc", "block-padding", "default", "zeroize"] }
 "cc-1_2_56" = { package = "cc", version = "^1.2.56", default-features = false, features = ["parallel"] }
 "census-0_4_2" = { package = "census", version = "^0.4.2", default-features = false, features = [] }
@@ -4790,7 +4774,6 @@ doc = false
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
-"registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "renderdoc-sys-1_1_0" = { package = "renderdoc-sys", version = "^1.1.0", default-features = false, features = [] }
 "reqwest-0_13_4" = { package = "reqwest", version = "^0.13.4", default-features = false, features = ["__rustls", "__tls", "blocking", "brotli", "form", "gzip", "json", "rustls-no-provider", "stream"] }
@@ -4806,7 +4789,7 @@ doc = false
 "runtime-bundle" = { path = "../../../crates/packaging/runtime-bundle", default-features = false, features = [] }
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
-"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = ["default", "rpc"] }
+"runtime-portal" = { path = "../../../crates/runtime/runtime-portal" }
 "rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }

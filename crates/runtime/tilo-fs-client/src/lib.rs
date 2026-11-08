@@ -68,7 +68,8 @@ pub const MAX_WRITE_CHUNK: u32 = 1 << 20;
 
 /// Try to dial the Tilo workspace-fs proxy via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (e.g. running as
-/// a Flatpak) or the fd isn't open.
+/// a Flatpak) or the fd isn't open. A process has one connection to the
+/// service, so a second dial reports it as taken.
 ///
 /// # Errors
 ///

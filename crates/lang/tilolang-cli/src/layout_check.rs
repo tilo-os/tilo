@@ -956,6 +956,45 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
         .find_map(|child| button_named(child, label))
 }
 
+/// How a press by its words reaches a window: the control of that name, or where a menu row of
+/// that name stands — a row is painted by the menu that shows it, so only a press at where it
+/// stands reaches it.
+enum Pressing {
+    /// A control, and whether a click reaches it rather than its semantic action.
+    Control(String, bool),
+    At(ui::kurbo::Rect),
+}
+
+/// The box the row `label` of a menu stands at, under `node`, when the window shows one.
+fn painted_row_named(node: &ui::headless::InspectionNode, label: &str) -> Option<ui::kurbo::Rect> {
+    node.semantics
+        .as_ref()
+        .and_then(|access| row_named(access, label))
+        .or_else(|| {
+            node.children
+                .iter()
+                .find_map(|child| painted_row_named(child, label))
+        })
+}
+
+/// The box of the row `label` among what `access` publishes, a menu's rows being its children's
+/// children.
+fn row_named(access: &ui::a11y::AccessNode, label: &str) -> Option<ui::kurbo::Rect> {
+    for child in &access.children {
+        if child.role == ui::a11y::Role::MenuItem
+            && !child.state.disabled
+            && child.name.as_deref() == Some(label)
+            && let Some(bounds) = child.bounds
+        {
+            return Some(bounds.to_rect());
+        }
+        if let Some(bounds) = row_named(child, label) {
+            return Some(bounds);
+        }
+    }
+    None
+}
+
 /// The test id of the first widget under `node` that publishes a button named `label` as a
 /// control it paints itself (an empty state's action): the widget is what is activated.
 fn painted_button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
@@ -1176,18 +1215,30 @@ impl AppCheck<'_> {
                     let found = {
                         let root = &staged.harness().inspection().root;
                         button_named(root, press)
-                            .map(|id| (id, true))
-                            .or_else(|| painted_button_named(root, press).map(|id| (id, false)))
+                            .map(|id| Pressing::Control(id, true))
+                            .or_else(|| {
+                                painted_button_named(root, press)
+                                    .map(|id| Pressing::Control(id, false))
+                            })
+                            .or_else(|| painted_row_named(root, press).map(Pressing::At))
                     };
-                    let Some((id, clicked)) = found else {
+                    let Some(pressing) = found else {
                         continue;
                     };
                     self.pressed.insert(press.clone());
-                    if clicked {
-                        staged.press(&id, layout.size.touch)?;
-                    } else {
-                        staged.press_action(&id)?;
+                    match pressing {
+                        Pressing::Control(id, clicked) if clicked => {
+                            staged.press(&id, layout.size.touch)?;
+                        }
+                        Pressing::Control(id, _) => staged.press_action(&id)?,
+                        Pressing::At(bounds) => {
+                            let center = bounds.center();
+                            staged.press_at(center.x, center.y)?;
+                        }
                     }
+                    // What the press opened — a menu over the window, a popover beside a
+                    // control — is laid out before the next word is looked for.
+                    staged.freshen()?;
                 }
                 for key in self.keys {
                     staged.key(key);

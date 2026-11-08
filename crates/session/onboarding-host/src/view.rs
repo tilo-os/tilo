@@ -705,29 +705,6 @@ impl OnboardingView {
         Self::new_in_context(identity_dir, OnboardingContext::HostDesktop, true)
     }
 
-    /// Build the trusted export-and-verify page for the active identity.
-    ///
-    /// Settings is deliberately only a discovery surface: the passphrase,
-    /// destination picker, and portable-backup cryptography remain in this
-    /// shell-owned ceremony.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the active identity cannot be read or validated.
-    pub fn new_for_portable_backup(identity_dir: PathBuf) -> Result<Self, String> {
-        let identity_path = runtime_identity::resolve_active_identity(&identity_dir)
-            .unwrap_or_else(|| identity_dir.join("primary.json"));
-        let identity = crate::identity::existing_identity_at(&identity_path)?;
-        let mut view = Self::new_in_context(identity_dir, OnboardingContext::FullSystem, false);
-        view.begin_portable_backup_for(identity);
-        view.refresh_backup_capability()
-            .map_err(|()| t("onboarding-connect-recovery-message"))?;
-        if !view.backup_export_available {
-            return Err(t("onboarding-backup-unavailable"));
-        }
-        Ok(view)
-    }
-
     /// Reopen the introduction after first login without repeating or
     /// weakening any identity ceremony.
     pub fn new_tour() -> Self {
@@ -1042,14 +1019,6 @@ impl OnboardingView {
         self.pressed.press(action);
     }
 
-    /// Takes a setup action as its button would, for tests that hand the view
-    /// to a host they then drive.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn presser(&self) -> Box<dyn Fn(&'static str)> {
-        let pressed = self.pressed.clone();
-        Box::new(move |action| pressed.press(action))
-    }
-
     /// The tour page on screen, counted from 1.
     #[cfg(any(test, feature = "test-support"))]
     pub fn tour_step(&self) -> Option<u8> {
@@ -1152,23 +1121,6 @@ impl OnboardingView {
         self.tour_page.is_some()
     }
 
-    /// Where this view shows a secret, if it shows one now: the restore step
-    /// (the backup's passphrase and a nearby device's pairing code) and the
-    /// backup step (the new passphrase and its confirmation). A capture draws
-    /// this as the placeholder.
-    ///
-    /// The whole view, not just its card: the card slides as a step
-    /// reveals, and the view is an opaque surface outside the tour anyway.
-    pub fn secret_rect(&self) -> Option<Rect> {
-        let shows_secret = self.tour_page.is_none()
-            && match self.flow.screen() {
-                Screen::Nearby | Screen::Restore | Screen::RecoveryKey => true,
-                Screen::Done => !self.identity_ready_page,
-                Screen::Intro | Screen::Existing | Screen::NoRecovery => false,
-            };
-        (shows_secret && self.rect.area() > 0.0).then_some(self.rect)
-    }
-
     /// Reopen an explicitly deferred, source-attested migration for the active identity.
     ///
     /// # Errors
@@ -1196,9 +1148,9 @@ impl OnboardingView {
         Ok(view)
     }
 
-    /// Reset this trusted view to the existing-identity backup step. Kept in
-    /// one place so Settings enters the exact same export, picker, and
-    /// verification flow as first-login onboarding.
+    /// Reset this trusted view to the existing-identity backup step, the same
+    /// export, picker, and verification flow as first-login onboarding.
+    #[cfg(test)]
     fn begin_portable_backup_for(&mut self, identity: MintedIdentity) {
         self.flow = Onboarding::new();
         self.flow.resume_created(identity);
@@ -2029,19 +1981,6 @@ impl OnboardingView {
                 .minted()
                 .is_none_or(|minted| !crate::identity::canonical_native_identity_ready(minted))
     }
-    pub fn take_existing_files_request(&mut self) -> Option<crate::retained::Request> {
-        self.migration.as_mut()?.take_access_request()
-    }
-    pub fn take_existing_files_release(&mut self) -> Option<String> {
-        self.migration.as_mut()?.take_access_release()
-    }
-    pub fn existing_files_outcome(&mut self, operation: &str, available: bool) {
-        if let Some(migration) = self.migration.as_mut() {
-            migration.access_outcome(operation, available);
-            self.invalidation.both();
-        }
-    }
-
     fn persist_progress(&mut self, stage: PersistedStage) -> bool {
         let Some(identity_dir) = self.identity_dir.as_ref() else {
             return true;

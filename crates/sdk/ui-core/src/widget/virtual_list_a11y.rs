@@ -255,7 +255,7 @@ impl<M: ListModel> VirtualList<M> {
                 _ => false,
             };
         }
-        if let Some(key) = self.key_for_semantic_target(target)
+        if let Some(key) = self.key_for_name(target.strip_prefix("key:").unwrap_or(target))
             && let Some(index) = self.model.index_of(&key)
         {
             return match action {

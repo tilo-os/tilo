@@ -9,7 +9,7 @@ mod pending_source;
 mod read_handle;
 mod revocations;
 pub use coordinator::ExternalHistoryRuntime;
-// Cap'n Proto capabilities are confined to the daemon's local executor.
+// Service connections are confined to the daemon's local executor.
 type LocalFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 use runtime_fs::external_history::replacement_control;
 use std::os::fd::AsFd;
