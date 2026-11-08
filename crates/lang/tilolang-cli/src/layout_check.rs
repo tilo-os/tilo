@@ -32,8 +32,9 @@ pub struct Size {
     pub touch: bool,
 }
 
-/// Phones, a tablet, a laptop, a desktop monitor and an ultrawide one.
-pub const SIZES: [Size; 6] = [
+/// Phones, a tablet, a half-width window on a portrait monitor, a laptop, a desktop monitor and
+/// an ultrawide one.
+pub const SIZES: [Size; 7] = [
     Size {
         width: 320,
         height: 568,
@@ -48,6 +49,11 @@ pub const SIZES: [Size; 6] = [
         width: 768,
         height: 1024,
         touch: true,
+    },
+    Size {
+        width: 960,
+        height: 1080,
+        touch: false,
     },
     Size {
         width: 1280,
