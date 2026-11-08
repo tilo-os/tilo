@@ -1086,7 +1086,7 @@ fn title_cut_with_room(needs: f64, has: f64, free: f64) -> bool {
 /// What is wrong with one header row, as the shell laid it out: a title cut off while an action
 /// in the row kept a label it could have shown as its icon, a title cut off with room standing
 /// empty beside it, or a row that kept its menu but not the app's primary action.
-fn header_row_problem(row: &ui::widget::HeaderRow) -> Option<String> {
+fn header_row_problem(row: &ui::widget::HeaderRowLayout) -> Option<String> {
     let needs = f64::from(row.title_needs);
     let has = f64::from(row.title_has);
     let free = f64::from(row.free_beside_title);
@@ -1249,8 +1249,8 @@ mod tests {
         free: f32,
         labelled: bool,
         primary: bool,
-    ) -> ui::widget::HeaderRow {
-        ui::widget::HeaderRow {
+    ) -> ui::widget::HeaderRowLayout {
+        ui::widget::HeaderRowLayout {
             column: "content",
             title_needs: needs,
             title_has: has,
