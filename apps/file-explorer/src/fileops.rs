@@ -198,12 +198,6 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
 
 /// Move `paths` to the trash. Falls back to a clear message if the
 /// platform trash isn't available.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable or the delete
-/// fails (e.g. a path no longer exists, or crosses a filesystem the trash
-/// backend can't handle).
 pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
     host_fs::trash::delete(paths)
 }
@@ -244,11 +238,6 @@ pub fn import_mounted_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, Strin
 /// Linux, macOS and Windows use an atomic no-replace rename on the same
 /// filesystem. The cross-filesystem fallback stages a complete private copy,
 /// removes the source, and only then publishes the destination atomically.
-///
-/// # Errors
-///
-/// Returns an error if `src` has no file name, staging fails, the source cannot
-/// be removed, or the staged tree cannot be published or restored.
 pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, true, &mut NoopTransferObserver)
 }
@@ -296,9 +285,6 @@ fn refusal(failure: host_fs::transfer::Failure) -> String {
 
 /// The same copy/cut staging and recovery with a host's live admission hooks.
 /// This grants no filesystem access by itself.
-///
-/// # Errors
-/// Refuses invalid destinations, collisions, I/O failures or a failed admission hook.
 pub fn transfer_into_with(
     src: &Path,
     dest_dir: &Path,
@@ -313,9 +299,6 @@ pub fn transfer_into_with(
 
 /// Transfer to one explicit leaf name with the same live admission and recovery.
 /// This grants no filesystem access and never replaces an occupied destination.
-///
-/// # Errors
-/// Refuses invalid names, lost authority, collisions and I/O failures.
 pub fn transfer_into_named_with(
     src: &Path,
     dest_dir: &Path,

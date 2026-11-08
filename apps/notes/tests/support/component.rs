@@ -296,9 +296,6 @@ pub fn edit_body(
 }
 
 /// Apply one notebook action to `doc`, as a collaborator's change arrives.
-///
-/// # Errors
-/// The action's refusal.
 pub fn apply_to(
     doc: &mut automerge::AutoCommit,
     action: &notes::actions::Action,
@@ -307,9 +304,6 @@ pub fn apply_to(
 }
 
 /// Apply one rich-text edit to `page`'s body.
-///
-/// # Errors
-/// The edit's refusal.
 pub fn edit_page_body(
     doc: &mut automerge::AutoCommit,
     page: notes::PageId,

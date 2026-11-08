@@ -792,9 +792,6 @@ const PAGE_MOST: usize = 32;
 /// asking for more wants as many as it can have, and reads on from the
 /// cursor. A message delivered or bridged under another name is shown by
 /// it ([`crate::transcript::shown_author`]).
-///
-/// # Errors
-/// When `page_size` is zero or `cursor` names no place.
 pub(crate) fn read_messages(
     held: &crate::messages::Messages,
     (channel, name): (&str, &dyn Fn(&str) -> String),

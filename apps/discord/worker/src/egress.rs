@@ -79,9 +79,6 @@ impl Egress {
     /// voice server's Ready named: a public address, as Discord's voice
     /// servers have, or loopback when the configuration allows it. The
     /// voice server itself was checked against [`Purpose::Voice`] first.
-    ///
-    /// # Errors
-    /// Why not.
     pub fn check_voice_udp(self, ip: std::net::IpAddr) -> Result<(), String> {
         if ip.is_loopback() {
             return if self.allow_loopback {

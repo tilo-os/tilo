@@ -296,10 +296,6 @@ fn placed(project: &Project) -> impl Iterator<Item = &crate::model::MediaItem> {
 
 /// Why `project` is no timeline an agent's render takes: empty, longer than
 /// [`AGENT_MAX_SECONDS`], or placing a source that is not workspace content.
-///
-/// # Errors
-///
-/// The refusal, naming the offending source.
 pub fn renderable(project: &Project) -> Result<(), String> {
     if project.clips.is_empty() {
         return Err("the timeline is empty: there is nothing to render".into());
@@ -341,10 +337,6 @@ pub fn placed_content(project: &Project) -> Vec<String> {
 
 /// `project` rendering only `start..end` (each defaulting to its render
 /// range): what the editor's `render-timeline` names.
-///
-/// # Errors
-///
-/// A range that does not lie on the timeline.
 pub fn ranged(project: &Project, start: Option<f64>, end: Option<f64>) -> Result<Project, String> {
     if start.is_none() && end.is_none() {
         return Ok(project.clone());
@@ -394,10 +386,6 @@ pub fn pipeline_desc(settings: &AgentExportSettings, sink: &str, with_audio: boo
 
 /// The timeline a record's saved document (`AutoCommit::save`) holds, as a
 /// render reads it from the snapshot its host hands over.
-///
-/// # Errors
-///
-/// The bytes are no document, or the document no timeline.
 pub fn read_snapshot(bytes: &[u8]) -> Result<Project, String> {
     ui::tilo_resource::Replica::<Project>::load(bytes)
         .and_then(|replica| replica.state())

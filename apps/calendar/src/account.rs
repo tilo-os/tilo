@@ -291,9 +291,6 @@ impl AccountStore {
     }
 
     /// Load accounts under an explicit root, returning custody failures.
-    ///
-    /// # Errors
-    /// Returns an error if the existing credential vault cannot be opened safely.
     pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
         let credentials = AccountCredentials::open_in(config_root)?;
         Ok(Self::from_shared(

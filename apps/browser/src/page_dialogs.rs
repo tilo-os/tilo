@@ -114,10 +114,6 @@ impl PageDialogs {
     /// Answer the question `id`: OK (or Leave, or Reload) when `accept`, else
     /// Cancel. A prompt accepted without `text` answers what its field
     /// holds.
-    ///
-    /// # Errors
-    /// When the page no longer waits on that question, or `text` is longer
-    /// than an answer can be.
     pub fn answer(
         &mut self,
         page: &SharedEngine,

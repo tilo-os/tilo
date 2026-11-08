@@ -69,10 +69,6 @@ pub struct Links {
 impl Links {
     /// The link that opens `reference` in its record on the web: the URL
     /// `share-link` mints for it on the workspace's host.
-    ///
-    /// # Errors
-    /// Why there is no such link: the message names no record, or the link
-    /// grammar refuses one of its parts.
     pub fn resource(&self, reference: &tilo::Reference) -> Result<String, String> {
         let provider = reference
             .provider

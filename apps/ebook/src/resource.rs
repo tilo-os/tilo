@@ -553,9 +553,6 @@ impl Ebook {
     }
 
     /// The reading font `font`: the font's read.
-    ///
-    /// # Errors
-    /// When the pickers no longer offer it.
     pub(crate) fn read_font(&self, font: &str) -> Result<serde_json::Value, String> {
         use tilo_resource::Model as _;
         self.fonts
@@ -566,9 +563,6 @@ impl Ebook {
     }
 
     /// The colour scheme `scheme`: the scheme's read.
-    ///
-    /// # Errors
-    /// When the pickers no longer offer it.
     pub(crate) fn read_scheme(&self, scheme: &str) -> Result<serde_json::Value, String> {
         use tilo_resource::Model as _;
         self.schemes
@@ -579,9 +573,6 @@ impl Ebook {
     }
 
     /// What the book `book` on the shelf is: the book's read.
-    ///
-    /// # Errors
-    /// When the book is not on the shelf.
     pub(crate) fn read_book(&self, book: &str) -> Result<serde_json::Value, String> {
         let entry = self
             .entries
@@ -623,9 +614,6 @@ impl Ebook {
 
     /// The highlight `highlight` (one of its pieces or its group), piece
     /// by piece, with its comments: the highlight's read.
-    ///
-    /// # Errors
-    /// When the highlight is gone.
     pub(crate) fn read_highlight(&self, highlight: Uuid) -> Result<serde_json::Value, String> {
         let group = self
             .highlight_group(highlight)
@@ -657,9 +645,6 @@ impl Ebook {
     }
 
     /// The bookmark, note or comment `annotation`: the annotation's read.
-    ///
-    /// # Errors
-    /// When the annotation is gone.
     pub(crate) fn read_annotation(&self, annotation: Uuid) -> Result<serde_json::Value, String> {
         let mark = self
             .live_marks()

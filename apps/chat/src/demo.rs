@@ -711,9 +711,6 @@ impl Workspace {
     /// against the chat record where it is invoked and applied through the
     /// chain to the part it changes (started when it is new). The part's
     /// number.
-    ///
-    /// # Errors
-    /// The chat record's refusal, or the verb's own.
     pub fn apply_part_as(
         &mut self,
         author: &str,
@@ -781,9 +778,6 @@ impl Workspace {
 // the record's verbs as a named person, the way the door applies them.
 
 /// Apply `invoke` to `doc` through the door, as `author` invokes it.
-///
-/// # Errors
-/// The door's refusal or the verb's own.
 pub fn apply_as(doc: &mut AutoCommit, author: &str, invoke: Invoke<Chat>) -> Result<(), DoorError> {
     apply_at(doc, author, 0, invoke)
 }
@@ -868,9 +862,6 @@ pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart>
 /// its genesis when empty), read against the chat record `chat` as the
 /// window's chain reads it: for a tool or a host that carries the parts as
 /// documents itself.
-///
-/// # Errors
-/// The chat record's refusal, or the door's or the verb's own.
 pub fn apply_part_doc(
     part: &mut AutoCommit,
     chat: &Chat,

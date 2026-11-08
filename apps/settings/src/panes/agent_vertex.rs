@@ -579,10 +579,6 @@ fn display_model(id: &str) -> &str {
 /// Add the Vertex AI provider `profile_id` to `config`, or change the
 /// project, location and model of the existing one, after checking what
 /// was typed.
-///
-/// # Errors
-/// A message for the person: an invalid project or location, or a provider
-/// that is gone or does not sign in with Google.
 pub(crate) fn apply(
     config: &mut ProviderConfig,
     profile_id: &str,
@@ -636,10 +632,6 @@ pub(crate) fn apply(
 
 /// Add the Gemini API provider `profile_id` billed to `project`, or bill
 /// another project with the existing one, after checking the project id.
-///
-/// # Errors
-/// A message for the person: an invalid project, or a provider that is gone
-/// or is not a Gemini API provider signed in with Google.
 pub(crate) fn apply_gemini(
     config: &mut ProviderConfig,
     profile_id: &str,

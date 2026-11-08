@@ -105,10 +105,6 @@ impl CloudMounts {
     }
 
     /// `request` as work for a worker thread.
-    ///
-    /// # Errors
-    ///
-    /// Why the service cannot be asked.
     pub(crate) fn request(
         &self,
         request: CloudRequest,

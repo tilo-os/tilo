@@ -107,10 +107,6 @@ impl ParticipantView {
 
     /// The view an edit told where to act (`at`) acts from: a paragraph
     /// selected whole, a collapsed caret in it, or a range of it.
-    ///
-    /// # Errors
-    /// Returns why `place` is not in `doc`: its paragraph is gone, or an
-    /// offset lies past the paragraph's end.
     pub fn at_place(doc: &AutoCommit, place: &ui::tilo_resource::Place) -> Result<Self, String> {
         use ui::tilo_resource::Place;
         let containers = crate::model::open(doc)?;

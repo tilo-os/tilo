@@ -100,9 +100,6 @@ fn count(n: usize) -> f64 {
 
 impl Chart {
     /// The marks of this chart on `art`, as one `draw`.
-    ///
-    /// # Errors
-    /// Refuses mismatched or invalid values, box or id, saying which.
     pub fn draw(&self, art: &Artwork) -> Result<Draw, Refusal> {
         let layout = self.layout(art)?;
         let prefix = self.prefix(art)?;

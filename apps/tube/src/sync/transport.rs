@@ -542,20 +542,11 @@ impl GrayjaySession {
     }
 
     /// Send a DATA frame (gzip'd) carrying a JSON sync package.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the package exceeds the transport bounds or cannot
-    /// be encoded and written to the authenticated peer.
     pub fn send_data(&mut self, sub_opcode: u8, json: &str) -> SyncResult<()> {
         self.send(opcode::DATA, sub_opcode, json.as_bytes(), true)
     }
 
     /// Send our `NOTIFY/AUTHORIZED` (`[idLen u8][uuid][nameLen u8][name]`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the authorization frame cannot be written.
     pub fn send_authorized(&mut self) -> SyncResult<()> {
         let id = uuid::Uuid::new_v4().to_string();
         let name = self.device_name.clone();

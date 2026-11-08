@@ -302,9 +302,6 @@ impl SignInSetup {
     /// Start signing in to `service` for `profile` (an existing provider)
     /// or a new one: open the browser, or ask GitHub for a code, and wait
     /// on a worker.
-    ///
-    /// # Errors
-    /// Why it could not start, for the person.
     pub(crate) fn begin(
         service: Service,
         profile: Option<&ProviderProfile>,

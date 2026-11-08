@@ -255,8 +255,6 @@ impl InternalRelease {
     /// Bind the exact received bytes to the embedded selection before parsing.
     /// A later downloader must retain existing origin/length rules; this method
     /// performs no transport, staging, execution or device access.
-    /// # Errors
-    /// Rejects byte length/digest mismatch, invalid schema or selection mismatch.
     pub fn verify_manifest(
         &self,
         bytes: &[u8],
@@ -555,8 +553,6 @@ fn is_sparc(architecture: &str) -> bool {
 /// publishes one. An empty selection is honest: source preparation then
 /// defers sensitive capture instead of claiming TPM protection it cannot prove.
 /// The download and the bundle review belong to the platform backend.
-/// # Errors
-/// Rejects malformed catalog entries or more than one policy for an architecture.
 pub fn bundled_target_policy_for_arch(
     architecture: &str,
 ) -> Result<Option<staging_handoff_model::prepared::TargetPolicyBundle>, String> {
@@ -599,8 +595,6 @@ pub fn bundled_target_policy_for_arch(
 /// another computer selects that computer's architecture through
 /// [`bundled_releases_for_arch`]; the host architecture is not a constraint on
 /// what the verified catalog may offer.
-/// # Errors
-/// Rejects invalid metadata in any entry, including foreign architectures.
 pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
     releases_for_host(BUNDLED_CATALOG, crate::host::architecture())
 }
@@ -611,8 +605,6 @@ pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
 /// falls back to the preparation host's architecture: an architecture without
 /// a verified payload yields an empty selection, so the interface can say so
 /// instead of writing a medium that cannot start there.
-/// # Errors
-/// Rejects an unsupported architecture and invalid metadata in any entry.
 pub fn bundled_releases_for_arch(architecture: &str) -> Result<Vec<TiloRelease>, String> {
     releases_for_arch(BUNDLED_CATALOG, architecture)
 }
@@ -648,8 +640,6 @@ pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
 /// Internal installer selections for `architecture`, not for the preparing
 /// host. A medium prepared for another computer resolves its own target
 /// architecture here; no fallback to the host architecture exists.
-/// # Errors
-/// Rejects an unsupported architecture or an invalid embedded catalog.
 pub fn bundled_internal_releases_for_arch(
     architecture: &str,
 ) -> Result<Vec<InternalRelease>, String> {

@@ -110,11 +110,6 @@ pub(crate) fn tint_for(id: &str) -> usize {
 /// Parse an EPUB without touching the library. The potentially expensive
 /// file read/hash/parse runs in the one bounded worker; the shelf row is the
 /// UI thread's action.
-///
-/// # Errors
-///
-/// Returns a concise reason when the path cannot be read within the EPUB byte
-/// budget or the EPUB container/content cannot be parsed safely.
 pub fn parse_path_detailed(path: &Path) -> Result<Book, String> {
     let bytes = read_epub_bytes(path)
         .ok_or_else(|| "The file couldn’t be read, or it’s larger than 128 MiB.".to_string())?;
@@ -131,10 +126,6 @@ pub fn parse_path_detailed(path: &Path) -> Result<Book, String> {
 /// The source is read once, under the normal EPUB byte limit.  This is used by
 /// the background importer, so the potentially expensive copy never runs on
 /// the UI thread.  Already-shared files are parsed in place.
-///
-/// # Errors
-///
-/// Returns a reader-safe message when the source cannot be read or parsed.
 pub fn parse_shared_path_detailed(path: &Path) -> Result<(Book, PathBuf), String> {
     let bytes = read_epub_bytes(path)
         .ok_or_else(|| "The file couldn’t be read, or it’s larger than 128 MiB.".to_string())?;

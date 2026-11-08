@@ -47,9 +47,6 @@ impl Selection {
     }
     /// Include or exclude one reviewed profile. The capture reads this same
     /// set, so an exclusion is never display-only.
-    ///
-    /// # Errors
-    /// Refuses an unknown, replaced or non-exportable source.
     pub(super) fn set_profile(&mut self, id: &str, included: bool) -> Result<(), &'static str> {
         self.authority.set_profile(id, included)
     }

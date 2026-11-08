@@ -1525,10 +1525,6 @@ impl AccountsPane {
     ///
     /// Uses the same validation as the `select-account-services` action; `mode`
     /// must be `sync` or `import`.
-    ///
-    /// # Errors
-    /// Returns an error if the mode is invalid, the form is closed or busy,
-    /// or the requested services are unavailable for the account.
     pub fn select_account_services(
         &mut self,
         files: bool,
@@ -3778,10 +3774,6 @@ impl AccountsPane {
     /// Remove the account `id`, its credential and its sync record, waiting
     /// for the vault: for a caller off the UI thread. The window removes
     /// through [`AccountsEffect::RemoveAccount`], which waits for nothing.
-    ///
-    /// # Errors
-    ///
-    /// Why the account could not be removed.
     pub fn remove(&mut self, id: &str) -> Result<(), String> {
         let outcome = Rc::new(std::cell::RefCell::new(None));
         let landed = Rc::clone(&outcome);

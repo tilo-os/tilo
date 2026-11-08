@@ -149,9 +149,6 @@ impl AccountStore {
     }
 
     /// Load accounts under an explicit root, returning custody failures.
-    ///
-    /// # Errors
-    /// Returns an error if the existing credential vault cannot be opened safely.
     pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
         let credentials = AccountCredentials::open_in(config_root)?;
         Ok(Self::from_shared(
@@ -294,10 +291,6 @@ impl AccountStore {
     /// Keep this device's secrets of these mail accounts under `config_root`:
     /// each password, an OAuth account's sealed token left as it is, and the
     /// secrets of the `removed` accounts dropped.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the vault cannot be saved.
     pub fn keep_secrets_in(
         &self,
         config_root: &Path,

@@ -304,10 +304,6 @@ pub fn arguments(before: &Shortcut, comment: &str, catalog: &ActionCatalog) -> M
 /// Adopt the agent's answer to a refinement as the program to review. It
 /// keeps the shortcut's identity and is checked like any other edit, so an
 /// answer that does not check comes back with the checker's diagnostics.
-///
-/// # Errors
-///
-/// Why the answer is not a shortcut at all.
 pub fn refine(
     answer: Value,
     before: &Drafted,

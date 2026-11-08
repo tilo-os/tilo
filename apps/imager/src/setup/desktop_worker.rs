@@ -5,9 +5,6 @@ use std::sync::mpsc::{self, Receiver};
 
 /// The worker owns the helper until its terminal exit even if the UI drops this
 /// receiver. Closing the progress view is never transaction cancellation.
-///
-/// # Errors
-/// Refuses unsupported platforms, invalid requests and thread creation failure.
 pub fn spawn_desktop_install(
     request: &DesktopInstallRequest,
 ) -> Result<Receiver<DesktopInstallEvent>, String> {
@@ -165,9 +162,6 @@ fn track_helper(
 
 /// Hidden narrow helper dispatch, before GUI startup. The request and its digest
 /// are arguments, so elevation never writes through user-controlled file names.
-///
-/// # Errors
-/// Returns malformed invocation errors; transaction failures use the protocol.
 pub fn maybe_run_desktop_helper(args: &[String]) -> Result<Option<i32>, String> {
     if !args
         .iter()

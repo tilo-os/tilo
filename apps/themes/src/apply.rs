@@ -102,10 +102,6 @@ pub fn appearance_values(
 
 /// Refuse a document that is not admitted or misses a contrast floor,
 /// naming what fails.
-///
-/// # Errors
-///
-/// The structural reason, or every failing pair.
 pub fn ensure_legible(document: &ThemeDocument) -> Result<(), String> {
     // The full reason, a surface shader's own compile error included, so
     // the import notice names what to fix.
@@ -127,10 +123,6 @@ pub fn ensure_legible(document: &ThemeDocument) -> Result<(), String> {
 }
 
 /// Make `document` the theme the system shows for its polarity.
-///
-/// # Errors
-///
-/// An illegible document, or a settings document that cannot be written.
 pub fn apply(document: &ThemeDocument) -> Result<(), String> {
     ensure_legible(document)?;
     let appearance = ui::storage::SettingsSection::named("appearance");
@@ -139,10 +131,6 @@ pub fn apply(document: &ThemeDocument) -> Result<(), String> {
 }
 
 /// The document as a file someone else can open in their Theme Studio.
-///
-/// # Errors
-///
-/// An illegible document.
 pub fn export(document: &ThemeDocument) -> Result<String, String> {
     ensure_legible(document)?;
     serde_json::to_string_pretty(document).map_err(|error| error.to_string())

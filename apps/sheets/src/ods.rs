@@ -37,21 +37,12 @@ pub fn parse_ods(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
 }
 
 /// Write tables to an `.ods` document.
-///
-/// # Errors
-///
-/// Returns an error if the package can't be assembled or `path` can't be
-/// written.
 pub fn write_ods(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     crate::xlsx::write_file(path, &ods_bytes(tables)?)?;
     Ok(())
 }
 
 /// Tables as the bytes of an `.ods` document, as [`write_ods`] writes it.
-///
-/// # Errors
-///
-/// Returns an error if the package can't be assembled.
 pub fn ods_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
     let snap = crate::xlsx::snapshot_of(tables, cell_style, to_ods_formula);
     let preserved = BTreeMap::from([("styles.xml".to_string(), common_styles_part(NUMBER_STYLES))]);

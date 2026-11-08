@@ -2077,10 +2077,6 @@ impl ExtensionController {
 
     /// Do what an extension's action asks, on the next `sync`, as its
     /// Library row's button does.
-    ///
-    /// # Errors
-    /// When this window has no extensions, no extension has the id, or the
-    /// extension cannot do it now (a settings page while it is off).
     pub fn request(&mut self, request: &ExtensionRequest) -> Result<(), String> {
         if !self.active {
             return Err(CATALOG.t("browser-extension-window-none"));

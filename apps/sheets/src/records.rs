@@ -39,9 +39,6 @@ fn same_key(a: &str, b: &str) -> bool {
 
 impl Columns {
     /// `names`, a new sheet's header names, in columns from A.
-    ///
-    /// # Errors
-    /// A name that is empty or repeats another, or none at all.
     pub(crate) fn from_names(names: &[String]) -> Result<Self, Refusal> {
         let mut columns: Vec<(String, u32)> = Vec::new();
         for (col, name) in (0u32..).zip(names) {
@@ -208,9 +205,6 @@ fn object(
 
 /// A new sheet's first cells: `columns` as its header row and `records`
 /// under it.
-///
-/// # Errors
-/// Why the columns or records cannot be written.
 pub(crate) fn new_sheet_writes(
     columns: &[String],
     records: &[serde_json::Value],
@@ -276,10 +270,6 @@ pub(crate) struct RecordsRequest<'a> {
 
 /// The writes of `request` into the sheet `snap`, whose cells show as
 /// `shown`.
-///
-/// # Errors
-/// Why the records cannot be written: no headers to key by on a sheet that
-/// has cells, a key no header names, a row that changed since it was read.
 pub(crate) fn set_records_writes(
     snap: &SheetSnapshot,
     shown: &[SearchableCell],
@@ -345,10 +335,6 @@ pub(crate) fn set_records_writes(
 /// collection of its rows, so the generic upsert reaches it as it reaches
 /// any collection's items. Returns the writes and, when the row is new, the
 /// row it goes to, which the caller inserts afresh.
-///
-/// # Errors
-/// `matching` is empty or names no header, more than one row matches, or a
-/// value is not a cell value.
 pub(crate) fn upsert_writes(
     snap: &SheetSnapshot,
     shown: &[SearchableCell],

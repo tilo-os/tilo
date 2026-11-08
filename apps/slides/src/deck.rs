@@ -712,9 +712,6 @@ impl Deck {
     /// The id of the slide `key` names: its id (also as `#id` or the
     /// slide's item resource id), or its number counting from 1 as the
     /// outline shows it, so a caller that counted slides needs no id.
-    ///
-    /// # Errors
-    /// Refuses a key that names no slide.
     pub fn slide_key(&self, key: &Id) -> Result<Id, Refusal> {
         if self.slides.contains(key) {
             return Ok(key.clone());

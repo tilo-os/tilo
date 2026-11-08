@@ -255,23 +255,11 @@ fn timezone() -> Option<String> {
 /// window someone uses, a fixed stand-in in a screenshot.
 pub trait Clock: Send + Sync {
     /// What timedated reports: the zone, automatic time, synchronisation.
-    ///
-    /// # Errors
-    ///
-    /// Why timedated could not be asked.
     fn status(&self) -> Result<os_actions::TimeSyncStatus, String>;
     /// Whether automatic time is on, asked on its own when the status did
     /// not say.
-    ///
-    /// # Errors
-    ///
-    /// Why it could not be asked.
     fn ntp(&self) -> Result<bool, String>;
     /// The zones timedated accepts.
-    ///
-    /// # Errors
-    ///
-    /// Why the zone list could not be read.
     fn zones(&self) -> Result<Vec<String>, String>;
     /// Where `zones` lie on the map: their coordinates in the installed
     /// tzdata.

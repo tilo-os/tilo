@@ -187,9 +187,6 @@ struct Catalog {
 }
 
 /// Parse all entries before selecting a host, so invalid foreign entries also fail closed.
-///
-/// # Errors
-/// Rejects unsupported schemas, unknown fields, invalid identities, evidence, and origins.
 pub fn parse_catalog(json: &str) -> Result<Vec<DesktopRelease>, String> {
     let catalog: Catalog =
         serde_json::from_str(json).map_err(|error| format!("Invalid Desktop catalog: {error}"))?;

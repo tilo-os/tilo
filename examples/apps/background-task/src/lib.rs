@@ -51,9 +51,6 @@ impl Default for Search {
 
 impl Search {
     /// What every change must leave true.
-    ///
-    /// # Errors
-    /// Refuses a limit out of range.
     pub fn valid(&self) -> Result<(), Refusal> {
         if !(2..=MAX_LIMIT).contains(&self.limit) {
             return Err(Refusal::new("the limit is 2 to 50,000,000"));

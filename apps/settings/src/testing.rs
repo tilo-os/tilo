@@ -58,9 +58,6 @@ pub fn labels_of(w: &dyn ui::Widget, name: &str, labels: &mut Vec<String>) {
 
 /// Set the field `field` of the section `kind` to `value` through the
 /// door, as an agent does.
-///
-/// # Errors
-/// The door's refusal: the section's check, an unknown field.
 pub fn edit_field(
     app: &mut TestApp<crate::SettingsShell>,
     kind: &str,
@@ -72,9 +69,6 @@ pub fn edit_field(
 
 /// Invoke the verb `action` of the section `kind` with `arguments`
 /// through the door, as an agent does.
-///
-/// # Errors
-/// The door's refusal.
 pub fn invoke_section(
     app: &mut TestApp<crate::SettingsShell>,
     kind: &str,
@@ -88,9 +82,6 @@ pub fn invoke_section(
 
 /// Set the field at `path` (field names, outermost first) of the section
 /// `kind` to `value` through the door, as an agent does.
-///
-/// # Errors
-/// The door's refusal: the section's check, an unknown field.
 pub fn edit_path(
     app: &mut TestApp<crate::SettingsShell>,
     kind: &str,

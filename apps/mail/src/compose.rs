@@ -1382,11 +1382,6 @@ impl ComposeWindow {
 
     /// Add a verified portal-staged attachment, enforcing the same bounds the
     /// replicated draft action will enforce on every collaborator.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when metadata is invalid/duplicate or attachment
-    /// count and total-byte bounds would be exceeded.
     pub fn add_attachment(&mut self, attachment: DraftAttachment) -> Result<(), String> {
         self.touched = true;
         let mut next = self.attachments.clone();

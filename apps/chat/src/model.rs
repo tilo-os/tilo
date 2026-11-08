@@ -473,9 +473,6 @@ impl AgentStepOutcome {
 impl AgentWork {
     /// What an agent reports of its work, refusing a state, route or outcome
     /// it does not name.
-    ///
-    /// # Errors
-    /// Returns why the report is not a record of work.
     pub fn from_update(update: &crate::record::WorkUpdate) -> Result<Self, String> {
         let text = |value: &Option<String>| value.clone().unwrap_or_default();
         let state = match update.state.as_str() {

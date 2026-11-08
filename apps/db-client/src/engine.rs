@@ -107,10 +107,6 @@ impl SqliteEngine {
     /// Open an in-memory database and seed it with the bundled sample
     /// schema + data so the schema browser and query runner work with no
     /// external file.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if the in-memory connection can't
-    /// be opened, or if seeding the bundled sample schema/data fails.
     #[cfg(feature = "samples")]
     pub fn open_sample() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
@@ -275,10 +271,6 @@ impl SqliteEngine {
     }
 
     /// Run a single SQL statement and collect the result.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if `sql` fails to prepare or
-    /// execute, or if a returned row's column value can't be read.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         let cancelled = std::mem::take(&mut self.cancelled);
         let trimmed = sql.trim();

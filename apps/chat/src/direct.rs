@@ -143,10 +143,6 @@ impl ChatApp {
     /// to the conversation with whom it names — a person, an agent, several of
     /// them, or a conversation that is already there — and the window opens
     /// where the message landed.
-    ///
-    /// # Errors
-    /// The box names nobody this chat knows, a conversation beside other
-    /// recipients, or a message with neither words nor anything to carry.
     pub(crate) fn send_from_box(
         &mut self,
         to: &[ui::floating_surface::Recipient],
@@ -175,10 +171,6 @@ impl ChatApp {
     /// or the one between this person and everyone else the box holds — the
     /// same id on every device, so a message to someone already talked to
     /// reopens their conversation rather than making a second.
-    ///
-    /// # Errors
-    /// A conversation is named beside other recipients, the box names nobody,
-    /// or it names a person this chat does not know.
     fn conversation_named(
         &self,
         to: &[ui::floating_surface::Recipient],

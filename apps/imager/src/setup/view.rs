@@ -431,9 +431,6 @@ impl SetupApp {
 
     /// Answer `effect` as its button would, after checking it against what
     /// is shown now, with the setup's status afterwards.
-    ///
-    /// # Errors
-    /// Returns why the effect cannot run in the current setup state.
     pub fn answer(&mut self, effect: SetupEffect) -> Result<serde_json::Value, String> {
         if self.full_os_check.is_some() {
             match &effect {
