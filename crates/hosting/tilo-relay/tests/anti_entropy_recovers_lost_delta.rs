@@ -32,15 +32,7 @@ use automerge::{AutoCommit, ROOT};
 use tilo_relay::{Envelope, RelayClient, reconcile};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay_on};
-
-fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir).map_or(0, |rd| {
-        rd.flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-            .count()
-    })
-}
+use crate::common::{TestUser, client_endpoint, pending_count, spawn_relay_on};
 
 /// A connects, subscribes, publishes `note = "recover-me"`, and waits
 /// until the host has queued it for the (still offline) B. Returns A's

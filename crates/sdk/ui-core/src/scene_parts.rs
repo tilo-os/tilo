@@ -1,33 +1,22 @@
-//! Keyed parts of a shell scene section, so a small change inside a section
-//! damages that change's bounds instead of the whole display.
+//! Keyed parts of a shell scene section, so a small change inside a section damages that
+//! change's bounds instead of the whole display.
 //!
-//! The retained-damage producer proves a frame sparse by comparing each scene
-//! section with the previous frame's. Without parts, any difference inside the
-//! workspace (a caret, a peer's cursor, a hover) made the whole section opaque
-//! to that proof. A part marks a stretch of a section's draw commands with a
-//! key and the bounds those commands can paint. Every part boundary splits the
-//! section's encoded streams into pieces; a piece belongs to the innermost part
-//! open across it, or to the section itself. Comparing the previous and current
-//! frame piece by piece then gives:
+//! The retained-damage producer proves a frame sparse by comparing each scene section with the
+//! previous frame's; without parts, any difference inside the workspace (a caret, a peer's
+//! cursor, a hover) made the whole section opaque to that proof. A part marks a stretch of a
+//! section's draw commands with a key and the bounds those commands can paint, and every part
+//! boundary splits the section's encoded streams into pieces, each belonging to the innermost
+//! part open across it. Comparing piece by piece then gives: every piece equal, the section is
+//! unchanged; only pieces of parts differ, damage is each changed part's old and new bounds;
+//! a piece of the section itself differs, or the proof cannot be made, and the frame is dense.
 //!
-//! - every piece equal: the section is unchanged;
-//! - only pieces of parts differ: damage is each changed part's old and new
-//!   bounds;
-//! - a piece of the section itself differs, the parts are not the same keys in
-//!   the same order, a changed part has no bounds, or anything cannot be
-//!   proven: no authority, so the frame is dense.
+//! Correctness rests on two facts: pixels outside every changed part's bounds come from
+//! byte-identical commands in both frames (the sparse renderer re-renders the whole scene inside
+//! the damage, so blend layers above a part compose correctly), and a part's commands are
+//! independent of what precedes them — the encoder dedups a transform or style against the last
+//! one encoded, so each boundary forces the next transform and style to be encoded again.
 //!
-//! Correctness rests on two facts. Pixels outside every changed part's bounds
-//! are produced by byte-identical commands in both frames, so they cannot have
-//! changed (the sparse renderer re-renders the whole scene inside the damage,
-//! so blend layers and filters above a part compose correctly there). And a
-//! part's commands are independent of what precedes them: the encoder dedups a
-//! transform or style against the last one encoded, so each boundary of a
-//! tracked section forces the next transform and style to be encoded again.
-//!
-//! Only sections the producer registered ([`track`]) are split; a part drawn
-//! into any other scene (a capture, a preview, a cached sub-scene) records
-//! nothing and changes no encoding.
+//! Only sections the producer registered ([`track`]) are split.
 
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};

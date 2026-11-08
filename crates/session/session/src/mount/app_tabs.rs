@@ -1,34 +1,15 @@
 //! Tabs of one app, opened and closed by the app itself.
-//!
-//! Applications have no tab strips: a second page, file or conversation is a
-//! second window of the app in a tab of the desktop's window group. An app
-//! asks for that over its authenticated `shell-ui` connection
-//! ([`ui::shell_tabs`]): another window right after its own tab, its own tab
-//! closed, the last closed tab back, its group stepped on, or its next window
-//! placed beside its own. The connection vouches for the app and the
-//! workspace it runs in; an app can never place, close or step another app's tab, and a
-//! request refused changes nothing.
-//!
-//! The socket is served here, and the asks become desk commands on the
-//! session loop's own pass: the desk is never read from another thread.
-//!
-//! An app also says here that its windows show a secret right now
-//! ([`FloatingSurfaceClientMessage::SetCaptureProtection`]): the session
-//! marks the app private for the compositor, which every capture asks, and
-//! answers on the same connection that the app may show the secret. The mark
-//! lasts while a connection of that app asks for it, and goes when the last
-//! one stops asking or closes.
-//!
-//! Every connection also receives the appearance of the window it belongs to
-//! ([`FloatingSurfaceHostMessage::Appearance`]): the temperature of the
-//! workspace that window is in, the person's own colour, the theme, and
-//! whether the workspace it stands in is in sync. It is sent when the connection
-//! opens and again whenever any of that changes.
-//!
-//! The same connections are made for a window the session opens in an app's
-//! running process ([`tilo_app_launch::Connects`]): each window reaches the
-//! collaboration broker and the shell-ui socket as itself, so what it asks is
-//! answered for its own tab.
+//! Applications have no tab strips: a second page, file or conversation is a second
+//! window of the app in a tab of the desktop's window group. An app asks for one
+//! over its authenticated `shell-ui` connection ([`ui::shell_tabs`]): another
+//! window after its own tab, its own tab closed, the last closed tab back, its
+//! group stepped on, or its next window beside its own. The connection vouches for
+//! the app and its workspace, so an app can never place, close or step another
+//! app's tab, and a refused request changes nothing. The asks become desk commands
+//! on the session loop's own pass: the desk is never read from another thread.
+//! An app also says here that its windows show a secret right now, which marks it
+//! private for the compositor that every capture asks, and every connection
+//! receives the appearance of its window's workspace.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, Write};
@@ -1235,7 +1216,7 @@ fn target_open(app: &str, target: &str) -> Option<Open> {
         return None;
     }
     let scheme = routing::scheme_of(target)?;
-    let installed = tilo_installed_apps::read_one_from_env(app).ok().flatten()?;
+    let installed = app_catalogue::apps::read_one_from_env(app).ok().flatten()?;
     installed
         .opens_uri_schemes
         .iter()

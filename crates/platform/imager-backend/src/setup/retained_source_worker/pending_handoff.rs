@@ -43,7 +43,7 @@ impl PendingHandoff {
         self.seed.check()
     }
     /// Borrow for existing enrolled daemon SCM_RIGHTS handoff. No duplication of
-    /// the root's active Capnp connection and no QPE frame is consumed here.
+    /// the root's active source connection and no QPE frame is consumed here.
     pub fn descriptors(&self) -> io::Result<(&File, &UnixStream, &File)> {
         self.check()?;
         if records::file_identity(&self.program)? != self.record.worker_program {

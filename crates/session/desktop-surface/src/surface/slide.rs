@@ -412,13 +412,6 @@ impl super::DesktopSurface {
         self.slides.borrow_mut().lift_to(travel / height);
     }
 
-    /// The fingers lifted: the deck stops following them. The strip they
-    /// carried it to is the change the host asks for next, which slides on
-    /// from here (a hand's change) or springs back.
-    pub fn end_strip_slide(&self) {
-        self.slides.borrow_mut().end_lift();
-    }
-
     /// Draw the strip the person left behind, at its pose, under the strip
     /// that arrived: a strip or workspace change moves as one view instead of
     /// cutting from one to the other. The bar, the notifications and the

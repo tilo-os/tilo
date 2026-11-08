@@ -1,7 +1,7 @@
 //! Retain the signed declarations of the exact package this host launches.
 use super::Apps;
+use app_catalogue::apps::InstalledApp;
 use tilo_action_broker::services::ApplicationCreationEvidence;
-use tilo_installed_apps::InstalledApp;
 
 pub(super) struct OriginalLaunch {
     pub(super) package_hash: String,

@@ -13,17 +13,6 @@ pub enum MergeOutcome {
     MissingDependencies,
 }
 
-/// Merge a committed mutation into `doc` through isolated admission.
-pub fn merge_committed(
-    doc: &mut AutoCommit,
-    mutation: &DocumentMutation,
-) -> Result<bool, MergeError> {
-    match merge_committed_with_status(doc, mutation)? {
-        MergeOutcome::Changed(changed) => Ok(changed),
-        MergeOutcome::MissingDependencies => Ok(false),
-    }
-}
-
 pub(crate) fn merge_committed_with_status(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,

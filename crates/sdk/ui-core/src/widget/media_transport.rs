@@ -1,42 +1,28 @@
-//! `MediaTransport`: what is playing and the controls that steer it, as one
-//! band of real controls: the art and the song, like and lyrics, shuffle,
-//! previous, play/pause, next and repeat over the scrubber, the queue and
-//! the volume.
+//! `MediaTransport`: what is playing and the controls that steer it, as one band of real controls —
+//! art and song, like and lyrics, shuffle, previous, play/pause, next and repeat over the scrubber,
+//! the queue and the volume.
 //!
-//! Playback belongs to the window, not to the page open, so the transport
-//! is meant for [`NavShell::bottom_band`](crate::widget::NavShell::bottom_band):
-//! it spans the window under every column.
+//! Playback belongs to the window, not to the page open, so the transport is meant for
+//! [`NavShell::bottom_band`](crate::widget::NavShell::bottom_band): it spans the window under every
+//! column.
 //!
-//! The app's player is the one truth. It declares what plays through a
-//! [`TransportFeed`] ([`TransportFeed::show`], cheap when nothing changed)
-//! and hands in the actions the controls invoke ([`TransportActions`]): play
-//! and pause, previous and next, shuffle, repeat, like, mute, the scrubber
-//! and the volume each run one of the app's own resource actions, as an
-//! agent invoking it would, so what the person presses is never a callback
-//! beside the app's actions. A control the app hands no action for is not
-//! there. What only changes what the window shows (the queue, the lyrics,
-//! the compact form's More menu, the art) and a swipe across the band come
-//! back as [`TransportEvent`]s ([`TransportFeed::take_events`]). The
-//! transport keeps nothing of its own but where the knob is while a finger
-//! or the pointer holds it.
+//! The app's player is the one truth. It declares what plays through a [`TransportFeed`]
+//! ([`TransportFeed::show`], cheap when nothing changed) and hands in the actions the controls
+//! invoke ([`TransportActions`]): each one runs one of the app's own resource actions, as an agent
+//! invoking it would, so what the person presses is never a callback beside the app's actions. A
+//! control the app hands no action for is not there. What only changes what the window shows (the
+//! queue, the lyrics, the compact form's More menu, the art) and a swipe across the band come back
+//! as [`TransportEvent`]s ([`TransportFeed::take_events`]). The transport keeps nothing of its own
+//! but where the knob is while a finger or the pointer holds it.
 //!
-//! The transport has two forms, chosen by its width:
-//!
-//! * **Wide**: the song on the left, the transport centred over the
-//!   scrubber, the queue and the volume on the right.
-//! * **Compact** (narrower than two large media cards): the song beside
-//!   previous, play and next, the volume and a More button that the app
-//!   answers with a menu holding what the wide form shows inline.
-//!
-//! The volume is reachable at every width: a slider beside the mute toggle
-//! where it fits, else a speaker button whose popover holds the slider.
-//! The art opens what plays when the app says what that is
-//! ([`TransportState::opens`]), and a horizontal swipe across the band,
-//! by finger or pointer, skips to the next or previous song.
-//!
-//! A control the app leaves out (`None`: a local file can't be liked) is not
-//! there at all, and everything rests disabled while nothing can play.
-//!
+//! Two forms, chosen by width: **wide** puts the song on the left, the transport centred over the
+//! scrubber, the queue and volume on the right; **compact** (narrower than two large media cards)
+//! puts the song beside previous, play and next, with the volume and a More button the app answers
+//! with a menu. The volume is reachable at every width, a slider where it fits and else a speaker
+//! button whose popover holds it; the art opens what plays when the app says what that is
+//! ([`TransportState::opens`]), and a horizontal swipe across the band skips a song. A control the
+//! app leaves out (a local file can't be liked) is not there at all, and everything rests disabled
+//! while nothing can play.
 //! ```ignore
 //! let transport = TransportFeed::new();
 //! let actions = TransportActions { play_pause: Some(play_pause), ..TransportActions::default() };

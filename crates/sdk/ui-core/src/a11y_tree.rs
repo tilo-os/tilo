@@ -1,32 +1,13 @@
-//! The **retained accessibility tree** — a stable, frame-to-frame semantic
-//! model of the running UI.
+//! The **retained accessibility tree**: a stable, frame-to-frame semantic model of the running
+//! UI.
 //!
-//! The toolkit is immediate-mode: `draw` and
-//! [`accesskit_bridge::build_tree_update`](crate::accesskit_bridge::build_tree_update)
-//! both re-derive a fresh tree each call, which is fine for pushing a whole
-//! tree at AccessKit but gives no stable identity or diff — nothing survives
-//! between frames. A [`SemanticTree`] is the retained counterpart: it keys
-//! nodes by a stable [`SemanticId`] and, on each [`refresh`](SemanticTree::refresh),
-//! diffs the freshly-walked UI against the previous frame, returning a
-//! [`TreeDelta`] while preserving identity for every node that recurs. This
-//! is the foundation an AT-SPI incremental push, a screen reader's change
-//! narration, or an agent/CLI introspection layer builds on.
-//!
-//! Each refresh assembles the tree from two sources, so a node carries both
-//! what it is and what you can do to it: the
-//! [`Widget::accessibility`] walk
-//! (roles/names/values/state, collapsing presentational widgets like the
-//! AccessKit bridge does) contributes generic verbs (focus, activate, …);
-//! the app's [`resources()`](crate::resources::resources) forest from
-//! the Tilo [action model](tilo_actions) contributes
-//! [`SemanticActionKind::App`] affordances carrying the exact
-//! [`EncodedAction`] the click action sends —
-//! so invoking one by name drives the same replayable action through the
-//! one audited dispatch path, letting an assistive client operate the tree,
-//! not just read it.
-//!
-//! The tree itself imports no AccessKit and no D-Bus — pure data plus a
-//! diff, unit-testable without a bus or a window.
+//! The toolkit re-derives a fresh tree each call, which is fine for pushing a whole tree at
+//! AccessKit but gives no stable identity or diff. A [`SemanticTree`] is the retained
+//! counterpart: it keys nodes by a stable [`SemanticId`] and, on each
+//! [`refresh`](SemanticTree::refresh), diffs the freshly-walked UI against the previous frame,
+//! returning a [`TreeDelta`] while preserving identity for every node that recurs. This is what
+//! an AT-SPI incremental push, a screen reader's change narration or an agent's introspection
+//! builds on.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1703,7 +1684,10 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
         let id = SemanticId::synthetic_of(&parent.id, index, access);
         let level = Level {
             id,
-            durable: access.semantic_key.is_some() && parent.durable,
+            // The same test `synthetic_of` gives a keyed id: a keyed control
+            // is the same one across a rebuild, so what it publishes stays
+            // reachable.
+            durable: access.is_keyed() && parent.durable,
             owner: parent.owner,
             children: Vec::new(),
         };

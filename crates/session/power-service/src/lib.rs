@@ -1,42 +1,15 @@
-//! The session's **power policy**: when the machine blanks, locks and
-//! sleeps on its own, what the lid, the power key and a failing battery do,
-//! and what keeps it awake.
-//!
-//! # Shape
-//!
-//! The decisions are [`tilo_power_mgmt::PowerPolicy`], which the session's
-//! settings loader reads from the person's settings and narrows to what this
-//! machine owes (an always-on host never sleeps on its own). The
-//! [`SessionPower`] service runs `tilo_power_mgmt::PowerService` over D-Bus —
-//! logind for sleeping, `UPower` for the lid and the battery — and tells the
-//! session's loop what to do through the [`PowerLink`]:
-//!
-//! * the idle timeouts go to the compositor, which runs its own idle state
-//!   machine, and a suspend it decides on comes back to the service, which
-//!   re-reads other programs' logind locks before it sleeps the machine;
-//! * a lid, a critical battery or the power key resolved to *lock* locks the
-//!   session, resolved to *suspend* goes to logind;
-//! * logind's `PrepareForSleep` locks the session first and holds the sleep
-//!   delay until the lock screen's frame is drawn; a failed suspend lifts
-//!   only the lock that this sleep installed; the resume edge resets the
-//!   idle timers;
-//! * a suspend inhibitor (a download, a remote session, media playing) holds
-//!   the idle timer and is mirrored into a logind lock, so other programs'
-//!   `systemd-inhibit` and the platform's own idle sleep wait for it too.
-//!
-//! # Published
-//!
-//! The service publishes two resources, so a person, an app and a headless
-//! test read and hold the same things through the session's action host:
-//!
-//! * `power:sleep` — the policy in force, what holds the machine awake, and
-//!   the actions `keep-awake`, `release`, `power-key`, `lid` and `sleep`;
-//! * `power:battery` — the pack's charge, its state and the time left.
-//!
-//! # Wiring
-//!
-//! The session passes a [`PowerLink`] in and applies what it says; nothing
-//! here touches the compositor or draws anything.
+//! The session's power policy: when the machine blanks, locks and sleeps on its
+//! own, what the lid, the power key and a failing battery do, and what keeps it
+//! awake.
+//! The decisions are [`tilo_power_mgmt::PowerPolicy`], read from the person's
+//! settings and narrowed to what this machine owes (an always-on host never sleeps
+//! on its own); [`SessionPower`] runs it over D-Bus and tells the session's loop
+//! what to do through the [`PowerLink`]. A sleep from logind locks the session
+//! first and holds the delay until the lock screen's frame is drawn, and a suspend
+//! inhibitor holds the idle timer and is mirrored into a logind lock.
+//! It publishes `power:sleep` (the policy, what holds the machine awake, and the
+//! `keep-awake`, `release`, `power-key`, `lid` and `sleep` actions) and
+//! `power:battery`. Nothing here touches the compositor or draws anything.
 
 pub mod effects;
 mod model;

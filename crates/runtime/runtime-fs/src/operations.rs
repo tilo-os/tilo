@@ -3849,42 +3849,6 @@ pub(super) mod tests {
             fixture,
         }
     }
-    /// Actual production native capture/EXCHANGE fixture for connected RPC tests.
-    /// Keeps the host authority, source disk and operation journal alive.
-    pub(crate) struct ActualReplacementFixture {
-        fixture: Fixture,
-        pub session: FsSession,
-        pub parent: DirectoryGrant,
-        pub job: Option<FsJob>,
-    }
-    impl ActualReplacementFixture {
-        pub(crate) fn revoke(&self) -> Result<(), FsError> {
-            self.fixture.authority.revoke_directory(&self.fixture.src)
-        }
-    }
-    pub(crate) fn completed_replacement_for_transport() -> ActualReplacementFixture {
-        let fixture = Fixture::new();
-        fixture.bind_removal();
-        fixture.bind_source_key();
-        fs::write(fixture.source("document"), b"transport old").unwrap();
-        fs::write(fixture.source("temporary"), b"transport new").unwrap();
-        let mut job = fixture
-            .session
-            .start(FsOperation::Replace {
-                entry: fixture.entry("temporary"),
-                into: fixture.src.clone(),
-                name: name("document"),
-                victim: fixture.entry("document"),
-            })
-            .unwrap();
-        assert_eq!(item(&drain(&mut job)).state, ItemState::Completed);
-        ActualReplacementFixture {
-            session: fixture.session.clone(),
-            parent: fixture.src.clone(),
-            job: Some(job),
-            fixture,
-        }
-    }
     struct Fixture {
         authority: NativeGrantAuthority,
         session: FsSession,

@@ -7,7 +7,6 @@
 //! hands the same effects to the desk.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -16,14 +15,9 @@ use tilo_sheets::Presentation;
 use tilo_sheets::directory::{self, Ask, Directory, DirectoryEffect, Status};
 use tilo_workspace_directory::{Held, Person, Store};
 
-use ui::kurbo::{Affine, Point, Rect};
-use ui::presence::PresenceCtx;
-use ui::taffy::{LengthPercentageAuto, NodeId, Position, Style, TaffyTree};
-use ui::vello::Scene;
-use ui::widget::{AppModel, Element, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
-use ui::winit::event::WindowEvent;
-use ui::{LocalState, TextRenderer, Theme};
+use ui::LocalState;
 
+use crate::over_page::OverSheet;
 use crate::shell::{HostRequest, HostRequests};
 
 /// What the page tells its desktop about the workspace directory
@@ -69,12 +63,9 @@ pub(crate) struct PageDirectory {
     /// The origin of the door last asked: where a page redeems the invitation
     /// of a door that names no origin.
     door_origin: Option<String>,
-    content: Option<Element>,
     /// What the built sheet shows and the search it was built with, so it is
     /// built again only when either moved.
     built: (Directory, u64),
-    replaced: bool,
-    rect: Rect,
 }
 
 impl PageDirectory {
@@ -108,21 +99,17 @@ impl PageDirectory {
             person,
             held: config.map(|config| config.held.clone()).unwrap_or_default(),
             door_origin: None,
-            content: None,
             built: (Directory::default(), u64::MAX),
-            replaced: false,
-            rect: Rect::ZERO,
         }
     }
 
     /// Put the sheet up, reading the page's directory as the session's shell
     /// reads its community's.
-    pub(crate) fn open(&mut self) {
+    pub(crate) fn open(&self) {
         self.query.set(String::new());
         self.store.set_note(None);
         self.store.read(self.community.clone(), None);
         self.presentation.open(false);
-        self.replaced = true;
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -131,7 +118,7 @@ impl PageDirectory {
 
     /// Take what the directory task answered, show it, and carry out what the
     /// person pressed since the last pass. Whether anything changed.
-    pub(crate) fn follow(&mut self) -> bool {
+    fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
         let mut changed = self.store.answered();
         for joined in self.store.take_joined() {
             changed = true;
@@ -158,7 +145,7 @@ impl PageDirectory {
         if self.presentation.is_open() {
             let shown = self.store.view(&self.held);
             let revision = self.query.revision();
-            if self.content.is_none() || shown != self.built.0 || revision != self.built.1 {
+            if missing || shown != self.built.0 || revision != self.built.1 {
                 self.built = (shown.clone(), revision);
                 // A page keeps no log of its own: a site that could not be
                 // read says why here, where its people's consoles keep it.
@@ -169,8 +156,7 @@ impl PageDirectory {
                 let ask: Ask = Rc::new(move |effect: DirectoryEffect| {
                     asked.borrow_mut().push(effect);
                 });
-                self.content = Some(directory::sheet(&shown, &self.query, &ask, None));
-                self.replaced = true;
+                show(Some(directory::sheet(&shown, &self.query, &ask, None)));
                 changed = true;
             }
         }
@@ -179,10 +165,8 @@ impl PageDirectory {
             changed = true;
             self.answer(effect);
         }
-        if !self.presentation.is_open() && self.content.is_some() {
-            self.content = None;
-            self.replaced = true;
-            changed = true;
+        if !self.presentation.is_open() {
+            show(None);
         }
         changed
     }
@@ -245,10 +229,8 @@ impl PageDirectory {
         }
     }
 
-    fn close(&mut self) {
+    fn close(&self) {
         self.presentation.close();
-        self.content = None;
-        self.replaced = true;
     }
 }
 
@@ -258,113 +240,20 @@ fn no_person() -> String {
     "this page has no identity of its own yet, so it cannot join a workspace".to_owned()
 }
 
-impl Widget for PageDirectory {
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        self.follow()
-    }
-
-    fn build_layout(
+impl OverSheet for PageDirectory {
+    fn follow_sheet(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let content = self
-            .content
-            .as_mut()
-            .map(|content| content.build_layout(taffy, theme, map));
-        // Over the whole page, out of its flow: the sheet's scrim covers it.
-        let style = Style {
-            position: Position::Absolute,
-            inset: ui::taffy::Rect {
-                left: LengthPercentageAuto::length(0.0),
-                right: LengthPercentageAuto::length(0.0),
-                top: LengthPercentageAuto::length(0.0),
-                bottom: LengthPercentageAuto::length(0.0),
-            },
-            ..Default::default()
-        };
-        let children: Vec<NodeId> = content.into_iter().collect();
-        taffy.widget_node(style, &children, map, self)
+        show: &mut dyn FnMut(Option<ui::widget::Element>),
+        missing: bool,
+    ) -> bool {
+        self.follow(show, missing)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let Some(content) = self.content.as_mut()
-            && let Some(child) = taffy.children(node).unwrap_or_default().first().copied()
-        {
-            content.apply_layout(taffy, child, inner);
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(content) = self.content.as_mut() {
-            content.draw(scene, transform, text, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let Some(content) = self.content.as_mut() else {
-            return;
-        };
-        let Some(&child) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first() else {
-            return;
-        };
-        content.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.content.as_deref().into_iter().collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        match self.content.as_mut() {
-            Some(content) => vec![content.as_mut()],
-            None => Vec::new(),
-        }
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.replaced)
-            | self
-                .content
-                .as_mut()
-                .is_some_and(|content| content.take_structure_dirty())
-    }
-
-    /// A page with no sheet up has nothing under it whose size could be
-    /// solved again: the default answers for every childless widget with
-    /// "measure", which would re-solve the whole tree on each frame that
-    /// lays out, a pan's included.
-    fn layout_needs_measure(&self) -> bool {
-        self.content
-            .as_ref()
-            .is_some_and(|content| content.layout_needs_measure())
-    }
-
-    fn traps_focus(&self) -> bool {
+    fn drawn(&self) -> bool {
         self.presentation.is_drawn()
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.content
-            .as_ref()
-            .is_some_and(|content| content.needs_redraw())
-    }
-
-    fn name(&self) -> &'static str {
+    fn sheet_name(&self) -> &'static str {
         "PageDirectory"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

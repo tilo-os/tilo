@@ -100,6 +100,14 @@ impl HistoryOrigin {
         }
     }
 
+    /// The record this row came from, if it is not the workspace document.
+    pub fn record(&self) -> Option<&RecordId> {
+        match self {
+            Self::DesktopTree => None,
+            Self::Record { id, .. } | Self::AppRecord { id, .. } => Some(id),
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::DesktopTree => crate::i18n::t("activity-source-workspace"),
@@ -548,18 +556,6 @@ impl WorkspaceHistoryIndex {
         query: WorkspaceHistoryQuery,
     ) -> bool {
         self.refresh_inner(tree, records, query, None, None)
-    }
-
-    /// Build a feed which also reads referenced, persisted records without
-    /// opening them in the app's live [`RecordStore`].
-    pub fn refresh_with_local_records(
-        &mut self,
-        tree: &mut impl ActivityTree,
-        records: &RecordStore,
-        local: &dyn PersistedRecordHistory,
-        query: WorkspaceHistoryQuery,
-    ) -> bool {
-        self.refresh_inner(tree, records, query, None, Some(local))
     }
 
     /// Join a caller's workspace-scoped tree rows with all records reachable from

@@ -269,16 +269,6 @@ impl Drop for FloatingRuntime {
 }
 
 impl App {
-    /// Pump the real native host channel in compositor-free acceptance fixtures.
-    /// Returns whether this launch's inherited connection is still present.
-    /// This exposes no connection injection or permission bypass.
-    #[cfg(all(feature = "native", feature = "test-support"))]
-    pub fn pump_native_host_for_test(&mut self) -> bool {
-        let _entry = self.enter_wake_scope();
-        self.pump_floating_surface_service();
-        self.floating.client.is_some()
-    }
-
     #[cfg(feature = "native")]
     fn pending_floating_ime_source(&self) -> Option<&str> {
         self.floating.client.as_ref()?;

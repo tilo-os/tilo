@@ -1,8 +1,8 @@
 /**
  * Who belongs to a workspace the host governs, administered by a device of the
- * host's own person (the owner): invitations, the people waiting to join,
- * members, their roles and removal. Every call is one `/rooms` request over
- * the peer's session; the host authorizes each one.
+ * host's own person (the owner): invitations, the addresses left at its door
+ * to be invited, members, their roles and removal. Every call is one `/rooms`
+ * request over the peer's session; the host authorizes each one.
  *
  * `createMembership({workspaces, workspace, displayName})` takes `workspaces(requestJson)`
  * (the wasm peer's `workspaces`, resolving to the reply's JSON), the workspace's uuid
@@ -45,14 +45,6 @@ const member = value => ({
   role: pageRole(value.role),
   owner: value.owner,
   removed: value.removed,
-});
-const waiting = value => ({
-  requestId: hex(value.request_id),
-  userPublicKey: hex(value.user_public_key),
-  devicePublicKey: hex(value.device_public_key),
-  name: value.name,
-  role: pageRole(value.role),
-  requestedAtMs: Math.floor(value.requested_at_ns / 1e6),
 });
 const listed = value => ({
   requestId: hex(value.request_id),
@@ -102,8 +94,8 @@ export function createMembership({workspaces, workspace, displayName = '', preAd
     /**
      * Issue an invitation to the workspace: resolves to its text, which
      * `inspectInvitation` and `joinWorkspace` take. It names this person
-     * (`displayName`) as the inviter; anyone holding it may ask to join, and
-     * the owner admits them. For a wait-list entry (`waitListEntry`, its
+     * (`displayName`) as the inviter; it admits whoever redeems it by itself.
+     * For a wait-list entry (`waitListEntry`, its
      * `requestId` from `waitList`), the entry shows it was invited and
      * leaves the list once someone joins with the invitation.
      */
@@ -145,43 +137,26 @@ export function createMembership({workspaces, workspace, displayName = '', preAd
     },
     /**
      * The workspace as governance records it: `{workspace, name, generation, members,
-     * waiting, invitations, notices}`. `members` include removed people
-     * (`removed`); `waiting` are people who redeemed an invitation and wait
-     * for `admit` or `decline`; `invitations` are those still redeemable;
-     * `notices` tell the owner who joined under a pre-admission
+     * invitations, notices}`. `members` include removed people (`removed`);
+     * `invitations` are those still redeemable; `notices` tell the owner who
+     * joined under a pre-admission
      * (`{kind: 'pre-admitted', userPublicKey, name, label, role, atMs}`).
      */
     async list() {
-      const [state, requests, pending, notices] = await Promise.all([
+      const [state, pending, notices] = await Promise.all([
         ask('List').then(reply => {
           const found = expect(reply, 'Rooms').find(value => value.room === workspace);
           if (!found) throw new Error('the host does not govern this workspace');
           return summary(found);
         }),
-        ask({Requests: {room: workspace}}).then(reply => expect(reply, 'Requests')),
         ask({Pending: {room: workspace}}).then(reply => expect(reply, 'Pending')),
         ask({Notices: {room: workspace}}).then(reply => expect(reply, 'Notices')),
       ]);
-      return {
-        ...state, waiting: requests.map(waiting), invitations: pending.map(invitation),
-        notices: notices.map(notice),
-      };
-    },
-    /** Only the people waiting to join, as `list().waiting`: one request. */
-    async requests() {
-      return expect(await ask({Requests: {room: workspace}}), 'Requests').map(waiting);
-    },
-    /** Admit a waiting person (`requestId` from `list().waiting`). */
-    async admit(requestIdHex) {
-      return summarize(await ask({Admit: {room: workspace, request_id: bytesOf(requestIdHex)}}));
-    },
-    /** Turn a waiting person away. */
-    async decline(requestIdHex) {
-      expect(await ask({Decline: {room: workspace, request_id: bytesOf(requestIdHex)}}), 'Requests');
+      return {...state, invitations: pending.map(invitation), notices: notices.map(notice)};
     },
     /** The addresses left at the workspace's door without an invitation, oldest
-     * first: `{requestId, contact, addedAtMs}` each, nobody to admit but an
-     * address to send an invitation to. For whoever may invite. */
+     * first: `{requestId, contact, addedAtMs}` each, an address to send an
+     * invitation to. For whoever may invite. */
     async waitList() {
       return expect(await ask({WaitList: {room: workspace}}), 'WaitList').map(listed);
     },

@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
+use app_registry::publisher::RegistryClient;
 use ed25519_dalek::SigningKey;
-use registry_client::RegistryClient;
 use registry_server::applications::{self, ProofSource};
 use registry_server::serve::ServeOptions;
 use registry_server::{AppState, ServerIdentity, Storage, bind_and_run};
@@ -100,7 +100,7 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
         let refused = publish(&client, &key, &builds).unwrap_err();
         assert!(format!("{refused:#}").contains("403"), "{refused:#}");
 
-        let status = registry_client::apply(
+        let status = app_registry::publisher::apply(
             &client,
             &key,
             vec![NamespaceClaim::Domain {
@@ -219,7 +219,7 @@ fn publish(
     client: &RegistryClient,
     key: &SigningKey,
     builds: &[Vec<u8>],
-) -> anyhow::Result<Vec<registry_client::Published>> {
+) -> anyhow::Result<Vec<app_registry::publisher::Published>> {
     let retention = registry_types::retention::RetentionPolicy::default();
-    registry_client::publish(client, key, builds, None, None, &retention)
+    app_registry::publisher::publish(client, key, builds, None, None, &retention)
 }

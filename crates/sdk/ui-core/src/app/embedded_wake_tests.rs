@@ -7,6 +7,7 @@ use crate::collaboration::{
 };
 use crate::presence::{PathSegment, PresenceKey};
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 
 struct QueuedTransport(Rc<RefCell<Vec<CollabEvent>>>);
 
@@ -205,12 +206,7 @@ fn a_wake_raised_during_the_model_pump_is_not_lost() {
     let before = fixture.calls();
     fixture.pump();
     assert_eq!(fixture.calls(), before + 1);
-    assert!(
-        fixture
-            .tile
-            .woken
-            .load(std::sync::atomic::Ordering::Acquire)
-    );
+    assert!(fixture.tile.woken.load(Ordering::Acquire));
     assert!(
         fixture.tile.app.wake_pending(),
         "the wake raised during the pump stays pending: the pass it asks for only runs in a frame the host prepares"

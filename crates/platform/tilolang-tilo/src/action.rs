@@ -505,6 +505,27 @@ impl DynAction {
                         .map(str::to_owned),
                 ),
                 DynEdit::Place { id, item, at, .. } => (id, item, at, None),
+                // An item added below the resource `id` within the collection its path names:
+                // it joined that collection, under the resource the path goes down to.
+                DynEdit::Edit { id, edit } => {
+                    let Some((item, value)) = item_added(edit) else {
+                        continue;
+                    };
+                    let (holder, field) = collection_of(id, edit);
+                    let Some(field) = field else {
+                        continue;
+                    };
+                    out.push((
+                        format!("{id}/{item}"),
+                        holder,
+                        field,
+                        value
+                            .get(crate::schema::TYPE_KEY)
+                            .and_then(Json::as_str)
+                            .map(str::to_owned),
+                    ));
+                    continue;
+                }
                 _ => continue,
             };
             if let Some(place) = Placement::decode(at).as_ref().and_then(Placement::place) {
@@ -1102,6 +1123,41 @@ fn holder_of(doc: &str, place: &tilolang_runtime::place::Place) -> String {
         Some(parent) => format!("{doc}/{parent}"),
         None => doc.to_owned(),
     }
+}
+
+/// The item `edit` adds to a collection by its id, and its record: `None` when the edit adds
+/// none.
+fn item_added(edit: &Edit<DynRecord>) -> Option<(String, &Json)> {
+    match edit.op() {
+        tilo_resource::EditOp::InsertItem {
+            id: Some(item),
+            value,
+            ..
+        }
+        | tilo_resource::EditOp::UpsertItem {
+            id: Some(item),
+            value,
+            ..
+        } => Some((item.to_string(), value)),
+        _ => None,
+    }
+}
+
+/// The resource holding the collection `edit`'s path names, and that collection's field.
+fn collection_of(id: &str, edit: &Edit<DynRecord>) -> (String, Option<String>) {
+    let mut holder = id.to_owned();
+    let mut field = None;
+    for segment in edit.path() {
+        match segment {
+            Segment::Item(item) => {
+                holder = format!("{id}/{item}");
+                field = None;
+            }
+            Segment::Field(name) => field = Some(name.clone()),
+            _ => {}
+        }
+    }
+    (holder, field)
 }
 
 /// The key of the order key in a nested collection's entry.

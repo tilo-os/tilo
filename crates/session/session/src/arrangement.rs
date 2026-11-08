@@ -1,26 +1,14 @@
-//! The person's arrangement as the desk they share with the workspace
-//! (workspace.md §9): what is open where, read off the desk itself, kept in
-//! the desk's own record ([`tilo_desktop_model::shared_record`], through the
-//! desk this session holds) with history and undo. A workspace's history — a
-//! strip made, a width dragged — is the desk's, and every member of the
-//! workspace reads the same one.
-//!
-//! A place also shows its resource through a view, and the person may pin it.
-//! Both are the window's own ([`tilo_desktop_model::Tab`]), so the desk's
-//! record answers what the arrangement is, on this device and across a
-//! restart.
-//!
+//! The person's arrangement as the desk they share with the workspace: what is
+//! open where, read off the desk itself, kept in the desk's own record
+//! ([`tilo_desktop_model::shared_record`]) with history and undo, so every member
+//! of the workspace reads the same one. A place's view and its pin are the
+//! window's own ([`tilo_desktop_model::Tab`]).
 //! Each arranging action ([`ArrangementAction`]) is one change of the desk,
-//! attributed to whoever asked for it — the person's own input included — and
-//! undone as that one step. What the desk changes on its own — a window an app
-//! opened, a drag — is a change of the desk like any other, made where the
-//! desk is.
-//!
-//! One rule is fixed (shell.md §1): nothing moves or takes focus under an
-//! ongoing gesture or while the person types. An arranging action that
-//! arrives then waits here and runs when the gesture or the typing ends; it
-//! is never dropped.
-
+//! attributed to whoever asked for it and undone as that one step; what the desk
+//! changes on its own is a change like any other.
+//! One rule is fixed (shell.md §1): nothing moves or takes focus under an ongoing
+//! gesture or while the person types. An action that arrives then waits here and
+//! runs when they end; it is never dropped.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
@@ -234,6 +222,14 @@ pub struct Surface {
 /// never a search of its own (shell.md §8, "Finding what to place").
 pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
 
+/// What the canvas does with text that is a question, or that nothing
+/// matches (shell.md §8.1, "Asking from the canvas"): the session posts it as
+/// the person into their ask conversation with the workspace's agent, and
+/// answers the resource that conversation is, so the text typed stands as a
+/// place of it. `None` when the session cannot ask — no agent to ask, no
+/// workspace to ask in — and the text then fails to place as it always did.
+pub type Ask = Rc<dyn Fn(&str) -> Option<String>>;
+
 /// The resource `hit` names, and the name its resource goes by, when a place
 /// can make something of it: an app's own `open` of a resource, or an action
 /// that acts on one. Every other row (a settings section, a file, a window's
@@ -256,15 +252,11 @@ fn placeable(hit: &tilo_desktop_search::Hit) -> Option<(&str, &str)> {
     }
 }
 
-/// Which of `hits` a text typed on the canvas places: the top one that names
-/// a resource `shows` accepts, or the one inside it that carries the same
-/// name when the text is that name.
-///
-/// This is the one ranking a text typed on the canvas and an agent's `find`
-/// share: the canvas stands this hit's resource, and `find` leads with this
-/// same hit — never with another row about the same resource. A hit the
-/// arrangement cannot place (a settings section) does not stand in the way
-/// of one it can.
+/// Which of `hits` a text typed on the canvas places: the top one that names a
+/// resource `shows` accepts, or the one inside it that carries the same name.
+/// This is the one ranking a typed text and an agent's `find` share, so `find`
+/// never leads with another row about the same resource. A hit the arrangement
+/// cannot place does not stand in the way of one it can.
 #[must_use]
 pub(crate) fn placed(
     hits: &[tilo_desktop_search::Hit],
@@ -484,31 +476,22 @@ impl Arrangement {
         Rc::clone(&self.catalog)
     }
 
-    /// The surface the desk shows at `(x, y)` as a place made there stands:
-    /// the workspace in front, its row, the id its own strip takes and the
-    /// id its place takes. Every id is this device's: a place made here is
-    /// this person's, synced by the record like any other.
-    ///
-    /// A workspace with no row yet — one just joined, whose first window is
-    /// what makes the row it goes in (`DesktopHost`, "the first window opened
-    /// there makes the strip it goes in") — is given a row here: a place put
-    /// on the canvas is that window, and refusing it would leave a person who
-    /// joined a workspace unable to place anything in it.
-    ///
+    /// The surface the desk shows at `(x, y)` as a place made there stands: the
+    /// workspace in front, its row, and the ids its strip and place take. Every id is
+    /// this device's. A workspace with no row yet — one just joined, whose first window
+    /// makes its row — is given a row here, so a person who joined a workspace can
+    /// place something in it.
     /// # Errors
-    /// The desk has no workspace in front to put anything on.
+    /// The desk has no workspace in front.
     pub fn surface_at(&self) -> Result<Surface, String> {
         self.surface_at_strip(None)
     }
 
-    /// The surface a place made in `strip` stands on: the strip's own workspace
-    /// and row when it names one on the desk, so the place joins that strip as
-    /// a tab; the workspace and row in front otherwise. The place's id is
-    /// minted here, whatever the strip.
-    ///
+    /// The surface a place made in `strip` stands on: the strip's own workspace and row
+    /// when it names one on the desk, so the place joins that strip as a tab; the
+    /// workspace and row in front otherwise. The place's id is minted here.
     /// # Errors
-    /// The desk has no workspace in front, or `strip` is not a strip on this
-    /// desk.
+    /// The desk has no workspace in front, or `strip` is not a strip on this desk.
     pub fn surface_at_strip(&self, strip: Option<u64>) -> Result<Surface, String> {
         let tree = self.handle.read(Clone::clone);
         if let Some(strip) = strip {
@@ -596,8 +579,15 @@ impl Arrangement {
     /// Returns the place's id, or `None` when nothing the text finds is a
     /// resource the arrangement can place.
     ///
+    /// Text that *asks* — a question ([`tilo_desktop_search::answers::question::asks`]),
+    /// or text nothing matches — goes to `ask` instead (shell.md §8.1,
+    /// "Asking from the canvas"): what it answers is the resource to place,
+    /// the person's ask conversation, so the text typed stands as a place of
+    /// that conversation, where they typed it, as one arranging step.
+    ///
     /// # Errors
-    /// Why the place could not be made, or the text found nothing to place.
+    /// Why the place could not be made, or the text found nothing to place
+    /// and nothing answered it.
     pub fn place_found(
         &mut self,
         asked: &str,
@@ -606,17 +596,38 @@ impl Arrangement {
         strip: Option<u64>,
         at: (i64, i64),
         find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
+        ask: &dyn Fn(&str) -> Option<String>,
         busy: Busy,
     ) -> Result<Option<u64>, String> {
         let text = text.trim();
         if text.is_empty() {
             return Err("nothing is typed to place".into());
         }
-        let Some(resource) = found(text, find, |resource| {
+        let found_resource = found(text, find, |resource| {
             self.catalog.borrow().get(resource).is_some()
-        }) else {
+        });
+        // A question is answered even when it happens to match something the
+        // search holds: the person asked, so the text they typed is a
+        // message to their agent, not a thing to stand (shell.md §8.1).
+        let asked_agent =
+            tilo_desktop_search::answers::question::asks(text) || found_resource.is_none();
+        let resource = if asked_agent {
+            ask(text)
+        } else {
+            found_resource
+        };
+        let Some(resource) = resource else {
             return Err(format!("nothing matches {text:?}"));
         };
+        // A text that asks brings the conversation it is with forward rather
+        // than standing a second place of it: the same conversation belongs
+        // in one place (shell.md §8.1). Text that finds a resource places it
+        // where the person typed, as it always has — a second place of a note
+        // is the person's to make.
+        if asked_agent && let Some(held) = self.place_of(&resource) {
+            self.ask(asked, ArrangementAction::Activate { place: held }, busy)?;
+            return Ok(Some(held));
+        }
         let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -633,6 +644,22 @@ impl Arrangement {
         };
         self.ask(asked, action, busy)?;
         Ok(Some(surface.place))
+    }
+
+    /// The place already showing `resource`, if one stands: what text typed
+    /// again brings forward rather than placing a second time.
+    #[must_use]
+    pub fn place_of(&self, resource: &str) -> Option<u64> {
+        let records = self.records();
+        self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|row| row.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| records.get(&tab.id) == Some(&resource.to_owned()))
+                .map(|tab| tab.id)
+        })
     }
 
     /// The arrangement as a shell's views read it: every workspace, row, strip and place, each
@@ -706,12 +733,9 @@ impl Arrangement {
         &self.person
     }
 
-    /// Carry out `action` as `asked`'s: one change of the record, attributed
-    /// to them and undone as one step. Under an ongoing gesture or while the
-    /// person types it waits ([`Self::waiting`]) and runs when they end.
-    ///
-    /// Returns whether it ran now.
-    ///
+    /// Carry out `action` as `asked`'s: one change of the record, attributed to them
+    /// and undone as one step. Under an ongoing gesture or while the person types it
+    /// waits ([`Self::waiting`]) and runs when they end. Returns whether it ran now.
     /// # Errors
     /// Why the action names something the arrangement does not hold.
     pub fn ask(
@@ -1943,6 +1967,9 @@ pub struct ArrangementDoor {
     /// The system's `find`, as the palette and an agent's `tilo` tool run it:
     /// what text typed on the canvas places (shell.md §8).
     find: Find,
+    /// What the canvas asks of the session when the text it is given is a
+    /// question, or names nothing (shell.md §8.1).
+    ask: Ask,
 }
 
 impl ArrangementDoor {
@@ -1953,19 +1980,15 @@ impl ArrangementDoor {
         arrangement: std::rc::Rc<RefCell<Arrangement>>,
         busy: std::rc::Rc<dyn Fn() -> Busy>,
         find: Find,
+        ask: Ask,
     ) -> Self {
         Self {
             arrangement,
             busy,
             actor: RefCell::new(String::new()),
             find,
+            ask,
         }
-    }
-
-    /// Arrange as `actor` from now on: what the person's own input does, so
-    /// their drag, their resize and their close are attributed to them.
-    pub fn arrange_as(&self, actor: &str) {
-        actor.clone_into(&mut self.actor.borrow_mut());
     }
 }
 
@@ -2030,10 +2053,11 @@ impl Published for ArrangementDoor {
         {
             let spot = (*x, *y);
             let find = Rc::clone(&self.find);
+            let ask = Rc::clone(&self.ask);
             let placed = self
                 .arrangement
                 .borrow_mut()
-                .place_found(&asked, text, view, *strip, spot, &*find, busy);
+                .place_found(&asked, text, view, *strip, spot, &*find, &*ask, busy);
             placed.map_err(|why| tilo_actions::DoorError::Unavailable {
                 code: "nothing_to_place".to_owned(),
                 reason: why,
@@ -2069,16 +2093,11 @@ impl Published for ArrangementDoor {
 }
 
 impl ArrangementDoor {
-    /// A `place` that names no workspace, row, strip or id of its own stands
-    /// on the surface in front, in a strip of its own, under ids minted here:
-    /// what a reference activated in a view asks for (shell.md §3), which
-    /// knows the point it wants and none of the desk's ids. `action`, decoded
-    /// from `arguments`, takes the surface in front's workspace and row and
-    /// fresh strip and place ids for whichever of them `arguments` leaves
-    /// out. They go into the action itself, never back through the
-    /// arguments: a desk's ids span all of `u64`, which an integer argument
-    /// does not. The record holds the ids it was given, as for any other
-    /// place.
+    /// A `place` that names no workspace, row, strip or id of its own stands on the
+    /// surface in front, in a strip of its own, under ids minted here: what a reference
+    /// activated in a view asks for (shell.md §3). They go into the action itself,
+    /// never back through the arguments: a desk's ids span all of `u64`, which an
+    /// integer argument does not.
     fn place_at_surface(
         &self,
         arguments: &serde_json::Map<String, Json>,

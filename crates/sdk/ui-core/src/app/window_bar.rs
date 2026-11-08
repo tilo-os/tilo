@@ -268,9 +268,7 @@ impl App {
     /// (`FrameHarness::press_window_slot`).
     #[cfg(feature = "native")]
     pub(crate) fn deliver_app_slot_event(&mut self, event: ToolbarEvent) {
-        let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
-        crate::window_toolbar::deliver(event);
-        if hands_keyboard {
+        if crate::window_toolbar::deliver_to_app(event) {
             self.hand_keyboard_to_app();
         }
     }

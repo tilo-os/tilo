@@ -102,6 +102,7 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
         Ty::RichText => FieldType::RichText,
         Ty::Date => FieldType::Date,
         Ty::Time => FieldType::Time,
+        Ty::Duration => FieldType::Duration,
         Ty::Identifier => FieldType::Identifier,
         Ty::Principal => FieldType::Principal,
         Ty::Record(key) => FieldType::Resource(record_kind(key)),

@@ -657,15 +657,6 @@ pub fn selected_identity_path(workspace: &str) -> io::Result<Option<PathBuf>> {
         .map(|profile| profile.record_path))
 }
 
-/// Resolve the person this device presents in a workspace.
-pub fn selected_principal_id(workspace: &str) -> io::Result<Option<String>> {
-    let store = IdentityRegistryStore::from_env()?;
-    let registry = store.load_reconciled_cached()?;
-    Ok(registry
-        .for_workspace(workspace)
-        .map(|profile| profile.principal_id()))
-}
-
 /// [`selected_principal_id`] for the compositor's input and frame loop: it
 /// never waits for the disk after the first call
 /// ([`IdentityRegistryStore::load_reconciled_prompt`]).

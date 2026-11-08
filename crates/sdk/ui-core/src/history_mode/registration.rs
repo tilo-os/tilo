@@ -234,23 +234,6 @@ impl HistoryRegistration {
         }
         Ok(registration)
     }
-    /// Attach the trusted source owner, never a service available to a preview.
-    pub fn with_asset_source(
-        mut self,
-        scope: &'static str,
-        source: std::rc::Rc<dyn super::HistoricalAssetSource>,
-    ) -> Result<Self, HistoryRegistrationError> {
-        if !self
-            .definition
-            .scopes
-            .iter()
-            .any(|candidate| candidate.key == scope)
-        {
-            return Err(HistoryRegistrationError::InvalidScopes);
-        }
-        self.assets.insert(scope, source);
-        Ok(self)
-    }
     /// Whether every source is a checked file of the mounted filesystem: a
     /// root's witness of the files it names, owning no document.
     #[must_use]

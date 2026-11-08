@@ -365,27 +365,6 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
-    /// Send a remote-action frame to one device of this workspace through
-    /// the host. The host routes it to that device's live connection only;
-    /// it is never stored or fanned out.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn publish_remote_action(&self, to: [u8; 32], frame: Vec<u8>) -> Result<(), CoeditError> {
-        self.client
-            .send(Envelope::RemoteAction {
-                workspace_id: self.workspace_id,
-                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                to_device_public_key: to,
-                // The host overwrites both from the authenticated connection.
-                from_device_public_key: self.author,
-                from_user_public_key: [0; 32],
-                frame,
-            })
-            .map_err(|_| CoeditError::Disconnected)
-    }
-
     /// Ask the workspace's governor to change its calls; the answer arrives as
     /// [`VoiceEvent::Result`] carrying `request`.
     ///

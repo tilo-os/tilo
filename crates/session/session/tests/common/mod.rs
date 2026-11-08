@@ -17,6 +17,7 @@
     reason = "test fixtures shared by the session's test binaries: a helper a binary does not use is not an error, and a failed step is the assertion"
 )]
 
+pub mod audio;
 pub mod dev_apps;
 pub mod people;
 pub mod window;
@@ -39,7 +40,7 @@ use tilolang_tilo::runtime::Principal;
 /// The canvas's entry, as assistive technology names it: a field bound to a view's state takes
 /// the name the view gives it for a person to read, its own words, rather than the state's name
 /// in the code (`typed`).
-pub const CANVAS_ENTRY: &str = "Find something";
+pub const CANVAS_ENTRY: &str = "Find something, or ask";
 /// The launcher's field, announced the same way: the view's own words for it, not the state's
 /// name in the code (`query`).
 pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
@@ -306,26 +307,54 @@ pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
     }
 }
 
-/// Type `text` (lower-case letters and spaces) on the keyboard, a key at a time, as the person
-/// does.
+/// Type `text` (lower-case letters, spaces and a question mark) on the keyboard, a key at a
+/// time, as the person does. A question mark is Shift and the slash key.
 pub fn type_text(session: &mut Session, text: &str) {
     const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
     const SPACE: u32 = 57;
+    /// Shift, held for the keys whose upper-case character is the one meant.
+    const SHIFT: u32 = 42;
+    const SLASH: u32 = 53;
     for letter in text.chars() {
-        let keycode = if letter == ' ' {
-            SPACE
+        let (keycode, shifted) = if letter == ' ' {
+            (SPACE, false)
+        } else if letter == '?' {
+            (SLASH, true)
         } else {
-            ROWS.iter()
-                .find_map(|(row, first)| {
-                    let at = u32::try_from(row.chars().position(|c| c == letter)?).ok()?;
-                    first.checked_add(at)
-                })
-                .unwrap_or_else(|| panic!("no key types {letter:?}"))
+            (
+                ROWS.iter()
+                    .find_map(|(row, first)| {
+                        let at = u32::try_from(row.chars().position(|c| c == letter)?).ok()?;
+                        first.checked_add(at)
+                    })
+                    .unwrap_or_else(|| panic!("no key types {letter:?}")),
+                false,
+            )
         };
+        if shifted {
+            session
+                .compositor()
+                .input(InputEvent::Key {
+                    keycode: SHIFT,
+                    pressed: true,
+                })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
         for pressed in [true, false] {
             session
                 .compositor()
                 .input(InputEvent::Key { keycode, pressed })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+        if shifted {
+            session
+                .compositor()
+                .input(InputEvent::Key {
+                    keycode: SHIFT,
+                    pressed: false,
+                })
                 .unwrap();
             session.step(Duration::from_millis(1)).unwrap();
         }
@@ -827,26 +856,6 @@ pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
     wait_for(session, "the test-control socket's answer", |_| {
         answered.try_recv().ok()
     })
-}
-
-/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") the way a person does: the bar's own
-/// preset switch for the three the switch stays on, and the shell's layout for the traditional
-/// desktop, which takes the switch off its bar (`bar_is_traditional`: its bar is the focused
-/// window's commands). The layout is the setting the settings page's own card runs
-/// (`shell.apply(shell.shell, to: shell.Layout.windows_desktop)`), and the same one acceptance
-/// step 8 drives, so the desktop a test draws is the desktop a person gets.
-///
-/// # Panics
-/// The switch or the layout refuses: the preset it names is not one this shell knows.
-#[track_caller]
-pub fn show_preset_by_name(session: &mut Session, preset: &str) {
-    if preset.eq_ignore_ascii_case("desktop") {
-        session
-            .run_shell_setting("apply", vec![Value::from("windows_desktop")])
-            .unwrap_or_else(|why| panic!("the desk shows {preset}: {why}"));
-        return;
-    }
-    show_preset(session, preset);
 }
 
 /// The surface the desk shows over its windows now, as its own reading names it: `none` at rest,

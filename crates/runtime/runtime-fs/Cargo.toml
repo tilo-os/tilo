@@ -24,8 +24,6 @@ cap-std = "3.4.6"
 rustix = { workspace = true, features = ["fs", "process"] }
 uuid.workspace = true
 runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
-capnp.workspace = true
-capnp-rpc.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync", "time"] }
 tokio-util.workspace = true
 serde.workspace = true

@@ -30,6 +30,10 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
 # tilo-relay, and the Discord connector's outside worker beside it (the
 # connector finds `<app>-worker` next to the relay it runs under).
 COPY bin/ /usr/local/bin/
+# Every version of the built-in apps' surface.toml, which the relay publishes
+# into its content plane at start: history written by an older version than this
+# build runs is decided with the surface it was written with.
+COPY surfaces/ /usr/local/share/tilo/surfaces/
 # Bot programs the deployment installs by path (TILO_ROOMS_BOTS) and the app
 # components they run lay text out from a container, which has no system
 # fonts: the product catalog sits where a Tilo binary looks for it.

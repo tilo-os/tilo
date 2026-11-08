@@ -38,7 +38,7 @@ async fn fill_with_cross_workspace(fixture: &Fixture) {
     session
         .tx
         .try_send(StateDelivery {
-            envelope: LiveEnvelope::Original(Arc::new(cross_workspace)),
+            envelope: Arc::new(cross_workspace),
             cleanup: None,
             source: None,
             _budget: None,
@@ -186,7 +186,7 @@ async fn overflow_before_final_ready_lags_and_ready_still_follows() {
     // commits once more.
     while state_tx
         .try_send(StateDelivery {
-            envelope: LiveEnvelope::Original(Arc::new(fixture.envelope(5))),
+            envelope: Arc::new(fixture.envelope(5)),
             cleanup: None,
             source: None,
             _budget: None,

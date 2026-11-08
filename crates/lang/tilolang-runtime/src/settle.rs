@@ -566,9 +566,19 @@ impl Core {
         approver: &Principal,
     ) -> Result<(String, String, String), RuntimeError> {
         // The record names the run that waits on the person: approving it goes on from its
-        // journal, so the calls it already made are not made again. A call recorded before it
-        // started has no run, and a run its record reached another replica from is not this
-        // one's to go on from: those run their action now.
+        // journal, so the calls it already made and the effects it already queued are not made
+        // again. A call recorded before it started has no run, and a run its record reached
+        // another replica from is not this one's to go on from: those run its action now.
+        //
+        // Either way the run is the one the record names, so the effects it queues are keyed by
+        // it: a device that runs the whole action itself queues each of them under the key the
+        // device that ran it first did, before the person was asked or after, and the record
+        // holds one. A call that never ran is keyed by the decision, which every replica reads.
+        let run = if rec.run.is_empty() {
+            format!("invocation:{origin}")
+        } else {
+            rec.run.clone()
+        };
         if !rec.run.is_empty() {
             match self.resolve(&rec.run, approver, Resolution::Approve) {
                 Ok(RunOutcome::Done(value)) => {
@@ -598,7 +608,7 @@ impl Core {
             chain: vec![identity.clone()],
             approved_by: Some(approver.clone()),
             suggested_by,
-            origin: Some(format!("invocation:{origin}")),
+            identity: Some(run),
             from: None,
             at: None,
         };

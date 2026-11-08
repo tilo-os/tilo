@@ -395,26 +395,6 @@ impl DesktopNotifications {
     }
 
     /// How many unread notifications the app with verified id `app_id`
-    /// says it has, as its icon badges on the bar. Zero when it says none,
-    /// or when this person turned app badges off.
-    pub fn set_app_badge(&self, app_id: &str, count: u32) {
-        let changed = {
-            let mut badges = self.log.badges.borrow_mut();
-            if count == 0 {
-                badges.remove(app_id).is_some()
-            } else if badges.get(app_id) == Some(&count) {
-                false
-            } else {
-                badges.insert(app_id.to_owned(), count);
-                true
-            }
-        };
-        if changed {
-            self.log.touch();
-        }
-    }
-
-    /// How many unread notifications the app with verified id `app_id`
     /// owns, as its icon badges.
     #[must_use]
     pub fn app_badge(&self, app_id: &str) -> u32 {

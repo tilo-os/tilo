@@ -59,10 +59,13 @@ pub enum Kind {
     /// A surface hanging over the window, a popover or a sheet, reaching past the window's
     /// edges: what it says there is cut off or cannot be pressed.
     PastWindow,
+    /// A column's title cut off while the header row beside it keeps room: the title was laid
+    /// out narrower than what it says, and nothing stands there to take the rest.
+    TitleClippedWithRoom,
 }
 
 impl Kind {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -83,6 +86,7 @@ impl Kind {
         Self::ZeroCount,
         Self::RepeatedCount,
         Self::PastWindow,
+        Self::TitleClippedWithRoom,
     ];
 
     pub fn name(self) -> &'static str {
@@ -107,6 +111,7 @@ impl Kind {
             Self::ZeroCount => "zero-count",
             Self::RepeatedCount => "repeated-count",
             Self::PastWindow => "past-window",
+            Self::TitleClippedWithRoom => "title-clipped-with-room",
         }
     }
 }
@@ -983,7 +988,8 @@ impl Walk<'_> {
 }
 
 /// Text whose widget needs more room than layout gave it: taller at its width than its box, or
-/// with a word wider than its box. Each widget measures itself as layout measures it.
+/// with a word wider than its box, or a column's title cut off while its row keeps room. Each
+/// widget measures itself as layout measures it.
 pub fn clipped_text(
     root: &mut dyn Widget,
     text: &mut ui::TextRenderer,
@@ -991,8 +997,18 @@ pub fn clipped_text(
 ) -> Vec<Problem> {
     let mut out = Vec::new();
     let clip = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
-    measure_walk(root, &mut Vec::new(), clip, text, &mut out);
+    measure_walk(root, &mut Vec::new(), clip, f64::INFINITY, text, &mut out);
     out
+}
+
+/// How much room beside a title is room it should have taken: more than the widest gap two
+/// neighbours in a header keep from each other.
+const TITLE_ROOM: f64 = 24.0;
+
+/// Whether a title that says `needs` wide is cut off in `has`, while `free` stands empty
+/// beside it in its row.
+fn title_cut_with_room(needs: f64, has: f64, free: f64) -> bool {
+    needs > has + EPSILON && free > TITLE_ROOM
 }
 
 #[allow(
@@ -1003,6 +1019,7 @@ fn measure_walk(
     widget: &mut dyn Widget,
     keys: &mut Vec<String>,
     clip: Rect,
+    room: f64,
     text: &mut ui::TextRenderer,
     out: &mut Vec<Problem>,
 ) {
@@ -1010,7 +1027,39 @@ fn measure_walk(
         .test_id()
         .map(|id| keys.push(id.to_owned()))
         .is_some();
-    measure_one(widget, keys, clip, text, out);
+    measure_one(widget, keys, clip, room, text, out);
+    let inner = widget
+        .child_clip_rect()
+        .map_or(clip, |child| clip.intersect(child));
+    let edge = widget.get_rect().x1;
+    let rects: Vec<Rect> = widget
+        .children_mut()
+        .iter()
+        .map(|child| child.get_rect())
+        .collect();
+    let mut children = widget.children_mut();
+    for index in 0..rects.len() {
+        let Some(&held) = rects.get(index) else {
+            continue;
+        };
+        // The room a child has beside it: where the next thing in its row starts, or the edge
+        // of the box that holds it.
+        let room = rects
+            .iter()
+            .enumerate()
+            .filter(|(other, beside)| {
+                *other != index
+                    && beside.x0 >= held.x1 - EPSILON
+                    && beside.y1 > held.y0 + EPSILON
+                    && beside.y0 < held.y1 - EPSILON
+            })
+            .map(|(_, beside)| beside.x0)
+            .fold(edge, f64::min);
+        let Some(child) = children.get_mut(index) else {
+            continue;
+        };
+        measure_walk(&mut **child, keys, inner, room, text, out);
+    }
     if pushed {
         keys.pop();
     }
@@ -1022,8 +1071,9 @@ fn measure_walk(
 )]
 fn measure_one(
     widget: &mut dyn Widget,
-    keys: &mut Vec<String>,
+    keys: &[String],
     clip: Rect,
+    room: f64,
     text: &mut ui::TextRenderer,
     out: &mut Vec<Problem>,
 ) {
@@ -1087,11 +1137,38 @@ fn measure_one(
             });
         }
     }
-    let inner = widget
-        .child_clip_rect()
-        .map_or(clip, |child| clip.intersect(child));
-    for child in widget.children_mut() {
-        measure_walk(child, keys, inner, text, out);
+    // A column's title is laid out by the shell and elided as it paints: what it says must fit
+    // the width it was given, and what stands empty beside it should have been its room.
+    if widget.name() == "NavShellTitle" && has_area(own) {
+        let needs = widget.measure(
+            Size {
+                width: None,
+                height: None,
+            },
+            Size {
+                width: AvailableSpace::MaxContent,
+                height: AvailableSpace::MaxContent,
+            },
+            text,
+        );
+        let needs = f64::from(needs.width);
+        let free = room - own.x1;
+        if title_cut_with_room(needs, own.width(), free) {
+            let shown = widget
+                .accessibility()
+                .and_then(|access| access.name)
+                .unwrap_or_default();
+            out.push(Problem {
+                kind: Kind::TitleClippedWithRoom,
+                keys: keys.iter().rev().cloned().collect(),
+                widget: widget.name().to_owned(),
+                id: widget.test_id().map(str::to_owned),
+                detail: format!(
+                    "says {needs:.0} wide, has {}, with {free:.0} free beside it ({shown:?})",
+                    size(own)
+                ),
+            });
+        }
     }
 }
 
@@ -1112,6 +1189,16 @@ mod tests {
             semantics: role.map(AccessNode::new),
             children: Vec::new(),
         }
+    }
+
+    /// A title cut off with room beside it is the defect; one that fills its row, or has
+    /// nothing to spare, is not.
+    #[test]
+    fn a_title_is_only_cut_off_unfairly_when_room_stands_beside_it() {
+        assert!(title_cut_with_room(180.0, 99.0, 77.0));
+        assert!(!title_cut_with_room(180.0, 180.0, 77.0));
+        assert!(!title_cut_with_room(180.0, 99.0, 8.0));
+        assert!(!title_cut_with_room(180.0, 99.0, 24.0));
     }
 
     fn overlaps(children: Vec<InspectionNode>) -> Vec<Problem> {

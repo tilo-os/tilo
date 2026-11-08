@@ -353,6 +353,24 @@ node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" 
 echo 'ok: two people joined, chatted, shared a desk and saw each other present'
 echo 'ok: a person invited from the page arrived from the link as the role it named'
 
+# The pages that wrote the chat are gone: the image starts again on the same
+# volume, and a person who was not here reads what they wrote and writes in it.
+# The history is the workspace's — a record's changes name the surface they were
+# written with, and a start that did not carry that version is answered by the
+# pages that wrote it or by the surfaces the image publishes from the apps'
+# history — never by a store beside the workspace.
+earlier=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat"])' \
+  "$work/people/report.json") || fail 'the two people left no chat message behind'
+stop_image
+: > "$log"
+start_image
+wait_ready || fail "the image did not start again on the volume people wrote in: $(tail -20 "$log")"
+verify_records_read
+node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" "$work/returns" \
+  "$live_host" "$state_root/roles.json" "$earlier" \
+  || fail 'a person joining after the restart did not find the chat the workspace kept'
+echo 'ok: a person joining after a restart reads the chat earlier pages wrote and writes in it'
+
 # The live plane taken away: a page says in its members' place that it cannot
 # reach live presence, and says it once in its console. A page that retried
 # silently would look like a workspace nobody is in.

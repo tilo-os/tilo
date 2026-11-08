@@ -950,8 +950,6 @@ impl std::fmt::Display for Interaction {
     }
 }
 
-pub use tilo_agent_models::{OfferedModel, OfferedModels};
-
 impl ProviderConfig {
     /// The model and where it runs, chosen for `kind`; `None` while nothing
     /// is chosen for it, or the choice names a provider that is switched off

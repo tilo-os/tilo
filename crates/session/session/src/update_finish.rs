@@ -1,37 +1,16 @@
-//! Finishing the staged system update: applied live, with the desktop
-//! restarted onto the new interface once the person has stepped away, and a
-//! restart of the machine asked for at most every two days.
-//!
-//! The update service stages the newest image on its own schedule and the
-//! live update applies what it can in place: the system services restart,
-//! the apps and the runtime are new at their next start. What waits for the
-//! desktop (the compositor, the session services, the interface versions apps
-//! speak) is this module's to finish, through the `system-update` resource's
-//! own actions ([`tilo_system_service::update::RESTART_DESKTOP`]): the
-//! session invokes one exactly as an app or the person would, and the
-//! service's worker starts the unit that restarts this desktop in place. The
-//! login stays, and the session comes back on the new interface with the
-//! windows it had open.
-//!
-//! Nothing is finished while someone is at the machine: they are away when
-//! the screen is locked or blanked and no input has come since
-//! ([`tilo_system_service::update::AWAY_FOR`]). A desktop restart and a
-//! request to restart the machine share one clock
-//! ([`tilo_system_service::update::ASK_INTERVAL`]), so the updates of those
-//! two days apply together. An always-on host has nobody to ask and no work
-//! to batch the restarts around: it finishes the update whenever it is away.
-//!
-//! Something that needs a newer system now (a collaborator's device at a
-//! newer protocol version) has the session fetch the update
-//! ([`tilo_system_service::update::UPDATE_NOW`]); what applied live is
-//! finished at the next moment the person is away, whatever the last restart.
-//!
-//! How an update ended is told here too. One the machine could not finish
-//! because a deployment did not start was settled before any session ran
-//! (`tilo-deployment fallback`), which left its report on the machine; the
-//! reports reach the session in the update's reading and the person is told
-//! of each once ([`Finish::tell_went_back`]), the ids they heard of recorded
-//! beside the restart record so no later session says it again.
+//! Finishing the staged system update: applied live, with the desktop restarted
+//! onto the new interface once the person has stepped away, and a restart of the
+//! machine asked for at most every two days.
+//! What waits for the desktop (the compositor, the session services, the interface
+//! versions apps speak) is finished here through the `system-update` resource's own
+//! actions ([`tilo_system_service::update::RESTART_DESKTOP`]), invoked exactly as
+//! an app or the person would; the login stays and the session comes back with the
+//! windows it had open. Nothing is finished while someone is at the machine: they
+//! are away when the screen is locked or blanked and no input has come since. A
+//! desktop restart and a machine restart share one clock, so those days' updates
+//! apply together; an always-on host has nobody to ask and finishes whenever it is
+//! away. How an update ended is told here too, once per report
+//! ([`Finish::tell_went_back`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;

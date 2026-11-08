@@ -170,7 +170,7 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
         return Ok(Reply::Forgotten { id, setup_binding });
     }
     let reply = match command {
-        Command::List => {
+        Command::List {} => {
             let mut sessions = Vec::new();
             for account in store.all().iter().filter(|account| {
                 account.type_id.as_str() == account_custody::service_sessions::SERVICE_SESSION_TYPE
@@ -431,7 +431,8 @@ mod tests {
         );
         vault.try_save().unwrap();
         let before = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
-        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List).unwrap() else {
+        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List {}).unwrap()
+        else {
             panic!("Expected list");
         };
         assert_eq!(sessions.len(), 1);
@@ -506,7 +507,8 @@ mod tests {
                 .unwrap()
                 .matches(&forget)
         );
-        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List).unwrap() else {
+        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List {}).unwrap()
+        else {
             panic!("Expected list after revocation");
         };
         assert!(sessions.is_empty());
@@ -517,7 +519,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(resolve(root.path(), [7; 32], Command::List).is_err());
+        assert!(resolve(root.path(), [7; 32], Command::List {}).is_err());
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
         let external = tempfile::tempdir().unwrap();
         AccountStore::new().save_in(external.path()).unwrap();

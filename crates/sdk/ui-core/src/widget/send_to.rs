@@ -34,22 +34,15 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::floating_surface as panel;
 
-/// How wide the box stands, at a text scale of one.
-const WIDTH: f32 = 320.0;
-/// The air between the menu and the box.
-const GAP: f32 = 8.0;
 /// The rows of the search shown at once: more than a person reads while
 /// typing, and few enough that the box stays beside its menu.
 const MAX_ROWS: usize = 6;
 /// The rows the message field is tall while the words fit on one line: air
 /// enough to look like somewhere to write.
-const MESSAGE_ROWS: f64 = 2.0;
+const MESSAGE_ROWS: usize = 2;
 /// The rows it grows to as the words wrap: past this the box would stand
 /// taller than what it is sent with, so its words scroll instead.
-const MAX_MESSAGE_ROWS: f64 = 4.0;
-/// The air above and below the message's lines, so its words never touch the
-/// field's edge.
-const MESSAGE_AIR: f64 = 3.0;
+const MAX_MESSAGE_ROWS: usize = 4;
 
 /// Which field the keyboard is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -329,10 +322,9 @@ impl SendToBox {
         if viewport.is_some() {
             self.viewport = viewport;
         }
-        let scale = self.text_scale;
-        let width = f64::from(WIDTH) * scale;
+        let width = self.width();
         let height = self.height();
-        let gap = f64::from(GAP) * scale;
+        let gap = self.gap();
         // Its menu's own reach stands in when nothing knows the window: the
         // box still lands beside the menu rather than anywhere.
         let viewport = self.viewport.unwrap_or(Rect::new(
@@ -377,10 +369,9 @@ impl SendToBox {
 
     /// The box's height, from what it holds.
     fn height(&self) -> f64 {
-        let scale = self.text_scale;
         let row = self.row_height();
         let pad = self.padding();
-        let gap = f64::from(GAP) / 2.0 * scale;
+        let gap = self.gap() / 2.0;
         let results = (self.rows.len().min(MAX_ROWS) as f64) * row;
         pad * 2.0
             + self.header_height() // the quiet line naming the box
@@ -400,8 +391,8 @@ impl SendToBox {
     fn message_height(&self) -> f64 {
         let theme = &self.theme;
         let style = theme.text(TextRole::Body);
-        let least = self.row_height() * MESSAGE_ROWS;
-        let most = self.row_height() * MAX_MESSAGE_ROWS;
+        let least = self.row_height() * MESSAGE_ROWS as f64;
+        let most = self.row_height() * MAX_MESSAGE_ROWS as f64;
         if self.text.trim().is_empty() {
             return least;
         }
@@ -409,16 +400,31 @@ impl SendToBox {
             clippy::cast_possible_truncation,
             reason = "a finite field width in CSS pixels fits the f32 shaping API"
         )]
-        let width = (f64::from(WIDTH) * self.text_scale
-            - self.padding() * 2.0
-            - f64::from(theme.tokens.spacing.s2) * 2.0) as f32;
+        let width =
+            (self.width() - self.padding() * 2.0 - f64::from(theme.tokens.spacing.s2) * 2.0) as f32;
         if !(width.is_finite() && width >= 1.0) {
             return least;
         }
         let (_, height) = crate::text_render::with_layout_renderer(theme.text_scale, |renderer| {
             renderer.measure_style(&self.text, Some(width), &style)
         });
-        (f64::from(height) + MESSAGE_AIR * self.text_scale * 2.0).clamp(least, most)
+        (f64::from(height) + self.message_air() * 2.0).clamp(least, most)
+    }
+
+    /// How wide the box stands.
+    fn width(&self) -> f64 {
+        f64::from(self.theme.tokens.metrics.panel_width_utility) * self.text_scale
+    }
+
+    /// The air between the menu and the box.
+    fn gap(&self) -> f64 {
+        f64::from(self.theme.tokens.spacing.s2) * self.text_scale
+    }
+
+    /// The air above and below the message's lines, so its words never touch
+    /// the field's edge.
+    fn message_air(&self) -> f64 {
+        f64::from(self.theme.tokens.spacing.s1) * self.text_scale
     }
 
     fn row_height(&self) -> f64 {
@@ -477,7 +483,7 @@ impl SendToBox {
     fn lay_chips(&self, asks: &[f64], y: f64, room: f64) -> (Vec<Rect>, f64) {
         let rect = self.rect;
         let row = self.row_height();
-        let gap = f64::from(GAP) / 2.0 * self.text_scale;
+        let gap = self.gap() / 2.0;
         let start = rect.x0 + self.padding();
         let mut chips = Vec::new();
         let narrowest = row * 0.5 + gap;
@@ -505,7 +511,7 @@ impl SendToBox {
         let rect = self.rect;
         let row = self.row_height();
         let pad = self.padding();
-        let gap = f64::from(GAP) / 2.0 * self.text_scale;
+        let gap = self.gap() / 2.0;
         let mut y = rect.y0 + pad;
         let header = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + self.header_height());
         y += self.header_height();

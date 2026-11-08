@@ -9,11 +9,17 @@
 //! chain against the workspace's trust, and the device against the roster
 //! ([`crate::relay::RelayAuthority::admit`]).
 //!
-//! Wire form (version 1):
+//! Wire form (version 2):
 //!
 //! ```text
-//! 1 | workspace [16] | scope (u8 length + id) | epoch u64 BE | certificate (u16 BE length + bytes)
+//! 2 | workspace [16] | scope (u8 length + id) | epoch u64 BE
+//!   | certificate (u16 BE length + bytes) | delegation (u16 BE length + bytes)
 //! ```
+//!
+//! The delegation is empty for a device that dials as itself. A page keeps its
+//! device key unextractable, so its transport speaks under a key of its own
+//! and presents its device's [`tilo_user_identity::EndpointDelegation`] here;
+//! the relay admits the endpoint only through that signature.
 //!
 //! The workspace is the uuid of the workspace record, so the two ends spell
 //! the namespace's workspace segment from the same bytes. The epoch is the
@@ -23,14 +29,16 @@
 use crate::carrier::MAX_GRANT_BYTES;
 
 /// The version byte of a native grant.
-pub const NATIVE: u8 = 1;
+pub const NATIVE: u8 = 2;
 /// Longest scope id a grant may name.
 pub const MAX_SCOPE_BYTES: usize = 128;
 /// Longest device certificate a grant may carry.
 pub const MAX_CERTIFICATE_BYTES: usize = 4096;
+/// Longest endpoint delegation a grant may carry.
+pub const MAX_DELEGATION_BYTES: usize = 4096;
 
 const HEADER: usize = 1 + 16 + 1;
-const TAIL: usize = 8 + 2;
+const TAIL: usize = 8 + 4;
 
 /// One device's request to join one scope of one workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +51,10 @@ pub struct Native {
     pub epoch: u64,
     /// The device certificate that binds the caller's key to the roster.
     pub certificate: Vec<u8>,
+    /// The device's statement that the calling endpoint speaks for it, when
+    /// the connection is not the device's own key; empty for a device that
+    /// dials as itself.
+    pub delegation: Vec<u8>,
 }
 
 /// No length prefix is trusted before the bytes behind it are present.
@@ -62,6 +74,7 @@ impl Native {
         scope: &str,
         epoch: u64,
         certificate: Vec<u8>,
+        delegation: Vec<u8>,
     ) -> Result<Self, String> {
         let scope_len = encoded_len(scope.len())
             .filter(|length| usize::from(*length) <= MAX_SCOPE_BYTES)
@@ -70,10 +83,15 @@ impl Native {
             .ok()
             .filter(|length| usize::from(*length) <= MAX_CERTIFICATE_BYTES)
             .ok_or_else(|| format!("certificate must be at most {MAX_CERTIFICATE_BYTES} bytes"))?;
+        let delegation_len = u16::try_from(delegation.len())
+            .ok()
+            .filter(|length| usize::from(*length) <= MAX_DELEGATION_BYTES)
+            .ok_or_else(|| format!("delegation must be at most {MAX_DELEGATION_BYTES} bytes"))?;
         let total = HEADER
             .saturating_add(usize::from(scope_len))
             .saturating_add(TAIL)
-            .saturating_add(usize::from(certificate_len));
+            .saturating_add(usize::from(certificate_len))
+            .saturating_add(usize::from(delegation_len));
         if total > MAX_GRANT_BYTES {
             return Err(format!("grant must be at most {MAX_GRANT_BYTES} bytes"));
         }
@@ -85,6 +103,7 @@ impl Native {
             scope: scope.to_owned(),
             epoch,
             certificate,
+            delegation,
         })
     }
 
@@ -95,10 +114,13 @@ impl Native {
         let scope_len = u8::try_from(scope.len()).unwrap_or(0);
         let certificate_len = u16::try_from(self.certificate.len()).unwrap_or(0);
         let [high, low] = certificate_len.to_be_bytes();
+        let delegation_len = u16::try_from(self.delegation.len()).unwrap_or(0);
+        let [delegation_high, delegation_low] = delegation_len.to_be_bytes();
         let capacity = HEADER
             .saturating_add(scope.len())
             .saturating_add(TAIL)
-            .saturating_add(self.certificate.len());
+            .saturating_add(self.certificate.len())
+            .saturating_add(self.delegation.len());
         let mut grant = Vec::with_capacity(capacity);
         grant.push(NATIVE);
         grant.extend_from_slice(&self.workspace);
@@ -107,6 +129,8 @@ impl Native {
         grant.extend_from_slice(&self.epoch.to_be_bytes());
         grant.extend_from_slice(&[high, low]);
         grant.extend_from_slice(&self.certificate);
+        grant.extend_from_slice(&[delegation_high, delegation_low]);
+        grant.extend_from_slice(&self.delegation);
         grant
     }
 
@@ -129,6 +153,12 @@ impl Native {
             return None;
         }
         let (certificate, rest) = rest.split_at_checked(certificate_len)?;
+        let (&[delegation_high, delegation_low], rest) = rest.split_first_chunk::<2>()?;
+        let delegation_len = usize::from(u16::from_be_bytes([delegation_high, delegation_low]));
+        if delegation_len > MAX_DELEGATION_BYTES {
+            return None;
+        }
+        let (delegation, rest) = rest.split_at_checked(delegation_len)?;
         if !rest.is_empty() {
             return None;
         }
@@ -137,6 +167,7 @@ impl Native {
             scope,
             epoch: u64::from_be_bytes(*epoch),
             certificate: certificate.to_vec(),
+            delegation: delegation.to_vec(),
         })
     }
 }
@@ -151,6 +182,7 @@ mod tests {
             "channel/0f8fad5b-d9cb-469f-a165-70867728950e",
             3,
             vec![9; 64],
+            Vec::new(),
         )
         .unwrap()
     }
@@ -162,11 +194,24 @@ mod tests {
     }
 
     #[test]
+    fn a_delegated_transport_rides_beside_the_certificate() {
+        let mut delegated = grant();
+        delegated.delegation = vec![5; 200];
+        assert_eq!(Native::parse(&delegated.encode()), Some(delegated));
+    }
+
+    #[test]
     fn the_version_is_the_first_byte_and_no_other_version_parses() {
         let mut bytes = grant().encode();
         assert_eq!(bytes[0], NATIVE);
-        bytes[0] = 2;
+        bytes[0] = 3;
         assert_eq!(Native::parse(&bytes), None);
+        bytes[0] = 1;
+        assert_eq!(
+            Native::parse(&bytes),
+            None,
+            "version 1 carried no delegation"
+        );
     }
 
     #[test]
@@ -187,9 +232,28 @@ mod tests {
     #[test]
     fn a_scope_that_does_not_fit_is_refused() {
         let long = "s".repeat(MAX_SCOPE_BYTES + 1);
-        assert!(Native::new([0; 16], &long, 0, vec![1]).is_err());
-        assert!(Native::new([0; 16], "", 0, vec![1]).is_err());
-        assert!(Native::new([0; 16], "workspace", 0, Vec::new()).is_err());
-        assert!(Native::new([0; 16], "workspace", 0, vec![1; MAX_CERTIFICATE_BYTES + 1]).is_err());
+        assert!(Native::new([0; 16], &long, 0, vec![1], Vec::new()).is_err());
+        assert!(Native::new([0; 16], "", 0, vec![1], Vec::new()).is_err());
+        assert!(Native::new([0; 16], "workspace", 0, Vec::new(), Vec::new()).is_err());
+        assert!(
+            Native::new(
+                [0; 16],
+                "workspace",
+                0,
+                vec![1; MAX_CERTIFICATE_BYTES + 1],
+                Vec::new()
+            )
+            .is_err()
+        );
+        assert!(
+            Native::new(
+                [0; 16],
+                "workspace",
+                0,
+                vec![1],
+                vec![1; MAX_DELEGATION_BYTES + 1]
+            )
+            .is_err()
+        );
     }
 }

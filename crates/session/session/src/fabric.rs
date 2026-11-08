@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use iroh::EndpointId;
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
@@ -36,7 +37,7 @@ pub struct Continuity {
 
 impl Continuity {
     /// Take the switches from a settings document, as Settings writes it.
-    pub(crate) fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
+    pub fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
         let section = document.get("continuity");
         let on = |name: &str| match section {
             None => settings_store::continuity_privacy::ON_UNLESS_SET,
@@ -146,10 +147,15 @@ impl SessionFabric {
         self.runtime.lock_recover().sibling_left(peer);
     }
 
-    /// Take one frame of the fabric a device sent on its session: what it
-    /// says of itself, an action for this device, or its request for this
-    /// device's fabric.
-    pub(crate) fn arrived(&self, peer: EndpointId, payload: &PersonalFabricPayload) {
+    /// Take one frame of the fabric a device sent on its session, at the
+    /// moment the transport took it: what it says of itself, an action for
+    /// this device, or its request for this device's fabric.
+    pub(crate) fn arrived(
+        &self,
+        peer: EndpointId,
+        payload: &PersonalFabricPayload,
+        received: Instant,
+    ) {
         match payload {
             PersonalFabricPayload::Snapshot(bytes) => {
                 let taken = self.runtime.lock_recover().snapshot(peer, bytes);
@@ -161,6 +167,15 @@ impl SessionFabric {
                 let taken = self.runtime.lock_recover().action(peer, bytes);
                 match taken {
                     Ok(Some(action)) => {
+                        // A clock probe is answered where its frame arrived,
+                        // and a report is measured from there: the exchange is
+                        // worth only the timestamps it carries.
+                        let device = self.runtime.lock_recover().device_behind(peer);
+                        if let Some(device) = device
+                            && tilo_device_fabric::clock::arrived(self, &device, &action, received)
+                        {
+                            return;
+                        }
                         tracing::debug!(%peer, action = ?action, "an action from one of the person's devices");
                     }
                     Ok(None) => {}
@@ -268,6 +283,13 @@ impl SessionFabric {
     /// session's pass to route.
     pub(crate) fn take_actions(&self) -> Vec<PersonalFabricActionEnvelope> {
         self.runtime.lock_recover().take_actions()
+    }
+
+    /// Probe the clock of every peer something here holds in sync, and forget
+    /// every estimate while Media continuity is off: the session's loop calls
+    /// this every pass.
+    pub(crate) fn pump_clock(&self) {
+        tilo_device_fabric::clock::pump(self, self.continuity.media_permitted());
     }
 
     fn publish(&self, target: Option<EndpointId>, payload: PersonalFabricPayload) {
@@ -555,22 +577,26 @@ impl crate::Session {
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. }
-            | PersonalFabricAction::RealtimeOffer { .. }
-            | PersonalFabricAction::RealtimeAccept { .. }
-            | PersonalFabricAction::RealtimeMediaReady { .. }
-            | PersonalFabricAction::RealtimeStopSource { .. }
-            | PersonalFabricAction::RealtimeCancel { .. }
+            // What no build sends and the fabric refuses before it reaches
+            // here; the variants stay for the wire's numbering alone.
+            | PersonalFabricAction::RetiredRealtimeOffer
+            | PersonalFabricAction::RetiredRealtimeAccept
+            | PersonalFabricAction::RetiredRealtimeMediaReady
+            | PersonalFabricAction::RetiredRealtimeStopSource
+            | PersonalFabricAction::RetiredRealtimeCancel
+            | PersonalFabricAction::RetiredRemoteCaptureSignal
+            | PersonalFabricAction::RetiredRemoteCaptureChunk
             | PersonalFabricAction::GamepadForwardRequest { .. }
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. }
-            | PersonalFabricAction::RemoteCaptureSignal { .. }
-            | PersonalFabricAction::RemoteCaptureChunk { .. }
-            | PersonalFabricAction::DeviceHealthProbe { .. }
-            | PersonalFabricAction::DeviceHealthReport { .. }
+            | PersonalFabricAction::RetiredDeviceHealthProbe
+            | PersonalFabricAction::RetiredDeviceHealthReport
+            | PersonalFabricAction::RetiredTethering
+            // A clock probe is answered where its frame arrived and a report
+            // measured from there, so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
             | PersonalFabricAction::FabricClockReport { .. }
-            | PersonalFabricAction::Tethering { .. }
             | PersonalFabricAction::WakeDevice { .. }
             | PersonalFabricAction::WakeReport { .. }
             | PersonalFabricAction::WakeProbe { .. }

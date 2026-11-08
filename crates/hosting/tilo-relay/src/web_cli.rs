@@ -1206,12 +1206,9 @@ pub async fn workspace(
     shutdown: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     // Every change the room receives is decided against its app's surface,
-    // a bot's included: the room's own apps carry theirs, others come from
-    // the registry.
-    tilo_relay::surfaces::decide_receipt_from_registry(
-        &std::env::var("TILO_REGISTRY")
-            .unwrap_or_else(|_| tilo_relay::surfaces::DEFAULT_REGISTRY.to_owned()),
-    );
+    // a bot's included: the room's own apps carry theirs, others the room
+    // keeps for them in its content plane.
+    tilo_relay::surfaces::decide_receipt(&args.state.join("surfaces"));
     #[cfg(feature = "agents")]
     if args.persistent.persistent.is_some() {
         return crate::persistent_room_cli::run(args, shutdown).await;

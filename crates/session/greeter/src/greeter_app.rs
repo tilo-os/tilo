@@ -1,35 +1,15 @@
 //! [`GreeterApp`] — the root login widget.
-//!
-//! The sign-in screen reads top to bottom as time, who, passcode, and then
-//! everything secondary. The time and date are the hero, set large and light
-//! on the shared authentication backdrop; below them the person signing in
-//! (their avatar and name, or a choice of accounts when the machine has
-//! several), the passcode field with its show/hide control and sign-in
-//! action, one status line, and the fingerprint action when a print is
-//! enrolled. Along the bottom edge sit the accessibility controls on one
-//! side and the machine's state and power on the other. Every control is a
-//! toolkit widget.
-//!
-//! IMPORTANT (focus): every layout node has a matching widget in `children()`.
-//! This keeps the toolkit's focus, accessibility and layout traversals aligned
-//! through every grouping and across recomposition.
-//!
-//! IMPORTANT (frames): the backdrop is still, and every container forwards
-//! its children's damage instead of claiming its whole box. A keystroke
-//! therefore repaints the passcode field, not the screen; the clock rebuilds
-//! the screen once a minute.
-//!
-//! The greeter keeps no document. A sign-in attempt is not data: it lives
-//! for one process and ends in a session or in a message on this screen.
-//! Every control therefore reports to the greeter directly:
-//!   * the username field and the session picker edit [`ui::LocalState`]s
-//!     the greeter reads when an attempt starts;
-//!   * the sign-in, fingerprint, account, accessibility and power controls
-//!     raise one-shot requests the greeter takes on its next sync.
-//!
-//! The passcode is held only in a process-local, zeroized buffer shared with
-//! a local-mode [`TextInput`]. It never enters an Automerge object, change
-//! history, persistence, presence, or peer sync.
+//! The sign-in screen reads top to bottom as time, who, passcode, then everything
+//! secondary, and every control is a toolkit widget.
+//! IMPORTANT (focus): every layout node has a matching widget in `children()`, so
+//! the toolkit's focus, accessibility and layout traversals stay aligned through
+//! every grouping and recomposition.
+//! IMPORTANT (frames): the backdrop is still, and every container forwards its
+//! children's damage instead of claiming its whole box, so a keystroke repaints the
+//! passcode field, not the screen.
+//! The greeter keeps no document: every control reports to it directly, and the
+//! passcode is held only in a process-local, zeroized buffer. It never enters an
+//! Automerge object, change history, persistence, presence or peer sync.
 
 use std::cell::Cell;
 use std::rc::Rc;

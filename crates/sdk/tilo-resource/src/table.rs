@@ -1237,21 +1237,7 @@ pub fn read_fields(
     obj: &ObjId,
     out: &mut dyn Any,
 ) -> Result<(), ModelError> {
-    let mut keys: Vec<&str> = Vec::with_capacity(record.fields.len());
-    for field in record.fields {
-        keys.push(field.key);
-    }
-    let mut slots = vec![None; keys.len()];
-    crate::model::fill_slots(doc, obj, &keys, &mut slots);
-    (record.build)(
-        &mut DocSource {
-            record,
-            doc,
-            slots,
-            index: 0,
-        },
-        out,
-    )
+    read_fields_over(record, doc, std::slice::from_ref(obj), out)
 }
 
 /// Read the record from the maps `objs`, field by field: each field from
@@ -1268,11 +1254,25 @@ pub(crate) fn read_fields_merged(
     objs: &[ObjId],
     out: &mut dyn Any,
 ) -> Result<(), ModelError> {
+    read_fields_over(record, doc, objs, out)
+}
+
+/// Read the record from `objs`, each field from the first map holding it.
+fn read_fields_over(
+    record: &RecordDesc,
+    doc: &Doc,
+    objs: &[ObjId],
+    out: &mut dyn Any,
+) -> Result<(), ModelError> {
     let mut keys: Vec<&str> = Vec::with_capacity(record.fields.len());
     for field in record.fields {
         keys.push(field.key);
     }
-    let mut slots = vec![None; keys.len()];
+    let mut slots: Vec<crate::model::MapSlot> = vec![None; keys.len()];
+    let mut objs = objs.iter();
+    if let Some(first) = objs.next() {
+        crate::model::fill_slots(doc, first, &keys, &mut slots);
+    }
     for obj in objs {
         let mut found = vec![None; keys.len()];
         crate::model::fill_slots(doc, obj, &keys, &mut found);

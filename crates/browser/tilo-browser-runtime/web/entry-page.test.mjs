@@ -46,8 +46,9 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   const peer = {origin: ORIGIN, workspace: 'current', userPublicKey: USER,
     host: {hostCert: {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd)}},
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
-    // A member, not the owner, of a host that keeps who asks to join to its owner.
-    membership: {list: async () => ({name: 'Current', members: []}), requests: async () => { throw new Error('only the owner sees who asks'); }},
+    // A member, not the owner, of a host that keeps its wait list to whoever
+    // it lets invite.
+    membership: {list: async () => ({name: 'Current', members: []}), waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
   const page = {peer: own ? null : {...peer, ...member}, entry: {base: 'https://web.example/'},
@@ -193,15 +194,15 @@ test('a wait-list invitation is the short link its site keeps, not the invitatio
   const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1_000};
   const {calls, diagnostics} = await fixture({member: {
     createInvitation: async () => 'SIGNED-invitation',
-    membership: {list: async () => ({name: 'Current', members: []}), requests: async () => [],
-      waitList: async () => [ed], mailInvite: async () => { throw new Error('this door sends no mail'); }},
+    membership: {list: async () => ({name: 'Current', members: []}),
+      waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this door sends no mail'); }},
   }});
   diagnostics.onHostAction('waiting-to-join');
   await tick();
   const waiting = document.body.children.find(form => form.dataset.card === 'waiting');
   assert.ok(waiting, 'the wait list is shown');
   // The listed section’s rows: one per address, each Invite then Remove.
-  const row = waiting.children[2].children[2].children[0];
+  const row = waiting.children[1].children[2].children[0];
   assert.equal(row.children[1].textContent, 'Invite');
   row.children[1].listeners.get('click')();
   await tick();

@@ -18,6 +18,8 @@
               lives until the app it serves is done"
 )]
 
+mod common;
+
 use std::os::fd::AsRawFd as _;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
@@ -203,16 +205,6 @@ fn session(socket: &Path, fixture: &Fixture) -> Session {
         session.step(Duration::from_millis(1)).expect("step");
     }
     session
-}
-
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
 }
 
 /// A connection to the session's plane as Files in the workspace, as the
@@ -686,7 +678,7 @@ fn until_the_app_is_done(
 
 #[test]
 fn files_copies_and_cuts_through_the_session_and_pastes_into_another_folder() {
-    let home = private_home();
+    let home = common::private_home();
     let socket = home.path().join("collab.sock");
     let fixture = fixture();
     let mut session = session(&socket, &fixture);

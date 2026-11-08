@@ -30,18 +30,6 @@ pub fn semantic_nodes(driver: &FrameHarness) -> Vec<(String, AccessNode)> {
     out
 }
 
-/// The first semantic node matching `matches`, if any.
-#[must_use]
-pub fn find_semantic(
-    driver: &FrameHarness,
-    matches: impl Fn(&AccessNode) -> bool,
-) -> Option<AccessNode> {
-    semantic_nodes(driver)
-        .into_iter()
-        .map(|(_, node)| node)
-        .find(|node| matches(node))
-}
-
 /// Every published resource as `(id, label, action ids)`, depth first.
 #[must_use]
 pub fn resource_snapshot(driver: &FrameHarness) -> Vec<(String, String, Vec<String>)> {

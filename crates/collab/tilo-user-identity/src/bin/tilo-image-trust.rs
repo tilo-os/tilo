@@ -235,30 +235,28 @@ fn decode_sha256(value: &std::ffi::OsStr) -> Result<[u8; 32], String> {
     Ok(digest)
 }
 
+/// The bytes of `path`, at most [`MAX_ARTIFACT_BYTES`]: a published artifact.
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    let file = open_readonly_without_symlinks(path)
-        .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-    if !file
-        .metadata()
-        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?
-        .is_file()
-    {
-        return Err(format!("{} is not a regular file", path.display()));
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_ARTIFACT_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
-        return Err(format!(
-            "{} exceeds the artifact size limit",
-            path.display()
-        ));
-    }
-    Ok(bytes)
+    read_artifact(path, false)
 }
 
+/// The bytes of `path` as live trust state, which is only its caller's to
+/// write.
 fn read_private_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    read_artifact(path, true)
+}
+
+/// Whether `metadata` describes a regular file only its caller can write,
+/// reached under one name: what live trust state and its locks must be.
+fn private_single_link(metadata: &std::fs::Metadata) -> bool {
+    let writable_by_others = metadata.mode() & 0o077 != 0;
+    metadata.is_file()
+        && !writable_by_others
+        && metadata.uid() == rustix::process::geteuid().as_raw()
+        && metadata.nlink() == 1
+}
+
+fn read_artifact(path: &Path, private: bool) -> Result<Vec<u8>, String> {
     let file = open_readonly_without_symlinks(path)
         .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
     let metadata = file
@@ -267,15 +265,14 @@ fn read_private_bounded(path: &Path) -> Result<Vec<u8>, String> {
     // Live trust artifacts are mutable root authority, despite containing no
     // secret material. Reject aliases and writable-by-others inodes so an
     // update cannot verify bytes controlled through another pathname.
-    if !metadata.is_file()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-        || metadata.nlink() != 1
-    {
+    if private && !private_single_link(&metadata) {
         return Err(format!(
             "{} must be caller-owned, mode 0600 or stricter, and have one link",
             path.display()
         ));
+    }
+    if !metadata.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
     }
     let mut bytes = Vec::new();
     file.take(MAX_ARTIFACT_BYTES + 1)
@@ -575,11 +572,7 @@ fn required_marker_is_armed(path: &Path) -> Result<bool, String> {
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
-    if !metadata.is_file()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o777 != 0o600
-        || metadata.nlink() != 1
-    {
+    if !private_single_link(&metadata) || metadata.mode() & 0o777 != 0o600 {
         return Err(
             "image-trust required marker must be caller-owned, single-link mode 0600 regular file"
                 .into(),
@@ -633,41 +626,10 @@ fn install_trust(
         return Err("trust directory must be caller-owned mode 0700 and not a symlink".into());
     }
 
-    let update_lock = open_lock_without_symlinks(&update_lock_path)
-        .map_err(|error| format!("cannot open {}: {error}", update_lock_path.display()))?;
-    let update_lock_metadata = update_lock
-        .metadata()
-        .map_err(|error| format!("cannot inspect update lock: {error}"))?;
-    if !update_lock_metadata.is_file()
-        || update_lock_metadata.uid() != rustix::process::geteuid().as_raw()
-        || update_lock_metadata.mode() & 0o077 != 0
-        || update_lock_metadata.nlink() != 1
-    {
-        return Err(
-            "update lock must be caller-owned, mode 0600 or stricter, and have one link".into(),
-        );
-    }
-    let _update_lock = advisory_lock::FileLock::exclusive(update_lock)
-        .map_err(|error| format!("cannot lock update transaction: {error}"))?;
+    let _update_lock = exclusive_lock(&update_lock_path, "update lock")?;
 
     let lock_path = trust_dir.join(".arm.lock");
-    let lock = open_lock_without_symlinks(&lock_path)
-        .map_err(|error| format!("cannot open {}: {error}", lock_path.display()))?;
-    let lock_metadata = lock
-        .metadata()
-        .map_err(|error| format!("cannot inspect arm lock: {error}"))?;
-    if !lock_metadata.is_file()
-        || lock_metadata.uid() != rustix::process::geteuid().as_raw()
-        || lock_metadata.mode() & 0o077 != 0
-        || lock_metadata.nlink() != 1
-    {
-        return Err(
-            "trust-store arm lock must be caller-owned, mode 0600 or stricter, and have one link"
-                .into(),
-        );
-    }
-    let _lock = advisory_lock::FileLock::exclusive(lock)
-        .map_err(|error| format!("cannot lock trust-store activation: {error}"))?;
+    let _lock = exclusive_lock(&lock_path, "trust-store arm lock")?;
     // `verify-and-record` takes this same stable sibling lock before reading
     // any trust artifacts.  Holding it across validation and marker-last
     // publication prevents standalone CLI users (outside tilo-verified-update's
@@ -873,36 +835,26 @@ fn verify(args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> 
     verify_common(args, false)
 }
 
+/// Open `path` as a lock only its caller may write, and take it exclusively,
+/// naming `what` in every error.
+fn exclusive_lock(path: &Path, what: &str) -> Result<advisory_lock::FileLock, String> {
+    let file = open_lock_without_symlinks(path)
+        .map_err(|error| format!("cannot open {what} {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect {what}: {error}"))?;
+    if !private_single_link(&metadata) {
+        return Err(format!(
+            "{what} must be caller-owned, mode 0600 or stricter, and have one link"
+        ));
+    }
+    advisory_lock::FileLock::exclusive(file).map_err(|error| format!("cannot lock {what}: {error}"))
+}
+
 fn lock_generation_state(path: &Path) -> Result<advisory_lock::FileLock, String> {
     let mut lock_name = path.as_os_str().to_owned();
     lock_name.push(".lock");
-    let lock_path = PathBuf::from(lock_name);
-    let file = open_lock_without_symlinks(&lock_path).map_err(|error| {
-        format!(
-            "cannot open generation lock {}: {error}",
-            lock_path.display()
-        )
-    })?;
-    if !file
-        .metadata()
-        .map_err(|error| format!("cannot inspect generation lock: {error}"))?
-        .is_file()
-    {
-        return Err("generation lock is not a regular file".into());
-    }
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("cannot inspect generation lock: {error}"))?;
-    if metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-        || metadata.nlink() != 1
-    {
-        return Err(
-            "generation lock must be caller-owned, mode 0600 or stricter, and have one link".into(),
-        );
-    }
-    advisory_lock::FileLock::exclusive(file)
-        .map_err(|error| format!("cannot lock generation state: {error}"))
+    exclusive_lock(&PathBuf::from(lock_name), "generation lock")
 }
 
 fn read_generation_floor(path: &Path) -> Result<Option<u64>, String> {
@@ -914,13 +866,7 @@ fn read_generation_floor(path: &Path) -> Result<Option<u64>, String> {
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(format!("{} is not a regular file", path.display()));
-    }
-    if metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-        || metadata.nlink() != 1
-    {
+    if !private_single_link(&metadata) {
         return Err(format!(
             "{} must be caller-owned, mode 0600 or stricter, and have one link",
             path.display()
@@ -1080,138 +1026,132 @@ mod tests {
         sign_device_cert, sign_revocation_entry,
     };
 
-    /// The bootc status parser requires the staged schema and its field parser uses fixed bounded
-    /// selectors.
+    /// The bootc status parser requires the staged schema, and refuses digests a
+    /// shell or a line reader would read differently.
     #[test]
-    fn bootc_status_is_parsed_only_through_the_staged_schema() {
-        // Phase: bootc_status_parser_requires_the_staged_schema.
-        {
-            assert_eq!(
-                parse_bootc_status_bytes(br#"{"status":{"staged":null}}"#).unwrap(),
-                None
-            );
-            assert_eq!(
-                parse_bootc_status_bytes(
-                    br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc"},"composefs":{"verity":"sha512:def"}}}}"#,
-                )
-                .unwrap(),
-                Some(("sha256:abc".into(), "sha512:def".into()))
-            );
-            assert!(parse_bootc_status_bytes(b"not-json").is_err());
-            assert!(parse_bootc_status_bytes(br#"{"status":{}}"#).is_err());
-            assert!(parse_bootc_status_bytes(br#"{"status":{"staged":false}}"#).is_err());
-            assert!(
-                parse_bootc_status_bytes(
-                    br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc\ninjected"},"composefs":{"verity":"sha512:def"}}}}"#,
-                )
-                .is_err()
-            );
-        }
+    fn bootc_status_parser_requires_the_staged_schema() {
+        assert_eq!(
+            parse_bootc_status_bytes(br#"{"status":{"staged":null}}"#).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_bootc_status_bytes(
+                br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc"},"composefs":{"verity":"sha512:def"}}}}"#,
+            )
+            .unwrap(),
+            Some(("sha256:abc".into(), "sha512:def".into()))
+        );
+        assert!(parse_bootc_status_bytes(b"not-json").is_err());
+        assert!(parse_bootc_status_bytes(br#"{"status":{}}"#).is_err());
+        assert!(parse_bootc_status_bytes(br#"{"status":{"staged":false}}"#).is_err());
+        assert!(
+            parse_bootc_status_bytes(
+                br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc\ninjected"},"composefs":{"verity":"sha512:def"}}}}"#,
+            )
+            .is_err()
+        );
+    }
 
-        // Phase: bootc_status_field_parser_uses_fixed_bounded_selectors.
-        {
-            let status = br#"{"status":{"booted":{"image":{"image":{"image":"registry/tilo:current"}},"composefs":{"verity":"sha512:booted"}},"staged":{"image":{"image":{"image":"registry/tilo:next"}},"composefs":{"verity":"sha512:staged"}},"rollback":null}}"#;
-            assert_eq!(
-                bootc_status_field_bytes(status, "booted-image").unwrap(),
-                "registry/tilo:current"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(status, "staged-composefs").unwrap(),
-                "sha512:staged"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(status, "rollback-image").unwrap(),
-                ""
-            );
-            let rollback = br#"{"status":{"rollback":{"image":{"version":"2026.10.18","timestamp":"2026-10-18T04:12:00Z"}}}}"#;
-            assert_eq!(
-                bootc_status_field_bytes(rollback, "rollback-version").unwrap(),
-                "2026.10.18"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(rollback, "rollback-timestamp").unwrap(),
-                "2026-10-18T04:12:00Z"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(status, "rollback-composefs").unwrap(),
-                ""
-            );
-            let queued = br#"{"status":{"rollbackQueued":true,"rollback":null}}"#;
-            assert_eq!(
-                bootc_status_field_bytes(queued, "rollback-queued").unwrap(),
-                "true"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(
-                    br#"{"status":{"rollbackQueued":false}}"#,
-                    "rollback-queued"
-                )
+    /// The bootc status field parser uses fixed bounded selectors, never an
+    /// expression over the document.
+    #[test]
+    fn bootc_status_field_parser_uses_fixed_bounded_selectors() {
+        let status = br#"{"status":{"booted":{"image":{"image":{"image":"registry/tilo:current"}},"composefs":{"verity":"sha512:booted"}},"staged":{"image":{"image":{"image":"registry/tilo:next"}},"composefs":{"verity":"sha512:staged"}},"rollback":null}}"#;
+        assert_eq!(
+            bootc_status_field_bytes(status, "booted-image").unwrap(),
+            "registry/tilo:current"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(status, "staged-composefs").unwrap(),
+            "sha512:staged"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(status, "rollback-image").unwrap(),
+            ""
+        );
+        let rollback = br#"{"status":{"rollback":{"image":{"version":"2026.10.18","timestamp":"2026-10-18T04:12:00Z"}}}}"#;
+        assert_eq!(
+            bootc_status_field_bytes(rollback, "rollback-version").unwrap(),
+            "2026.10.18"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(rollback, "rollback-timestamp").unwrap(),
+            "2026-10-18T04:12:00Z"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(status, "rollback-composefs").unwrap(),
+            ""
+        );
+        let queued = br#"{"status":{"rollbackQueued":true,"rollback":null}}"#;
+        assert_eq!(
+            bootc_status_field_bytes(queued, "rollback-queued").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(br#"{"status":{"rollbackQueued":false}}"#, "rollback-queued")
                 .unwrap(),
-                "false"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(status, "rollback-queued").unwrap(),
-                ""
-            );
-            assert!(
-                bootc_status_field_bytes(
-                    br#"{"status":{"rollbackQueued":"yes"}}"#,
-                    "rollback-queued"
-                )
+            "false"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(status, "rollback-queued").unwrap(),
+            ""
+        );
+        assert!(
+            bootc_status_field_bytes(br#"{"status":{"rollbackQueued":"yes"}}"#, "rollback-queued")
                 .is_err()
-            );
-            let dated = br#"{"status":{"booted":{"image":{"timestamp":"2026-10-09T13:20:59Z"}},"staged":{"image":{"timestamp":"2026-10-20T08:00:00Z"}},"rollback":{"composefs":{"verity":"abc"}}}}"#;
-            assert_eq!(
-                bootc_status_field_bytes(dated, "booted-timestamp").unwrap(),
-                "2026-10-09T13:20:59Z"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(dated, "staged-timestamp").unwrap(),
-                "2026-10-20T08:00:00Z"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(dated, "rollback-composefs").unwrap(),
-                "abc"
-            );
-            assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
-        }
+        );
+        let dated = br#"{"status":{"booted":{"image":{"timestamp":"2026-10-09T13:20:59Z"}},"staged":{"image":{"timestamp":"2026-10-20T08:00:00Z"}},"rollback":{"composefs":{"verity":"abc"}}}}"#;
+        assert_eq!(
+            bootc_status_field_bytes(dated, "booted-timestamp").unwrap(),
+            "2026-10-09T13:20:59Z"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(dated, "staged-timestamp").unwrap(),
+            "2026-10-20T08:00:00Z"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(dated, "rollback-composefs").unwrap(),
+            "abc"
+        );
+        assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
+    }
 
-        // Phase: bootc_status_transport_tells_a_local_install_from_a_registry_one.
-        {
-            // A deployment installed from a local medium records that transport;
-            // this is what keeps the update policy from replacing a developer's
-            // own image with a registry build.
-            let local = br#"{"status":{"booted":{"image":{"image":{"image":"/var/tmp/image.oci.tar","transport":"oci-archive"}}},"staged":null}}"#;
-            assert_eq!(
-                bootc_status_field_bytes(local, "booted-transport").unwrap(),
-                "oci-archive"
-            );
-            assert_eq!(
-                bootc_status_field_bytes(local, "staged-transport").unwrap(),
-                ""
-            );
-            let registry = br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest","transport":"registry"}}}}}"#;
-            assert_eq!(
-                bootc_status_field_bytes(registry, "booted-transport").unwrap(),
-                "registry"
-            );
-            // No deployment, or a deployment that records no transport: nothing,
-            // which the update policy reads as the registry default bootc uses.
-            assert_eq!(
-                bootc_status_field_bytes(br#"{"status":{"booted":null}}"#, "booted-transport")
-                    .unwrap(),
-                ""
-            );
-            assert_eq!(
-                bootc_status_field_bytes(
-                    br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest"}}}}}"#,
-                    "booted-transport"
-                )
-                .unwrap(),
-                ""
-            );
-            assert!(bootc_status_field_bytes(br#"{"status":{}}"#, "booted-transport").is_err());
-        }
+    /// The bootc status transport tells a deployment installed from a local medium
+    /// from one installed from a registry.
+    #[test]
+    fn bootc_status_transport_tells_a_local_install_from_a_registry_one() {
+        // A deployment installed from a local medium records that transport;
+        // this is what keeps the update policy from replacing a developer's
+        // own image with a registry build.
+        let local = br#"{"status":{"booted":{"image":{"image":{"image":"/var/tmp/image.oci.tar","transport":"oci-archive"}}},"staged":null}}"#;
+        assert_eq!(
+            bootc_status_field_bytes(local, "booted-transport").unwrap(),
+            "oci-archive"
+        );
+        assert_eq!(
+            bootc_status_field_bytes(local, "staged-transport").unwrap(),
+            ""
+        );
+        let registry = br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest","transport":"registry"}}}}}"#;
+        assert_eq!(
+            bootc_status_field_bytes(registry, "booted-transport").unwrap(),
+            "registry"
+        );
+        // No deployment, or a deployment that records no transport: nothing,
+        // which the update policy reads as the registry default bootc uses.
+        assert_eq!(
+            bootc_status_field_bytes(br#"{"status":{"booted":null}}"#, "booted-transport").unwrap(),
+            ""
+        );
+        assert_eq!(
+            bootc_status_field_bytes(
+                br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest"}}}}}"#,
+                "booted-transport"
+            )
+            .unwrap(),
+            ""
+        );
+        assert!(bootc_status_field_bytes(br#"{"status":{}}"#, "booted-transport").is_err());
     }
 
     fn arguments(values: &[&str]) -> impl Iterator<Item = std::ffi::OsString> {

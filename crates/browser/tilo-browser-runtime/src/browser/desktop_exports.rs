@@ -222,26 +222,3 @@ pub fn desktop_search_toggle(id: u64) -> Result<(), JsValue> {
         Ok(())
     })
 }
-
-/// Replace the desktop's tree with one changed elsewhere (`DesktopTree`
-/// JSON, for example from a peer). Tabs still present keep their running
-/// applications; the change is saved to the profile like a local one.
-///
-/// # Errors
-///
-/// Rejects a closed or single-application mount or a malformed tree.
-#[wasm_bindgen]
-pub fn desktop_apply_tree(id: u64, tree: &str) -> Result<(), JsValue> {
-    let tree = crate::desktop::parse_tree(tree).map_err(error)?;
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        desktop.handle.replace_tree(tree);
-        desktop.shared.wake();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
-}

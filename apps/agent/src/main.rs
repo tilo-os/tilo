@@ -268,6 +268,10 @@ fn main() -> anyhow::Result<()> {
         permissions,
         content: device_content(),
         companions: cli.companions,
+        // A launched agent inherits the launcher's admission
+        // (`TILO_SVC_COLLAB_FD`); an explicit endpoint is a harness's, which
+        // presents the certificate it names.
+        identity: None,
     };
     Session::connect(cfg)?.run()
 }

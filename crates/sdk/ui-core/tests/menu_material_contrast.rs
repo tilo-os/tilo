@@ -19,12 +19,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::sync::Arc;
-
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Shape};
 use vello::peniko::{Color, Fill};
 
+use crate::support::render::write_png;
+use std::sync::Arc;
 use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
 use tilo_ui::color::contrast_ratio;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -139,16 +139,6 @@ fn colour_at(rgba: &[u8], x: u32, y: u32) -> Color {
     Color::from_rgb8(r, g, b)
 }
 
-fn dump(name: &str, rgba: &[u8]) {
-    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
-        return;
-    };
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = format!("{dir}/{name}.png");
-    tilo_ui::png::write_rgba8(&path, CANVAS_W, CANVAS_H, rgba).unwrap();
-    eprintln!("wrote {path}");
-}
-
 /// Pixels of `rect` (inset by `inset`), as integer coordinates.
 fn pixels(rect: Rect, inset: f64) -> impl Iterator<Item = (u32, u32)> {
     let rect = rect.inset(-inset);
@@ -191,8 +181,10 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
             let with_text = render(&theme, backdrop_name, |scene, text| {
                 shown.draw_overlay(scene, Affine::IDENTITY, text, &theme, &presence);
             });
-            dump(
+            write_png(
                 &format!("menu_material_{theme_name}_{backdrop_name}"),
+                CANVAS_W,
+                CANVAS_H,
                 &with_text,
             );
             let panel = Widget::modal_capture(&shown).expect("the menu is open");
@@ -309,7 +301,12 @@ fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
     let with_text = render(&theme, "white", |scene, text| {
         host.draw_overlay(scene, Affine::IDENTITY, text, &theme, &presence);
     });
-    dump("menu_material_words_on_light_slide_dark", &with_text);
+    write_png(
+        "menu_material_words_on_light_slide_dark",
+        CANVAS_W,
+        CANVAS_H,
+        &with_text,
+    );
     let material = render(&theme, "white", |scene, _| {
         tilo_ui::widget::floating_surface::paint_rounded(
             scene,

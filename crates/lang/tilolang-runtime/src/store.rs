@@ -1171,6 +1171,13 @@ pub trait Store {
         crate::cost::Reads::default()
     }
 
+    /// Whether the store has read the whole workspace: until it has, the items it lists are the
+    /// part it has read, and a count of them is not the workspace's ([`crate::colls`]'
+    /// `counted`). A store given everything it holds is.
+    fn settled(&self) -> bool {
+        true
+    }
+
     /// A fresh id, unique across replicas and restarts.
     fn fresh_id(&mut self, prefix: &str) -> String;
 

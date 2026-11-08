@@ -15,11 +15,14 @@ use crate::widget::Widget;
 
 use super::{AccessibilityIssue, InspectionNode};
 
+/// The node a semantic `target` names: the one whose action target or semantic key is `target`
+/// — the latter is the name the accessibility tree keys a node by (a list row an agent chooses).
 pub(super) fn find_semantic_target<'a>(
     node: &'a AccessNode,
     target: &str,
 ) -> Option<&'a AccessNode> {
-    if node.action_target.as_deref() == Some(target) {
+    if node.action_target.as_deref() == Some(target) || node.semantic_key.as_deref() == Some(target)
+    {
         return Some(node);
     }
     node.children

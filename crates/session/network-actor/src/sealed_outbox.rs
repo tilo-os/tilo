@@ -23,11 +23,9 @@
 //! [`RelayCoeditSession::commit`]: tilo_relay_session::RelayCoeditSession::commit
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
 
 use neighbour_wire::Retention;
 use tilo_desktop_model::WorkspaceId;
-use tilo_lock::MutexRecover as _;
 use tilo_relay_session::CoeditPayload;
 
 use super::held_log::{HeldLog, HeldWrite};
@@ -176,7 +174,6 @@ impl SealedOutbox {
 /// next heartbeat's [`Self::retry`].
 pub(super) struct RecordKeeper {
     tx: Option<std::sync::mpsc::Sender<Keep>>,
-    wake: Arc<Mutex<Option<crate::Wake>>>,
 }
 
 enum Keep {
@@ -202,28 +199,20 @@ impl RecordKeeper {
     /// A keeper of the logs under `log`; with none, held writes are kept in
     /// memory alone.
     pub(super) fn new(log: Option<HeldLog>) -> Self {
-        let wake: Arc<Mutex<Option<crate::Wake>>> = Arc::default();
         let Some(log) = log else {
-            return Self { tx: None, wake };
+            return Self { tx: None };
         };
         let (tx, rx) = std::sync::mpsc::channel::<Keep>();
         let started = std::thread::Builder::new()
             .name("sealed-records".into())
-            .spawn({
-                let wake = Arc::clone(&wake);
-                move || {
-                    let mut waiting = Waiting::default();
-                    while let Ok(first) = rx.recv() {
-                        waiting.add(first);
-                        for next in rx.try_iter() {
-                            waiting.add(next);
-                        }
-                        if waiting.keep(&log)
-                            && let Some(wake) = wake.lock_recover().as_ref()
-                        {
-                            wake();
-                        }
+            .spawn(move || {
+                let mut waiting = Waiting::default();
+                while let Ok(first) = rx.recv() {
+                    waiting.add(first);
+                    for next in rx.try_iter() {
+                        waiting.add(next);
                     }
+                    waiting.keep(&log);
                 }
             });
         if let Err(error) = &started {
@@ -231,14 +220,7 @@ impl RecordKeeper {
         }
         Self {
             tx: started.is_ok().then_some(tx),
-            wake,
         }
-    }
-
-    /// Wake the frame loop with `wake` when a workspace's word on keeping its
-    /// writes changes.
-    pub(super) fn set_wake(&self, wake: crate::Wake) {
-        *self.wake.lock_recover() = Some(wake);
     }
 
     /// Hold `write` in the log of `workspace`, on topic `ws`.

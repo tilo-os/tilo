@@ -1,7 +1,7 @@
-//! Descriptors handed over a connected Cap'n Proto stream with `SCM_RIGHTS`.
+//! Descriptors handed over a connected stream with `SCM_RIGHTS`.
 //!
-//! Cap'n Proto here has no descriptor capabilities, so a client that must
-//! hand a service an open object sends the descriptor itself alongside the
+//! A service wire carries no descriptors itself, so a client that must
+//! hand a service an open object sends the descriptor alongside the
 //! connection's ordinary bytes: [`DescriptorSender::send`] queues it and the
 //! connection's next write carries it. Each side numbers the descriptors on
 //! one connection in order from zero; the single writer and the ordered stream

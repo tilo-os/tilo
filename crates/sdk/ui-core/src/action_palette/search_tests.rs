@@ -1,4 +1,5 @@
 // Palette search: a query's work is budgeted per frame, its hits are grouped,
+use std::sync::atomic::Ordering;
 // and exact matches are reached however many candidates come before them.
 
 #[test]
@@ -15,12 +16,9 @@ fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
         palette.set_providers(vec![Box::new(LazyCorpus {
             materialized: Arc::clone(&materialized),
         })]);
-        materialized.store(0, std::sync::atomic::Ordering::Relaxed);
+        materialized.store(0, Ordering::Relaxed);
         palette.open();
-        assert_eq!(
-            materialized.load(std::sync::atomic::Ordering::Relaxed),
-            PROVIDER_HIT_BUDGET
-        );
+        assert_eq!(materialized.load(Ordering::Relaxed), PROVIDER_HIT_BUDGET);
         assert_eq!(palette.len(), PER_GROUP_CAP);
         palette.activate_selected();
         assert!(
@@ -123,20 +121,16 @@ fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidate
             .any(|resource_id| resource_id == target_id),
         "the exact result must retain its canonical resource action"
     );
-    assert!(
-        palette
-            .take_search_announcement()
-            .is_some_and(|announcement| announcement.contains("result"))
-    );
+    assert!(palette
+        .take_search_announcement()
+        .is_some_and(|announcement| announcement.contains("result")));
 
     palette.set_query("a different query");
     assert_ne!(palette.search_generation, generation);
-    assert!(
-        !palette
-            .result_labels()
-            .iter()
-            .any(|label| label == "The only exact abc d result")
-    );
+    assert!(!palette
+        .result_labels()
+        .iter()
+        .any(|label| label == "The only exact abc d result"));
     let restarted = palette.advance_search_page();
     assert_eq!(restarted.generation, palette.search_generation);
     assert!(restarted.inspected <= PROVIDER_HIT_BUDGET);

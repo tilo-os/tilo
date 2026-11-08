@@ -327,6 +327,13 @@ impl Core {
                     ret_i64(len_to_i64(self.coll_len_or_count(&coll, count)?))
                 }
             },
+            // A list's count is the app's own, but what it was built from is the store's: until
+            // the store has read all of the workspace, either is the part read so far, which a
+            // view shows as not yet known rather than as the count.
+            Imp::CollCounted => match self.list_or_coll(a.h(0)?)? {
+                ListOrColl::Len(len) => self.ret_h(option_int(self.settled().then_some(len))),
+                ListOrColl::Coll(coll) => self.ret_h(option_int(self.coll_counted(&coll)?)),
+            },
             Imp::ListGetI | Imp::ListGetF | Imp::ListGetH => {
                 let at = index(a.long(1)?, "list")?;
                 let item = self.with_val(a.h(0)?, |v| match v {
@@ -618,4 +625,10 @@ fn compare_keys(a: &Value, b: &Value) -> Result<std::cmp::Ordering, String> {
             b.kind_name()
         )),
     }
+}
+
+/// How many items a view shows, as a handle: some when the store has read the whole workspace,
+/// none before it has ([`Core::coll_counted`]).
+fn option_int(count: Option<usize>) -> Value {
+    count.map_or_else(Value::none, |n| Value::some(Value::Int(len_to_i64(n))))
 }

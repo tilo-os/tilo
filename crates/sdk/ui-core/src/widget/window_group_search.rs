@@ -137,26 +137,30 @@ impl WindowGroup {
             self.search.place(Rect::ZERO, 0.0);
             return;
         }
-        let px = crate::widget::window_controls::CONTROL_PX;
-        if let Some((row, reach)) = self.bar.toolbar_search_slot() {
-            // The app put its slots in the bar: the control ends their row,
-            // and the open search grows back over the location.
-            let x0 = row.x1 + crate::widget::window_controls::CONTROL_GAP;
-            let y0 = row.center().y - px / 2.0;
-            self.search.place_trailing(
-                Rect::new(x0, y0, x0 + px, y0 + px),
-                reach.min(x0),
-                row.x0.min(x0),
-            );
-            return;
-        }
-        let row = self.bar.get_rect();
-        let x0 = self.bar.tabs_end() + crate::widget::window_controls::CONTROL_GAP;
-        let y0 = row.center().y - px / 2.0;
-        let limit = self.bar.window_controls().content_limit(row);
-        self.search
-            .place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
-        self.search
-            .set_cramped_start(self.bar.search_cramped_start());
+        place_search(&self.bar, &mut self.search);
     }
+}
+
+/// Place `search` in `bar`'s row after its tabs, and let it reach up to the
+/// window's own controls: the rule every host lays a window's bar out by.
+pub(crate) fn place_search(bar: &crate::widget::TabBar, search: &mut crate::widget::WindowSearch) {
+    let px = crate::widget::window_controls::CONTROL_PX;
+    if let Some((row, reach)) = bar.toolbar_search_slot() {
+        // The app put its slots in the bar: the control ends their row, and
+        // the open search grows back over the location.
+        let x0 = row.x1 + crate::widget::window_controls::CONTROL_GAP;
+        let y0 = row.center().y - px / 2.0;
+        search.place_trailing(
+            Rect::new(x0, y0, x0 + px, y0 + px),
+            reach.min(x0),
+            row.x0.min(x0),
+        );
+        return;
+    }
+    let row = bar.get_rect();
+    let x0 = bar.tabs_end() + crate::widget::window_controls::CONTROL_GAP;
+    let y0 = row.center().y - px / 2.0;
+    let limit = bar.window_controls().content_limit(row);
+    search.place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
+    search.set_cramped_start(bar.search_cramped_start());
 }

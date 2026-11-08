@@ -326,29 +326,6 @@ impl Drop for StartedSession {
     }
 }
 
-/// `tilo-session`, started as `dist/dev/shell-run.sh` starts its first pass: its test-control
-/// socket mints the throwaway identity the next session opens its desk with. Ended by SIGTERM,
-/// it ends as it does on its own: the process exits cleanly, the files people choose for apps,
-/// which it mounted, are unmounted, and its socket is gone.
-#[test]
-fn a_session_ended_by_sigterm_unmounts_what_it_mounted() {
-    let Some(mut session) = StartedSession::started() else {
-        return;
-    };
-    session.mint_identity();
-    session.signal_group(libc::SIGTERM);
-    let status = session.child.wait().unwrap();
-    assert!(status.success(), "the session ends cleanly: {status:?}");
-    assert!(
-        !mounted(&session.documents),
-        "the files people choose for apps are unmounted"
-    );
-    assert!(
-        !session.control.exists(),
-        "the test-control socket is removed"
-    );
-}
-
 /// A stop of the session's whole process group signals every member, and a wrapper that was
 /// signalled with the group passes the signal on: the session is asked twice, and the second
 /// must not end it before it has put away what it mounted.

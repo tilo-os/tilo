@@ -225,13 +225,6 @@ impl OverviewPanel {
         }
     }
 
-    /// Offer "New workspace" only when the host can make one.
-    #[must_use]
-    pub fn with_new_workspace(mut self, offered: bool) -> Self {
-        self.offer_add = offered;
-        self
-    }
-
     /// Offer a new workspace or not, as the host's policy answers now.
     pub fn set_new_workspace(&mut self, offered: bool) {
         if self.offer_add != offered {
@@ -383,12 +376,6 @@ impl OverviewPanel {
     /// Something of the overview is on screen.
     pub fn is_drawn(&self) -> bool {
         self.open || self.progress() > 0.0
-    }
-
-    /// Where workspace `index`'s row is (the "you are here" block for the workspace
-    /// you are in), for a host's tests and scripts.
-    pub fn workspace_rect(&self, index: usize) -> Option<Rect> {
-        (self.open && index < self.desk.cards.len()).then(|| self.row_rect(index))
     }
 
     /// The pointer moved to `p`; whether what it is over changed.

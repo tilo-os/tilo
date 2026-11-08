@@ -1,25 +1,18 @@
 //! Jobs: the long work the whole system can see.
 //!
-//! Anything that can take longer than a breath is a **job**: it has a name,
-//! a subject, a progress a person can read, a way out, and an outcome — and
-//! it belongs to the system, not to the window that started it.
+//! Anything that can take longer than a breath is a **job**: it has a name, a subject, a
+//! progress a person can read, a way out and an outcome, and it belongs to the system, not to
+//! the window that started it. An app starts one with [`start`] and keeps the [`Running`] it
+//! gets back while its worker runs: the worker says what it is doing and how far it has got,
+//! checks whether the person stopped it and ends it exactly once. The record lives in a
+//! registry of the process, so closing the page, the panel or the window that started the work
+//! does not end it ([`rows`]).
 //!
-//! An app starts one with [`start`] and keeps the [`Running`] it gets back
-//! while its worker runs: the worker says what it is doing ([`Running::phase`])
-//! and how far it has got ([`Running::progress`], [`Running::seen`]), checks
-//! whether the person stopped it ([`Running::is_stopped`]), and ends it
-//! exactly once ([`Running::done`], [`Running::failed`], [`Running::stopped`]).
-//! The record lives in a registry of the process, so closing the page, the
-//! panel or the window that started the work does not end it: whoever shows
-//! the surface next reads the same rows ([`rows`]) and the same progress.
-//!
-//! What a person is shown is one row per job ([`surface`]): its title, what
-//! it is doing now, a bar that is determinate when the total is known and
-//! honest when it is not, a **Stop** for a job that can be stopped, and a
-//! **Show me** that goes to the thing being worked on. A finished job keeps
-//! its row until it is read; a failed one states why, and stands in
-//! [`crate::attention`] as well, because a failure is something a person has
-//! to decide about — see [`crate::attention::publish`].
+//! One row per job ([`surface`]): its title, what it is doing now, a bar determinate when the
+//! total is known, a **Stop** where it can be stopped, a **Show me** that goes to the thing
+//! being worked on. A finished job keeps its row until it is read; a failed one states why and
+//! stands in [`crate::attention`] as well, since a failure is something a person has to decide
+//! about ([`crate::attention::publish`]).
 //!
 //! ```ignore
 //! let job = ui::jobs::start(
@@ -38,10 +31,9 @@
 //! });
 //! ```
 //!
-//! The rule this module exists to keep: an app never improvises a progress
-//! story of its own. A spinner with no words, a percentage with no way out,
-//! a "working…" that dies with its window — all of those are this module
-//! seen from the wrong side.
+//! The rule this module exists to keep: an app never improvises a progress story of its own. A
+//! spinner with no words, a percentage with no way out, a "working…" that dies with its window
+//! — all of those are this module seen from the wrong side.
 
 mod record;
 mod surface;

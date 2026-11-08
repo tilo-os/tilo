@@ -125,7 +125,6 @@ impl Joined {
     pub(super) fn reach(&self) -> Reach {
         Reach {
             endpoint: self.endpoint.clone(),
-            https: None,
             own_host: self
                 .room_host()
                 .map(|host| Arc::clone(host) as Arc<dyn tilo_peer_state::owner::session::OwnHost>),

@@ -436,26 +436,29 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
     settle(&mut session, |session| place_of(session, id).is_none());
 }
 
-// (4) A text nothing published matches places nothing and says why: what the
-// person typed is not silently dropped.
+// (4) A text nothing published matches is not dropped and not refused: it is
+// a sentence to the agent the workspace keeps, so the ask conversation stands
+// where the person typed (shell.md §8.1, "Asking from the canvas").
 #[test]
-fn text_that_finds_nothing_places_nothing_and_says_why() {
+fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let before = arrangement(&session).places.len();
-    let refused = session.invoke(
-        "shell:arrangement",
-        "place-found",
-        serde_json::json!({"text": "nothing is called this", "x": 0, "y": 0})
-            .as_object()
-            .expect("arguments"),
-    );
-    assert!(refused.is_err(), "a text nothing matches is refused");
+    let placed = session
+        .invoke(
+            "shell:arrangement",
+            "place-found",
+            serde_json::json!({"text": "nothing is called this", "x": 0, "y": 0})
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("text that names nothing asks the agent");
+    let _ = placed;
     assert_eq!(
         arrangement(&session).places.len(),
-        before,
-        "nothing was placed"
+        before + 1,
+        "the ask conversation stands where they typed"
     );
 }
 

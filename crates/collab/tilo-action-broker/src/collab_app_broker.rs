@@ -6463,22 +6463,6 @@ impl AppBrokerState {
         self.surface_changes.subscribe()
     }
 
-    /// Read one current receipt without surveying or disclosing another
-    /// actor's jobs.
-    #[must_use]
-    pub fn invocation_status_for_actor(
-        &self,
-        id: u64,
-        actor: &str,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        self.invocation_status_for_owner(
-            id,
-            &InvocationOwner::Local {
-                actor: actor.to_string(),
-            },
-        )
-    }
-
     /// Check `evidence` against the offered action's confirmation policy and,
     /// when one is required, mint the one-use grant that binds it to this
     /// exact peer, address, argument and actor.
@@ -7770,8 +7754,6 @@ impl AppBrokerState {
             // A new admitted session brings its own certificate expiry: the
             // policy turn re-checks, and from then on wakes at that expiry.
             tilo_identity_host::policy_change::announce();
-            let workspace = CrdtRoute::from_channel_key(channel_id).cluster_id;
-            self.publish_certified_people(&workspace);
         }
         rx
     }
@@ -7982,34 +7964,6 @@ impl AppBrokerState {
         people.into_values().collect()
     }
 
-    pub(crate) fn certified_people_for_shell(
-        &self,
-    ) -> Vec<(String, Vec<ui::collaboration::Collaborator>)> {
-        let workspaces = self
-            .channels
-            .lock()
-            .map(|channels| {
-                channels
-                    .iter()
-                    .filter(|(_, subscribers)| {
-                        subscribers
-                            .context
-                            .iter()
-                            .any(|subscriber| subscriber.native.is_some())
-                    })
-                    .map(|(channel, _)| CrdtRoute::from_channel_key(channel).cluster_id)
-                    .collect::<std::collections::BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        workspaces
-            .into_iter()
-            .map(|workspace| {
-                let people = self.certified_people_in_workspace(&workspace);
-                (workspace, people)
-            })
-            .collect()
-    }
-
     fn native_roster_for_subscriber(
         &self,
         route: &CrdtRoute,
@@ -8029,12 +7983,6 @@ impl AppBrokerState {
             admitted: current,
             roster,
         }))
-    }
-
-    fn publish_certified_people(&self, workspace: &str) {
-        if let Some(fanout) = self.fanout.upgrade() {
-            fanout.publish_certified_people(workspace);
-        }
     }
 
     /// The delegated agents of the workspace `channel` belongs to whose person's
@@ -8102,12 +8050,9 @@ impl AppBrokerState {
             let route = CrdtRoute::from_channel_key(&channel);
             let Ok(current) = self.revalidate_admission(&route, &admitted) else {
                 self.drop_context_subscriber(&channel, peer_id, &admitted)?;
-                self.publish_certified_people(&route.cluster_id);
                 continue;
             };
-            if self.tell_context_subscriber(&route, &channel, peer_id, &admitted, &current)? {
-                self.publish_certified_people(&route.cluster_id);
-            }
+            self.tell_context_subscriber(&route, &channel, peer_id, &admitted, &current)?;
         }
         Ok(())
     }
@@ -12226,30 +12171,9 @@ pub mod tests {
         source_identity: Option<AdmittedJoinIdentity>,
     }
 
-    include!("local_directory_surface.rs");
-
     impl LocalDirectoryFixture {
-        /// Install the source only after the production certificate, signature,
-        /// enrolled-device and current workspace admission checks succeed.
-        pub fn authenticate_source(&mut self, presentation: &[u8]) -> Result<CapRole, String> {
-            let source = verify_join_identity(
-                &self.route,
-                presentation,
-                self.state.membership.as_ref(),
-                self.state.trusted_devices.as_deref().map(Vec::as_slice),
-                self.state.services.native_certificates.as_deref(),
-            )?;
-            let role = source.role;
-            self.source_identity = Some(source);
-            self.reconnect_directory();
-            Ok(role)
-        }
-
         pub fn query_count(&self) -> usize {
             self.directory_state.borrow().query_count
-        }
-        pub fn disconnect_directory(&self) {
-            self.directories.remove(self.peer_id);
         }
         pub fn reconnect_directory(&self) {
             self.directories.directories.borrow_mut().insert(
@@ -12272,15 +12196,6 @@ pub mod tests {
 
         pub fn set_confirmation_required(&self, required: bool) {
             self.directory_state.borrow_mut().confirmation_required = required;
-        }
-
-        /// The parameters the directory's action takes.
-        pub fn set_params(&self, params: Vec<tilo_actions::ActionParam>) {
-            self.directory_state.borrow_mut().params = params;
-        }
-
-        pub fn set_result_spec(&self, result: tilo_actions::ResultSpec) {
-            self.directory_state.borrow_mut().result = result;
         }
 
         fn invocation_channel(&self) -> runtime_collab::ChannelHandle {
@@ -12339,43 +12254,11 @@ pub mod tests {
                 .await
         }
 
-        pub fn set_resolve_mode(&self, mode: DirectoryResolveMode) {
-            self.directory_state.borrow_mut().resolve_mode = mode;
-        }
-
         pub fn take_invocation_identity(&mut self) -> Option<(u64, tilo_actions::InvocationId)> {
             self.invocation_rx
                 .try_recv()
                 .ok()
                 .map(|invocation| (invocation.id, invocation.invocation))
-        }
-
-        pub fn take_invocation_actor(&mut self) -> Option<String> {
-            self.invocation_rx
-                .try_recv()
-                .ok()
-                .map(|invocation| invocation.actor)
-        }
-
-        /// The next delivered invocation's actor and the invoker the host
-        /// recorded for it.
-        pub fn take_invocation_invoker(
-            &mut self,
-        ) -> Option<(String, Option<tilo_actions::ActionInvoker>)> {
-            self.invocation_rx.try_recv().ok().map(|invocation| {
-                let invoker = invocation
-                    .context
-                    .as_ref()
-                    .and_then(|context| context.invoker.clone());
-                (invocation.actor, invoker)
-            })
-        }
-
-        pub fn take_invocation_argument(&mut self) -> Option<Option<String>> {
-            self.invocation_rx
-                .try_recv()
-                .ok()
-                .map(|invocation| invocation.argument)
         }
 
         pub fn resolve_count(&self) -> usize {
@@ -12671,12 +12554,6 @@ pub mod tests {
         membership: crate::test_support::WorkspaceTreeHandle,
     ) -> LocalDirectoryFixture {
         local_directory_fixture_with_peer(membership, Some(71))
-    }
-
-    pub fn local_directory_fixture_with_first_allocated_peer(
-        membership: crate::test_support::WorkspaceTreeHandle,
-    ) -> LocalDirectoryFixture {
-        local_directory_fixture_with_peer(membership, None)
     }
 
     fn local_directory_fixture_with_peer(
@@ -13927,14 +13804,6 @@ pub mod tests {
         assert_eq!(AppBrokerState::participant_id(&admitted), person);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
-        let observed = Arc::new(Mutex::new(Vec::<(
-            String,
-            Vec<ui::collaboration::Collaborator>,
-        )>::new()));
-        let observed_sink = Arc::clone(&observed);
-        let _people = fanout.subscribe_certified_people(Arc::new(move |workspace, people| {
-            observed_sink.lock().unwrap().push((workspace, people));
-        }));
         let (state, _bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -14065,17 +13934,6 @@ pub mod tests {
         assert_eq!(collaborators[0].name, forged.name);
         assert!(collaborators[0].is_agent);
         assert!(!collaborators[0].is_self);
-        assert!(
-            observed
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .1
-                .iter()
-                .all(|row| row.id != forged.id),
-            "ordinary Context cannot enter the certified People observer"
-        );
         assert!(membership.write().workspaces[0].revoke_grant(&collision));
         assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
@@ -14086,17 +13944,6 @@ pub mod tests {
             collaborators
                 .iter()
                 .all(|row| row.id != format!("agent:{person}"))
-        );
-        assert!(
-            observed
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .1
-                .iter()
-                .all(|row| row.id != format!("agent:{person}")),
-            "membership replacement retires the certified agent from shell projection"
         );
         assert!(collaborators.iter().all(|row| row.id != other_person));
         assert!(
@@ -14130,17 +13977,6 @@ pub mod tests {
                 .iter()
                 .any(|row| row.id == "agent:reed" && row.is_agent)
         );
-        assert!(
-            observed
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .1
-                .iter()
-                .any(|row| row.id == "agent:reed" && row.is_agent),
-            "certified kind comes from the owner row, not an id convention"
-        );
 
         let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
         assert!(matches!(
@@ -14168,10 +14004,6 @@ pub mod tests {
         .await;
         membership.write().workspaces[0].policy.owner = None;
         state.refresh_workspace_context_services().unwrap();
-        assert!(
-            observed.lock().unwrap().last().unwrap().1.is_empty(),
-            "losing the certified source withdraws the complete shell roster"
-        );
         assert!(
             !matches!(pending.await, Ok(Some(_))),
             "revocation must terminate an already waiting native read"

@@ -185,17 +185,22 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
         .find_map(|sub| search_for(&sub, name, depth.saturating_sub(1)))
 }
 
+/// Whether `package_id` is named by the image-owned list at `path`, read
+/// through `variable` in developer builds. A missing file means `builtin` — the
+/// compiled-in set for that entitlement — never "nobody": an image that did not
+/// ship the list must still run the packages it is built around.
+pub fn entitled(package_id: &str, path: &str, variable: &'static str, builtin: &[&str]) -> bool {
+    let policy_path = package_store::dev_env::dev_override(variable)
+        .map_or_else(|| PathBuf::from(path), PathBuf::from);
+    match std::fs::read_to_string(&policy_path) {
+        Ok(list) => policy_matches(&list, package_id),
+        Err(_) => builtin.contains(&package_id),
+    }
+}
+
 /// Decide the hardening for a package, reading the image's policy list.
 pub fn for_package(package_id: &str) -> RuntimeHardening {
-    let policy_path = package_store::dev_env::dev_override(POLICY_PATH_ENV)
-        .map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
-    let high_risk = match std::fs::read_to_string(&policy_path) {
-        Ok(list) => policy_matches(&list, package_id),
-        // No policy file: fall back to the compiled-in set rather than to
-        // "harden nothing".
-        Err(_) => BUILTIN_HIGH_RISK.contains(&package_id),
-    };
-    if !high_risk {
+    if !entitled(package_id, POLICY_PATH, POLICY_PATH_ENV, BUILTIN_HIGH_RISK) {
         return RuntimeHardening::none();
     }
     RuntimeHardening {

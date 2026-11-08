@@ -530,7 +530,14 @@ impl ChannelHandle {
         }
     }
 
-    async fn changed(&self, of: Changes, after: u64) -> Result<u64, NotAvailable> {
+    /// Wait until `of` may have changed since `after` (0 at first, then what
+    /// the previous call returned), and answer the value to wait from next.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when this route does not follow `of` or the
+    /// host is unavailable.
+    pub async fn changed(&self, of: Changes, after: u64) -> Result<u64, NotAvailable> {
         match self
             .call(Operation::Changed {
                 channel: self.channel.handle,
@@ -903,15 +910,6 @@ impl ChannelHandle {
         )
     }
 
-    /// Wait until the person's speaker groups may have changed since `after`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the host has nothing to follow.
-    pub async fn speaker_changed(&self, after: u64) -> Result<u64, NotAvailable> {
-        self.changed(Changes::Speakers, after).await
-    }
-
     /// Subscribe to lifecycle edges addressed to this exact application.
     ///
     /// # Errors
@@ -936,48 +934,6 @@ impl ChannelHandle {
             call,
         })
         .await
-    }
-
-    /// Wait until this route's channel keys, or this device's access to
-    /// them, may have changed since `after` (0 at first, then what the
-    /// previous call returned), and return the value to wait from next.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the host has no channel service to
-    /// follow or is unavailable.
-    pub async fn channel_keys_changed(&self, after: u64) -> Result<u64, NotAvailable> {
-        self.changed(Changes::ChannelKeys, after).await
-    }
-
-    /// Wait until what a Nearby Send snapshot would show this connection
-    /// may have changed since `after`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when this route may not use Nearby Send or
-    /// the host has none.
-    pub async fn nearby_transfer_changed(&self, after: u64) -> Result<u64, NotAvailable> {
-        self.changed(Changes::NearbyTransfers, after).await
-    }
-
-    /// Wait until the drives the shell lists may have changed since `after`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when this route may not list drives.
-    pub async fn drives_changed(&self, after: u64) -> Result<u64, NotAvailable> {
-        self.changed(Changes::Drives, after).await
-    }
-
-    /// Wait until the person's apps may have changed since `after`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when this route may not list the person's
-    /// apps.
-    pub async fn applications_changed(&self, after: u64) -> Result<u64, NotAvailable> {
-        self.changed(Changes::Applications, after).await
     }
 
     /// This application's live activity: what it shows outside its windows

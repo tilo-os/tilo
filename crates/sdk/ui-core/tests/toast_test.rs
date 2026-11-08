@@ -10,6 +10,7 @@
     reason = "in a test these are the assertion, not a hazard; pixel probes round f64 rects to u32"
 )]
 
+use crate::support::render::write_png;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -43,7 +44,7 @@ fn a_notification_card_registers_its_edge() {
             card.closable = true;
             paint_card(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &card);
             let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
-            dump(&format!("toast_card_{name}"), &rgba);
+            write_png(&format!("toast_card_{name}"), CANVAS_W, CANVAS_H, &rgba);
 
             // Right edge, mid-height: clear of the accent stripe, the dismiss
             // button and the corner radius.
@@ -72,14 +73,4 @@ const CARD_INSET: f64 = 20.0;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
     tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
-}
-
-fn dump(name: &str, rgba: &[u8]) {
-    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
-        return;
-    };
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = format!("{dir}/{name}.png");
-    tilo_ui::png::write_rgba8(&path, CANVAS_W, CANVAS_H, rgba).unwrap();
-    eprintln!("wrote {path}");
 }

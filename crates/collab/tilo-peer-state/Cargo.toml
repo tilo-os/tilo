@@ -75,8 +75,6 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The join client an enrollment redeems its invitation over, and the relay
 # session a joined workspace syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
-# The HTTPS client seam of a host reached over its HTTPS routes.
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 
 [dev-dependencies]

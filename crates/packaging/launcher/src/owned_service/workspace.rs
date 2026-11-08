@@ -1,9 +1,11 @@
 //! Fresh protected working ancestry; only new fixed worker leaves delegated.
+use crate::fd::{identity, open_beneath};
+use crate::owned_service::refused;
 use std::{
     fs::File,
     io,
     os::{
-        fd::{AsRawFd, FromRawFd},
+        fd::AsRawFd,
         unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::{Component, Path, PathBuf},
@@ -47,27 +49,11 @@ pub(super) struct Owner {
     pub gid: u32,
 }
 
-fn refused(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message)
-}
-fn open(parent: &File, name: &std::ffi::CStr) -> io::Result<File> {
-    let raw = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { File::from_raw_fd(raw) })
-}
 fn child(parent: &File, name: &std::ffi::CStr) -> io::Result<File> {
     if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    open(parent, name)
+    open_beneath(parent, name)
 }
 fn controlled(path: &Path) -> io::Result<Vec<File>> {
     if !path.is_absolute() {
@@ -88,17 +74,13 @@ fn controlled(path: &Path) -> io::Result<Vec<File>> {
         let parent = chain.last().ok_or(io::ErrorKind::InvalidData)?;
         StorageDirectory::from_file(parent.try_clone()?)?.validate_namespace_control()?;
         let name = std::ffi::CString::new(name.as_encoded_bytes()).map_err(io::Error::other)?;
-        chain.push(open(parent, &name)?);
+        chain.push(open_beneath(parent, &name)?);
     }
     let leaf = chain.last().ok_or(io::ErrorKind::InvalidData)?;
     let storage = StorageDirectory::from_file(leaf.try_clone()?)?;
     storage.validate_namespace_control()?;
     storage.validate_privacy(Privacy::OwnerOnly)?;
     Ok(chain)
-}
-fn identity(file: &File) -> io::Result<(u64, u64)> {
-    let metadata = file.metadata()?;
-    Ok((metadata.dev(), metadata.ino()))
 }
 fn delegate(directory: &File, facts: Owner) -> io::Result<()> {
     if unsafe { libc::fchown(directory.as_raw_fd(), facts.uid, facts.gid) } < 0
@@ -146,7 +128,7 @@ impl Workspace {
         let held = self.chain.last().ok_or(io::ErrorKind::InvalidData)?;
         for (relative, expected) in [(APP, &self.app), (self.layout.person.path(), &self.person)] {
             let name = std::ffi::CString::new(relative).map_err(io::Error::other)?;
-            if identity(&open(held, &name)?)? != identity(expected)? {
+            if identity(&open_beneath(held, &name)?)? != identity(expected)? {
                 return Err(refused("Worker projection was replaced"));
             }
         }

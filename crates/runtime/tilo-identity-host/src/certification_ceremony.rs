@@ -422,13 +422,6 @@ impl Signer {
             Err(error) => Reply::Refused(error),
         }
     }
-
-    /// Whether the person approved `session` here and its signing round is
-    /// still to come.
-    #[must_use]
-    pub fn awaits_signing(&self, session: &[u8; 16]) -> bool {
-        self.approved.contains_key(session)
-    }
 }
 
 /// Where a certification stands for the device that asked.

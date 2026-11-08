@@ -498,20 +498,6 @@ impl LaunchReadiness {
         self
     }
 
-    /// How the startup ended, once it has, without waiting: `None` while it
-    /// runs. Asked again after it answered, it answers that the observer
-    /// stopped.
-    pub fn try_settled(&mut self) -> Option<Result<(), LaunchReadinessError>> {
-        match self.receiver.try_recv() {
-            Ok(Ok(())) => Some(Ok(())),
-            Ok(Err(detail)) => Some(Err(LaunchReadinessError::Failed(detail))),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                Some(Err(LaunchReadinessError::ObserverStopped))
-            }
-        }
-    }
-
     /// Wait for an adopted window or a terminal startup failure.
     pub async fn wait(self) -> Result<(), String> {
         self.wait_with_adoption()
@@ -694,7 +680,7 @@ pub trait LauncherServices: Send + Sync {
     fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// The ids installed apps were published under before, as the installed catalogue believes
-    /// them (`tilo_installed_apps::earlier_ids`): an application target naming one opens the app
+    /// them (`app_catalogue::apps::earlier_ids`): an application target naming one opens the app
     /// that took its place. None where no app was renamed.
     fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
         tilo_action_policy::EarlierIds::default()
@@ -1610,7 +1596,6 @@ pub struct FileClipboardContext {
     pub(crate) duplicate: SelectedDescriptorSource,
     pub(crate) workspace: String,
     pub(crate) owner: String,
-    pub(crate) history_compensation: bool,
     /// The agent behind this command, when the broker's custody of its
     /// original invocation names an agent acting for the person whose
     /// session Files runs in (`agent:<id>`). Presentation only.
@@ -1651,11 +1636,6 @@ impl FileClipboardContext {
     /// nothing.
     pub fn attributed_agent(&self) -> Option<&str> {
         self.attributed_agent.as_deref()
-    }
-    /// Whether the broker admitted this command through a declared document Undo.
-    /// This is minted from original invocation custody, never caller parameters.
-    pub fn is_history_compensation(&self) -> bool {
-        self.history_compensation
     }
     /// Recheck the exact caller against live custody and workspace policy.
     ///

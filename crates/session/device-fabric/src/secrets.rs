@@ -159,18 +159,6 @@ pub fn open_wifi_credential(
     Ok(password)
 }
 
-/// Certified recipients currently represented by an opaque bundle.
-pub fn wifi_envelope_recipients(
-    credential: &WifiCredential,
-) -> Result<BTreeSet<DeviceId>, WifiSecretError> {
-    validate_wifi_envelopes(&credential.sealed_secret)?;
-    Ok(decode_bundle(&credential.sealed_secret)?
-        .recipients()
-        .into_iter()
-        .cloned()
-        .collect())
-}
-
 pub fn validate_wifi_envelopes(bytes: &[u8]) -> Result<(), WifiSecretError> {
     let bundle = decode_bundle(bytes)?;
     let listed = bundle.recipients();
@@ -291,10 +279,6 @@ mod tests {
             assert_eq!(
                 open_wifi_credential(&credential, &author_key).unwrap(),
                 "passphrase"
-            );
-            assert_eq!(
-                wifi_envelope_recipients(&credential).unwrap(),
-                BTreeSet::from([author])
             );
             let mut moved = credential.clone();
             moved.nonce[0] ^= 1;

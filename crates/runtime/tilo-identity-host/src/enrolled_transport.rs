@@ -82,12 +82,11 @@ fn context(binding: &str) -> io::Result<Vec<u8>> {
     Ok(context)
 }
 fn password_valid(password: &[u8]) -> io::Result<()> {
-    if password.len() > 4096
-        || std::str::from_utf8(password).map_or(true, |value| value.chars().count() < 15)
-    {
-        return Err(invalid());
+    if tilo_seal::migration_password(password) {
+        Ok(())
+    } else {
+        Err(invalid())
     }
-    Ok(())
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

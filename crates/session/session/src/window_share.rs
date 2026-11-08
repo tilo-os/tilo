@@ -1,40 +1,16 @@
 //! This device's windows shared with a workspace, and the windows its members
 //! share: the session's side of a window's stream.
-//!
-//! A person shares a window with the workspace they are in (`share`): the
-//! session captures it through the compositor's own read-back — which is
-//! where capture protection blanks a secret window — encodes it with the
-//! window-share encoder on a thread of its own, and publishes its start,
-//! frames and end to exactly the members that asked to view it, over the
-//! authenticated direct route each asked on ([`SurfaceViewRequest`]). The
-//! stream ends when the person stops the share or the window closes.
-//!
-//! A member views a window another device shares by asking for it
-//! (`watch`): the ask names the workspace and the tab the window is shown in on
-//! this device, whose tile is the host's window ([`TileContent::HostedWindow`]).
-//! What comes back is decoded into that tab's tile here
-//! ([`DesktopHandle::show_peer_surface`] and
-//! [`DesktopHandle::peer_surface_frame`]), which publishes the window, its
-//! picture and its actions as one resource ([`PeerRead`]). The viewer's
-//! pointer, keys and keyframe requests leave the tile the same way back
-//! ([`DesktopHandle::take_peer_outgoing`]), over the topic of the workspace
-//! the stream came on; the sender's own rule decides whether they reach the
-//! window.
-//!
-//! Another member's input reaches the window through a seat of its own
-//! ([`Compositor::open_seat`]): its pointer and its keys act in that window
-//! and nowhere else, and only while the person allows it. A member the person
-//! did not let in reaches nothing, and the compositor's firewall refuses every
-//! member's input after the cut chord or while the session is locked. What a
-//! member types, composes or pastes goes where the person's own keyboard and
-//! clipboard go, and its close closes the window.
-//!
-//! What the bar says of it ([`DesktopChromeSnapshot::active_exposures`]) is
-//! read from the same shares ([`WindowShares::exposures`]).
-//!
-//! [`TileContent::HostedWindow`]: tilo_desktop_model::TileContent::HostedWindow
-//! [`PeerRead`]: tilo_desktop_surface::PeerRead
-//! [`DesktopChromeSnapshot::active_exposures`]: tilo_desktop::chrome::DesktopChromeSnapshot::active_exposures
+//! A person shares a window with the workspace they are in (`share`): the session
+//! captures it through the compositor's own read-back, where capture protection
+//! blanks a secret window, encodes it on a thread of its own, and publishes its
+//! start, frames and end to exactly the members that asked to view it
+//! ([`SurfaceViewRequest`]). The stream ends when the person stops the share or the
+//! window closes.
+//! A member views a window another device shares by asking for it (`watch`); what
+//! comes back is decoded into that tab's tile here ([`PeerRead`]). Another member's
+//! input reaches the window through a seat of its own ([`Compositor::open_seat`]),
+//! only while the person allows it, and the compositor's firewall refuses every
+//! member's input after the cut chord or while the session is locked.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -802,7 +778,7 @@ impl WindowShares {
                 }
             };
             let receivers = self.receivers_for(start.tab);
-            let share = match SharedFlatpakSession::start_with_metrics(
+            let share = match SharedFlatpakSession::start_negotiated(
                 sync.peer(),
                 start.app_id.clone(),
                 start.tab,
@@ -810,7 +786,6 @@ impl WindowShares {
                 picture.height,
                 &FlatpakShareConfig::default(),
                 &receivers,
-                None,
             ) {
                 Ok(share) => Arc::new(share.with_tab(start.tab)),
                 Err(error) => {

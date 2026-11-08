@@ -1,46 +1,12 @@
-//! The native session: `tilo-session [--backend drm|headless|nested]
-//! [--size WxH] [--connector NAME]
-//! [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
-//! [--shell screen] [--host-desktop]
-//! [--firstboot|--firstboot-only]
-//! [--provision-identity|--verify-collaboration-identity] [--no-x11]
-//! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
-//! [--admit-repl PATH]... [--test-control PATH] [--admin-control PATH]
-//! [--headless-owner-control] [--seed-apps]
-//! [-- command args...]`. Listens on a fresh `wayland-N` socket, serves X11
-//! clients one display per workspace (unless `--no-x11`), prints the socket
-//! and the agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl
-//! --door` takes) and starts `command` with `WAYLAND_DISPLAY` set to it; with
-//! a command, the session lasts as long as it does. A headless session's
-//! first output carries `HEADLESS-1` unless `--connector` names another, so
-//! it can pose as a desk whose panel is a named connector. `--shell
-//! screen` shows the tilolang shell (`apps/tl/shell`): the whole screen, its
-//! bar, dock and the person's arrangement as their preset shows it, every
-//! window in its place's well. The desktop services serve
-//! on the buses the environment names unless a flag names another (or none);
-//! a nested session, which runs in a window of a desktop it did not start,
-//! serves no bus unless a flag names one and exports nothing to that
-//! desktop's systemd user manager and D-Bus activation. A command started in
-//! the session is given the session bus a flag named, so the portal and the
-//! notifications it reaches are the session's own. The two identity commands
-//! open no display: they establish the machine's identity or prove that the
-//! one it holds verifies, and the process stops with their answer.
-//! `--test-control PATH`
-//! opens the development test-control socket there (`tilo-control
-//! snapshot`), in development builds only, and prints it
-//! (`TILO_TEST_CONTROL=`). The owner's own control socket — what `tilo-control`
-//! drives the desktop with, and the actions it lists and invokes — is the
-//! seat's `admin-control.sock` in `$XDG_RUNTIME_DIR/tilo-session`, which this
-//! session serves when its account owns the machine: a member of `wheel` whose
-//! identity claimed the device at its first login; `--admin-control PATH`
-//! opens it elsewhere, and a headless session, which serves no seat, opens it
-//! only when asked to (`--headless-owner-control`, under
-//! `headless-owner-control.sock` there). Whichever it binds it prints
-//! (`TILO_ADMIN_CONTROL=`); `--seed-apps` publishes the records of the tilolang apps installed
-//! in this session's own app store, each filled with its first scenario's seed data
-//! ([`tilo_session::seeded_apps`]), also in development builds only.
-//! SIGTERM, SIGINT and SIGHUP end the session as ending on its own does, so
-//! what it mounted and bound goes with it.
+//! The native session: `tilo-session [--backend drm|headless|nested] [--size WxH]
+//! [--connector NAME] [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
+//! [--shell screen] [--host-desktop] [--admit-repl PATH]...
+//! [--test-control PATH] [--admin-control PATH] [--seed-apps] [-- command args...]`.
+//! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
+//! workspace (unless `--no-x11`), prints the socket and the agent door it serves,
+//! and starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
+//! session lasts as long as it does. A nested session serves no bus unless a flag
+//! names one. SIGTERM, SIGINT and SIGHUP end the session as ending on its own does.
 
 #[cfg(target_os = "linux")]
 use tilo_session::desktop_services::{Bus, Buses};
@@ -1247,7 +1213,7 @@ fn search_options() -> tilo_session::SearchOptions {
     // What a reference written under an app's earlier id names, for search
     // and for every decision this process makes.
     let content = tilo_desktop_search::content_index::session();
-    match tilo_installed_apps::earlier_ids_from_env() {
+    match app_catalogue::apps::earlier_ids_from_env() {
         Ok(earlier) => {
             tilo_action_policy::earlier::register_all(&earlier);
             content.set_earlier_ids(earlier);

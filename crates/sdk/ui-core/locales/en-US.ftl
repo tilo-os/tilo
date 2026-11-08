@@ -980,10 +980,10 @@ change-window = { $count ->
     [one] One change by { $who }
    *[other] { $count } changes by { $who }
 }
-# A window's mark when the type names what an item of it is ($noun, plural): everyone who
-# changed what the window shows, and how many items they changed.
+# A window's mark when the type names what an item of it is ($noun, plural, and $one, its
+# singular): everyone who changed what the window shows, and how many items they changed.
 change-window-changed = { $who } changed { $count ->
-    [one] one { $noun }
+    [one] one { $one }
    *[other] { $count } { $noun }
 }
 # The names a window's mark lists, as a sentence reads them; past three it names the first two
@@ -1003,9 +1003,9 @@ change-window-more = { $who } changed at least { $count ->
     [one] one change
    *[other] { $count } changes
 }
-# The same, when the type names what an item of it is ($noun, plural).
+# The same, when the type names what an item of it is ($noun, plural, and $one, singular).
 change-window-changed-more = { $who } changed at least { $count ->
-    [one] one { $noun }
+    [one] one { $one }
    *[other] { $count } { $noun }
 }
 

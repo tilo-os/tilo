@@ -8,15 +8,13 @@
     clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use emoji::Recents;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome, DesktopRules, JOIN_WORKSPACE};
-use tilo_desktop::emoji_picker::{EmojiLink, EmojiPlace, RecentsStore};
+use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
@@ -116,20 +114,6 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-#[derive(Clone)]
-struct MemoryRecents(Rc<RefCell<Recents>>);
-
-impl RecentsStore for MemoryRecents {
-    fn load(&self) -> Recents {
-        self.0.borrow().clone()
-    }
-
-    fn save(&self, recents: &Recents) -> Result<(), String> {
-        *self.0.borrow_mut() = recents.clone();
-        Ok(())
-    }
-}
-
 /// The desk and the chrome a window shows over it, before either is mounted.
 struct Desk {
     surface: DesktopSurface,
@@ -143,9 +127,7 @@ struct Desk {
 fn desk() -> Desk {
     let tree = desk_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
-    let link = EmojiLink::new(Box::new(MemoryRecents(Rc::new(RefCell::new(
-        Recents::default(),
-    )))));
+    let link = EmojiLink::default();
     let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
@@ -262,7 +244,7 @@ fn highlighted(frame: &mut FrameHarness) -> String {
             .selected()
             .expect("the card highlights an emoji")
             .to_owned();
-        chrome.emoji().spoken_name(&text)
+        ui::emoji_catalogue::emoji_name(&text)
     })
 }
 
@@ -279,7 +261,7 @@ fn highlighted_in(app: &mut ui::App) -> String {
         .selected()
         .expect("the card highlights an emoji")
         .to_owned();
-    chrome.emoji().spoken_name(&text)
+    ui::emoji_catalogue::emoji_name(&text)
 }
 
 /// What Tilo's own screen reader said, through the toolkit's recording

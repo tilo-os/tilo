@@ -371,6 +371,38 @@ view page<R>(
     }
 }
 
+/// One of an app's places on another app's page: a card that stands for `of`, names the place
+/// as its app calls it (`name`), says how many items it holds, and shows the first of them as
+/// their own rows (`row`, the type's row view, as everywhere else). The items are the place's,
+/// not a filter rewritten here: an app that declares its place as a filter (`Task.today`) gives
+/// its words and what it holds (`items.matching(Task.today)`), and one whose place no filter
+/// asks, such as the conversations with anything left unread, writes a view of its own over
+/// this. A card is a summary, so a list longer than the rows it shows ends with the way into
+/// the rest: `Show all`, which opens `of`, as pressing the card does. The count is how many the
+/// place holds, so a card never says more than it shows.
+///
+/// A place with nothing in it takes no room on the page: one quiet line says it is caught up,
+/// which is what a morning's page is for. Nothing else of it stands there — no count of none,
+/// no empty list.
+template view place<R, T>(of: R, name: Text, items: List<T>, row: (T) -> View) {
+    let n = items.count()
+    ui.Card(item: of, title: name, count: if n == 0 { .none } else { .some(n) }) {
+        if n == 0 {
+            ui.Text(phrase("tilolang-all-caught-up"), secondary: true)
+        } else {
+            list(items) { x ->
+                row(x)
+            }
+            if n > preview_rows() {
+                ui.Button("Show all {n}") {
+                    on press: open(of)
+                }
+            }
+        }
+        on activate: open(of)
+    }
+}
+
 /// A window that is a conversation of `of`: its items in order, the latest at the foot, each a
 /// `row`, built as they show, above the composer, which stays at the foot. Who wrote each item
 /// and when come from the log (`created`), and the list draws them as every conversation does:
@@ -531,7 +563,10 @@ view history<R>(of: R) {
                     row(gap: .tight, align: .start) {
                         avatar(s.who)
                         stack(gap: .tight, fill: 1.0) {
-                            row(gap: .tight, align: .center) {
+                            // The row wraps rather than squeezing the name it opens with: an
+                            // undo's own word is as long as its language says, and a name cut
+                            // to nothing to make room for it says less than nothing.
+                            row(gap: .tight, align: .center, wrap: true) {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
                                 }
@@ -574,7 +609,7 @@ view history<R>(of: R) {
                             }
                             for v in s.versions {
                                 stack(gap: .tight) {
-                                    row(gap: .related, align: .center) {
+                                    row(gap: .related, align: .center, wrap: true) {
                                         std.version_sentence(v)
                                         spacer()
                                         ui.Time(v.at, role: .caption, secondary: true)
@@ -651,11 +686,9 @@ template view version_said(v: host.Version) {
 /// What a version did to each field it changed: the field's name, what it held before and what
 /// it holds after, each as the field's type shows it; or that it made or removed the resource.
 template view version_changes(v: host.Version) {
-    if v.kind == "created" {
-        ui.Text(phrase("tilolang-history-made"), role: .caption, secondary: true)
-    } else if v.kind == "removed" {
-        ui.Text(phrase("tilolang-history-removed"), role: .caption, secondary: true)
-    } else if not v.changes.is_empty() {
+    // What the change did to the fields it holds. A change that made or removed the resource
+    // already says so above (`std.version_said`), so nothing stands twice under it.
+    if v.kind != "created" and v.kind != "removed" and not v.changes.is_empty() {
         grid(columns: 3, gap: .related) {
             for c in v.changes {
                 ui.Text(c.label, role: .caption, secondary: true)

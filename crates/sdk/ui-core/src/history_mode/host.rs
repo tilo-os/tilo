@@ -2249,6 +2249,28 @@ impl HistoryHost {
 /// A window's History, as its window holds it.
 pub(crate) type HistoryChrome = Box<dyn HistoryChromeApi>;
 
+/// The window's History control `history` offers its window's bar: none while
+/// there is no History to open.
+pub(crate) fn window_control(
+    history: &dyn HistoryChromeApi,
+) -> Option<crate::widget::HistoryControl> {
+    history
+        .offers_control()
+        .then(|| crate::widget::HistoryControl::of(history.is_open()))
+}
+
+/// Run the window's History `control` on `history`, as the History shortcut
+/// does.
+pub(crate) fn press_window_control(
+    history: &mut dyn HistoryChromeApi,
+    control: crate::widget::HistoryControl,
+) -> Result<(), String> {
+    let intent = super::door::history_control_binding(control)
+        .invoke(())
+        .map_err(|error| error.to_string())?;
+    super::embedded::run_door_control(history, &intent).map_err(|error| error.to_string())
+}
+
 /// The History code, as a program that fetches it on first use hands it
 /// over (`install_history_code`).
 #[derive(Clone, Copy)]

@@ -6,7 +6,5 @@ mod dkg_three_devices;
 mod dkg_two_devices;
 #[path = "interop_with_collab_types.rs"]
 mod interop_with_collab_types;
-#[path = "recovery_share.rs"]
-mod recovery_share;
 #[path = "single_device.rs"]
 mod single_device;

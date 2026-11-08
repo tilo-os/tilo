@@ -18,6 +18,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Endpoint, presets};
+use iroh::protocol::Router;
 use tempfile::TempDir;
 
 use tilo_user_identity::{
@@ -27,6 +28,7 @@ use tilo_user_identity::{
 use tilo_relay::{
     Envelope, RelayClient, RelayConfig,
     daemon::{Relay, RelayIdentity},
+    host::{HostConfig, HostIdentity, HostMode, WorkspaceHost},
 };
 
 /// A "user" (root keypair) + on-disk identity root usable by the
@@ -220,6 +222,156 @@ pub async fn admit_members(
 /// Bind a plain iroh endpoint the tests can use to dial a relay.
 pub async fn client_endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal).bind().await.unwrap()
+}
+
+/// An endpoint whose key is the device's own, as a device dials with.
+pub async fn device_endpoint(device: &TestDevice) -> Endpoint {
+    Endpoint::builder(presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
+        .bind()
+        .await
+        .unwrap()
+}
+
+/// A host in `mode` on `device`'s own endpoint, routed as its embedder
+/// routes it.
+pub struct Hosted {
+    pub host: WorkspaceHost,
+    pub router: Router,
+    _state: TempDir,
+}
+
+impl Hosted {
+    pub async fn stop(self) {
+        self.router.shutdown().await.unwrap();
+        self.host.shutdown().await;
+    }
+}
+
+pub async fn host_on(user: &TestUser, device: &TestDevice, mode: HostMode) -> Hosted {
+    let state = tempfile::tempdir().unwrap();
+    let endpoint = device_endpoint(device).await;
+    let host = WorkspaceHost::open(
+        HostConfig::new(state.path().to_path_buf(), mode),
+        HostIdentity {
+            user_public_key: user.user_pk,
+            device_signing_key: device.sk.clone(),
+            device_cert: device.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        endpoint.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut router = Router::builder(endpoint);
+    for (alpn, handler) in host.protocols() {
+        router = router.accept(alpn, handler);
+    }
+    Hosted {
+        host,
+        router: router.spawn(),
+        _state: state,
+    }
+}
+
+/// A session of `device` to the certified host `host` of its own person.
+pub async fn session_to(user: &TestUser, device: &TestDevice, host: &Hosted) -> RelayClient {
+    RelayClient::connect_v2_to_enrolled_home_peer(
+        device_endpoint(device).await,
+        host.host.node_addr(),
+        user.user_pk,
+        host.host.device_cert().device_public_key,
+        device.cert.clone(),
+        device.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap()
+}
+
+/// The next delta `client` receives.
+pub async fn next_delta(client: &RelayClient) -> Vec<u8> {
+    tilo_test_env::within("the delta arrives", async {
+        loop {
+            if let Envelope::Delta { delta, .. } =
+                client.recv().await.expect("the session stays open")
+            {
+                break delta;
+            }
+        }
+    })
+    .await
+}
+
+/// The publisher a shell is: a coedit session of `author` to `relay`, dialing
+/// as the shell dials an enrolled home peer, once the relay has it.
+pub async fn publisher(
+    relay: &TestRelay,
+    user: &TestUser,
+    author: &TestDevice,
+    workspace: u64,
+) -> tilo_relay::RelayCoeditSession {
+    let publisher = tilo_relay::RelayCoeditSession::join(
+        RelayClient::connect_v2_to_enrolled_home_peer(
+            client_endpoint().await,
+            relay.relay.node_addr(),
+            user.user_pk,
+            relay.relay.handle().mesh_profile().device,
+            author.cert.clone(),
+            author.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap(),
+        workspace,
+        author.device_pubkey(),
+    )
+    .unwrap();
+    tilo_test_env::within("the publisher's subscription", async {
+        while !matches!(
+            publisher.recv().await,
+            Some(tilo_relay::Inbound::Ready { .. })
+        ) {}
+    })
+    .await;
+    publisher
+}
+
+/// A client of `device` subscribed to `workspace` on the relay at `addr`, once
+/// the relay admits it.
+pub async fn connect(
+    user: &TestUser,
+    device: &TestDevice,
+    addr: iroh_base::EndpointAddr,
+    workspace: u64,
+) -> RelayClient {
+    let client = RelayClient::connect(
+        client_endpoint().await,
+        addr,
+        user.user_pk,
+        device.cert.clone(),
+        device.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client
+        .send(Envelope::Subscribe {
+            workspace_id: workspace,
+        })
+        .unwrap();
+    next(&client, |env| matches!(env, Envelope::Ready { .. })).await;
+    client
+}
+
+/// How many queued deltas a relay's state root holds in `dir`.
+pub fn pending_count(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |rd| {
+        rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+            .count()
+    })
 }
 
 /// The next envelope from `client` that `want` accepts: the wait ends as soon

@@ -61,7 +61,7 @@ enum RegistryAction {
     Delete,
 }
 
-impl From<TargetPlatform> for registry_client::Platform {
+impl From<TargetPlatform> for app_registry::publisher::Platform {
     fn from(value: TargetPlatform) -> Self {
         match value {
             TargetPlatform::TiloOs => Self::TiloOs,
@@ -1040,7 +1040,7 @@ fn read_tapp(path: &Path, keep_blobs: bool) -> Result<(Tapp, BTreeMap<BlobHash, 
 
 // identity I/O
 
-/// A publisher key file (see [`registry_client::key`]) as a package signer.
+/// A publisher key file (see [`app_registry::publisher::key`]) as a package signer.
 fn load_identity(path: &Path) -> Result<SigningIdentity> {
     load_signing_key(path).map(SigningIdentity::from_signing_key)
 }
@@ -1048,13 +1048,13 @@ fn load_identity(path: &Path) -> Result<SigningIdentity> {
 /// The raw signing key behind a key file — for signatures that aren't
 /// package signatures (registry entries).
 fn load_signing_key(path: &Path) -> Result<SigningKey> {
-    registry_client::key::load(path)
+    app_registry::publisher::key::load(path)
 }
 
 fn cmd_pending(args: &PendingArgs) -> Result<()> {
     let package_id = args.package_id.as_str();
     let signer = load_signing_key(&args.identity)?;
-    let client = registry_client::RegistryClient::new(&args.registry)?;
+    let client = app_registry::publisher::RegistryClient::new(&args.registry)?;
     let Some(entry) = client.pending(&signer, package_id)? else {
         return Ok(());
     };
@@ -1086,7 +1086,7 @@ fn reconcile_entry_history(
             .context("verify runtime catalogue against registry owner")?;
         let (tapp, _) = read_tapp(&args.file, false)?;
         require_runtime_offers(entry, &args.url, &tapp.meta.manifest, &catalogue.entries)?;
-        let dropped = registry_client::runtime_history::reconcile(
+        let dropped = app_registry::publisher::runtime_history::reconcile(
             entry,
             &catalogue.entries,
             &args.url,
@@ -1144,7 +1144,7 @@ fn require_runtime_offers(
                     })
         });
         if !offered {
-            return Err(registry_client::runtime_history::MissingRuntime {
+            return Err(app_registry::publisher::runtime_history::MissingRuntime {
                 package_id: entry.package_id.clone(),
                 version: current.version.clone(),
                 architecture: target.architecture.clone(),
@@ -1159,7 +1159,7 @@ fn require_runtime_offers(
 fn record_missing_runtime(path: Option<&Path>, error: &anyhow::Error) -> Result<()> {
     if let (Some(path), Some(missing)) = (
         path,
-        error.downcast_ref::<registry_client::runtime_history::MissingRuntime>(),
+        error.downcast_ref::<app_registry::publisher::runtime_history::MissingRuntime>(),
     ) {
         let record = serde_json::json!({
             "package_id": missing.package_id,
@@ -1225,7 +1225,7 @@ mod runtime_readiness_tests {
         let missing = require_runtime_offers(&app, url, &manifest, &[]).unwrap_err();
         assert_eq!(
             missing
-                .downcast_ref::<registry_client::runtime_history::MissingRuntime>()
+                .downcast_ref::<app_registry::publisher::runtime_history::MissingRuntime>()
                 .unwrap()
                 .runtime,
             *runtime
@@ -1255,7 +1255,7 @@ mod runtime_readiness_tests {
     fn writes_only_typed_exact_runtime_refusals() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("missing.json");
-        let missing = registry_client::runtime_history::MissingRuntime {
+        let missing = app_registry::publisher::runtime_history::MissingRuntime {
             package_id: "so.tilo.agent".into(),
             version: "1.0.8".into(),
             architecture: "aarch64".into(),
@@ -1284,7 +1284,7 @@ fn load_previous_entry(path: &Path) -> Result<registry_types::RegistryEntry> {
     Ok(entry)
 }
 
-fn load_entry_metadata(path: &Path) -> Result<registry_client::EntryMetadata> {
+fn load_entry_metadata(path: &Path) -> Result<app_registry::publisher::EntryMetadata> {
     let bytes =
         std::fs::read(path).with_context(|| format!("read entry metadata {}", path.display()))?;
     serde_json::from_slice(&bytes).context("decode entry metadata JSON")
@@ -1354,14 +1354,14 @@ fn cmd_bot_entry(args: &BotEntryArgs) -> Result<()> {
         .as_deref()
         .map(load_entry_metadata)
         .transpose()?;
-    let release = registry_client::BotRelease {
+    let release = app_registry::publisher::BotRelease {
         program: &canonical,
         package_id: &args.package_id,
         version: &args.version,
         registry_origin: &args.registry,
         connectors: &connectors,
     };
-    let entry = registry_client::build_bot_entry(
+    let entry = app_registry::publisher::build_bot_entry(
         &release,
         &signer,
         previous.as_ref(),
@@ -1369,7 +1369,7 @@ fn cmd_bot_entry(args: &BotEntryArgs) -> Result<()> {
         release_time(),
     )?;
     if args.upload {
-        registry_client::RegistryClient::new(&args.registry)?
+        app_registry::publisher::RegistryClient::new(&args.registry)?
             .upload_program(&signer, &canonical)?;
     }
     print_entry(&entry, args.action, &signer)?;
@@ -1404,8 +1404,8 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
     let previous = previous_entry.map(load_previous_entry).transpose()?;
     let metadata = metadata.map(load_entry_metadata).transpose()?;
     let mut entry = if let Some(objects) = &args.objects {
-        registry_client::build_entry_with_objects(
-            registry_client::ThinPackage {
+        app_registry::publisher::build_entry_with_objects(
+            app_registry::publisher::ThinPackage {
                 tapp: &tapp_bytes,
                 objects: &tilo_app_package::chunks::ObjectDir::new(objects),
             },
@@ -1418,7 +1418,7 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
             &retention,
         )?
     } else {
-        registry_client::build_entry(
+        app_registry::publisher::build_entry(
             &tapp_bytes,
             url,
             &signer,

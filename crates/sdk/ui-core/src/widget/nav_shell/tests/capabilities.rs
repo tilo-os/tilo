@@ -219,6 +219,34 @@ fn the_actions_start_after_the_title_and_the_title_at_the_gutter() {
     assert!(part_rect(&h, Part::Action(Column::Content, 0)).x0 >= title.x1);
 }
 
+/// A title takes the room the actions leave: where most of the row's actions wait in the
+/// menu, the title says what it says instead of being held to a third of the row with empty
+/// space beside it.
+#[test]
+fn a_title_takes_the_room_its_actions_leave() {
+    let theme = Theme::dark();
+    let title = "Launch plan for the autumn release, and everything it has to carry with it";
+    let actions: Vec<Element> = (0..10)
+        .map(|_| Box::new(Button::new("open", "Open").in_menu().on_view(|| {})) as Element)
+        .collect();
+    let shell = NavShell::new()
+        .content(Probe::boxed("content").0)
+        .content_header(title, actions);
+    let mut h = harness(shell, 1024, 700, theme.clone());
+    settle(&mut h, 1024, 700);
+    let shown = part_rect(&h, Part::Title(Column::Content));
+    let door = part_rect(&h, Part::More(Column::Content));
+    assert!(door.width() > 0.0, "the actions wait in the menu's door");
+    let (needs, _) =
+        crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
+    assert!(
+        (shown.width() - needs).abs() < 1.5,
+        "the title says {needs:.0} wide and takes {:.0} ({shown:?})",
+        shown.width()
+    );
+    assert!(shown.x1 <= door.x0, "{shown:?} does not run into {door:?}");
+}
+
 /// Labelled buttons collapse to their icons when the row is short; then
 /// the rest move into the More menu, and choosing one there runs it.
 #[test]

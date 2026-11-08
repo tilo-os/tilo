@@ -882,15 +882,15 @@ fn the_focus_ring_stands_apart_from_every_face() {
 #[test]
 fn face_colors_per_role_track_state_and_stay_readable() {
     use crate::a11y::contrast_ratio;
-    let hover = ButtonInteract {
+    let hover = Interaction {
         hovered: true,
         ..Default::default()
     };
-    let press = ButtonInteract {
+    let press = Interaction {
         pressed: true,
         ..Default::default()
     };
-    let rest = ButtonInteract::default();
+    let rest = Interaction::default();
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
         let colors = &theme.tokens.colors;
         let raised = colors.surfaces.raised;
@@ -1013,7 +1013,7 @@ fn disabled_faces_are_neutral_and_reject_input() {
     fn disabled_faces_are_neutral_bordered_and_readable_in_every_theme() {
         use crate::a11y::contrast_ratio;
 
-        let disabled = ButtonInteract {
+        let disabled = Interaction {
             hovered: true,
             pressed: true,
             focused: true,
@@ -1187,7 +1187,7 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
             face_colors(
                 &theme,
                 ButtonRole::Primary,
-                ButtonInteract {
+                Interaction {
                     hovered: true,
                     ..Default::default()
                 }
@@ -1371,33 +1371,33 @@ fn the_intrinsic_footprint_follows_the_label_and_never_moves_it() {
         let mut text = TextRenderer::new();
         let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
         let states = [
-            ("rest", ButtonInteract::default()),
+            ("rest", Interaction::default()),
             (
                 "hovered",
-                ButtonInteract {
+                Interaction {
                     hovered: true,
-                    ..ButtonInteract::default()
+                    ..Interaction::default()
                 },
             ),
             (
                 "pressed",
-                ButtonInteract {
+                Interaction {
                     pressed: true,
-                    ..ButtonInteract::default()
+                    ..Interaction::default()
                 },
             ),
             (
                 "focused",
-                ButtonInteract {
+                Interaction {
                     focused: true,
-                    ..ButtonInteract::default()
+                    ..Interaction::default()
                 },
             ),
             (
                 "disabled",
-                ButtonInteract {
+                Interaction {
                     disabled: true,
-                    ..ButtonInteract::default()
+                    ..Interaction::default()
                 },
             ),
         ];
@@ -1678,15 +1678,15 @@ fn keys_plain_ink_and_bound_state() {
     fn a_key_rests_on_a_faint_lift_with_a_title_label() {
         let theme = Theme::dark();
         let ground = theme.tokens.colors.surfaces.content;
-        let (rest, edge, _) = face_colors(&theme, ButtonRole::Key, ButtonInteract::default());
+        let (rest, edge, _) = face_colors(&theme, ButtonRole::Key, Interaction::default());
         assert_ne!(rest, ground, "a key is lifted off its ground");
         assert!(edge.is_none());
         let (hover, _, _) = face_colors(
             &theme,
             ButtonRole::Key,
-            ButtonInteract {
+            Interaction {
                 hovered: true,
-                ..ButtonInteract::default()
+                ..Interaction::default()
             },
         );
         assert_ne!(hover, rest);

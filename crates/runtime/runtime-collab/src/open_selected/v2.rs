@@ -287,26 +287,8 @@ pub fn decode_command(bytes: &[u8]) -> io::Result<RootCommand> {
 }
 /// # Errors
 /// Refuses malformed, oversized or inconsistent version two wire values.
-pub fn decode_admission(bytes: &[u8], access: SelectedAccess) -> io::Result<RootReply> {
-    let v: AdmissionReply = super::decode(bytes)?;
-    if v.schema != 2 || v.access != access || !v.reply.valid() {
-        return Err(refused());
-    }
-    Ok(v.reply)
-}
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
 pub fn decode_claim(bytes: &[u8], access: SelectedAccess) -> io::Result<ClaimReply> {
     let v: ClaimResult = super::decode(bytes)?;
-    if v.schema != 2 || v.access != access || !v.reply.valid() {
-        return Err(refused());
-    }
-    Ok(v.reply)
-}
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
-pub fn decode_target(bytes: &[u8], access: SelectedAccess) -> io::Result<TargetReply> {
-    let v: TargetResult = super::decode(bytes)?;
     if v.schema != 2 || v.access != access || !v.reply.valid() {
         return Err(refused());
     }

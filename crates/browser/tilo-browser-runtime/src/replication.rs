@@ -1028,18 +1028,25 @@ impl Joined {
         }
     }
 
-    /// Answer device `from`'s request for content a record of an app this
-    /// page has open references, from what the page keeps: a file a visitor
-    /// posted here, which the workspace's host asks for to keep its own copy.
+    /// Answer device `from`'s request for content of this workspace, from
+    /// what the page keeps: an app surface this page carries or kept, and a
+    /// file a record of an app it has open references, which the workspace's
+    /// host asks for to keep its own copy. A surface is public app metadata and
+    /// is answered for any app, open or not: a member reading a record this
+    /// page never opened still needs the version it was written with.
     fn content_wanted(&self, from: [u8; 32], request: &[u8]) {
         let device = self.peer.status().device;
         let apps: BTreeSet<String> = self.open_records().map(|(app, _)| app).collect();
         let pieces =
             tilo_browser_peer::content::answer(&device, &from, request, |app, workspace, hash| {
-                if workspace != self.uuid || !apps.contains(app) {
+                if workspace != self.uuid {
                     return None;
                 }
-                crate::page_content::page_content().read(hash)
+                tilo_browser_peer::surfaces::read(app, hash).or_else(|| {
+                    apps.contains(app)
+                        .then(|| crate::page_content::page_content().read(hash))
+                        .flatten()
+                })
             });
         for piece in pieces {
             if self.peer.send_content(self.workspace, from, piece).is_err() {

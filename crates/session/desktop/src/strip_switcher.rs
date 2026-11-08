@@ -1,41 +1,17 @@
-//! The strip switcher: the strip ribbon grown into labels. Shared by every
-//! desktop host, so strips are listed, switched, made, named and removed the
-//! same way on the native shell and in a page. It is the one place strips are
-//! picked: the top bar only names the strip shown, and opens this.
-//!
-//! It has one job, the strips of the workspace shown. At rest it is the
-//! ribbon on the content's right edge: one small mark per strip, the focused
-//! one long, and only where a workspace holds more than one strip — a lone
-//! strip would leave a bare mark with nothing to choose. Opened, each strip's
-//! name stands as a label level with its mark (no panel around them: the
-//! labels are the switcher), with the faces of the people on it (the only
-//! place the strips say who is where), and a "New strip" label under the
-//! last. Workspaces are not here; they are switched, made and joined from the
-//! workspace menu.
-//!
-//! Every action is a tap or a long-press, the same for a finger and a
-//! pointer; hovering only gets there sooner:
-//!
-//! - A tap on the ribbon opens the labels, pinned until a choice, Escape or
-//!   a tap elsewhere. A pointer that comes to rest on the ribbon opens them
-//!   too, following aim, not contact ([`EdgeAim`]): one sweeping past the
-//!   screen edge on its way somewhere else does not, and they go the moment
-//!   it leaves them.
-//! - A tap on a label moves to that strip; a wheel or two-finger scroll over
-//!   the ribbon or its labels moves to the strip above or below.
-//! - A long-press (or a secondary click) on a label puts its strip's actions
-//!   beside it: Rename, and Remove for an empty strip that is not the
-//!   workspace's last (nothing is lost: a strip with windows is never
-//!   offered for removal). A double click renames too.
-//! - "New strip" makes a strip, moves to it and puts its name in place for
-//!   typing. A name field never lives in a surface that hover alone keeps
-//!   up, so naming pins the labels until Enter, Escape or a press elsewhere.
-//!
-//! Super+S opens them for the keyboard: arrows choose, Enter takes, F2
-//! renames, Delete removes, Escape closes.
-//!
-//! The state is pure: every method takes the instant it reasons about, and
-//! the host turns a returned [`Command`] into the change on the desktop.
+//! The strip switcher: the strip ribbon grown into labels, shared by every desktop
+//! host so strips are listed, switched, made, named and removed the same way on the
+//! native shell and in a page. It is the one place strips are picked; the top bar
+//! only names the strip shown and opens this. Workspaces are not here; they are
+//! switched from the workspace menu.
+//! At rest it is the ribbon on the content's right edge, one mark per strip, and
+//! only where a workspace holds more than one. Opened, each strip's name stands as
+//! a label level with its mark, with the faces of the people on it and a "New
+//! strip" label under the last. A tap opens the labels pinned; a pointer at rest
+//! on the ribbon opens them following aim, not contact ([`EdgeAim`]); a label tap
+//! moves there, a wheel scrolls, a long-press offers Rename and Remove, and
+//! Super+S opens them for the keyboard.
+//! The state is pure: every method takes the instant it reasons about, and the host
+//! turns a returned [`Command`] into the change on the desktop.
 
 use crate::text_entry::{self, Edit, Mods};
 use ui::TextRole;
