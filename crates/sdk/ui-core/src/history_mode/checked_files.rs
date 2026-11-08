@@ -254,15 +254,7 @@ mod tests {
         }
         // phase: files_uncertain_result_keeps_exact_request_and_blocks_replacement
         {
-            let mut session = FileRestoreSession::default();
-            let request = session
-                .prepare(
-                    review(),
-                    Operation::Restore {
-                        version_id: FileVersionId(uuid::Uuid::from_u128(5)),
-                    },
-                )
-                .unwrap();
+            let (mut session, request) = prepared(5);
             assert!(session.receive(
                 request,
                 Outcome::RecoveryPending {
@@ -280,15 +272,7 @@ mod tests {
         }
         // phase: files_late_completion_of_a_settled_request_is_recognised_as_stale
         {
-            let mut session = FileRestoreSession::default();
-            let request = session
-                .prepare(
-                    review(),
-                    Operation::Restore {
-                        version_id: FileVersionId(uuid::Uuid::from_u128(5)),
-                    },
-                )
-                .unwrap();
+            let (mut session, request) = prepared(5);
             assert!(
                 !session.has_settled(&request),
                 "a pending request is not stale"
@@ -320,28 +304,12 @@ mod tests {
                 },
                 Outcome::InvalidRequest,
             ] {
-                let mut session = FileRestoreSession::default();
-                let request = session
-                    .prepare(
-                        review(),
-                        Operation::Restore {
-                            version_id: FileVersionId(uuid::Uuid::from_u128(5)),
-                        },
-                    )
-                    .unwrap();
+                let (mut session, request) = prepared(5);
                 assert!(session.receive(request, outcome));
                 assert!(session.request.is_none());
                 assert!(session.receipts.is_empty());
             }
-            let mut session = FileRestoreSession::default();
-            let request = session
-                .prepare(
-                    review(),
-                    Operation::Restore {
-                        version_id: FileVersionId(uuid::Uuid::from_u128(5)),
-                    },
-                )
-                .unwrap();
+            let (mut session, request) = prepared(5);
             assert!(session.receive(
                 request,
                 Outcome::Unchanged {
@@ -355,6 +323,20 @@ mod tests {
     }
 
     use super::*;
+    /// A session with the review `review()` answers and a pending restore of
+    /// version `version`, which a case then settles, replaces or ages out.
+    fn prepared(version: u128) -> (FileRestoreSession, Request) {
+        let mut session = FileRestoreSession::default();
+        let request = session
+            .prepare(
+                review(),
+                Operation::Restore {
+                    version_id: FileVersionId(uuid::Uuid::from_u128(version)),
+                },
+            )
+            .unwrap();
+        (session, request)
+    }
     fn review() -> Review {
         Review {
             schema_version: 1,

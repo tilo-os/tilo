@@ -458,6 +458,44 @@ mod tests {
     use crate::history_mode::HistoryRegistration;
     use automerge::AutoCommit;
 
+    /// A file-history backend that never answers: every read fails, and a
+    /// submit either fails or, where the case proves none can happen, panics
+    /// with its reason.
+    mod no_transport {
+        use crate::history_mode::checked_files::FileHistoryTransport;
+        use fs_protocol::files::*;
+        pub(super) struct NoTransport {
+            pub(super) never_submits: Option<&'static str>,
+        }
+        impl FileHistoryTransport for NoTransport {
+            fn read(
+                &self,
+                _: FileHistoryReadQueryV1,
+            ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
+                Err(FileHistoryReadErrorV1::Unavailable)
+            }
+            fn preview(
+                &self,
+                _: FileHistoryReadScopeV1,
+                _: FileVersionId,
+            ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
+                Err(FileHistoryReadErrorV1::Unavailable)
+            }
+            fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
+                Err(CheckedHistoryOutcomeV1::Unavailable)
+            }
+            fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
+                if let Some(reason) = self.never_submits {
+                    panic!("{reason}");
+                }
+                CheckedHistoryOutcomeV1::Unavailable
+            }
+            fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
+                CheckedHistoryOutcomeV1::Unavailable
+            }
+        }
+    }
+
     fn test_host() -> HistoryHost {
         fn preview(
             _: FilePreviewInput,
@@ -519,40 +557,17 @@ mod tests {
         }
         // phase: files_confirmation_queued_after_same_frame_cancel_cannot_submit
         {
-            use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
+            use crate::history_mode::checked_files::FileHistoryTarget;
             use fs_protocol::files::*;
-            struct Transport;
-            impl FileHistoryTransport for Transport {
-                fn read(
-                    &self,
-                    _: FileHistoryReadQueryV1,
-                ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
-                    Err(FileHistoryReadErrorV1::Unavailable)
-                }
-                fn preview(
-                    &self,
-                    _: FileHistoryReadScopeV1,
-                    _: FileVersionId,
-                ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
-                    Err(FileHistoryReadErrorV1::Unavailable)
-                }
-                fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
-                    Err(CheckedHistoryOutcomeV1::Unavailable)
-                }
-                fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
-                    panic!("cancelled confirmation must never submit")
-                }
-                fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
-                    CheckedHistoryOutcomeV1::Unavailable
-                }
-            }
             let mut host = test_host();
             let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
             let mut files = FileController::new(FileHistoryTarget {
                 binding: uuid::Uuid::new_v4(),
                 record,
                 label: "file".into(),
-                transport: std::sync::Arc::new(Transport),
+                transport: std::sync::Arc::new(no_transport::NoTransport {
+                    never_submits: Some("cancelled confirmation must never submit"),
+                }),
                 authors: crate::history_source::AuthorDirectory::new(),
             });
             files.suspend();
@@ -589,33 +604,8 @@ mod tests {
         }
         // phase: round1_root_target_replacement_or_removal_invalidates_queued_confirmation
         {
-            use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
+            use crate::history_mode::checked_files::FileHistoryTarget;
             use fs_protocol::files::*;
-            struct Transport;
-            impl FileHistoryTransport for Transport {
-                fn read(
-                    &self,
-                    _: FileHistoryReadQueryV1,
-                ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
-                    Err(FileHistoryReadErrorV1::Unavailable)
-                }
-                fn preview(
-                    &self,
-                    _: FileHistoryReadScopeV1,
-                    _: FileVersionId,
-                ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
-                    Err(FileHistoryReadErrorV1::Unavailable)
-                }
-                fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
-                    Err(CheckedHistoryOutcomeV1::Unavailable)
-                }
-                fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
-                    CheckedHistoryOutcomeV1::Unavailable
-                }
-                fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
-                    CheckedHistoryOutcomeV1::Unavailable
-                }
-            }
             for (remove, late) in [(false, false), (true, false), (false, true), (true, true)] {
                 let mut host = test_host();
                 let HistorySourceRegistration::CheckedFiles { source, .. } = host.source() else {
@@ -627,7 +617,9 @@ mod tests {
                     binding: uuid::Uuid::new_v4(),
                     record,
                     label: "A".into(),
-                    transport: std::sync::Arc::new(Transport),
+                    transport: std::sync::Arc::new(no_transport::NoTransport {
+                        never_submits: None,
+                    }),
                     authors: crate::history_source::AuthorDirectory::new(),
                 };
                 source.set_target(Some(target.clone()));
@@ -885,35 +877,10 @@ mod tests {
     /// devices read as the person, and a stranger still reads by key.
     #[test]
     fn file_rows_attribute_an_agents_version_to_the_agent_for_its_person() {
-        use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
+        use crate::history_mode::checked_files::FileHistoryTarget;
         use crate::history_source::{AuthorDirectory, HistoryAgent};
         use crate::widget::history::{AuthorRelation, HistoryAttribution};
         use fs_protocol::files::*;
-        struct Transport;
-        impl FileHistoryTransport for Transport {
-            fn read(
-                &self,
-                _: FileHistoryReadQueryV1,
-            ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
-                Err(FileHistoryReadErrorV1::Unavailable)
-            }
-            fn preview(
-                &self,
-                _: FileHistoryReadScopeV1,
-                _: FileVersionId,
-            ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
-                Err(FileHistoryReadErrorV1::Unavailable)
-            }
-            fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
-                Err(CheckedHistoryOutcomeV1::Unavailable)
-            }
-            fn submit(&self, _: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
-                CheckedHistoryOutcomeV1::Unavailable
-            }
-            fn result(&self, _: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
-                CheckedHistoryOutcomeV1::Unavailable
-            }
-        }
         let (ada, ada_laptop, scribe, stranger) = ([1; 32], [2; 32], [3; 32], [4; 32]);
         let mut authors = AuthorDirectory::new();
         authors.register_person(
@@ -934,7 +901,9 @@ mod tests {
             binding: uuid::Uuid::new_v4(),
             record,
             label: "Report.txt".into(),
-            transport: std::sync::Arc::new(Transport),
+            transport: std::sync::Arc::new(no_transport::NoTransport {
+                never_submits: None,
+            }),
             authors,
         });
         let version = |id: u128, person: [u8; 32], device: [u8; 32]| FileVersionV1 {
