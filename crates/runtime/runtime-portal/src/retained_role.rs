@@ -153,16 +153,12 @@ impl VerifiedDaemonPeer {
     }
     /// Exact fixed protected executable observation for the existing owned
     /// helper bootstrap delegation; these numbers alone never mint a role.
-    /// # Errors
-    /// Refuses a retired task or changed fixed installed image.
     pub fn program_identity(&self) -> io::Result<[u64; 2]> {
         self.check_current()?;
         let metadata = self.helper.metadata()?;
         Ok([metadata.dev(), metadata.ino()])
     }
     /// Held task start observed at admission, rechecked before delegation.
-    /// # Errors
-    /// Refuses retired or substituted process/image custody.
     pub fn start_time(&self) -> io::Result<u64> {
         self.check_current()?;
         Ok(self.start)

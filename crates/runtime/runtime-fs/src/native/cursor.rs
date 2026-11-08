@@ -19,8 +19,6 @@ pub struct FsDirectoryCursor {
 }
 impl FsSession {
     /// Opens an independent cursor from the actual directory descriptor.
-    /// # Errors
-    /// Refuses non-enumerable or revoked scope and native directory IO.
     pub fn open_directory_cursor(
         &self,
         root: &DirectoryGrant,
@@ -51,8 +49,6 @@ impl FsDirectoryCursor {
     }
     /// At most128 names, each accompanied by the same nofollow stat observation.
     /// Mutation can change enumeration order/content; this is not a snapshot.
-    /// # Errors
-    /// Refuses stale sequence, enumeration IO, closed session or revoked lineage.
     pub fn page(&self, expected: u64) -> Result<DirectoryStreamPage, FsError> {
         let table = self.session.call()?;
         self.session

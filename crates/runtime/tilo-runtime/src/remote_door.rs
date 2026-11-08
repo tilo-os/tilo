@@ -145,9 +145,6 @@ pub trait PersonsDevices: Send + Sync {
 
     /// Whether `certificate`, shown on a connection the transport proved is
     /// from `dialer`, is one of the person's devices now.
-    ///
-    /// # Errors
-    /// Why it is not.
     fn admit(&self, dialer: [u8; 32], certificate: &DeviceCert) -> Result<(), Refusal>;
 }
 
@@ -506,9 +503,6 @@ pub struct Dialed {
 /// Open the door of the device at `addr` from `endpoint`, as the device
 /// `own` certifies, asking to work in `workspace`; with `probe`, only ask
 /// whether it would open.
-///
-/// # Errors
-/// The device could not be reached, or its door refused, and why.
 pub async fn open(
     endpoint: &Endpoint,
     addr: EndpointAddr,
@@ -605,9 +599,6 @@ pub fn forward_request(line: &[u8]) -> Option<Forward> {
 /// Ask the host at the other end of `stream` to carry it to the door
 /// `forward` names, and read whether that door opened. From `Ok` on, the
 /// stream is that door's.
-///
-/// # Errors
-/// The host or the device's door refused, and why.
 pub fn ask_forward(stream: &mut UnixStream, forward: &Forward) -> io::Result<()> {
     let mut line = serde_json::to_vec(&ForwardLine {
         forward: forward.clone(),
@@ -755,9 +746,6 @@ impl Doors {
 
     /// The device `named` names: its endpoint id, or its name as the person
     /// reads it, matched without regard to case.
-    ///
-    /// # Errors
-    /// No device, or more than one, has that name, or it is this device.
     pub fn resolve(&self, named: &str) -> Result<[u8; 32], String> {
         let named = named.trim();
         let own = self.devices.this_device().device_public_key;

@@ -714,9 +714,6 @@ impl Environment {
 
     /// Write this environment as the whole of a fresh record document — how
     /// a record is created; every later change is an action.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     pub fn write_record(&self, doc: &mut tilo_resource::Doc) -> Result<(), ModelError> {
         tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)?;
         // A fresh record is at today's storage version; without the stamp it
@@ -814,9 +811,6 @@ pub fn same_packages(a: &[String], b: &[String]) -> bool {
 }
 
 /// Parse an image id as the record stores it.
-///
-/// # Errors
-/// Returns the reason when `id` is not a `tapp:<hex>` id.
 pub fn parse_image(id: &str) -> Result<PackageId, String> {
     PackageId::from_str(id).map_err(|e| format!("{id:?} is not an image id: {e}"))
 }
@@ -914,11 +908,6 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
 /// is accepted and written that way). Lower-case, no trailing dot. The
 /// grammar is [`collab_types::caps::NetHostPattern`]'s, the one apps' grants
 /// are read with too.
-///
-/// # Errors
-/// Returns the reason when `host` is not a host name: empty, an address
-/// (egress is decided by name, so a literal would bypass the resolver that
-/// decides), or characters DNS names do not carry.
 pub fn normalize_host(host: &str) -> Result<String, String> {
     collab_types::caps::NetHostPattern::parse(host)
         .map(|pattern| pattern.to_string())

@@ -358,9 +358,6 @@ impl CloudClient {
     }
 
     /// Consume a pinned hold after account metadata was saved.
-    ///
-    /// # Errors
-    /// Returns an error unless the token matches and the account is in Import mode.
     pub fn complete_import(&mut self, account: &str, token: &str) -> std::io::Result<()> {
         self.control(&CloudRequest::CompleteImport {
             account: account.to_owned(),

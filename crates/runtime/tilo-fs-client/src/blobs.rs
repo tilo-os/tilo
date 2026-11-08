@@ -197,10 +197,6 @@ struct HandoffFrame {
 /// little-endian `u32` length and a JSON object
 /// `{"protocol":1,"principal":"app","workspace":…,"app_id":…}` or
 /// `{"protocol":1,"principal":"session"}`. The launcher writes the same bytes.
-///
-/// # Errors
-///
-/// Returns an I/O error when the frame cannot be written.
 pub fn write_handoff(stream: &mut impl io::Write, principal: &BlobPrincipal) -> io::Result<()> {
     let frame = match principal {
         BlobPrincipal::App(scope) => HandoffFrame {
@@ -223,10 +219,6 @@ pub fn write_handoff(stream: &mut impl io::Write, principal: &BlobPrincipal) -> 
 }
 
 /// Read and validate a handoff frame (server side).
-///
-/// # Errors
-///
-/// Returns an I/O error for a truncated, oversized, unknown or invalid frame.
 pub async fn read_handoff<R>(reader: &mut R) -> io::Result<BlobPrincipal>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -645,11 +637,6 @@ impl BlobClient {
 
     /// Keep a copy of the public content `name` on this device for this
     /// app; the first keeper starts its fetch.
-    ///
-    /// # Errors
-    ///
-    /// Returns the service's refusal (an unknown name) or a connection
-    /// error.
     pub fn public_keep(&self, name: &str) -> Result<(), BlobError> {
         let target = self.data_target()?;
         let name = name.to_owned();
@@ -664,10 +651,6 @@ impl BlobClient {
 
     /// This app no longer keeps the public content `name`. The copy stays
     /// on this device until the device needs its room.
-    ///
-    /// # Errors
-    ///
-    /// Returns the service's refusal or a connection error.
     pub fn public_release(&self, name: &str) -> Result<(), BlobError> {
         let target = self.data_target()?;
         let name = name.to_owned();
@@ -681,10 +664,6 @@ impl BlobClient {
     }
 
     /// Read one range of the current copy of the public content `name`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the service's refusal or a connection error.
     pub fn public_read(
         &self,
         name: &str,
@@ -707,11 +686,6 @@ impl BlobClient {
     /// The whole current copy of the public content `name` and its hash,
     /// verified against it; `Err` with the outcome when it is pending or
     /// unavailable.
-    ///
-    /// # Errors
-    ///
-    /// Returns the service's refusal, a connection error, or a refusal when
-    /// the bytes do not hash to the copy's hash.
     pub fn public_read_all(
         &self,
         name: &str,

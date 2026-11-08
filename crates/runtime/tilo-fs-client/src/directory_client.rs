@@ -141,8 +141,6 @@ impl DirectoryClient {
     }
 
     /// Reserve only actual held native work; observations are never source grants.
-    /// # Errors
-    /// Refuses absent sealed verifier, substitutions, rights or admission failure.
     pub async fn prepare_replace(
         &self,
         temporary: &EntryName,
@@ -250,8 +248,6 @@ impl DirectoryClient {
     }
 
     /// Retain metadata custody without any byte IO capability.
-    /// # Errors
-    /// Refuses changed identity, wrong type, revoked scope or transport failure.
     pub async fn pin_metadata(
         &self,
         name: &EntryName,
@@ -310,8 +306,6 @@ impl DirectoryClient {
     }
 
     /// Open an existing no-follow child. Missing files require an actual create job.
-    /// # Errors
-    /// Refuses unsupported modes, missing rights, wrong file type and revoked scopes.
     pub async fn open_file(
         &self,
         name: &EntryName,
@@ -477,8 +471,6 @@ impl DirectoryClient {
     }
 
     /// Same-parent NOREPLACE only. Never an atomic-save or replacing-rename claim.
-    /// # Errors
-    /// Refuses native lookup/admission, revoked scope or transport loss.
     pub async fn atomic_save(
         &self,
         temporary: &EntryName,
@@ -614,8 +606,6 @@ impl NativeJobClient {
 
     /// Ask for canonical job cancellation. An in-flight native commit may already
     /// have happened; callers must consume its actual terminal outcome.
-    /// # Errors
-    /// Refuses revoked or disconnected native job scope.
     pub async fn cancel(&self) -> Result<(), NotAvailable> {
         match call(&self.object, FsRequest::JobCancel).await? {
             FsReply::Ack(status) => crate::native_reply::check(status),

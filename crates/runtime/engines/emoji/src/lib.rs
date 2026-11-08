@@ -28,9 +28,6 @@ pub use emoji;
 ///
 /// The engine's check binary calls it, so a release proves the library loads
 /// and runs against the runtime it ships with.
-///
-/// # Errors
-/// Names the catalogue that read wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     let english = emoji::Catalogue::english();

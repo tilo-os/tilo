@@ -75,9 +75,6 @@ pub extern "C-unwind" fn tilo_adblock_engine_check() -> bool {
 ///
 /// The check binary runs it through its unmangled entry, so a release proves
 /// the library loads and runs against the runtime it ships with.
-///
-/// # Errors
-/// Names what the compiler produced wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     let list = "||ads.example.com^\n###ad-banner\n";

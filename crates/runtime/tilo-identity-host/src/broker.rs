@@ -46,10 +46,6 @@ pub trait ChannelKeySource: Send + Sync + 'static {
     /// newer than `known_generation`; `None` while no channel service runs.
     /// The route goes to the channel's participants with this device's access
     /// request, so it can decide Read on the record itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when ready keys cannot be encoded.
     fn access(
         &self,
         workspace: WorkspaceId,
@@ -184,11 +180,6 @@ fn close_clients(clients: &Mutex<HashMap<u64, UnixStream>>) {
 }
 /// Start the identity broker's unix-socket listener at `path`, serving
 /// clients on their own thread until the returned handle drops.
-///
-/// # Errors
-///
-/// Returns an error if binding the unix socket at `path` fails, or if the
-/// listener thread cannot be spawned.
 pub fn spawn(
     path: PathBuf,
     tree: Arc<dyn WorkspaceMembership>,
@@ -731,10 +722,6 @@ pub fn trusted_current_device(
 /// selected, trusted device. This is a privileged host API, not an app socket
 /// request: callers must authorize the complete typed operation before calling.
 /// The protocol separates moderation credentials from other device signatures.
-///
-/// # Errors
-///
-/// Rejects missing identities, untrusted devices and invalid operations.
 pub fn sign_external_moderation(
     workspace: &str,
     operation: &registry_types::ExternalModerationOperation,

@@ -457,10 +457,6 @@ impl Signaller {
 impl Command {
     /// Hand `request` to the guest whose control socket is `control`, with
     /// `streams` as its standard input, output and error.
-    ///
-    /// # Errors
-    ///
-    /// The guest did not take the command.
     pub fn start(
         control: &UnixStream,
         request: &Request,
@@ -485,10 +481,6 @@ impl Command {
     }
 
     /// What passes signals on to the command.
-    ///
-    /// # Errors
-    ///
-    /// The socket could not be duplicated.
     pub fn signaller(&self) -> std::io::Result<Signaller> {
         Ok(Signaller(self.socket.try_clone()?))
     }

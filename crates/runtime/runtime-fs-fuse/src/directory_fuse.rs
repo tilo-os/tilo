@@ -129,8 +129,6 @@ fn mode(flags: i32, created: bool) -> io::Result<OpenMode> {
 }
 impl DirectoryFilesystem {
     /// Uses only a mode-selected, independently admitted directory channel.
-    /// # Errors
-    /// Refuses invalid target credentials or missing/invalid directory custody.
     pub fn new(source: DirectoryConnection, uid: u32, gid: u32) -> io::Result<Self> {
         if uid == 0 {
             return Err(error(libc::EINVAL));

@@ -41,8 +41,6 @@ impl Socket {
     }
 
     /// Adopt a connected Unix seqpacket descriptor; close it on every error.
-    /// # Errors
-    /// Rejects wrong socket type/family, disconnected descriptors or bad flags.
     pub fn adopt(fd: OwnedFd) -> io::Result<Self> {
         let mut kind = 0;
         let mut size =

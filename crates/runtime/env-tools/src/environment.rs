@@ -45,10 +45,6 @@ pub fn to_tool_error(error: BuildError) -> ToolBuildError {
 /// old release, and are built again on first use there. All or nothing: the
 /// first tool that fails fails the switch, so the record keeps its old
 /// runtime and a tool is never mounted on a runtime it was not built for.
-///
-/// # Errors
-///
-/// The failing tool's packages and why.
 pub fn rebuild_tools(
     builder: &dyn ToolBuilder,
     arch: &str,

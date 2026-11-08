@@ -63,10 +63,6 @@ pub trait Environment: Send + Sync {
 
     /// Invoke `action` on the record as part of `run`: checked against its
     /// grants, recorded in its History, and carried out.
-    ///
-    /// # Errors
-    ///
-    /// Why it was refused or did not get carried out, in words.
     fn act(&self, action: FileAction, run: Option<&Run>) -> Result<Acted, String>;
 
     /// Start keeping content in the environment's content store, for an

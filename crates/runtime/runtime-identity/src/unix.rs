@@ -284,11 +284,6 @@ fn read_private_selector(path: &std::path::Path) -> io::Result<String> {
 /// Listing never writes: it takes no lock and creates or re-modes nothing.
 /// Every writer replaces a record by rename, so each record is read whole. A
 /// store that does not exist yet lists nothing.
-///
-/// # Errors
-///
-/// Returns an error if `dir` is not a real directory owned by this user, or
-/// can't be read.
 pub fn list_identities(dir: &std::path::Path) -> io::Result<Vec<IdentitySummary>> {
     let meta = match fs::symlink_metadata(dir) {
         Ok(meta) => meta,
@@ -436,11 +431,6 @@ fn import_identity_unlocked(
 /// Move one record's inline key into its secret provider. Idempotent. Only
 /// provisioning and Settings secure records; an app launch reads only their
 /// public fields through [`load_metadata_for_launch`] and never writes the store.
-///
-/// # Errors
-///
-/// Returns an error if the lifecycle lock can't be acquired, the record
-/// can't be read, or no secret provider can secure it.
 pub fn secure_identity(dir: &std::path::Path, id: &str) -> io::Result<KeyProtection> {
     let _lock = IdentityLock::acquire(dir)?;
     let path = identity_path(dir, id)?;
@@ -450,11 +440,6 @@ pub fn secure_identity(dir: &std::path::Path, id: &str) -> io::Result<KeyProtect
 /// Migrate using an explicitly supplied provider, for a hardware-backed
 /// integration. The provider's `protection()` is what Settings reports; merely
 /// detecting a TPM device never changes the label.
-///
-/// # Errors
-///
-/// Returns an error if the lifecycle lock can't be acquired, the record
-/// can't be read, or the provider fails to secure it.
 pub fn secure_identity_with_provider(
     dir: &std::path::Path,
     id: &str,
@@ -599,12 +584,6 @@ fn secure_record_with_provider_unlocked(
 /// Select which identity the launcher brokers into newly started apps.
 /// Running apps retain the old capability until relaunched, avoiding a
 /// mid-operation author change.
-///
-/// # Errors
-///
-/// Returns an error if the lifecycle lock can't be acquired, `id` doesn't
-/// name a regular-file identity record, the record can't be secured or
-/// re-validated, or the active-identity selector can't be written.
 pub fn set_active_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
     let _lock = IdentityLock::acquire(dir)?;
     let path = identity_path(dir, id)?;
@@ -676,9 +655,6 @@ pub fn update_identity_profile(
 /// Publish name, colour and canonical pixels together under the identity lifecycle
 /// lock, preserving signing/provider custody. A failed durability acknowledgement
 /// must still be treated as a failed save by the caller.
-///
-/// # Errors
-/// Refuses invalid presentation, unavailable custody or failed publication.
 pub fn update_identity_presentation(
     dir: &std::path::Path,
     id: &str,
@@ -724,9 +700,6 @@ pub fn update_identity_presentation(
 /// Change the canonical public photo while preserving identity and provider custody.
 /// `None` restores the initials/colour presentation. The caller must normalize
 /// a consented source image before constructing the bounded `ProfilePhoto`.
-///
-/// # Errors
-/// Refuses unsafe identity paths, unavailable custody or a failed private publication.
 pub fn update_identity_photo(
     dir: &std::path::Path,
     id: &str,
@@ -1454,9 +1427,6 @@ pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
 
 /// Public metadata from the actually inherited broker only. This never falls
 /// back to an environment/config record path or unlocks a local signing share.
-///
-/// # Errors
-/// Refuses absence of a bound broker, malformed metadata or service refusal.
 pub fn load_bound_metadata() -> Result<IdentityMetadata, NotAvailable> {
     if runtime_portal::service_fd(IDENTITY_SERVICE).is_none()
         && std::env::var_os(broker::BROKER_ENV_VAR).is_none()

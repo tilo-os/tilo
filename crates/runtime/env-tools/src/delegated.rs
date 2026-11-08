@@ -149,10 +149,6 @@ pub struct UnsignedStore {
 
 impl UnsignedStore {
     /// Seal for `publisher` into `out`, reading runtimes from `store`.
-    ///
-    /// # Errors
-    ///
-    /// On an architecture images aren't built for.
     pub fn new(store: Store, publisher: [u8; 32], out: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             store,

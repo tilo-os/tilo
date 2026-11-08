@@ -125,10 +125,6 @@ pub fn answer(grants: &DeviceGrants, line: &str) -> String {
 }
 
 /// Serve `grants` on `socket` until the process exits.
-///
-/// # Errors
-///
-/// The socket cannot be bound, or its directory is not private.
 pub fn serve(grants: Arc<DeviceGrants>, socket: &Path) -> std::io::Result<()> {
     let server = ConsoleServer::new();
     let (wake, woken) = std::sync::mpsc::sync_channel::<()>(1);

@@ -68,11 +68,6 @@ pub struct Connection(Arc<Inner>);
 impl Connection {
     /// Drive a connected stream on a thread of its own, so callers need no
     /// runtime of their own and calls from any context share one transport.
-    ///
-    /// # Errors
-    ///
-    /// Returns a failed connection when the stream cannot be made asynchronous
-    /// or the driver thread cannot start.
     pub fn connect(name: &str, stream: UnixStream) -> io::Result<Arc<Self>> {
         let transport = stream.try_clone()?;
         stream.set_nonblocking(true)?;
@@ -310,10 +305,6 @@ impl Capabilities {
 /// Serve `root` to the peer on `stream` until it goes away. Calls are answered
 /// concurrently; every object the table holds is released when the connection
 /// ends.
-///
-/// # Errors
-///
-/// Returns a failed connection when a frame does not decode or the writer stops.
 pub async fn serve_connected(
     stream: tokio::net::UnixStream,
     root: Arc<dyn ServeObject>,

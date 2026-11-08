@@ -45,8 +45,6 @@ impl InvalidationControl {
         }
     }
     /// Start only with the notifier belonging to this filesystem's Session.
-    /// # Errors
-    /// Refuses duplicate starts, poisoned custody or thread creation failure.
     pub fn start(&self, notifier: Notifier) -> io::Result<InvalidationWorker> {
         let mut slot = self
             .sender

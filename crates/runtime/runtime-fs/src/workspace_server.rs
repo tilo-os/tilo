@@ -34,8 +34,6 @@ pub trait WorkspaceFileBackend: Send + Sync + 'static {
         None
     }
     /// Actual held native identity for directory opens; legacy backends expose none.
-    /// # Errors
-    /// Refuses unavailable authority or failed descriptor identity lookup.
     fn native_identity(&self) -> Result<Option<[u64; 2]>, String> {
         Ok(None)
     }
@@ -47,8 +45,6 @@ pub trait WorkspaceFileBackend: Send + Sync + 'static {
     fn write(&self, offset: u64, bytes: &[u8]) -> Result<u32, String>;
 
     /// One non-idempotent atomic append. Unsupported by default.
-    /// # Errors
-    /// Refuses unsupported append, unavailable authority or a failed write.
     fn append(&self, _bytes: &[u8]) -> Result<u32, String> {
         Err("atomic append unsupported".into())
     }
@@ -64,8 +60,6 @@ pub trait WorkspaceFileBackend: Send + Sync + 'static {
 /// separators; the root is `""`.
 pub trait WorkspaceBackend: Send + Sync + 'static {
     /// Independently admitted native directory custody. Selected files return None.
-    /// # Errors
-    /// Refuses unavailable authority or failed directory admission.
     fn directory(
         &self,
     ) -> Result<Option<Arc<dyn crate::directory_backend::WorkspaceDirectoryBackend>>, String> {
@@ -76,8 +70,6 @@ pub trait WorkspaceBackend: Send + Sync + 'static {
     /// selects the original path-backed behavior, which permits Read only.
     /// Write retains its canonical truncate/create meaning; Append retains
     /// append semantics. A provider must refuse modes it cannot implement.
-    /// # Errors
-    /// Refuses unavailable authority, changed selection or unsupported modes.
     fn open(
         &self,
         _path: &str,
@@ -93,9 +85,6 @@ pub trait WorkspaceBackend: Send + Sync + 'static {
 
     /// Up to `max_len` bytes of the file at `path` from `offset`, empty at
     /// its end.
-    ///
-    /// # Errors
-    /// `path` is not a file here, or its content cannot be read.
     fn read(&self, path: &str, offset: u64, max_len: u32) -> Result<Vec<u8>, String>;
 }
 
@@ -120,10 +109,6 @@ impl Drop for WorkspaceServer {
 /// Serves `backend` at `socket`, owner-only, to every connection, from a
 /// thread of its own, running the backend's calls on `runtime`. A stale
 /// socket file is replaced.
-///
-/// # Errors
-/// `socket` is not a socket path, or cannot be bound, or the thread cannot
-/// start.
 pub fn serve_workspace(
     socket: &Path,
     backend: Arc<dyn WorkspaceBackend>,
@@ -177,14 +162,10 @@ pub struct ConnectedWorkspaceServer {
 
 impl ConnectedWorkspaceServer {
     /// Wait for the actual connection to finish without requesting stop.
-    /// # Errors
-    /// Returns the connection's own failure, or a panic in its worker.
     pub fn wait(mut self) -> io::Result<()> {
         self.join()
     }
     /// Ask it to stop and report the actual owned worker departure.
-    /// # Errors
-    /// Returns the connection's own failure, or a panic in its worker.
     pub fn retire(mut self) -> io::Result<()> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
@@ -219,8 +200,6 @@ impl Drop for ConnectedWorkspaceServer {
 /// Serve an attested, owned stream through the existing `WorkspaceFs` protocol.
 /// Transport authentication and source authority remain the caller's boundary;
 /// this function opens no socket path and accepts no credential claims.
-/// # Errors
-/// Refuses unusable streams or failure to create the owned server runtime/thread.
 pub fn serve_workspace_connected(
     stream: std::os::unix::net::UnixStream,
     backend: Arc<dyn WorkspaceBackend>,
@@ -231,8 +210,6 @@ pub fn serve_workspace_connected(
 
 /// Same owned source connection, with an optional source-resident pending-only
 /// handoff registry. Registry contents arise only from actual Pending servers.
-/// # Errors
-/// Refuses invalid streams or unavailable owned server resources.
 pub fn serve_workspace_connected_with_handoffs(
     stream: std::os::unix::net::UnixStream,
     backend: Arc<dyn WorkspaceBackend>,

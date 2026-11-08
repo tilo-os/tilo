@@ -131,10 +131,6 @@ impl PersonPaths {
     /// The identity this account runs as: `$TILO_IDENTITY_ROOT`, else the
     /// system device root when it exists, else the person's data directory;
     /// and the person's identity directory.
-    ///
-    /// # Errors
-    ///
-    /// Why the person's identity directory cannot be found.
     pub fn from_env() -> Result<Self, String> {
         let root = std::env::var_os("TILO_IDENTITY_ROOT").map_or_else(
             || {
@@ -200,10 +196,6 @@ pub enum KeyHolding {
 
 /// What of the identity at `paths` this device holds, without opening its
 /// secret.
-///
-/// # Errors
-///
-/// When this account has no identity, or its record cannot be read.
 pub fn key_holding(paths: &PersonPaths) -> Result<KeyHolding, String> {
     if IdentityPaths::under(&paths.root).user_privkey.exists() {
         return Ok(KeyHolding::Whole);
@@ -225,10 +217,6 @@ pub fn key_holding(paths: &PersonPaths) -> Result<KeyHolding, String> {
 
 /// The certificate to propose for `candidate`, a personal device of
 /// `person`, valid from about `now_ns`; and the relay service it announced.
-///
-/// # Errors
-///
-/// When the candidate's keys are malformed.
 pub fn proposed_certificate(
     person: [u8; 32],
     candidate: &Candidate,
@@ -317,11 +305,6 @@ pub fn command_error(stderr: &[u8], fallback: &str) -> String {
 /// The devices trusted under the identity `identity_id` (whose root key is
 /// `user_public_key`), the one `device` holds a certificate for marked
 /// current.
-///
-/// # Errors
-///
-/// Why the fleet cannot be read, or that it holds another identity's
-/// records.
 pub fn trusted_devices(
     fleets: &DeviceFleetStore,
     device: &IdentityPaths,
@@ -383,10 +366,6 @@ pub fn revocation_reason(text: &str) -> Result<RevocationReason, String> {
 
 /// Root-sign the permanent revocation of `device` (64 hex characters) under
 /// the identity `identity_id`, for `reason`.
-///
-/// # Errors
-///
-/// Why the device was not revoked.
 pub fn revoke(
     fleets: &DeviceFleetStore,
     identity_id: &str,

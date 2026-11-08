@@ -205,10 +205,6 @@ pub struct Viewer {
 impl Viewer {
     /// Configure from [`ORIGIN_ENV`] and [`HOST_READY_ENV`]; `None` unless
     /// both are set. The ledger lives in the private directory `state`.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an origin that is not an exact `https://` origin.
     pub fn from_env(state: &Path) -> io::Result<Option<Self>> {
         let (Some(origin), Some(ready)) = (
             std::env::var_os(ORIGIN_ENV),
@@ -498,10 +494,6 @@ fn find(ledger: &Ledger, invite_id: &str) -> Result<usize, ViewerError> {
 /// [`Viewer::from_env`] with its expiry sweeper running: what an MCP
 /// endpoint passes to [`crate::mcp_http::Endpoint::with_viewer`]. The ledger
 /// lives in the private directory `state`.
-///
-/// # Errors
-///
-/// Rejects an invalid origin, or an app runtime that cannot start.
 pub fn start_from_env(state: &Path) -> io::Result<Option<std::sync::Arc<Viewer>>> {
     let Some(viewer) = Viewer::from_env(state)? else {
         return Ok(None);
@@ -512,10 +504,6 @@ pub fn start_from_env(state: &Path) -> io::Result<Option<std::sync::Arc<Viewer>>
 }
 
 /// Remove expired viewers every [`SWEEP_INTERVAL`] on the app runtime.
-///
-/// # Errors
-///
-/// Returns an error when the app runtime cannot start.
 pub fn spawn_sweeper(viewer: std::sync::Arc<Viewer>) -> io::Result<()> {
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     runtime.spawn(async move {
