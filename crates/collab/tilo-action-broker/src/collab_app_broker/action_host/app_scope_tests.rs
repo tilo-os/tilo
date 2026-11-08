@@ -8,8 +8,8 @@
 )]
 
 use super::super::{
-    ActionDirectoryRoot, AppBrokerState, BrokerChannels, FanoutState, LocalActionDirectoryRegistry,
-    PeerPublisher, RegisteredActionDirectory, directory_pagination,
+    ActionDirectoryRoot, AppBrokerState, LocalActionDirectoryRegistry, RegisteredActionDirectory,
+    directory_pagination,
 };
 use crate::collab_broker::CrdtRoute;
 use crate::services::{
@@ -19,8 +19,8 @@ use crate::services::{
 use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
     ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueRow, MAX_CATALOGUE_PAGE,
     PendingPoll, workspace_provider,
@@ -213,13 +213,8 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
         rows: keys,
     });
     let launcher = Arc::new(Launcher::default());
-    let (state, _bridge_rx) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
+    let (state, _bridge_rx) = AppBrokerState::test_state(
         Some(tree.shared().authority()),
-        None,
-        None,
         HostServices {
             launcher: Some(launcher.clone()),
             workspace_governance: Some(governance.clone()),
@@ -506,15 +501,8 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
-    let (state, bridge_rx) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        Some(tree.shared().authority()),
-        None,
-        None,
-        HostServices::default(),
-    );
+    let (state, bridge_rx) =
+        AppBrokerState::test_state(Some(tree.shared().authority()), HostServices::default());
     let asked = Rc::new(Asked::default());
     let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
     let provider = 47;

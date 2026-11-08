@@ -219,7 +219,7 @@ impl AppBrokerState {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
+    use super::super::AppBrokerState;
     use super::{CONNECT_WAIT, ConnectedLaunch, PUBLISH_WAIT};
     use crate::services::{LaunchContent, LaunchPlace, Launched};
     use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
@@ -289,13 +289,8 @@ mod tests {
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge_rx) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            None,
-            None,
             crate::services::HostServices {
                 launcher: Some(Arc::new(Ticketed::default())),
                 ..Default::default()
@@ -428,13 +423,8 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let launcher = Arc::new(Ticketed::default());
-        let (state, bridge) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, bridge) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            None,
-            None,
             crate::services::HostServices {
                 launcher: Some(launcher.clone()),
                 local_person: Some(Arc::new(NativePerson(certificate.clone()))),

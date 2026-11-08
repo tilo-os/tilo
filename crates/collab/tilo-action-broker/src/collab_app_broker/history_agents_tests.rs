@@ -61,15 +61,8 @@ fn context_receivers_learn_their_workspaces_verified_agents_and_each_change() {
         workspace: workspace.clone(),
         agents: Mutex::new(vec![scribe("Scribe")]),
     });
-    let (state, _bridge) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        Some(authority.clone()),
-        None,
-        None,
-        HostServices::default(),
-    );
+    let (state, _bridge) =
+        AppBrokerState::test_state(Some(authority.clone()), HostServices::default());
     let mut in_room = state.subscribe_context(
         &CrdtRoute::record("so.tilo.notes", &workspace, "a").channel_key(),
         1,

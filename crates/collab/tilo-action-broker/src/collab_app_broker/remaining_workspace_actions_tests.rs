@@ -3,7 +3,6 @@
     reason = "every test here keeps its fixture and guards alive through its assertions"
 )]
 use super::*;
-use crate::collab_app_broker::{BrokerChannels, FanoutState, PeerPublisher};
 use crate::services::{HostServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
 use crate::test_support::WorkspaceSlot;
 use std::sync::Mutex;
@@ -98,13 +97,8 @@ fn library_replans_after_custody_instead_of_applying_a_stale_delete() {
     tree.workspaces.push(workspace.clone());
     let tree = tree.shared();
     let library = Arc::new(Library::default());
-    let (state, _) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
+    let (state, _) = AppBrokerState::test_state(
         Some(tree.authority()),
-        None,
-        None,
         HostServices {
             shortcut_library: Some(library.clone()),
             ..Default::default()
@@ -156,13 +150,8 @@ fn keyboard_rechecks_live_policy_and_execution_after_custody() {
         tree.workspaces.push(workspace.clone());
         let tree = tree.shared();
         let keyboard = Arc::new(Keyboard::default());
-        let (state, _) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _) = AppBrokerState::test_state(
             Some(tree.authority()),
-            None,
-            None,
             HostServices {
                 keyboard_shortcuts: Some(keyboard.clone()),
                 ..Default::default()
@@ -327,13 +316,8 @@ fn fixture(
     workspace.set_owner("owner");
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace.clone());
-    let (state, _) = AppBrokerState::new_configured(
-        &Arc::new(FanoutState::new()),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
+    let (state, _) = AppBrokerState::test_state(
         Some(tree.shared().authority()),
-        None,
-        None,
         HostServices {
             workspace_governance: Some(service.clone()),
             ..Default::default()
@@ -561,13 +545,8 @@ fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
             );
             let mut tree = crate::test_support::WorkspaceTree::default();
             tree.workspaces.push(workspace.clone());
-            let (state, _) = AppBrokerState::new_configured(
-                &Arc::new(FanoutState::new()),
-                Arc::new(Mutex::new(BrokerChannels::default())),
-                PeerPublisher::disabled(),
+            let (state, _) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
-                None,
-                None,
                 HostServices {
                     keyboard_shortcuts: Some(keys.clone()),
                     shortcut_library: Some(library.clone()),

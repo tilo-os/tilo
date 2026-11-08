@@ -82,13 +82,8 @@ fn broker_with_tree(
         checked,
         calls: Mutex::default(),
     });
-    let (state, _) = AppBrokerState::new_configured(
-        &Arc::new(super::super::FanoutState::new()),
-        Arc::new(Mutex::new(super::super::BrokerChannels::default())),
-        super::super::PeerPublisher::disabled(),
+    let (state, _) = AppBrokerState::test_state(
         Some(tree.authority()),
-        None,
-        None,
         HostServices {
             workspace_governance: Some(service.clone()),
             ..Default::default()

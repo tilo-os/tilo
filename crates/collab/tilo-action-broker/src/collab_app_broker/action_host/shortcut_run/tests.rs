@@ -6,12 +6,10 @@ use super::super::*;
 use super::*;
 use crate::collab_app_broker::InvocationOwner;
 use crate::collab_app_broker::invocation_journal::{InvocationJournal, InvocationKey};
-use crate::collab_app_broker::{BrokerChannels, FanoutState, PeerPublisher};
 use crate::services::{
     HostServices, LocalPersonServices, ShortcutLibraryRequest, ShortcutLibraryServices,
 };
 use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
-use std::sync::Mutex;
 
 struct Library(tokio::runtime::Handle);
 
@@ -178,13 +176,8 @@ impl Fixture {
         }
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        let (state, _bridge) = AppBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
+        let (state, _bridge) = AppBrokerState::test_state(
             Some(tree.shared().authority()),
-            None,
-            None,
             HostServices {
                 shortcut_library: Some(Arc::new(Library(tokio::runtime::Handle::current()))),
                 local_person: Some(person.clone()),
