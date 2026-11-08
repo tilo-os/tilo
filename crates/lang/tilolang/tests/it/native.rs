@@ -75,8 +75,7 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    state opened: Option<Note> = .none
-    std.list(nb.notes, opened) { (n, at) ->
+    std.list(nb.notes) { (n, at) ->
         ui.ListItem(item: n, presence: at) {
             note_row(n)
         }

@@ -59,7 +59,6 @@ view note_line(n: Note) {
 view notebook(nb: Notebook) {
     state order: NoteOrder = .created
     state place: Text = ""
-    state opened: Option<Note> = .none
     let notes: List<Note> = nb.notes
     let sorted = if order == .title { notes.sort_by(.title) } else { notes }
     let shown = sorted.matching(place)
@@ -79,7 +78,7 @@ view notebook(nb: Notebook) {
             if shown.is_empty() {
                 ui.EmptyState("No notes yet", icon: meta(Note).icon)
             } else {
-                std.list(shown, opened) { (n, at) ->
+                std.list(shown) { (n, at) ->
                     ui.ListItem(item: n, presence: at) {
                         note_line(n)
                     }

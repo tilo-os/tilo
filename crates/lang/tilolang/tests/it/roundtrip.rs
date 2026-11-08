@@ -230,8 +230,7 @@ view note_row(n: Note) {
 
 view notebook(nb: Notebook) {
     state shown: NoteFilter = NoteFilter.all
-    state opened: Option<Note> = .none
-    std.list(nb.notes, opened) { (n, at) ->
+    std.list(nb.notes) { (n, at) ->
         ui.ListItem(item: n, presence: at)
     }
 }

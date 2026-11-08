@@ -33,18 +33,22 @@ app tilo.std "Standard library"
 /// nests its rows gives `tree`; one that groups says the name of the items that group under
 /// nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that does
 /// neither gives neither.
+///
+/// The row the person opened is the list's own state, so a window that lists and nothing else
+/// declares none. A view that opens a row from elsewhere in the window — what `on show` does —
+/// keeps that state itself and passes it as `opened:`.
 template view list<T>(
     items: List<T>,
-    opened: State<Option<T>>,
+    opened: State<Option<T>> = open_item,
     tree: Bool = false,
     ungrouped: Option<Text> = .none,
     tail_title: Option<Text> = .none,
     row: (T, Option<Principal>) -> View,
 ) {
-    // The item the person opened where it stands — the row grows into it, and pressing it again,
-    // Escape, or a press beside it closes it — is the window's `opened`: the view that lists the
-    // items holds it, so it can also open one from outside the list (what `on show` does). A row
-    // without a document opens elsewhere, in the window's pane, so the list keeps nothing of it.
+    // The item the person opened where it stands: the row grows into it, and pressing it again,
+    // Escape, or a press beside it closes it. A row without a document opens elsewhere, in the
+    // window's pane, so the list keeps nothing of it.
+    state open_item: Option<T> = .none
     ui.VirtualList(
         selection_follows_focus: true,
         multi_select: true,
@@ -128,13 +132,14 @@ template view add_entry(placeholder: Text, create: Action) {
 /// to open beside it.
 ///
 /// `row` draws one item's row and the window puts it down the list, with who else is at the
-/// item as every list of the platform shows it. An app whose window needs more than this — a
-/// list that groups or nests its rows, a sidebar of its own — composes `std.list`,
-/// `std.places` and `std.header` itself.
+/// item as every list of the platform shows it. The row the person opened is the list's own,
+/// unless the app keeps one (`opened`) to open a row from elsewhere in the window. An app whose
+/// window needs more than this — a list that groups or nests its rows, a sidebar of its own —
+/// composes `std.list`, `std.places` and `std.header` itself.
 template view browse<R, T, S>(
     of: R,
     items: List<T>,
-    opened: State<Option<T>>,
+    opened: Option<State<Option<T>>> = .none,
     places: List<Filter<T>> = [],
     sort: Option<State<S>> = .none,
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
@@ -203,7 +208,7 @@ template view browse<R, T, S>(
 /// as the first.
 template view browse_rows<T>(
     items: List<T>,
-    opened: State<Option<T>>,
+    opened: Option<State<Option<T>>> = .none,
     empty: Text,
     icon: Option<Text>,
     entry: Option<Action>,

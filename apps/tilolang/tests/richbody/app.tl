@@ -31,7 +31,6 @@ fn name_of(n: Note) -> Text {
 
 /// The notebook's window: its notes, each opening in a window of its own.
 view notebook(nb: Notebook) {
-    state opened: Option<Note> = .none
     ui.NavShell(
         content_kind: .document,
         overview_title: .some(meta(Notebook).title),
@@ -41,7 +40,7 @@ view notebook(nb: Notebook) {
             if nb.notes.is_empty() {
                 ui.EmptyState("No notes yet", icon: meta(Note).icon)
             } else {
-                std.list(nb.notes, opened) { (n, at) ->
+                std.list(nb.notes) { (n, at) ->
                     ui.ListItem(item: n, presence: at) {
                         note_row(n)
                     }

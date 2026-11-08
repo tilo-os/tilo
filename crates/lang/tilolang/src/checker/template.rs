@@ -115,6 +115,15 @@ fn kind_of(te: &TypeExpr) -> Kind<'_> {
     }
 }
 
+/// The `state` declaration a parameter's default names (`opened: State<Option<T>> = open_item`),
+/// when its default is a name.
+fn default_state_name(p: &ast::Param) -> Option<&str> {
+    match &p.default.as_ref()?.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
 /// Whether a view declared with these type parameters and parameters is a template.
 #[must_use]
 pub fn is_template(view: &ast::ViewDecl) -> bool {
@@ -407,11 +416,33 @@ impl Checker<'_> {
             let m = caller.macros.get(n)?;
             (!matches!(m, Macro::State(_)) || !caller.names.contains_key(n)).then(|| m.clone())
         };
+        // The states a template keeps itself: a `State<T>` parameter a call leaves out, or
+        // leaves to the template by passing on an absent `Option<State<T>>`, is the state its
+        // default names, one the template declares in its body (`opened: State<Option<T>> =
+        // open_item`). Read once the template's own states are lowered: a caller that wants the
+        // state passes its own. A parameter with no default still needs one.
+        let mut own: Vec<(&ast::Param, &TypeExpr, &ast::Expr)> = Vec::new();
+        // The state a parameter's default names, when the call gave the parameter one of its
+        // own: the template keeps nothing of it then.
+        let mut kept: Vec<&str> = Vec::new();
         // Values and view state first: they bind the type parameters lambdas are read with.
         for (i, p) in view.params.iter().enumerate() {
             if !matches!(kind_of(&p.ty), Kind::Value(_))
                 && let Some(m) = passed(i)
             {
+                if matches!(m, Macro::Absent)
+                    && let Kind::State(te) = kind_of(&p.ty)
+                    && let Some(default) = &p.default
+                {
+                    own.push((p, te, default));
+                    continue;
+                }
+                if matches!(m, Macro::Some(_) | Macro::State(_))
+                    && matches!(kind_of(&p.ty), Kind::State(_))
+                    && let Some(name) = default_state_name(p)
+                {
+                    kept.push(name);
+                }
                 let held = match &m {
                     Macro::Some(inner) => inner.as_ref(),
                     other => other,
@@ -484,16 +515,18 @@ impl Checker<'_> {
                     self.emit(Stmt::Set(local, v));
                     values.insert(p.name.name.clone(), local);
                 }
-                Kind::State(te) => match given[i] {
-                    Some(a) => {
+                Kind::State(te) => match (given[i], &p.default) {
+                    (Some(a), _) => {
                         if let Some(state) = self.state_arg(&a.value, view, p) {
                             Self::unify(te, &state.ty, &params, &mut types);
                             values.insert(p.name.name.clone(), state.local);
                             states.insert(p.name.name.clone(), state.clone());
                             macros.insert(p.name.name.clone(), Macro::State(state));
+                            kept.extend(default_state_name(p));
                         }
                     }
-                    None => self.err(
+                    (None, Some(default)) => own.push((p, te, default)),
+                    (None, None) => self.err(
                         "E022",
                         span,
                         format!(
@@ -633,24 +666,83 @@ impl Checker<'_> {
             let local = self.declare(&p.name.name, v.ty.clone());
             self.emit(Stmt::Set(local, v));
         }
-        let body = self.template_state(view, &view.body);
+        let body = self.template_state(view, &view.body, &kept);
+        // The state each parameter left to the template keeps, now that its own are declared.
+        for (p, te, default) in own {
+            let Some(state) = self.own_state(view, p, default) else {
+                continue;
+            };
+            Self::unify(te, &state.ty, &params, &mut self.st.types);
+            let types = self.st.types.clone();
+            let want = self.type_in(te, &types);
+            if !want.is_error() && !state.ty.same(&want) {
+                let (w, f) = (self.show(&want), self.show(&state.ty));
+                self.err(
+                    "E020",
+                    default.span,
+                    format!(
+                        "`{}` of `{}` takes {w}; the state it names is {f}",
+                        p.name.name, view.name.name
+                    ),
+                );
+            }
+            self.bind_local(&p.name.name, state.local);
+            self.st.states.insert(p.name.name.clone(), state.clone());
+            self.st
+                .macros
+                .insert(p.name.name.clone(), Macro::State(state));
+        }
         let node = self.template_body(&body, parent);
         self.st.expanding.pop();
         self.leave(saved);
         node
     }
 
+    /// The state a template's `State<T>` parameter names as its default (`opened:
+    /// State<Option<T>> = open_item`): the one the template declares, read in its own scope.
+    fn own_state(
+        &mut self,
+        view: &ast::ViewDecl,
+        p: &ast::Param,
+        default: &ast::Expr,
+    ) -> Option<StateRef> {
+        let state = match &default.kind {
+            ExprKind::Ident(name) => self.state_named(name),
+            _ => None,
+        };
+        if state.is_none() {
+            let known = self.state_names();
+            self.err(
+                "E066",
+                default.span,
+                format!(
+                    "`{}` of `{}` takes a `state` declaration of the template it names, and the template declares: {known}",
+                    p.name.name, view.name.name
+                ),
+            );
+        }
+        state
+    }
+
     /// Lowers the `state` declarations at the top of a template's body: state of
     /// the view it expands in, kept under that view's id and the template's name
-    /// (`<view id>:list.query`), as the view's own is under its name. Returns the rest of the
-    /// body.
-    fn template_state(&mut self, view: &ast::ViewDecl, body: &[UiStmt]) -> Vec<UiStmt> {
+    /// (`<view id>:list.query`), as the view's own is under its name. One a parameter names as
+    /// its default is the caller's instead, and left undeclared. Returns the rest of the body.
+    fn template_state(
+        &mut self,
+        view: &ast::ViewDecl,
+        body: &[UiStmt],
+        kept: &[&str],
+    ) -> Vec<UiStmt> {
         let mut rest = Vec::new();
         for s in body {
             let UiKind::State(d) = &s.kind else {
                 rest.push(s.clone());
                 continue;
             };
+            if kept.contains(&d.name.name.as_str()) {
+                continue;
+            }
             let types = self.st.types.clone();
             let ty = self.type_in(&d.ty, &types);
             let base = format!("{}:{}.{}", self.st.view_id, view.name.name, d.name.name);

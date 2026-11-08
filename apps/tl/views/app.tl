@@ -143,12 +143,9 @@ action send(v: WrittenView, to: chat.TextChannel) {
 
 /// Every view, the kept ones a place of their own, each opening in a window of its own.
 view views_list(all: Views) {
-    // The view this window's list shows opened where it stands.
-    state opened: Option<WrittenView> = .none
     std.browse(
         all,
         all.items,
-        opened,
         places: [WrittenView.kept],
         everything: "All views",
         empty: "No views yet",

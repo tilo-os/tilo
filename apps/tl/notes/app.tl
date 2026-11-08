@@ -85,9 +85,7 @@ fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
 /// person looking chose, under the place they chose.
 view notebook(nb: Notebook) {
     state order: NoteOrder = .created
-    // The note this window's list shows opened where it stands.
-    state opened: Option<Note> = .none
-    std.browse(nb, listed(nb, order), opened, places: [Note.pinned], sort: order) { n ->
+    std.browse(nb, listed(nb, order), places: [Note.pinned], sort: order) { n ->
         note_row(n)
     }
 }

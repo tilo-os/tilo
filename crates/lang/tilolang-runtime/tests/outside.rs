@@ -168,8 +168,7 @@ root Desk
 default view desk for Desk
 
 view desk(desk: Desk) {
-    state opened: Option<Draft> = .none
-    std.list(desk.drafts, opened) { (d, at) ->
+    std.list(desk.drafts) { (d, at) ->
         ui.ListItem(item: d, presence: at) {
             draft_line(d)
         }
