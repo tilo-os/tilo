@@ -713,15 +713,17 @@ fn build(
 /// thread running the app, which is the main thread's; a worker gets the room to match.
 pub(crate) const WORKER_STACK: usize = 32 * 1024 * 1024;
 
-/// Start `worker` on a thread of the scope with a window's stack.
+/// Start `worker` on a thread of the scope with a window's stack, and say why one could not
+/// start: the work it would have taken then has nobody to run it.
 fn spawn_worker<'scope, 'env>(
     scope: &'scope std::thread::Scope<'scope, 'env>,
     worker: impl FnOnce() + Send + 'scope,
-) {
+) -> Result<(), String> {
     std::thread::Builder::new()
         .stack_size(WORKER_STACK)
         .spawn_scoped(scope, worker)
-        .expect("a worker starts");
+        .map(drop)
+        .map_err(|error| format!("a worker could not start: {error}"))
 }
 
 /// Run every unit of `units` at the same time, each on a worker of its own, and return what each
@@ -743,9 +745,10 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
         units.iter().map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
     let stopped = AtomicBool::new(false);
+    let unstarted: Mutex<Option<String>> = Mutex::new(None);
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            spawn_worker(scope, || {
+            let started = spawn_worker(scope, || {
                 tilo_ui_host::i18n::ensure();
                 let mut worker = Worker {
                     apps,
@@ -767,8 +770,19 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
                     }
                 }
             });
+            if let Err(failure) = started {
+                stopped.store(true, Ordering::Relaxed);
+                *unstarted.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure);
+                break;
+            }
         }
     });
+    if let Some(failure) = unstarted
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        return Err(failure);
+    }
     let mut out = Vec::with_capacity(units.len());
     for slot in taken {
         let found = slot
@@ -853,17 +867,28 @@ fn run_opens(
             }
         }
     } else {
+        let unstarted: Mutex<Option<String>> = Mutex::new(None);
         std::thread::scope(|scope| {
             for app in busy {
                 let Some(slot) = slots.get(app) else {
                     continue;
                 };
-                spawn_worker(scope, move || {
+                let started = spawn_worker(scope, move || {
                     tilo_ui_host::i18n::ensure();
                     *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
                 });
+                if let Err(failure) = started {
+                    *unstarted.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure);
+                    break;
+                }
             }
         });
+        if let Some(failure) = unstarted
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            return Err(failure);
+        }
     }
     let mut opened: Vec<Found> = (0..scenes.len()).map(|_| Found::default()).collect();
     let mut shown: Vec<Shown> = vec![Shown::new(); apps.len()];
