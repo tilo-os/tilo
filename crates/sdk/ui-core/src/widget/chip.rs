@@ -1556,31 +1556,13 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
 
+    /// A chip in a bar's room for it: whatever it says, its row is 60 high.
     fn lay_out(w: &mut dyn Widget) {
         lay_out_with_theme(w, &Theme::dark());
     }
 
     fn lay_out_with_theme(w: &mut dyn Widget, theme: &Theme) {
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        let node = w.build_layout(&mut taffy, theme, &mut node_map);
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(300.0),
-                    height: taffy::AvailableSpace::Definite(60.0),
-                },
-                |k, a, id, _, _| {
-                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
-                        (*p).measure(k, a, &mut tr)
-                    })
-                },
-            )
-            .unwrap();
-        w.apply_layout(&taffy, node, Point::ZERO);
+        crate::testing::lay_out_in(w, 300.0, 60.0, theme).expect("a chip lays out");
     }
 
     #[test]
