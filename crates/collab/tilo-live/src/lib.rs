@@ -2,6 +2,15 @@
 //! and tilo-video/1 object profiles and, behind `relay`, `moq-lite` relays and clients over
 //! WebTransport (see [`carrier`] for the session layout).
 
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        clippy::arc_with_non_send_sync,
+        reason = "a page's MoQ handles to JavaScript stay on the page's one thread"
+    )
+)]
+
 pub use collab_types::scope;
 
 /// A stream's frames: the track they are sealed under, the sealing and

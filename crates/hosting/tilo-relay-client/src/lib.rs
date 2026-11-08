@@ -21,6 +21,13 @@
 //! browser over HTTPS).
 
 #![deny(rust_2018_idioms)]
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        reason = "a page's HTTP client answers through JavaScript, so the futures that await it stay on the page's one thread"
+    )
+)]
 
 #[cfg(feature = "iroh")]
 pub mod certify;

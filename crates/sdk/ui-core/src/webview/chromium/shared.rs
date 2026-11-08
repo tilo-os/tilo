@@ -434,6 +434,10 @@ impl Claim {
         if let Some(server) = server {
             server.stop();
         }
+        // Giving the claim up here, not at the end of the scope, frees the
+        // profile before the host is marked exited. A page holds no claim to
+        // free: there is no local socket, so `Ownership` carries nothing.
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         drop(self);
         if let Some(server) = server {
             server.mark_host_exited();

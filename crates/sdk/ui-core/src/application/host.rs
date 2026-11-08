@@ -976,6 +976,9 @@ fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
                 .and_then(|()| file.sync_all())
                 .and_then(|()| tilo_files::native::atomic::sync_directory(profile_root))
             {
+                // Close the file before removing it; a page's file handle has
+                // nothing to close.
+                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
                 drop(file);
                 let _ = std::fs::remove_file(&path);
                 return Err(LaunchError::Operation(format!(
