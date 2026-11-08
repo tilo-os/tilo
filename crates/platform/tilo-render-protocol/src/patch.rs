@@ -484,6 +484,9 @@ pub struct Form {
     pub fields: Vec<(String, String)>,
     /// Every field is short (one line, a switch or a choice): a popover can hold them.
     pub short: bool,
+    /// The controls whose choice answers the form by itself, by key: a form's quick choices,
+    /// where a pick says everything the form asks, so one tap is one answer.
+    pub answers: Vec<String>,
     /// The fields, laid out: a tree of the same components and content nodes views send.
     pub tree: Node,
 }

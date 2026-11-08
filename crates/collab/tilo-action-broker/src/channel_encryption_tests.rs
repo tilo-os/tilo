@@ -19,12 +19,26 @@ fn device(
     policy: &Policy,
     dir: &Path,
 ) -> Device {
+    sealed_device(workspace, workspace_id, id, (seed, seed), policy, dir)
+}
+
+/// [`device`] whose state is sealed under the vault of `vault` and whose
+/// device key is `seed`'s: a machine copied from another keeps the person's
+/// vault and gets a key of its own.
+fn sealed_device(
+    workspace: &Arc<Workspace>,
+    workspace_id: WorkspaceId,
+    id: usize,
+    (vault, seed): (u8, u8),
+    policy: &Policy,
+    dir: &Path,
+) -> Device {
     workspace.queues.lock().unwrap().entry(id).or_default();
     let broker = Arc::new(Mutex::new(BrokerChannels::default()));
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
-            vault: VaultKey::new([seed; 32]),
+            vault: VaultKey::new([vault; 32]),
             device_key: key(seed),
         },
         Box::new(Directory {
@@ -1877,6 +1891,122 @@ fn a_restored_identity_regains_the_whole_channel_on_its_new_device() {
             .is_err(),
         "the lost device was removed and cannot read what follows"
     );
+}
+
+/// Copy `from` into `to`, as a disk copy does.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// A machine copied from another re-keys its device. Its copied channel
+/// state names the source's member, so it is dropped rather than used: the
+/// branch takes no leaf of the source's. Once the person's new device is a
+/// reader, a participant admits it, its key history opens what was written
+/// before, and what either writes afterwards the other reads, while the
+/// source stays the member it was.
+#[test]
+fn a_branched_device_rejoins_as_itself_beside_its_source() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let channel = ChannelId::new();
+    let artifact = collab_types::ArtifactId::new();
+    let policy = Policy::readers([20]);
+    let (source_dir, branch_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut source = device(&workspace, workspace_id, 0, 20, &policy, source_dir.path());
+    let ChannelAccess::Ready(keys) = create(&mut source, workspace_id, channel, now) else {
+        panic!("the source's keys");
+    };
+    let before = keys
+        .seal_content(artifact, ContentRetention::Delta, b"before the copy")
+        .unwrap();
+    let source_epoch = keys.epoch();
+
+    // The disk is copied; the copy re-keys to device 21 and keeps the
+    // person's vault. Certified, it is the person's device and a reader.
+    copy_tree(source_dir.path(), branch_dir.path());
+    let copied = ChannelPeer::path_in(
+        &channels_dir(&branch_dir.path().join("channels"), workspace_id),
+        channel,
+    );
+    assert!(copied.exists());
+    policy.allowed.lock().unwrap().insert(public(21));
+    let mut branch = sealed_device(
+        &workspace,
+        workspace_id,
+        1,
+        (20, 21),
+        &policy,
+        branch_dir.path(),
+    );
+    assert!(
+        !copied.exists(),
+        "the source's member state is dropped, never used"
+    );
+    assert!(matches!(
+        branch.service.access(workspace_id, channel, now),
+        ChannelAccess::Waiting
+    ));
+    run(&mut [&mut source, &mut branch], &mut now, 5);
+    let ChannelAccess::Ready(branch_keys) = branch.service.access(workspace_id, channel, now)
+    else {
+        panic!("the branch is admitted as itself");
+    };
+    assert!(
+        branch_keys
+            .open_content(artifact, &before.0, &before.1)
+            .is_ok(),
+        "its key history opens what was written before the copy"
+    );
+
+    // Each reads what the other writes from now on.
+    let ChannelAccess::Ready(source_keys) = source.service.access(workspace_id, channel, now)
+    else {
+        panic!("the source keeps its membership");
+    };
+    assert!(
+        source_keys.epoch() > source_epoch,
+        "admitting the branch is a commit"
+    );
+    let from_branch = branch_keys
+        .seal_content(artifact, ContentRetention::Delta, b"from the branch")
+        .unwrap();
+    assert_eq!(
+        source_keys
+            .open_content(artifact, &from_branch.0, &from_branch.1)
+            .unwrap()
+            .as_slice(),
+        b"from the branch"
+    );
+    let from_source = source_keys
+        .seal_content(artifact, ContentRetention::Delta, b"from the source")
+        .unwrap();
+    assert_eq!(
+        branch_keys
+            .open_content(artifact, &from_source.0, &from_source.1)
+            .unwrap()
+            .as_slice(),
+        b"from the source"
+    );
+
+    // Both come back as themselves after a restart.
+    drop((source, branch));
+    for (id, keys, dir) in [
+        (0, (20, 20), source_dir.path()),
+        (1, (20, 21), branch_dir.path()),
+    ] {
+        let mut restarted = sealed_device(&workspace, workspace_id, id, keys, &policy, dir);
+        assert!(ready_epoch(&restarted.service.access(workspace_id, channel, now)).is_some());
+    }
 }
 
 fn sealed_op(

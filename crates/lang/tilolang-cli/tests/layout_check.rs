@@ -4,6 +4,7 @@
 //! already name, so a new one fails here.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use tilolang_cli::layout_check::{self, Kind, Options};
 
@@ -83,7 +84,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // No window in this fixture floats a popover or a sheet, and none composes a
             // shell whose title the row's actions squeeze.
             | Kind::PastWindow
-            | Kind::TitleClippedWithRoom => "(no view)",
+            | Kind::TitleClippedWithRoom
+            // The fixture's windows ship one language: nothing reads from another catalogue.
+            | Kind::MixedLanguage => "(no view)",
         };
         assert_eq!(
             finding.view,
@@ -111,6 +114,53 @@ fn a_view_whose_body_is_layers_lays_its_children_over_each_other() {
         report.findings.is_empty(),
         "the row over the content is where the view put it:\n{}",
         layout_check::render(&report)
+    );
+}
+
+/// A window reads in one language throughout: a word it shows from a catalogue in another
+/// language — here the app's source standing in for a translation it lacks — is a finding, and
+/// the same window read in the language the person speaks has none. The person's language is
+/// staged whatever locale this machine runs in, so the two runs differ by the person alone.
+#[test]
+fn a_word_a_window_shows_from_another_languages_catalogue_is_a_finding() {
+    let dir = manifest().join("tests/layout_check/languages");
+    let report = |locale: &str| {
+        layout_check::check(&Options {
+            dirs: vec![dir.clone()],
+            locale: locale.to_owned(),
+            ..Options::default()
+        })
+        .expect("the fixture lays out")
+    };
+    let english = report(layout_check::DEFAULT_LOCALE);
+    assert!(
+        english.findings.is_empty(),
+        "every word reads in English:\n{}",
+        layout_check::render(&english)
+    );
+    let german = report("de-DE");
+    let mixed: Vec<&str> = german
+        .findings
+        .iter()
+        .filter(|f| f.kind == Kind::MixedLanguage)
+        .map(|f| f.id.as_str())
+        .collect();
+    assert_eq!(
+        mixed.len(),
+        1,
+        "the one word German lacks:\n{}",
+        layout_check::render(&german)
+    );
+    assert!(
+        mixed[0].contains("w-a-word-only-the-source-language"),
+        "the word the app's German leaves out: {}",
+        mixed[0]
+    );
+    assert_eq!(
+        german.findings.len(),
+        1,
+        "and nothing else:\n{}",
+        layout_check::render(&german)
     );
 }
 
@@ -153,6 +203,50 @@ fn a_board_lane_draws_every_card_it_has_room_for() {
         report.findings.is_empty(),
         "no lane loses the cards it has room for:\n{}",
         layout_check::render(&report)
+    );
+}
+
+/// A view another app's page draws is laid out there, so it is reached for the package that
+/// defines it though none of that package's own windows shows it; a row view of a type inside a
+/// collection of a union is opened on an item of that type; and a view nothing calls is named as
+/// one to delete, apart from a view a view calls that no scenario reaches.
+#[test]
+fn a_view_another_app_draws_and_a_union_items_row_view_are_reached_while_a_dead_view_is_named() {
+    let dir = manifest().join("tests/layout_check/reach");
+    let report = layout_check::check(&Options {
+        dirs: vec![dir.join("drawer"), dir.join("drawn")],
+        search: vec![dir],
+        ..Options::default()
+    })
+    .expect("the fixtures lay out");
+    let unreached: Vec<(&str, bool)> = report
+        .unreached
+        .iter()
+        .map(|view| (view.view.as_str(), view.called))
+        .collect();
+    assert_eq!(
+        unreached,
+        [
+            ("layoutdrawn › behind", true),
+            ("layoutdrawn › orphan", false)
+        ],
+        "the row another app draws and the note's row are reached, and the two no layout \
+         shows say which they are:\n{}",
+        layout_check::render(&report)
+    );
+    let rendered = layout_check::render(&report);
+    assert!(
+        rendered.contains(
+            "note: no view calls layoutdrawn › orphan: nothing can draw it, so delete it"
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "note: no scenario reaches layoutdrawn › behind: a view calls it, so a scenario must \
+             reach the view that draws it"
+        ),
+        "{rendered}"
     );
 }
 
@@ -245,6 +339,42 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
         refused.contains("declares no filter `nonsense`"),
         "the run says what it could not stage: {refused}"
     );
+}
+
+/// A window held in the hand shows its list; the row a person taps opens what it holds in
+/// front of the list. The run stages every such screen, named after what it shows — for an app
+/// whose rows open a page over the list (a board's cards) as for one whose window pushes it.
+#[test]
+fn a_phone_layout_shows_what_a_tapped_row_opens() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    for (app, shows) in [
+        ("notes", " in front at 390×844"),
+        // The list stands behind what the app opened, and comes back by its Back chip.
+        ("notes", ", then Back pressed at 390×844"),
+        // A board keeps no detail of its own: the card a finger taps is the page that shows.
+        ("board", "then a card_page in front at 390×844"),
+    ] {
+        let dir = manifest().join("../../../apps/tl").join(app);
+        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+            .arg("layout-check")
+            .arg(&dir)
+            .args(["--dump", "390x844"])
+            .output_locked()
+            .expect("the check runs");
+        let doc = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(
+            output.status.success(),
+            "{app} is laid out: {}",
+            doc.lines().last().unwrap_or_default()
+        );
+        let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
+        assert!(
+            headers.iter().any(|header| header.contains(shows)),
+            "a phone window shows what `{shows}` names in {app}:\n{}",
+            headers.join("\n")
+        );
+    }
 }
 
 #[test]

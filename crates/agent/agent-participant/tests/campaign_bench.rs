@@ -31,6 +31,10 @@
     reason = "a benchmark harness: a broken scenario or host is the failure it reports"
 )]
 
+#[path = "harness/hosted.rs"]
+mod hosted;
+#[path = "harness/page.rs"]
+mod page;
 #[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
 mod participant;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
@@ -48,29 +52,21 @@ use std::time::{Duration, Instant};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
+use tilo_actions::ActionOutput;
 use tilo_actions::door::ActionAddress;
-use tilo_actions::remote::{
-    CataloguePage, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, RemoteActionTarget, application_open_target,
-};
-use tilo_actions::{ActionOutput, InvocationId};
-use tilo_agent_participant::{AgentHost, ApiKey, AppCatalogue, ModelChoice, record_provider};
-use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_actions::remote::{CatalogueQuery, InvokeArgument, application_open_target};
+use tilo_agent_participant::{ApiKey, AppCatalogue, ModelChoice, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
-use tilo_relay_client::Approver;
+use tilo_relay::daemon::Relay;
 use tilo_relay_protocol::agents::{
-    AGENTS_PROVIDER, AgentStatus, AgentTask, AgentsStatus, GrantState, MESSAGE_ACTION,
-    REQUEST_GRANT_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
-    agent_resource,
+    AgentStatus, AgentTask, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION,
+    SPAWN_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState, agent_resource,
 };
-use tilo_user_identity::{
-    CertificationPolicy, DeviceCapabilities, RevocationList, issue_device_cert,
-};
+use tilo_user_identity::DeviceCapabilities;
 
-use support::{Device, WORKSPACE, enrol, ready, start_peer, workspace};
+use hosted::{Hosted, Laptop, Options, Unlisted};
+use page::Page;
+use support::{Device, WORKSPACE, enrol};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
@@ -81,335 +77,49 @@ const WRITER: &str = "so.tilo.word-processor";
 /// begins: written steps, none of them, so no model is asked.
 const JOIN: &str = "[]";
 
-struct Hosted {
-    relay: Relay,
-    web: WebHandle,
-    agents: AgentHost,
-}
-
+/// The host, offering every app a scenario drives.
 async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: ModelChoice) -> Hosted {
-    let user = root.verifying_key().to_bytes();
-    let cfg = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
-        ..Default::default()
-    };
-    let (relay, agents) = tilo_relay::agents::start(
-        cfg,
-        RelayIdentity {
-            user_public_key: user,
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        tilo_relay::agents::AgentOptions {
-            state_dir: state.join("agents"),
-            model,
-            // Every app a browser mounts, and Mail, which only an agent's
-            // worker holds.
-            catalogue: Some(Arc::new(AppCatalogue::native)),
-            feedback_reviewer: None,
-        },
+    hosted::start(
+        root,
+        host,
+        state,
+        Options::offering(AppCatalogue::native, model),
     )
     .await
-    .unwrap();
-    let web = relay
-        .serve_web(WebConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
-                hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                store: Some(state.join("web-dev-identity")),
-            },
-            allowed_origins: Vec::new(),
-            plain_listen: None,
-            public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
-            country: None,
-            fetch_proxy: None,
-            live: LiveConfig::default(),
-        })
-        .await
-        .unwrap();
-    Hosted { relay, web, agents }
 }
 
-/// The laptop: a root holder answering every agent request with the
-/// agent's certificate and the delegation of exactly what was proposed, and
-/// every question an agent puts to its person (an action that asks first):
-/// allowed once for the agents in `confirming` (a scenario's `may_confirm`),
-/// refused for the rest.
+/// The laptop: a root holder answering every agent request with the agent's
+/// certificate and the delegation of exactly what was proposed, and every
+/// question an agent puts to its person: allowed once for the agents in
+/// `confirming` (a scenario's `may_confirm`), refused for the rest.
 fn approve_agents(
     relay: &Relay,
     root: SigningKey,
     laptop: &Device,
-    confirming: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    confirming: &std::sync::Mutex<BTreeSet<String>>,
 ) -> tokio::task::JoinHandle<()> {
-    let addr = relay.node_addr();
-    let cert = laptop.cert.clone();
-    let key = laptop.key.clone();
-    tokio::spawn(async move {
-        let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .bind()
-            .await
-            .unwrap();
-        let mut approver = Approver::connect(&endpoint, addr, cert, &key, &RevocationList::new())
-            .await
-            .unwrap();
-        loop {
-            // The host closing ends the approver; a benchmark run is over then.
-            let (Ok(proposals), Ok(pending_list)) = (
-                approver.list_agent_proposals().await,
-                approver.list_pending().await,
-            ) else {
-                return;
-            };
-            for pending in pending_list {
-                let Some(agent) = proposals
-                    .iter()
-                    .find(|agent| agent.request_digest == pending.request_digest)
-                else {
-                    continue;
-                };
-                let now = tilo_clock::unix_now_ns();
-                let cert = issue_device_cert(
-                    &pending.request,
-                    &root,
-                    &CertificationPolicy::agent(),
-                    &RevocationList::new(),
-                    now,
-                )
-                .unwrap();
-                let delegation = agent
-                    .proposal
-                    .sign(&root, pending.request.device_public_key, now)
-                    .unwrap();
-                let decided = approver
-                    .decide(
-                        pending.request_digest,
-                        ApproverDecision::IssueDelegate { cert, delegation },
-                    )
-                    .await;
-                assert!(
-                    matches!(decided, Ok(ApproverReply::Decided) | Err(_)),
-                    "{decided:?}"
-                );
-            }
-            let Ok(questions) = approver.list_confirmations().await else {
-                return;
-            };
-            for question in questions {
-                let allowed = confirming.lock().is_ok_and(|agents| {
-                    agents.contains(&question.agent_id) || agents.contains(&question.agent_label)
-                });
-                let answer = if allowed {
-                    ConfirmationAnswer::AllowOnce
-                } else {
-                    ConfirmationAnswer::Deny
-                };
-                eprintln!(
-                    "bench: {} asked to {} · {}: {answer:?}",
-                    question.agent_label, question.action_label, question.resource_label
-                );
-                let _ = approver.answer(question.id, answer).await;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    let confirming = confirming
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    Laptop::new(confirming, Unlisted::Deny).spawn(relay, root, laptop)
 }
 
-/// A browser session driving the host's agent supervisor, and the workspace's
-/// records through the host's workspace actions as the workspace's owner.
-struct Browser {
-    peer: PeerHandle,
-    events: PeerEvents,
-    host_key: [u8; 32],
-    /// How many changes the page has received of each record: an owner's
-    /// change is heard in the workspace before the agents act on it.
-    heard: std::sync::Mutex<BTreeMap<DocumentRoute, usize>>,
-}
-
-impl Browser {
-    async fn open(hosted: &Hosted, device: &Device, host: &Device) -> Self {
-        let https = support::https::DevHttps::new(
-            hosted.web.addr,
-            hosted.web.certificate_sha256.as_ref().unwrap(),
-        );
-        let peer = start_peer(
-            Host::Https(https),
-            device.cert.clone(),
-            host.cert.clone(),
-            device.key.clone(),
-        );
-        let events = peer.events();
-        peer.join_placed(WORKSPACE, "Workspace").unwrap();
-        ready(&[&peer]).await;
-        Self {
-            peer,
-            events,
-            host_key: host.cert.device_public_key,
-            heard: std::sync::Mutex::new(BTreeMap::new()),
-        }
-    }
-
-    /// Take what the page received: the host's answers `pick` accepts (the
-    /// first one), and the records' changes, counted.
-    fn pump<T>(&self, pick: &impl Fn(RemoteActionMessage) -> Option<T>) -> Option<T> {
-        let mut picked = None;
-        for event in self.events.drain() {
-            match event {
-                PeerEvent::RemoteAction { from, frame, .. } if from == self.host_key => {
-                    if picked.is_none() {
-                        picked = pick(RemoteActionFrame::decode(&frame).unwrap().message);
-                    }
-                }
-                PeerEvent::Document(document) => {
-                    *self
-                        .heard
-                        .lock()
-                        .unwrap()
-                        .entry(document.route.clone())
-                        .or_default() += 1;
-                }
-                PeerEvent::RemoteActionUndeliverable { reason, .. } => {
-                    panic!("undeliverable: {reason}")
-                }
-                _ => {}
-            }
-        }
-        picked
-    }
-
-    /// Send `message` to the host and wait for the answer `pick` accepts.
-    async fn exchange<T>(
-        &self,
-        message: RemoteActionMessage,
-        what: &str,
-        pick: impl Fn(RemoteActionMessage) -> Option<T>,
-    ) -> T {
-        let frame = RemoteActionFrame::new(message).encode().unwrap();
-        self.peer
-            .send_remote_action(workspace(), self.host_key, frame)
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            assert!(Instant::now() < deadline, "no answer: {what}");
-            if let Some(answer) = self.pump(&pick) {
-                return answer;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
-    /// One remote action to the host: to `provider` (the agent supervisor,
-    /// a record of the workspace, the workspace itself).
-    async fn invoke(
-        &self,
-        provider: &str,
-        address: ActionAddress,
-        argument: InvokeArgument,
-    ) -> Result<ActionOutput, String> {
-        let invocation = InvocationId::new();
-        let what = format!("{provider} {}#{}", address.resource, address.action);
-        let request = RemoteActionMessage::Invoke(InvokeRequest {
-            on_behalf_of: None,
-            invocation,
-            target: RemoteActionTarget {
-                provider: provider.into(),
-                address,
-            },
-            argument,
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        });
-        self.exchange(request, &what, |message| match message {
-            RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
-                Some(match receipt.status {
-                    ReceiptStatus::Completed { output } => Ok(output),
-                    other => Err(format!("{other:?}")),
-                })
-            }
-            _ => None,
-        })
-        .await
-    }
-
-    /// One remote action to the host's agent supervisor.
-    async fn call(
-        &self,
-        resource: &str,
-        action: &str,
-        argument: InvokeArgument,
-    ) -> Result<serde_json::Value, String> {
-        self.invoke(
-            AGENTS_PROVIDER,
-            ActionAddress::new(resource, action),
-            argument,
-        )
-        .await
-        .map(|output| output.value.unwrap_or_default())
-    }
-
-    /// The host's catalogue of the workspace's records and their actions.
-    async fn catalogue(&self, query: CatalogueQuery) -> Result<CataloguePage, String> {
-        static CORRELATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let correlation = CORRELATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.exchange(
-            RemoteActionMessage::CatalogueRequest { correlation, query },
-            "the workspace's catalogue",
-            |message| match message {
-                RemoteActionMessage::CatalogueResponse {
-                    correlation: got,
-                    result,
-                } if got == correlation => Some(result.map_err(|error| format!("{error:?}"))),
-                _ => None,
-            },
-        )
-        .await
-    }
-
-    /// How many changes of `route` the page has received.
-    fn heard(&self, route: &DocumentRoute) -> usize {
-        self.heard.lock().unwrap().get(route).copied().unwrap_or(0)
-    }
-
-    /// Wait until the page has received more than `past` changes of
-    /// `route`; `false` when none came in time.
-    async fn until_heard(&self, route: &DocumentRoute, past: usize) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            let _: Option<()> = self.pump(&|_| None);
-            if self.heard(route) > past {
-                return true;
-            }
+/// Wait until the page has received more than `past` changes of `route`;
+/// `false` when none came in time, so a scenario reports it and goes on.
+impl Page {
+    async fn heard_in_time(&mut self, route: &DocumentRoute, past: usize) -> bool {
+        let deadline = tilo_test_env::hang_deadline();
+        while self.heard(route) <= past {
             if Instant::now() >= deadline {
                 return false;
             }
+            self.pump();
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }
-
-    async fn status(&self) -> AgentsStatus {
-        serde_json::from_value(
-            self.call(SUPERVISOR_RESOURCE, STATUS_ACTION, InvokeArgument::None)
-                .await
-                .unwrap(),
-        )
-        .unwrap()
-    }
-
-    /// Wait until `done` holds for the supervisor's status.
-    async fn until(&self, what: &str, done: impl Fn(&AgentsStatus) -> bool) -> AgentsStatus {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        loop {
-            let status = self.status().await;
-            if done(&status) {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "{what}: {status:#?}");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        true
     }
 }
 
@@ -688,7 +398,7 @@ fn ran_isolated() -> bool {
 }
 
 /// Request and wait for one approved grant.
-async fn grant_for(browser: &Browser, role: &Role) -> String {
+async fn grant_for(browser: &mut Page, role: &Role) -> String {
     let requested = browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -716,7 +426,7 @@ async fn grant_for(browser: &Browser, role: &Role) -> String {
 }
 
 /// Spawn the agent of `grant` in the workspace with nothing to do.
-async fn spawn(browser: &Browser, grant: &str) {
+async fn spawn(browser: &mut Page, grant: &str) {
     browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -733,7 +443,7 @@ async fn spawn(browser: &Browser, grant: &str) {
 }
 
 /// Give the agent of `grant` the task `text`; its task id.
-async fn message(browser: &Browser, grant: &str, text: &str) -> String {
+async fn message(browser: &mut Page, grant: &str, text: &str) -> String {
     let answer = browser
         .call(
             &agent_resource(grant),
@@ -882,7 +592,7 @@ impl OwnerRun {
 /// host's workspace actions on the workspace's record of its app (opened first when
 /// the workspace has none), as a person acting on a record nobody has open. Then
 /// wait until the workspace has heard every change, so agents act on them.
-async fn run_as_owner(browser: &Browser, text: &str) -> OwnerRun {
+async fn run_as_owner(browser: &mut Page, text: &str) -> OwnerRun {
     let steps: Vec<serde_json::Value> = serde_json::from_str(text)
         .unwrap_or_else(|error| panic!("an owner's task is written steps: {error}"));
     let mut run = OwnerRun::default();
@@ -901,7 +611,7 @@ async fn run_as_owner(browser: &Browser, text: &str) -> OwnerRun {
             Ok(route) => {
                 let past = browser.heard(route);
                 let outcome = browser
-                    .invoke(
+                    .invoke_on(
                         &record_provider(route),
                         ActionAddress::new(resource.clone(), action.clone()),
                         InvokeArgument::Json(arguments.clone()),
@@ -932,7 +642,7 @@ async fn run_as_owner(browser: &Browser, text: &str) -> OwnerRun {
         }
     }
     for (route, past) in &changed {
-        if !browser.until_heard(route, *past).await {
+        if !browser.heard_in_time(route, *past).await {
             eprintln!(
                 "bench: the owner's change to {} {} was not heard in time",
                 route.app_id, route.record
@@ -946,8 +656,11 @@ async fn run_as_owner(browser: &Browser, text: &str) -> OwnerRun {
 
 /// The workspace's record of `app` an owner's written step acts on: the one the
 /// workspace holds, else one the host opens for the owner.
-async fn owner_record(browser: &Browser, app: &str) -> Result<DocumentRoute, String> {
-    let page = browser.catalogue(CatalogueQuery::default()).await?;
+async fn owner_record(browser: &mut Page, app: &str) -> Result<DocumentRoute, String> {
+    let page = browser
+        .catalogue(CatalogueQuery::default())
+        .await
+        .map_err(|error| format!("{error:?}"))?;
     let held: Vec<DocumentRoute> = page
         .providers
         .iter()
@@ -967,7 +680,7 @@ async fn owner_record(browser: &Browser, app: &str) -> Result<DocumentRoute, Str
         [] => {
             let open = application_open_target(WORKSPACE, app);
             let opened = browser
-                .invoke(&open.provider, open.address, InvokeArgument::None)
+                .invoke_on(&open.provider, open.address, InvokeArgument::None)
                 .await?;
             let record = opened
                 .value
@@ -1091,18 +804,13 @@ async fn campaign_bench() {
     let hosted = start_with(&root, &host, state.path(), model).await;
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let confirming = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
-    let _approver = approve_agents(
-        &hosted.relay,
-        root.clone(),
-        &laptop,
-        Arc::clone(&confirming),
-    );
+    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop, &confirming);
     eprintln!("bench: host started for scenario {}", scenario.id);
-    let browser = Browser::open(&hosted, &browser_device, &host).await;
+    let mut browser = Page::open(&hosted, &browser_device, &host).await;
 
     let mut grants = BTreeMap::new();
     for role in &scenario.agents {
-        grants.insert(role.name.clone(), grant_for(&browser, role).await);
+        grants.insert(role.name.clone(), grant_for(&mut browser, role).await);
     }
     eprintln!("bench: {} grants approved", grants.len());
     if let Ok(mut agents) = confirming.lock() {
@@ -1119,7 +827,7 @@ async fn campaign_bench() {
     // before anyone hands out tasks: each agent holds the workspace's keys when
     // the records it will work on are made. The clock starts after.
     for grant in grants.values() {
-        spawn(&browser, grant).await;
+        spawn(&mut browser, grant).await;
     }
     browser
         .until("every agent to join the workspace", |status| {
@@ -1174,7 +882,7 @@ async fn campaign_bench() {
             for task in stage.tasks.iter().filter(|task| task.actor == Actor::Owner) {
                 let launched_ms = unix_ms();
                 let text = fill(&task.text);
-                let run = run_as_owner(&browser, &text).await;
+                let run = run_as_owner(&mut browser, &text).await;
                 eprintln!(
                     "bench: step {}: the owner ran {} written step(s) for {}{}",
                     stage.id,
@@ -1196,7 +904,7 @@ async fn campaign_bench() {
                     .unwrap_or_else(|| panic!("step {} names an unknown agent {agent}", stage.id))
                     .clone();
                 let text = fill(text);
-                let task = message(&browser, &grant, &text).await;
+                let task = message(&mut browser, &grant, &text).await;
                 issued.push(Issued {
                     agent: agent.clone(),
                     grant,
@@ -1222,7 +930,7 @@ async fn campaign_bench() {
             }
             events_done[number] = true;
             let grant = grants[&event.agent].clone();
-            let task = message(&browser, &grant, &fill(&event.text)).await;
+            let task = message(&mut browser, &grant, &fill(&event.text)).await;
             eprintln!(
                 "bench: event {} at {:.1}s",
                 event.label,
@@ -1245,7 +953,7 @@ async fn campaign_bench() {
             let outcome = match (fault.kind.as_str(), fault.agent.as_ref()) {
                 ("kill_agent", Some(agent)) => {
                     let grant = grants[agent].clone();
-                    restart_agent(&browser, &grant, &mut launched).await
+                    restart_agent(&mut browser, &grant, &mut launched).await
                 }
                 (kind, _) => format!("unsupported fault {kind}"),
             };
@@ -1373,7 +1081,7 @@ async fn campaign_bench() {
 /// again each of its launched tasks that had not ended, as a supervisor
 /// restarting a crashed worker would. Says what happened.
 async fn restart_agent(
-    browser: &Browser,
+    browser: &mut Page,
     grant: &str,
     launched: &mut BTreeMap<usize, (Instant, Vec<Issued>)>,
 ) -> String {

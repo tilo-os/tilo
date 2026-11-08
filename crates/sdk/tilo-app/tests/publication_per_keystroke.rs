@@ -14,64 +14,8 @@ use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[(
-        "en-US",
-        "keystroke-draft = Next task\nkeystroke-done = Completed\n",
-    )],
-);
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-/// One task.
-pub struct Task {
-    pub title: String,
-    pub done: bool,
-}
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-/// The draft and the tasks.
-pub struct Checklist {
-    pub draft: String,
-    pub tasks: Collection<Task>,
-}
-
-#[resource(
-    kind = "test.keystroke-checklist",
-    label = "Checklist",
-    app = "so.tilo.test-keystroke-checklist"
-)]
-impl Checklist {
-    /// Set the next task's title.
-    #[action]
-    pub fn draft(&mut self, title: String) {
-        self.draft = title;
-    }
-
-    /// Add `count` tasks at once.
-    #[action]
-    pub fn seed(&mut self, cx: &mut ActionCx, count: u32) {
-        for index in 0..count {
-            self.tasks.push(
-                cx.id(),
-                Task {
-                    title: format!("Task {index}"),
-                    done: false,
-                },
-            );
-        }
-    }
-
-    /// Mark a task completed or open.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
-    #[action]
-    pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
-        self.tasks.get_mut(task).ok_or("gone")?.done = done;
-        Ok(())
-    }
-}
+use crate::support_checklist;
+use crate::support_checklist::Checklist;
 
 struct Keystrokes;
 
@@ -86,7 +30,7 @@ impl ResourceApp for Keystrokes {
     const TITLE: &'static str = "Checklist";
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&support_checklist::CATALOG)
     }
 
     /// A live window's record starts at the size under test. (A real app's
@@ -116,7 +60,7 @@ impl ResourceApp for Keystrokes {
                     row.control_with(
                         |shown| Checkbox::from_state(shown)
                             .with_id(&control)
-                            .with_label("keystroke-done"),
+                            .with_label(support_checklist::DONE),
                         |task| task.done,
                         Checklist::SET_DONE.map(move |done| (id.clone(), done))
                     ),

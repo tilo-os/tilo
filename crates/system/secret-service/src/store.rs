@@ -28,6 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tilo_seal::secret_service::CallerKey;
 use tilo_seal::{Context, Label, SymmetricKey, envelope};
+use tilo_user_identity::branch::{Resealed, SealedStore, SigningKey};
 use tilo_user_identity::persist::{IdentityPaths, PersistError, load_device_key};
 use zeroize::Zeroizing;
 
@@ -142,26 +143,96 @@ impl KeySource for DeviceIdentityKey {
     }
 }
 
+/// A person's vault when the machine's device key changes, as on a branched
+/// machine ([`tilo_user_identity::branch`]): re-sealed from the store key the
+/// old device key released to the one the new key releases. The salt and
+/// the account stay, so the store opens as before under the new identity.
+pub struct DeviceVault {
+    pub vault: PathBuf,
+    pub salt: PathBuf,
+    pub account: String,
+}
+
+impl DeviceVault {
+    /// The vault of the person running this process, where `serve` keeps it.
+    #[must_use]
+    pub fn of_this_person(data_dir: &Path, uid: u32) -> Self {
+        Self {
+            vault: data_dir.join("vault.tseal"),
+            salt: data_dir.join("salt"),
+            account: uid.to_string(),
+        }
+    }
+}
+
+impl SealedStore for DeviceVault {
+    fn name(&self) -> String {
+        format!("Secret Service vault {}", self.vault.display())
+    }
+
+    fn reseal(
+        &self,
+        from: &[SigningKey],
+        to: &SigningKey,
+    ) -> std::result::Result<Resealed, String> {
+        let sealed = match std::fs::read(&self.vault) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Resealed::Absent),
+            Err(error) => return Err(format!("{}: {error}", self.vault.display())),
+        };
+        // No salt, no key opens the vault: it is nothing this machine sealed.
+        let salt = match read_salt(&self.salt) {
+            Ok(salt) => salt,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Resealed::Foreign);
+            }
+            Err(error) => return Err(format!("{}: {error}", self.salt.display())),
+        };
+        let key = |device: &SigningKey| {
+            let seed = Zeroizing::new(device.to_bytes());
+            tilo_seal::secret_service::store_key(seed.as_ref(), &salt, self.account.as_bytes())
+                .map_err(|error| error.to_string())
+        };
+        let new = key(to)?;
+        if envelope::open(&new, context(), &sealed).is_ok() {
+            return Ok(Resealed::AlreadyNew);
+        }
+        for old in from {
+            let Ok(plain) = envelope::open(&key(old)?, context(), &sealed) else {
+                continue;
+            };
+            let resealed =
+                envelope::seal(&new, context(), &plain).map_err(|error| error.to_string())?;
+            tilo_files::native::private::write_atomic(&self.vault, &resealed)
+                .map_err(|error| format!("{}: {error}", self.vault.display()))?;
+            return Ok(Resealed::Moved);
+        }
+        Ok(Resealed::Foreign)
+    }
+}
+
+fn read_salt(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
+    use std::io::Read;
+    let mut bytes = Zeroizing::new(Vec::with_capacity(32));
+    tilo_files::native::private::read(path)?
+        .take(33)
+        .read_to_end(&mut bytes)?;
+    let mut salt = Zeroizing::new([0_u8; 32]);
+    if bytes.len() != salt.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the salt has the wrong length",
+        ));
+    }
+    salt.copy_from_slice(&bytes);
+    Ok(salt)
+}
+
 /// The person's salt: minted once, never replaced. A salt that exists but
 /// is unreadable or malformed is an error, because a new one would orphan
 /// the vault.
 fn load_or_create_salt(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
-    use std::io::Read;
-    let read = |path: &Path| -> io::Result<Zeroizing<[u8; 32]>> {
-        let mut bytes = Zeroizing::new(Vec::with_capacity(32));
-        tilo_files::native::private::read(path)?
-            .take(33)
-            .read_to_end(&mut bytes)?;
-        let mut salt = Zeroizing::new([0_u8; 32]);
-        if bytes.len() != salt.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the salt has the wrong length",
-            ));
-        }
-        salt.copy_from_slice(&bytes);
-        Ok(salt)
-    };
+    let read = read_salt;
     match read(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         existing => return existing,

@@ -1225,7 +1225,10 @@ readers = ["crates/dev/tilo-app-template-smoke/src/lib.rs"]
 
 [[cargo]]
 package = "tilo-user-identity"
-inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
+inputs = [
+  "os/usr/lib/systemd/system/tilo-device-key-init.service",
+  "os/usr/lib/systemd/system/tilo-device-branch.service",
+]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]

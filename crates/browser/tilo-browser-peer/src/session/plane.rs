@@ -24,14 +24,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+#[cfg(feature = "iroh")]
 use tilo_live::plane::Join;
 use tilo_live::plane::Plane;
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+#[cfg(feature = "iroh")]
 use super::Host;
 use super::{Command, Link, PeerEvent, Task, lock};
 use crate::ChannelContentKeys;
@@ -319,7 +319,7 @@ pub(crate) fn join(
 /// so a page-shaped peer reaches the same plane a browser reaches over
 /// WebTransport: it seals and opens as itself, under the workspace scope's
 /// keys, and the serving device copies bytes it cannot open.
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+#[cfg(feature = "iroh")]
 pub(crate) struct NativeJoin {
     /// The endpoint this device dials from.
     pub endpoint: iroh::Endpoint,
@@ -329,6 +329,9 @@ pub(crate) struct NativeJoin {
     pub commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
     /// This device's certificate, presented as the grant.
     pub cert: tilo_user_identity::DeviceCert,
+    /// This device's statement that the endpoint speaks for it, when the
+    /// endpoint is not the device's own key (a page): the grant carries it.
+    pub delegation: Vec<u8>,
     /// This device.
     pub device: [u8; 32],
     /// The workspace joined.
@@ -341,13 +344,14 @@ pub(crate) struct NativeJoin {
     pub members: BTreeSet<[u8; 32]>,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+#[cfg(feature = "iroh")]
 pub(crate) fn join_native(join: NativeJoin) {
     let NativeJoin {
         endpoint,
         host,
         commands,
         cert,
+        delegation,
         device,
         workspace_id,
         workspace,
@@ -355,20 +359,38 @@ pub(crate) fn join_native(join: NativeJoin) {
         members,
     } = join;
     n0_future::task::spawn(async move {
-        let joined = native(&endpoint, host, &cert, device, &workspace, keys, members).await;
+        let joined = native(
+            &endpoint,
+            host,
+            &cert,
+            &delegation,
+            device,
+            &workspace,
+            keys,
+            members,
+        )
+        .await;
+        #[cfg(not(target_arch = "wasm32"))]
+        let joined = Command::PlaneJoined(workspace_id, joined);
+        #[cfg(target_arch = "wasm32")]
+        let joined = {
+            ARRIVED.with(|arrived| arrived.borrow_mut().push((workspace_id, joined)));
+            Command::PlaneJoined(workspace_id)
+        };
         if let Some(commands) = commands.upgrade() {
-            let _ = commands.send(Command::PlaneJoined(workspace_id, joined));
+            let _ = commands.send(joined);
         }
     });
 }
 
 /// The join itself: the grant this device presents, then the plane on the
 /// serving device's carrier.
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+#[cfg(feature = "iroh")]
 async fn native(
     endpoint: &iroh::Endpoint,
     host: iroh_base::EndpointAddr,
     cert: &tilo_user_identity::DeviceCert,
+    delegation: &[u8],
     device: [u8; 32],
     workspace: &str,
     keys: ChannelContentKeys,
@@ -385,7 +407,7 @@ async fn native(
         &scope.id(),
         keys.epoch(),
         certificate,
-        Vec::new(),
+        delegation.to_vec(),
     )
     .map_err(|_| Failed::Unavailable)?;
     Plane::join(
@@ -571,20 +593,32 @@ impl Task {
                     keys,
                     members,
                 ),
-                #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
-                Link::Iroh { endpoint, .. } => {
-                    let Host::Iroh { addr, relay_url } = &self.config.host else {
-                        continue;
+                #[cfg(feature = "iroh")]
+                Link::Iroh {
+                    endpoint,
+                    delegation,
+                    ..
+                } => {
+                    // The workspace's own governance names where its host
+                    // listens; a host that has not named itself yet is
+                    // dialled where the session reached it.
+                    let (addr, relay_url) = match self.replicas.host_endpoint(workspace_id) {
+                        Some(named) => named,
+                        None => match &self.config.host {
+                            Host::Iroh { addr, relay_url } => (addr.clone(), relay_url.clone()),
+                            Host::Https(_) => continue,
+                        },
                     };
                     let host = match relay_url {
-                        Some(url) => addr.clone().with_relay_url(url.clone()),
-                        None => addr.clone(),
+                        Some(url) => addr.with_relay_url(url),
+                        None => addr,
                     };
                     join_native(NativeJoin {
                         endpoint: endpoint.clone(),
                         host,
                         commands: self.commands.clone(),
                         cert: self.config.cert.clone(),
+                        delegation: delegation.clone(),
                         device: self.config.cert.device_public_key,
                         workspace_id,
                         workspace,

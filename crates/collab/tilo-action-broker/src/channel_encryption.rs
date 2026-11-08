@@ -1473,13 +1473,32 @@ impl ChannelEncryption {
     ) -> channel_crypto::Result<bool> {
         let store = self.store.as_ref().ok_or_else(no_store)?;
         let dir = channels_dir(&store.root, workspace);
-        let Some(peer) = ChannelPeer::open(
+        let opened = match ChannelPeer::open(
             &dir,
             channel,
             Box::new(store.device_key.clone()),
             &store.vault,
-        )?
-        else {
+        ) {
+            // A machine copied from another re-keyed its device: the state
+            // names the device it was copied from, whose member it is, and
+            // can never act for this one. It is dropped, never used, so this
+            // device takes no leaf of its source's; it then joins as itself,
+            // as any further device of the member does.
+            Err(channel_crypto::Error::OtherDevice) => {
+                tracing::info!(
+                    %workspace,
+                    "channel state named the device this machine was copied from; joining as this device"
+                );
+                match std::fs::remove_file(ChannelPeer::path_in(&dir, channel)) {
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(error.into());
+                    }
+                    _ => return Ok(false),
+                }
+            }
+            opened => opened?,
+        };
+        let Some(peer) = opened else {
             return Ok(false);
         };
         self.insert_peer(workspace, channel, peer, now);

@@ -26,7 +26,9 @@ screens (the strip deck, `ui::widget::StripDeck`; one fills the work area at
 a time and each keeps its own horizontal pan), a strip's window
 groups run left to right, and each display is a window onto part of that desk
 (every display shows the same workspace and holds its own groups).
-Workspaces are separate desks, stacked in order. Nothing overlaps and nothing floats.
+Workspaces are separate desks, stacked in order. Windows tile, and nothing
+overlaps where they tile; a window the person floats stands above them, in a
+size of its own, until it is dragged back into a gap or snapped back.
 
 Every input device says the same three things:
 
@@ -117,6 +119,7 @@ each tab through the window-transfer consent sheet exactly where
 |---|---|---|---|---|
 | Maximize, restore | `group.maximize`, `group.restore` | Super+↑ maximizes, Super+↓ restores (on any strip); Super+M toggles | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
 | Full screen / restore | `group.fullscreen` | Super+F | — | today |
+| Float over the desk, snap back into the strip | a place's `float` / `snap-back` | Super+Shift+F toggles | drag a window's tab-bar ground off its strip to float it; drag a float over a strip, into a gap ([Floating over the desk](#floating-over-the-desk)) | today |
 | Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag either edge ([Resizing a window](#resizing-a-window)) | steps and edge drags today |
 | Previous / next tab | `tab.previous` / `-next` | Super+Ctrl+Shift+Tab / Super+Ctrl+Tab (Ctrl+Shift+Tab / Ctrl+Tab where the app leaves them unhandled) | click a tab | today |
 | Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | today |
@@ -132,6 +135,33 @@ a maximized group stops at the leading edge gutter, where the strip's first
 window starts, and only a client's full screen covers it. Both still hold one slot
 for the whole desktop; each display getting its own, so a group full screen on
 a projector leaves the laptop's chrome alone, is planned.
+
+### Floating over the desk
+
+A group dragged by its tab-bar ground and let go where no strip is lifts
+where the hand let it: it takes the floating size, stands above every strip
+and window of its workspace, and leaves the gap it came from, which the
+windows after it close. It is the same group — its tabs, its scroll and its
+draft stay where they were. Its place is in the workspace's record, so every
+member sees it floating in the same spot, each on their own display: the
+record keeps the corner it holds and its distances from it, so a smaller
+screen finds it inside their display.
+
+A float stands on the desk rather than in it: it carries the floating
+elevation and its own opaque ground under its bar and body, so the window it
+covers never reads through it, and while the hand carries it, it reads as
+lifted off what it passes over.
+
+A float dragged by its bar follows the hand. Over a strip the gap it would
+land in shows as any reorder drag's does; let go there and it snaps back into
+that gap as if it had never floated. Let go off the strip and it stays where
+it was let go. A cancelled drag, or Escape, puts it back where it stood.
+Snapping back with no target (`snap-back` without a row) returns it exactly
+to the place it floated from.
+
+The window menu offers **Float this window** or **Snap back into the strip**
+by what it holds now, with Super+Shift+F as the chord; the window switcher
+lists floats with every other window, in the order they were focused.
 
 ## Gestures
 
@@ -367,6 +397,7 @@ shortcut) and `Motion::context` for what only says where something went
 | Resize | an edge drag is direct manipulation: the width follows the pointer every frame, a Tilo app lays out again every frame, a client is configured at frame rate and its last buffer is shown unscaled against the fixed edge until it answers ([Resizing a window](#resizing-a-window)) | the new width on the next frame |
 | Maximize / restore | the group's rect springs between its tiled rect and the work area; siblings on that display fade (`fast`) rather than being squashed | the end state on the next frame, no fade |
 | Full screen | as maximize, and the chrome slides off that display's edges | as maximize |
+| Float, snap back | while the hand carries it the float is welded to the pointer; let go, it is drawn at the floating size where it was let go, fading in (`fast`), and the gap it left closes | the float at once, without the fade |
 | Switch tab | the tab chips open and close (180 ms); the content is swapped, never crossfaded | the content and chips on the next frame |
 | Focus another window (Super+←/→) | the strip glides on the rect spring to frame it | the focus shows on the next frame; the viewport slides (`fast`) only when the target was off screen |
 | Focus another strip | the strip deck slides vertically to it (`motion::Snap`): every strip is a full-height screen and one fills the work area at a time; three fingers move the deck with the hand and the release settles it with their momentum (past a quarter of the height, or a flick, commits) | the same slide within `fast`; an agent or script lands at once |

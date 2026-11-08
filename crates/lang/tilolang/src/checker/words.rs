@@ -6,6 +6,9 @@
 //! Only the literal a component shows is a message: the value given to a prop that shows words
 //! (not one the toolkit marks as data), or what such a value takes from a branch, an option or a
 //! list. A literal compared, passed to a function or used as a key stays text.
+//!
+//! A view's text parameter is words it shows, so the literal a caller gives it is the caller's
+//! message too ([`super::template::Checker::expand`]).
 
 use super::{Checker, Ex};
 use crate::abi::Imp;

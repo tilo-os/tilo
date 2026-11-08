@@ -333,13 +333,17 @@ impl Ty {
     /// Whether a value of this type may stand where `want` is expected: itself, a case of a
     /// union, or — where `host.Resource` is expected — any resource at all, since that type is
     /// what the language has for "a resource of whichever app" (a place a shell holds, a hit
-    /// `find` answers), and every resource is one.
+    /// `find` answers), and every resource is one. A list whose items fit `want`'s items fits
+    /// it too (`List<TextChannel>` where `List<TextChannel | Direct>` is expected): a list's
+    /// items are read, and an item written back goes through the collection that holds it,
+    /// never through a list value.
     #[must_use]
     pub fn fits(&self, want: &Self) -> bool {
         match (self, want) {
             (Self::Record(k), Self::Union(keys)) => keys.contains(k),
             (Self::Union(a), Self::Union(b)) => a.iter().all(|k| b.contains(k)),
             (Self::Record(_) | Self::Union(_), Self::Record(k)) if is_any_resource(k) => true,
+            (Self::List(found), Self::List(want)) => found.fits(want),
             _ => self.same(want),
         }
     }

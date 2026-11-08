@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-gallery = Gallery
+
 d-bxbqgdkv = Item
     .doc = The toolkit's components as an app written in tilolang places them: each `ui.*` component, in the groups people meet them in, with the values an app would give it.
     .noun = { $count ->
@@ -33,6 +35,10 @@ d-4cquroaf = Owner
 d-aimcpxqu = Updated
     .doc = When the basics last changed.
 
+d-5cf5i2l7-filter-owner = Owner
+
+d-5cf5i2l7-filter-updated = Updated
+
 d-oulybdah = Backlog
     .doc = The team's items as a list, with the composer a conversation has at its foot.
     .noun = { $count ->
@@ -59,6 +65,8 @@ d-x6hy4icv = Items
 
 d-7jakulc4 = Lead
     .doc = Who leads the release: at each of its tabs.
+
+d-knnd7epb-filter-lead = Lead
 
 d-x3epwv5u = Gallery
     .doc = The gallery: a window of each group.
@@ -148,6 +156,34 @@ d-6a3xhxmz = Archived
 d-bmzzwoln = Text size
     .doc = The size of the text in the report.
 
+d-lhci3noh-filter-by_email = By email
+
+d-lhci3noh-filter-repeating = Repeating
+
+d-lhci3noh-filter-seats = Seats
+
+d-lhci3noh-filter-share = Share
+
+d-lhci3noh-filter-urgency = Urgency
+
+d-lhci3noh-filter-owner = Owner
+
+d-lhci3noh-filter-reviewer = Reviewer
+
+d-lhci3noh-filter-showing = Showing
+
+d-lhci3noh-filter-step = Step
+
+d-lhci3noh-filter-starts = Starts
+
+d-lhci3noh-filter-clock = Clock
+
+d-lhci3noh-filter-ends = Ends
+
+d-lhci3noh-filter-archived = Archived
+
+d-lhci3noh-filter-text_size = Text size
+
 d-pprp6hfn = Data
     .doc = The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards and the history of a document, each reading a collection of the app's own.
     .noun = { $count ->
@@ -185,6 +221,8 @@ d-jqhagvfx = State
 
 d-pu34cefb = Size
 
+d-7y5fd5tj-filter-size = Size
+
 d-quhjeqzv = File
     .doc = One file of the tree: where it stands, and what it is.
     .noun = { $count ->
@@ -200,6 +238,12 @@ d-iqq34vjp = Parent
 d-jd5rkocy = Folder
 
 d-5dlddfkg = Size
+
+d-quhjeqzv-filter-parent = Parent
+
+d-quhjeqzv-filter-folder = Folder
+
+d-quhjeqzv-filter-size = Size
 
 d-s7r6xeia = Message
     .doc = One message of the conversation: who said it, when, and what.
@@ -218,6 +262,10 @@ d-thqsnyuw = At
 
 d-wavjxiov = Mine
 
+d-s7r6xeia-filter-at = At
+
+d-s7r6xeia-filter-mine = Mine
+
 d-xnmw2f5g = Card
     .doc = One card of the grid: what it stands for and how many things it holds.
     .noun = { $count ->
@@ -228,6 +276,8 @@ d-xnmw2f5g = Card
 d-y5gdkqew = Title
 
 d-ii4dp5pl = Count
+
+d-xnmw2f5g-filter-count = Count
 
 d-4cntcc2v = Change
     .doc = One change of the document: who made it, when, and what it did.
@@ -244,6 +294,8 @@ d-kbnmru3y = Summary
 
 d-e4daczuq = At
 
+d-4cntcc2v-filter-at = At
+
 d-oepvsx65 = Feedback
     .doc = How things are going: badges and banners, progress and gauges, stats, the facts of a thing, a path, a toolbar, rows that open in place, and what is still loading.
     .noun = { $count ->
@@ -255,6 +307,8 @@ d-2pxvl4zz = Title
 
 d-bafspfun = Owner
     .doc = Who is syncing the files.
+
+d-oepvsx65-filter-owner = Owner
 
 d-rnok2vxj = Places
     .doc = What the gallery holds of a canvas: places at points on a surface that pans and zooms.
@@ -285,6 +339,8 @@ d-7n6qkvce = Code
 
 d-o2brvdoa = Source
     .doc = The source being written.
+
+d-exu5jg4p-filter-at = At
 
 d-wb23plj7 = Shell parts
     .doc = The parts the shell is made of, as a view places them: a bar or a dock's body, a run of items a person reorders by dragging one, and the divider a conversation marks its first unread line with.

@@ -405,6 +405,44 @@ pub fn start_peer_with_store(
     )
 }
 
+/// A page's device key in custody: the session signs with it and never reads
+/// it, as a browser's `WebCrypto` key is used. A page's endpoint therefore
+/// speaks under a key of its own, which the device signs for.
+pub struct PageCustody(SigningKey);
+
+impl tilo_browser_peer::DeviceSigner for PageCustody {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> tilo_browser_peer::SignFuture<'_> {
+        let signature = ed25519_dalek::Signer::sign(&self.0, &message).to_bytes();
+        Box::pin(std::future::ready(Ok(signature)))
+    }
+}
+
+/// [`start_peer`] for a page: over `store`, its custody keeps the device key,
+/// so its session dials from an endpoint the device delegated.
+pub fn start_page(
+    host: Host,
+    cert: DeviceCert,
+    host_cert: DeviceCert,
+    key: SigningKey,
+    store: Arc<MemoryPeerStore>,
+) -> PeerHandle {
+    PeerHandle::start(
+        PeerConfig {
+            host,
+            cert,
+            host_cert,
+            revocations: RevocationList::new(),
+            background: false,
+        },
+        Arc::new(PageCustody(key)),
+        store,
+    )
+}
+
 pub async fn ready(peers: &[&PeerHandle]) {
     wait_for("sessions ready", || async {
         peers

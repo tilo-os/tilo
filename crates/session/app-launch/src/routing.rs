@@ -29,6 +29,14 @@ use crate::launch::{Launch, Open};
 /// that claims its type or extension, else the first of the machine's own.
 #[must_use]
 pub fn document(path: &Path, installed: &[InstalledApp], entries: &Scan) -> Option<Launch> {
+    documents(path, installed, entries).into_iter().next()
+}
+
+/// Every app that opens the document at `path`, in the order [`document`]
+/// tries them: the installed Tilo apps that claim its type, then those that
+/// claim its extension, then the machine's own entries.
+#[must_use]
+pub fn documents(path: &Path, installed: &[InstalledApp], entries: &Scan) -> Vec<Launch> {
     let extension = path
         .extension()
         .and_then(std::ffi::OsStr::to_str)
@@ -44,34 +52,48 @@ pub fn document(path: &Path, installed: &[InstalledApp], entries: &Scan) -> Opti
         })
     };
     let claims_mime = |app: &InstalledApp| mime.as_deref().is_some_and(|mime| app.opens_mime(mime));
-    let app = installed
-        .iter()
-        .find(|app| claims_mime(app))
-        .or_else(|| installed.iter().find(|app| claims_extension(app)));
-    if let Some(app) = app {
-        return Some(
+    let mut claiming: Vec<&InstalledApp> =
+        installed.iter().filter(|app| claims_mime(app)).collect();
+    for app in installed {
+        if claims_extension(app)
+            && !claiming
+                .iter()
+                .any(|listed| listed.package_id == app.package_id)
+        {
+            claiming.push(app);
+        }
+    }
+    let mut launches: Vec<Launch> = claiming
+        .into_iter()
+        .map(|app| {
             Launch::Package {
                 app: app.package_id.clone(),
                 open: None,
             }
-            .opening(open),
-        );
-    }
-    let entry = entries.entries.iter().find(|entry| {
-        mime.as_deref().is_some_and(|mime| {
-            entry
-                .mime_types
-                .iter()
-                .any(|claims| claims.eq_ignore_ascii_case(mime))
+            .opening(open.clone())
         })
-    })?;
-    Some(
-        Launch::Host {
-            desktop_id: entry.id.clone(),
-            open: None,
-        }
-        .opening(open),
-    )
+        .collect();
+    launches.extend(
+        entries
+            .entries
+            .iter()
+            .filter(|entry| {
+                mime.as_deref().is_some_and(|mime| {
+                    entry
+                        .mime_types
+                        .iter()
+                        .any(|claims| claims.eq_ignore_ascii_case(mime))
+                })
+            })
+            .map(|entry| {
+                Launch::Host {
+                    desktop_id: entry.id.clone(),
+                    open: None,
+                }
+                .opening(open.clone())
+            }),
+    );
+    launches
 }
 
 /// The app that opens `uri`: the first installed Tilo app claiming its
@@ -226,6 +248,45 @@ mod tests {
                 desktop_id: "org.example.Viewer".into(),
                 open: Some(Open::File("/home/you/paper.pdf".into())),
             })
+        );
+    }
+
+    #[test]
+    fn every_claiming_app_is_listed_with_the_one_opening_it_today_first() {
+        let scan = entries(
+            "[Desktop Entry]\nType=Application\nName=Viewer\nExec=viewer %f\n\
+             MimeType=text/plain;application/pdf;\n",
+        );
+        let notes = app("so.tilo.notes", &["txt"], &["text/plain"], &[]);
+        // Claims the extension only, and the same one as Notes: listed once.
+        let writer = app("so.tilo.word-processor", &["txt"], &[], &[]);
+        let listed = documents(
+            Path::new("/home/you/todo.txt"),
+            &[writer, notes.clone()],
+            &scan,
+        );
+        assert_eq!(
+            listed,
+            vec![
+                Launch::Package {
+                    app: "so.tilo.notes".into(),
+                    open: Some(Open::File("/home/you/todo.txt".into())),
+                },
+                Launch::Package {
+                    app: "so.tilo.word-processor".into(),
+                    open: Some(Open::File("/home/you/todo.txt".into())),
+                },
+                Launch::Host {
+                    desktop_id: "org.example.Viewer".into(),
+                    open: Some(Open::File("/home/you/todo.txt".into())),
+                },
+            ],
+            "the type's claims before the extension's, the host's last"
+        );
+        assert_eq!(
+            document(Path::new("/home/you/todo.txt"), &[notes], &scan),
+            Some(listed[0].clone()),
+            "opening a document uses the same order"
         );
     }
 

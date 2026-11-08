@@ -4,7 +4,6 @@
 use automerge::AutoCommit;
 use tilolang_runtime::{Principal, UiNode, Value};
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::host::Host;
 
 /// The package in `dir` compiled with the packages it uses, as `tilolang build` bundles it: its
 /// imports resolve as `check` and `build` resolve them, against what the platform and the native
@@ -60,25 +59,34 @@ fn lists(node: &UiNode, out: &mut Vec<String>) {
 
 #[test]
 fn a_bundle_draws_the_rows_of_the_packages_it_uses() {
-    let doc = AutoCommit::new();
-    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+    let (mut replica, _) = crate::fixtures::Replica::new("ada", AutoCommit::new(), &[]);
     let bundle = today();
-    host.load_bundle(&bundle).unwrap();
+    replica.host.load_bundle(&bundle).unwrap();
     let ada = Principal::new("ada");
-    // The todo list's own first scenario fills it, then Today's attaches it.
+    // Each package's own first scenario fills it, then Today's attaches them, each change
+    // committed through the workspace as a window commits it: the record holds who made what,
+    // which a place that names what the person has not read asks for.
     for import in &bundle.imports {
-        host.root_of(&import.meta.app).unwrap();
+        replica.host.root_of(&import.meta.app).unwrap();
+        replica.commit();
         let first = import.meta.scenarios.first().unwrap();
-        host.runtime()
+        replica
+            .host
+            .runtime()
             .invoke_action(&ada, (first.action.as_str(), vec![]))
             .unwrap();
+        replica.commit();
     }
-    host.root_of(&bundle.meta.app).unwrap();
+    replica.host.root_of(&bundle.meta.app).unwrap();
+    replica.commit();
     let scenario = bundle.meta.scenarios.first().unwrap();
-    host.runtime()
+    replica
+        .host
+        .runtime()
         .invoke_action(&ada, (scenario.action.as_str(), vec![]))
         .unwrap();
-    let mut view = host.open_main(&bundle.meta.app).unwrap();
+    replica.commit();
+    let mut view = replica.view(&bundle.meta.app);
     let mut keys = Vec::new();
     lists(view.tree(), &mut keys);
     let mut shown = Vec::new();
@@ -90,7 +98,9 @@ fn a_bundle_draws_the_rows_of_the_packages_it_uses() {
             }
         }
     }
-    for text in ["Buy oat milk and eggs", "# general"] {
+    // The task's row, and Chat's unread conversation row (`general` holds a message Ada has
+    // not read): the channel names itself, the hash being its icon.
+    for text in ["Buy oat milk and eggs", "general"] {
         assert!(
             shown.iter().any(|shown| shown.contains(text)),
             "Today draws `{text}` with the view of the package it belongs to: {shown:?}"

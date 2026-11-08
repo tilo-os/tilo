@@ -88,3 +88,53 @@ fn a_device_holding_two_different_certificates_keeps_its_own_in_both_places() {
     assert_eq!(own, kept, "the device's own certificate is kept");
     assert_eq!(owners, kept, "and the owner's place holds the same one");
 }
+
+/// A machine copied from this one re-keys at boot and waits uncertified;
+/// the person's next sign-in, holding their identity, certifies the new key
+/// under the name the branch took, and the source's certificate is not
+/// what it presents.
+#[test]
+fn a_branched_device_is_certified_at_the_persons_next_sign_in() {
+    use tilo_user_identity::branch::{self, Branch, Certification, Machine, Settled};
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    let temp = tempfile::tempdir().unwrap();
+    let identity = temp.path().join("identity");
+    let paths = IdentityPaths::under(temp.path().join("system"));
+    ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, "Studio")
+        .expect("provision");
+    let source = persist::read_device_cert(&paths.device_cert).unwrap();
+    let machine = Machine::parse("4c4c4544-0042-3510-8048-b4c04f4d3232").unwrap();
+    branch::record_machine(&paths, &machine).unwrap();
+
+    let settled = branch::settle(
+        &paths,
+        Machine::parse("8a1f02d6-91c4-4f0e-9b9a-2d1f5c3e7a10").as_ref(),
+        &Branch {
+            stores: vec![],
+            machine: None,
+            now_ns: tilo_clock::unix_now_ns(),
+            after: &|_| Ok(()),
+        },
+    )
+    .expect("re-key");
+    let Settled::Branched(branched) = settled else {
+        panic!("not re-keyed: {settled:?}");
+    };
+    // The root is in the person's own record, not the system tree: nothing
+    // at boot signs for the new key.
+    assert!(matches!(branched.certification, Certification::Pending(_)));
+    assert!(!paths.device_cert.exists());
+
+    ensure_collaboration_identity(&identity, &paths, FILES).expect("sign in");
+    let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+    tilo_user_identity::verify_device_cert(&cert).expect("the new certificate verifies");
+    assert_eq!(cert.device_public_key, branched.device);
+    assert_ne!(cert.device_public_key, source.device_public_key);
+    assert_eq!(cert.user_public_key, source.user_public_key);
+    assert_eq!(cert.device_label, branched.label);
+    assert!(cert.device_label.starts_with("Studio branch "));
+    assert_eq!(branch::pending_label(&paths).unwrap(), None);
+    let (own, owners) = both_files(&paths);
+    assert_eq!(own, owners);
+}

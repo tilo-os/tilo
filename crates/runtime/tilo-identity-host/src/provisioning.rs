@@ -1394,12 +1394,23 @@ fn ensure_device_certificate_for_identity(
         Some(cert) => {
             issue_device_certificate(identity, device_public_key, &cert.device_label, class)?
         }
-        None => issue_device_certificate(identity, device_public_key, device_label, class)?,
+        // A machine copied from another one re-keyed at boot and named
+        // itself after it; its certificate carries that name.
+        None => {
+            let branch = tilo_user_identity::branch::pending_label(paths)
+                .ok()
+                .flatten();
+            let label = branch.as_deref().unwrap_or(device_label);
+            issue_device_certificate(identity, device_public_key, label, class)?
+        }
     };
     for (path, existing) in &held {
         if existing.as_ref() != Some(&cert) {
             persist::write_device_cert(path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
         }
+    }
+    if let Err(error) = tilo_user_identity::branch::clear_pending_label(paths) {
+        tracing::warn!(%error, "could not clear the name a copied machine waited with");
     }
     Ok(cert_path)
 }

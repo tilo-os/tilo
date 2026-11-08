@@ -41,6 +41,7 @@ impl DesktopChrome {
             ShortcutAction::ReopenClosedTab => self.dispatch(ChromeEffect::ReopenClosed),
             ShortcutAction::ToggleMaximize => self.maximize_focused(None),
             ShortcutAction::ToggleFullscreen => self.toggle_fullscreen(),
+            ShortcutAction::ToggleFloat => self.toggle_float(),
             // The tab leaves its window for one of its own, as the window
             // menu's Split right does.
             ShortcutAction::DetachTab => self.split_focused_tab(),
@@ -445,5 +446,26 @@ impl DesktopChrome {
     /// The window in front, as the desk addresses it now.
     fn focused_route(&self) -> Option<tilo_desktop_surface::navigation::Route> {
         self.handle.snapshot(&self.generation, Vec::new()).active
+    }
+
+    /// Lift the focused window above the desk, or put it back into its
+    /// strip.
+    fn toggle_float(&self) {
+        let floating = self.handle.read(|tree| -> Option<bool> {
+            let workspace = tree.active_workspace()?;
+            let strip = *tree.active_strip.get(&workspace.slot)?;
+            let group = tree.active_group_for(strip)?;
+            Some(workspace.arrangement.float_of(group).is_some())
+        });
+        let Some(floating) = floating else {
+            return;
+        };
+        let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
+            return;
+        };
+        self.dispatch(ChromeEffect::Float {
+            group: route.group,
+            on: !floating,
+        });
     }
 }

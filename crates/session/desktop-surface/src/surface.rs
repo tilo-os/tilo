@@ -55,6 +55,7 @@ mod close_button_tests;
 #[cfg(test)]
 mod close_motion_tests;
 mod displays;
+mod floats;
 mod history;
 mod hung;
 mod launch;
@@ -1211,6 +1212,45 @@ impl DesktopSurface {
         self.rows.get_mut(&strip)
     }
 
+    /// Hand each row the windows the workspace holds floating above its
+    /// strip, of the strip the person works in: the others show their
+    /// windows where they are.
+    fn sync_floats(&mut self) {
+        let shown = self.shown;
+        let mut returning = None;
+        for (strip, row) in &mut self.rows {
+            let floats = if Some(*strip) == shown {
+                floats::floats_of(
+                    &self.shared.borrow().tree,
+                    *strip,
+                    floats::area_of(row.get_rect()),
+                )
+            } else {
+                HashMap::new()
+            };
+            // A window the record put back in its strip after floating is
+            // the one the person just snapped back: its strip brings it into
+            // view as it does a window that opens or takes the focus, or the
+            // window lands where the pan left the strip rather than where it
+            // stood when it was lifted.
+            let back = row
+                .floats()
+                .keys()
+                .find(|group| !floats.contains_key(group))
+                .copied();
+            row.set_floats(floats);
+            if Some(*strip) == shown
+                && let Some(group) = back
+                && !row.is_floating(group)
+            {
+                returning = Some((*strip, group));
+            }
+        }
+        if self.reveal.is_none() {
+            self.reveal = returning;
+        }
+    }
+
     /// Build (once) and show the active workspace's active strip.
     fn show_active_strip(&mut self) {
         let shown_before = self.shown;
@@ -1476,6 +1516,11 @@ impl DesktopSurface {
                 .reorder_group_within_strip(strip_id, group, index)
                 .is_some();
         }
+        // A window lifted over the desk, or let go back into its strip.
+        if let Some(ask) = row.take_pending_float() {
+            let area = floats::area_of(row.get_rect());
+            changed |= floats::carry_out(&mut shared, strip_id, ask, area);
+        }
         let mut new_tab = None;
         let mut search_in = None;
         for group in &mut row.groups {
@@ -1630,6 +1675,25 @@ impl DesktopSurface {
                         // The row reads this in `present`; the window taken
                         // across the display takes the whole strip with it.
                         shared.tree.set_fullscreen(ids.strip, ids.group, fullscreen);
+                    }
+                    Admitted::Float(ids, on) if live(&shared.tree, ids) => {
+                        // A chord or a menu row lifts the window over the
+                        // place it stands, or puts it back in its strip; the
+                        // row reads it in `present`.
+                        let lifted = match self.rows.get(&ids.strip) {
+                            Some(row) => {
+                                let area = floats::area_of(row.get_rect());
+                                if on {
+                                    floats::lift(&mut shared, ids.strip, row, ids.group, area)
+                                } else {
+                                    floats::set(&mut shared, ids.strip, ids.group, None)
+                                }
+                            }
+                            None => false,
+                        };
+                        if lifted {
+                            shared.tree.set_active_group(ids.strip, ids.group);
+                        }
                     }
                     Admitted::Rename(ids, name) if live(&shared.tree, ids) => {
                         if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
@@ -1998,6 +2062,10 @@ impl DesktopSurface {
         if let Some(row) = self.shown_row() {
             row.set_fullscreen(fullscreen, false);
         }
+        // A window the workspace holds floating stands over the desk, at
+        // the place its record keeps for this device's display; every other
+        // strip shows its windows in their strip.
+        self.sync_floats();
         let (route, width) = {
             let shared = self.shared.borrow();
             (

@@ -9,7 +9,7 @@ use tilo_secret_service::migrate::{self, GnomeKeyring, Outcome};
 use tilo_secret_service::service::{
     AppRow, BUS_NAME, BusResolver, Core, MANAGEMENT_PATH, Managers, publish,
 };
-use tilo_secret_service::store::{DeviceIdentityKey, Store};
+use tilo_secret_service::store::{DeviceIdentityKey, DeviceVault, Store};
 use tilo_user_identity::persist::IdentityPaths;
 use tracing::{error, info};
 
@@ -38,6 +38,11 @@ enum Command {
         #[command(subcommand)]
         action: Apps,
     },
+    /// Re-seal this person's store to the machine's new device key. A
+    /// branched machine's boot runs it as each person, with the keys on
+    /// standard input (`tilo_user_identity::branch::hand_over`).
+    #[command(hide = true)]
+    ResealDevice,
 }
 
 #[derive(Subcommand)]
@@ -69,6 +74,7 @@ async fn main() -> ExitCode {
         Command::Serve {} => serve(None).await,
         Command::Status => status().await,
         Command::Apps { action } => apps(action).await,
+        Command::ResealDevice => reseal_device(),
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
@@ -138,6 +144,21 @@ async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> 
         _ = terminate.recv() => {}
         _ = tokio::signal::ctrl_c() => {}
     }
+    Ok(())
+}
+
+fn reseal_device() -> Result<(), String> {
+    use std::io::Read as _;
+    use tilo_user_identity::branch::{SealedStore as _, take_over};
+    let mut input = zeroize::Zeroizing::new(Vec::new());
+    std::io::stdin()
+        .take(1024)
+        .read_to_end(&mut input)
+        .map_err(|e| format!("reading the device keys: {e}"))?;
+    let (from, to) = take_over(&input).map_err(|e| e.to_string())?;
+    let dir = tilo_secret_service::data_dir().ok_or("no home directory")?;
+    let outcome = DeviceVault::of_this_person(&dir, uid()).reseal(&from, &to)?;
+    println!("{}", outcome.as_str());
     Ok(())
 }
 

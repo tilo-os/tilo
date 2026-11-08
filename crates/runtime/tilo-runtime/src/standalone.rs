@@ -94,6 +94,9 @@ pub struct Standalone {
     /// runtime runs, and the workspaces' store answered on the same router.
     _personal_door: tilo_action_broker::personal::Door,
     _personal_router: iroh::protocol::Router,
+    /// The agent doors of the person's other devices, dialed from this
+    /// runtime's endpoint as the device its store certifies.
+    remote_doors: Arc<crate::remote_door::Doors>,
     /// The workspaces this device keeps, served on that same router.
     _store_link: Option<StoreService>,
     _lock: advisory_lock::FileLock,
@@ -218,6 +221,7 @@ impl Standalone {
         Ok(Self {
             policy_origin,
             broker,
+            remote_doors: remote_doors(&joined, &personal.sync),
             joined,
             _channels: channel_keys,
             _identity: identity_broker,
@@ -437,6 +441,10 @@ impl RuntimeServices for Standalone {
             &self.blob_socket,
             &self.workspace,
         )))
+    }
+
+    fn remote_doors(&self) -> Option<Arc<crate::remote_door::Doors>> {
+        Some(Arc::clone(&self.remote_doors))
     }
 }
 
@@ -915,6 +923,16 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         router,
         store_link,
     })
+}
+
+/// The agent doors of the person's other devices, dialed from `joined`'s
+/// endpoint as the device the person's store `personal` certifies.
+fn remote_doors(joined: &Joined, personal: &PersonalSync) -> Arc<crate::remote_door::Doors> {
+    Arc::new(crate::remote_door::Doors::new(
+        joined.endpoint(),
+        Arc::new(crate::remote_door::PersonalDevices::new(personal.clone())),
+        tilo_rt::app().handle().clone(),
+    ))
 }
 
 /// The broker's channel state, with the profile's durable collaboration

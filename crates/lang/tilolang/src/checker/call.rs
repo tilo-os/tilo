@@ -2365,7 +2365,7 @@ impl Checker<'_> {
             }
             (
                 Ty::List(t) | Ty::Set(t) | Ty::Collection(t),
-                "map" | "filter" | "any" | "all" | "find" | "count",
+                "map" | "flat_map" | "filter" | "any" | "all" | "find" | "count",
             ) => {
                 let elem = (**t).clone();
                 self.higher_order(r, &elem, name, args, span)

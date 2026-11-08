@@ -567,9 +567,6 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         {
             let mut state = self.state();
-            if let Some(invocation) = state.selected_open.control.take() {
-                return Some(invocation);
-            }
             if let Some(invocation) = state.app_chooser.take() {
                 return Some(invocation);
             }

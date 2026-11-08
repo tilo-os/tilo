@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{Checker, Ex, StateRef, UiPlace};
+use super::{Checker, Ctx, Ex, StateRef, UiPlace};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, TypeExpr, TypeExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
@@ -450,6 +450,16 @@ impl Checker<'_> {
                 Kind::Value(te) => {
                     let Some(a) = given[i] else { continue };
                     let want = self.type_in(te, &types);
+                    // A text parameter is words the view shows, as a component's prop of words
+                    // is: the literal given to it is this view's message (i18n.md §2), so
+                    // `std.composer(draft, "Comment on this {noun}", send)`'s sentence is
+                    // translated with the view that writes it.
+                    if self.st.ctx == Ctx::View
+                        && !want.is_error()
+                        && super::component::shows_text(&want)
+                    {
+                        self.mark_shown(&a.value);
+                    }
                     if matches!(&want, Ty::Option(inner) if **inner == Ty::Action) {
                         self.entry_action(a.value.span, &a.value);
                     }
@@ -465,7 +475,6 @@ impl Checker<'_> {
                             ),
                         );
                     }
-                    let want = self.type_in(te, &types);
                     let v = if want.is_error() || v.ty.same(&want) || coerces(&v.ty, &want) {
                         v
                     } else {

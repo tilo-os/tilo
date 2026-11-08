@@ -1803,7 +1803,11 @@ impl Core {
             }
         }
         if target.item.is_none() && meta.roots.contains(&ty.id) {
-            return Ok(meta.title.clone());
+            return Ok(self.words.borrow().word(
+                &tilolang::messages::key_of(&meta.app),
+                &[],
+                &meta.title,
+            ));
         }
         Ok(sentence(&ty.name))
     }

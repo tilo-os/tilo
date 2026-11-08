@@ -1110,7 +1110,7 @@ mod tests {
             .is_err(),
             "an expired delegation admits nobody"
         );
-        let mut anyone = delegated.clone();
+        let mut anyone = delegated;
         anyone.delegation = serde_json::to_vec(
             &tilo_user_identity::sign_endpoint_delegation(&page_key, page, 100, 1000).unwrap(),
         )

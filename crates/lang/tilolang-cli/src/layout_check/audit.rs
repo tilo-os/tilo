@@ -62,10 +62,14 @@ pub enum Kind {
     /// A column's title cut off while the header row beside it keeps room: the title was laid
     /// out narrower than what it says, and nothing stands there to take the rest.
     TitleClippedWithRoom,
+    /// A word the window shows from a catalogue in another language than the one it speaks: a
+    /// window says everything in one language, so a German word in an English window (or the
+    /// source standing in for a translation the window's own catalogues lack) is a fault.
+    MixedLanguage,
 }
 
 impl Kind {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -87,6 +91,7 @@ impl Kind {
         Self::RepeatedCount,
         Self::PastWindow,
         Self::TitleClippedWithRoom,
+        Self::MixedLanguage,
     ];
 
     pub fn name(self) -> &'static str {
@@ -112,6 +117,7 @@ impl Kind {
             Self::RepeatedCount => "repeated-count",
             Self::PastWindow => "past-window",
             Self::TitleClippedWithRoom => "title-clipped-with-room",
+            Self::MixedLanguage => "mixed-language",
         }
     }
 }

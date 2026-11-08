@@ -1277,8 +1277,7 @@ impl AppActions for Apps {
     /// Open `uri` in the app that takes it: a document's own app when it is
     /// a file on this machine, else the app that claims its scheme.
     fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
-        let installed = app_catalogue::apps::read_from_env().unwrap_or_default();
-        let entries = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
+        let (installed, entries) = routes();
         let launch = match uri.strip_prefix("file://") {
             // A file URI is percent-encoded; the path it names is not.
             Some(path) => {
@@ -1302,6 +1301,14 @@ impl AppActions for Apps {
             &Workspace::under(&runtime_dir(), String::new()),
         )
     }
+}
+
+/// This device's apps as routing reads them: the installed Tilo packages and
+/// the machine's own desktop entries.
+pub(crate) fn routes() -> (Vec<app_catalogue::apps::InstalledApp>, desktop_entry::Scan) {
+    let installed = app_catalogue::apps::read_from_env().unwrap_or_default();
+    let entries = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
+    (installed, entries)
 }
 
 /// `launch` as this machine can start it: a bare name is the app as a window

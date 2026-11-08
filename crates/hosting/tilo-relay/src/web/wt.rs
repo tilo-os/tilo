@@ -273,7 +273,7 @@ impl Pages {
     /// with the certificate its grant carries.
     fn admit_member(
         &self,
-        device: [u8; 32],
+        endpoint: [u8; 32],
         proof: &[u8],
     ) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let grant = tilo_live::grant::Native::parse(proof).ok_or(Denied)?;
@@ -286,9 +286,21 @@ impl Pages {
         // presenting another device's certificate is refused.
         let certificate: tilo_user_identity::DeviceCert =
             serde_json::from_slice(&grant.certificate).map_err(|_| Denied)?;
-        if certificate.device_public_key != device
-            || certificate.is_expired_at(tilo_clock::unix_now_ns())
-        {
+        // The endpoint speaks for that device: it is the device's own key, or
+        // one the device signed a live delegation for — a page's key cannot
+        // leave its custody, so its endpoint speaks under a key of its own.
+        if endpoint != certificate.device_public_key {
+            let delegation: tilo_user_identity::EndpointDelegation =
+                serde_json::from_slice(&grant.delegation).map_err(|_| Denied)?;
+            if delegation.device_public_key != certificate.device_public_key {
+                return Err(Denied);
+            }
+            delegation
+                .verify(&endpoint, tilo_clock::unix_now_ns())
+                .map_err(|_| Denied)?;
+        }
+        let device = certificate.device_public_key;
+        if certificate.is_expired_at(tilo_clock::unix_now_ns()) {
             return Err(Denied);
         }
         let peer = AuthenticatedPeer {

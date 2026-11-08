@@ -16,6 +16,11 @@ mod cases {
 type Inbox {
     unread: Int = 3
     kind: Text = "work"
+    pinned: Bool = false
+
+    search {
+        filter "Pinned" = pinned
+    }
 }
 
 root Inbox
@@ -26,6 +31,8 @@ view inbox(i: Inbox) {
     ui.Text("{i.unread} new messages")
     ui.Text(if i.unread > 2 and i.kind != "home" { "At work" } else { "At home" })
     ui.Link("https://example.com/help", label: .some("Help"))
+    ui.Text(meta(i).title)
+    ui.Text(filters(Inbox).find(f -> f.query == "is:pinned")?.label ?? "Pinned")
 }
 "#;
 
@@ -33,6 +40,7 @@ view inbox(i: Inbox) {
     struct German;
     impl Words for German {
         fn add(&self, _: &[(String, String)]) {}
+        fn add_used(&self, _: &[(String, String)]) {}
         fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
             let arg = |name: &str| {
                 args.iter()
@@ -44,6 +52,10 @@ view inbox(i: Inbox) {
                 Some("w-new-messages") => format!("{} neue Nachrichten", arg("unread")),
                 Some("w-at-work") => "Bei der Arbeit".to_owned(),
                 Some("w-help") => "Hilfe".to_owned(),
+                // The app's title, keyed by the app's id, and a filter's label, keyed by its
+                // type and the filter's key: neither is a declaration with an attribute.
+                _ if key == "d-so-tilo-inbox" => "Eingang".to_owned(),
+                _ if key.ends_with("-filter-pinned") => "Angeheftet".to_owned(),
                 _ => source.to_owned(),
             }
         }
@@ -66,6 +78,13 @@ view inbox(i: Inbox) {
             !catalogue.contains("example"),
             "a data prop's literal is no message: {catalogue}"
         );
+        assert!(catalogue.contains("d-so-tilo-inbox = Inbox"), "{catalogue}");
+        let inbox_id = app.meta().types[0].id.clone();
+        let filter = tilolang::messages::filter_key(&inbox_id, "pinned");
+        assert!(
+            catalogue.contains(&format!("{filter} = Pinned")),
+            "a filter's label is a message: {catalogue}"
+        );
 
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
         app.load(&rt);
@@ -79,7 +98,16 @@ view inbox(i: Inbox) {
             .into_iter()
             .map(|t| text_prop(t, "value"))
             .collect();
-        assert_eq!(texts, ["3 neue Nachrichten", "Bei der Arbeit"]);
+        assert_eq!(
+            texts,
+            [
+                "3 neue Nachrichten",
+                "Bei der Arbeit",
+                "Eingang",
+                "Angeheftet"
+            ],
+            "a window's title and a filter's label are words too"
+        );
         let link = of_kind(view.tree(), "ui.Link");
         assert_eq!(text_prop(link[0], "url"), "https://example.com/help");
         assert_eq!(

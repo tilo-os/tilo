@@ -307,6 +307,10 @@ type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
 struct ConnectConfig {
     cert: DeviceCert,
     host_cert: DeviceCert,
+    /// Where the host's iroh endpoint is dialled: the session and its planes
+    /// reach it there.
+    #[serde(default)]
+    address: Option<JsHostAddress>,
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
@@ -348,10 +352,32 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
     postcard::from_bytes(&bytes).map_err(js_error)
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsHostAddress {
+    /// The endpoint's key and the addresses it answers at.
+    endpoint_addr: iroh_base::EndpointAddr,
+    /// The packet relay the host is reached through, when it names one.
+    #[serde(default)]
+    relay_url: Option<String>,
+}
+
+impl JsHostAddress {
+    /// The host as the peer dials it.
+    fn host(&self) -> Host {
+        Host::Iroh {
+            addr: self.endpoint_addr.clone(),
+            relay_url: self.relay_url.as_deref().and_then(|url| url.parse().ok()),
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JsHostInfo {
     host_cert: DeviceCert,
+    /// Where the host listens on iroh, when it names an endpoint.
+    address: Option<JsHostAddress>,
 }
 
 /// What the host publishes before certification: its certificate. Resolves
@@ -362,6 +388,10 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
         post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
     serde_json::to_string(&JsHostInfo {
         host_cert: info.host_cert,
+        address: info.address.map(|address| JsHostAddress {
+            endpoint_addr: address.endpoint_addr,
+            relay_url: address.relay_url,
+        }),
     })
     .map_err(js_error)
 }
@@ -382,6 +412,7 @@ pub async fn certify_device(
     invite_hex: Option<String>,
     custody: JsValue,
     on_pairing_code: Function,
+    address: Option<String>,
 ) -> Result<String, JsError> {
     let signer = PageSigner::from_js(&custody)?;
     let user: [u8; 32] = hex::decode(user_public_key_hex)
@@ -395,7 +426,14 @@ pub async fn certify_device(
             .map_err(|_| js_error("a pairing invite is 16 bytes"))?,
         None => [0; 16],
     };
-    let host = Host::Https(Arc::new(PageHttp(post)));
+    // A host that named its iroh endpoint is certified there; one that named
+    // none is certified over its HTTPS origin.
+    let host = match address.filter(|text| !text.is_empty()) {
+        Some(text) => serde_json::from_str::<JsHostAddress>(&text)
+            .map_err(js_error)?
+            .host(),
+        None => Host::Https(Arc::new(PageHttp(post))),
+    };
     let (cert, host_cert) =
         tilo_browser_peer::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
@@ -1848,7 +1886,10 @@ impl WasmPeer {
         let display_name = config.display_name;
         let handle = PeerHandle::start(
             PeerConfig {
-                host: Host::Https(Arc::new(PageHttp(post))),
+                host: match &config.address {
+                    Some(address) => address.host(),
+                    None => Host::Https(Arc::new(PageHttp(post))),
+                },
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),

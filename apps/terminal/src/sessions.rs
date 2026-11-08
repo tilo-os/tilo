@@ -109,6 +109,10 @@ pub struct Sessions {
     pub host_requested: bool,
     /// The places a listing off the UI thread found, once it answers.
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
+    /// The window the shell shows this tab in, in its own process: the
+    /// workspace the desktop put it in is the one its environments belong
+    /// to. `None` for a Terminal in a process of its own.
+    window: Option<ui::hosted_window::HostedWindow>,
 }
 
 /// What the supervisor listed: the environments (or why it could not) and
@@ -149,6 +153,7 @@ impl Sessions {
             intent: None,
             host_requested: false,
             listing: None,
+            window: None,
         }
     }
 
@@ -198,6 +203,24 @@ impl Sessions {
         )
     }
 
+    /// Show this tab in `window`, a window the shell lent it in its own
+    /// process (`None`: a Terminal in a process of its own).
+    pub(crate) fn in_window(&mut self, window: Option<ui::hosted_window::HostedWindow>) {
+        self.window = window;
+    }
+
+    /// The tilo workspace this Terminal is in, which the environments it
+    /// opens and lists belong to: the workspace the desktop put its window
+    /// in, read at each request for a window can move; in a process of its
+    /// own, the workspace the launcher started it in. `None` when unknown.
+    pub(crate) fn workspace(&self) -> Option<String> {
+        match &self.window {
+            Some(window) => window.workspace(),
+            None => std::env::var("TILO_WORKSPACE_ID").ok(),
+        }
+        .filter(|workspace| !workspace.is_empty())
+    }
+
     /// Whether this tab opens sessions at all.
     pub fn is_live(&self) -> bool {
         !matches!(self.source, Source::None)
@@ -244,16 +267,20 @@ impl Sessions {
                 "agents may not open the device's own shell".into(),
             ));
         }
+        let workspace = self.workspace();
         match &mut self.source {
             Source::None => Err(OpenError::Unavailable(
                 "this terminal has no process service".into(),
             )),
-            Source::Standalone => TerminalBackend::open(target, requested_by, relay_session),
+            Source::Standalone => {
+                TerminalBackend::open(target, requested_by, relay_session, workspace.as_deref())
+            }
             Source::Hosted { first } => crate::HostedProcessServices::open_session(
                 first.take(),
                 target,
                 requested_by,
                 relay_session,
+                workspace.as_deref(),
                 None,
             ),
             #[cfg(test)]
@@ -272,6 +299,7 @@ impl Sessions {
         {
             // Cancels any superseded request before consuming another connection.
             self.pending = None;
+            let workspace = self.workspace();
             if let Source::Hosted { first } = &mut self.source {
                 if requester == Requester::Agent && target.is_host() {
                     return Some(Err(OpenError::Refused(
@@ -283,6 +311,7 @@ impl Sessions {
                     target.clone(),
                     requester,
                     attach.map(str::to_owned),
+                    workspace,
                     waker,
                 ) {
                     Ok(pending) => {
@@ -381,6 +410,7 @@ impl Sessions {
             return;
         }
         let (send, receive) = std::sync::mpsc::channel();
+        let workspace = self.workspace();
         let spawned = std::thread::Builder::new()
             .name("tilo-terminal-list-places".into())
             .spawn(move || {
@@ -389,6 +419,7 @@ impl Sessions {
                     .unwrap_or_default();
                 let environments = crate::HostedProcessServices::ask(
                     &serde_json::json!({"op": "list-environments"}),
+                    workspace.as_deref(),
                 )
                 .and_then(|reply| parse_directory_reply(&reply));
                 let _ = send.send(Listing {
@@ -500,7 +531,19 @@ impl Sessions {
         if !matches!(self.source, Source::Hosted { .. }) {
             return Err("environments are managed through Tilo's shell runtime".into());
         }
-        parse_directory_reply(&crate::HostedProcessServices::ask(request)?)
+        parse_directory_reply(&crate::HostedProcessServices::ask(
+            request,
+            self.workspace().as_deref(),
+        )?)
+    }
+}
+
+/// Name `workspace` in a request to the supervisor as its top-level
+/// `workspace` field; a Terminal that does not know its workspace sends
+/// none.
+pub(crate) fn with_workspace(request: &mut serde_json::Value, workspace: Option<&str>) {
+    if let (Some(fields), Some(workspace)) = (request.as_object_mut(), workspace) {
+        fields.insert("workspace".into(), serde_json::json!(workspace));
     }
 }
 

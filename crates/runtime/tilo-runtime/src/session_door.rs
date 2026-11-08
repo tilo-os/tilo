@@ -358,8 +358,8 @@ where
 /// admitted it.
 #[cfg(unix)]
 pub fn serve_after<H>(
-    mut stream: std::os::unix::net::UnixStream,
-    mut first: Option<Vec<u8>>,
+    stream: std::os::unix::net::UnixStream,
+    first: Option<Vec<u8>>,
     host: impl FnOnce() -> Result<H, String>,
     tasks: Option<std::sync::Arc<dyn crate::mcp::TaskHosts>>,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
@@ -367,6 +367,42 @@ pub fn serve_after<H>(
 where
     H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
 {
+    serve_with(
+        stream,
+        first,
+        host,
+        Beside {
+            tasks,
+            devices: None,
+        },
+        ask,
+    )
+}
+
+/// What a door's connection is served with beside its host: where its task's
+/// programs run, and the person's devices as the host reaches them.
+#[derive(Default)]
+pub struct Beside {
+    pub tasks: Option<std::sync::Arc<dyn crate::mcp::TaskHosts>>,
+    pub devices: Option<std::sync::Arc<dyn crate::remote_door::DeviceDirectory>>,
+}
+
+/// [`serve_after`], with what `beside` holds.
+///
+/// # Errors
+/// Returns transport errors; a refusal is `Ok`.
+#[cfg(unix)]
+pub fn serve_with<H>(
+    mut stream: std::os::unix::net::UnixStream,
+    mut first: Option<Vec<u8>>,
+    host: impl FnOnce() -> Result<H, String>,
+    beside: Beside,
+    ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
+) -> io::Result<()>
+where
+    H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
+{
+    let Beside { tasks, devices } = beside;
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -446,7 +482,7 @@ where
             },
         ),
     };
-    let server = std::sync::Arc::new(server.with_task_hosts(tasks));
+    let server = std::sync::Arc::new(server.with_task_hosts(tasks).with_devices(devices));
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     if let Some(reply) = runtime
         .block_on(server.handle(hello.request))

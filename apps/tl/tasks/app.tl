@@ -223,14 +223,15 @@ action due_clear(t: Task) (label: "No date", group: "Due") {
 /// workspace's own device runs it, once for all of them.
 trigger ring(t: Task) at t.remind: remind(t)
 
-/// Sets when to remind whoever is doing a task of it, counted from now, or clears the
-/// reminder.
-action remind_at(t: Task, after: Option<Duration>) uses time (
-    label: "Remind me",
-    icon: .bell,
-    group: "Remind",
-) {
-    t.remind = if let d = after { .some(now + d) } else { .none }
+/// Sets the moment whoever is doing a task is reminded of it.
+action remind_at(t: Task, when: Time) uses time (label: "Remind me", icon: .bell, group: "Remind") {
+    t.remind = .some(when)
+}
+
+/// Clears a task's reminder: it is not told of again.
+action remind_clear(t: Task) uses time (label: "No reminder", icon: .bell_off, group: "Remind") {
+    require t.remind != .none "It has no reminder"
+    t.remind = .none
 }
 
 /// Tells whoever is doing a task, or the one who made it, what the task is and when it is due
@@ -931,7 +932,7 @@ view task_page(t: Task) {
                         on choose: remind_at(t)
                     }
                     ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
-                        on choose: remind_at(t, .none)
+                        on choose: remind_clear(t)
                     }
                 }
             }

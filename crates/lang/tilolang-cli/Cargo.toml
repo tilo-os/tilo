@@ -33,6 +33,8 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 registry-types = { path = "../../packaging/registry-types" }
 tilolang = { path = "../tilolang" }
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+# The person the layout is checked for: their language, staged over the machine's.
+tilo-process = { path = "../../platform/tilo-process", features = ["native"] }
 # Rebuilding on every saved source.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The generations a saved build is published into for the running app (`src/dev.rs`).

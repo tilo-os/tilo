@@ -51,6 +51,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("text_assistance", Holder::Person),
     // This device's.
     ("accessibility_device", Holder::Device),
+    (crate::agent_door::SECTION, Holder::Device),
     ("agent_providers", Holder::Device),
     (APP_DEVICE_LOCAL_SECTION, Holder::Device),
     ("appearance_device", Holder::Device),

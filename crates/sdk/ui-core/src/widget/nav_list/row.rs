@@ -132,6 +132,13 @@ impl NavPaint {
             NavRowKind::Pending { .. } if rail => nav_rail_row_height(theme),
             NavRowKind::Pending { .. } => nav_item_height(theme, false, false),
         };
+        // A destination is pressed with a finger where the input is a finger's: the row is as
+        // tall as the target that input takes, as every compact control of the toolkit is.
+        let height = if matches!(&row.kind, NavRowKind::Item { .. }) {
+            height.max(f64::from(self.interaction.minimum_target()))
+        } else {
+            height
+        };
         height.max(1.0)
     }
 
@@ -684,11 +691,17 @@ impl Widget for NavRow {
             NavRowKind::Caption { caption, .. } => (caption.clone(), None, None),
             NavRowKind::Pending { .. } => (String::new(), None, None),
         };
-        let mut node = AccessNode::new(Role::Group)
+        // A destination is an entry of the tree the list is: it says it is one, and whether it
+        // is the one the person picked. A header and a caption group what stands under them.
+        let item = matches!(self.row.kind, NavRowKind::Item { .. });
+        let mut node = AccessNode::new(if item { Role::TreeItem } else { Role::Group })
             .with_name(name)
             .with_children(self.semantic_children(&paint));
         node.description = description;
         node.state.checked = checked;
+        if item {
+            node.state.selected = self.selection.selected;
+        }
         // Where the row stands in the navigation tree: a header heads its
         // items, nested items stand deeper.
         node.level = Some(match &self.row.kind {

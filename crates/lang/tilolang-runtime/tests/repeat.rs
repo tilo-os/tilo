@@ -304,6 +304,8 @@ action remind(probe: Probe, reminder: std.Reminder, due: Date, at: Option<Time>)
 
         impl Words for Recorded {
             fn add(&self, _catalogues: &[(String, String)]) {}
+
+            fn add_used(&self, _catalogues: &[(String, String)]) {}
             fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
                 self.asked
                     .borrow_mut()

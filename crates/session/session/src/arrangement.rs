@@ -230,6 +230,28 @@ pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
 /// workspace to ask in — and the text then fails to place as it always did.
 pub type Ask = Rc<dyn Fn(&str) -> Option<String>>;
 
+/// What a text typed on the canvas found, and where it stands: the inputs of
+/// [`Arrangement::place_found`] besides the arrangement itself.
+#[derive(Clone, Copy)]
+pub struct Found<'a> {
+    /// The person the place is made as.
+    pub asked: &'a str,
+    /// The text they typed.
+    pub text: &'a str,
+    /// The resource's view, empty for its primary one.
+    pub view: &'a str,
+    /// The strip the place joins as a tab, else one of its own.
+    pub strip: Option<u64>,
+    /// Where on the canvas it stands.
+    pub at: (i64, i64),
+    /// The system's search, [`Find`].
+    pub find: &'a dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
+    /// The ask for text that asks, [`Ask`].
+    pub ask: &'a dyn Fn(&str) -> Option<String>,
+    /// Whether anyone else's change is still in flight.
+    pub busy: Busy,
+}
+
 /// The resource `hit` names, and the name its resource goes by, when a place
 /// can make something of it: an app's own `open` of a resource, or an action
 /// that acts on one. Every other row (a settings section, a file, a window's
@@ -588,17 +610,17 @@ impl Arrangement {
     /// # Errors
     /// Why the place could not be made, or the text found nothing to place
     /// and nothing answered it.
-    pub fn place_found(
-        &mut self,
-        asked: &str,
-        text: &str,
-        view: &str,
-        strip: Option<u64>,
-        at: (i64, i64),
-        find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
-        ask: &dyn Fn(&str) -> Option<String>,
-        busy: Busy,
-    ) -> Result<Option<u64>, String> {
+    pub fn place_found(&mut self, inputs: Found<'_>) -> Result<Option<u64>, String> {
+        let Found {
+            asked,
+            text,
+            view,
+            strip,
+            at,
+            find,
+            ask,
+            busy,
+        } = inputs;
         let text = text.trim();
         if text.is_empty() {
             return Err("nothing is typed to place".into());
@@ -1825,19 +1847,50 @@ fn placing_actions() -> Vec<ActionSpec> {
                 optional("y", ParamType::Integer, "Its canvas y"),
                 optional("width", ParamType::Integer, "Its width in canvas pixels"),
                 optional("height", ParamType::Integer, "Its height in canvas pixels"),
+                // A place that floats stands above the windows rather than
+                // on the canvas: it has no canvas x and y, and the corner
+                // and insets are its own instead (`width` and `height` are
+                // its size). Left out, the place stands on the canvas.
+                optional(
+                    "float",
+                    ParamType::Text,
+                    "Floats it above its workspace's windows at this corner of the work area: top-left, top-right, bottom-right (the default) or bottom-left",
+                ),
+                optional(
+                    "dx",
+                    ParamType::Integer,
+                    "A float's distance from that corner's side edge, in canvas pixels",
+                ),
+                optional(
+                    "dy",
+                    ParamType::Integer,
+                    "A float's distance from that corner's top or bottom edge, in canvas pixels",
+                ),
             ],
-            |args| ArrangementAction::Place {
-                workspace: id_text(args, "workspace"),
-                row: count(args, "row"),
-                strip: count(args, "strip"),
-                place: count(args, "place"),
-                resource: text(args, "resource"),
-                view: args.text("view").unwrap_or_default().to_owned(),
-                x: args.integer("x").unwrap_or_default(),
-                y: args.integer("y").unwrap_or_default(),
-                width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
-                height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
-                float: None,
+            |args| {
+                let float = args.text("float").map(|corner| {
+                    FloatPlace::new(
+                        // ignored-failure: a corner's name that names none stands at the default corner
+                        FloatCorner::parse(corner).unwrap_or_default(),
+                        float_coord(args.integer("dx"), FLOAT_INSET),
+                        float_coord(args.integer("dy"), FLOAT_INSET),
+                        float_side(args.integer("width"), FLOAT_WIDTH),
+                        float_side(args.integer("height"), FLOAT_HEIGHT),
+                    )
+                });
+                ArrangementAction::Place {
+                    workspace: id_text(args, "workspace"),
+                    row: count(args, "row"),
+                    strip: count(args, "strip"),
+                    place: count(args, "place"),
+                    resource: text(args, "resource"),
+                    view: args.text("view").unwrap_or_default().to_owned(),
+                    x: args.integer("x").unwrap_or_default(),
+                    y: args.integer("y").unwrap_or_default(),
+                    width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
+                    height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
+                    float,
+                }
             },
         ),
         action(
@@ -2054,10 +2107,16 @@ impl Published for ArrangementDoor {
             let spot = (*x, *y);
             let find = Rc::clone(&self.find);
             let ask = Rc::clone(&self.ask);
-            let placed = self
-                .arrangement
-                .borrow_mut()
-                .place_found(&asked, text, view, *strip, spot, &*find, &*ask, busy);
+            let placed = self.arrangement.borrow_mut().place_found(Found {
+                asked: &asked,
+                text,
+                view,
+                strip: *strip,
+                at: spot,
+                find: &*find,
+                ask: &*ask,
+                busy,
+            });
             placed.map_err(|why| tilo_actions::DoorError::Unavailable {
                 code: "nothing_to_place".to_owned(),
                 reason: why,

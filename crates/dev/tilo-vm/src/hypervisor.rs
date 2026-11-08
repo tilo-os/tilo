@@ -348,6 +348,52 @@ pub trait Hypervisor {
     fn ci_layers_from_host(&self) -> bool {
         false
     }
+    /// How `vm branch` makes new VMs from a stopped one.
+    fn branching(&self) -> Branching {
+        Branching::Unsupported(format!(
+            "the {} adapter cannot branch a VM; create each VM from the image instead: tilo-vm vm create <name>",
+            self.name()
+        ))
+    }
+    /// Is the VM off, so nothing writes its disk? `None` when the adapter
+    /// cannot tell.
+    fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        self.running(vm, runner).map(|running| !running)
+    }
+    /// Commands that give a VM `create` cloned the MAC in its entry
+    /// (`nic_mac`), where cloning keeps the source's.
+    fn assign_identity(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        Vec::new()
+    }
+    /// The UUID the hypervisor gave the VM, asked of it; `None` where the
+    /// VM gets the entry's own `uuid`.
+    fn query_uuid(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<String> {
+        None
+    }
+}
+
+/// How an adapter branches a stopped VM (`vm branch`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Branching {
+    /// tilo-vm freezes the VM's disk as a read-only base, and `create`
+    /// makes each VM's disk, the source's next one included, a qcow2 child
+    /// of it (the entry's `image`).
+    Backing,
+    /// `create` clones the stopped VM named by the entry's `template`
+    /// copy-on-write itself (UTM: an APFS clone of the VM bundle).
+    Clone,
+    /// Branching is refused; what to do instead.
+    Unsupported(String),
+}
+
+/// A new VM's identity: a random UUID, and a random MAC in QEMU's
+/// `52:54:00` range.
+pub fn new_identity() -> (String, String) {
+    let [a, b, c, ..] = *uuid::Uuid::new_v4().as_bytes();
+    (
+        uuid::Uuid::new_v4().to_string(),
+        format!("52:54:00:{a:02x}:{b:02x}:{c:02x}"),
+    )
 }
 
 /// # Errors
@@ -382,7 +428,10 @@ fn configured_endpoint(vm: &Vm<'_>, default_host: &str, port: u16) -> SshEndpoin
 
 /// A qcow2 child of the image (a qcow2 dev disk or a raw disk), so the image
 /// stays pristine. Runs the `qemu-img` resolved when the VM was created.
-fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
+///
+/// # Errors
+/// The VM has no `disk`.
+pub fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
     let disk = vm.disk()?;
     let qemu_img = vm.entry.qemu_img.as_deref().unwrap_or("qemu-img");
     let format = image::Format::from_entry(vm.entry.image_format.as_deref()).name();
@@ -469,6 +518,12 @@ impl Hypervisor for Device {
     fn ci_layers_from_host(&self) -> bool {
         true
     }
+
+    fn branching(&self) -> Branching {
+        Branching::Unsupported(
+            "a device is a real machine with its own disk; install another device instead (tilo-vm guide devices)".into(),
+        )
+    }
 }
 
 pub struct Libvirt;
@@ -535,6 +590,9 @@ pub fn domain_xml_with_uuid(
         ("kvm", "host-passthrough")
     };
     let e = quick_xml::escape::escape;
+    // The domain UUID is also the SMBIOS system UUID the guest reads: named
+    // in both places, so the guest sees exactly the UUID tilo-vm recorded.
+    let uuid = uuid.or(vm.entry.uuid.as_deref());
     Ok(format!(
         "<domain type='{domain_type}'>
   <name>{name}</name>{uuid}
@@ -548,7 +606,7 @@ pub fn domain_xml_with_uuid(
     </firmware>
     <smbios mode='sysinfo'/>{direct}
   </os>
-  <sysinfo type='smbios'>
+  <sysinfo type='smbios'>{system}
     <oemStrings>
       <entry>{credential}</entry>
     </oemStrings>
@@ -561,7 +619,7 @@ pub fn domain_xml_with_uuid(
       <source file='{disk}'/>
       <target dev='vda' bus='virtio'/>{disk_boot}
     </disk>{boot_esp}
-    <interface type='user'>
+    <interface type='user'>{mac}
       <backend type='passt'/>
       <model type='virtio'/>
       <portForward proto='tcp'><range start='{port}' to='22'/></portForward>
@@ -579,6 +637,14 @@ pub fn domain_xml_with_uuid(
 ",
         name = e(vm.name),
         uuid = uuid.map_or_else(String::new, |u| format!("\n  <uuid>{}</uuid>", e(u))),
+        system = uuid.map_or_else(String::new, |u| format!(
+            "\n    <system>\n      <entry name='uuid'>{}</entry>\n    </system>",
+            e(u)
+        )),
+        mac = vm.entry.nic_mac.as_deref().map_or_else(String::new, |m| format!(
+            "\n      <mac address='{}'/>",
+            e(m)
+        )),
         memory = vm.memory(),
         cpus = vm.cpus(),
         arch = e(arch),
@@ -668,12 +734,15 @@ impl Hypervisor for Libvirt {
         root_key: &str,
         runner: &mut dyn Runner,
     ) -> Result<Vec<CommandLine>, CliError> {
-        let uuid = runner
-            .output(&Self::virsh(vm, &["domuuid", vm.name]))
-            .ok()
-            .filter(|o| o.success)
-            .map(|o| o.stdout.trim().to_owned())
-            .filter(|u| !u.is_empty());
+        // A VM made before tilo-vm recorded a UUID keeps libvirt's.
+        let uuid = vm.entry.uuid.clone().or_else(|| {
+            runner
+                .output(&Self::virsh(vm, &["domuuid", vm.name]))
+                .ok()
+                .filter(|o| o.success)
+                .map(|o| o.stdout.trim().to_owned())
+                .filter(|u| !u.is_empty())
+        });
         Ok(vec![Self::define(vm, root_key, uuid.as_deref())?])
     }
 
@@ -728,6 +797,19 @@ impl Hypervisor for Libvirt {
             .ok()
             .filter(|o| o.success)?;
         Some(output.stdout.trim() == "pmsuspended")
+    }
+
+    fn branching(&self) -> Branching {
+        Branching::Backing
+    }
+
+    fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        // Running, paused and suspended (S3) domains all hold the disk open.
+        let output = runner
+            .output(&Self::virsh(vm, &["domstate", vm.name]).env("LC_ALL", "C"))
+            .ok()
+            .filter(|o| o.success)?;
+        Some(output.stdout.trim() == "shut off")
     }
 
     fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
@@ -854,6 +936,12 @@ impl Hypervisor for Qemu {
         }
     }
 
+    fn branching(&self) -> Branching {
+        Branching::Unsupported(
+            "the qemu adapter runs CI and scenario VMs through os/dev/vm.sh, which gives a VM no UUID of its own, so a branch could not tell it was branched; set up the box with libvirt: tilo-vm vm create <name> --hypervisor libvirt".into(),
+        )
+    }
+
     fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
         Some(Self::script(vm, &["serial"]))
     }
@@ -886,6 +974,20 @@ impl Hypervisor for Qemu {
 }
 
 pub struct Utm;
+
+/// A string inside an `AppleScript` string literal.
+fn utm_quote(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// `osascript` running `lines` inside `tell application "UTM"`.
+fn utm_script(lines: &[String]) -> CommandLine {
+    let mut command = CommandLine::new("osascript", &["-e", "tell application \"UTM\""]);
+    for line in lines {
+        command = command.arg("-e").arg(line.as_str());
+    }
+    command.arg("-e").arg("end tell")
+}
 
 /// What a UTM VM gets unless `--memory-mb`/`--cpus` say otherwise: building
 /// the shell in the VM needs more than the other adapters' default (a
@@ -1092,6 +1194,51 @@ impl Hypervisor for Utm {
         Some(CommandLine::new("utmctl", &["attach", vm.name]))
     }
 
+    fn branching(&self) -> Branching {
+        Branching::Clone
+    }
+
+    fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        let output = runner
+            .output(&CommandLine::new("utmctl", &["status", vm.name]))
+            .ok()
+            .filter(|o| o.success)?;
+        match output.stdout.trim() {
+            "stopped" => Some(true),
+            "starting" | "started" | "pausing" | "paused" | "resuming" | "stopping" => Some(false),
+            _ => None,
+        }
+    }
+
+    fn assign_identity(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        // UTM's clone keeps the source's MAC; its scripting sets a new one.
+        let Some(mac) = vm.entry.nic_mac.as_deref() else {
+            return Vec::new();
+        };
+        vec![utm_script(&[
+            format!("set m to virtual machine \"{}\"", utm_quote(vm.name)),
+            "set c to configuration of m".into(),
+            "set n to network interfaces of c".into(),
+            "set i to item 1 of n".into(),
+            format!("set address of i to \"{}\"", utm_quote(mac)),
+            "set item 1 of n to i".into(),
+            "set network interfaces of c to n".into(),
+            "update configuration of m with c".into(),
+        ])]
+    }
+
+    fn query_uuid(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<String> {
+        // UTM's clone gives the VM a new UUID, which its QEMU backend passes
+        // to the guest as the SMBIOS system UUID.
+        let script = utm_script(&[format!(
+            "return id of virtual machine \"{}\"",
+            utm_quote(vm.name)
+        )]);
+        let output = runner.output(&script).ok().filter(|o| o.success)?;
+        let id = output.stdout.trim().to_ascii_lowercase();
+        uuid::Uuid::parse_str(&id).is_ok().then_some(id)
+    }
+
     fn control(&self, _vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
         let mut command = CommandLine::new("utmctl", &[]);
         command.args.extend(args.iter().cloned());
@@ -1147,6 +1294,24 @@ impl Whpx {
         20_000_u16.saturating_add(vm.ssh_port() % 40_000)
     }
 
+    /// QEMU's SMBIOS system UUID, the guest's `product_uuid`, when the VM
+    /// has its own.
+    fn uuid_args(vm: &Vm<'_>) -> Vec<String> {
+        vm.entry
+            .uuid
+            .iter()
+            .flat_map(|u| ["-uuid".to_owned(), u.clone()])
+            .collect()
+    }
+
+    /// The network card, with the VM's own MAC when it has one.
+    fn net_device(vm: &Vm<'_>) -> String {
+        vm.entry.nic_mac.as_deref().map_or_else(
+            || "virtio-net-pci,netdev=net0".into(),
+            |mac| format!("virtio-net-pci,netdev=net0,mac={mac}"),
+        )
+    }
+
     fn qemu_args(vm: &Vm<'_>) -> Vec<String> {
         let disk = vm.entry.disk.as_deref().unwrap_or_default();
         let code = vm.entry.firmware_code.as_deref().unwrap_or_default();
@@ -1168,6 +1333,7 @@ impl Whpx {
             vm.memory().to_string(),
             "-no-reboot".into(),
         ];
+        args.extend(Self::uuid_args(vm));
         if let Some(direct) = &vm.entry.direct_kernel {
             let mut cmdline = direct.cmdline.clone();
             if let Some(public) = Self::public_key(vm) {
@@ -1226,7 +1392,7 @@ impl Whpx {
             "-netdev".into(),
             format!("user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22", vm.ssh_port()),
             "-device".into(),
-            "virtio-net-pci,netdev=net0".into(),
+            Self::net_device(vm),
             "-serial".into(),
             format!("file:{uart}"),
             "-chardev".into(),
@@ -1344,6 +1510,10 @@ impl Hypervisor for Whpx {
     fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
         // QEMU keeps no registration: the VM is its files.
         Vec::new()
+    }
+
+    fn branching(&self) -> Branching {
+        Branching::Backing
     }
 
     fn power_off(&self, vm: &Vm<'_>) -> Option<CommandLine> {
@@ -1490,6 +1660,12 @@ impl Hypervisor for HyperV {
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
         let name = ps_quote(vm.name);
         vec![powershell(&format!("Remove-VM -Name {name} -Force"))]
+    }
+
+    fn branching(&self) -> Branching {
+        Branching::Unsupported(
+            "a Hyper-V VM runs its own copy of the VHDX, which has no copy-on-write child here; on Windows ARM64 use the whpx adapter: tilo-vm vm create <name> --hypervisor whpx".into(),
+        )
     }
 
     fn power_off(&self, vm: &Vm<'_>) -> Option<CommandLine> {

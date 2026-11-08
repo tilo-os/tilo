@@ -10,6 +10,8 @@
 //! device to the workspace as one of the owner's, which is how the workspace's
 //! governance tells every member it may hold the workspace.
 
+use std::time::SystemTime;
+
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
@@ -23,7 +25,7 @@ use tilo_relay_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
-use super::{CollaborationError, Workspaces};
+use super::{CollaborationError, GovernedWorkspace, Workspaces};
 use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::host_authority::HostOperation;
@@ -60,9 +62,42 @@ impl Workspaces {
         let governed = self.workspace(workspace).await?;
         let governed = governed.lock().await;
         let own = self.transport_hint(&governed)?;
-        Ok(std::iter::once(own)
-            .chain(governed.peer().governance().workspace_hosts())
-            .collect())
+        let mut hosts = vec![own.clone()];
+        hosts.extend(
+            governed
+                .peer()
+                .governance()
+                .workspace_hosts()
+                .into_iter()
+                .filter(|hint| hint.host.device_public_key != own.host.device_public_key),
+        );
+        drop(governed);
+        Ok(hosts)
+    }
+
+    /// Name this host's own signed address among the workspace's hosts, as its
+    /// governor, so every member reads where the workspace is served from the
+    /// replica it already holds. Naming it as it is named changes nothing.
+    pub(super) async fn name_own_host(
+        &self,
+        governed: &mut GovernedWorkspace,
+    ) -> Result<(), String> {
+        let host = &self.inner.host;
+        let hint = self
+            .transport_hint(governed)
+            .map_err(|error| error.to_string())?;
+        let now = SystemTime::now();
+        let mut candidate = governed.peer().clone();
+        if candidate
+            .governance_mut()
+            .author_workspace_host(&hint, &host.key, now)?
+        {
+            governed.commit(candidate, &host.key, now, |record, _| {
+                Ok(record.collaboration.clone())
+            })?;
+            self.settle(governed).await?;
+        }
+        Ok(())
     }
 
     /// Change which hosts `workspace`'s governance names with `change`, as its

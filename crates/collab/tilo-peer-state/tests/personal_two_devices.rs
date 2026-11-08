@@ -9,16 +9,18 @@
 )]
 tilo_automerge_isolate::test_worker!();
 
+mod common;
+
+use common::{addr, device, device_with, localhost_endpoint};
+
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use durable_store::DurableStore as _;
 use ed25519_dalek::SigningKey;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
+use iroh::Endpoint;
 use std::time::Duration;
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync, RefusalReason};
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
-};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
 use ui::permissions::UserId;
 use ui::record::RecordKind;
 use ui::record::person::PersonRecords;
@@ -29,41 +31,6 @@ const RECORD: &str = "prefs";
 /// The app whose own record the devices share, and the kind of it.
 const NOTES: &str = "so.tilo.notes";
 const KIND: &str = "notes.reading-position";
-
-/// A device key `n` certified by `root`.
-fn device(root: &SigningKey, n: u8, capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[n; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{n}"),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
-}
-
-/// A localhost endpoint with no relay whose identity is the device `key`.
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
-}
 
 /// A record with `field` set to `value`, as an app's first write of it.
 fn record(field: &str, value: &str) -> collab_types::DocumentMutation {
@@ -103,8 +70,8 @@ async fn until(sync: &PersonalSync, done: impl Fn(&PersonalStore) -> bool + Sync
 async fn two_devices_of_one_person_converge_on_their_own_documents() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let root_key = root.verifying_key().to_bytes();
-    let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
-    let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+    let (a_key, a_cert) = device(&root, 2);
+    let (b_key, b_cert) = device(&root, 3);
     let now = SystemTime::now();
 
     let a = PersonalStore::open(root_key, a_cert, now).unwrap();
@@ -117,11 +84,11 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
         .unwrap();
     assert!(b.store().rows().is_empty());
 
-    let a_endpoint = endpoint(&a_key).await;
+    let a_endpoint = localhost_endpoint(&a_key).await;
     let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(PERSONAL_ALPN, a.clone())
         .spawn();
-    let b_endpoint = endpoint(&b_key).await;
+    let b_endpoint = localhost_endpoint(&b_key).await;
     let link = tokio::spawn({
         let b = b.clone();
         let b_endpoint = b_endpoint.clone();
@@ -151,12 +118,12 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
 
     // A device of another identity is refused the link and holds nothing.
     let other = SigningKey::from_bytes(&[9; 32]);
-    let (c_key, c_cert) = device(&other, 10, DeviceCapabilities::member());
+    let (c_key, c_cert) = device(&other, 10);
     let c = PersonalSync::new(
         PersonalStore::open(other.verifying_key().to_bytes(), c_cert, now).unwrap(),
         c_key.clone(),
     );
-    let c_endpoint = endpoint(&c_key).await;
+    let c_endpoint = localhost_endpoint(&c_key).await;
     let refused = c.connect(&c_endpoint, addr(&a_endpoint)).await;
     assert!(refused.is_err(), "a device of another identity is refused");
     assert!(c.store().rows().is_empty());
@@ -169,7 +136,7 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
 
     // A store node holds none of the person's documents: it cannot even open
     // a store on their identity.
-    let (_, node_cert) = device(&root, 4, DeviceCapabilities::host());
+    let (_, node_cert) = device_with(&root, 4, DeviceCapabilities::host());
     assert!(PersonalStore::open(root_key, node_cert, now).is_err());
 
     link.abort();
@@ -219,8 +186,8 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let root_key = root.verifying_key().to_bytes();
     let person = hex::encode(root_key);
-    let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
-    let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+    let (a_key, a_cert) = device(&root, 2);
+    let (b_key, b_cert) = device(&root, 3);
     let now = SystemTime::now();
 
     let a = PersonalSync::new(
@@ -262,11 +229,11 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
 
     // Nothing is joined and no workspace exists: the devices meet over the
     // person's store alone.
-    let a_endpoint = endpoint(&a_key).await;
+    let a_endpoint = localhost_endpoint(&a_key).await;
     let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(PERSONAL_ALPN, a.clone())
         .spawn();
-    let b_endpoint = endpoint(&b_key).await;
+    let b_endpoint = localhost_endpoint(&b_key).await;
     let link = tokio::spawn({
         let b = b.clone();
         let b_endpoint = b_endpoint.clone();
@@ -379,11 +346,11 @@ async fn carries_to_the_other_device(
             )
         })
         .unwrap();
-    let a_endpoint = endpoint(a.0).await;
+    let a_endpoint = localhost_endpoint(a.0).await;
     let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(PERSONAL_ALPN, a_sync.clone())
         .spawn();
-    let b_endpoint = endpoint(b.0).await;
+    let b_endpoint = localhost_endpoint(b.0).await;
     let link = tokio::spawn({
         let b_sync = b_sync.clone();
         let b_endpoint = b_endpoint.clone();
@@ -473,8 +440,8 @@ async fn a_record_kept_before_the_store_reads_on_the_persons_other_device() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let root_key = root.verifying_key().to_bytes();
     let person = hex::encode(root_key);
-    let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
-    let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+    let (a_key, a_cert) = device(&root, 2);
+    let (b_key, b_cert) = device(&root, 3);
     let store = std::rc::Rc::new(durable_store::MemoryStore::new());
     let kind = RecordKind::new(KIND);
     let id = ui::record::person::record_id(&kind);
@@ -604,11 +571,11 @@ impl Meeting {
         b: &PersonalSync,
         b_key: &SigningKey,
     ) -> Self {
-        let a_endpoint = endpoint(a_key).await;
+        let a_endpoint = localhost_endpoint(a_key).await;
         let router = iroh::protocol::Router::builder(a_endpoint.clone())
             .accept(PERSONAL_ALPN, a.clone())
             .spawn();
-        let b_endpoint = endpoint(b_key).await;
+        let b_endpoint = localhost_endpoint(b_key).await;
         let link = tokio::spawn({
             let b = b.clone();
             let b_endpoint = b_endpoint.clone();
@@ -656,8 +623,8 @@ fn device_store(
 async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let root_key = root.verifying_key().to_bytes();
-    let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
-    let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+    let (a_key, a_cert) = device(&root, 2);
+    let (b_key, b_cert) = device(&root, 3);
     let now = SystemTime::now();
     let a = device_store(root_key, &a_cert, &a_key, now);
     let b = device_store(root_key, &b_cert, &b_key, now);

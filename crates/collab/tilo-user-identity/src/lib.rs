@@ -63,6 +63,9 @@
 
 #![deny(rust_2018_idioms)]
 pub mod approval;
+// A branched machine re-keys its identity files on the machine itself.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+pub mod branch;
 pub mod canonical;
 pub mod cert;
 pub mod certification;

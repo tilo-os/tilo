@@ -551,3 +551,69 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
     let strip = strip_of(&session, number(&entry.strip)).expect("the place has its strip");
     assert!(strip.placed, "it stands on the canvas");
 }
+
+// A place asked to float stands above the workspace's windows at the corner
+// and size it asked for, rather than on the canvas, and that is the same one
+// undoable step.
+#[test]
+fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    with_mailbox(&mut session);
+    let row = front_row(&session);
+    let (workspace, strip, place) = {
+        let tree = session.handle().read(Clone::clone);
+        (
+            tree.active_workspace()
+                .expect("workspace")
+                .slot
+                .0
+                .to_string(),
+            session.handle().mint_id(),
+            session.handle().mint_id(),
+        )
+    };
+
+    session
+        .invoke(
+            "shell:arrangement",
+            "place",
+            serde_json::json!({
+                "workspace": workspace,
+                "row": row,
+                "strip": strip,
+                "place": place,
+                "resource": "tl:so.tilo.lang.mail:inbox",
+                "view": "reader",
+                "float": "top-left",
+                "dx": 48,
+                "dy": 64,
+                "width": 520,
+                "height": 360,
+            })
+            .as_object()
+            .expect("arguments"),
+        )
+        .expect("the arranging action runs");
+    settle(&mut session, |session| place_of(session, place).is_some());
+
+    let entry = place_of(&session, place).expect("the entry is in the record");
+    let held = strip_of(&session, number(&entry.strip)).expect("its strip is in the record");
+    assert!(held.floating, "it stands above the windows");
+    assert_eq!(held.float_corner, "top-left", "at the corner it asked for");
+    assert_eq!(
+        (held.float_dx, held.float_dy),
+        (48, 64),
+        "kept that far off the corner's edges"
+    );
+    assert_eq!(
+        (held.float_width, held.float_height),
+        (520, 360),
+        "at the size it asked for"
+    );
+    assert!(!held.placed, "a float stands above the canvas, not on it");
+
+    session.undo_arrangement().expect("undo");
+    settle(&mut session, |session| place_of(session, place).is_none());
+}
