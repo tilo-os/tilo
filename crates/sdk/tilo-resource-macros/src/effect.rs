@@ -778,13 +778,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     }
                 },
                 quote!(Self::#ident {
-                    #field: #krate::__private::serde_json::from_value(
-                        #krate::__private::serde_json::Value::Object(::core::clone::Clone::clone(arguments)),
-                    )
-                    .map_err(|error| #krate::effect::EffectDecodeError::Argument {
-                        name: ::std::string::ToString::to_string(::std::stringify!(#field)),
-                        source: error,
-                    })?,
+                    #field: #krate::effect::flattened_argument(
+                        arguments,
+                        ::core::stringify!(#field),
+                    )?,
                 }),
             )
         } else if matches!(variant.fields, Fields::Unit) {

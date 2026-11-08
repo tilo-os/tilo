@@ -1130,7 +1130,7 @@ doc = false
 "tilo-boot-signin" = { path = "../../../crates/system/boot-signin", default-features = false, features = [] }
 "tilo-bot-directory" = { path = "../../../crates/packaging/bot-directory", default-features = false, features = [] }
 "tilo-browser-compute" = { path = "../../../crates/browser/tilo-browser-compute", default-features = false, features = [] }
-"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", features = ["toolkit"] }
+"tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", default-features = false, features = ["default", "toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
@@ -2245,6 +2245,7 @@ doc = false
 "serde_derive-1_0_228" = { package = "serde_derive", version = "^1.0.228", default-features = false, features = ["default"] }
 "serde_derive_internals-0_30_0" = { package = "serde_derive_internals", version = "^0.30.0", default-features = false, features = [] }
 "serde_json-1_0_151" = { package = "serde_json", path = "../../../vendor/serde_json", default-features = false, features = ["alloc", "default", "indexmap", "preserve_order", "raw_value", "std"] }
+"serde_path_to_error-0_1_20" = { package = "serde_path_to_error", version = "^0.1.20", default-features = false, features = [] }
 "serde_repr-0_1_20" = { package = "serde_repr", version = "^0.1.20", default-features = false, features = [] }
 "serde_spanned-1_1_1" = { package = "serde_spanned", version = "^1.1.1", default-features = false, features = ["alloc", "serde", "std"] }
 "serde_urlencoded-0_7_1" = { package = "serde_urlencoded", version = "^0.7.1", default-features = false, features = [] }
@@ -4824,6 +4825,7 @@ doc = false
 "serde_derive-1_0_228" = { package = "serde_derive", version = "^1.0.228", default-features = false, features = ["default"] }
 "serde_derive_internals-0_30_0" = { package = "serde_derive_internals", version = "^0.30.0", default-features = false, features = [] }
 "serde_json-1_0_151" = { package = "serde_json", path = "../../../vendor/serde_json", default-features = false, features = ["alloc", "default", "indexmap", "preserve_order", "raw_value", "std"] }
+"serde_path_to_error-0_1_20" = { package = "serde_path_to_error", version = "^0.1.20", default-features = false, features = [] }
 "serde_repr-0_1_20" = { package = "serde_repr", version = "^0.1.20", default-features = false, features = [] }
 "serde_spanned-1_1_1" = { package = "serde_spanned", version = "^1.1.1", default-features = false, features = ["alloc", "serde", "std"] }
 "serde_urlencoded-0_7_1" = { package = "serde_urlencoded", version = "^0.7.1", default-features = false, features = [] }

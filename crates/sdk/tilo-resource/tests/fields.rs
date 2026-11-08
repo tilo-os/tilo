@@ -909,6 +909,30 @@ fn a_flattened_struct_is_the_effects_arguments() {
     assert_eq!(BoardView::decode("look", &arguments).unwrap(), look);
 }
 
+/// A flattened struct's field that does not decode is named as the caller
+/// typed it, not by the struct that carries it: a refusal says which
+/// argument to fix.
+#[test]
+fn a_flattened_argument_names_the_field_that_does_not_decode() {
+    use tilo_resource::Effect as _;
+    for (arguments, field) in [
+        (serde_json::json!({ "region": "everywhere" }), "region"),
+        (
+            serde_json::json!({ "region": [0, 0, 10, 10], "grid": "yes" }),
+            "grid",
+        ),
+    ] {
+        let error = BoardView::decode("look", arguments.as_object().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                tilo_resource::EffectDecodeError::Argument { name, .. } if name == field
+            ),
+            "`{field}` is named: {error}"
+        );
+    }
+}
+
 #[test]
 fn an_optional_parameter_bound_to_nothing_is_left_out() {
     let decl = Board::RETITLE
