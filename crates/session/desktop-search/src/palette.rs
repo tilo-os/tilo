@@ -655,6 +655,20 @@ impl DesktopSearch {
         let mut rows = Vec::new();
         let mut more_rows = Vec::new();
         let entries = self.fitted(groups, browsing, &mut rows, &mut more_rows);
+        // A source that answered re-ranks the same query, and a card not yet
+        // given its room lists nothing: for that frame the plan has no row,
+        // while the card on screen still shows the rows of the plan before.
+        // Keeping them is what the person sees, and what their Enter acts
+        // on; an empty plan would leave the key naming nothing, and the
+        // press would go nowhere. The search says it is still filling in.
+        let refilling = rows.is_empty()
+            && !self.rows.is_empty()
+            && self.shown_query.as_deref() == Some(query)
+            && (pending || self.waiting() || self.answering());
+        if refilling {
+            self.palette.set_searching(true);
+            return;
+        }
         // What is selected on screen is named by the rows of the frame the
         // person sees, before this frame replaces them.
         let on_screen = self
@@ -2377,6 +2391,56 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(group(&search).as_deref(), Some(chosen.as_str()));
+    }
+
+    /// An answer to a query re-ranks it, and the frame it re-ranks in has no
+    /// row yet: the card on screen still shows the rows of the frame before.
+    /// They stay what the palette presses name, so a key pressed in that
+    /// frame opens the row the person saw rather than nothing.
+    #[test]
+    fn the_frame_a_query_is_reranked_in_keeps_the_rows_it_shows() {
+        let (mut search, arrived) = with_a_late_app(data());
+        search.set_query("notes");
+        settled(&mut search);
+        let shown = search.results().len();
+        let named = search
+            .palette()
+            .selected_id()
+            .expect("a row is chosen")
+            .to_owned();
+        assert!(shown >= 2, "{:?}", search.results());
+        assert!(search.waiting(), "the app's answer is still coming");
+
+        arrived.set(true);
+        assert!(search.refresh(), "the answer re-ranks the rows");
+        assert_eq!(
+            search.results().len(),
+            shown,
+            "the rows the card shows stay for the frame the query is re-ranked in"
+        );
+        assert_eq!(
+            search.palette().selected_id(),
+            Some(named.as_str()),
+            "the row the person presses Enter on is still named"
+        );
+        assert!(
+            search
+                .palette()
+                .visible_entries()
+                .iter()
+                .any(|entry| entry.id == named),
+            "the card lists the row it shows"
+        );
+
+        settled(&mut search);
+        assert!(
+            search
+                .results()
+                .iter()
+                .any(|hit| hit.title == "notes from the meeting"),
+            "the late answer is listed once the query is ranked again: {:?}",
+            search.results()
+        );
     }
 
     /// Nobody moved the selection: it is the best result, and follows the
