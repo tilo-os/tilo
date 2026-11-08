@@ -30,7 +30,9 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use automerge::sync::SyncDoc;
+use automerge::transaction::CommitOptions;
 use automerge::{AutoCommit, ChangeHash};
+use collab_types::FrameworkChange;
 use tilo_automerge::ApplyIncoming;
 use tokio::sync::watch;
 
@@ -63,23 +65,49 @@ impl ChangeTrackedDoc {
         self.changes.subscribe()
     }
 
+    /// Take `doc`'s place as the document, announcing it to the same
+    /// subscribers: what a namespace that took a peer's document whole does,
+    /// so the state kept beside it follows the document that replaced it.
+    pub(super) fn replace_document(&mut self, mut doc: AutoCommit) {
+        if doc.get_heads() != self.doc.get_heads() {
+            self.doc = doc;
+            self.announce();
+        }
+    }
+
     // Quiet `&mut` operations: none of these changes what the document
     // holds. (`get_heads` and the saves close a pending transaction, but
-    // that transaction's edits were announced when they were made.)
+    // that transaction's edits were announced when they were made.) Closing
+    // it is where the mount's edit becomes a change, so that is where it is
+    // named as what it is.
+
+    /// Commit what the document changed as a mount's edit of the tree: the
+    /// change names the framework's direct edit of a record, which no app
+    /// action produced, as every change a device signs must
+    /// ([`collab_types::check_claimed`]).
+    fn commit_named(&mut self) {
+        self.doc.commit_with(
+            CommitOptions::default().with_message(FrameworkChange::Native.change_message()),
+        );
+    }
 
     pub(super) fn get_heads(&mut self) -> Vec<ChangeHash> {
+        self.commit_named();
         self.doc.get_heads()
     }
 
     pub(super) fn save(&mut self) -> Vec<u8> {
+        self.commit_named();
         self.doc.save()
     }
 
     pub(super) fn save_incremental(&mut self) -> Vec<u8> {
+        self.commit_named();
         self.doc.save_incremental()
     }
 
     pub(super) fn save_after(&mut self, heads: &[ChangeHash]) -> Vec<u8> {
+        self.commit_named();
         self.doc.save_after(heads)
     }
 
@@ -90,6 +118,7 @@ impl ChangeTrackedDoc {
         after: &[ChangeHash],
         recursive: bool,
     ) -> Result<Vec<automerge::Patch>, automerge::AutomergeError> {
+        self.commit_named();
         self.doc.diff_obj(obj, before, after, recursive)
     }
 
@@ -97,6 +126,7 @@ impl ChangeTrackedDoc {
     /// delta touched, and only that, so derived state follows it without a
     /// walk over the document.
     pub(super) fn arm_patches(&mut self) {
+        self.commit_named();
         self.doc.update_diff_cursor();
     }
 
@@ -104,19 +134,23 @@ impl ChangeTrackedDoc {
     /// The document re-arms past them, so [`Self::disarm_patches`] is what
     /// stops the log from growing again.
     pub(super) fn take_patches(&mut self) -> Vec<automerge::Patch> {
+        self.commit_named();
         self.doc.diff_incremental()
     }
 
     pub(super) fn disarm_patches(&mut self) {
+        self.commit_named();
         self.doc.reset_diff_cursor();
     }
 
     /// The changes this document holds beyond `heads`.
     pub(super) fn get_changes(&mut self, heads: &[ChangeHash]) -> Vec<automerge::Change> {
+        self.commit_named();
         self.doc.get_changes(heads)
     }
 
     pub(super) fn has_change(&mut self, hash: &ChangeHash) -> bool {
+        self.commit_named();
         self.doc.get_change_meta_by_hash(hash).is_some()
     }
 
@@ -124,6 +158,7 @@ impl ChangeTrackedDoc {
         &mut self,
         state: &mut automerge::sync::State,
     ) -> Option<automerge::sync::Message> {
+        self.commit_named();
         self.doc.sync().generate_sync_message(state)
     }
 
@@ -134,6 +169,7 @@ impl ChangeTrackedDoc {
         state: &mut automerge::sync::State,
         message: automerge::sync::Message,
     ) -> Result<bool, automerge::AutomergeError> {
+        self.commit_named();
         let before = self.doc.get_heads();
         let received = self.doc.receive_incoming_sync(state, message);
         let changed = self.doc.get_heads() != before;

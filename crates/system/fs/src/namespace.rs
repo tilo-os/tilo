@@ -32,7 +32,8 @@ pub use fs_protocol::tree::ROOT_ID;
 // The document's layout is `fs_protocol::tree`'s: the record that carries the
 // tree reads the same document the mount writes.
 use fs_protocol::tree::{
-    CONTENT_REVISION_KEY, PLACEMENT_NAME_KEY, RECORD_ID_KEY, ROOT_RECORD_ID_KEY, TRASH_ID,
+    CONTENT_REVISION_KEY, NODES_KEY, PLACEMENT_NAME_KEY, RECORD_ID_KEY, ROOT_RECORD_ID_KEY,
+    TRASH_ID,
 };
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
 /// Prefix of a node id derived from its stable record id, so every device
@@ -960,6 +961,62 @@ impl Namespace {
         self.index_after_apply();
         self.resolve_pending();
         Ok(self.doc.save_incremental())
+    }
+
+    /// Take in a tree record's whole document, as a mount joins the tree its
+    /// workspace keeps.
+    ///
+    /// A namespace that holds no node of its own is no replica of the record:
+    /// it is a mount that has been given no tree yet, and it takes the
+    /// record's document as its own — the record's nodes, under the record's
+    /// own root identity, rather than a second empty tree created beside them
+    /// and merged. One that holds nodes already is a replica, and the record
+    /// merges into it. The caller publishes what this device then holds that
+    /// the record does not: nothing, for a document taken as it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` is not a valid automerge document, or cannot
+    /// be merged into this one.
+    pub fn adopt_or_merge_remote_and_resolve(
+        &mut self,
+        data: &[u8],
+    ) -> Result<Vec<u8>, automerge::AutomergeError> {
+        if self.holds_tree() {
+            return self.merge_remote_and_resolve(data);
+        }
+        let mut adopted = AutoCommit::load(data)?;
+        // A record no mount has written holds no tree: nothing to take.
+        let Some((Value::Object(ObjType::Map), nodes)) = adopted.get(&ROOT, NODES_KEY)? else {
+            return Ok(Vec::new());
+        };
+        // The device keeps writing as itself: the document's actor is this
+        // mount's, whatever the devices before it wrote as.
+        adopted.set_actor(self.doc.get_actor().clone());
+        self.doc.replace_document(adopted);
+        self.nodes = nodes;
+        self.ino_to_id.clear();
+        self.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
+        self.id_to_ino.clear();
+        self.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
+        self.next_ino = ROOT_INO + 1;
+        self.verified_records.clear();
+        self.record_ids_complete = false;
+        self.verified_generation = next_verified_generation();
+        self.merge_generation = next_verified_generation();
+        self.cycle_scan_pending = true;
+        self.placed_since_resolve.clear();
+        self.resolved_heads = None;
+        self.ensure_record_ids();
+        self.rebuild_record_index();
+        Ok(Vec::new())
+    }
+
+    /// Whether this namespace holds a tree of its own: a node a mount here
+    /// created, rather than only the empty map a fresh document starts with.
+    #[must_use]
+    pub fn holds_tree(&self) -> bool {
+        self.doc.keys(&self.nodes).next().is_some()
     }
 
     /// Moves [`Self::merge_generation`] on when a merge since `before`

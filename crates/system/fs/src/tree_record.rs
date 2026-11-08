@@ -2,11 +2,12 @@
 //!
 //! The namespace is one Automerge document ([`crate::namespace`]), and
 //! `fs_protocol::tree` reads that same document as a resource. This module is
-//! the writer that joins the record's route on the session: it hands the
-//! session this device's namespace as the tree's first snapshot, publishes
-//! every change the mount makes as an increment, and applies what other
-//! devices of the person — or, in a shared workspace, its other members —
-//! publish, resolving conflicts through the namespace's own rules.
+//! the writer that joins the record's route on the session: a device that
+//! mounts a tree publishes it whole as the record's first publication, and
+//! every change the mount makes afterwards as an increment. A device that
+//! mounts nothing yet is given the tree whole by a device that holds it,
+//! rather than creating a second empty tree beside it, and answers the
+//! session's ask when a device joins and needs the tree whole again.
 //!
 //! The filesystem daemon is the windowless endpoint of the Files app: the
 //! launcher names the app and workspace on the connection it dials, and the
@@ -92,24 +93,44 @@ async fn serve_once(
 
     let mut publisher = TreePublisher::join(&client, cluster, credentials).await?;
     let mut changes = namespace.lock_recover().subscribe_changes();
-    publisher.publish_snapshot(namespace).await?;
     let events = publisher
         .handle
         .subscribe()
         .await
         .context("the session publishes the record's changes")?;
+    let context = publisher
+        .handle
+        .subscribe_context()
+        .await
+        .context("the session tells this device what it is asked for")?;
+    if namespace.lock_recover().holds_tree() {
+        // This device mounts a tree: the record holds it whole from here on.
+        publisher.publish_whole(namespace).await?;
+    } else {
+        // This device mounts nothing yet: it is given the tree a device that
+        // has one publishes, rather than creating a second empty one.
+        publisher.ask_for_the_tree().await;
+    }
     loop {
         tokio::select! {
-            changed = changes.changed() => {
-                if changed.is_err() {
+            moved = changes.changed() => {
+                if moved.is_err() {
                     // The namespace is gone; nothing is left to publish.
                     return Ok(());
                 }
-                publisher.publish_changes(namespace).await?;
+                publisher.publish(namespace).await?;
             }
             event = events.read() => {
                 let event = event.context("the record's changes reach this device")?;
                 publisher.receive(event, namespace).await?;
+            }
+            asked = context.read() => {
+                let asked = asked.context("the session's asks reach this device")?;
+                if asked.snapshot_requested && namespace.lock_recover().holds_tree() {
+                    // A device joined and the session asked a holder for the
+                    // tree whole: this one holds it.
+                    publisher.publish_whole(namespace).await?;
+                }
             }
         }
     }
@@ -121,8 +142,9 @@ struct TreePublisher {
     handle: ChannelHandle,
     credentials: PeerCredentials,
     /// The namespace heads this device has published: every change after them
-    /// is the next increment.
-    published: Vec<ChangeHash>,
+    /// is the next increment. Empty until this device published the tree
+    /// whole, which is how the record's first publication goes out.
+    sent: Vec<ChangeHash>,
     /// The typed mutation a segmented transfer is arriving as.
     reassembler: DocumentReassembler,
 }
@@ -157,31 +179,48 @@ impl TreePublisher {
             cluster: cluster.to_owned(),
             handle,
             credentials: credentials.clone(),
-            published: Vec::new(),
+            sent: Vec::new(),
             reassembler: DocumentReassembler::default(),
         })
     }
 
-    /// The record whole, as a the device that has it publishes to a record it
-    /// just joined.
-    async fn publish_snapshot(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
-        let bytes = namespace.lock_recover().save();
+    /// Ask a device that holds the tree to publish it whole, as a device
+    /// joining it with nothing of its own does.
+    async fn ask_for_the_tree(&self) {
+        if let Err(error) = self.handle.request_document_snapshot().await {
+            tracing::debug!(%error, "the record's holders are not asked for the tree whole");
+        }
+    }
+
+    /// Publish the tree whole: what the record holds from this device from now
+    /// on, and what a device joining it gets.
+    async fn publish_whole(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
+        let (bytes, heads) = {
+            let mut namespace = namespace.lock_recover();
+            let bytes = namespace.save();
+            (bytes, namespace.heads())
+        };
         self.send(DocumentMutation::Snapshot(bytes)).await?;
-        self.published = namespace.lock_recover().heads();
+        self.sent = heads;
         Ok(())
     }
 
-    /// What the mount changed since the last increment.
-    async fn publish_changes(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
+    /// Publish what this device changed: the tree whole when it has published
+    /// nothing yet, everything since it last did afterwards.
+    async fn publish(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
+        if self.sent.is_empty() {
+            return self.publish_whole(namespace).await;
+        }
         let (bytes, heads) = {
             let mut namespace = namespace.lock_recover();
-            let bytes = namespace.changes_since(&self.published);
+            let bytes = namespace.changes_since(&self.sent);
             (bytes, namespace.heads())
         };
-        if !bytes.is_empty() {
-            self.send(DocumentMutation::Incremental(bytes)).await?;
+        if bytes.is_empty() {
+            return Ok(());
         }
-        self.published = heads;
+        self.send(DocumentMutation::Incremental(bytes)).await?;
+        self.sent = heads;
         Ok(())
     }
 
@@ -196,12 +235,20 @@ impl TreePublisher {
         let Some(mutation) = self.mutation_of(&op)? else {
             return Ok(());
         };
+        if matches!(mutation, DocumentMutation::Incremental(_))
+            && !namespace.lock_recover().holds_tree()
+        {
+            // A change of a tree this device was never given: it asks for the
+            // tree whole rather than merging one root beside another.
+            self.ask_for_the_tree().await;
+            return Ok(());
+        }
         let resolution = {
             let mut namespace = namespace.lock_recover();
             match mutation {
                 DocumentMutation::Snapshot(bytes) => namespace
-                    .merge_remote_and_resolve(&bytes)
-                    .context("the published tree merges into this one")?,
+                    .adopt_or_merge_remote_and_resolve(&bytes)
+                    .context("the published tree becomes this device's")?,
                 DocumentMutation::Incremental(bytes) => namespace
                     .apply_remote_and_resolve(&bytes)
                     .context("a published tree change applies to this one")?,
@@ -210,7 +257,7 @@ impl TreePublisher {
         if !resolution.is_empty() {
             self.send(DocumentMutation::Incremental(resolution)).await?;
         }
-        self.published = namespace.lock_recover().heads();
+        self.sent = namespace.lock_recover().heads();
         Ok(())
     }
 
@@ -245,9 +292,9 @@ impl TreePublisher {
             let now = SystemTime::now();
             let mut op = SignedOp::new_unsigned(
                 frame,
-                document_artifact_id(FILES_APP, &self.cluster, &self.record()),
+                document_artifact_id(FILES_APP, &self.cluster, &Self::record()),
                 collab_types::Ed25519PublicKey::from_bytes(self.credentials.device_public_key()),
-                document_attestation_id(FILES_APP, &self.cluster, &self.record()),
+                document_attestation_id(FILES_APP, &self.cluster, &Self::record()),
                 OpKind::Change,
                 now,
                 next_unordered_document_sequence(now),
@@ -264,7 +311,7 @@ impl TreePublisher {
     }
 
     /// The record this device publishes.
-    fn record(&self) -> String {
+    fn record() -> String {
         collab_types::person_record_id(fs_protocol::tree::TREE_KIND)
     }
 }

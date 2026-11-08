@@ -783,6 +783,22 @@ impl Person {
         self.certify_with(paths, label, None)
     }
 
+    /// The configuration home the first use of this machine provisioned the
+    /// person in.
+    pub fn config_home(&self) -> PathBuf {
+        self.identity.path().join("config")
+    }
+
+    /// The identity root holding this machine's device key and certificate.
+    pub fn identity_root(&self) -> PathBuf {
+        self.identity.path().join("system")
+    }
+
+    /// The home the first use of this machine provisioned them in.
+    pub fn home(&self) -> PathBuf {
+        self.identity.path().join("home")
+    }
+
     /// Certify the device key `paths` holds as this person's site: the device a site runs, which
     /// governs the workspaces it hosts and takes part in their channels, so the records it keeps
     /// are sealed ones.

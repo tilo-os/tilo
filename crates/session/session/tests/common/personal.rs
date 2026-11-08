@@ -1,0 +1,312 @@
+//! One person's own identity, workspace and session, as a person record's test
+//! needs them: the device this machine is, another of their devices certified
+//! under their root, the workspace they hold with a record declared in it, a
+//! session that serves the person's own store, and a client that speaks on
+//! that session's plane as an app does.
+//!
+//! A person's own workspace is the cluster their store's records route on
+//! ([`collab_types::personal_cluster`]), and an app they launch joins a record
+//! of theirs there by the kind its surface declares.
+
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test fixtures: a failed step is the assertion"
+)]
+
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
+
+use ed25519_dalek::{Signer as _, SigningKey};
+use runtime_collab::CollabClient;
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_identity_host::provisioning::FILE_SECRETS_ENV;
+use tilo_peer_state::TransportOrigin;
+use tilo_peer_state::owner::{self, testing};
+use tilo_service::LoopWake;
+use tilo_session::{ActionPlane, Launches, Options, Session};
+use tilo_user_identity::{DeviceCert, IdentityPaths};
+
+use super::people::Person;
+
+/// The person's keys and the environment a session finds them in: this
+/// machine's identity, as setup provisioned it.
+pub struct Personal {
+    /// The person, whose root certified this machine and every other device of
+    /// theirs.
+    pub person: Person,
+    /// Where this machine's device key and certificate live.
+    pub paths: IdentityPaths,
+    /// This machine's key, as the identity store minted it.
+    pub device: SigningKey,
+    /// This machine's certificate, signed by the person's root.
+    pub cert: DeviceCert,
+    /// The socket this machine's session serves its plane on.
+    socket: PathBuf,
+    /// The environment the identity was provisioned in, restored before the
+    /// directories it names are removed.
+    _env: tilo_test_env::ScopedEnv,
+    _runtime: tempfile::TempDir,
+}
+
+impl Personal {
+    /// The person `name`, on this machine, as their computer's first use
+    /// provisions them.
+    pub fn new(name: &str) -> Self {
+        let person = Person::new(name);
+        let runtime = tempfile::tempdir().expect("a runtime directory for this machine");
+        // The session serves its socket from a directory no one else may enter,
+        // as the runtime directory is.
+        let services = runtime.path().join("tilo/services");
+        std::fs::create_dir_all(&services).expect("the session's services directory");
+        std::fs::set_permissions(&services, std::fs::Permissions::from_mode(0o700))
+            .expect("the services directory is this machine's alone");
+        std::fs::create_dir_all(person.home()).expect("this machine's home");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", person.config_home())
+            .set("TILO_IDENTITY_ROOT", person.identity_root())
+            .set("XDG_RUNTIME_DIR", runtime.path())
+            .set("FILE_SECRETS_ENV", FILE_SECRETS_ENV)
+            .set("HOME", person.home());
+        let paths = IdentityPaths::under(person.identity_root());
+        let device =
+            tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
+        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+            .expect("this device's certificate");
+        let socket = tilo_paths::xdg::service_socket("collab");
+        Self {
+            person,
+            paths,
+            device,
+            cert,
+            socket,
+            _env: env,
+            _runtime: runtime,
+        }
+    }
+
+    /// Another of the person's devices, certified under their root:
+    /// [`Other::new`], and recorded in this machine's fleet as the device the
+    /// person admitted, so this machine's session answers it as one of theirs.
+    pub fn second(&self, label: &str) -> Other {
+        let other = Other::new(&self.person, label);
+        tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
+            .expect("this machine's device fleet")
+            .remember_certificate(&hex::encode(other.cert.user_public_key), other.cert.clone())
+            .expect("the person's other device is enrolled on this machine");
+        other
+    }
+
+    /// The cluster the person's own records route on, which their store
+    /// carries.
+    pub fn cluster(&self) -> String {
+        collab_types::personal_cluster(&self.cert.user_public_key).to_string()
+    }
+
+    /// The socket this machine's session serves its plane on.
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+}
+
+/// Another of the person's devices, certified under their root: its own keys,
+/// its own certificate, and nothing of this machine's.
+pub struct Other {
+    /// Where the device's key and certificate live.
+    pub paths: IdentityPaths,
+    /// The device's key.
+    pub device: SigningKey,
+    /// The device's certificate, signed by the person's root.
+    pub cert: DeviceCert,
+    _root: tempfile::TempDir,
+}
+
+impl Other {
+    /// Certify a device key drawn for `label` under `person`'s root, as the
+    /// person admits a device of theirs.
+    pub fn new(person: &Person, label: &str) -> Self {
+        let root = tempfile::tempdir().expect("a directory for the device's identity");
+        let paths = IdentityPaths::under(root.path());
+        let cert = person.certify(&paths, label);
+        let device =
+            tilo_user_identity::persist::load_device_key(&paths).expect("the device's key");
+        Self {
+            paths,
+            device,
+            cert,
+            _root: root,
+        }
+    }
+}
+
+/// The person `root` certifies, as a workspace names its owner.
+pub fn principal(root: &[u8; 32]) -> String {
+    match collab_types::caps::Principal::person_from_key(
+        collab_types::crypto::Ed25519PublicKey::from_bytes(*root),
+    ) {
+        collab_types::caps::Principal::Person(id) => id,
+        other => panic!("{other:?} is not a person"),
+    }
+}
+
+/// A desk showing the person's own workspace, known by its id and owned by
+/// them.
+pub fn desk(root: &[u8; 32], cluster: &str) -> DesktopTree {
+    let workspace = WorkspaceId::parse(cluster).expect("a workspace id");
+    let slot = WorkspaceSlot::of_workspace(workspace);
+    let mut workspace = Workspace::in_workspace(slot, workspace, "Desk");
+    workspace.set_owner(principal(root));
+    DesktopTree {
+        workspaces: vec![workspace.clone()],
+        active: workspace.slot,
+        ..DesktopTree::default()
+    }
+}
+
+/// The person's own workspace, held in `state` with `device` the one governing
+/// it, and `kind` declared as the record `app` keeps there: what the session
+/// opens when it starts, so the person's records reach their store as any
+/// workspace's records do.
+pub fn hold_workspace(
+    state: &Path,
+    device: &SigningKey,
+    cert: &DeviceCert,
+    cluster: &str,
+    app: &str,
+    kind: &str,
+) {
+    let store_file = state.join("tilo").join("rooms.json");
+    std::fs::create_dir_all(
+        store_file
+            .parent()
+            .expect("the state's workspace directory"),
+    )
+    .expect("this device's state directory");
+    let owner = owner::open_file(&owner::owner_file_of(&store_file))
+        .expect("an owner for this device's workspace");
+    let workspace = WorkspaceId::parse(cluster).expect("a workspace id");
+    let governor = testing::enroll_interactive_governor_in(&owner, device, cert, cluster)
+        .expect("this device governs the workspace it hosts");
+    // The governor's checkpoint now names this device: the host admits it as the publication a
+    // host's own workspace makes.
+    let host = governor.workspace_host().device_public_key;
+    let frames: Vec<Vec<u8>> = governor
+        .outgoing()
+        .map(|(bytes, _)| bytes.to_vec())
+        .collect();
+    for frame in frames {
+        owner
+            .receive(
+                workspace,
+                TransportOrigin::RetainedRelayDelta(host),
+                postcard::from_bytes(&frame).expect("a publication is a message"),
+                None,
+                std::time::SystemTime::now(),
+            )
+            .expect("the host admits the workspace's people");
+    }
+    // The record the app keeps, created empty as this device's own, before any
+    // app joins it: what the host of a workspace does when one of its records'
+    // apps first opens it.
+    let record = collab_types::person_record_id(kind);
+    let route = owner::ApplicationRecord::declared(app, &record, kind, &[kind.to_owned()])
+        .expect("the app declares this record of the person's");
+    owner
+        .prepare_application_record(
+            workspace,
+            cert,
+            device,
+            &route,
+            std::time::SystemTime::now(),
+        )
+        .expect("this device creates the record it hosts");
+}
+
+/// What an app presents to join `cluster`'s channel: the certificate, and the
+/// device's proof that it is the certificate's.
+pub fn presentation(device: &SigningKey, cert: &DeviceCert, cluster: &str) -> Vec<u8> {
+    runtime_collab::CertifiedJoinIdentity {
+        workspace_id: cluster.to_owned(),
+        device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
+        proof: device
+            .sign(&runtime_identity::collaboration_join_signing_bytes(cluster))
+            .to_bytes()
+            .to_vec(),
+    }
+    .encode()
+    .expect("a presentation encodes")
+}
+
+/// A session serving `app` on `socket`, on this computer's certified device,
+/// with the person's own workspace on its desk and its state at `state`.
+/// `windowless` records the app's process as an endpoint no window serves, as
+/// the files daemon's is.
+pub fn session(
+    socket: &Path,
+    machine: &Personal,
+    who: &str,
+    cluster: &str,
+    state: &Path,
+    app: &str,
+    windowless: bool,
+) -> Session {
+    // The app speaks from this test's own process, so the launch the session
+    // would have recorded for it names that process.
+    let launches = std::sync::Arc::new(Launches::default());
+    if windowless {
+        launches.windowless(std::process::id(), app, cluster);
+    } else {
+        launches.started(std::process::id(), app, cluster, true);
+    }
+    let mut session = super::headless(Options {
+        collab: true,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: who.to_owned(),
+        launches,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    });
+    session
+        .handle()
+        .replace_tree(desk(&machine.cert.user_public_key, cluster));
+    for _ in 0..4 {
+        session
+            .step(std::time::Duration::from_millis(1))
+            .expect("step");
+    }
+    session
+}
+
+/// An app connected to the session's plane as `app` in `cluster`, as the
+/// launcher hands it the connection.
+pub fn connect(socket: &Path, app: &str, cluster: &str) -> CollabClient {
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+    launcher::services::write_collab_handoff(&mut stream, app, cluster)
+        .expect("the launcher names the app on the connection");
+    stream
+        .set_nonblocking(true)
+        .expect("the connection is ready for the runtime");
+    let stream = tokio::net::UnixStream::from_std(stream).expect("a runtime stream");
+    let (reader, writer) = stream.into_split();
+    let (client, carrying) = CollabClient::over(reader, writer);
+    tokio::spawn(carrying);
+    client
+}
+
+/// Where the session keeps the person's own documents.
+pub fn store_path(state: &Path) -> PathBuf {
+    state.join("tilo").join("personal").join("documents")
+}
+
+/// The channel key of the person's own record of `kind`, as `app` keeps it.
+pub fn channel(app: &str, cluster: &str, kind: &str) -> String {
+    tilo_action_broker::route::CrdtRoute::record(app, cluster, record(kind)).channel_key()
+}
+
+/// The record of the person's own that `kind` names.
+pub fn record(kind: &str) -> String {
+    collab_types::person_record_id(kind)
+}
