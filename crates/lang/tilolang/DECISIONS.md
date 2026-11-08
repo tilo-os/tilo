@@ -619,13 +619,11 @@ search.md, "What a type declares" and "Types, references and paths".
   Places draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`),
   which a view that counts writes.
 - **A window that is only a list is `std.browse`.** It writes that window from the inputs the app
-  names alone — `of` (the resource the window is of), `items`, `places`, `sort`, `everything`, the
-  `empty` state, the `entry` action — with its query state, the title and count that name the place
-  chosen, and the pane beside the list when rows open there. It scans nothing (`filters(T)`) and
-  reads no layout off a type; the one fact it takes from the type is `opens`, whether its rows have
-  a window of their own, and a window whose rows open in front of it states `opens: false`. An app
-  whose window needs a sidebar of counts, grouped rows or a bar action of its own composes
-  `std.list`, `std.places` and `std.header` itself.
+  names alone — `of`, `items`, `places`, `sort` with the order each case asks (`by`), `everything`,
+  `empty`, `entry` — with its query state in the order chosen, the title and count naming the place
+  chosen, and the pane beside the list when rows open there. It reads no layout off a type, scans
+  nothing, and takes `opens` from the type alone. An app whose window needs a sidebar of counts,
+  grouped rows or a bar action of its own composes `std.list`, `std.places` and `std.header` itself.
 - **A list groups by the key its caller gives.** `ui.ListItem(group:)` takes the item's own key and
   heads each run of items naming the same key with the key itself, as the platform presents a
   value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that

@@ -111,11 +111,11 @@ pages, forms. It relies on general language features any author can use:
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
 
 A window that is only a list is `std.browse`: it takes the resource its window is of, the items,
-the places and the sort, and writes that window the standard way — the place a person chose as its
-state, the list that place finds, the title and count naming that place, the empty state, the entry
-that adds an item, and the pane beside the list when the rows open there. It draws what the caller
-named and never reads a shell off the type; `opens` is the one fact it takes from the type, whether
-its rows have a window of their own, and a window whose rows open in front of it states
+the places and the sort — the order each case asks, `by` — and writes that window the standard
+way: the place and order chosen as its state, the list that one query finds, the title and count
+naming the place, the empty state, the entry that adds an item, and the pane beside the list when
+the rows open there. It draws what the caller named and never reads a shell off the type; `opens`
+is the one fact it takes from the type, and a window whose rows open in front of it states
 `opens: false`. An app whose window is more than this — a sidebar of its own, rows that group or
 nest — composes `std.list`, `std.places` and `std.header` itself.
 

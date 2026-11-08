@@ -72,20 +72,17 @@ action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
     n.tags.remove(t)
 }
 
-/// The notes of a notebook, in an order.
-fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
-    let notes: List<Note> = nb.notes
-    match order {
-        .created => notes,
-        .title => notes.sort_by(.title),
-    }
-}
-
 /// The notebook's window: its notes, each opening in a window of its own, in the order the
 /// person looking chose, under the place they chose.
 view notebook(nb: Notebook) {
     state order: NoteOrder = .created
-    std.browse(nb, listed(nb, order), places: [Note.pinned], sort: order) { n ->
+    std.browse(
+        nb,
+        nb.notes,
+        places: [Note.pinned],
+        sort: order,
+        by: o -> if o == .title { "title" } else { "" },
+    ) { n ->
         note_row(n)
     }
 }

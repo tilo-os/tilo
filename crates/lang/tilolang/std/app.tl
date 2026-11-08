@@ -119,29 +119,29 @@ template view add_entry(placeholder: Text, create: Action) {
 }
 
 /// The window of `of` that lists `items`: the places the app names (`places`) in the sidebar,
-/// with all of them called `everything`; the sort menu when it gives `sort`; the entry at the
-/// list's end when it gives `entry`; and nothing to list when the place chosen finds nothing,
-/// where it says `empty`. The window owns the query: the place a person chose is its state,
-/// kept for them alone, and the list is what that place finds (`items.matching(query)`), the
+/// with all of them called `everything`; the sort menu when it gives `sort`, each case asked of
+/// the order as `by` writes it (`"title"`, `"-due"`, `""` for the items as they are); the entry
+/// at the list's end when it gives `entry`; and nothing to list when the place chosen finds
+/// nothing, where it says `empty`. The window owns the query — the place a person chose and the
+/// order they chose are its state, kept for them alone — and the list is that one query, the
 /// title over it and its count naming that place.
 ///
-/// The rows open beside the list when their type has a window of its own (`opens`, the type's
-/// own fact); then choosing one opens it in the column beside the list, and the window says
-/// beside them that nothing is chosen. A window whose rows open in front of it instead gives
-/// `opens: false`: then the list is the window's content, under its own title, with no column
-/// to open beside it.
+/// The rows open beside the list when their type has a window of its own (`opens`, the type's own
+/// fact): choosing one opens it in the column beside the list, and the window says beside them
+/// that nothing is chosen. A window whose rows open in front of it gives `opens: false` instead:
+/// the list is then its content, under its own title, with no column to open beside it.
 ///
-/// `row` draws one item's row and the window puts it down the list, with who else is at the
-/// item as every list of the platform shows it. The row the person opened is the list's own,
-/// unless the app keeps one (`opened`) to open a row from elsewhere in the window. An app whose
-/// window needs more than this — a list that groups or nests its rows, a sidebar of its own —
-/// composes `std.list`, `std.places` and `std.header` itself.
+/// `row` draws one item's row and the window puts it down the list, with who else is at the item
+/// as every list shows it. The row the person opened is the list's own, unless the app keeps one
+/// (`opened`) to open a row from elsewhere. A window that needs more — grouped or nested rows, a
+/// sidebar of its own — composes `std.list`, `std.places` and `std.header` itself.
 template view browse<R, T, S>(
     of: R,
     items: List<T>,
     opened: Option<State<Option<T>>> = .none,
     places: List<Filter<T>> = [],
     sort: Option<State<S>> = .none,
+    by: Option<(S) -> Text> = .none,
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
     entry: Option<Action> = .none,
@@ -151,7 +151,8 @@ template view browse<R, T, S>(
 ) {
     state query: Text = ""
     let kind = meta(T)
-    let shown = items.matching(query)
+    let order = if let s = sort { if let ask = by { ask(s) } else { "" } } else { "" }
+    let shown = items.matching(if order == "" { query } else { query + " sort:" + order })
     let title = places.find(p -> p.query == query)?.label ?? everything
     let sidebar_title: Option<Text> = if places.is_empty() { .none } else { .some(meta(of).title) }
     if opens {
