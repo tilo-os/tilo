@@ -129,6 +129,11 @@ fn main() -> std::process::ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    // Every installed app's surface, named before the session serves anything:
+    // the person records it keeps are what a service writing one of them is
+    // admitted against, and the filesystem daemon joins the person's own as it
+    // starts beside the session, before any window of the Files app opened.
+    tilo_app_launch::name_installed_surfaces();
     let Some(line) = command_line(ours) else {
         return ExitCode::FAILURE;
     };

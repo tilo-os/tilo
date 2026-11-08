@@ -28,17 +28,12 @@ use uuid::Uuid;
 
 pub const ROOT_INO: u64 = 1;
 /// Sentinel parent for the tree root (not materialized as a node).
-pub const ROOT_ID: &str = "ROOT";
-/// Sentinel parent for deleted subtrees (not materialized as a node).
-const TRASH_ID: &str = "TRASH";
-const ROOT_RECORD_ID_KEY: &str = "root_record_id";
-const RECORD_ID_KEY: &str = "record_id";
-/// The name the record's latest signed binding asked for. The visible `name`
-/// may differ when two records want one name; this is what makes that
-/// resolution a pure function of the signed bindings rather than of arrival
-/// order.
-const PLACEMENT_NAME_KEY: &str = "placement_name";
-const CONTENT_REVISION_KEY: &str = "content_revision_v1";
+pub use fs_protocol::tree::ROOT_ID;
+// The document's layout is `fs_protocol::tree`'s: the record that carries the
+// tree reads the same document the mount writes.
+use fs_protocol::tree::{
+    CONTENT_REVISION_KEY, PLACEMENT_NAME_KEY, RECORD_ID_KEY, ROOT_RECORD_ID_KEY, TRASH_ID,
+};
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
 /// Prefix of a node id derived from its stable record id, so every device
 /// independently rebuilding the same record log creates the same node object.

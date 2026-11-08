@@ -16,6 +16,9 @@
 //! - [`share_control`] — the bounded local share-control socket protocol.
 //! - [`recipient_control`] — the local protocol for admitting and observing
 //!   received shares.
+//! - [`tree`] — a workspace's files as the record that carries them
+//!   ([`tree::FilesTree`]): the namespace document's resource type, which
+//!   the Files app keeps and the daemon writes.
 //!
 //! Every signed payload canonicalises and signs through `collab-types`
 //! ([`collab_types::canonical`], [`collab_types::crypto`]); the dependency
@@ -39,6 +42,7 @@ pub mod files;
 pub mod projection;
 pub mod recipient_control;
 pub mod share_control;
+pub mod tree;
 
 /// The `collab-types` vocabulary these wire types are expressed in: the key
 /// type they name and the canonical encoding every control frame and signed
@@ -88,3 +92,4 @@ pub use share_control::{
     SHARE_CONTROL_FRAMING, SHARE_CONTROL_VERSION, ShareControlErrorCode, ShareControlOperationV1,
     ShareControlRequestV1, ShareControlResponseV1, ShareControlResultV1,
 };
+pub use tree::{FilesTree, Tree, TreeEntry};
