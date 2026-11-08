@@ -69,6 +69,10 @@ NATIVE_TEST_FEATURES = {
     # fixtures every application test draws with (the headless app driver, the
     # pinned font catalogue) are behind its `test-support`.
     "tilo-ui": ("test-support",),
+    # The workspace engine's integration tests join a workspace through its
+    # host's enrollment answer, which the session's own owner tests need too,
+    # so they build with the fixtures and internals behind `test-support`.
+    "tilo-peer-state": ("test-support",),
 }
 
 # Packages whose tested features above are not their default build. The

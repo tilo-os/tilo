@@ -66,12 +66,12 @@ fn private_dir(path: &Path) -> Result<()> {
 
 fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result<Command> {
     let paths = paths(env)?;
-    ensure!(
-        paths.state.join("namespace.bin").is_file(),
-        "no saved Files namespace; recover or explicitly initialize first"
-    );
-    // This production check validates the existing certificate/key, signed
-    // authority and exact Files capability. It never creates credentials.
+    // Read-only: a cache with no saved signed authority, saved tree or
+    // discovered workspace is not started, so the desktop never creates an
+    // empty workspace. This production check validates the existing
+    // certificate/key, signed authority and exact Files capability; it never
+    // creates credentials.
+    workspace_startup::inspect(&paths.state)?.require_existing()?;
     let status = Command::new(&args.admin_binary)
         .arg("files-workspace-check")
         .arg("--identity-root")
@@ -86,9 +86,6 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
             "{} files-workspace-check failed: {status}",
             args.admin_binary.display()
         );
-    }
-    if !workspace_startup::inspect(&paths.state)?.can_resume_existing() {
-        bail!("saved workspace cannot be resumed");
     }
     let mount = paths.state.join("mount");
     private_dir(&mount)?;

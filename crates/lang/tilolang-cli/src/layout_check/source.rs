@@ -150,7 +150,12 @@ fn callee_view(
     }
 }
 
-fn collect(stmts: &[UiStmt], placed: &Placed, calls: &mut HashMap<ast::NodeId, Call>) {
+fn collect(
+    stmts: &[UiStmt],
+    placed: &Placed,
+    calls: &mut HashMap<ast::NodeId, Call>,
+    argument_views: &mut Vec<String>,
+) {
     for stmt in stmts {
         match &stmt.kind {
             UiKind::Call(call) => {
@@ -161,20 +166,32 @@ fn collect(stmts: &[UiStmt], placed: &Placed, calls: &mut HashMap<ast::NodeId, C
                         span: placed.span(stmt.span.start),
                     },
                 );
+                // A view an argument names (`open(x, view: task_page)`) is one the app draws,
+                // as surely as one the view calls where it stands: the window shows it over
+                // what it opened.
+                let args: &[ast::Arg] = match &call.call.kind {
+                    ast::ExprKind::Call { args, .. } => args,
+                    ast::ExprKind::OptChain { args, .. } => args.as_deref().unwrap_or_default(),
+                    _ => &[],
+                };
+                argument_views.extend(args.iter().filter_map(|arg| match &arg.value.kind {
+                    ast::ExprKind::Ident(name) => Some(name.clone()),
+                    _ => None,
+                }));
                 if let Some(block) = &call.block {
-                    collect(block, placed, calls);
+                    collect(block, placed, calls, argument_views);
                 }
             }
-            UiKind::For { body, .. } => collect(body, placed, calls),
+            UiKind::For { body, .. } => collect(body, placed, calls, argument_views),
             UiKind::If { then, els, .. } | UiKind::IfLet { then, els, .. } => {
-                collect(then, placed, calls);
+                collect(then, placed, calls, argument_views);
                 if let Some(els) = els {
-                    collect(els, placed, calls);
+                    collect(els, placed, calls, argument_views);
                 }
             }
             UiKind::Match { arms, .. } => {
                 for arm in arms {
-                    collect(&arm.body, placed, calls);
+                    collect(&arm.body, placed, calls, argument_views);
                 }
             }
             UiKind::Slot { node, name, body } => {
@@ -185,7 +202,7 @@ fn collect(stmts: &[UiStmt], placed: &Placed, calls: &mut HashMap<ast::NodeId, C
                         span: placed.span(stmt.span.start),
                     },
                 );
-                collect(body, placed, calls);
+                collect(body, placed, calls, argument_views);
             }
             UiKind::Fact { node, .. } => {
                 calls.insert(
@@ -214,6 +231,7 @@ impl SourceMap {
                 continue;
             };
             let mut calls = HashMap::new();
+            let mut argument_views = Vec::new();
             let mut spans = HashMap::new();
             let mut aliases: HashMap<String, String> = HashMap::new();
             for item in &module.items {
@@ -227,7 +245,7 @@ impl SourceMap {
                     }
                     ast::Item::View(view) => {
                         spans.insert(view.name.name.clone(), placed.span(view.span.start));
-                        collect(&view.body, &placed, &mut calls);
+                        collect(&view.body, &placed, &mut calls, &mut argument_views);
                     }
                     _ => {}
                 }
@@ -240,8 +258,12 @@ impl SourceMap {
                 .map(|view| view.name.as_str())
                 .collect();
             let mut callers = BTreeSet::new();
-            for call in calls.values() {
-                if let Some((app, view)) = callee_view(&call.what, &app, &aliases, &names) {
+            for what in calls
+                .values()
+                .map(|call| call.what.as_str())
+                .chain(argument_views.iter().map(String::as_str))
+            {
+                if let Some((app, view)) = callee_view(what, &app, &aliases, &names) {
                     callers.insert((app, view));
                 }
             }

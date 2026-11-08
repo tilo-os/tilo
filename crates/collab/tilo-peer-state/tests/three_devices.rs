@@ -28,6 +28,8 @@ use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
+mod common;
+
 tilo_automerge_isolate::test_worker!();
 
 /// A device at `key` under `root`.
@@ -569,4 +571,140 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
         )
         .unwrap();
     }
+}
+
+/// A device's direct link admits into its owner's live replica of the
+/// workspace, and the owner publishes what it takes in: the device that dialled
+/// holds, after the link alone, what the other device holds, on disk too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
+    use common::{addr, localhost_endpoint};
+    use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (_root_a, key_a, cert_a) = device(91, 92, "A's desktop");
+    let (_root_b, key_b, cert_b) = device(73, 74, "B's desktop");
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
+    let mut governor =
+        TestGovernor::empty_interactive(cert_a.clone(), key_a.clone(), WORKSPACE).unwrap();
+    let now = SystemTime::now();
+    governor.pin_clock(now);
+    let a = open_file(&directory.path().join("a.json")).unwrap();
+    enroll(
+        &a,
+        &key_a,
+        &cert_a,
+        &mut governor,
+        MemberRole::Moderator,
+        [1; 32],
+        now,
+    );
+    let b = open_file(&directory.path().join("b.json")).unwrap();
+    enroll(
+        &b,
+        &key_b,
+        &cert_b,
+        &mut governor,
+        MemberRole::Moderator,
+        [2; 32],
+        now,
+    );
+    // A's device takes what its host has published.
+    for (bytes, _) in governor.outgoing() {
+        a.receive(
+            workspace,
+            TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
+            postcard::from_bytes(bytes).unwrap(),
+            Some(&key_a),
+            now,
+        )
+        .unwrap();
+    }
+    // A's device saves a shortcut of its own: a workspace change its own owner
+    // publishes, which B's device has no way to have before the link.
+    let mut hint = testing::shortcut("link");
+    tilo_peer_state::workspace::sign_saved_shortcut(WORKSPACE, &mut hint, &cert_a, &key_a).unwrap();
+    a.commit_shortcut_change(
+        &OwnerCommitRequest {
+            workspace: WORKSPACE.into(),
+            operation: CommitOperation::ShortcutChange {
+                invocation: uuid::Uuid::new_v4(),
+                caller: cert_a.clone(),
+                change: serde_json::to_vec(&tilo_automation::ShortcutChange::Save(Box::new(hint)))
+                    .unwrap(),
+            },
+        },
+        &key_a,
+        now,
+    )
+    .unwrap();
+    let held = a
+        .with_current(workspace, |view| Ok(view.peer().workspace_heads()))
+        .unwrap();
+    assert_ne!(
+        b.with_current(workspace, |view| Ok(view.peer().workspace_heads()))
+            .unwrap(),
+        held,
+        "B's device has not taken the workspace's newest change yet"
+    );
+
+    // A's device serves the workspace on the direct link; B's device dials it
+    // and admits every frame into its own owner.
+    let a_link = DirectSync::over(a.replica(workspace).unwrap(), key_a.clone())
+        .owning(a.clone(), workspace)
+        .unwrap();
+    let b_link = DirectSync::over(b.replica(workspace).unwrap(), key_b.clone())
+        .owning(b.clone(), workspace)
+        .unwrap();
+    let a_endpoint = localhost_endpoint(&key_a).await;
+    let _router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(DIRECT_ALPN, a_link)
+        .spawn();
+    let b_endpoint = localhost_endpoint(&key_b).await;
+    // B's device retires and republishes its own custody while the link admits
+    // frames: neither takes the other's away.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let retiring = std::thread::spawn({
+        let b = b.clone();
+        let stop = std::sync::Arc::clone(&stop);
+        move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                b.retire_outgoing(workspace).unwrap();
+                b.persist(workspace).unwrap();
+            }
+        }
+    });
+    let link = tokio::spawn({
+        let a_addr = addr(&a_endpoint);
+        let dialing = b_link.clone();
+        async move { dialing.connect(&b_endpoint, a_addr).await }
+    });
+
+    // B's committed view converges on A's: what the link admitted is published.
+    let mut changes = b_link.changes();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while b
+            .with_current(workspace, |view| Ok(view.peer().workspace_heads()))
+            .unwrap()
+            != held
+        {
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("B's owner publishes what the link admitted");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    retiring.join().unwrap();
+
+    // And its record carries it: a fresh owner over the same file holds the
+    // workspace's state with no link at all.
+    let reopened = open_file(&directory.path().join("b.json")).unwrap();
+    assert_eq!(
+        reopened
+            .with_current(workspace, |view| Ok(view.peer().workspace_heads()))
+            .unwrap(),
+        held,
+        "the link's frames are in B's record"
+    );
+    link.abort();
 }

@@ -41,8 +41,15 @@ pub mod installation;
 pub mod offload;
 pub mod placement;
 mod postcard_sink;
+pub mod replica;
+/// A workspace's retained sealed history: the frames a store device keeps
+/// without a key to open them.
+#[cfg(not(target_arch = "wasm32"))]
+mod retained;
 mod shared;
 mod state;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod store;
 pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;

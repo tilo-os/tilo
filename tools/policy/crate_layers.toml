@@ -80,10 +80,6 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "a participant opens the document frame of the record it plans against, the framing every reader of a record's frames speaks"
 
   [[rule.allow]]
-  package = "tilo-store-link"
-  why = "the store link joins the engine to a workspace's store: it replays the frames kept there into the engine and keeps what the engine seals, so a member catches up without a long-lived workspace host"
-
-  [[rule.allow]]
   package = "tilo-agent-participant"
   why = "an agent's participant names the engine's document-frame route — the address a frame names its place in a workspace's document by — and its join vocabulary; it holds no engine state and writes only through the actions it publishes"
 

@@ -253,7 +253,7 @@ impl Reader<'_> {
                 .as_bool()
                 .map(Value::Bool)
                 .ok_or_else(|| not(at, json, "a Bool")),
-            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => json
+            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => json
                 .as_str()
                 .map(|text| Value::Text(text.to_owned()))
                 .ok_or_else(|| not(at, json, &format!("a `{}`, as text", ty.display("")))),

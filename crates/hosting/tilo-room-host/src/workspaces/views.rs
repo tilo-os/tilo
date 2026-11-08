@@ -26,6 +26,7 @@ impl GovernedWorkspace {
         peer.check_document_read(device, app, record, now).ok()?;
         let standing = peer.permissions(device, now).ok()?.standing();
         let sandbox = peer.governance().governed_sandbox().ok()?;
+        drop(peer);
         Some(ViewReadPolicy {
             workspace: self.workspace().to_owned(),
             standing,
@@ -64,7 +65,7 @@ impl Workspaces {
         for governed in workspaces {
             let runtime = governed.lock().await;
             if runtime.workspace_id() == workspace {
-                return bot_shows_personas(runtime.peer(), installation, SystemTime::now());
+                return bot_shows_personas(&runtime.peer(), installation, SystemTime::now());
             }
         }
         false

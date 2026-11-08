@@ -164,6 +164,13 @@ impl ListRows {
         // read: the window takes it there at once. Only a removal whose place the view does not
         // say is one the order it left has to be read for ([`Self::read_keys`]).
         if let Some(changes) = where_the_rows_go(patches) {
+            // The window dropped the rows the view took out, so the app holds none of them any
+            // more: a row that comes back is rendered again rather than named.
+            for patch in patches {
+                if let Patch::Remove { key, .. } = patch {
+                    self.keys.shown.remove(key);
+                }
+            }
             return changes;
         }
         // The window reads the rows anew, and the keys are read from now on. The window drops

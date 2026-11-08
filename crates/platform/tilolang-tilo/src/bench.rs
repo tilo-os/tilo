@@ -504,8 +504,6 @@ fn fill_registers(record: &mut DynRecord, registers: &[(String, Ty)]) -> Result<
             Ty::Time => json!(BENCH_TIME),
             Ty::Date => json!("2026-06-29"),
             Ty::Identifier => json!("mailto:bench@example.org"),
-            Ty::Repeat => json!("FREQ=WEEKLY"),
-            Ty::Reminder => json!("-PT15M"),
             Ty::Int => json!(0),
             Ty::Float => json!(0.0),
             Ty::Bool => json!(false),

@@ -1641,6 +1641,51 @@ timeout_secs = 10800
 on = ["dispatch"]
 dispatch_inputs = { only = "", outputs = "1920x1080@1,1280x800@1.25", gl = "auto" }
 
+# A box set up once, branched into two that start configured and work on their own
+# (scripts/vm-e2e/branch.py): this tree's dev disk and tilo-vm, on libvirt in the micro-VM.
+[[check]]
+name = "e2e-branch"
+run = "bash tools/ci/vm-e2e-branch.sh"
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/e2e-branch/**"]
+cache = false
+git = true
+timeout_secs = 7200
+on = ["dispatch"]
+dispatch_inputs = { hold = "0" }
+
+[[check]]
+name = "e2e-agents"
+# Several coding agents on one booted tilo box, each in an environment of its own workspace:
+# two workspaces, Terminal and an environment in each, an MCP client configured as Claude Code
+# in each environment's shell, the person's answers on the sheet and their Stop
+# (scripts/vm-acceptance/acceptance/checks/agents_e2e.py).
+run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt && bash tools/ci/vm-acceptance.sh e2e-agents"
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/e2e-agents/report/**"]
+cache = false
+git = true
+timeout_secs = 5400
+on = ["dispatch"]
+
+[[check]]
+# An agent on one of the person's Tilo boxes steering another of their boxes over MCP, on real
+# VMs: two boxes branched from one set-up box, a third of another person, on one local network.
+name = "e2e-remote"
+run = "bash tools/ci/e2e-remote.sh"
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/e2e-remote/**"]
+cache = false
+git = true
+timeout_secs = 7200
+on = ["dispatch"]
+
 [[check]]
 name = "vm-cohort-x86_64"
 run = "bash tools/ci/vm-cohort.sh produce"

@@ -611,12 +611,10 @@ A `std.Identifier`
 is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com")`, a bare
 `jane@x.com` or `+4930…` taken as `mailto:` or `tel:`; `.scheme` and `.value` read its parts.
 
-`std.Repeat` and `std.Reminder` are held as their RFC 5545 text too: a repeat is its rule
-(`std.Repeat("FREQ=WEEKLY;INTERVAL=2")`, `…;X-FROM=DONE` to count from the day it was
-completed) and a reminder its trigger duration (`std.Reminder("-PT15M")`), both from a string
-literal. `.next(from, done_on)`, `.next_at(at, day)` and `.at(due, at)` read them in the
-person's zone, so a wall time of day survives a change of clocks, and `.label()` says what they
-do in the reader's words ("Every 2 weeks", "15 minutes before").
+A repeating item and a reminder are the app's own facts, not the language's: an app that has
+them declares a field holding what it stores (`repeat: Text` for an RFC 5545 rule,
+`remind: Option<Duration>` for how long before the due moment) and says in words what it holds
+through `phrase(...)`, as every other field is said.
 
 `query(T, in: x, filter: value, sort: .field_order)` lists the resources of `T` inside `x`
 that the filters hold of, a lazy list the index answers. Its arguments are `T`'s filters,

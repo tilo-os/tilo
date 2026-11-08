@@ -23,7 +23,7 @@ fn recovery_only_launch_does_not_create_a_workspace_or_identity() {
         .output_locked()
         .expect("run production Files CLI");
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files namespace"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files authority"));
     assert!(!cache.exists());
     assert!(!mount.exists());
     assert!(!identity.exists());
@@ -47,6 +47,7 @@ fn status_is_read_only_and_does_not_require_identity() {
     let status: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("public status JSON");
     assert_eq!(status["can_resume_existing"], false);
+    assert_eq!(status["saved_authority"], false);
     assert_eq!(status["saved_namespace"], false);
     assert!(!cache.exists());
     assert!(!dir.path().join("identity").exists());
@@ -90,6 +91,17 @@ impl Profile {
             .expect("write namespace");
     }
 
+    /// A cache prepared by initialization or recovery: its signed authority,
+    /// before any mount has written a tree.
+    fn save_authority(&self) {
+        std::fs::create_dir_all(self.cache()).expect("create cache");
+        std::fs::write(
+            self.cache().join("workspace-authority.bin"),
+            b"signed authority",
+        )
+        .expect("write authority");
+    }
+
     fn admin_argv(&self) -> Option<Vec<String>> {
         let recorded = std::fs::read_to_string(self.dir.path().join("admin.argv")).ok()?;
         Some(recorded.lines().map(str::to_string).collect())
@@ -129,7 +141,7 @@ fn primary_launch_without_a_saved_namespace_creates_nothing() {
     let profile = Profile::new(0);
     let output = profile.launch(&[]);
     assert_not_ready(&output);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files namespace"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files authority"));
     assert!(
         profile.admin_argv().is_none(),
         "no identity check without saved state"
@@ -137,6 +149,23 @@ fn primary_launch_without_a_saved_namespace_creates_nothing() {
     assert!(!profile.path("state").exists());
     assert!(!profile.path("run").exists());
     assert!(!profile.path("identity").exists());
+}
+
+#[test]
+fn primary_launch_resumes_a_cache_that_holds_only_its_signed_authority() {
+    let profile = Profile::new(0);
+    profile.save_authority();
+    let output = profile.launch(&[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(profile.admin_argv().is_some(), "the authority check ran");
+    assert!(
+        !profile.cache().join("namespace.bin").exists(),
+        "the tree arrives with the first mount, from the Files record"
+    );
 }
 
 #[test]

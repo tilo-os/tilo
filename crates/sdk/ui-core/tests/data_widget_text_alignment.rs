@@ -408,12 +408,10 @@ fn data_rows_centre_their_text_and_scale_once() {
                     .row_height(TREE_ROW_HEIGHT)
                     .height(text, &theme)
             });
-            // A chevron stands at the row's leading edge, in the step its own depth keeps
-            // free in front of the content; the content starts one step and a bleed after it.
-            let bleed = row_bleed(&theme);
+            // The list leads every row one step, where the chevron that folds it hangs: the
+            // top level's content starts on that column, and each depth a step further in.
             let step = disclosure_gutter(&theme);
-            let row_x0 = tree.x0 + bleed.max(step);
-            let label_x0 = row_x0 + bleed + step;
+            let label_x0 = tree.x0 + row_bleed(&theme).max(step);
             let row = Rect::new(label_x0, tree.y0, label_x0 + 200.0, tree.y0 + row_h);
             let root_label = ink(&cap.image, row);
             label_ink.push(root_label);
@@ -422,7 +420,7 @@ fn data_rows_centre_their_text_and_scale_once() {
             // the 2× body size.
             assert_centered("root label", root_label, row, 2.5);
             assert_has_air("root label", root_label, row);
-            let glyph = Rect::new(row_x0, tree.y0, row_x0 + step, tree.y0 + row_h);
+            let glyph = Rect::new(tree.x0, tree.y0, label_x0, tree.y0 + row_h);
             let glyph_ink = ink(&cap.image, glyph);
             // The down-triangle's rasterized ink is optically bottom-heavy at
             // 2x even though it shares the label's centred line box.

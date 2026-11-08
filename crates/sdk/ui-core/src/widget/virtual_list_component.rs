@@ -929,9 +929,10 @@ fn bare_row(
                 // A tree indents the row's content one disclosure gutter per depth, its lift
                 // still filling the row; how far its branch got is its trailing figure.
                 if let Some(marks) = tree {
-                    // A tree's row keeps the step its chevron takes free, and stands that one
-                    // step in from its depth's column whether or not it has subtasks to fold.
-                    row = row.depth(marks.depth(&key.to_owned())).tree_row();
+                    // A tree's row stands one step per depth in from the column its list
+                    // leads, whether or not it has subtasks to fold: the chevron that folds it
+                    // hangs in the step in front of its content.
+                    row = row.depth(marks.depth(&key.to_owned()));
                     if value_free && let Some(progress) = progress.clone() {
                         row = row.value(progress);
                     }

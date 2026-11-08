@@ -1143,6 +1143,41 @@ impl Plane {
     }
 }
 
+/// Whether the shortcut catalogue the services hand an app on this machine names every
+/// shortcut of the desktop.
+#[cfg(test)]
+fn shortcut_catalogue(services: &tilo_action_broker::services::HostServices) -> bool {
+    let Some(keys) = services.keyboard_shortcuts.as_ref() else {
+        return false;
+    };
+    let listed = keys
+        .apply(
+            &settings_store::hardware::ShortcutConfig::default(),
+            &tilo_actions::ActionAddress::new(
+                tilo_sheets::keyboard_shortcuts::RESOURCE,
+                tilo_sheets::keyboard_shortcuts::LIST_ACTION,
+            ),
+            None,
+        )
+        .expect("the catalogue is answered")
+        .value
+        .expect("the catalogue is the answer");
+    listed["shortcuts"]
+        .as_array()
+        .is_some_and(|rows| !rows.is_empty())
+}
+
+/// The session's own actions as the broker's steps, for a fixture: a door that is never asked
+/// anything.
+#[cfg(test)]
+fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActions> {
+    let doors =
+        crate::agent_door::SessionDoors::new(tilo_service::LoopWake::default().handle(), "Pat");
+    std::sync::Arc::new(crate::session_actions::SessionActions::new(
+        std::sync::Arc::new(doors),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1734,39 +1769,4 @@ mod tests {
             "an app this device did not read declared nothing"
         );
     }
-}
-
-/// Whether the shortcut catalogue the services hand an app on this machine names every
-/// shortcut of the desktop.
-#[cfg(test)]
-fn shortcut_catalogue(services: &tilo_action_broker::services::HostServices) -> bool {
-    let Some(keys) = services.keyboard_shortcuts.as_ref() else {
-        return false;
-    };
-    let listed = keys
-        .apply(
-            &settings_store::hardware::ShortcutConfig::default(),
-            &tilo_actions::ActionAddress::new(
-                tilo_sheets::keyboard_shortcuts::RESOURCE,
-                tilo_sheets::keyboard_shortcuts::LIST_ACTION,
-            ),
-            None,
-        )
-        .expect("the catalogue is answered")
-        .value
-        .expect("the catalogue is the answer");
-    listed["shortcuts"]
-        .as_array()
-        .is_some_and(|rows| !rows.is_empty())
-}
-
-/// The session's own actions as the broker's steps, for a fixture: a door that is never asked
-/// anything.
-#[cfg(test)]
-fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActions> {
-    let doors =
-        crate::agent_door::SessionDoors::new(tilo_service::LoopWake::default().handle(), "Pat");
-    std::sync::Arc::new(crate::session_actions::SessionActions::new(
-        std::sync::Arc::new(doors),
-    ))
 }

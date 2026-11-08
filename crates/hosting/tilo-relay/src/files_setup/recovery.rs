@@ -1,4 +1,6 @@
-//! Restore an explicitly selected enrolled namespace through the native sync plane.
+//! Restore an explicitly selected enrolled Files binding: its signed
+//! authority and ticket, which is everything a mount needs. The workspace's
+//! Files record fills its tree on the first mount.
 use super::{
     Context, IdentityPaths, Path, PathBuf, Result, WorkspaceAuthority, WorkspaceAuthorityEnvelope,
     capabilities, existing_person, new_cache, require_files_access,
@@ -31,7 +33,6 @@ pub(crate) struct JoinOptions {
 struct JoinedNamespace {
     registration: tilo_relay::transport::ContentPeerRegistration,
     authority: WorkspaceAuthorityEnvelope,
-    namespace: Vec<u8>,
 }
 
 fn validate_binding(
@@ -83,20 +84,6 @@ async fn fetch_joined_namespace(
     .await?
     .context("peer has no signed Files authority; establish its existing policy before recovery")?;
     validate_authority(person, workspace, &authority)?;
-    let policy = Some(fs::AclHandle::new(fs::WorkspaceAcl::from_capabilities(
-        person,
-        &authority.capabilities,
-        &[],
-        None,
-    )));
-    let namespace = fs::sync::fetch_remote_doc(
-        endpoint,
-        registration.endpoint.clone(),
-        identity,
-        workspace,
-        &policy,
-    )
-    .await?;
     let current = fs::sync::submit_workspace_authority(
         endpoint,
         registration.endpoint.clone(),
@@ -112,7 +99,6 @@ async fn fetch_joined_namespace(
     Ok(JoinedNamespace {
         registration,
         authority,
-        namespace,
     })
 }
 
@@ -135,9 +121,8 @@ async fn fetch_existing(
     )
     .await;
     endpoint.close().await;
-    outcome.map_err(|_| {
-        anyhow::anyhow!("Files namespace recovery timed out; existing data remains unknown")
-    })?
+    outcome
+        .map_err(|_| anyhow::anyhow!("Files recovery timed out; existing data remains unknown"))?
 }
 
 fn prepare_join(
@@ -148,9 +133,6 @@ fn prepare_join(
 ) -> Result<()> {
     validate_binding(expected, &joined.registration)?;
     validate_authority(person, expected, &joined.authority)?;
-    // Load the peer's actual Automerge history; never initialize a replacement.
-    let mut namespace = fs::Namespace::from_bytes("recovered-device", &joined.namespace)?;
-    let bytes = namespace.save();
     let peers = [fs::workspace_authority::PersistedContentPeer {
         endpoint: joined.registration.endpoint,
         ticket: Some(joined.registration.ticket.clone()),
@@ -174,8 +156,6 @@ fn prepare_join(
         joined.registration.ticket.as_bytes(),
         0o600,
     )?;
-    // Readiness becomes visible only after signed authority and binding persist.
-    tilo_files::native::atomic::write_with_mode(&cache.join("namespace.bin"), &bytes, 0o600)?;
     Ok(())
 }
 
@@ -210,7 +190,7 @@ pub(crate) fn join(options: &JoinOptions) -> Result<()> {
         joined,
     )?;
     println!(
-        "Restored existing Files namespace {}. This does not establish recovery of historical populated data; no file payloads were fetched.",
+        "Restored the existing Files binding {}. Its tree is published by the workspace's Files record, not fetched per file.",
         options.files_workspace_id
     );
     Ok(())

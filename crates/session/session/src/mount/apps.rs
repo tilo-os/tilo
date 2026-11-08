@@ -270,14 +270,12 @@ impl Apps {
         // The place is the person's own arranging step, in the workspace they opened the app in:
         // one attributed, undoable change of the desk, exactly as typing what the app shows and
         // pressing it would be (shell.md §8).
-        let Some(slot) = self.workspace_slot(&workspace.id) else {
-            return None;
-        };
+        let slot = self.workspace_slot(&workspace.id)?;
         let person = self.state.borrow().person.clone();
         let placed = arrangement
             .borrow_mut()
             .place_root(&person, slot, &root, view);
-        Some(placed.map_err(|error| DoorError::Failed(error.to_string())))
+        Some(placed.map_err(DoorError::Failed))
     }
 
     /// Stand the root of the served app `app` on the canvas of the workspace `workspace` (a slot),

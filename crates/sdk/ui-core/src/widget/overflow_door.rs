@@ -344,8 +344,13 @@ impl Widget for OverflowDoor {
 
     /// The button, and while its menu is up, the commands behind it: the menu
     /// paints its rows itself, so a person using a screen reader reaches those
-    /// commands here rather than nowhere.
+    /// commands here rather than nowhere. A door with nothing behind it is not
+    /// there: no button is on the surface for a screen reader or an agent to
+    /// press.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        if !self.shown {
+            return None;
+        }
         let mut node = Widget::accessibility(&self.button)?;
         node.state.expanded = Some(self.menu.is_open());
         if self.menu.is_open()

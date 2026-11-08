@@ -49,11 +49,11 @@ struct HeldWorkspace {
 impl HeldWorkspace {
     fn governed(&self) -> Governed<'_> {
         Governed {
-            peer: &self.peer.0,
+            peer: (&self.peer.0).into(),
             host: &self.host,
             workspace_id: join::room_workspace_id(WORKSPACE).unwrap(),
             generation: self.generation,
-            governance_messages: &self.peer,
+            governance_messages: None,
         }
     }
 }

@@ -62,7 +62,12 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: PathBuf) -> Rc<Apps> {
 
 /// A session showing `preset`, whose notes app the record service serves, its apps started
 /// through `launcher`.
-fn session(_home: &tilo_test_env::TestHome, preset: &str, apps: Rc<Apps>, served: bool) -> Session {
+fn session(
+    _home: &tilo_test_env::TestHome,
+    preset: &str,
+    apps: &Rc<Apps>,
+    served: bool,
+) -> Session {
     let services: Vec<Box<dyn tilo_service::Service>> = if served {
         vec![Box::new(common::notebook(&["Groceries"]).0)]
     } else {
@@ -75,8 +80,8 @@ fn session(_home: &tilo_test_env::TestHome, preset: &str, apps: Rc<Apps>, served
             shell: true,
             collab: false,
             services,
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(Rc::clone(&apps)),
+            apps: Some(Rc::clone(apps) as Rc<dyn AppActions>),
+            launch: Some(Rc::clone(apps)),
             ..Options::default()
         },
         &[tilo_compositor::OutputConfig::new(
@@ -100,7 +105,7 @@ fn opening_a_served_app_places_its_root(preset: &str) {
     let handed = home.home().join("handed");
     let launcher = launcher_recording(&home, &handed);
     let apps = apps_at(&home, launcher.path().to_owned());
-    let mut session = session(&home, preset, Rc::clone(&apps), true);
+    let mut session = session(&home, preset, &apps, true);
     // The record service publishes the notes; the disposition of the connection from the desk
     // to the app's door is the shell's, not this test's.
     common::until(&mut session, "the notes' root is published", |session| {
@@ -161,7 +166,7 @@ fn an_app_no_service_runs_launches_its_window() {
     let handed = home.home().join("handed");
     let launcher = launcher_recording(&home, &handed);
     let apps = apps_at(&home, launcher.path().to_owned());
-    let mut session = session(&home, "Strips", Rc::clone(&apps), false);
+    let mut session = session(&home, "Strips", &apps, false);
 
     apps.open(&tilo_app_launch::Launch::Package {
         app: NOTES.to_owned(),

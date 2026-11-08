@@ -139,7 +139,10 @@ fn visit_action_ui_routes<'tree>(
 ) {
     // A widget composed in two places of one window reports its control twice
     // with the same binding: the same expression, listed twice. Only distinct
-    // bindings sharing a key can name different expressions.
+    // bindings sharing a key can name different expressions — and one control
+    // may carry several of them, the value it shows and the action a press runs
+    // on it each their own binding, so a shared control id is no ambiguity: the
+    // binding's own address is what the query matches.
     let mut unique: Vec<&crate::widget::ControlBindingMetadata> =
         Vec::with_capacity(bindings.len());
     for binding in bindings {
@@ -148,14 +151,6 @@ fn visit_action_ui_routes<'tree>(
         }
     }
     for binding in &unique {
-        if unique
-            .iter()
-            .filter(|candidate| candidate.control_id == binding.control_id)
-            .count()
-            != 1
-        {
-            continue;
-        }
         let paths = tree.control_paths_unranked(&binding.control_id);
         let leaves = paths
             .iter()

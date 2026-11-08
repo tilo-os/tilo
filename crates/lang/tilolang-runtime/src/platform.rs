@@ -2499,8 +2499,6 @@ mod tests {
             assert!(form_asks(&meta, ty), "a form asks for {ty}");
         }
         for ty in [
-            "std.Repeat",
-            "std.Reminder",
             "Bytes",
             "Response",
             "json.Value",

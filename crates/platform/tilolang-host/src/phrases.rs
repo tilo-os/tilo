@@ -179,48 +179,6 @@ mod tests {
         );
     }
 
-    /// A repeat and a reminder say what they do in the reader's language, the count picking the
-    /// plural: "Every 2 weeks", "Alle 2 Wochen", "3 days after done", "15 minutes before".
-    #[test]
-    fn a_repeat_and_a_reminder_read_as_words() {
-        let count = |n: &str| vec![("count".to_owned(), n.to_owned())];
-        let english = Phrases::new("en-US");
-        assert_eq!(
-            english.say("tilolang-repeat-every-weeks", &count("2")),
-            "Every 2 weeks"
-        );
-        assert_eq!(
-            english.say("tilolang-repeat-every-days", &count("1")),
-            "Every day"
-        );
-        assert_eq!(
-            english.say("tilolang-repeat-weekdays", &[]),
-            "Every weekday"
-        );
-        assert_eq!(
-            english.say("tilolang-repeat-days-after-done", &count("3")),
-            "3 days after done"
-        );
-        assert_eq!(
-            english.say("tilolang-remind-minutes-before", &count("15")),
-            "15 minutes before"
-        );
-        assert_eq!(
-            english.say("tilolang-remind-when-due", &[]),
-            "When it is due"
-        );
-        let german = Phrases::new("de_DE.UTF-8");
-        assert_eq!(
-            german.say("tilolang-repeat-every-weeks", &count("2")),
-            "Alle 2 Wochen"
-        );
-        assert_eq!(german.say("tilolang-repeat-weekdays", &[]), "Jeden Werktag");
-        assert_eq!(
-            german.say("tilolang-remind-hours-before", &count("1")),
-            "1 Stunde vorher"
-        );
-    }
-
     /// A window speaks the language its package ships: an English-only app reads English even
     /// where the person's own language is German.
     #[test]

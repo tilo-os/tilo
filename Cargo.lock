@@ -18943,6 +18943,7 @@ dependencies = [
  "bao-tree",
  "blake3",
  "bytes",
+ "channel-crypto",
  "clap",
  "cloud-source",
  "cloud-source-dav",
@@ -21006,7 +21007,6 @@ dependencies = [
  "tilo-room-host",
  "tilo-rt",
  "tilo-secrets",
- "tilo-store-link",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -21599,63 +21599,6 @@ dependencies = [
  "tilo-lock",
  "tilo-test-env",
  "tracing",
- "web-time",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-store-link"
-version = "0.1.0"
-dependencies = [
- "channel-crypto",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "hex",
- "iroh",
- "neighbour-wire",
- "postcard",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-action-policy",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-automerge-isolate",
- "tilo-delivery-protocol",
- "tilo-desktop-model",
- "tilo-identity-host",
- "tilo-peer-state",
- "tilo-relay-protocol",
- "tilo-store-node",
- "tilo-user-identity",
- "tokio",
- "tracing",
- "uuid",
- "web-time",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-store-node"
-version = "0.1.0"
-dependencies = [
- "channel-crypto",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "hex",
- "iroh",
- "iroh-base",
- "neighbour-wire",
- "postcard",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-clock",
- "tilo-files",
- "tilo-lock",
- "tilo-user-identity",
- "tokio",
- "tracing",
- "uuid",
  "web-time",
  "workspace-hack",
 ]
@@ -28256,8 +28199,6 @@ dependencies = [
  "tilo-spotify",
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
- "tilo-store-link",
- "tilo-store-node",
  "tilo-subject",
  "tilo-surface-host",
  "tilo-system-info",

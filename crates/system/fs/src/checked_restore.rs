@@ -457,9 +457,9 @@ impl QuickFS {
                 history,
                 &self.namespace,
                 &runtime.namespace_path,
-                move |delta| {
+                move |_delta| {
                     if let Some(sync) = &sync {
-                        sync.announce_delta(&delta);
+                        sync.announce_change();
                     }
                     Ok(())
                 },

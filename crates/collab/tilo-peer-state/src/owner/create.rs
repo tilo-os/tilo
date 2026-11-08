@@ -91,8 +91,9 @@ impl NativeWorkspaceOwner {
         let messages = peer
             .publication_mut()
             .durable_bootstrap_messages(key, now, 1)?;
-        let mut view = NativeCommittedView {
-            record: StoredWorkspace {
+        let mut view = NativeCommittedView::new(
+            peer.clone(),
+            StoredWorkspace {
                 version: 2,
                 workspace: id,
                 workspace_id,
@@ -115,8 +116,7 @@ impl NativeWorkspaceOwner {
                 join_ledger: crate::join_ledger::JoinLedger::default(),
                 join_admissions: std::collections::BTreeMap::new(),
             },
-            peer,
-        };
+        );
         for message in messages {
             // The workspace's own part of the seed is its governance, which
             // every joiner is answered with; what else was published — the
@@ -124,7 +124,7 @@ impl NativeWorkspaceOwner {
             // outgoing publication.
             if matches!(message, NeighbourMsg::AppDocument { .. }) {
                 let bytes = publication::prepare(&publication::request(&message)?)?;
-                publication::append_local(&mut view, bytes)?;
+                publication::append_local(&mut view.record, bytes)?;
             }
         }
         self.publish_workspace(id, view, None)?;
@@ -148,15 +148,16 @@ impl NativeWorkspaceOwner {
         // Only a record this device hosts and that says nothing yet is
         // written here ([`Self::host_already_named`]), so what it names is its
         // own host: the hint must be this workspace's, signed by this device.
-        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        let candidate = self.view(workspace)?;
         crate::owner::validate_host_hint(
             &hint,
             &workspace.to_string(),
             candidate.record.workspace_id,
             &candidate.record.device,
         )?;
-        candidate.record.host_hint = Some(hint);
-        self.publish_workspace(workspace, candidate, None)?;
+        let mut record = candidate.record.clone();
+        record.host_hint = Some(hint);
+        self.publish_record(workspace, &candidate, record, None)?;
         Ok(true)
     }
 

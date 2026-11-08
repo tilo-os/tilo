@@ -362,7 +362,7 @@ impl Workspaces {
         // it), so the workspace's host starts the part, as it prepares any record,
         // and what the bot wrote in it is the bot's.
         let (mut document, heads, starts_part) =
-            bot_base(governed.peer(), keys.is_some(), (app, record), existing)?;
+            bot_base(&governed.peer(), keys.is_some(), (app, record), existing)?;
         tilo_automerge::ApplyIncoming::load_incoming(&mut document, changes)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         let mut candidate = governed.peer().clone();

@@ -424,9 +424,7 @@ impl Checker<'_> {
 
     /// `; did you mean `check`?` for a name that is not an action.
     fn near_action(&self, name: &str, item: Option<&Ty>) -> String {
-        crate::diag::did_you_mean(name, self.applicable(item).map(|c| c.name.as_str()))
-            .map(|near| format!("; did you mean `{near}`?"))
-            .unwrap_or_default()
+        crate::diag::suggestion(name, self.applicable(item).map(|c| c.name.as_str()))
     }
 
     /// The placement as the node holds it: each action's id, the group the view puts it in (none
@@ -1230,8 +1228,20 @@ impl Checker<'_> {
                         },
                         _ => false,
                     };
+                    // A template expanded here is the component its body makes, as a view is.
+                    let from_template = match &c.call.kind {
+                        ExprKind::Call { callee, .. } => match &callee.kind {
+                            ExprKind::Field { base, name } => self
+                                .template_at(base, &name.name)
+                                .and_then(|t| crate::resolve::view_root_component(&t.decl.body))
+                                .is_some_and(|made| slot.accepts.takes(&made)),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
                     let fits = own_view
                         || from_caller
+                        || from_template
                         || component_of(c).is_some_and(|(base, name)| {
                             slot.accepts.takes(name) && self.names_toolkit(base)
                         });

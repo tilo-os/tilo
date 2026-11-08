@@ -460,39 +460,17 @@ async fn signed_authority_and_blob_acls_scope_access_to_live_certified_readers()
     }
 }
 
-/// A content request is not trusted merely because its hash is known.
-/// The collaborator first bootstraps through the authenticated
-/// filesystem protocol; its subsequent blob request is served by that
-/// workspace's guarded iroh-blobs handler. Replacing the signed
-/// authority while that certified relationship is live must deny the
-/// collaborator's *next* request while preserving governor access.
-async fn bootstrap_authorized_collaborator(
+/// A content request is not trusted merely because its hash is known: the
+/// collaborator's blob request is served by the workspace's guarded
+/// iroh-blobs handler for as long as the signed authority entitles it.
+async fn authorized_collaborator_reads_content(
     endpoint: &Endpoint,
-    identity: &FsTransportIdentity,
-    ticket: &Ticket,
+    remote: EndpointAddr,
     hash: Hash,
     expected: &[u8],
 ) -> Hydrator {
-    let document = tilo_test_env::within(
-        "the authenticated collaborator bootstrap",
-        fetch_remote_doc(
-            endpoint,
-            ticket.node.clone(),
-            identity,
-            ticket.workspace_id(),
-            &None,
-        ),
-    )
-    .await
-    .expect("signed collaborator bootstraps through the filesystem protocol");
-    assert!(
-        Namespace::from_bytes("collab", &document)
-            .unwrap()
-            .entry_at("before-revoke.txt")
-            .is_some()
-    );
     let hydrator = Hydrator::new(endpoint.clone(), Arc::new(ContentStore::memory()));
-    hydrator.add_peer(ticket.node.clone());
+    hydrator.add_peer(remote);
     assert_eq!(
         tilo_test_env::within(
             "the authenticated collaborator blob request",
@@ -506,14 +484,9 @@ async fn bootstrap_authorized_collaborator(
     hydrator
 }
 
-async fn assert_revoked_collaborator_is_denied(
-    hydrator: &Hydrator,
-    endpoint: &Endpoint,
-    identity: &FsTransportIdentity,
-    ticket: &Ticket,
-    hash: Hash,
-    bytes: &[u8],
-) {
+/// Replacing the signed authority while that certified relationship is live
+/// denies the collaborator's *next* request.
+async fn assert_revoked_collaborator_is_denied(hydrator: &Hydrator, hash: Hash, bytes: &[u8]) {
     assert!(
         tilo_test_env::within(
             "the revoked collaborator blob request",
@@ -522,21 +495,6 @@ async fn assert_revoked_collaborator_is_denied(
         .await
         .is_err(),
         "an already-authenticated collaborator is denied by the revised authority"
-    );
-    assert!(
-        tilo_test_env::within(
-            "the revoked collaborator namespace request",
-            fetch_remote_doc(
-                endpoint,
-                ticket.node.clone(),
-                identity,
-                ticket.workspace_id(),
-                &None
-            )
-        )
-        .await
-        .is_err(),
-        "the same authenticated collaborator loses its next namespace request too"
     );
 }
 
@@ -651,10 +609,20 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
         )
         .await;
 
-        let collab_hydrator = bootstrap_authorized_collaborator(
+        // The collaborator reaches the host on the session plane first, as
+        // every peer does: that is where the host attests its certificate.
+        submit_workspace_authority(
             &collab_endpoint,
+            nas_endpoint.addr(),
             &collab_identity,
-            &ticket,
+            workspace_id,
+            None,
+        )
+        .await
+        .expect("the collaborator's session reaches the host");
+        let collab_hydrator = authorized_collaborator_reads_content(
+            &collab_endpoint,
+            ticket.node.clone(),
             first_hash,
             first,
         )
@@ -671,15 +639,7 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
 
         let after = b"this remains available only to the owner";
         let after_hash = publish_post_revoke_content(&nas_store, &nas_namespace, after).await;
-        assert_revoked_collaborator_is_denied(
-            &collab_hydrator,
-            &collab_endpoint,
-            &collab_identity,
-            &ticket,
-            after_hash,
-            after,
-        )
-        .await;
+        assert_revoked_collaborator_is_denied(&collab_hydrator, after_hash, after).await;
         assert_owner_retains_content_access(
             &owner_endpoint,
             nas_endpoint.addr(),
@@ -687,58 +647,6 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
             after,
         )
         .await;
-    }
-    // Phase `live_sync_rejects_a_revoked_certified_device_before_mode`.
-    // Certificate possession and an ACL grant are both insufficient once
-    // the admitting mount has learned an effective root-signed revocation.
-    {
-        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
-
-        let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-        let (ep_b, _look_b, auth_b, root_b, _device_b) =
-            bind_certified_test_endpoint_with_root().await;
-        let mut revocation = RevocationEntry {
-            user_public_key: auth_b.user_public_key(),
-            revoked_device_public_key: auth_b.device_public_key(),
-            revoked_at_ns: unix_now_ns().saturating_sub(1),
-            reason: RevocationReason::Compromised,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut revocation, &root_b).unwrap();
-        auth_a
-            .revocations
-            .write()
-            .unwrap()
-            .insert(revocation)
-            .unwrap();
-
-        let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(ep_a.clone(), store.clone()));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let policy = policy_granting(&[auth_b.user_public_key()]);
-        let (_workspace, ticket) = Workspace::host(
-            ep_a,
-            look_a,
-            store,
-            hydrator,
-            namespace,
-            auth_a,
-            Some(policy),
-        )
-        .unwrap();
-
-        let result = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await;
-        assert!(
-            result.is_err(),
-            "revoked peer must receive no mode response"
-        );
     }
     // Phase `certified_human_grant_bootstraps_from_an_owned_device`.
     // A workspace grant names the human root, while the connection arrives
@@ -764,7 +672,7 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
         }
         let policy = policy_granting(&[auth_b.user_public_key()]);
         let server = ep_a.clone();
-        let (_workspace, ticket) = Workspace::host(
+        let (_workspace, _ticket) = Workspace::host(
             ep_a,
             look_a,
             store,
@@ -775,21 +683,29 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
         )
         .unwrap();
 
-        let document = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .expect("a device certified by the granted human must bootstrap");
-        let joined = Namespace::from_bytes("joiner", &document).unwrap();
-        assert!(joined.entry_at("human-shared").is_some());
-        let connection = ep_b.connect(server.addr(), iroh_blobs::ALPN).await.unwrap();
-        iroh_blobs::get::request::get_blob(connection, manifest)
+        // The device's session attests its certificate: that is what lets
+        // the host resolve the human grant to this connection. The host
+        // answers a stream only after recording it, so the round trip makes
+        // the grant resolvable before the read.
+        let sessions = SessionPool::new(
+            ep_b.clone(),
+            auth_b.clone(),
+            Ticket::workspace_id_for_topic(*server.id().as_bytes()),
+        );
+        let session = sessions
+            .get(&server.addr())
             .await
-            .expect("the same certified human grant must authorize blob hydration");
+            .expect("the certified device's session reaches the host");
+        session::announce(&sessions, &session)
+            .await
+            .expect("the host answers the certified device");
+        authorized_collaborator_reads_content(
+            &ep_b,
+            server.addr(),
+            manifest,
+            b"human-shared content",
+        )
+        .await;
     }
     // Phase `record_mesh_accepts_same_human_relays_but_rejects_other_people`.
     {
@@ -1255,19 +1171,6 @@ fn identity(endpoint: &Endpoint) -> IdentityKey {
     *endpoint.id().as_bytes()
 }
 
-async fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = std::time::Instant::now()
-        .checked_add(tilo_test_env::hang_bound())
-        .unwrap();
-    while std::time::Instant::now() < deadline {
-        if cond() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    cond()
-}
-
 fn record_services(root: &std::path::Path) -> RecordServices {
     RecordServices {
         authority: Arc::new(ShareAuthority::open(root.join("share-authority.json")).unwrap()),
@@ -1286,173 +1189,6 @@ fn record_services(root: &std::path::Path) -> RecordServices {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 async fn structure_content_and_transactions_propagate_between_peers() {
-    // Phase `structural_changes_propagate_both_ways`.
-    // Two real nodes bootstrap, then structural changes propagate live over
-    // authenticated sessions in BOTH directions.
-    {
-        // --- host A: seed a dir, then start hosting ---
-        let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-        let store_a = Arc::new(ContentStore::memory());
-        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        ns_a.lock()
-            .unwrap()
-            .create_dir(ROOT_INO, "shared", 1)
-            .unwrap();
-        let (ws_a, ticket) = Workspace::host(
-            ep_a.clone(),
-            look_a,
-            store_a.clone(),
-            hyd_a.clone(),
-            ns_a.clone(),
-            auth_a,
-            None,
-        )
-        .unwrap();
-
-        // --- joiner B: bootstrap the doc, then join ---
-        let (ep_b, look_b, auth_b) = bind_certified_endpoint().await;
-        let store_b = Arc::new(ContentStore::memory());
-        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let doc = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .unwrap();
-        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
-        let ws_b = Workspace::join(
-            ep_b.clone(),
-            look_b,
-            store_b.clone(),
-            hyd_b.clone(),
-            ns_b.clone(),
-            ticket,
-            auth_b,
-            None,
-        )
-        .await
-        .unwrap();
-
-        // Bootstrap projection: B sees the seeded dir immediately.
-        assert!(
-            ns_b.lock().unwrap().entry_at("shared").is_some(),
-            "joiner must see the host's seeded tree via bootstrap"
-        );
-
-        // A -> B: host creates a file post-sync (simulating a FUSE write).
-        {
-            let delta = {
-                let mut n = ns_a.lock().unwrap();
-                n.create_file(ROOT_INO, "from_a.txt", None, 0, 2).unwrap();
-                n.save_incremental()
-            };
-            ws_a.sync.announce_delta(&delta);
-        }
-        assert!(
-            wait_until(|| ns_b.lock().unwrap().entry_at("from_a.txt").is_some()).await,
-            "A's change must propagate to B"
-        );
-
-        // B -> A: joiner creates a file; host must see it.
-        {
-            let delta = {
-                let mut n = ns_b.lock().unwrap();
-                n.create_file(ROOT_INO, "from_b.txt", None, 0, 3).unwrap();
-                n.save_incremental()
-            };
-            ws_b.sync.announce_delta(&delta);
-        }
-        assert!(
-            wait_until(|| ns_a.lock().unwrap().entry_at("from_b.txt").is_some()).await,
-            "B's change must propagate back to A (bidirectional)"
-        );
-    }
-    // Phase `content_written_on_one_peer_hydrates_on_another`.
-    // The full collaborative read-write loop: A writes a file with real
-    // content; B's namespace syncs the entry; B then hydrates
-    // the content over iroh-blobs and reads A's actual bytes.
-    {
-        // host A
-        let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-        let store_a = Arc::new(ContentStore::memory());
-        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        let (ws_a, ticket) = Workspace::host(
-            ep_a.clone(),
-            look_a,
-            store_a.clone(),
-            hyd_a.clone(),
-            ns_a.clone(),
-            auth_a,
-            None,
-        )
-        .unwrap();
-
-        // joiner B
-        let (ep_b, look_b, auth_b) = bind_certified_endpoint().await;
-        let store_b = Arc::new(ContentStore::memory());
-        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let doc = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .unwrap();
-        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
-        let _ws_b = Workspace::join(
-            ep_b.clone(),
-            look_b,
-            store_b.clone(),
-            hyd_b.clone(),
-            ns_b.clone(),
-            ticket,
-            auth_b,
-            None,
-        )
-        .await
-        .unwrap();
-
-        // A writes a file: chunk+ingest content into A's store, set the entry, broadcast.
-        let content = b"a shared collaborative document body";
-        let hash = store_a.write_content(content).await.unwrap().unwrap();
-        {
-            let delta = {
-                let mut n = ns_a.lock().unwrap();
-                n.create_file(ROOT_INO, "doc.txt", Some(&hash), content.len() as u64, 7)
-                    .unwrap();
-                n.save_incremental()
-            };
-            ws_a.sync.announce_delta(&delta);
-        }
-
-        assert!(
-            wait_until(|| ns_b.lock().unwrap().entry_at("doc.txt").is_some()).await,
-            "doc entry must sync to B"
-        );
-
-        // ...and hydrates the real bytes from A over iroh-blobs.
-        let bhash = {
-            let mut n = ns_b.lock().unwrap();
-            let attr = n.lookup(ROOT_INO, "doc.txt").unwrap();
-            n.hash_for(attr.ino.0).unwrap()
-        };
-        assert!(
-            !store_b.has(bhash).await,
-            "precondition: B lacks the content"
-        );
-        let got = hyd_b
-            .read(bhash, 0, content.len() as u64)
-            .await
-            .expect("B hydrates content from A");
-        assert_eq!(got.as_slice(), content, "B must read A's real bytes");
-    }
     // Phase `fresh_record_join_finishes_initial_projection_before_returning`.
     {
         let server_temp = tempfile::tempdir().unwrap();
@@ -1491,15 +1227,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
         )
         .unwrap();
 
-        let document = fetch_remote_doc(
-            &client_ep,
-            ticket.node.clone(),
-            &client_identity,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .unwrap();
         let client_services = record_services(client_temp.path());
         let client_repository = Arc::clone(&client_services.repository);
         let client_store = Arc::new(ContentStore::memory());
@@ -1511,9 +1238,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 lookup: client_lookup,
                 store: client_store,
                 hydrator: client_hydrator,
-                namespace: Arc::new(Mutex::new(
-                    Namespace::from_bytes("initial-record-client", &document).unwrap(),
-                )),
+                namespace: Arc::new(Mutex::new(Namespace::new("initial-record-client").unwrap())),
                 identity: client_identity,
                 policy: client_policy,
             },
@@ -2667,155 +2392,6 @@ async fn a_long_lived_blob_index_follows_every_namespace_change() {
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
 )]
-async fn namespace_documents_reach_only_entitled_peers_and_readers_cannot_author() {
-    // Phase `a_stranger_receives_no_namespace_document`.
-    // The negative on the document plane: a peer holding no grant asks the
-    // host for the workspace document and gets nothing it can read a
-    // workspace out of — asserted on the bytes at the far endpoint, not on
-    // the gate having been consulted.
-    {
-        let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-        let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
-
-        let store_a = Arc::new(ContentStore::memory());
-        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        ns_a.lock()
-            .unwrap()
-            .create_dir(ROOT_INO, "secret-plans", 1)
-            .unwrap();
-
-        // The workspace grants somebody — just not B.
-        let someone_else = identity_of(iroh::SecretKey::generate().public());
-        let (_ws_a, ticket) = Workspace::host(
-            ep_a.clone(),
-            look_a,
-            store_a.clone(),
-            hyd_a,
-            ns_a,
-            auth_a,
-            Some(policy_granting(&[someone_else])),
-        )
-        .unwrap();
-
-        let leaked = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .unwrap_or_default();
-        assert!(
-            leaked.is_empty(),
-            "a peer with no grant must not be able to load the host's workspace document"
-        );
-    }
-    // Phase `a_subtree_reader_receives_no_monolithic_namespace_document`.
-    {
-        let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-        let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
-
-        let mut acl = WorkspaceAcl::new();
-        acl.grant_read(identity(&ep_b), "/shared");
-        let policy = Some(AclHandle::new(acl));
-        let store_a = Arc::new(ContentStore::memory());
-        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        ns_a.lock()
-            .unwrap()
-            .create_dir(ROOT_INO, "private", 1)
-            .unwrap();
-        let (_ws_a, ticket) =
-            Workspace::host(ep_a.clone(), look_a, store_a, hyd_a, ns_a, auth_a, policy).unwrap();
-
-        let leaked = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .unwrap_or_default();
-        assert!(
-            leaked.is_empty(),
-            "a subtree reader must not receive a whole document naming private paths"
-        );
-    }
-    // Phase `a_read_only_peer_pulls_updates_but_cannot_author`.
-    {
-        let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-        let (ep_b, look_b, auth_b) = bind_certified_endpoint().await;
-        let policy = Some(policy_read_write(&[identity(&ep_a)], &[identity(&ep_b)]));
-
-        let store_a = Arc::new(ContentStore::memory());
-        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        let (_ws_a, ticket) = Workspace::host(
-            ep_a.clone(),
-            look_a,
-            store_a,
-            hyd_a,
-            ns_a.clone(),
-            auth_a,
-            policy.clone(),
-        )
-        .unwrap();
-
-        let doc = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .unwrap();
-        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
-        let store_b = Arc::new(ContentStore::memory());
-        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let _ws_b = Workspace::join(
-            ep_b.clone(),
-            look_b,
-            store_b,
-            hyd_b,
-            ns_b.clone(),
-            ticket.clone(),
-            auth_b.clone(),
-            policy,
-        )
-        .await
-        .unwrap();
-
-        ns_b.lock()
-            .unwrap()
-            .create_file(ROOT_INO, "readers-change", None, 0, 2)
-            .unwrap();
-        ns_a.lock()
-            .unwrap()
-            .create_file(ROOT_INO, "owners-change", None, 0, 3)
-            .unwrap();
-        assert!(
-            wait_until(|| ns_b.lock().unwrap().entry_at("owners-change").is_some()).await,
-            "a read-only peer must still pull the owner's updates"
-        );
-        assert!(
-            ns_a.lock().unwrap().entry_at("readers-change").is_none(),
-            "the owner's reconcile must not symmetrically sync with a read-only peer"
-        );
-    }
-}
-
-// Split from the document-plane test above so nextest runs the two
-// networked halves in parallel: the read-only phase there waits for the
-// host's periodic anti-entropy pass.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
 async fn content_and_writes_reach_only_entitled_peers() {
     // Phase `a_stranger_cannot_hydrate_content`.
     // The negative on the content plane: a stranger who already knows a
@@ -2858,156 +2434,50 @@ async fn content_and_writes_reach_only_entitled_peers() {
             "and nothing may have landed in its store"
         );
     }
-    // Phase `an_entitled_peer_still_bootstraps_and_hydrates`.
-    // Same host, same policy, an invited peer: bootstrap, live sync and
-    // hydration all still work — without this the negatives above would be
-    // satisfied by a mount that serves nobody.
+    // Phase `an_entitled_peer_hydrates_content`.
+    // Same host, same policy, an invited peer: the bytes reach it, without
+    // which the negative above would be satisfied by a mount that serves
+    // nobody.
     {
         let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-        let (ep_b, look_b, auth_b) = bind_certified_endpoint().await;
+        let (ep_b, _look_b, _auth_b) = bind_certified_endpoint().await;
         let policy = policy_granting(&[identity(&ep_a), identity(&ep_b)]);
 
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        ns_a.lock()
-            .unwrap()
-            .create_dir(ROOT_INO, "shared", 1)
-            .unwrap();
         let content = b"a shared collaborative document body";
         let hash = store_a.write_content(content).await.unwrap().unwrap();
-
-        let (ws_a, ticket) = Workspace::host(
+        let namespace = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
+        namespace
+            .lock()
+            .unwrap()
+            .create_file(
+                ROOT_INO,
+                "shared.txt",
+                Some(&hash),
+                u64::try_from(content.len()).unwrap(),
+                1,
+            )
+            .unwrap();
+        let _ws_a = Workspace::host(
             ep_a.clone(),
             look_a,
-            store_a.clone(),
-            hyd_a.clone(),
-            ns_a.clone(),
+            store_a,
+            hyd_a,
+            namespace,
             auth_a,
-            Some(policy.clone()),
-        )
-        .unwrap();
-
-        let doc = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .expect("an entitled peer bootstraps the document");
-        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
-        assert!(
-            ns_b.lock().unwrap().entry_at("shared").is_some(),
-            "the invited peer sees the host's tree"
-        );
-
-        let store_b = Arc::new(ContentStore::memory());
-        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let _ws_b = Workspace::join(
-            ep_b.clone(),
-            look_b,
-            store_b.clone(),
-            hyd_b.clone(),
-            ns_b.clone(),
-            ticket,
-            auth_b,
             Some(policy),
         )
-        .await
         .unwrap();
 
-        {
-            let delta = {
-                let mut n = ns_a.lock().unwrap();
-                n.create_file(ROOT_INO, "doc.txt", Some(&hash), content.len() as u64, 7)
-                    .unwrap();
-                n.save_incremental()
-            };
-            ws_a.sync.announce_delta(&delta);
-        }
-        assert!(
-            wait_until(|| ns_b.lock().unwrap().entry_at("doc.txt").is_some()).await,
-            "an entitled peer must still receive the host's changes"
-        );
-
+        let store_b = Arc::new(ContentStore::memory());
+        let hyd_b = Hydrator::new(ep_b.clone(), store_b.clone());
+        hyd_b.add_peer(ep_a.addr());
         let got = hyd_b
             .read(hash, 0, content.len() as u64)
             .await
             .expect("an entitled peer hydrates content");
         assert_eq!(got.as_slice(), content, "and reads the host's real bytes");
-    }
-    // Phase `root_writers_still_sync_bidirectionally`.
-    {
-        let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-        let (ep_b, look_b, auth_b) = bind_certified_endpoint().await;
-        let policy = Some(policy_read_write(&[identity(&ep_a), identity(&ep_b)], &[]));
-
-        let store_a = Arc::new(ContentStore::memory());
-        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        let (ws_a, ticket) = Workspace::host(
-            ep_a.clone(),
-            look_a,
-            store_a,
-            hyd_a,
-            ns_a.clone(),
-            auth_a.clone(),
-            policy.clone(),
-        )
-        .unwrap();
-
-        let doc = fetch_remote_doc(
-            &ep_b,
-            ticket.node.clone(),
-            &auth_b,
-            ticket.workspace_id(),
-            &None,
-        )
-        .await
-        .unwrap();
-        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
-        let store_b = Arc::new(ContentStore::memory());
-        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let ws_b = Workspace::join(
-            ep_b.clone(),
-            look_b,
-            store_b,
-            hyd_b,
-            ns_b.clone(),
-            ticket.clone(),
-            auth_b.clone(),
-            policy,
-        )
-        .await
-        .unwrap();
-
-        let from_b = {
-            let mut namespace = ns_b.lock().unwrap();
-            namespace
-                .create_file(ROOT_INO, "from-b", None, 0, 2)
-                .unwrap();
-            namespace.save_incremental()
-        };
-        ws_b.sync.announce_delta(&from_b);
-        assert!(
-            wait_until(|| ns_a.lock().unwrap().entry_at("from-b").is_some()).await,
-            "B's authenticated mutation wake must sync into A"
-        );
-
-        let from_a = {
-            let mut namespace = ns_a.lock().unwrap();
-            namespace
-                .create_file(ROOT_INO, "from-a", None, 0, 3)
-                .unwrap();
-            namespace.save_incremental()
-        };
-        ws_a.sync.announce_delta(&from_a);
-        assert!(
-            wait_until(|| ns_b.lock().unwrap().entry_at("from-a").is_some()).await,
-            "A's authenticated mutation wake must sync into B"
-        );
     }
 }
 
@@ -3200,700 +2670,6 @@ async fn a_peer_without_the_session_protocol_is_not_reconciled_with() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Namespace payloads are bound to the requesting workspace.
-
-/// Another workspace's namespace: a real, valid tree, just not this one.
-fn other_workspace_namespace() -> Namespace {
-    let mut namespace = Namespace::new("other-workspace").unwrap();
-    namespace
-        .create_dir(ROOT_INO, "other-workspace-secret", 1)
-        .unwrap();
-    namespace
-}
-
-type RogueAnswer =
-    Arc<dyn Fn(&FsTransportIdentity, NamespaceRequestV1) -> NamespaceFrameV1 + Send + Sync>;
-
-/// A certified peer that answers every sync-ALPN request with whatever
-/// `answer` makes of it, whichever workspace the request names.
-#[derive(Clone)]
-struct RogueNamespaceServer {
-    endpoint: Endpoint,
-    identity: FsTransportIdentity,
-    answer: RogueAnswer,
-}
-
-impl std::fmt::Debug for RogueNamespaceServer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RogueNamespaceServer")
-    }
-}
-
-impl ProtocolHandler for RogueNamespaceServer {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        authenticate_connection(
-            &self.endpoint,
-            &connection,
-            &mut recv,
-            &mut send,
-            &self.identity,
-        )
-        .await
-        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let request = SYNC_FRAMING
-            .read_async(&mut recv)
-            .await
-            .and_then(|frame| frame.ok_or(FrameError::Closed))
-            .map_err(AcceptError::from_err)?;
-        let request: NamespaceRequestV1 = postcard::from_bytes(&request).unwrap();
-        if request.mode == NamespaceModeV1::Sync {
-            // The requester's first round.
-            let _ = read_namespace_frame(&mut recv).await;
-        }
-        write_namespace_frame(&mut send, &(self.answer)(&self.identity, request))
-            .await
-            .map_err(AcceptError::from_err)?;
-        let _ = send.finish();
-        connection.closed().await;
-        Ok(())
-    }
-}
-
-async fn rogue_namespace_server(answer: RogueAnswer) -> (Router, EndpointAddr, IdentityKey) {
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let person = identity.user_public_key();
-    let router = Router::builder(endpoint.clone())
-        .accept(
-            TILO_FS_SYNC_ALPN,
-            RogueNamespaceServer {
-                endpoint: endpoint.clone(),
-                identity,
-                answer,
-            },
-        )
-        .spawn();
-    (router, endpoint.addr(), person)
-}
-
-/// Serves `namespace`, correctly bound, as a document of `workspace`.
-fn serve_document_of(workspace: uuid::Uuid, namespace: Namespace) -> RogueAnswer {
-    let bytes = Mutex::new(namespace);
-    Arc::new(move |identity, _request| {
-        let tree = bytes.lock().unwrap().save();
-        NamespaceFrameV1::Payload(
-            identity
-                .bind_namespace(workspace, NamespacePayloadKind::Document, tree)
-                .unwrap(),
-        )
-    })
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_document_of_another_workspace_is_refused_although_validly_signed() {
-    let requested = uuid::Uuid::new_v4();
-    let other = uuid::Uuid::new_v4();
-    let (router, rogue, _) =
-        rogue_namespace_server(serve_document_of(other, other_workspace_namespace())).await;
-    let (ep, _lookup, identity) = bind_certified_endpoint().await;
-
-    let error = fetch_remote_doc(&ep, rogue, &identity, requested, &None)
-        .await
-        .expect_err("another workspace's tree must not be accepted");
-    let text = format!("{error:#}");
-    assert!(
-        text.contains(&format!("belongs to workspace {other}"))
-            && text.contains(&requested.to_string()),
-        "{text}"
-    );
-    router.shutdown().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_document_whose_bytes_are_not_the_signed_ones_is_refused() {
-    let workspace = uuid::Uuid::new_v4();
-    let (router, rogue, _) = rogue_namespace_server(Arc::new(move |identity, _| {
-        let mut signed = identity
-            .bind_namespace(
-                workspace,
-                NamespacePayloadKind::Document,
-                Namespace::new("honest").unwrap().save(),
-            )
-            .unwrap();
-        signed.bytes = other_workspace_namespace().save();
-        NamespaceFrameV1::Payload(signed)
-    }))
-    .await;
-    let (ep, _lookup, identity) = bind_certified_endpoint().await;
-
-    let error = fetch_remote_doc(&ep, rogue, &identity, workspace, &None)
-        .await
-        .expect_err("bytes other than the signed ones must not be accepted");
-    assert!(
-        format!("{error:#}").contains("do not match their signed digest"),
-        "{error:#}"
-    );
-    router.shutdown().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_document_bound_by_another_device_than_the_peer_is_refused() {
-    let workspace = uuid::Uuid::new_v4();
-    let (router, rogue, _) = rogue_namespace_server(Arc::new(move |_, _| {
-        let elsewhere = ed25519_dalek::SigningKey::from_bytes(&[0x5a; 32]);
-        NamespaceFrameV1::Payload(
-            BoundNamespacePayloadV1::sign(
-                workspace,
-                NamespacePayloadKind::Document,
-                other_workspace_namespace().save(),
-                &elsewhere,
-            )
-            .unwrap(),
-        )
-    }))
-    .await;
-    let (ep, _lookup, identity) = bind_certified_endpoint().await;
-
-    let error = fetch_remote_doc(&ep, rogue, &identity, workspace, &None)
-        .await
-        .expect_err("a binding by another device must not be accepted");
-    assert!(
-        format!("{error:#}").contains("another device than the authenticated peer"),
-        "{error:#}"
-    );
-    router.shutdown().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_document_signed_by_a_device_outside_the_policy_is_refused() {
-    let workspace = uuid::Uuid::new_v4();
-    let (router, rogue, rogue_person) =
-        rogue_namespace_server(serve_document_of(workspace, other_workspace_namespace())).await;
-    let (ep, _lookup, identity) = bind_certified_endpoint().await;
-    let someone_else = identity_of(iroh::SecretKey::generate().public());
-    let policy = Some(policy_granting(&[identity.user_public_key(), someone_else]));
-
-    let error = fetch_remote_doc(&ep, rogue.clone(), &identity, workspace, &policy)
-        .await
-        .expect_err("a device whose holder may not read the workspace serves no tree");
-    assert!(format!("{error:#}").contains("not authorised"), "{error:#}");
-
-    // The same bytes from a member are accepted: the refusal was the signer's.
-    let member = Some(policy_granting(&[rogue_person]));
-    fetch_remote_doc(&ep, rogue, &identity, workspace, &member)
-        .await
-        .unwrap();
-    router.shutdown().await.unwrap();
-}
-
-/// A device serving several workspaces answers only for the one it serves
-/// on this endpoint, and says so.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_host_refuses_a_namespace_request_for_another_workspace() {
-    let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-    let store_a = Arc::new(ContentStore::memory());
-    let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-    let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-    ns_a.lock()
-        .unwrap()
-        .create_dir(ROOT_INO, "hosts-tree", 1)
-        .unwrap();
-    let (_ws_a, ticket) =
-        Workspace::host(ep_a, look_a, store_a, hyd_a, ns_a, auth_a, None).unwrap();
-    let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
-    let other = uuid::Uuid::new_v4();
-
-    let error = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b, other, &None)
-        .await
-        .expect_err("the host serves only its own workspace");
-    assert!(
-        format!("{error:#}").contains("does not serve the requested workspace"),
-        "{error:#}"
-    );
-    // The right workspace is served.
-    let doc = fetch_remote_doc(
-        &ep_b,
-        ticket.node.clone(),
-        &auth_b,
-        ticket.workspace_id(),
-        &None,
-    )
-    .await
-    .unwrap();
-    assert!(
-        Namespace::from_bytes("B", &doc)
-            .unwrap()
-            .entry_at("hosts-tree")
-            .is_some()
-    );
-}
-
-/// A workspace member that serves `namespace` of `workspace` over the
-/// session protocol and runs no reconciliation of its own: whatever reaches
-/// the test's device came from that device's pass.
-async fn session_member(
-    workspace: uuid::Uuid,
-    namespace: Arc<Mutex<Namespace>>,
-) -> (Router, EndpointAddr, IdentityKey) {
-    session_member_under(workspace, namespace, None).await
-}
-
-/// [`session_member`], deciding who may do what by `policy`.
-async fn session_member_under(
-    workspace: uuid::Uuid,
-    namespace: Arc<Mutex<Namespace>>,
-    policy: PeerPolicy,
-) -> (Router, EndpointAddr, IdentityKey) {
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let person = identity.user_public_key();
-    let (announcements, _) = mpsc::unbounded_channel();
-    let protocol = SessionProtocol {
-        endpoint: endpoint.clone(),
-        identity,
-        policy,
-        namespace,
-        store: Arc::new(ContentStore::memory()),
-        records: None,
-        workspace_id: workspace,
-        announcements,
-        pool: std::sync::Weak::new(),
-    };
-    let router = Router::builder(endpoint.clone())
-        .accept(TILO_FS_SESSION_ALPN, protocol)
-        .spawn();
-    (router, endpoint.addr(), person)
-}
-
-/// A peer that takes session connections, counting them, and never answers
-/// on them, as a device that hangs mid-handshake does.
-#[derive(Clone, Debug, Default)]
-struct StalledPeer(Arc<std::sync::atomic::AtomicUsize>);
-
-impl ProtocolHandler for StalledPeer {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        connection.closed().await;
-        Ok(())
-    }
-}
-
-/// One shared tree and `n` members' later changes to it, each under its
-/// own name.
-fn forks_of_a_shared_tree(names: &[&str]) -> (Vec<u8>, Vec<Namespace>) {
-    let mut base = Namespace::new("base").unwrap();
-    base.create_dir(ROOT_INO, "shared", 1).unwrap();
-    let bytes = base.save();
-    let forks = names
-        .iter()
-        .map(|name| {
-            let mut fork = Namespace::from_bytes(*name, &bytes).unwrap();
-            fork.create_dir(ROOT_INO, name, 2).unwrap();
-            fork
-        })
-        .collect();
-    (bytes, forks)
-}
-
-/// The reconciliation loop's exchanges for a device holding `namespace`,
-/// with `policy` deciding whether it writes, exactly as the loop decides.
-fn exchanges_for(
-    endpoint: &Endpoint,
-    identity: &FsTransportIdentity,
-    (workspace, policy): (uuid::Uuid, PeerPolicy),
-    namespace: &Arc<Mutex<Namespace>>,
-    deadline: Duration,
-) -> PeerExchanges {
-    let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
-        || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
-    PeerExchanges::new(
-        PassShared {
-            namespace: Arc::clone(namespace),
-            hydrator: Arc::new(Hydrator::new(
-                endpoint.clone(),
-                Arc::new(ContentStore::memory()),
-            )),
-            identity: identity.clone(),
-            policy,
-            records: None,
-            sessions: Arc::new(SessionPool::new(
-                endpoint.clone(),
-                identity.clone(),
-                workspace,
-            )),
-            may_write,
-            namespace_exchanged: Mutex::new(HashMap::new()),
-        },
-        deadline,
-    )
-}
-
-const TIMER_PASS: PassPlan = PassPlan {
-    announce: false,
-    reconcile: crate::record_materializer::ReconcileScope::Unplaced,
-    quiet: true,
-};
-
-/// One stalled peer and three healthy ones: the pass exchanges with the
-/// healthy ones concurrently and is over at the per-peer deadline, while
-/// the stalled one's exchange still runs; the next pass does not start the
-/// stalled peer again while that exchange is still running.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn idle_pass_is_bounded_with_unreachable_peer() {
-    let workspace = uuid::Uuid::new_v4();
-    let (base, forks) = forks_of_a_shared_tree(&["from-a", "from-b", "from-c"]);
-    let mut routers = Vec::new();
-    let (stalled_endpoint, _lookup, _identity) = bind_certified_endpoint().await;
-    let stalled = StalledPeer::default();
-    routers.push(
-        Router::builder(stalled_endpoint.clone())
-            .accept(TILO_FS_SESSION_ALPN, stalled.clone())
-            .spawn(),
-    );
-    let stalled_id = stalled_endpoint.addr().id;
-    let mut peers = vec![stalled_endpoint.addr()];
-    for fork in forks {
-        let (router, addr, _person) = session_member(workspace, Arc::new(Mutex::new(fork))).await;
-        routers.push(router);
-        peers.push(addr);
-    }
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let namespace = Arc::new(Mutex::new(Namespace::from_bytes("device", &base).unwrap()));
-    let deadline = Duration::from_secs(5);
-    let exchanges = exchanges_for(
-        &endpoint,
-        &identity,
-        (workspace, None),
-        &namespace,
-        deadline,
-    );
-
-    exchanges.run(peers.clone(), TIMER_PASS).await;
-    // The pass is over while the stalled peer's exchange still runs: it did
-    // not wait for that exchange to end.
-    assert!(
-        exchanges.busy.lock().unwrap().contains(&stalled_id),
-        "the pass waited for the stalled peer's exchange to end"
-    );
-    // Exchanges that outlive their pass still land.
-    tilo_test_env::wait_until("the healthy peers' changes", || {
-        let namespace = namespace.lock().unwrap();
-        ["from-a", "from-b", "from-c"]
-            .iter()
-            .all(|name| namespace.entry_at(name).is_some())
-    });
-    let accepted = stalled.0.load(std::sync::atomic::Ordering::SeqCst);
-
-    exchanges.run(peers, TIMER_PASS).await;
-    assert_eq!(
-        stalled.0.load(std::sync::atomic::Ordering::SeqCst),
-        accepted,
-        "the stalled peer, still exchanging, was started again"
-    );
-    for router in routers {
-        router.shutdown().await.unwrap();
-    }
-}
-
-/// A read-only device takes namespace changes from a session member as the
-/// changes beyond its heads, and asks a peer without the session protocol
-/// for nothing at all: not this workspace's document from a member, not
-/// another workspace's from a stranger. The full-document pull of earlier
-/// releases is gone from every pass.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn read_only_member_never_downloads_full_snapshot() {
-    let workspace = uuid::Uuid::new_v4();
-    let (base, mut forks) = forks_of_a_shared_tree(&["hosts-later", "legacy-only"]);
-    let legacy_tree = forks.pop().unwrap();
-    let host_tree = forks.pop().unwrap();
-    let (host_router, host, host_person) =
-        session_member(workspace, Arc::new(Mutex::new(host_tree))).await;
-    let documents_served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let serve = serve_document_of(workspace, legacy_tree);
-    let counted = Arc::clone(&documents_served);
-    let (legacy_router, legacy, legacy_person) = rogue_namespace_server(Arc::new(
-        move |identity: &FsTransportIdentity, request: NamespaceRequestV1| {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            serve(identity, request)
-        },
-    ))
-    .await;
-    let (stranger_router, stranger, stranger_person) = rogue_namespace_server(serve_document_of(
-        uuid::Uuid::new_v4(),
-        other_workspace_namespace(),
-    ))
-    .await;
-
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let namespace = Arc::new(Mutex::new(Namespace::from_bytes("reader", &base).unwrap()));
-    // Everyone is a reader of the whole workspace; nobody here writes it.
-    let policy = Some(policy_granting(&[
-        identity.user_public_key(),
-        host_person,
-        legacy_person,
-        stranger_person,
-    ]));
-    let exchanges = exchanges_for(
-        &endpoint,
-        &identity,
-        (workspace, policy),
-        &namespace,
-        PEER_DEADLINE,
-    );
-    let first_pass = PassPlan {
-        announce: false,
-        reconcile: crate::record_materializer::ReconcileScope::Everything,
-        quiet: false,
-    };
-    for plan in [first_pass, TIMER_PASS] {
-        exchanges
-            .run(vec![host.clone(), legacy.clone(), stranger.clone()], plan)
-            .await;
-    }
-
-    let has = |path: &str| namespace.lock().unwrap().entry_at(path).is_some();
-    assert!(has("hosts-later"), "the session member's changes arrived");
-    assert!(!has("legacy-only"), "no document was merged per request");
-    assert!(!has("other-workspace-secret"));
-    assert_eq!(
-        documents_served.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "a per-request peer was asked for its whole document"
-    );
-    for router in [host_router, legacy_router, stranger_router] {
-        router.shutdown().await.unwrap();
-    }
-}
-
-/// A device that may only read the workspace keeps reading it across
-/// reconnects: the host's changes arrive into a reader that already holds
-/// a change of its own, a later reconnect with nothing new to take is a
-/// quiet pass rather than a failure, and the device that was never part of
-/// the exchange is left exactly as it was. The reader ends holding the
-/// host's files, so what an app reads through it is what the workspace has.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn read_only_member_keeps_reading_across_reconnects() {
-    let workspace = uuid::Uuid::new_v4();
-    let (_base, mut forks) = forks_of_a_shared_tree(&["hosts-only", "reader-local", "untouched"]);
-    let reader_tree = forks.pop().unwrap();
-    let observer_tree = forks.pop().unwrap();
-    let host_tree = Arc::new(Mutex::new(forks.pop().unwrap()));
-    let (host_router, host, host_person) = session_member(workspace, Arc::clone(&host_tree)).await;
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    // The reader may read the whole workspace; only the host may write it.
-    let policy = Some(policy_read_write(
-        &[host_person],
-        &[identity.user_public_key(), identity.device_public_key()],
-    ));
-    let reader = Arc::new(Mutex::new(reader_tree));
-    let exchanges = exchanges_for(
-        &endpoint,
-        &identity,
-        (workspace, policy),
-        &reader,
-        PEER_DEADLINE,
-    );
-    let first_pass = PassPlan {
-        announce: false,
-        reconcile: crate::record_materializer::ReconcileScope::Everything,
-        quiet: false,
-    };
-    for plan in [first_pass, TIMER_PASS] {
-        exchanges.run(vec![host.clone()], plan).await;
-    }
-
-    let names = |namespace: &Arc<Mutex<Namespace>>| {
-        let namespace = namespace.lock().unwrap();
-        ["hosts-only", "reader-local"]
-            .into_iter()
-            .filter(|path| namespace.entry_at(path).is_some())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        names(&reader),
-        ["hosts-only"],
-        "the read-only device did not take the host's change"
-    );
-    assert_eq!(
-        names(&Arc::new(Mutex::new(observer_tree))),
-        ["reader-local"],
-        "the read-only device's own change reached the host"
-    );
-
-    // A later pass, and a session dropped and dialled again: both still
-    // answer, and the reader still lists exactly the host's files.
-    exchanges.run(vec![host.clone()], TIMER_PASS).await;
-    exchanges.run(vec![host.clone()], TIMER_PASS).await;
-    assert_eq!(
-        names(&reader),
-        ["hosts-only"],
-        "a reconnect changed what the read-only device lists"
-    );
-    host_router.shutdown().await.unwrap();
-}
-
-/// A namespace whose document holds `changes` changes, as months of saves
-/// leave one: a file per hundred changes, rewritten in a change of its own.
-fn namespace_with_history(changes: u64) -> Namespace {
-    let mut namespace = Namespace::new("history").unwrap();
-    let mut file = ROOT_INO;
-    for change in 0..changes {
-        if change.is_multiple_of(100) {
-            file = namespace
-                .create_file(ROOT_INO, format!("file-{change}"), None, 0, change)
-                .unwrap();
-        } else {
-            let content = Hash::new(change.to_le_bytes());
-            assert!(namespace.set_content(file, Some(&content), change, change));
-        }
-        namespace.heads();
-    }
-    namespace
-}
-
-/// The sync bytes `host` and `device` generated in one session exchange,
-/// through the production client ([`session::sync_namespace`]) and server.
-async fn namespace_session_pass(
-    (sessions, session): (&SessionPool, &session::Session),
-    device: &Arc<Mutex<Namespace>>,
-    host: &Arc<Mutex<Namespace>>,
-    policy: &PeerPolicy,
-) -> Result<usize> {
-    let generated = || {
-        device
-            .lock()
-            .unwrap()
-            .sync_bytes_generated()
-            .saturating_add(host.lock().unwrap().sync_bytes_generated())
-    };
-    let before = generated();
-    session::sync_namespace(sessions, session, device, None, policy).await?;
-    Ok(generated().saturating_sub(before))
-}
-
-/// #3858. Two writers in sync, with 5,000 namespace changes behind them.
-/// Every pass used to start both ends from a fresh Automerge sync state,
-/// whose first message carries a Bloom filter over the document's whole
-/// history (10 bits a change): 6 KB here, 62 KB at 50,000 changes, every
-/// 3 s per peer, built under the namespace lock. A pass now resumes where
-/// the last completed one left off, and an idle one sends only heads.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_namespace_pass_sends_no_history_bloom() {
-    let workspace = uuid::Uuid::new_v4();
-    let history = namespace_with_history(5_000).save();
-    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
-    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let device_key = identity.device_public_key();
-    let device = Arc::new(Mutex::new(
-        Namespace::from_bytes("device", &history).unwrap(),
-    ));
-    let sessions = SessionPool::new(endpoint, identity, workspace);
-    let session = sessions
-        .get(&addr)
-        .await
-        .expect("the host speaks the session protocol");
-    let pass = (&sessions, &*session);
-
-    let first = namespace_session_pass(pass, &device, &host, &None)
-        .await
-        .unwrap();
-    assert!(
-        first > 5_000,
-        "first contact summarises the whole history ({first} B)"
-    );
-    let idle = namespace_session_pass(pass, &device, &host, &None)
-        .await
-        .unwrap();
-    assert!(
-        idle < 512,
-        "an idle pass sent {idle} B; the first sent {first} B"
-    );
-    // The server stores its progress once it has sent its last frame.
-    assert!(
-        wait_until(|| {
-            let mut host = host.lock().unwrap();
-            host.begin_sync_with(&device_key).shared_heads == host.heads()
-        })
-        .await,
-        "serving the exchange left the host resuming from it too"
-    );
-
-    // Resuming loses nothing: changes on either side still cross.
-    host.lock()
-        .unwrap()
-        .create_file(ROOT_INO, "from-host", None, 0, 1)
-        .unwrap();
-    device
-        .lock()
-        .unwrap()
-        .create_file(ROOT_INO, "from-device", None, 0, 1)
-        .unwrap();
-    namespace_session_pass(pass, &device, &host, &None)
-        .await
-        .unwrap();
-    assert!(device.lock().unwrap().entry_at("from-host").is_some());
-    assert!(host.lock().unwrap().entry_at("from-device").is_some());
-    let idle = namespace_session_pass(pass, &device, &host, &None)
-        .await
-        .unwrap();
-    assert!(idle < 512, "idle again after a change: {idle} B");
-    router.shutdown().await.unwrap();
-}
-
-/// A device's remembered sync progress is no authority: once its holder's
-/// write access is revoked, a session that completed exchanges before is
-/// refused like any other, and nothing more reaches it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn revoked_writer_is_cut_off_with_persisted_state() {
-    let workspace = uuid::Uuid::new_v4();
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let writer = identity.user_public_key();
-    let acl = policy_read_write(&[writer], &[]);
-    let host = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-    let (router, addr, _person) =
-        session_member_under(workspace, Arc::clone(&host), Some(acl.clone())).await;
-    let device = Arc::new(Mutex::new(
-        Namespace::from_bytes("device", &host.lock().unwrap().save()).unwrap(),
-    ));
-    let sessions = SessionPool::new(endpoint, identity, workspace);
-    let session = sessions
-        .get(&addr)
-        .await
-        .expect("the host speaks the session protocol");
-    let pass = (&sessions, &*session);
-    for _ in 0..2 {
-        namespace_session_pass(pass, &device, &host, &None)
-            .await
-            .unwrap();
-    }
-
-    let mut revoked = WorkspaceAcl::new();
-    revoked.grant_read(writer, "/");
-    acl.replace(revoked);
-    host.lock()
-        .unwrap()
-        .create_file(ROOT_INO, "after-revoke", None, 0, 2)
-        .unwrap();
-    device
-        .lock()
-        .unwrap()
-        .create_file(ROOT_INO, "from-revoked-writer", None, 0, 2)
-        .unwrap();
-    let error = namespace_session_pass(pass, &device, &host, &None)
-        .await
-        .expect_err("a revoked writer's exchange is refused");
-    assert!(format!("{error:#}").contains("denied"), "{error:#}");
-    assert!(device.lock().unwrap().entry_at("after-revoke").is_none());
-    assert!(
-        host.lock()
-            .unwrap()
-            .entry_at("from-revoked-writer")
-            .is_none()
-    );
-    router.shutdown().await.unwrap();
-}
-
 /// #4113. The idle timer: three seconds after anything happens, doubling
 /// per quiet timer pass to thirty; a change or a pass something started
 /// brings it back to three; a failing exchange
@@ -3957,298 +2733,6 @@ fn idle_backoff_doubles_to_the_ceiling_and_resets_on_change() {
         RECONCILE_INTERVAL,
         "a new failure after a success holds the short interval again"
     );
-}
-
-/// #4113. An idle exchange's replies carry the peer's heads; only one
-/// that brings changes reports any, so idle timer passes neither count as
-/// changes nor stop the timer backing off.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_namespace_exchange_reports_no_change() {
-    let workspace = uuid::Uuid::new_v4();
-    let history = namespace_with_history(500).save();
-    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
-    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let device = Arc::new(Mutex::new(
-        Namespace::from_bytes("device", &history).unwrap(),
-    ));
-    let sessions = SessionPool::new(endpoint, identity, workspace);
-    let session = sessions.get(&addr).await.unwrap();
-    let sync = || session::sync_namespace(&sessions, &session, &device, None, &None);
-    for pass in 0..3 {
-        assert!(
-            !sync().await.unwrap(),
-            "idle exchange {pass} reported a change"
-        );
-    }
-    host.lock()
-        .unwrap()
-        .create_file(ROOT_INO, "from-host", None, 0, 1)
-        .unwrap();
-    assert!(sync().await.unwrap(), "a received change is reported");
-    assert!(device.lock().unwrap().entry_at("from-host").is_some());
-    device
-        .lock()
-        .unwrap()
-        .create_file(ROOT_INO, "from-device", None, 0, 1)
-        .unwrap();
-    assert!(
-        !sync().await.unwrap(),
-        "sending this device's change receives nothing"
-    );
-    assert!(host.lock().unwrap().entry_at("from-device").is_some());
-    router.shutdown().await.unwrap();
-}
-
-/// #4113. A peer's own pass that brings changes wakes this device's
-/// loop as an announcement does, so the records behind them are pulled now
-/// rather than at an idle timer pass up to 30 s later; an idle one does not.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_peers_exchange_that_brings_changes_starts_a_pass() {
-    let workspace = uuid::Uuid::new_v4();
-    let host = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let (announce_tx, mut announcements) = mpsc::unbounded_channel();
-    let protocol = SessionProtocol {
-        endpoint: endpoint.clone(),
-        identity,
-        policy: None,
-        namespace: Arc::clone(&host),
-        store: Arc::new(ContentStore::memory()),
-        records: None,
-        workspace_id: workspace,
-        announcements: announce_tx,
-        pool: std::sync::Weak::new(),
-    };
-    let router = Router::builder(endpoint.clone())
-        .accept(TILO_FS_SESSION_ALPN, protocol)
-        .spawn();
-    let (device_endpoint, _lookup, device_identity) = bind_certified_endpoint().await;
-    let device_id = device_endpoint.id();
-    let device = Arc::new(Mutex::new(
-        Namespace::from_bytes("device", &host.lock().unwrap().save()).unwrap(),
-    ));
-    let sessions = SessionPool::new(device_endpoint, device_identity, workspace);
-    let session = sessions.get(&endpoint.addr()).await.unwrap();
-    let sync = || session::sync_namespace(&sessions, &session, &device, None, &None);
-
-    sync().await.unwrap();
-    while announcements.try_recv().is_ok() {}
-    device
-        .lock()
-        .unwrap()
-        .create_file(ROOT_INO, "from-device", None, 0, 1)
-        .unwrap();
-    sync().await.unwrap();
-    let announced = tokio::time::timeout(tilo_test_env::hang_bound(), announcements.recv())
-        .await
-        .expect("the host's loop was woken")
-        .unwrap();
-    assert_eq!(announced, device_id);
-    sync().await.unwrap();
-    // Once the host is shut down and every request it was serving has
-    // ended, no sender of announcements is left: what has arrived by then is
-    // all that ever will.
-    router.shutdown().await.unwrap();
-    let late = tilo_test_env::within("the host's requests to end", async {
-        let mut late = Vec::new();
-        while let Some(announced) = announcements.recv().await {
-            late.push(announced);
-        }
-        late
-    })
-    .await;
-    assert!(late.is_empty(), "an idle exchange woke the loop");
-}
-
-/// #4113. A timer pass skips the namespace exchange with a peer that
-/// agreed on this device's heads at its last exchange in this loop: no sync
-/// message on either side. It never skips on the loop's first exchange with
-/// a peer, nor on a pass something started, nor once this device has a
-/// change, nor once the backstop is due, and every change still crosses.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn quiet_timer_pass_skips_the_namespace_exchange_with_a_peer_in_sync() {
-    let workspace = uuid::Uuid::new_v4();
-    let history = namespace_with_history(500).save();
-    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
-    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let device = Arc::new(Mutex::new(
-        Namespace::from_bytes("device", &history).unwrap(),
-    ));
-    let exchanges = exchanges_for(
-        &endpoint,
-        &identity,
-        (workspace, None),
-        &device,
-        PEER_DEADLINE,
-    );
-    let generated = || {
-        device
-            .lock()
-            .unwrap()
-            .sync_bytes_generated()
-            .saturating_add(host.lock().unwrap().sync_bytes_generated())
-    };
-    let pass = |plan: PassPlan| {
-        let exchanges = &exchanges;
-        let addr = addr.clone();
-        async move {
-            let before = generated();
-            let outcome = exchanges.run(vec![addr], plan).await;
-            assert!(!outcome.failed, "{plan:?} failed");
-            generated().saturating_sub(before)
-        }
-    };
-    let announced = PassPlan {
-        announce: true,
-        reconcile: crate::record_materializer::ReconcileScope::Touched,
-        quiet: false,
-    };
-
-    assert!(
-        pass(TIMER_PASS).await > 0,
-        "the loop's first exchange is never skipped"
-    );
-    assert_eq!(
-        pass(TIMER_PASS).await,
-        0,
-        "a quiet pass with a peer in sync"
-    );
-    assert!(
-        pass(announced).await > 0,
-        "a pass something started exchanges"
-    );
-    assert_eq!(pass(TIMER_PASS).await, 0);
-
-    device
-        .lock()
-        .unwrap()
-        .create_file(ROOT_INO, "from-device", None, 0, 1)
-        .unwrap();
-    assert!(
-        pass(TIMER_PASS).await > 0,
-        "this device's change is exchanged"
-    );
-    assert!(host.lock().unwrap().entry_at("from-device").is_some());
-    assert_eq!(pass(TIMER_PASS).await, 0);
-
-    // The peer's change comes with its own pass; failing that, with the
-    // backstop.
-    host.lock()
-        .unwrap()
-        .create_file(ROOT_INO, "from-host", None, 0, 1)
-        .unwrap();
-    let device_of_host = *addr.id.as_bytes();
-    exchanges.shared.namespace_exchanged.lock().unwrap().insert(
-        device_of_host,
-        Instant::now()
-            .checked_sub(NAMESPACE_BACKSTOP)
-            .expect("an instant before the backstop"),
-    );
-    assert!(pass(TIMER_PASS).await > 0, "the backstop exchanges");
-    assert!(device.lock().unwrap().entry_at("from-host").is_some());
-    assert_eq!(pass(TIMER_PASS).await, 0);
-    router.shutdown().await.unwrap();
-}
-
-/// #4113. A device restarted with its persisted sync progress resumes
-/// its exchange with a peer over the production session: heads only,
-/// where a restart used to resend a summary of the whole history.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn persisted_sync_progress_resumes_a_session_exchange_after_restart() {
-    let workspace = uuid::Uuid::new_v4();
-    let history = namespace_with_history(5_000).save();
-    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
-    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
-    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
-    let device = Arc::new(Mutex::new(
-        Namespace::from_bytes("device", &history).unwrap(),
-    ));
-    let sessions = SessionPool::new(endpoint, identity, workspace);
-    let session = sessions.get(&addr).await.unwrap();
-    let pass = (&sessions, &*session);
-    let first = namespace_session_pass(pass, &device, &host, &None)
-        .await
-        .unwrap();
-    assert!(first > 5_000, "first contact is a full sync ({first} B)");
-
-    let (saved, progress) = {
-        let mut device = device.lock().unwrap();
-        (device.save(), device.encode_peer_sync_states())
-    };
-    let restarted = || (Namespace::from_bytes("device", &saved).unwrap(), &progress);
-    // Without its progress (before #4113) the restart syncs in full.
-    let (forgetful, _) = restarted();
-    let forgetful = Arc::new(Mutex::new(forgetful));
-    let full = namespace_session_pass(pass, &forgetful, &host, &None)
-        .await
-        .unwrap();
-    assert!(
-        full > 5_000,
-        "a restart without progress syncs in full ({full} B)"
-    );
-
-    let (mut resumed, progress) = restarted();
-    assert_eq!(resumed.restore_peer_sync_states(progress).unwrap(), 1);
-    let resumed = Arc::new(Mutex::new(resumed));
-    let bytes = namespace_session_pass(pass, &resumed, &host, &None)
-        .await
-        .unwrap();
-    assert!(
-        bytes < 512,
-        "a restart with progress resumed ({bytes} B, full {full} B)"
-    );
-    host.lock()
-        .unwrap()
-        .create_file(ROOT_INO, "while-restarted", None, 0, 1)
-        .unwrap();
-    namespace_session_pass(pass, &resumed, &host, &None)
-        .await
-        .unwrap();
-    assert!(
-        resumed
-            .lock()
-            .unwrap()
-            .entry_at("while-restarted")
-            .is_some()
-    );
-    router.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn sync_frames_are_little_endian_length_then_raw_message() {
-    let mut wire = Vec::new();
-    SYNC_FRAMING.write_async(&mut wire, b"ab").await.unwrap();
-    SYNC_FRAMING.write_async(&mut wire, &[]).await.unwrap();
-    assert_eq!(wire, [2, 0, 0, 0, b'a', b'b', 0, 0, 0, 0]);
-
-    let mut reader = &[1, 0, 0, 0, 9, 0, 0, 0, 0][..];
-    assert_eq!(
-        SYNC_FRAMING.read_async(&mut reader).await.unwrap(),
-        Some(vec![9])
-    );
-    // An empty message means that side has nothing to send this round.
-    assert_eq!(
-        SYNC_FRAMING.read_async(&mut reader).await.unwrap(),
-        Some(Vec::new())
-    );
-    assert_eq!(SYNC_FRAMING.read_async(&mut reader).await.unwrap(), None);
-}
-
-#[tokio::test]
-async fn sync_frames_over_sixty_four_mebibytes_or_truncated_are_refused() {
-    let oversized = (64_u32 * 1024 * 1024 + 1).to_le_bytes();
-    assert!(matches!(
-        SYNC_FRAMING.read_async(&mut &oversized[..]).await,
-        Err(FrameError::TooLarge(_))
-    ));
-    for wire in [&[2, 0][..], &[2, 0, 0, 0, 1][..]] {
-        assert!(matches!(
-            SYNC_FRAMING.read_async(&mut &wire[..]).await,
-            Err(FrameError::Truncated)
-        ));
-    }
 }
 
 /// A device's publisher over a fresh repository, for the conflict-watch
@@ -4509,6 +2993,24 @@ fn direct_bytes_sent(endpoints: &[&Endpoint]) -> u64 {
         .sum()
 }
 
+/// A namespace holding `changes` changes, one file per hundred.
+fn namespace_with_history(author: &str, changes: u64) -> Namespace {
+    let mut namespace = Namespace::new(author).unwrap();
+    let mut file = ROOT_INO;
+    for change in 0..changes {
+        if change.is_multiple_of(100) {
+            file = namespace
+                .create_file(ROOT_INO, format!("file-{change}"), None, 0, change)
+                .unwrap();
+        } else {
+            let content = Hash::new(change.to_le_bytes());
+            assert!(namespace.set_content(file, Some(&content), change, change));
+        }
+        namespace.heads();
+    }
+    namespace
+}
+
 /// A measurement, not a gate: run with `TILO_FS_IDLE_MEASURE=<seconds>`
 /// and `TILO_FS_NATIVE_TRACE=1 … -- --nocapture`. Two writer devices under
 /// an ACL, each with a record plane and the production reconciliation
@@ -4544,7 +3046,7 @@ async fn idle_workspace_cost_measurement() {
         host_identity.user_public_key(),
         device_identity.user_public_key(),
     ];
-    let history = namespace_with_history(5_000).save();
+    let history = namespace_with_history("history", 5_000).save();
     let host_store = Arc::new(ContentStore::memory());
     let (_host, ticket) = Workspace::host_with_records(
         host_ep.clone(),
@@ -4665,7 +3167,6 @@ fn replica_session_host(
         endpoint: endpoint.clone(),
         identity: identity.clone(),
         policy,
-        namespace: Arc::new(Mutex::new(Namespace::new("replica-host").unwrap())),
         store,
         records: Some(records),
         workspace_id,

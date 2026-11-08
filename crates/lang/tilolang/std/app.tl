@@ -35,15 +35,16 @@ app tilo.std "Standard library"
 /// neither gives neither.
 template view list<T>(
     items: List<T>,
+    opened: State<Option<T>>,
     tree: Bool = false,
     ungrouped: Option<Text> = .none,
     tail_title: Option<Text> = .none,
     row: (T, Option<Principal>) -> View,
 ) {
-    // The item the person opened where it stands: the row grows into it, and pressing it again,
-    // Escape, or a press beside it closes it. A row without a document opens elsewhere, in the
-    // window's pane, so the list keeps nothing of it.
-    state open_item: Option<T> = .none
+    // The item the person opened where it stands — the row grows into it, and pressing it again,
+    // Escape, or a press beside it closes it — is the window's `opened`: the view that lists the
+    // items holds it, so it can also open one from outside the list (what `on show` does). A row
+    // without a document opens elsewhere, in the window's pane, so the list keeps nothing of it.
     ui.VirtualList(
         selection_follows_focus: true,
         multi_select: true,
@@ -51,12 +52,12 @@ template view list<T>(
         tree: tree,
         ungrouped_title: ungrouped,
         tail_title: tail_title,
-        open: open_item,
+        open: opened,
     ) {
         on select(x: T): open(x, front: false)
         on activate(x: T): open(x)
-        on opened(x: T): set(open_item, x)
-        on closed: set(open_item, .none)
+        on opened(x: T): set(opened, x)
+        on closed: set(opened, .none)
         for x in items {
             row(x, lenses(x).find(l -> not l.mine)?.who)
         }
@@ -133,6 +134,7 @@ template view add_entry(placeholder: Text, create: Action) {
 template view browse<R, T, S>(
     of: R,
     items: List<T>,
+    opened: State<Option<T>>,
     places: List<Filter<T>> = [],
     sort: Option<State<S>> = .none,
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
@@ -163,7 +165,7 @@ template view browse<R, T, S>(
                 std.header(sort: sort)
             }
             overview: {
-                browse_rows(shown, empty, kind.icon, entry, entry_placeholder) { x ->
+                browse_rows(shown, opened, empty, kind.icon, entry, entry_placeholder) { x ->
                     row(x)
                 }
             }
@@ -187,7 +189,7 @@ template view browse<R, T, S>(
                 std.header(sort: sort)
             }
             content: {
-                browse_rows(shown, empty, kind.icon, entry, entry_placeholder) { x ->
+                browse_rows(shown, opened, empty, kind.icon, entry, entry_placeholder) { x ->
                     row(x)
                 }
             }
@@ -201,6 +203,7 @@ template view browse<R, T, S>(
 /// as the first.
 template view browse_rows<T>(
     items: List<T>,
+    opened: State<Option<T>>,
     empty: Text,
     icon: Option<Text>,
     entry: Option<Action>,
@@ -217,7 +220,7 @@ template view browse_rows<T>(
             if items.is_empty() {
                 ui.EmptyState(empty, icon: icon, inline: true)
             } else {
-                std.list(items) { (x, at) ->
+                std.list(items, opened) { (x, at) ->
                     ui.ListItem(item: x, presence: at) {
                         row(x)
                     }
@@ -227,7 +230,7 @@ template view browse_rows<T>(
     } else if items.is_empty() {
         ui.EmptyState(empty, icon: icon)
     } else {
-        std.list(items) { (x, at) ->
+        std.list(items, opened) { (x, at) ->
             ui.ListItem(item: x, presence: at) {
                 row(x)
             }

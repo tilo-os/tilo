@@ -3,12 +3,17 @@
 //! apart, the parts of a day and the week it stands in, and the day or moment a text names.
 //!
 //! A day is the person's before it is UTC's: what a moment is read as (`t.day()`,
-//! `t.time_of_day()`) and `today` read the zone `crate::recurrence` reads, and the week
-//! `d.start_of_week()` starts is the one their region starts, which the host names. A length of
-//! time is its number of seconds, so a day moving by one checks that it is whole days first: a
-//! written length that is no whole day the checker refuses, one code holds is refused here.
+//! `t.time_of_day()`) and `today` read the zone the host names, the one their region starts its
+//! week in, and the one a written wall-clock time is read in. A length of time is its number of
+//! seconds, so a day moving by one checks that it is whole days first: a written length that is
+//! no whole day the checker refuses, one code holds is refused here.
+//!
+//! The zone is an IANA name where the host names one, else the clock's offset: a wall time a
+//! person writes (`2026-06-30T09:00`) is that minute where they are, and a day is theirs before
+//! it is UTC's.
 
-use chrono::{Datelike, Duration, NaiveDate, Timelike};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use chrono_tz::Tz;
 
 use tilolang::calendar::{DAY, civil_from_days, time_text};
 
@@ -98,31 +103,42 @@ impl Core {
                 };
                 self.ret_h(Value::Text(day_text(start)))
             }
-            Imp::DayParse => {
-                let (text, near) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
-                let read = self.when_of(&text, &near)?;
-                let day = match read.day {
-                    Some(days) => {
-                        let day = Self::day_of_days(days)?;
-                        Some(Box::new(Value::Text(day_text(day))))
-                    }
-                    None => None,
-                };
-                self.ret_h(Value::Opt(day))
+            Imp::DayParse => self.day_parse(a),
+            Imp::WallClock => {
+                self.clock()?;
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(self.wall_clock(&text)?))
             }
-            Imp::TimeParse => {
-                let (text, near) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
-                let read = self.when_of(&text, &near)?;
-                // A text that names a day and no time is the moment that day starts.
-                let at = match (read.day, read.minutes) {
-                    (Some(days), minutes) => Some(self.moment_of(days, minutes.unwrap_or(0))?),
-                    _ => None,
-                };
-                let at = at.map(|at| Box::new(Value::Text(time_text(at))));
-                self.ret_h(Value::Opt(at))
-            }
+            Imp::TimeParse => self.time_parse(a),
             _ => trap("not a day or moment import"),
         }
+    }
+
+    /// The day a text names, near the day a person says it on.
+    fn day_parse(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let (text, near) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
+        let read = self.when_of(&text, &near)?;
+        let day = match read.day {
+            Some(days) => {
+                let day = Self::day_of_days(days)?;
+                Some(Box::new(Value::Text(day_text(day))))
+            }
+            None => None,
+        };
+        self.ret_h(Value::Opt(day))
+    }
+
+    /// The moment a text names, near the day a person says it on.
+    fn time_parse(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let (text, near) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
+        let read = self.when_of(&text, &near)?;
+        // A text that names a day and no time is the moment that day starts.
+        let at = match (read.day, read.minutes) {
+            (Some(days), minutes) => Some(self.moment_of(days, minutes.unwrap_or(0))?),
+            _ => None,
+        };
+        let at = at.map(|at| Box::new(Value::Text(time_text(at))));
+        self.ret_h(Value::Opt(at))
     }
 
     /// A `Date` value as a day.
@@ -178,6 +194,75 @@ impl Core {
     /// none), which their region knows and their zone does not.
     fn week_start(&self) -> i64 {
         self.week_start.borrow().as_ref().map_or(0, |start| start())
+    }
+
+    /// The instant a wall-clock time names for the person: `2026-06-30T09:00`, read in their
+    /// zone, as the instant it is (`2026-06-30T16:00:00Z` where their clock is six hours behind
+    /// UTC). A time that is no time of day traps: the checker admits only well-formed ones.
+    fn wall_clock(&self, text: &str) -> HResult<String> {
+        let wall = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"]
+            .into_iter()
+            .find_map(|shape| NaiveDateTime::parse_from_str(text, shape).ok());
+        let Some(wall) = wall else {
+            return trap(format!("`{text}` is not a wall-clock time"));
+        };
+        Ok(tilolang::calendar::time_text(self.instant_of(wall)))
+    }
+
+    /// The person's zone as its IANA name: the one the invocation pinned when it read the
+    /// clock, else the host's, when it named one this build knows.
+    fn zone_name(&self) -> Option<String> {
+        if let Some(clock) = self.pinned_clock() {
+            return clock
+                .zone
+                .and_then(|zone| tilo_recurrence::canonical_zone(&zone));
+        }
+        let name = self.zone_name.borrow().as_ref().and_then(|name| name())?;
+        tilo_recurrence::canonical_zone(&name)
+    }
+
+    /// The zone with that name, or `None` for a host that named none or one this platform does
+    /// not know.
+    fn zone(&self) -> Option<Tz> {
+        self.zone_name()?.parse().ok()
+    }
+
+    /// The person's offset from UTC now, in seconds: what the invocation pinned, else what a
+    /// host that names no zone gives.
+    fn offset(&self) -> i64 {
+        if let Some(clock) = self.pinned_clock() {
+            return clock.offset;
+        }
+        self.zone.borrow().as_ref().map_or(0, |zone| zone())
+    }
+
+    /// The moment `wall` names for the person: read in their zone, so a time of day keeps its
+    /// minutes across a change of clocks; by their clock's offset where the host named no zone.
+    pub(crate) fn instant_of(&self, wall: NaiveDateTime) -> i64 {
+        let resolved = self
+            .zone_name()
+            .and_then(|zone| tilo_recurrence::wall_to_utc(&zone, wall))
+            .map(|(instant, _)| instant.timestamp());
+        resolved.unwrap_or_else(|| wall.and_utc().timestamp().saturating_sub(self.offset()))
+    }
+
+    /// The wall time the moment `instant` reads as for the person.
+    pub(crate) fn local_wall(&self, instant: i64) -> NaiveDateTime {
+        let Some(utc) = DateTime::from_timestamp(instant, 0) else {
+            return NaiveDateTime::default();
+        };
+        match self.zone() {
+            Some(zone) => zone.from_utc_datetime(&utc.naive_utc()).naive_local(),
+            None => utc
+                .checked_add_signed(Duration::seconds(self.offset()))
+                .unwrap_or(utc)
+                .naive_utc(),
+        }
+    }
+
+    /// The day `instant` falls on for the person.
+    pub(crate) fn local_day(&self, instant: i64) -> NaiveDate {
+        self.local_wall(instant).date()
     }
 }
 

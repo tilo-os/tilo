@@ -191,6 +191,114 @@ fn a_tree_changed_on_one_device_reaches_the_persons_other_device() {
     );
 }
 
+/// A shared workspace's tree is the workspace's own Files record: what one
+/// member's mount changes reaches another member's mount, a person joining the
+/// workspace later is given the tree whole, and a member the workspace removes
+/// stops receiving it.
+#[test]
+fn a_shared_workspaces_tree_reaches_each_member() {
+    let (site, _ada, bob, ada_laptop, bob_laptop) =
+        common::people::two_people_at_a_site_with_files();
+    let cluster = site.workspace.clone();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for the mounts");
+    let _in_runtime = runtime.enter();
+
+    // Ada's mount holds the workspace's tree first: the record's founder.
+    let here = namespace("ada-laptop");
+    here.lock_recover()
+        .create_dir(ROOT_INO, "Notes", 1_000)
+        .expect("a folder");
+    here.lock_recover()
+        .create_file(ROOT_INO, "readme.txt", None, 5, 1_000)
+        .expect("a file");
+    let _ada_mount = mount_on(&ada_laptop, &here, &cluster);
+
+    // Bob's mount holds nothing yet: it is given the tree Ada's mount holds.
+    let there = namespace("bob-laptop");
+    let _bob_mount = mount_on(&bob_laptop, &there, &cluster);
+    wait_held(
+        &site,
+        &[&ada_laptop, &bob_laptop],
+        &there,
+        &["Notes", "readme.txt"],
+        "Bob to hold the tree Ada's mount holds",
+    );
+
+    // What one member's mount changes reaches the other's as it happens.
+    change_tree(&here, |expected, what| {
+        wait_held(&site, &[&ada_laptop, &bob_laptop], &there, expected, what);
+    });
+    there
+        .lock_recover()
+        .create_file(ROOT_INO, "from-bob.md", None, 0, 5_000)
+        .expect("a file");
+    wait_held(
+        &site,
+        &[&ada_laptop, &bob_laptop],
+        &here,
+        &["Notes", "readme.txt", "from-bob.md"],
+        "Ada to hold the file Bob's mount made",
+    );
+
+    // A person joining the workspace later is given the tree whole.
+    let cyd = common::people::Person::new("Cyd");
+    let cyd_laptop = common::people::joined_carrying(
+        &site,
+        &cyd,
+        "Cyd's laptop",
+        &common::people::Device::install_files,
+    );
+    site.wait_for_member(cyd.public);
+    let later = namespace("cyd-laptop");
+    let _cyd_mount = mount_on(&cyd_laptop, &later, &cluster);
+    let expected = contents(&here);
+    let devices = [&ada_laptop, &bob_laptop, &cyd_laptop];
+    wait_held(
+        &site,
+        &devices,
+        &later,
+        &expected.iter().map(String::as_str).collect::<Vec<_>>(),
+        "Cyd to be given the tree whole",
+    );
+
+    // A member the workspace removes reads nothing more of its tree, and
+    // writes nothing into it, while the members it keeps carry on.
+    site.remove(bob.public);
+    site.wait_for_removal(bob.public);
+    here.lock_recover()
+        .create_file(ROOT_INO, "after-removal.md", None, 0, 9_000)
+        .expect("a file");
+    let expected = contents(&here);
+    wait_held(
+        &site,
+        &[&ada_laptop, &cyd_laptop],
+        &later,
+        &expected.iter().map(String::as_str).collect::<Vec<_>>(),
+        "Cyd to hold the file Ada's mount made after Bob was removed",
+    );
+    there
+        .lock_recover()
+        .create_file(ROOT_INO, "from-removed.md", None, 0, 10_000)
+        .expect("a file");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < until {
+        let (bob, ada, cyd) = (contents(&there), contents(&here), contents(&later));
+        assert!(
+            !bob.iter().any(|path| path == "after-removal.md")
+                && !ada.iter().any(|path| path == "from-removed.md")
+                && !cyd.iter().any(|path| path == "from-removed.md"),
+            "the removed member reads nothing the workspace writes after his removal, and writes \
+             nothing into it: Bob's mount holds {bob:?}, Ada's {ada:?}, Cyd's {cyd:?}\n{}",
+            bob_laptop.log(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// What a mount changes in the tree it holds — a file added, moved into
 /// `Notes`, renamed there, and deleted — each held by `held` as it happens.
 fn change_tree(here: &Mounted, mut held: impl FnMut(&[&str], &str)) {
@@ -292,6 +400,7 @@ fn mount(namespace: &Mounted, cluster: &str, paths: &IdentityPaths) -> tokio::ta
         cluster.to_owned(),
         credentials,
         tilo_paths::xdg::service_socket("collab"),
+        tilo_paths::xdg::service_socket("identity"),
     )
 }
 
@@ -321,6 +430,10 @@ fn mount_on(
             .directory()
             .join("runtime")
             .join("tilo/services/collab.sock"),
+        device
+            .directory()
+            .join("runtime")
+            .join("tilo/services/identity.sock"),
     )
 }
 

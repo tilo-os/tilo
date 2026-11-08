@@ -1050,10 +1050,11 @@ impl Instance {
             self.stage_failed = Some(failed.join("; "));
         }
         self.commit_planned();
-        // A scenario that returns a resource shows it, as a primary action shows what it made.
-        // A script opened it, so a narrow window shows it in front at once.
+        // A scenario that returns a resource shows it, as a primary action shows what it made:
+        // in place in the list of the place it belongs to, when the view lists its type. A
+        // script opened it, so a narrow window brings it in front at once.
         if let Some(shown) = shown {
-            self.open_detail(&shown, None, Some(ui::Front::Action));
+            self.show_in_window(&shown, Some(ui::Front::Action));
         }
     }
 
@@ -1189,7 +1190,10 @@ impl Instance {
                     if let Some(target) = plan.target
                         && (target.item.is_some() || plan.app != self.app || plan.view.is_some())
                     {
-                        self.open_detail(&target, plan.view.as_deref(), Some(front));
+                        match plan.view.as_deref() {
+                            None => self.show_in_window(&target, Some(front)),
+                            Some(view) => self.open_detail(&target, Some(view), Some(front)),
+                        }
                     }
                     self.commit_planned();
                 }
@@ -1415,7 +1419,7 @@ impl Instance {
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
                 if let Some(target) = wire::runtime_resource(&resource) {
-                    self.open_detail(&target, None, Some(ui::Front::Input));
+                    self.show_in_window(&target, Some(ui::Front::Input));
                 }
                 Ok(())
             }
@@ -1675,8 +1679,10 @@ impl Instance {
             };
             args.push(Value::resource(&target));
         }
-        // Nothing is left to ask: the palette runs the action as it is.
-        if action.params.len() <= args.len() {
+        // What is still to ask is what the action has no default for, as the label's "…" and
+        // every form read it: when the address's subject leaves nothing, the action runs as it
+        // is, as a control that runs it runs it.
+        if action.unbound(args.len()).next().is_none() {
             return false;
         }
         let Some(view) = self.view(Lane::Root) else {

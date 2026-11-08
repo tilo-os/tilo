@@ -184,6 +184,26 @@ fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
     find(&staged.harness().inspection().root, name)
 }
 
+/// Where the floating surface the widget `name` draws stands once it is shown: a page's fields
+/// carry popovers of their own, laid out only while open, so the first one is not the surface a
+/// press opened.
+fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
+    fn all(node: &ui::headless::InspectionNode, name: &str, out: &mut Vec<Rect>) {
+        if node.widget == name {
+            let [x, y, width, height] = node.rect;
+            out.push(Rect::new(x, y, x + width, y + height));
+        }
+        for child in &node.children {
+            all(child, name, out);
+        }
+    }
+    let mut rects = Vec::new();
+    all(&staged.harness().inspection().root, name, &mut rects);
+    rects
+        .into_iter()
+        .find(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+}
+
 /// Where the column title that says `said` stands once the layout ran.
 fn title_rect(staged: &stage::Staged, said: &str) -> Option<Rect> {
     fn find(node: &ui::headless::InspectionNode, said: &str) -> Option<Rect> {
@@ -242,16 +262,23 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
     let mut rows = Vec::new();
     collect(staged.harness().root_widget(), &mut rows);
 
-    rows.into_iter()
+    // One change reads once however many rows show it: a task open where it stands shows it
+    // on its row and again over the step that made it, and both are the same change.
+    let mut changes = Vec::new();
+    for change in rows
+        .into_iter()
         .filter_map(ui::widget::ListRow::shown_change)
-        .map(|change| {
-            (
-                change.identity.to_owned(),
-                change.name.to_owned(),
-                change.said.to_owned(),
-            )
-        })
-        .collect()
+    {
+        let change = (
+            change.identity.to_owned(),
+            change.name.to_owned(),
+            change.said.to_owned(),
+        );
+        if !changes.contains(&change) {
+            changes.push(change);
+        }
+    }
+    changes
 }
 
 /// The mark a window's header carries: what changed in what it shows, and by whom.
@@ -1010,6 +1037,19 @@ fn a_scenario_on_two_layers_is_named_apart() {
     );
 }
 
+/// Lay `body` out on a thread with a window's stack: a window's tree is as deep as the
+/// documents it shows, and a rich-text editor inside a row standing open needs more room than
+/// a test thread's two megabytes. A window in the app lays out on the thread running the app,
+/// which is the main thread's; a test gets the room to match.
+fn on_a_windows_stack(body: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(super::WORKER_STACK)
+        .spawn(body)
+        .expect("a thread starts")
+        .join()
+        .expect("the window lays out");
+}
+
 /// The tasks app staged as the "while you were away" scenario has it, laid out at `size`.
 fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
     let mut staged = stage::Staged::over(
@@ -1019,7 +1059,7 @@ fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
         size,
         ui::Theme::light(),
         None,
-        &["place=Task.today".to_owned()],
+        &[],
     )
     .expect("the scenario stages");
     staged
@@ -1046,171 +1086,178 @@ fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
     reason = "frame and mark sizes are small counts, far inside usize and f64"
 )]
 fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
-    // The marks a row and a window carry are read from the record's steps, which are the
-    // store's versions and the person's seen marks: a scenario staged for a capture is
-    // written down as a session writes it, or the capture shows nothing of what it staged.
-    tilo_ui_host::i18n::ensure();
-    ui::clock::freeze_for_capture();
-    let packages = tasks_packages();
-    let mut away = away_at(&packages, (1280, 800));
-    let rows = row_changes(&away);
-    // The two tasks of today's list that someone else changed while she was away: Bo took
-    // the mail and her agent moved the survey to today, each row saying so in its words.
-    assert_eq!(
-        rows.len(),
-        2,
-        "the two rows of the tasks Bo and her agent changed are marked: {rows:?}"
-    );
-    for (identity, name, said) in &rows {
-        assert!(
-            !identity.is_empty() && identity != "ada",
-            "a marked row names who changed it, never the person's own step: {identity}"
+    on_a_windows_stack(|| {
+        // The marks a row and a window carry are read from the record's steps, which are the
+        // store's versions and the person's seen marks: a scenario staged for a capture is
+        // written down as a session writes it, or the capture shows nothing of what it staged.
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = tasks_packages();
+        let mut away = away_at(&packages, (1280, 800));
+        let rows = row_changes(&away);
+        // The two tasks of today's list that someone else changed while she was away: Bo took
+        // the mail and her agent moved the survey to today, each row saying so in its words.
+        assert_eq!(
+            rows.len(),
+            2,
+            "the two rows of the tasks Bo and her agent changed are marked: {rows:?}"
         );
-        assert!(!name.is_empty(), "a marked row names the changer: {name}");
+        for (identity, name, said) in &rows {
+            assert!(
+                !identity.is_empty() && identity != "ada",
+                "a marked row names who changed it, never the person's own step: {identity}"
+            );
+            assert!(!name.is_empty(), "a marked row names the changer: {name}");
+            assert!(
+                !said.is_empty() && !said.contains("this") && !said.contains("done to"),
+                "a marked row says what they did, in words, of \"it\": {said}"
+            );
+        }
         assert!(
-            !said.is_empty() && !said.contains("this") && !said.contains("done to"),
-            "a marked row says what they did, in words, of \"it\": {said}"
+            rows.iter()
+                .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
+            "the mail Bo gave her says it was given to her: {rows:?}"
         );
-    }
-    assert!(
-        rows.iter()
-            .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
-        "the mail Bo gave her says it was given to her: {rows:?}"
-    );
-    let composed = away.composed().expect("the window composed its view");
-    let window = window_mark(&composed)
-        .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
-    // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
-    assert!(
-        matches!(
-            window.props.get("count"),
-            Some(tilo_render_protocol::patch::Value::Int(3))
-        ),
-        "the window counts the three changes she has not seen: {window:?}"
-    );
-    the_catch_up_names_each_item_it_changed(&window);
-    // The list is the window's content, so its header is the window's: the mark stands among
-    // the header actions, first, in the row that carries the title it counts.
-    let mut slots = Vec::new();
-    nodes(&composed, "slot", &mut slots);
-    let header = slots
-        .iter()
-        .find(|slot| {
-            slot.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
-                && slot
-                    .children
+        let composed = away.composed().expect("the window composed its view");
+        let window = window_mark(&composed)
+            .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
+        // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
+        assert!(
+            matches!(
+                window.props.get("count"),
+                Some(tilo_render_protocol::patch::Value::Int(3))
+            ),
+            "the window counts the three changes she has not seen: {window:?}"
+        );
+        the_catch_up_names_each_item_it_changed(&window);
+        // The list is the window's content, so its header is the window's: the mark stands among
+        // the header actions, first, in the row that carries the title it counts.
+        let mut slots = Vec::new();
+        nodes(&composed, "slot", &mut slots);
+        let header = slots
+            .iter()
+            .find(|slot| {
+                slot.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
+                    && slot
+                        .children
+                        .iter()
+                        .any(|child| child.kind == "ui.ChangeMark")
+            })
+            .unwrap_or_else(|| panic!("the window's header holds the window's mark: {composed:?}"));
+        assert_eq!(
+            header.children[0].kind, "ui.ChangeMark",
+            "the window's mark stands first among the header's actions: {header:?}"
+        );
+        // A node in the tree is not a pixel: the mark stands beside "Today", in its row, and the
+        // frame has its ink there.
+        let mark = floating_rect(&away, "ChangeMark").expect("the window's mark is laid out");
+        let today = title_rect(&away, "Today").expect("the list column's title is laid out");
+        assert!(
+            mark.width() > 40.0 && mark.height() > 20.0,
+            "the mark has room to stand in the header: {mark:?}"
+        );
+        assert!(
+            mark.y0 <= today.y1 && mark.y1 >= today.y0,
+            "the mark stands in the title's row: title {today:?}, mark {mark:?}"
+        );
+        assert!(
+            mark.x0 > today.x0 && mark.x1 <= 1280.0,
+            "the mark stands in the header, inside the window it counts: title {today:?}, mark {mark:?}"
+        );
+        let rgba = away.harness().render_rgba();
+        let (wide, tall) = (1280usize, 800usize);
+        assert!(!rgba.is_empty(), "the frame renders");
+        let device = rgba.len() / 4;
+        let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
+        let ground = ui::Theme::light().tokens.colors.surfaces.content.to_rgba8();
+        let ground = [ground.r, ground.g, ground.b];
+        let pixel = |x: usize, y: usize| {
+            let at = (y * wide * scale + x) * 4;
+            [rgba[at], rgba[at + 1], rgba[at + 2]]
+        };
+        let mut inked = 0;
+        for y in (mark.y0 as usize * scale)..(mark.y1 as usize * scale) {
+            for x in (mark.x0 as usize * scale)..(mark.x1 as usize * scale) {
+                if !pixel(x, y)
                     .iter()
-                    .any(|child| child.kind == "ui.ChangeMark")
-        })
-        .unwrap_or_else(|| panic!("the window's header holds the window's mark: {composed:?}"));
-    assert_eq!(
-        header.children[0].kind, "ui.ChangeMark",
-        "the window's mark stands first among the header's actions: {header:?}"
-    );
-    // A node in the tree is not a pixel: the mark stands beside "Today", in its row, and the
-    // frame has its ink there.
-    let mark = floating_rect(&away, "ChangeMark").expect("the window's mark is laid out");
-    let today = title_rect(&away, "Today").expect("the list column's title is laid out");
-    assert!(
-        mark.width() > 40.0 && mark.height() > 20.0,
-        "the mark has room to stand in the header: {mark:?}"
-    );
-    assert!(
-        mark.y0 <= today.y1 && mark.y1 >= today.y0,
-        "the mark stands in the title's row: title {today:?}, mark {mark:?}"
-    );
-    assert!(
-        mark.x0 > today.x0 && mark.x1 <= 1280.0,
-        "the mark stands in the header, inside the window it counts: title {today:?}, mark {mark:?}"
-    );
-    let rgba = away.harness().render_rgba();
-    let (wide, tall) = (1280usize, 800usize);
-    assert!(!rgba.is_empty(), "the frame renders");
-    let device = rgba.len() / 4;
-    let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
-    let ground = ui::Theme::light().tokens.colors.surfaces.content.to_rgba8();
-    let ground = [ground.r, ground.g, ground.b];
-    let pixel = |x: usize, y: usize| {
-        let at = (y * wide * scale + x) * 4;
-        [rgba[at], rgba[at + 1], rgba[at + 2]]
-    };
-    let mut inked = 0;
-    for y in (mark.y0 as usize * scale)..(mark.y1 as usize * scale) {
-        for x in (mark.x0 as usize * scale)..(mark.x1 as usize * scale) {
-            if !pixel(x, y)
-                .iter()
-                .zip(ground)
-                .all(|(painted, beneath)| painted.abs_diff(beneath) <= 12)
-            {
-                inked += 1;
+                    .zip(ground)
+                    .all(|(painted, beneath)| painted.abs_diff(beneath) <= 12)
+                {
+                    inked += 1;
+                }
             }
         }
-    }
-    assert!(
-        inked > 500,
-        "the mark is painted in the header, not only built: {inked} px in {mark:?}"
-    );
+        assert!(
+            inked > 500,
+            "the mark is painted in the header, not only built: {inked} px in {mark:?}"
+        );
+    });
 }
 
 #[test]
 fn a_catch_up_hangs_inside_the_window_it_belongs_to() {
-    // A mark's catch-up is a panel under the mark where the window is wide, a sheet at its
-    // foot where it is narrow, and neither reaches past the window it belongs to.
-    tilo_ui_host::i18n::ensure();
-    ui::clock::freeze_for_capture();
-    let packages = tasks_packages();
-    let mut away = away_at(&packages, (1280, 800));
-    let window = window_mark(&away.composed().expect("the window composed its view"))
-        .expect("the window's header says what changed in it");
-    away.press(&window.key, false)
-        .expect("the window's mark opens its catch-up");
-    away.lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
-        .expect("the app lays out with its catch-up open");
-    let wide = floating_rect(&away, "Popover").unwrap_or_else(|| {
-        fn all(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
-            out.push(format!("{} {:?}", node.widget, node.test_id));
-            for child in &node.children {
-                all(child, out);
+    on_a_windows_stack(|| {
+        // A mark's catch-up is a panel under the mark where the window is wide, a sheet at its
+        // foot where it is narrow, and neither reaches past the window it belongs to.
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = tasks_packages();
+        let mut away = away_at(&packages, (1280, 800));
+        let window = window_mark(&away.composed().expect("the window composed its view"))
+            .expect("the window's header says what changed in it");
+        away.press(&window.key, false)
+            .expect("the window's mark opens its catch-up");
+        away.lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+            .expect("the app lays out with its catch-up open");
+        let wide = floating_rect(&away, "Popover").unwrap_or_else(|| {
+            fn all(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+                out.push(format!("{} {:?}", node.widget, node.test_id));
+                for child in &node.children {
+                    all(child, out);
+                }
             }
-        }
-        let mut names = Vec::new();
-        all(&away.harness().inspection().root, &mut names);
-        panic!("the catch-up hangs over the window: {}", names.join(" "));
-    });
-    assert!(
-        wide.x0 >= 0.0 && wide.x1 <= 1280.0 && wide.width() <= 400.0,
-        "the catch-up stays inside a window 1280 wide, and no wider than a list panel: {wide:?}"
-    );
-    let wrong = wrong_in(&away, (1280, 800));
-    assert!(
-        wrong.is_empty(),
-        "nothing reaches past the window: {wrong:?}"
-    );
+            let mut names = Vec::new();
+            all(&away.harness().inspection().root, &mut names);
+            panic!("the catch-up hangs over the window: {}", names.join(" "));
+        });
+        assert!(
+            wide.x0 >= 0.0 && wide.x1 <= 1280.0 && wide.width() <= 400.0,
+            "the catch-up stays inside a window 1280 wide, and no wider than a list panel: {wide:?}"
+        );
+        let wrong = wrong_in(&away, (1280, 800));
+        assert!(
+            wrong.is_empty(),
+            "nothing reaches past the window: {wrong:?}"
+        );
 
-    // A window held in the hand is staged at its own size, as a capture stages it.
-    let mut narrow = away_at(&packages, (390, 844));
-    let window = window_mark(&narrow.composed().expect("the narrow window composed"))
-        .expect("the narrow window's header says what changed in it");
-    narrow
-        .press(&window.key, false)
-        .expect("the narrow window's mark opens its catch-up");
-    narrow
-        .lay_out((390, 844), ui::Theme::light(), input_at((390, 844)), 1.0)
-        .expect("the app lays out narrow with its catch-up open");
-    let sheet = floating_rect(&narrow, "Popover").expect("the catch-up hangs over the window");
-    assert!(
-        sheet.x0 >= 0.0
-            && sheet.x1 <= 390.0
-            && sheet.y1 <= 844.0
-            && sheet.y1 >= 820.0
-            && sheet.width() >= 300.0,
-        "a narrow window holds the catch-up as a sheet across its foot: {sheet:?}"
-    );
-    let wrong = wrong_in(&narrow, (390, 844));
-    assert!(
-        wrong.is_empty(),
-        "the sheet reaches nothing past the window: {wrong:?}"
-    );
+        // A window held in the hand is staged at its own size, as a capture stages it. It stands on
+        // the place the task it answers with belongs to, over the places behind it; the mark in its
+        // header is the window's own either way.
+        let mut narrow = away_at(&packages, (390, 844));
+        let mark = shown_floating_rect(&narrow, "ChangeMark")
+            .expect("the narrow window's header shows its mark");
+        narrow
+            .press_at(mark.center().x, mark.center().y)
+            .expect("the narrow window's mark opens its catch-up");
+        narrow
+            .freshen()
+            .expect("the app lays out narrow with its catch-up open");
+        let sheet =
+            shown_floating_rect(&narrow, "Popover").expect("the catch-up hangs over the window");
+        assert!(
+            sheet.x0 >= 0.0
+                && sheet.x1 <= 390.0
+                && sheet.y1 <= 844.0
+                && sheet.y1 >= 820.0
+                && sheet.width() >= 300.0,
+            "a narrow window holds the catch-up as a sheet across its foot: {sheet:?}"
+        );
+        let wrong = wrong_in(&narrow, (390, 844));
+        assert!(
+            wrong.is_empty(),
+            "the sheet reaches nothing past the window: {wrong:?}"
+        );
+    });
 }
 
 #[test]

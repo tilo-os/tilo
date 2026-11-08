@@ -152,7 +152,7 @@ impl NativeWorkspaceOwner {
             join_ledger: crate::join_ledger::JoinLedger::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
-        self.publish_workspace(workspace, NativeCommittedView { peer, record }, None)?;
+        self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
         Ok(true)
     }
 
@@ -250,7 +250,7 @@ impl NativeWorkspaceOwner {
             join_ledger: crate::join_ledger::JoinLedger::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
-        self.publish_workspace(workspace, NativeCommittedView { peer, record }, None)?;
+        self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
         Ok(true)
     }
 }

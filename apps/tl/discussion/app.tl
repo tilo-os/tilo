@@ -150,7 +150,9 @@ view written(c: Comment) {
 /// beside them as the thread it stands in: the window of the app itself, where a thread is found
 /// by what it is about and opens it.
 view recently(all: Comments) {
-    std.browse(all, all.items, empty: "Nothing said yet", opens: false) { c ->
+    // The comment this window's list shows opened where it stands.
+    state opened: Option<Comment> = .none
+    std.browse(all, all.items, opened, empty: "Nothing said yet", opens: false) { c ->
         remark(c)
     }
 }

@@ -616,11 +616,13 @@ view watched_page(h: WatchEntry) {
 
 /// The history in the feed's content: the same rows as its own place draws.
 view history_list(yt: YouTube) {
+    // The entry this list shows opened where it stands.
+    state opened: Option<WatchEntry> = .none
     let entries = yt.history.sort_by(.watched, desc)
     if entries.is_empty() {
         ui.EmptyState("Nothing watched yet", message: .some("The videos you watch are listed here"))
     } else {
-        std.list(entries) { (entry, at) ->
+        std.list(entries, opened) { (entry, at) ->
             ui.ListItem(item: entry, presence: at) {
                 watch_row(entry)
             }

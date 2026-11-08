@@ -10,7 +10,7 @@ use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
 use crate::ir;
 use crate::meta::{
     ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FnMeta, Line, PackageMeta,
-    ParamMeta, ProposalMeta, ScenarioMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
+    ParamMeta, ProposalMeta, ScenarioMeta, ShowMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
@@ -295,7 +295,7 @@ pub fn check_package(
 
 fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
-    let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states);
+    let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states, &a.ir.shows);
     meta.views
         .extend(row_views(&a.ir, &a.env.app, &fx, &a.ir.states));
     meta.words.clone_from(&a.ir.words);
@@ -444,8 +444,24 @@ fn row_views(
             ),
             presents: None,
             row_of: Some(v.owner.clone()),
+            show: None,
         })
         .collect()
+}
+
+/// What the view `name` (id `id`) answers a request to show an item with, when it declares one.
+fn show_of(shows: &[crate::ir::ViewShow], id: &str, name: &str, app: &str) -> Option<ShowMeta> {
+    let show = shows.iter().find(|s| s.view == id)?;
+    Some(ShowMeta {
+        ty: show.ty.clone(),
+        func: FnMeta {
+            id: show.export.clone(),
+            name: format!("{name} shown an item"),
+            doc: String::new(),
+            params: params_meta(std::slice::from_ref(&show.param), app),
+            result: Ty::Action.meta_text(app),
+        },
+    })
 }
 
 fn build_meta(
@@ -453,6 +469,7 @@ fn build_meta(
     env: &Env,
     fx: &Effects,
     template_states: &[(String, crate::resolve::StateInfo)],
+    shows: &[crate::ir::ViewShow],
 ) -> PackageMeta {
     let app = env.app.as_str();
     let mut meta = PackageMeta {
@@ -725,6 +742,7 @@ fn build_meta(
                         state: Vec::new(),
                         presents: Some(c.id.clone()),
                         row_of: None,
+                        show: None,
                     });
                 }
             }
@@ -763,6 +781,7 @@ fn build_meta(
                     ),
                     presents: None,
                     row_of: None,
+                    show: show_of(shows, &c.id, &c.name, app),
                 });
             }
             Item::Fn(f) => {

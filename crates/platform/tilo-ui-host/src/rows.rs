@@ -194,6 +194,20 @@ impl RemoteRows {
         if self.keys.len() != len {
             self.resize(len);
         }
+        // A row the app inserted comes as little as its key: the list reads it once the app
+        // renders it, so the range it shows is asked for again.
+        if let Some(asked) = self.asked.clone() {
+            let held = self
+                .keys
+                .get(asked.start.min(self.keys.len())..asked.end.min(self.keys.len()))
+                .unwrap_or_default()
+                .iter()
+                .flatten()
+                .any(|key| !self.rows.contains_key(&**key));
+            if held {
+                self.wanted = Some(asked);
+            }
+        }
     }
 
     fn resize(&mut self, len: usize) {

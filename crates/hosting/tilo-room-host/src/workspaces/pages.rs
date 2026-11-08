@@ -1394,7 +1394,8 @@ impl Workspaces {
             if workspace.admitted_device(request_id) != Some(device) {
                 continue;
             }
-            let role = match workspace.peer().permissions(device, system_time(now)) {
+            let admitted = workspace.peer().permissions(device, system_time(now));
+            let role = match admitted {
                 Ok(member) => match member.role {
                     collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
                         WorkspaceRole::Editor

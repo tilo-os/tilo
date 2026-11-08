@@ -1,4 +1,4 @@
-//! The mounted workspace tree, published as the Files app's person record.
+//! The mounted workspace tree, published as the Files app's record.
 //!
 //! The namespace is one Automerge document ([`crate::namespace`]), and
 //! `fs_protocol::tree` reads that same document as a resource. This module is
@@ -14,19 +14,32 @@
 //! session admits it against the launch it recorded for this process. Files
 //! change where the files are, so nothing here carries an action: a change
 //! is the namespace's own edit, made by the mount.
+//!
+//! A shared workspace seals its records, so this endpoint seals and opens the
+//! tree the way every app of the workspace does: it asks the session's
+//! identity service for the record's content keys and seals each change under
+//! them before the session admits it, and opens the changes others publish
+//! under the same keys.
 
+use std::io::Write as _;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use automerge::ChangeHash;
+use channel_crypto::ChannelContentKeys;
 use collab_types::document_transfer::{DocumentFrame, DocumentReassembler};
 use collab_types::{
-    DocumentMutation, OpKind, SignedOp, document_artifact_id, document_attestation_id,
-    next_unordered_document_sequence, sign_op,
+    ContentRetention, DocumentMutation, EncryptionMetadata, OpKind, SignedOp, document_artifact_id,
+    document_attestation_id, next_unordered_document_sequence, sign_op,
 };
 use runtime_collab::{CertifiedJoinIdentity, ChannelHandle, CollabClient, OpEvent};
+use tilo_identity_client::BrokerSigningIdentity;
+use tilo_identity_client::wire::{
+    ChannelAccess, HANDSHAKE_FRAMING, Handshake, PRESENTATION_VERSION, PresentationHandshake,
+};
 use tilo_lock::MutexRecover as _;
 
 use crate::identity::PeerCredentials;
@@ -40,8 +53,15 @@ pub const FILES_APP: &str = "so.tilo.file-explorer";
 /// connection ended: the session may restart under a daemon that outlives it.
 const RECONNECT: Duration = Duration::from_secs(2);
 
+/// The most changes of a sealed record this device holds unopened while it
+/// waits for the record's keys. Past it the tree is read whole instead, which
+/// settles every change at once.
+const MAX_UNOPENED: usize = 16;
+
 /// Publish `namespace` on `cluster` as the Files app's record, for as long as
-/// the daemon serves it, on the collaboration socket at `socket`.
+/// the daemon serves it, on the collaboration socket at `socket`. The
+/// identity service at `identity` is where a workspace that seals its records
+/// hands this endpoint their content keys.
 ///
 /// The writer rejoins whenever that connection ends; a session that is not up
 /// yet is waited for, not given up on, since the daemon starts beside it.
@@ -51,10 +71,11 @@ pub fn spawn(
     cluster: String,
     credentials: PeerCredentials,
     socket: PathBuf,
+    identity: PathBuf,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            match serve_once(&namespace, &cluster, &credentials, &socket).await {
+            match serve_once(&namespace, &cluster, &credentials, &socket, &identity).await {
                 Ok(()) => tracing::debug!(cluster, "the workspace tree's record connection ended"),
                 Err(error) => {
                     tracing::warn!(cluster, ?error, "the workspace tree is not published");
@@ -72,6 +93,7 @@ async fn serve_once(
     cluster: &str,
     credentials: &PeerCredentials,
     path: &Path,
+    identity: &Path,
 ) -> Result<()> {
     let mut stream = tilo_files::native::socket::connect(path)
         .with_context(|| format!("connect to the session at {}", path.display()))?;
@@ -87,7 +109,7 @@ async fn serve_once(
     let (client, carrying) = CollabClient::over(reader, writer);
     tokio::spawn(carrying);
 
-    let mut publisher = TreePublisher::join(&client, cluster, credentials).await?;
+    let mut publisher = TreePublisher::join(&client, cluster, credentials, identity).await?;
     let mut changes = namespace.lock_recover().subscribe_changes();
     let events = publisher
         .handle
@@ -132,6 +154,34 @@ async fn serve_once(
     }
 }
 
+/// Whether `error` is this session serving no identity service at all,
+/// rather than one that has not answered yet.
+fn no_identity_service(error: &anyhow::Error) -> bool {
+    error
+        .root_cause()
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// Whether `cluster` is the store of the person `root` belongs to: records
+/// there are kept in the store and reach their other devices over the link
+/// those devices prove themselves to each other on, so no workspace channel
+/// seals them.
+fn in_person_store(root: &[u8; 32], cluster: &str) -> bool {
+    uuid::Uuid::parse_str(cluster)
+        .is_ok_and(|cluster| collab_types::is_personal_cluster(root, &cluster))
+}
+
+/// What became of one change of the record this device was handed.
+enum Open {
+    /// The change's payload, opened.
+    Opened(Vec<u8>),
+    /// This device's keys cannot open it yet: newer ones may.
+    Later,
+    /// It never opens here: it is not this record's, or not this channel's.
+    Never,
+}
+
 /// This device's participation in one workspace's tree record.
 struct TreePublisher {
     cluster: String,
@@ -143,6 +193,47 @@ struct TreePublisher {
     sent: Vec<ChangeHash>,
     /// The typed mutation a segmented transfer is arriving as.
     reassembler: DocumentReassembler,
+    /// Where this device asks for the record's content keys, when the
+    /// workspace seals its records.
+    identity: PathBuf,
+    /// The identity service connection, opened the first time keys are
+    /// needed.
+    signer: Option<Arc<BrokerSigningIdentity>>,
+    /// What this device may do with the record's content: seal it, wait for
+    /// its keys, or write it unsealed.
+    access: Access,
+    /// The record's content keys, while this device holds them.
+    keys: Option<ChannelContentKeys>,
+    /// The service generation the keys were answered at: what this device
+    /// asks from when it asks again, so the answer is keys only when they
+    /// changed.
+    generation: u64,
+    /// The generation the record's unopened changes were last asked about:
+    /// one question per generation, as an app asks one per keys it holds.
+    asked_for_held: Option<u64>,
+    /// Changes of a sealed record that arrived before its keys did, in the
+    /// order they came.
+    unopened: Vec<SignedOp>,
+}
+
+/// What this device may do with the record's content.
+///
+/// A workspace that seals its records holds every change until it hands the
+/// keys over, as an app of the workspace holds its edits. The person's own
+/// cluster seals nothing: its records are kept in the person's store and reach
+/// their other devices over the link those devices authenticate each other
+/// with.
+#[derive(Clone, Copy)]
+enum Access {
+    /// The workspace hands this endpoint the record's keys: every change it
+    /// makes is sealed under them, and every change that arrives must open.
+    Sealed,
+    /// Its keys are not here yet: the tree waits for them rather than going
+    /// out in the clear into a workspace that seals.
+    Waiting,
+    /// The workspace has no channel for this record, or no identity service
+    /// answers on this session: the tree goes as it is.
+    Unsealed,
 }
 
 impl TreePublisher {
@@ -151,6 +242,7 @@ impl TreePublisher {
         client: &CollabClient,
         cluster: &str,
         credentials: &PeerCredentials,
+        identity: &Path,
     ) -> Result<Self> {
         let record = collab_types::person_record_id(fs_protocol::tree::TREE_KIND);
         let channel = runtime_collab::route::channel_key::format(FILES_APP, cluster, &record);
@@ -168,16 +260,38 @@ impl TreePublisher {
         .encode()
         .context("this device's join presentation encodes")?;
         let handle = client
-            .join_channel(&channel, &presentation)
+            .join_channel_as_kind(
+                &channel,
+                &presentation,
+                "",
+                "person",
+                fs_protocol::tree::TREE_KIND,
+            )
             .await
             .context("the session admits this device to the workspace tree")?;
-        Ok(Self {
+        // The kind the join named is the record the session founds for this
+        // endpoint's first write, as it founds every app's record on open.
+        let person = credentials.cert().user_public_key;
+        let mut publisher = Self {
             cluster: cluster.to_owned(),
             handle,
             credentials: credentials.clone(),
             sent: Vec::new(),
             reassembler: DocumentReassembler::default(),
-        })
+            identity: identity.to_path_buf(),
+            signer: None,
+            access: if in_person_store(&person, cluster) {
+                Access::Unsealed
+            } else {
+                Access::Waiting
+            },
+            keys: None,
+            generation: 0,
+            asked_for_held: None,
+            unopened: Vec::new(),
+        };
+        publisher.refresh_keys().await;
+        Ok(publisher)
     }
 
     /// Ask a device that holds the tree to publish it whole, as a device
@@ -220,7 +334,7 @@ impl TreePublisher {
         Ok(())
     }
 
-    /// Apply one change another device published, and publish what resolving
+    /// Take one change another device published, and publish what resolving
     /// it wrote.
     async fn receive(&mut self, event: OpEvent, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
         let op: SignedOp = postcard::from_bytes(&event.op).context("a signed change decodes")?;
@@ -228,7 +342,92 @@ impl TreePublisher {
             // This device's own change: the namespace holds it already.
             return Ok(());
         }
-        let Some(mutation) = self.mutation_of(&op)? else {
+        self.unopened.push(op);
+        if self.unopened.len() > MAX_UNOPENED {
+            // The keys still are not here: read the tree whole from a holder
+            // instead of holding changes this device cannot open.
+            self.unopened.clear();
+            self.ask_for_the_tree().await;
+            return Ok(());
+        }
+        self.take_unopened(namespace).await
+    }
+
+    /// Apply every change this device holds the keys for, in the order they
+    /// arrived, asking for the record's keys once when one of them needs
+    /// them.
+    async fn take_unopened(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
+        while let Some(op) = self.unopened.first() {
+            let payload = match self.opened(op) {
+                Open::Opened(payload) => payload,
+                Open::Later => {
+                    // Keys this device does not hold: ask for them, once per
+                    // generation of the ones it has.
+                    if self.asked_for_held == Some(self.generation) {
+                        // This device cannot open changes of the record: the
+                        // tree it reads from a holder is the whole of it.
+                        self.unopened.clear();
+                        self.ask_for_the_tree().await;
+                        return Ok(());
+                    }
+                    self.asked_for_held = Some(self.generation);
+                    self.refresh_keys().await;
+                    continue;
+                }
+                Open::Never => {
+                    self.unopened.remove(0);
+                    tracing::debug!("a change handed to this device is not the tree's to open");
+                    continue;
+                }
+            };
+            let op = self.unopened.remove(0);
+            self.apply(&op, payload, namespace).await?;
+        }
+        Ok(())
+    }
+
+    /// The change `op` carries, opened when the workspace seals it.
+    fn opened(&self, op: &SignedOp) -> Open {
+        match (&op.encryption, self.access) {
+            (None, Access::Unsealed) => Open::Opened(op.payload.clone()),
+            // Sealed or not, the workspace's answer is not here yet.
+            (_, Access::Waiting) => Open::Later,
+            // A change that does not go as this device's route does is another
+            // workspace's: cleartext into a workspace that seals is the
+            // downgrade the gate refuses, and sealed content on a route with
+            // no keys to open it is not this tree's.
+            (None, Access::Sealed) | (Some(_), Access::Unsealed) => Open::Never,
+            (Some(metadata), Access::Sealed) => {
+                let Some(keys) = &self.keys else {
+                    return Open::Later;
+                };
+                if keys.channel_id() != metadata.channel {
+                    return Open::Never;
+                }
+                if !keys.holds_epoch(metadata.epoch) {
+                    // Sealed under an epoch this device's keys have moved
+                    // past: newer keys open it.
+                    return Open::Later;
+                }
+                match keys.open_content(self.artifact(), metadata, &op.payload) {
+                    Ok(opened) => Open::Opened(opened.to_vec()),
+                    Err(error) => {
+                        tracing::debug!(%error, "a change of the tree does not open under its keys");
+                        Open::Never
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply one opened change, and publish what resolving it wrote.
+    async fn apply(
+        &mut self,
+        op: &SignedOp,
+        payload: Vec<u8>,
+        namespace: &Arc<Mutex<Namespace>>,
+    ) -> Result<()> {
+        let Some(mutation) = self.mutation_of(op, &payload)? else {
             return Ok(());
         };
         if matches!(mutation, DocumentMutation::Incremental(_))
@@ -257,12 +456,10 @@ impl TreePublisher {
         Ok(())
     }
 
-    /// The change `op` carries, once every segment of it arrived. `None` for
-    /// a segment of a transfer still arriving.
-    fn mutation_of(&mut self, op: &SignedOp) -> Result<Option<DocumentMutation>> {
-        match DocumentFrame::decode(&op.payload)
-            .context("a published change is a document frame")?
-        {
+    /// The change `payload` carries, once every segment of it arrived. `None`
+    /// for a segment of a transfer still arriving.
+    fn mutation_of(&mut self, op: &SignedOp, payload: &[u8]) -> Result<Option<DocumentMutation>> {
+        match DocumentFrame::decode(payload).context("a published change is a document frame")? {
             DocumentFrame::Whole(mutation) => Ok(Some(mutation)),
             DocumentFrame::Segment(segment) => {
                 let complete = self
@@ -279,22 +476,40 @@ impl TreePublisher {
         }
     }
 
-    /// Sign `mutation` as this device and publish every frame of it.
-    async fn send(&self, mutation: DocumentMutation) -> Result<()> {
+    /// Sign `mutation` as this device and publish every frame of it, sealed
+    /// under the record's content keys when the workspace seals its records.
+    async fn send(&mut self, mutation: DocumentMutation) -> Result<()> {
         let frames = mutation
             .encode_frames()
             .context("the change fits the collaboration wire")?;
         for frame in frames {
+            let (payload, encryption) = self.seal(frame).await?;
             let now = SystemTime::now();
-            let mut op = SignedOp::new_unsigned(
-                frame,
-                document_artifact_id(FILES_APP, &self.cluster, &Self::record()),
-                collab_types::Ed25519PublicKey::from_bytes(self.credentials.device_public_key()),
-                document_attestation_id(FILES_APP, &self.cluster, &Self::record()),
-                OpKind::Change,
-                now,
-                next_unordered_document_sequence(now),
-            );
+            let mut op = match encryption {
+                Some(metadata) => SignedOp::new_unsigned_with_encryption(
+                    payload,
+                    self.artifact(),
+                    collab_types::Ed25519PublicKey::from_bytes(
+                        self.credentials.device_public_key(),
+                    ),
+                    self.attestation(),
+                    OpKind::Change,
+                    now,
+                    next_unordered_document_sequence(now),
+                    metadata,
+                ),
+                None => SignedOp::new_unsigned(
+                    payload,
+                    self.artifact(),
+                    collab_types::Ed25519PublicKey::from_bytes(
+                        self.credentials.device_public_key(),
+                    ),
+                    self.attestation(),
+                    OpKind::Change,
+                    now,
+                    next_unordered_document_sequence(now),
+                ),
+            };
             sign_op(&mut op, self.credentials.signing_key())
                 .context("this device signs the change it publishes")?;
             let bytes = postcard::to_stdvec(&op).context("a signed change encodes")?;
@@ -304,6 +519,164 @@ impl TreePublisher {
                 .context("the session admits this device's change")?;
         }
         Ok(())
+    }
+
+    /// `frame` as the session admits it: sealed under the record's keys when
+    /// the workspace seals its records, and as it is otherwise.
+    async fn seal(&mut self, frame: Vec<u8>) -> Result<(Vec<u8>, Option<EncryptionMetadata>)> {
+        if matches!(self.access, Access::Waiting) {
+            // The record's keys may have been handed over since the join.
+            self.refresh_keys().await;
+        }
+        if matches!(self.access, Access::Unsealed) {
+            return Ok((frame, None));
+        }
+        for attempt in 0..2 {
+            let Access::Sealed = self.access else {
+                bail!("the workspace has not handed this device the tree's keys yet");
+            };
+            let Some(keys) = &self.keys else {
+                bail!("this device holds no keys of the tree's");
+            };
+            // A whole tree is a checkpoint of the record, which is what a
+            // device holding none of it takes in first.
+            let retention = ContentRetention::of_frame(&frame);
+            match keys.seal_content(self.artifact(), retention, &frame) {
+                Ok((metadata, sealed)) => return Ok((sealed, Some(metadata))),
+                Err(channel_crypto::Error::MissingContentKey(_)) if attempt == 0 => {
+                    // The channel moved to an epoch this device has not been
+                    // handed yet: ask for the keys again and seal under them.
+                    self.refresh_keys().await;
+                }
+                Err(error) => {
+                    return Err(error).context("the change seals under the record's keys");
+                }
+            }
+        }
+        bail!("the record's keys do not cover the channel's current epoch")
+    }
+
+    /// Ask the session's identity service for the record's content keys, at
+    /// the generation this device holds: it is answered the keys when they
+    /// changed, and with none when they did not.
+    ///
+    /// A session with no identity service at all keeps the tree unsealed; one
+    /// whose service has not handed the keys over yet keeps them waiting.
+    async fn refresh_keys(&mut self) {
+        if matches!(self.access, Access::Unsealed) {
+            return;
+        }
+        let signer = match &self.signer {
+            Some(signer) => Arc::clone(signer),
+            None => match self.connect_identity() {
+                Ok(signer) => {
+                    let signer = Arc::new(signer);
+                    self.signer = Some(Arc::clone(&signer));
+                    signer
+                }
+                Err(error) if no_identity_service(&error) => {
+                    // Nothing serves this session's identity: as an app of a
+                    // harness, the endpoint has no keys to ask for.
+                    tracing::debug!(%error, "the tree goes unsealed: this session serves no identity service");
+                    self.access = Access::Unsealed;
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "the identity service is not here for the tree's keys yet");
+                    return;
+                }
+            },
+        };
+        let cluster = self.cluster.clone();
+        let record = Self::record();
+        let generation = self.generation;
+        let asked = tokio::task::spawn_blocking(move || {
+            signer.channel_keys(&cluster, FILES_APP, &record, generation)
+        })
+        .await;
+        match asked {
+            Ok(Ok(reply)) => match (reply.access, reply.keys.as_deref()) {
+                (ChannelAccess::Ready, Some(bytes)) => {
+                    match ChannelContentKeys::from_bytes(bytes) {
+                        Ok(keys) => {
+                            self.keys = Some(keys);
+                            self.generation = reply.generation;
+                            self.access = Access::Sealed;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "the tree's content keys do not decode");
+                        }
+                    }
+                }
+                // Keys reported unchanged: the ones held still open the
+                // record, and a caller holding none never gets this answer.
+                (ChannelAccess::Ready, None) => {
+                    self.access = if self.keys.is_some() {
+                        Access::Sealed
+                    } else {
+                        Access::Waiting
+                    };
+                }
+                (access, _) => {
+                    // Waiting, removed, unavailable, or no secret store: the
+                    // workspace seals, and the tree waits to be sealed.
+                    self.access = Access::Waiting;
+                    tracing::debug!(
+                        ?access,
+                        cluster = %self.cluster,
+                        "the workspace has not handed this device the tree's keys yet"
+                    );
+                }
+            },
+            Ok(Err(error)) => {
+                // The service answered and refused: it may answer differently
+                // once this device is admitted, so the tree waits rather than
+                // going out in the clear.
+                tracing::debug!(%error, "the identity service withholds the tree's keys");
+            }
+            Err(error) => {
+                tracing::debug!(%error, "the tree's keys were not asked for");
+            }
+        }
+    }
+
+    /// This device's connection to the session's identity service, bound to
+    /// the workspace whose tree it publishes, as an app's connection is.
+    fn connect_identity(&self) -> Result<BrokerSigningIdentity> {
+        let mut stream = UnixStream::connect(&self.identity).with_context(|| {
+            format!(
+                "connect to the identity service at {}",
+                self.identity.display()
+            )
+        })?;
+        let handshake = PresentationHandshake {
+            handshake: Handshake {
+                workspace_id: self.cluster.clone(),
+                app_id: FILES_APP.to_owned(),
+                surface: None,
+            },
+            presentation_version: PRESENTATION_VERSION,
+        };
+        let bytes =
+            serde_json::to_vec(&handshake).context("this connection's handshake is JSON")?;
+        HANDSHAKE_FRAMING
+            .write(&mut stream, &bytes)
+            .context("name this device's app and workspace on the identity connection")?;
+        stream
+            .flush()
+            .context("the identity service reads this connection's handshake")?;
+        BrokerSigningIdentity::from_connected_io(stream)
+            .context("the identity service answers this device")
+    }
+
+    /// The artifact this device's changes are of.
+    fn artifact(&self) -> collab_types::ArtifactId {
+        document_artifact_id(FILES_APP, &self.cluster, &Self::record())
+    }
+
+    /// The attestation this device's changes are made under.
+    fn attestation(&self) -> collab_types::AttestationId {
+        document_attestation_id(FILES_APP, &self.cluster, &Self::record())
     }
 
     /// The record this device publishes.

@@ -189,6 +189,12 @@ fn start(
 /// the rows are where it lives until an operation records the membership that
 /// includes them, so a redemption reaches the membership before any operation
 /// names it.
+///
+/// Whether the workspace honours an invitation is what its rows record of who
+/// may invite — the grants an operation writes after the log starts are in
+/// them, and the membership the log starts from need not name them yet. A
+/// grant the workspace's rows do not hold admits no one here, as at the
+/// admission each device received.
 fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) {
     use base64::Engine as _;
     // ignored-failure: a ledger this device cannot read admits no one
@@ -229,7 +235,7 @@ fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) {
             let at_ns = joined_ms.saturating_mul(1_000_000);
             // ignored-failure: an invitation that does not admit its joiner admits no one
             let Ok(grant) = crate::workspace::membership::invitation_admits(
-                policy,
+                &rows,
                 workspace,
                 &signed,
                 receipt.user_public_key,
@@ -237,7 +243,7 @@ fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) {
             ) else {
                 continue;
             };
-            if policy.is_owner(&person) || policy.is_banned(&person) {
+            if rows.is_owner(&person) || rows.is_banned(&person) {
                 continue;
             }
             // A redemption is how someone entered the workspace, not what

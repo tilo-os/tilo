@@ -47,8 +47,8 @@ pub fn parse_ty(text: &str, app: &str) -> Result<Ty, String> {
 ///
 /// When the type has no value to start from (a record, a union, an action): a read of the field
 /// traps until something writes it, so whatever makes such a record outside the language's
-/// constructors (a seed, a fixture) must give it one. A person, a date, a time, an identifier, a
-/// repeat or a reminder reads as its empty value, as the index compares it.
+/// constructors (a seed, a fixture) must give it one. A person, a date, a time or an identifier
+/// reads as its empty value, as the index compares it.
 pub fn unwritten_value(
     ty: &Ty,
     default: Option<&serde_json::Value>,
