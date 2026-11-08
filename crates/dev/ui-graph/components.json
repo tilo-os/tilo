@@ -150,6 +150,11 @@
           "name": "square",
           "doc": "A square rather than a circle: an account or a site, not a person.",
           "type": "bool"
+        },
+        {
+          "name": "room",
+          "doc": "The avatar's room with none in it: a message that continues its author's run lines up under the first one's avatar without repeating it. Nothing is painted and nothing is read out.",
+          "type": "bool"
         }
       ],
       "semantics": {
@@ -1351,6 +1356,23 @@
       "semantics": {
         "role": "Button",
         "label": "label"
+      }
+    },
+    {
+      "name": "DayDivider",
+      "doc": "A day in a conversation: the divider a transcript draws over the first message of a local day, as its own described component (`ui.DayDivider`). A view that draws a conversation's rows itself marks its days with it, so the band, the rules and the label are the toolkit's and every transcript places the same divider.\nThe label is the day as the person reads it (\"Today\", \"Yesterday\", \"Sunday\", \"Jun 21\"); a view that draws its own rows reads it from the clock it already has, as a transcript does (`ConversationClock::day_label`).",
+      "props": [
+        {
+          "name": "day",
+          "doc": "The day, as the person reads it: \"Today\", \"Yesterday\", the weekday inside the last week, then the date.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "day"
       }
     },
     {

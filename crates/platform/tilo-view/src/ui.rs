@@ -175,6 +175,9 @@ pub fn virtual_list(key: &str, rows: Vec<Node>) -> Node {
 /// The gap between a layout's children: the design system's rhythms, never a measurement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gap {
+    /// Neighbours that meet: a window's bar and the content under it, a row's lead and its
+    /// message, as the language's `.none` gap.
+    None,
     Tight,
     Related,
     Sibling,
@@ -186,6 +189,7 @@ impl Gap {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::None => "none",
             Self::Tight => "tight",
             Self::Related => "related",
             Self::Sibling => "sibling",

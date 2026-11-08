@@ -15,6 +15,7 @@ use chrono::Datelike as _;
 use vello::kurbo::Rect;
 
 use crate::chrome::nav_row_height;
+use crate::component::Component;
 use crate::format;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
@@ -296,10 +297,10 @@ pub fn line_height(text: &mut TextRenderer, theme: &Theme, role: TextRole) -> f6
 
 /// [`DayDividerFace`] as a widget, for a list built of widgets: a band across its column with
 /// the day's label at its centre, where a conversation's day changes.
-#[crate::component::not_a_component(
-    part,
-    "the divider between days of a transcript, which `ui.VirtualList(transcript: true)` draws"
-)]
+///
+/// A described component (`ui.DayDivider`), so a view that draws a conversation's own rows —
+/// a Rust view of a channel, whose rows are components rather than a `transcript` list — marks
+/// its days with the very divider a transcript draws, in the same band, at the same rhythm.
 pub struct DayDivider {
     label: String,
     rect: Rect,
@@ -319,7 +320,44 @@ impl DayDivider {
     }
 }
 
+/// A day in a conversation: the divider a transcript draws over the first message of a local
+/// day, as its own described component (`ui.DayDivider`). A view that draws a conversation's
+/// rows itself marks its days with it, so the band, the rules and the label are the toolkit's
+/// and every transcript places the same divider.
+///
+/// The label is the day as the person reads it ("Today", "Yesterday", "Sunday", "Jun 21"); a
+/// view that draws its own rows reads it from the clock it already has, as a transcript does
+/// (`ConversationClock::day_label`).
+#[derive(Clone, Component, Debug, Default, PartialEq)]
+#[component(name = "DayDivider", role = "Group", label = "day")]
+pub struct DayDividerProps {
+    /// The day, as the person reads it: "Today", "Yesterday", the weekday inside the last week,
+    /// then the date.
+    #[component(required, positional)]
+    pub day: String,
+}
+
+impl crate::component::Described for DayDivider {
+    type Props = DayDividerProps;
+
+    fn from_props(_key: &str, props: DayDividerProps) -> Self {
+        Self::new(props.day)
+    }
+
+    /// Another day, or the same: the label it shows changes where the divider stands.
+    fn set_props(&mut self, props: DayDividerProps) -> bool {
+        if self.label == props.day {
+            return true;
+        }
+        self.label = props.day;
+        self.drawn = false;
+        true
+    }
+}
+
 impl crate::widget::Widget for DayDivider {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
