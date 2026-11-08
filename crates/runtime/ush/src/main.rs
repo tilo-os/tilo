@@ -41,6 +41,9 @@ fn main() -> ExitCode {
         "restart" => guest::restart(),
         "tilo" | "app" | "store" | "system" => guest::host_cli(&prog_name, rest),
         "history" => guest::file_history(rest),
+        name if ush::agent_door::CONNECT_COMMANDS.contains(&name) => {
+            ush::agent_door::connect_main(rest)
+        }
         // The file actions: GNU's names, answered here so each invocation is
         // one action of the environment record's, checked against its grants
         // and undone from its History.

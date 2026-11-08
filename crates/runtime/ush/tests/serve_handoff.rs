@@ -1371,3 +1371,177 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
         "the service retires and reaps the exited guest before teardown"
     );
 }
+
+/// A guest reaches the desktop through its environment's own agent door: `ush` asks the session
+/// for it as the environment opens, binds the socket the session answered at
+/// `/run/tilo/agent.sock` and names it in `TILO_AGENT_SOCK`, and the guest's `tilo-runtime
+/// --connect` relays to it. The connection comes from a descendant of the process holding the
+/// door's lease, the host path is not in the guest, and the lease closes when the environment
+/// ends.
+#[test]
+fn a_guest_reaches_the_session_through_its_own_agent_door() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    require_sandbox!();
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let images = dir.path().join("images");
+    fixture_images(&images);
+    let usr = dir.path().join("usr");
+    std::fs::create_dir_all(usr.join("bin")).unwrap();
+    std::fs::create_dir_all(usr.join("libexec")).unwrap();
+    std::os::unix::fs::symlink(
+        tilo_test_env::package_binary!("tilo-ush"),
+        usr.join("libexec/tilo-ush"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("../libexec/tilo-ush", usr.join("bin/ush")).unwrap();
+    let store = Store::at(dir.path().join("store"));
+
+    // The session: its own door, which opens the environment's.
+    let runtime = dir.path().join("rt");
+    let session_dir = runtime.join(tilo_paths::login::SESSION_DIR);
+    std::fs::create_dir_all(session_dir.join(tilo_paths::login::ENVIRONMENT_DOORS_DIR)).unwrap();
+    let door = session_dir.join(tilo_paths::login::AGENT_SOCKET_FILE);
+    let environment_door = session_dir
+        .join(tilo_paths::login::ENVIRONMENT_DOORS_DIR)
+        .join("e1.sock");
+    let session = fake_session(&door, environment_door.clone());
+
+    let command = format!(
+        "printf 'SOCK=%s\\n' \"$TILO_AGENT_SOCK\"; test -e '{}' || printf 'UNSEEN\\n'; \
+         printf '{{\"hello\":1}}\\n' | tilo-runtime --connect",
+        environment_door.display()
+    );
+    let output = std::process::Command::new("timeout")
+        .arg("--kill-after=5s")
+        .arg("30s")
+        .arg(usr.join("bin/ush"))
+        .args(["-c", &command])
+        .env(ush::store::STORE_ENV, store.root())
+        .env_remove(ush::store::RECORDS_ENV)
+        .env_remove("TILO_USH_BIN")
+        .env("TILO_USH_IMAGES", &images)
+        .env("SHELL", "/usr/bin/bash")
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .output_locked()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "ush failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        format!(
+            "SOCK={}\nUNSEEN\n{{\"answered\":1}}\n",
+            tilo_paths::login::GUEST_AGENT_SOCKET
+        ),
+        "the guest's own door, not the host's path, answered"
+    );
+    let (asked, inside, said) = session.join().unwrap();
+    assert_eq!(
+        asked.environment,
+        format!("{}/{DEFAULT_RECORD}", ush::workspace::PRIMARY)
+    );
+    assert_eq!(asked.workspace, None, "the primary workspace names none");
+    assert!(
+        inside,
+        "the guest's program descends from the lease's holder"
+    );
+    assert_eq!(said, "{\"hello\":1}\n");
+}
+
+/// A session's agent door at `door`, as the session serves it to one environment: it answers the
+/// environment's request with a door at `serving`, answers the one program that connects there,
+/// and waits for the lease to close. What the environment asked, whether the program descended
+/// from the lease's holder, and the line it sent.
+fn fake_session(
+    door: &Path,
+    serving: PathBuf,
+) -> std::thread::JoinHandle<(runtime_portal::environment_door::Request, bool, String)> {
+    use runtime_portal::environment_door::{Reply, Request};
+    let listener = tilo_files::native::socket::bind(door).unwrap();
+    std::thread::spawn(move || {
+        let (lease, _) = listener.accept().unwrap();
+        let holder = peer_pid(&lease);
+        let mut line = Vec::new();
+        BufReader::new(lease.try_clone().unwrap())
+            .read_until(b'\n', &mut line)
+            .unwrap();
+        let asked = Request::of(line.trim_ascii_end()).expect("an environment's door request");
+        let own = tilo_files::native::socket::bind(&serving).unwrap();
+        (&lease)
+            .write_all(
+                &Reply::Opened {
+                    path: serving,
+                    workspace: "front".into(),
+                }
+                .line(),
+            )
+            .unwrap();
+        let (client, _) = own.accept().unwrap();
+        let inside = descends_from(peer_pid(&client), holder);
+        let mut said = String::new();
+        BufReader::new(client.try_clone().unwrap())
+            .read_line(&mut said)
+            .unwrap();
+        (&client).write_all(b"{\"answered\":1}\n").unwrap();
+        drop(client);
+        // The lease stays open while the environment runs, and closes as it ends.
+        let mut rest = Vec::new();
+        let _ = (&lease).read_to_end(&mut rest);
+        (asked, inside, said)
+    })
+}
+
+/// The pid the kernel names for the other end of `stream`.
+fn peer_pid(stream: &UnixStream) -> u32 {
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).unwrap();
+    // SAFETY: `stream` owns the descriptor, and the kernel writes at most `length` bytes.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &raw mut length,
+        )
+    };
+    assert_eq!(read, 0, "the peer's credentials");
+    u32::try_from(credentials.pid).unwrap()
+}
+
+/// Whether `pid` descends from `ancestor`, by the parents `/proc` names.
+fn descends_from(pid: u32, ancestor: u32) -> bool {
+    let mut current = pid;
+    for _ in 0..128 {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{current}/stat")) else {
+            return false;
+        };
+        let Some(parent) = stat
+            .rsplit_once(") ")
+            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+            .and_then(|parent| parent.parse::<u32>().ok())
+        else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        if parent <= 1 {
+            return false;
+        }
+        current = parent;
+    }
+    false
+}

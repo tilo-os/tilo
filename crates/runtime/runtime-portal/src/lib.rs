@@ -25,6 +25,10 @@ pub mod agent_transport;
 /// descriptors they carry, so Linux only, like the clients that use it.
 #[cfg(unix)]
 pub mod door;
+/// An environment's own agent door, which `ush` asks the session for when it
+/// opens a confined environment.
+#[cfg(unix)]
+pub mod environment_door;
 /// What a process says first on its connection to its session's services:
 /// the launch it is, written on a Unix socket. Only a broker attests it
 /// (its own side reads `/proc`), so writing one is available wherever the

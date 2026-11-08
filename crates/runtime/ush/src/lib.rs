@@ -59,6 +59,7 @@
 //! permissions panel and can revoke. There is no `ush`-local permission type.
 //! See [`policy`].
 
+pub mod agent_door;
 pub mod approved_checks;
 pub mod audit;
 pub mod broker;
@@ -132,6 +133,10 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "touch",
     "append",
     "history",
+    // A coding agent's MCP server, `tilo-runtime --connect`, as on the host:
+    // relayed to the environment's own agent door (`crate::agent_door`).
+    "tilo-runtime",
+    "tilo-runtime-mcp",
     // A file's own history, read and restored through the mount's own
     // protocols, so a script or an agent reads the same revisions the file
     // manager's History view lists instead of a second store beside them.

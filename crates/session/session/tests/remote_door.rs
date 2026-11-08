@@ -338,7 +338,8 @@ fn an_agent_from_another_device_waits_for_the_person_and_leaving_withdraws_it() 
     b.pump(|b| b.questions.pending().len() == 1);
     let (who, what) = b.asked();
     assert_eq!(who, "Claude Code, from your device Studio laptop");
-    let named = agent_id("claude-code", &person.laptop.1);
+    // Each connection the person admits is an agent of its own: the device's agent, first of it.
+    let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
     assert_eq!(what, format!("Work in “Desk” as the agent {named}"));
 
     // Nobody is at this box: nothing is answered, and nothing is admitted.
@@ -371,7 +372,7 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
         introduced.pointer("/result/serverInfo").is_some(),
         "{introduced}"
     );
-    let named = agent_id("claude-code", &person.laptop.1);
+    let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
     b.pump(|b| b.seated() == [named.clone()]);
 
     // The same tools as a program of this login, and the person's devices.
@@ -442,7 +443,7 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
         "{introduced}"
     );
     assert!(b.questions.pending().is_empty(), "nobody was asked");
-    let named = agent_id("claude-code", &person.laptop.1);
+    let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
     b.pump(|b| b.seated() == [named.clone()]);
 
     // The setting lets in the person's own devices and nothing else: a device of another person,

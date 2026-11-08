@@ -72,6 +72,8 @@ with the system store's current `env-runtime`; every workspace has its own.
 /tmp /run /proc /dev     fresh
 /var           tmpfs, plus the environment's own /var/lib and /var/cache
 /run/ush/bin   the runtime and its command shims, read-only
+/run/tilo/agent.sock   the environment's own agent door, when the session
+               opened one (see environments.md, "Coding agents")
 ```
 
 Nothing else from the host is in the namespace — including its network: see

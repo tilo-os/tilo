@@ -64,6 +64,10 @@ opens them. The task host is not an app, so it gets its own admission instead of
   it (`Caller::local_agent(agent).acting_for(person)`; `BrokerActor` agent for person, never
   session-delegated, so no preset widens it). The task host's only connection is its program
   connection to the door: it holds no app's route, no broker connection and publishes nothing.
+  Each connection the person admits is an agent of its own (`claude-code@dev#2`: the client,
+  the environment it works from or `host`, an instance), so two sessions of one program are
+  two authors; a program in a confined environment comes in by that environment's own door and
+  works in its workspace ([environments.md, "Coding agents"](../../app-model/environments.md#coding-agents)).
 - **Reads, per record.** The task host asks the door for each record it reads, once per
   program (`{"record": {app, record}}`; the person's own record for an app with
   `records: .own`). The broker decides it at the record's node with that actor, the lesser of
