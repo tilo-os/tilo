@@ -256,8 +256,11 @@ impl SlotType for Attachments {
 
 /// The menu of an item: the view's own content first, as it placed it; then, after a
 /// separator, each command the item offers (`offered`, its allowed actions) that the view did
-/// not place, so every action stays reachable from the menu. A command is placed when the view
-/// has one that runs the same action on the same resource.
+/// not place, so every action stays reachable from the menu.
+///
+/// A command is placed when the view has one that runs the same action on the same resource,
+/// or, for a view whose own commands are its events rather than the type's actions, one the
+/// person knows by the same name.
 #[must_use]
 pub fn item_menu(placed: Vec<MenuPart>, offered: Vec<MenuPart>) -> Vec<MenuPart> {
     let taken: Vec<tilo_actions::ActionAddress> = placed
@@ -265,11 +268,20 @@ pub fn item_menu(placed: Vec<MenuPart>, offered: Vec<MenuPart>) -> Vec<MenuPart>
         .filter_map(MenuPart::invokes)
         .cloned()
         .collect();
+    // A command of the view's own is an event it runs, naming no action: it stands for the
+    // action the person knows by its name.
+    let named: Vec<&str> = placed
+        .iter()
+        .filter(|part| part.invokes().is_none())
+        .filter_map(MenuPart::label)
+        .collect();
     let rest: Vec<MenuPart> = offered
         .into_iter()
         .filter(|part| {
-            part.invokes()
-                .is_none_or(|address| !taken.contains(address))
+            !part
+                .invokes()
+                .is_some_and(|address| taken.contains(address))
+                && !part.label().is_some_and(|label| named.contains(&label))
         })
         .collect();
     let mut menu = placed;
