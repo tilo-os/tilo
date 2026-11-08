@@ -343,11 +343,12 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     );
 }
 
-/// The count the tasks window shows over its list.
-fn overview_count(view: &ViewInstance) -> Option<i64> {
+/// The count the tasks window shows over its list: the list is the window's content, so the
+/// count stands beside the content's title.
+fn list_count(view: &ViewInstance) -> Option<i64> {
     fn walk(node: &UiNode, out: &mut Option<i64>) {
         if node.kind == "ui.NavShell"
-            && let Some(Value::Int(count)) = node.props.get("overview_count")
+            && let Some(Value::Int(count)) = node.props.get("count")
         {
             *out = Some(*count);
         }
@@ -370,12 +371,12 @@ fn the_home_list_counts_the_inbox_that_was_just_written() {
         call(&ada, "new_task", create(&root, title));
     }
     assert_eq!(
-        overview_count(&ada.view(APP)),
+        list_count(&ada.view(APP)),
         Some(2),
         "both unsorted tasks count before they are indexed"
     );
     ada.commit();
-    assert_eq!(overview_count(&ada.view(APP)), Some(2), "and after");
+    assert_eq!(list_count(&ada.view(APP)), Some(2), "and after");
 }
 
 #[test]
@@ -2059,12 +2060,20 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
         .expect("the row it listed")
 }
 
-/// The menu a task's row offers.
+/// The menu a task's row offers: the slot of the item the row presents, not one of a row drawn
+/// inside it — a task opened in the row holds rows of its own.
 fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
     let row = home_row(view, want);
-    all(row, "slot")
+    let item = all(row, "ui.ListItem")
         .into_iter()
-        .find(|slot| slot.props.get("name") == Some(&Value::text("menu")))
+        .find(|item| item.props.get("item").and_then(target) == target(want))
+        .unwrap_or_else(|| panic!("the row presents the task: {row:?}"));
+    let menu = |node: &'a UiNode| {
+        node.kind == "slot" && node.props.get("name") == Some(&Value::text("menu"))
+    };
+    item.children
+        .iter()
+        .find(|child| menu(child))
         .unwrap_or_else(|| panic!("the row offers a menu: {row:?}"))
 }
 
