@@ -855,9 +855,6 @@ mod tests {
         }
 
         /// Mark a task done or open.
-        ///
-        /// # Errors
-        /// Refuses a task that is gone.
         #[action(item = tasks)]
         pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
             self.tasks.get_mut(task).ok_or("gone")?.done = done;
@@ -865,9 +862,6 @@ mod tests {
         }
 
         /// Retitle a task.
-        ///
-        /// # Errors
-        /// Refuses a task that is gone.
         #[action(item = tasks)]
         pub fn rename(&mut self, task: &Id, title: String) -> Result<(), &'static str> {
             self.tasks.get_mut(task).ok_or("gone")?.title = title;

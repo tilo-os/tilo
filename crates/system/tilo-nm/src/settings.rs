@@ -238,9 +238,6 @@ impl Settings {
 
     /// Give the family these addresses (`address/prefix`; a bare address
     /// takes the longest prefix).
-    ///
-    /// # Errors
-    /// An entry that is not an address of the family.
     pub fn set_addresses(&mut self, family: IpFamily, addresses: &[String]) -> Result<(), String> {
         let mut entries: Vec<Setting> = Vec::new();
         for entry in addresses {
@@ -282,9 +279,6 @@ impl Settings {
     }
 
     /// Give the family its own gateway, or (`None`) none.
-    ///
-    /// # Errors
-    /// A gateway that is not an address of the family.
     pub fn set_gateway(&mut self, family: IpFamily, gateway: Option<&str>) -> Result<(), String> {
         let setting = family.setting();
         match gateway.filter(|gateway| !gateway.is_empty()) {
@@ -303,9 +297,6 @@ impl Settings {
     }
 
     /// Give the family these name servers (empty: none of its own).
-    ///
-    /// # Errors
-    /// An entry that is not an address of the family.
     pub fn set_dns(&mut self, family: IpFamily, servers: &[String]) -> Result<(), String> {
         let setting = family.setting();
         let mut v4 = Vec::new();

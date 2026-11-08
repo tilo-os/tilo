@@ -25,9 +25,6 @@ const PREFERRED_REFRESH_MHZ: u32 = 60_000;
 /// The layout for `outputs` on `specs`: the n-th connector (in connector
 /// order, as vkms numbers them) gets the n-th spec; they sit left to right,
 /// top-aligned, edge to edge in logical pixels, the first one primary.
-///
-/// # Errors
-/// A sentence saying which output cannot be arranged as asked.
 pub fn plan(
     outputs: &[DisplayOutputSnapshot],
     specs: &[OutputSpec],
@@ -127,9 +124,6 @@ fn sizes(modes: &[OutputMode]) -> String {
 
 /// Stage, wait for and confirm the layout for `specs`. Runs as the slot's
 /// user with its `HOME` and `XDG_RUNTIME_DIR`.
-///
-/// # Errors
-/// A sentence for the step that failed or timed out.
 pub fn apply(specs: &[OutputSpec], timeout: Duration) -> Result<String, String> {
     let started = Instant::now();
     let left = || timeout.saturating_sub(started.elapsed());

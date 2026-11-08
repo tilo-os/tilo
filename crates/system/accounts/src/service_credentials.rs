@@ -47,9 +47,6 @@ impl ServiceAuthorization {
     }
 
     /// Stable namespace reference. A reference alone never authorizes access.
-    ///
-    /// # Errors
-    /// Rejects invalid profile identifiers.
     pub fn credential_ref(&self, id: &str) -> Result<CredentialRef, BrokerError> {
         if id.is_empty()
             || id.len() > 128

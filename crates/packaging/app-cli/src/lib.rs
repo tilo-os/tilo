@@ -221,11 +221,6 @@ pub fn prefer_installed_runtime<'a>(
 /// The registry `registry_name`'s offer of the runtime `runtime`: a version
 /// of one of its runtime packages that provides exactly that runtime for
 /// this machine.
-///
-/// # Errors
-///
-/// Returns an error when no enabled registry has that name or it cannot be
-/// read or fails a proof.
 pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<CatalogueApp>, String> {
     let registries = config::load_registries();
     let registry = registries
@@ -286,11 +281,6 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
 
 /// The newest package of the runtime build `runtime` from the first enabled
 /// repository that offers it, in the user's repository order.
-///
-/// # Errors
-///
-/// Returns the last repository's error when none offers it and one could
-/// not be read.
 pub fn runtime_offer_from_enabled(runtime: &str) -> Result<Option<CatalogueApp>, String> {
     let mut last_error = None;
     for registry in config::load_registries().enabled() {
@@ -456,11 +446,6 @@ fn app_for_version(
 /// Every version of `package_id` the registry named `registry_name` offers
 /// this machine on its channel, newest first. Older versions come from the
 /// entry's signed version index when the registry serves compact snapshots.
-///
-/// # Errors
-///
-/// Returns an error when no enabled registry has that name, or it cannot be
-/// read, does not list the package, or fails a proof.
 pub fn version_offers(package_id: &str, registry_name: &str) -> Result<Vec<CatalogueApp>, String> {
     let registries = config::load_registries();
     let registry = registries
@@ -562,10 +547,6 @@ pub struct InstalledApp {
 }
 
 /// Every installed app, the system image's included, as the copy that runs.
-///
-/// # Errors
-///
-/// Returns an error if the installed-app registry cannot be read.
 pub fn installed_apps() -> Result<Vec<InstalledApp>, String> {
     let entries = package_store::list_installed()
         .map_err(|error| format!("could not read the installed app registry: {error}"))?;
@@ -644,11 +625,6 @@ pub fn image_version_beneath(package_id: &str) -> Result<Option<String>, String>
 }
 
 /// Version recorded by an installed app's manifest, when readable.
-///
-/// # Errors
-///
-/// Returns an error if the installed-app registry or the package's manifest
-/// cannot be read.
 pub fn installed_version(package_id: &str) -> Result<Option<String>, String> {
     let Some(entry) = package_store::find_installed(package_id)
         .map_err(|error| format!("could not read the installed app registry: {error}"))?
@@ -691,11 +667,6 @@ pub struct InstalledVersion {
 /// Every installed package's version and whether it is current, from one
 /// read of the installed set: asking [`installed_current`] per app read the
 /// whole set again for each of them.
-///
-/// # Errors
-///
-/// Returns an error if the installed-app registry or any installed package
-/// manifest cannot be read.
 pub fn installed_for_update() -> Result<std::collections::HashMap<String, InstalledVersion>, String>
 {
     let entries = package_store::list_installed()
@@ -896,11 +867,6 @@ pub fn available() -> CatalogueListing {
 }
 
 /// Resolve a human-friendly name without guessing across ambiguous matches.
-///
-/// # Errors
-///
-/// Returns an error when no offered app matches `query`, or when the
-/// human-friendly name matches more than one offer.
 pub fn resolve_offer<'a>(
     apps: &'a [CatalogueApp],
     query: &str,

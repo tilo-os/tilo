@@ -280,10 +280,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// host: no record is opened here, the view reads the reading `answers`
     /// publishes at `resource`, and everything it submits goes back to
     /// `answers` (`one-app-model.md` §4).
-    ///
-    /// # Errors
-    /// The profile cannot be made, or the reading does not read as the app's
-    /// resource.
     pub fn hosted(
         resource: &str,
         answers: impl super::Answers + 'static,
@@ -681,10 +677,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app replaying the recording `file` holds, as the session opens a
     /// recording a report carries: in a private window of its own.
-    ///
-    /// # Errors
-    /// Returns any launch or construction failure, and the refusal of bytes
-    /// that are no recording.
     pub fn replaying(file: OpenFile) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
@@ -929,10 +921,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// beside its own (a part of a chain), to `other`, which holds it too,
     /// as the workspace's record sync sends a device a record it opened: `other`
     /// takes it in and draws its next frame. Whether `other` changed.
-    ///
-    /// # Errors
-    /// Returns why either window does not hold the record, or why `other`
-    /// refused it.
     pub fn deliver_record_to(&mut self, other: &mut Self, id: &RecordId) -> Result<bool, String> {
         let checkout = other
             .records
@@ -1056,9 +1044,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// control's press or a field's edit hands it over: over the session's
     /// connection when the app is the session's, into the record here when
     /// it is not.
-    ///
-    /// # Errors
-    /// The dispatcher's refusal, in its own words.
     pub fn submit(&mut self, submit: impl super::Submit<A::Resource>) -> Result<(), String> {
         let refused = self
             .harness
@@ -1090,10 +1075,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Invoke a declared action through the host door, exactly as a control,
     /// the palette, an agent or a script does.
-    ///
-    /// # Errors
-    /// Returns the host's refusal: unknown action, bad arguments, denied
-    /// permission or the action's own refusal.
     pub fn invoke(&mut self, invoke: Invoke<A::Resource>) -> Result<(), tilo_actions::DoorError> {
         self.invoke_as(invoke, false)
     }
@@ -1143,9 +1124,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ///
     /// A saved descriptor is not an authority grant: every call checks the
     /// running app's current permissions and resource state again.
-    ///
-    /// # Errors
-    /// Returns a refusal if the hosted component cannot be observed.
     pub fn actions(
         &mut self,
     ) -> Result<Vec<tilo_actions::ActionDescriptor>, tilo_actions::DoorError> {
@@ -1865,9 +1843,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Nothing else runs: no frame is laid out or forced, so what the window
     /// shows of it is what its own frames ([`Self::frame`]) take up, as for
     /// a person who is only watching. Whether the record changed.
-    ///
-    /// # Errors
-    /// The record is not open here, or the change does not merge.
     pub fn replica_arrives(
         &mut self,
         record: &RecordId,
@@ -1929,9 +1904,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The version at `heads` as History mode previews it: the app's own
     /// view, read-only, over the document as it was then.
-    ///
-    /// # Errors
-    /// Returns why that version cannot be read or drawn.
     pub fn past_version(
         &self,
         heads: &[ui_core::automerge::ChangeHash],
@@ -2456,10 +2428,6 @@ pub struct HostedApp {
 
 impl HostedApp {
     /// The app `definition` as its owner `author` opens it on a fresh private profile.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure, or the contract violation the live
-    /// host would refuse the app's action surface for.
     pub fn open(
         definition: &'static ui_core::application::ApplicationDefinition,
         author: &str,
@@ -2538,9 +2506,6 @@ impl HostedApp {
     /// Invoke `action` of the published `resource` through the host's door, as `invoker` (the
     /// person at the window when `None`), within `ambient`: the task the invoker is carrying
     /// out, recorded with every change it makes. Answers what the operation answered.
-    ///
-    /// # Errors
-    /// The door's refusal, or the operation's failure.
     pub fn invoke(
         &mut self,
         invoker: Option<tilo_actions::ActionInvoker>,

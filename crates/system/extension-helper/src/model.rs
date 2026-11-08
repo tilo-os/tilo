@@ -824,9 +824,6 @@ pub fn codec_runtime_complete(part: &Part, base: &Base) -> bool {
 }
 
 /// The contents of `usr/lib/extension-release.d/extension-release.<name>`.
-///
-/// # Errors
-/// A value or key that could change the file's meaning.
 pub fn extension_release(
     os_id: &str,
     version_id: &str,
@@ -919,9 +916,6 @@ pub fn archive_parts(name: &[u8]) -> Vec<&[u8]> {
 /// metadata the base owns for its own files, and an rpm database would make
 /// the base's look different. Anything that escapes the tree is rejected
 /// outright rather than dropped.
-///
-/// # Errors
-/// A member that climbs out of the tree.
 pub fn safe_member(name: &[u8]) -> Result<Option<Vec<&[u8]>>> {
     let parts = archive_parts(name);
     if parts.contains(&b"..".as_slice()) {

@@ -172,9 +172,6 @@ pub fn gamepad_buttons() -> impl Iterator<Item = u16> {
 
 /// The controls of a gamepad combo such as `a`, `guide+lb` or `up`:
 /// pressed in order, released in reverse.
-///
-/// # Errors
-/// A part that names no control.
 pub fn gamepad_combo(combo: &str) -> Result<Vec<GamepadInput>, String> {
     if combo.is_empty() {
         return Err(combo.to_owned());
@@ -389,9 +386,6 @@ pub fn text_strokes(text: &str) -> Result<Vec<Stroke>, char> {
 
 /// Key codes of a combo such as `ctrl+alt+t`, `super`, `Return` or
 /// `shift+/`: pressed in order, released in reverse.
-///
-/// # Errors
-/// A part that names no key.
 pub fn combo_codes(combo: &str) -> Result<Vec<u16>, String> {
     if combo.is_empty() {
         return Err(combo.to_owned());

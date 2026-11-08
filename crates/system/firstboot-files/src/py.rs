@@ -60,9 +60,6 @@ fn split_reversed(path: &[u8]) -> Vec<Part> {
 /// `os.path.realpath(path)` (not strict): symlinks that exist are followed,
 /// a component that cannot be read is taken as written, and a symlink loop
 /// stops at the looping link.
-///
-/// # Errors
-/// A relative path when the working directory cannot be read.
 pub fn realpath(path: &OsStr) -> std::io::Result<OsString> {
     let path = path.as_bytes();
     let mut rest = split_reversed(path);

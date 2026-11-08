@@ -41,15 +41,11 @@ struct KeyFile {
 pub struct VerifiedCatalog(CatalogPayload);
 impl VerifiedCatalog {
     /// Verify envelope, canonical payload, schema and all release shapes.
-    /// # Errors
-    /// Rejects unreadable, oversized, untrusted, malformed or unsigned input.
     pub fn load(path: &Path, keys: &Path) -> Result<Self, String> {
         load_catalog(path, keys, CATALOG_SIGNATURE_DOMAIN).map(Self)
     }
     /// Verify an explicitly selected offline developer catalogue. Normal image
     /// consumers reject this separate signature domain even with the same key.
-    /// # Errors
-    /// Rejects unsigned, mismatched-domain or malformed receipt metadata.
     pub fn load_developer_offline(path: &Path, keys: &Path) -> Result<Self, String> {
         load_catalog(path, keys, DEVELOPER_SIGNATURE_DOMAIN).map(Self)
     }

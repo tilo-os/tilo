@@ -143,9 +143,6 @@ impl Effected {
     /// Finished, answering with the content of `hash` in this device's
     /// content store (an effect declared `content`), which another app's
     /// content-collecting operation takes.
-    ///
-    /// # Errors
-    /// Returns why `hash` names no content.
     pub fn content(hash: &str) -> Result<Self, String> {
         let resource = tilo_actions::content_resource(hash)
             .ok_or_else(|| format!("{hash:?} is not a content hash"))?;
@@ -714,10 +711,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// The resource at `version`, as a caller names one: a change id from
     /// its history (or enough of one) or a checkpoint's name.
-    ///
-    /// # Errors
-    /// Returns why `version` names no version of this document, or that
-    /// the handler has no document to read.
     pub fn version(&self, version: &str) -> Result<DocumentVersion, String> {
         let document = self
             .inv
@@ -782,9 +775,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// Submit the exact approved moderation operation through the record's host.
     /// Pass the returned Send future to the action's existing job.
-    ///
-    /// # Errors
-    /// Refuses projection drains, changed dispatch custody or unavailable transport.
     pub fn external_moderation(
         &self,
         operation: registry_types::ExternalModerationOperation,
@@ -834,9 +824,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// Run an approved project check through this effect's admitted host channel.
     /// Commands, source paths and resource bounds are chosen by the project host.
     /// Pass the returned future to the existing effect job with [`Self::spawn`].
-    ///
-    /// # Errors
-    /// Refuses projection drains, absent original custody or unavailable transport.
     pub fn approved_check(
         &self,
         check_id: &str,
@@ -862,9 +849,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// Attach approved-check reports to this action's existing job progress.
     /// The app remains the sole publisher of invocation-update sequences.
-    ///
-    /// # Errors
-    /// Refuses absent dispatch custody or unavailable approved transport.
     pub fn approved_check_reported(
         &self,
         check_id: &str,
@@ -1880,10 +1864,6 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
     /// Answer `op` when it is one of `E`'s effects: decode it, hand it to
     /// `handle`, and start what it started. `Ok(None)` for any other
     /// operation.
-    ///
-    /// # Errors
-    /// Returns the handler's failure, or why its answer breaks the effect's
-    /// declaration.
     pub(crate) fn start(
         &mut self,
         op: &ResourceOperation<'_>,
@@ -2015,10 +1995,6 @@ struct Answered<'a> {
 /// it started in `jobs`. `reply` tracks a job for an output a job's caller
 /// learns as the job's; `land` moves the participant where the effect was
 /// told to act once it succeeded.
-///
-/// # Errors
-/// The handler's failure, or why its answer breaks the effect's
-/// declaration.
 fn settle_start(
     jobs: &mut Running,
     answered: Answered<'_>,
@@ -2089,9 +2065,6 @@ struct InvocationParts {
 
 /// The parts of the context of an effect invoked by `op`, told to act at
 /// `place`, reading `doc`.
-///
-/// # Errors
-/// The custody no longer holds.
 #[inline(never)]
 fn invocation_parts(
     op: &ResourceOperation<'_>,
@@ -2129,9 +2102,6 @@ fn invocation_parts(
 
 /// The parts of the context of a completion or an outbox entry run for
 /// `invocation`, under `custody`: no document, target or place.
-///
-/// # Errors
-/// The custody no longer holds.
 #[inline(never)]
 fn custody_parts(
     invocation: Option<InvocationId>,

@@ -45,9 +45,6 @@ pub struct WhatsappRuntime {
 impl WhatsappRuntime {
     /// Bind an already linked, host-custodied SDK instance to its local journal.
     /// The host must hold exclusive credential authority throughout a send.
-    ///
-    /// # Errors
-    /// Refuses service or journal ownership mismatches.
     pub fn new(
         owner: Owner,
         client: Arc<Client>,

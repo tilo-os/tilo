@@ -37,9 +37,6 @@ pub struct SimBinding {
 
 impl SimBinding {
     /// Capture one authorized SIM without discovery, fallback or normalization.
-    ///
-    /// # Errors
-    /// Refuses invalid daemon/object identities, absent ICCID or zero epoch.
     pub fn new(
         daemon: String,
         modem: String,
@@ -92,8 +89,6 @@ impl DbusTransport {
     }
 
     /// Check the selected daemon and physical SIM before private initialization.
-    /// # Errors
-    /// Refuses revoked permission, a replaced daemon, or a changed SIM.
     pub async fn validate(&self) -> Result<(), Error> {
         self.check_binding().await
     }

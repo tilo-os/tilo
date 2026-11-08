@@ -126,11 +126,6 @@ impl OciImages {
     }
 
     /// The tapp of `id`, from the cache or the sources.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a source cannot be asked or serves bytes that
-    /// do not match their digest.
     pub async fn fetch(&self, id: &PackageId) -> Result<Option<Vec<u8>>> {
         let path = self.cached(id);
         if let Some(bytes) = read_if_present(&path)? {

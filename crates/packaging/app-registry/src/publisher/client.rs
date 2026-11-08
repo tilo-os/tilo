@@ -45,10 +45,6 @@ impl RegistryClient {
 
     /// Validate a registry address before storing it in a publisher profile.
     /// This performs no network requests and does not construct an HTTP client.
-    ///
-    /// # Errors
-    ///
-    /// When the URL cannot be parsed or is not HTTPS or loopback HTTP.
     pub fn validate_url(base: &str) -> Result<()> {
         let url = reqwest::Url::parse(base).context("invalid registry URL")?;
         let loopback = url.host_str().is_some_and(|host| {
@@ -71,10 +67,6 @@ impl RegistryClient {
     }
 
     /// The published entry for `package_id`, if the catalogue has one.
-    ///
-    /// # Errors
-    ///
-    /// When the registry cannot be reached or answers with something else.
     pub fn entry(&self, package_id: &str) -> Result<Option<RegistryEntry>> {
         let url = format!("{}/entries/{package_id}", self.base);
         let response = self.http.get(&url).send().with_context(|| url.clone())?;
@@ -95,10 +87,6 @@ impl RegistryClient {
 
     /// The entry `key` has waiting for review for `package_id`, if any.
     /// Only its publisher may read it.
-    ///
-    /// # Errors
-    ///
-    /// When the registry cannot be reached or refuses the read.
     pub fn pending(&self, key: &SigningKey, package_id: &str) -> Result<Option<RegistryEntry>> {
         let url = format!("{}/entries/{package_id}/pending", self.base);
         let signed_at = tilo_clock::unix_now();
@@ -190,10 +178,6 @@ impl RegistryClient {
     }
 
     /// Send a signed publisher application. Answers its status.
-    ///
-    /// # Errors
-    ///
-    /// When the registry refuses it; the message names any missing proof.
     pub fn apply(&self, application: &PublisherApplication) -> Result<serde_json::Value> {
         let url = format!("{}/publishers/applications", self.base);
         let response = self
@@ -209,10 +193,6 @@ impl RegistryClient {
     }
 
     /// The status of the application from `pubkey_hex`, if there is one.
-    ///
-    /// # Errors
-    ///
-    /// When the registry cannot be reached.
     pub fn application(&self, pubkey_hex: &str) -> Result<Option<serde_json::Value>> {
         let url = format!("{}/publishers/applications/{pubkey_hex}", self.base);
         let response = self.http.get(&url).send().with_context(|| url.clone())?;

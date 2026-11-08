@@ -36,9 +36,6 @@ pub fn provider_admin_from_launcher()
 
 /// Bind an authenticated descriptor and explicit public selection. No environment
 /// or profile discovery occurs; no other RPC client may use the source.
-///
-/// # Errors
-/// Rejects invalid or disconnected descriptors and unavailable app runtimes.
 #[cfg(unix)]
 pub fn from_descriptor_selection(
     descriptor: std::os::fd::BorrowedFd<'_>,

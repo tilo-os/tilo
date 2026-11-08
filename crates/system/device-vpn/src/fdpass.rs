@@ -11,10 +11,6 @@ use std::os::unix::net::UnixStream;
 const CONTROL_BYTES: usize = 64;
 
 /// Write `line` to `stream`, with `fd` attached to its first byte.
-///
-/// # Errors
-///
-/// The write fails.
 pub fn write_line_with_fd(
     stream: &UnixStream,
     line: &[u8],

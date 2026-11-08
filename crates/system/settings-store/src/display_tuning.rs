@@ -117,11 +117,6 @@ pub fn plan_scale(
 
 /// `base` with the display `connector` (the default one when `None`) at the
 /// resolution it runs now and `hertz`, every other choice kept.
-///
-/// # Errors
-///
-/// The display offers no such rate at its resolution, no such display, or
-/// the result does not validate for this hardware.
 pub fn plan_refresh(
     outputs: &[DisplayOutputSnapshot],
     base: &DisplayConfig,

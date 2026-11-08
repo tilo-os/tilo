@@ -85,9 +85,6 @@ pub fn parse_probe(output: &str) -> Probe {
 /// run commands as root without a password, checked by visudo before it is
 /// moved in place (sudo skips the `.new` file meanwhile). sudo asks for the
 /// user's password on the terminal.
-///
-/// # Errors
-/// A user name sudoers would not take literally.
 pub fn grant_sudo_line(user: &str) -> Result<String, CliError> {
     let valid = !user.is_empty()
         && user.len() <= 32

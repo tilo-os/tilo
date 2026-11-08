@@ -587,11 +587,6 @@ fn parse_invocation(value: &serde_json::Value) -> Result<Invocation, String> {
 /// a string that is one placeholder becomes the bound JSON value itself
 /// (a number stays a number), and a placeholder inside longer text becomes
 /// the value's text. A path walks object keys and array indexes.
-///
-/// # Errors
-///
-/// An unknown name, a path the bound value does not have, or an unclosed
-/// placeholder.
 pub fn substitute(
     value: &serde_json::Value,
     bindings: &std::collections::BTreeMap<String, serde_json::Value>,

@@ -39,10 +39,6 @@ pub fn system_interfaces_path() -> PathBuf {
 }
 
 /// The declaration at `path`; `None` when there is none.
-///
-/// # Errors
-///
-/// Returns an error when the file exists but cannot be read or parsed.
 pub fn read_interfaces(path: &Path) -> Result<Option<ProvidedInterfaces>, InterfacesError> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,

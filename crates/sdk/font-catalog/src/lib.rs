@@ -206,11 +206,6 @@ pub struct Face {
 }
 
 /// The compiled-in manifest, parsed once.
-///
-/// # Errors
-///
-/// When the compiled-in manifest does not parse or has an unsupported
-/// schema — a packaging mistake in this build.
 pub fn manifest() -> Result<&'static Manifest, Error> {
     static PARSED: OnceLock<Result<Manifest, String>> = OnceLock::new();
     PARSED
@@ -446,10 +441,6 @@ impl Asset {
 }
 
 /// Lowercase hex SHA-256 of a file, streamed through a fixed buffer.
-///
-/// # Errors
-///
-/// When the file cannot be read.
 #[allow(
     clippy::large_stack_arrays,
     reason = "A single fixed 64 KiB stack buffer bounds memory while streaming each font into SHA-256."

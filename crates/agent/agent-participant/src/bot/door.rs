@@ -47,9 +47,6 @@ pub trait DoorParticipant: Send {
     /// Invoke as `invoker` within `context` and commit the change.
     /// `confirmed`: the run confirmed it, from the grant's advance consent,
     /// for an action whose contract asks for confirmation.
-    ///
-    /// # Errors
-    /// The door's refusal or the action's failure.
     fn invoke(
         &mut self,
         route: &DocumentRoute,
@@ -161,9 +158,6 @@ pub enum PerformError {
 /// A connector's worker, performing one queued outbox entry.
 pub trait Performer: Send + Sync {
     /// Perform `queued` (the entry's value) and answer the service's result.
-    ///
-    /// # Errors
-    /// Why it was not performed.
     fn perform(&self, queued: Value) -> Result<Value, PerformError>;
 }
 

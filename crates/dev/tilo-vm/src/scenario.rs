@@ -156,10 +156,6 @@ impl Drop for CredentialsInput {
 }
 
 /// Parse one bounded, exact JSON object without ever echoing supplied text.
-///
-/// # Errors
-///
-/// Invalid, oversized, non-alphanumeric or matching credentials.
 pub fn parse_credentials(bytes: &[u8]) -> Result<Credentials, &'static str> {
     if bytes.is_empty() || bytes.len() > 8192 {
         return Err("credentials stdin must contain one bounded JSON object");
@@ -186,10 +182,6 @@ pub fn parse_credentials(bytes: &[u8]) -> Result<Credentials, &'static str> {
 }
 
 /// Read credentials before creating artifacts or booting the VM.
-///
-/// # Errors
-///
-/// Standard input could not be read or did not contain valid credentials.
 pub fn credentials_from_stdin() -> Result<Credentials, &'static str> {
     let mut bytes = zeroize::Zeroizing::new(Vec::new());
     std::io::stdin()
@@ -221,10 +213,6 @@ pub const RECOVERY_KEY_MARKER: &str = "::tilo-recovery-key::";
 /// marker, or anything shaped like a recovery key, and return the files it
 /// emptied. The same guarantee the release cycle gives its uploads: a
 /// diagnostic that could carry recovery material is withheld, never kept.
-///
-/// # Errors
-///
-/// An I/O error walking or rewriting the directory.
 pub fn scrub(dir: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
     scrub_with(dir, secrets, |_| true)
 }

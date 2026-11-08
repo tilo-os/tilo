@@ -121,17 +121,11 @@ pub trait TransferObserver {
 
     /// Retain the staged copy's identity before any Cut deletion or
     /// publication.
-    ///
-    /// # Errors
-    /// Refuses the transfer if its staged receipt cannot be retained.
     fn staged_source(&mut self, _staging: &Path) -> io::Result<()> {
         Ok(())
     }
 
     /// Persist recovery intent before the source is hidden.
-    ///
-    /// # Errors
-    /// Refuses destructive I/O when its write-ahead receipt cannot be saved.
     fn before_source_quarantine(&mut self, _source: &Path, _quarantine: &Path) -> io::Result<()> {
         Ok(())
     }
@@ -226,10 +220,6 @@ impl TransferObserver for () {}
 
 /// Copy `source` into `dest_dir` under its own name, or the first free
 /// numbered one; with `remove_source`, move it.
-///
-/// # Errors
-/// Refuses invalid names, collisions, lost admission and I/O failures; a
-/// failed move restores its source or retains its copy, and says which.
 pub fn transfer(
     source: &Path,
     dest_dir: &Path,

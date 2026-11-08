@@ -24,17 +24,11 @@ pub fn metadata(device: &Path) -> Result<String> {
 }
 
 /// The volume's sibling-unlock token, if it has one.
-///
-/// # Errors
-/// When the metadata cannot be read or the token is malformed.
 pub fn token(device: &Path) -> Result<Option<Token>> {
     token::from_metadata(&metadata(device)?)
 }
 
 /// The volume's UUID.
-///
-/// # Errors
-/// When cryptsetup cannot read it.
 pub fn uuid(device: &Path) -> Result<String> {
     let out = exec::run(
         "cryptsetup",
@@ -49,9 +43,6 @@ pub fn uuid(device: &Path) -> Result<String> {
 }
 
 /// The volume's UUID as its 16 bytes.
-///
-/// # Errors
-/// When cryptsetup cannot read it or it is not a UUID.
 pub fn uuid_bytes(device: &Path) -> Result<[u8; 16]> {
     let text = uuid(device)?;
     let digits: String = text.chars().filter(|c| *c != '-').collect();
@@ -94,9 +85,6 @@ fn slots(metadata: &str) -> Result<BTreeSet<u32>> {
 /// The passphrase is 256 bits of derived key, so the slot uses the cheapest
 /// PBKDF: stretching adds nothing to a key that is not guessable, and early
 /// boot tries it in milliseconds.
-///
-/// # Errors
-/// When cryptsetup refuses, or the new slot cannot be identified.
 pub fn add_slot(device: &Path, authorise: Option<&Path>, passphrase: &str) -> Result<u32> {
     let before = slots(&metadata(device)?)?;
     let dir = tempfile::Builder::new()

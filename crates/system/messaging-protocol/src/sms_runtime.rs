@@ -41,9 +41,6 @@ pub struct SmsRuntime {
 
 impl SmsRuntime {
     /// Bind host-custodied journal and modem authority without creating a grant.
-    ///
-    /// # Errors
-    /// Refuses a non-SMS or mismatched journal owner.
     pub fn new(
         owner: Owner,
         transport: DbusTransport,
@@ -148,9 +145,6 @@ impl SmsRuntime {
     /// Read one complete inbound SMS under the exact reviewed recipient route.
     /// The host retains its current receive/SIM lease. This neither creates,
     /// sends, stores, deletes nor acknowledges a modem object.
-    /// # Errors
-    /// Refuses stale account/SIM/daemon authority, another sender, incomplete
-    /// or unsupported PDUs and invalid/oversized private content.
     pub async fn read_received(
         &self,
         accounts: &accounts::AccountStore,

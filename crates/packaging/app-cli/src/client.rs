@@ -230,12 +230,6 @@ pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, Registr
 
 /// Fetch and verify the owner-signed snapshot, compact when the registry
 /// offers it, while advancing the durable anti-rollback checkpoint.
-///
-/// # Errors
-///
-/// Returns an error if the endpoint is unsafe, the response fails or exceeds
-/// the size limit, any proof check fails, or the snapshot would roll back or
-/// fork the durable checkpoint.
 pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, RegistryError> {
     let mut url = registry_url(reg, "entries")?;
     url.set_query(Some("format=compact"));

@@ -488,9 +488,6 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
 }
 
 /// `--min-age`: seconds, from `0`, `90s`, `30m`, `1h` or `2d`.
-///
-/// # Errors
-/// Anything else.
 pub fn parse_age(text: &str) -> Result<u64, String> {
     let text = text.trim();
     let (number, unit) = text.split_at(
@@ -519,9 +516,6 @@ fn parse_awake_duration(text: &str) -> Result<u64, String> {
 }
 
 /// `--resolution`: `WIDTHxHEIGHT`, each 320 to 16384 pixels.
-///
-/// # Errors
-/// Anything else.
 pub fn parse_resolution(text: &str) -> Result<String, String> {
     let size = |part: &str| {
         part.parse::<u16>()

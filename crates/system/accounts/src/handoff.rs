@@ -188,9 +188,6 @@ impl HandoffStore {
     }
 
     /// Replace the account's handoff credential.
-    ///
-    /// # Errors
-    /// A description of the key, encryption or write failure.
     pub fn publish(&self, id: &AccountId, credential: &HandoffCredential) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create the handoff directory: {error}"))?;
@@ -209,9 +206,6 @@ impl HandoffStore {
     }
 
     /// The account's handoff credential, `None` when none is published.
-    ///
-    /// # Errors
-    /// A description of a key or integrity failure.
     pub fn read(&self, id: &AccountId) -> Result<Option<HandoffCredential>, String> {
         let sealed = match std::fs::read(self.file(id)) {
             Ok(sealed) => sealed,
@@ -231,9 +225,6 @@ impl HandoffStore {
 
     /// Remove the account's handoff credential (sign-out, removal, a
     /// revoked grant).
-    ///
-    /// # Errors
-    /// A description of the removal failure.
     pub fn withdraw(&self, id: &AccountId) -> Result<(), String> {
         match std::fs::remove_file(self.file(id)) {
             Ok(()) => Ok(()),

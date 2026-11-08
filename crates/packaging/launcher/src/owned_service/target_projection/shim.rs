@@ -79,9 +79,6 @@ fn held_inode(file: &File) -> io::Result<u64> {
 impl RootTargetBootstrap {
     /// Exact fixed descriptor admission, before mandatory Landlock. The caller
     /// is the independently verified canonical native shim, never an app mode.
-    ///
-    /// # Errors
-    /// Fails if root credentials, the sealed bootstrap, namespace separation, inherited FUSE identity, or baseline filter custody cannot be verified.
     pub fn prepare() -> io::Result<Self> {
         root()?;
         let record = receive_record(&duplicate(TOKEN_FD)?)?;

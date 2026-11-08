@@ -184,10 +184,6 @@ impl Storage {
 
     /// The compact snapshot last published, if any. It may lag the full
     /// snapshot; callers compare its `snapshot_hash_hex`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be read or decoded.
     pub fn load_compact_snapshot(&self) -> Result<Option<CompactRegistrySnapshot>, StorageError> {
         let path = self.compact_snapshot_path();
         if path
@@ -322,10 +318,6 @@ impl Storage {
     /// registry. Only reviewed artifacts pass through here, so the registry
     /// serves no bytes it has not inspected. Bytes that do not decode as a
     /// package carry no payload to serve.
-    ///
-    /// # Errors
-    /// Returns an error if the registry lock cannot be taken or a blob cannot
-    /// be written durably.
     pub fn save_payload_blobs(&self, tapp_bytes: &[u8]) -> Result<usize, StorageError> {
         let _lock = self.lock_snapshot()?;
         Ok(self
@@ -395,9 +387,6 @@ impl Storage {
     /// `/artifacts/<blake3>.tapp`, returning the digest. Nothing is published
     /// by importing: a version still binds these exact bytes, and review
     /// still verifies them.
-    ///
-    /// # Errors
-    /// Returns an error if the bytes are not a package or cannot be written.
     pub fn import_artifact(&self, tapp_bytes: &[u8]) -> Result<String, StorageError> {
         tilo_app_package::tapp::read(tapp_bytes, &mut tilo_app_package::DiscardBlobs)
             .map_err(|error| StorageError::Parse(format!("artifact: {error}")))?;
@@ -421,9 +410,6 @@ impl Storage {
     /// Keep a publisher's bot program, which the caller authenticated and
     /// checked, under its BLAKE3. Like package uploads it stays private until
     /// review approves a version that binds it.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be written.
     pub fn save_program_upload(&self, bytes: &[u8]) -> Result<String, StorageError> {
         let digest = blake3::hash(bytes).to_hex().to_string();
         let path = self
@@ -434,9 +420,6 @@ impl Storage {
     }
 
     /// The uploaded program named `blake3_hex`, re-checked against its name.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be read or no longer matches its name.
     pub fn load_program_upload(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         read_named(
             self.program_upload_path(blake3_hex),
@@ -449,10 +432,6 @@ impl Storage {
     /// `/blobs/<blake3>` with its compressed twin like any package blob.
     /// Holding the registry lock keeps a concurrent prune from seeing the
     /// blob before the entry that binds it.
-    ///
-    /// # Errors
-    /// Returns an error if the lock cannot be taken or the blob or its twin
-    /// cannot be written.
     pub fn save_program_blob(&self, bytes: &[u8]) -> Result<String, StorageError> {
         let _lock = self.lock_snapshot()?;
         let hash = tilo_app_package::BlobHash::of(bytes);
@@ -476,9 +455,6 @@ impl Storage {
     /// Keep a publisher's upload, which the caller has authenticated, under
     /// its BLAKE3. Uploads are never served; review reads them, and approval
     /// imports the ones a version binds as artifacts.
-    ///
-    /// # Errors
-    /// Returns an error if the bytes cannot be written durably.
     pub fn save_upload(&self, tapp_bytes: &[u8]) -> Result<String, StorageError> {
         let digest = blake3::hash(tapp_bytes).to_hex().to_string();
         let path = self
@@ -634,10 +610,6 @@ impl Storage {
     /// exactly as just its package root, and return how many were
     /// compacted. Each package is converted under the registry lock on its
     /// own, so serving and publishing interleave with a long compaction.
-    ///
-    /// # Errors
-    /// Returns an error when the staging directory or a staged package cannot
-    /// be read or rewritten.
     pub fn compact_staged_artifacts(&self) -> Result<usize, StorageError> {
         let mut compacted: usize = 0;
         for digest in list_digests(&self.root.join("staged-artifacts"), ".tapp")? {
@@ -664,20 +636,11 @@ impl Storage {
     /// that order. The retained lock file and kernel `flock` make this safe
     /// across `CronJobs`, the HTTP server, and CLI processes; the in-process
     /// mutex also covers independently opened [`Storage`]s.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the process mutex is poisoned or the cross-process
-    /// lock file cannot be opened or locked.
     pub fn lock_snapshot(&self) -> Result<SnapshotLock<'_>, StorageError> {
         SnapshotLock::acquire(self)
     }
 
     /// Load a crash-recovery record for the first-party batch promoter.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the journal cannot be read or decoded.
     pub fn load_promotion_transaction(&self) -> Result<Option<PromotionJournal>, StorageError> {
         load_json(
             &self.promotion_transaction_path(),
@@ -686,10 +649,6 @@ impl Storage {
     }
 
     /// Persist the exact batch and candidate snapshot before applying reviews.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the journal cannot be encoded or written atomically.
     pub fn save_promotion_transaction(
         &self,
         journal: &PromotionJournal,
@@ -698,20 +657,11 @@ impl Storage {
     }
 
     /// Remove a completed promotion transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the journal cannot be removed from durable storage.
     pub fn delete_promotion_transaction(&self) -> Result<bool, StorageError> {
         delete_if_exists(&self.promotion_transaction_path())
     }
 
     /// Loads the currently published owner-signed snapshot, if present.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the snapshot exceeds the local size bound, cannot
-    /// be read, or is not valid JSON.
     pub fn load_snapshot(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         let path = self.snapshot_path();
         if path
@@ -726,10 +676,6 @@ impl Storage {
     }
 
     /// Atomically publishes an owner-signed snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the snapshot cannot be encoded or written.
     pub fn save_snapshot(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         let guard = self.lock_snapshot()?;
         guard.publish(snapshot)
@@ -766,11 +712,6 @@ impl Storage {
     /// Exactly one archive member must match. The hash remains in the filename
     /// so operators can compare backup/object-store listings without parsing
     /// JSON, while sequence is the stable rollback handle.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if history cannot be read, contains multiple members
-    /// for the sequence, or the selected member fails filename/body checks.
     pub fn load_snapshot_sequence(
         &self,
         sequence: u64,
@@ -832,10 +773,6 @@ impl Storage {
     }
 
     /// The record of the pruned history prefix, if any was pruned.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the record cannot be read or decoded.
     pub fn history_compaction(&self) -> Result<Option<HistoryCompaction>, StorageError> {
         load_json(
             &self.history_compaction_path(),
@@ -1081,10 +1018,6 @@ impl Storage {
     }
 
     /// Load an entry that moderation has removed from public visibility.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry cannot be read or decoded.
     pub fn load_quarantined_entry(
         &self,
         package_id: &str,
@@ -1096,28 +1029,16 @@ impl Storage {
     }
 
     /// Atomically persist an entry outside the public index.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry cannot be encoded or persisted.
     pub fn save_quarantined_entry(&self, entry: &RegistryEntry) -> Result<(), StorageError> {
         save_json(&self.quarantined_entry_path(&entry.package_id), entry)
     }
 
     /// Remove an entry from quarantine after it has been restored.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry exists but cannot be removed.
     pub fn delete_quarantined_entry(&self, package_id: &str) -> Result<bool, StorageError> {
         delete_if_exists(&self.quarantined_entry_path(package_id))
     }
 
     /// Load one pending publisher submission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the submission cannot be read or decoded.
     pub fn load_pending(
         &self,
         submission_id: &str,
@@ -1126,28 +1047,16 @@ impl Storage {
     }
 
     /// Load all pending submissions. Ordering is not defined.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the queue cannot be read or decoded.
     pub fn load_pending_submissions(&self) -> Result<Vec<PendingSubmission>, StorageError> {
         load_json_dir(&self.root.join("pending"), "pending submission")
     }
 
     /// Atomically create or replace a pending submission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the submission cannot be encoded or persisted.
     pub fn save_pending(&self, submission: &PendingSubmission) -> Result<(), StorageError> {
         save_json(&self.pending_path(&submission.submission_id), submission)
     }
 
     /// The publisher application from `pubkey_hex`, if any.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the key is not hex or the record cannot be read.
     pub fn load_publisher_application(
         &self,
         pubkey_hex: &str,
@@ -1159,10 +1068,6 @@ impl Storage {
     }
 
     /// Every publisher application, in no particular order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a record cannot be read.
     pub fn load_publisher_applications(
         &self,
     ) -> Result<Vec<crate::applications::StoredApplication>, StorageError> {
@@ -1173,10 +1078,6 @@ impl Storage {
     }
 
     /// Atomically create or replace a publisher application.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the record cannot be encoded or persisted.
     pub fn save_publisher_application(
         &self,
         application: &crate::applications::StoredApplication,
@@ -1200,10 +1101,6 @@ impl Storage {
     }
 
     /// Remove a pending submission after its terminal review record is durable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the submission exists but cannot be removed.
     pub fn delete_pending(&self, submission_id: &str) -> Result<bool, StorageError> {
         delete_if_exists(&self.pending_path(submission_id))
     }
@@ -1224,10 +1121,6 @@ impl Storage {
     }
 
     /// Durably retain a newer revision without replacing a journal reservation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the revision cannot be encoded or persisted.
     pub(crate) fn save_deferred_pending(
         &self,
         submission: &PendingSubmission,
@@ -1251,10 +1144,6 @@ impl Storage {
     }
 
     /// Load one durable moderator review/audit record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the review cannot be read or decoded.
     pub fn load_review(&self, review_id: &str) -> Result<Option<ReviewRecord>, StorageError> {
         load_json(&self.review_path(review_id), "review")
     }
@@ -1269,10 +1158,6 @@ impl Storage {
     }
 
     /// Atomically persist a review/audit record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the review cannot be encoded or persisted.
     pub fn save_review(&self, review: &ReviewRecord) -> Result<(), StorageError> {
         save_json(&self.review_path(&review.review_id), review)
     }
@@ -1375,39 +1260,22 @@ impl<'a> SnapshotLock<'a> {
     }
 
     /// Current published snapshot while the writer lock is held.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the current snapshot cannot be read or decoded.
     pub fn current(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         self.storage.load_snapshot()
     }
 
     /// Load an immutable historical member while the writer lock is held.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if history cannot be read or the member is invalid.
     pub fn sequence(&self, sequence: u64) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         self.storage.load_snapshot_sequence(sequence)
     }
 
     /// Archive a legacy current pointer without changing the live pointer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the snapshot conflicts with history or cannot be
-    /// written atomically.
     pub fn archive_current(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         self.storage.archive_snapshot(snapshot)
     }
 
     /// Exact signed transaction left by a crashed writer, if any. Callers
     /// verify its owner signature before invoking [`Self::recover`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the pending transaction cannot be read or decoded.
     pub fn pending_transaction(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         load_json(
             &self.storage.snapshot_transaction_path(),
@@ -1416,11 +1284,6 @@ impl<'a> SnapshotLock<'a> {
     }
 
     /// Finish the existing exact transaction after the caller authenticates it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if recovery cannot validate or durably publish the
-    /// recorded snapshot.
     pub fn recover(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         let Some(snapshot) = self.pending_transaction()? else {
             return Ok(None);
@@ -1519,11 +1382,6 @@ impl<'a> SnapshotLock<'a> {
     /// retained history snapshot, or in a version index still served, so a
     /// client one snapshot behind can still fetch what it was offered.
     /// Holding the lock keeps every writer of staged bytes out meanwhile.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if registry state cannot be read or a file cannot be
-    /// removed.
     pub fn prune_unreferenced(&self) -> Result<PruneReport, StorageError> {
         let plan = self.plan_prune(&self.referenced_entries()?)?;
         let report = plan.report();
@@ -1547,10 +1405,6 @@ impl<'a> SnapshotLock<'a> {
     /// `retention`, which versions publishers applying it would drop from
     /// the published entries and what pruning would then delete. Nothing is
     /// changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if registry state cannot be read.
     pub fn preview_prune(
         &self,
         retention: Option<&registry_types::retention::RetentionPolicy>,
@@ -1746,11 +1600,6 @@ impl<'a> SnapshotLock<'a> {
     /// compaction record (or the first archived member), so the signed
     /// predecessor hash of the oldest retained snapshot commits to all of it.
     /// The new record is written before any file is removed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the published pointer is missing or would be
-    /// pruned, the chain is broken, or a file cannot be read or removed.
     pub fn compact_history(&self) -> Result<HistoryCompactionReport, StorageError> {
         let storage = self.storage;
         let previous = storage.history_compaction()?;

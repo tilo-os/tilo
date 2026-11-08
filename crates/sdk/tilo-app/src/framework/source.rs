@@ -77,9 +77,6 @@ impl Source {
     /// Submit `ask` through the connection that keeps the record; `Document`
     /// has no separate door (`None`), because its door is the document the
     /// pass lent.
-    ///
-    /// # Errors
-    /// The session's refusal, in its own words.
     pub(crate) fn submit(&self, ask: &Ask) -> Option<Result<(), String>> {
         match self {
             Self::Document => None,

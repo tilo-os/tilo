@@ -95,10 +95,6 @@ pub enum ReplyError {
 }
 
 /// Parse a Get VCP Feature reply (`read` of 11 bytes).
-///
-/// # Errors
-///
-/// Returns why the reply cannot be trusted.
 pub fn parse_get_vcp_reply(reply: &[u8], vcp: u8) -> Result<VcpValue, ReplyError> {
     // Null message: source, 0x80, checksum.
     if reply.get(1) == Some(&0x80) {

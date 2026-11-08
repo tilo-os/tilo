@@ -313,9 +313,6 @@ impl Hub {
     }
 
     /// End the process `pid` of the lifetime `started_at`.
-    ///
-    /// # Errors
-    /// Why it was not ended.
     pub fn end_process(&self, pid: u32, started_at: u64, force: bool) -> Result<(), Refusal> {
         let mut collector = self.collector();
         let policy = collector.policy().clone();
@@ -329,9 +326,6 @@ impl Hub {
     }
 
     /// End every process of `app` the person may end.
-    ///
-    /// # Errors
-    /// Why none was ended.
     pub fn end_app(&self, app: &str, force: bool) -> Result<u32, Refusal> {
         let mut collector = self.collector();
         let policy = collector.policy().clone();

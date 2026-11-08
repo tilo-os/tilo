@@ -262,9 +262,6 @@ impl<P: Progress> Siblings for Peers<'_, P> {
 /// eavesdropper replaying a recorded exchange would, and returns the
 /// sibling's answer. Verification only: it proves a sibling refuses a
 /// replayed request, which can never open anything.
-///
-/// # Errors
-/// When the transcript is unusable or the sibling cannot be reached.
 pub async fn replay(transcript: &Transcript) -> Result<String> {
     let sibling = Sibling {
         device: transcript.sibling.clone(),

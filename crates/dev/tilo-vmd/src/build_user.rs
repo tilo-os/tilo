@@ -37,9 +37,6 @@ pub struct BuildUser {
 impl BuildUser {
     /// The owner of `build_root` when the daemon is root and the owner is
     /// not; `None` when builds run as the daemon itself.
-    ///
-    /// # Errors
-    /// The build root's owner has no account.
     pub fn for_build_root(build_root: &Path) -> Result<Option<Self>, DaemonError> {
         let euid = rustix::process::geteuid().as_raw();
         let Ok(meta) = std::fs::metadata(build_root) else {
@@ -91,9 +88,6 @@ impl BuildUser {
     }
 
     /// Give `path` (not following a final symlink) to this account.
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn own(&self, path: &Path) -> Result<(), DaemonError> {
         std::os::unix::fs::lchown(path, Some(self.uid), Some(self.gid)).map_err(DaemonError::io(
             format!("give {} to {}", path.display(), self.name),
@@ -104,9 +98,6 @@ impl BuildUser {
     /// daemons built as root, and their files would make this account's
     /// builds fail with "permission denied". Returns how many entries
     /// changed hands.
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn reclaim(&self, root: &Path) -> Result<u64, DaemonError> {
         let mut changed = 0_u64;
         let mut pending = vec![root.to_owned()];

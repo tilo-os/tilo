@@ -96,9 +96,6 @@ pub(crate) fn reading(resource: &str) -> Option<String> {
 
 /// Submit `ask` through the session's action door, as the person acting in
 /// this app's view or as the app itself (`docs/architecture/apps.md` §4).
-///
-/// # Errors
-/// The door's refusal, in its own words.
 pub(crate) fn submit(ask: &Ask) -> Result<(), String> {
     let remote = ui_core::RemoteActions::current();
     let target = tilo_actions::remote::RemoteActionTarget {

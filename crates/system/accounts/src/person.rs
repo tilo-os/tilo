@@ -109,9 +109,6 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
 #[resource(kind = "tilo.accounts", label = "Accounts", version = 2, migrate = upgrade)]
 impl PersonAccounts {
     /// Project public browser choices from the existing typed account document.
-    ///
-    /// # Errors
-    /// Refuses a document that cannot be read as Settings' account resource.
     pub fn browser_accounts_from_doc(
         doc: &tilo_resource::Doc,
         root: &str,
@@ -163,9 +160,6 @@ impl PersonAccounts {
     /// This changes the Settings account record only; it creates no credential,
     /// certificate, room membership or content key. Republishing preserves a
     /// person's disabled choice and chosen account name.
-    ///
-    /// # Errors
-    /// Refuses malformed public metadata or an occupied identity account id.
     #[action]
     pub fn publish_browser_identity(
         &mut self,
@@ -364,9 +358,6 @@ impl PersonAccounts {
     /// Keep this device's account file under `config_root` the projection
     /// of the person's accounts, for the services that read it. Writes only
     /// when it differs. Whether it wrote.
-    ///
-    /// # Errors
-    /// The file could not be written.
     pub fn project_in(&self, config_root: &Path) -> std::io::Result<bool> {
         let store = self.store();
         if AccountStore::load_in(config_root) == store {

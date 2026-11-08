@@ -36,10 +36,6 @@ fn read_stdin() -> Result<Zeroizing<String>, String> {
 /// Add the provider to this configuration's settings, make it the default,
 /// and keep its key: `preset` with `model` and the key on stdin (none for a
 /// keyless preset), or with `record`, [`export`]'s output on stdin.
-///
-/// # Errors
-/// An unknown or sign-in preset, an invalid profile, a keyed provider given
-/// no key, or settings or custody that cannot be written.
 pub(super) fn provision(
     preset: Option<&str>,
     model: Option<&str>,
@@ -109,10 +105,6 @@ pub(super) fn provision(
 
 /// Write this configuration's default provider, and its key where it keeps
 /// one, to stdout as a [`Record`].
-///
-/// # Errors
-/// No default provider, a signed-in one (its grant stays on this device), or
-/// a key custody cannot answer.
 pub(super) fn export() -> Result<(), String> {
     let config = ProviderConfig::load();
     let profile = config

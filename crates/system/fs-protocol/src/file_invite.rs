@@ -129,11 +129,6 @@ impl FileInviteV1 {
     }
 
     /// Verify an unrestricted bearer invite and its presented secret.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when ordinary invite verification fails, the invite is
-    /// not bearer-scoped, the secret mismatches, or online authority is needed.
     pub fn verify_bearer_at(&self, secret: &[u8; 32], now_ms: u64) -> Result<(), FileInviteError> {
         self.verify_at(now_ms)?;
         let FileInviteSubject::Bearer { secret_hash } = self.subject else {

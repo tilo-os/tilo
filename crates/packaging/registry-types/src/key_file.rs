@@ -43,10 +43,6 @@ pub fn parse(text: &str) -> Result<SigningKey, KeyFileError> {
 }
 
 /// The key in the key file at `path`.
-///
-/// # Errors
-///
-/// When the file cannot be read or is no key file.
 pub fn load(path: &Path) -> Result<SigningKey, KeyFileError> {
     let text = std::fs::read_to_string(path).map_err(|source| KeyFileError::Read {
         path: path.to_path_buf(),

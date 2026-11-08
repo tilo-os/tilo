@@ -121,9 +121,6 @@ pub enum Trust {
 impl Trust {
     /// Reads `trust.env` text (strict `TILO_RELEASE_*=value` lines, `#`
     /// comments) for an image that carries the root (`chain`) or not.
-    ///
-    /// # Errors
-    /// Any line or value it cannot use.
     pub fn parse(text: &str, chain: bool) -> Result<Self, String> {
         let mut values: Vec<(&str, &str)> = Vec::new();
         for line in text.lines() {
@@ -173,9 +170,6 @@ impl Trust {
 
     /// The trust installed in `dir`: `dir/trust.env`, and chain mode when
     /// `dir/root.crt` exists.
-    ///
-    /// # Errors
-    /// An unreadable or unusable `trust.env`.
     pub fn load(dir: &Path) -> Result<Self, String> {
         let path = dir.join("trust.env");
         let shown = path.display().to_string();

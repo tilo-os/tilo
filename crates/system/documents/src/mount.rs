@@ -123,11 +123,6 @@ const MAX_THREADS: usize = 8;
 /// a mount a crashed shell left behind there. Only this user can enter it:
 /// the kernel refuses every other user, and nothing on it can be executed
 /// or be a device.
-///
-/// # Errors
-///
-/// When FUSE is unavailable, the folder cannot be prepared, or the process
-/// that unmounts it when this one ends cannot be started.
 pub fn mount(documents: Documents, at: &Path) -> io::Result<Mounted> {
     clear_stale_mount(at)?;
     std::fs::create_dir_all(at)?;

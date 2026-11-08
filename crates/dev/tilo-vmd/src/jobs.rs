@@ -32,9 +32,6 @@ pub const AUTH_FILE: &str = "/etc/ostree/auth.json";
 
 /// Run `command`, streaming its stdout and stderr to our stderr (stdout
 /// carries only the job line), and keep the tail of its stderr.
-///
-/// # Errors
-/// The program could not be started.
 pub fn stream(step: &str, command: &mut Command) -> Result<(bool, String), DaemonError> {
     let mut child = command
         .stdin(Stdio::null())
@@ -194,9 +191,6 @@ pub fn apps_in(src: &Path) -> Vec<String> {
 
 impl Daemon {
     /// Run a [`BuildJob`].
-    ///
-    /// # Errors
-    /// Missing sources, tools or components, and failing build steps.
     pub fn build_job(&mut self, job: BuildJob) -> Result<JobOutput, DaemonError> {
         let src = self.targets.src(&job.worktree);
         self.targets.touch(&job.worktree, job.owner.clone())?;
@@ -413,9 +407,6 @@ impl Daemon {
 
     /// Run a [`CiJob`]: pull the image, copy the component's paths out of
     /// it, and import them as a layer with `authority = "ci"`.
-    ///
-    /// # Errors
-    /// Missing podman, registry refusals, paths the image lacks.
     pub fn ci_job(&mut self, job: &CiJob) -> Result<JobOutput, DaemonError> {
         if !on_path("podman") {
             return Err(DaemonError::ToolMissing {
@@ -608,9 +599,6 @@ pub fn pull_error(image: &str, output: &str) -> DaemonError {
 
 /// Copy each absolute `path` (a trailing `/` copies a tree) from `root`
 /// into `dest`, keeping symlinks and modes.
-///
-/// # Errors
-/// A path the image lacks, and I/O failures.
 pub fn extract_paths(
     root: &Path,
     dest: &Path,

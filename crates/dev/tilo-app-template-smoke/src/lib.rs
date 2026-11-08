@@ -183,11 +183,6 @@ pub mod screens {
     }
 
     /// Build the generated route registry at `initial`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the route is absent or one of its graphs cannot
-    /// be parsed, validated, or constructed.
     pub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {
         router_with(initial, theme, UiBuildContext::default())
     }

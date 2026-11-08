@@ -102,11 +102,6 @@ fn sign_rsa_pkcs1_ring(
 /// Create a salted SHA-512-crypt record accepted by Linux account tooling.
 ///
 /// The caller's buffer is scrubbed on every return path.
-///
-/// # Errors
-///
-/// Returns an error when the password is outside the account-policy bounds or
-/// the operating system cannot provide cryptographic randomness.
 pub fn hash_account_password(password: &mut [u8]) -> Result<String, String> {
     if password.len() < 10 || password.len() > 1024 || password.contains(&b'\n') {
         password.zeroize();
@@ -519,11 +514,6 @@ pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertific
 }
 
 /// Generate an RSA-2048 key pair suitable for TPM policy authorization.
-///
-/// # Errors
-///
-/// Returns an error if the operating-system random source fails or either PEM
-/// representation cannot be encoded.
 pub fn generate_tpm_authority_key() -> Result<TpmAuthorityKey, String> {
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use rsa::{
@@ -797,11 +787,6 @@ pub fn sign_kernel_module(
 }
 
 /// Create the detached PKCS#7 `SignedData` used by authenticated UEFI variable updates.
-///
-/// # Errors
-///
-/// Returns an error if the key or certificate is malformed, if they do not
-/// match, or if the signature or CMS structure cannot be encoded.
 pub fn sign_efi_variable_payload(
     private_key_pem: &str,
     certificate_bytes: &[u8],

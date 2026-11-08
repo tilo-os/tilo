@@ -143,10 +143,6 @@ impl Candidate {
     /// Build shared configuration only after an explicit authentication
     /// choice. Missing source preferences never imply password auth.
     /// Credentials and enrollment are separate custody operations.
-    ///
-    /// # Errors
-    /// Refuses a transport/authentication the native Mail connector cannot
-    /// faithfully represent, including different endpoint usernames.
     pub fn reviewed_config(
         &self,
         authentication: AuthMethod,
@@ -224,9 +220,6 @@ pub fn discover(path: &Path) -> Result<Vec<Candidate>, DiscoveryError> {
 
 /// Parse the descriptor the existing file chooser already opened. The path
 /// is never recovered and reopened.
-///
-/// # Errors
-/// Refuses a different file name or metadata exceeding the discovery budget.
 pub fn read_selected(name: &str, reader: impl Read) -> Result<Vec<Candidate>, DiscoveryError> {
     if Path::new(name)
         .file_name()

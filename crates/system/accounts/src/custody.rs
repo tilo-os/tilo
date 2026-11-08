@@ -18,9 +18,6 @@ pub const REFUSED: &str = "This account's secret is not available to this app";
 /// Seal `password` as account `account`'s secret, for `app`: only the
 /// accounts' keeper may. A password replaces the password; a sign-in's
 /// sealed grant stays.
-///
-/// # Errors
-/// Refuses any other app; returns why the vault could not be saved.
 pub fn seal(
     credentials: &mut AccountCredentials,
     app: &str,
@@ -44,9 +41,6 @@ pub fn seal(
 
 /// Account `account`'s secret for `app`: only for an enabled account of the
 /// person's (`store`) whose type `app` keeps, with a secret sealed.
-///
-/// # Errors
-/// Refuses any other app, account or type, and an account with no secret.
 pub fn release(
     store: &AccountStore,
     credentials: &AccountCredentials,

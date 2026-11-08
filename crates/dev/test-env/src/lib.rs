@@ -586,10 +586,6 @@ pub struct TestHome {
 
 impl TestHome {
     /// Create the tree and point the environment at it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if the temporary tree cannot be created.
     pub fn new() -> io::Result<Self> {
         let root = tempfile::Builder::new()
             .prefix("tilo-test-home-")
@@ -684,10 +680,6 @@ const RUNTIME_NAMES_BUDGET: usize = 64;
 /// is `$TMPDIR` when that leaves room for `RUNTIME_NAMES_BUDGET` bytes of
 /// names below it, else `/tmp`, where the directory's random name and mode
 /// keep it private like any other temporary directory.
-///
-/// # Errors
-///
-/// Returns the I/O error if the directory cannot be created.
 pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
     const PREFIX: &str = "tilo-rt-";
     // `/<prefix><6 random characters>`, then the names below it.
@@ -721,10 +713,6 @@ pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
 /// whose crashes it simulates by reopening, not by losing power: the code
 /// still syncs, but a sync then costs nothing instead of waiting on a disk
 /// shared with every other job's writes.
-///
-/// # Errors
-///
-/// Returns the I/O error if the directory cannot be created.
 pub fn memory_tempdir() -> io::Result<tempfile::TempDir> {
     match tilo_paths::memory_temp_dir() {
         Some(memory) => tempfile::tempdir_in(memory),

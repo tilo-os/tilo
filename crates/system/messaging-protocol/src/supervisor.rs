@@ -59,15 +59,11 @@ impl AccountSupervisor {
     /// The hosting caller supplies its certified persona and exact device.
     /// These labels create no authority: only an owner-matched broker can
     /// publish ready, and that broker still checks the current grant per I/O.
-    /// # Errors
-    /// Refuses malformed native owner identity.
     pub fn new(owner: &crate::journal::Owner) -> Result<Arc<Self>, SendError> {
         Self::new_with_authority(owner, None)
     }
     /// Retain the host's current admission/credential check for lifecycle and
     /// every operation. A passing check alone never publishes a ready adapter.
-    /// # Errors
-    /// Refuses malformed native owner identity.
     pub fn new_with_authority(
         owner: &crate::journal::Owner,
         authority: Option<Arc<dyn AccountAuthority>>,
@@ -112,8 +108,6 @@ impl AccountSupervisor {
     }
     /// Install the native host's private linking capability for this exact
     /// frozen owner. This neither starts linking nor publishes Ready.
-    /// # Errors
-    /// Refuses another person/account/generation or duplicate setup ownership.
     pub fn install_setup(&self, setup: tilo_messaging::SetupClient) -> Result<(), SendError> {
         if setup.principal() != self.owner.principal
             || setup.account() != &self.account
@@ -138,8 +132,6 @@ impl AccountSupervisor {
     }
     /// Publish a recoverable non-ready state without replacing any adapter.
     /// Ready can only be published by verified installation below.
-    /// # Errors
-    /// Refuses ready-by-label and poisoned supervisor state.
     pub fn unavailable(&self, state: AccountState) -> Result<(), SendError> {
         if state == AccountState::Ready {
             return Err(SendError::InvalidRequest);
@@ -152,8 +144,6 @@ impl AccountSupervisor {
         Ok(())
     }
     /// Publish only the owner-matched native private broker.
-    /// # Errors
-    /// Refuses foreign owner custody or duplicate installation.
     pub fn install_native(
         &self,
         broker: &crate::native_broker::NativeBroker,
@@ -161,8 +151,6 @@ impl AccountSupervisor {
         self.install(broker.owner(), broker.client())
     }
     /// Install an existing account-owned broker; no connection/login is started.
-    /// # Errors
-    /// Refuses another persona/device/service/account or duplicate installation.
     pub fn install_external(
         &self,
         broker: &crate::external_broker::ExternalBroker,
@@ -183,8 +171,6 @@ impl AccountSupervisor {
     /// Install the verified independent Signal receive stream and sending as
     /// one lifecycle publication. Failed setup never publishes ready; teardown
     /// interrupts and joins only this account's receive worker.
-    /// # Errors
-    /// Refuses wrong owner, duplicate service or failed native receiver setup.
     pub fn install_signal_receiving(
         &self,
         broker: &crate::signal_broker::SignalBroker,
@@ -244,8 +230,6 @@ impl AccountSupervisor {
     /// publishing the already linked `WhatsApp` adapter as ready. The SDK must
     /// have been built with this hook before any connection. The host supplies
     /// current caller/grant custody; this never connects or logs in.
-    /// # Errors
-    /// Refuses a mismatched owner/source/hook, missing worker runtime or duplicate.
     #[cfg(feature = "whatsapp-sdk")]
     pub async fn install_whatsapp(
         self: &Arc<Self>,

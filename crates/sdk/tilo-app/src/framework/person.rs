@@ -174,9 +174,6 @@ impl<P: Resource> PersonRecord<P> {
     }
 
     /// Apply the action `invoke` names, as [`Self::apply`].
-    ///
-    /// # Errors
-    /// The arguments do not build the action, or it refused to apply.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())

@@ -62,9 +62,6 @@ pub fn read_public(key: &Path) -> Result<String, CliError> {
 }
 
 /// Make VM `name`'s key at `key` unless it exists; returns its public key.
-///
-/// # Errors
-/// `ssh-keygen` is missing or fails, or the key directory cannot be made.
 pub fn ensure(runner: &mut dyn Runner, key: &Path, name: &str) -> Result<String, CliError> {
     if !key.exists() {
         if let Some(dir) = key.parent() {

@@ -86,10 +86,6 @@ impl TrustedDisplayTools {
     }
 
     /// Trust `tool` from now on.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the settings section can't be written.
     pub fn trust(tool: DisplayTool) -> std::io::Result<()> {
         let mut trusted = Self::load();
         if trusted.insert(tool) {
@@ -99,10 +95,6 @@ impl TrustedDisplayTools {
     }
 
     /// Ask before keeping this tool's changes again.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the settings section can't be written.
     pub fn forget(executable: &str) -> std::io::Result<()> {
         let mut trusted = Self::load();
         if trusted.remove(executable) {

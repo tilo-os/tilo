@@ -117,9 +117,6 @@ pub fn profile_key(name: &str) -> Option<&'static str> {
 }
 
 /// The profile `name` names.
-///
-/// # Errors
-/// An unknown name, or a checked-in file that does not describe a usable device.
 pub fn profile(name: &str) -> Result<DeviceProfile, String> {
     let (_, text) = PROFILES
         .iter()

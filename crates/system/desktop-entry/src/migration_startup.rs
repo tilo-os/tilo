@@ -97,9 +97,6 @@ impl RecordBuilder {
         self.record.entries.is_empty()
     }
     /// Validate the collected imported identities.
-    ///
-    /// # Errors
-    /// Refuses malformed paths, duplicate entries, or an invalid operation or schema.
     pub fn finish(self) -> io::Result<Record> {
         self.record.validate()?;
         Ok(self.record)
@@ -393,19 +390,11 @@ fn read_root(root: &File) -> io::Result<Option<Record>> {
 }
 
 /// Read the canonical target-user policy. A required policy must be complete.
-///
-/// # Errors
-/// Refuses incomplete, malformed, oversized, or insecure policy files, operation
-/// mismatches, and unsafe home traversal; propagates filesystem errors.
 pub fn read(home: &Path) -> io::Result<Option<Record>> {
     read_root(&home_file(home)?)
 }
 
 /// Return permitted input names; a required policy error refuses the whole set.
-///
-/// # Errors
-/// Returns an error if the required policy cannot be read securely or any
-/// protected identity changed or disappeared, even if absent from the input.
 pub fn filter(home: &Path, paths: &[PathBuf]) -> io::Result<BTreeSet<PathBuf>> {
     let root = home_file(home)?;
     let Some(record) = read_root(&root)? else {

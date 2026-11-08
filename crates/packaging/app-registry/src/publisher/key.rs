@@ -54,10 +54,6 @@ pub fn parse(text: &str) -> Result<SigningKey> {
 pub use key_file::encode;
 
 /// The key in the file at `path`.
-///
-/// # Errors
-///
-/// When the file cannot be read or holds no key.
 pub fn load(path: &Path) -> Result<SigningKey> {
     key_file::load(path).with_context(|| format!("publisher key {}", path.display()))
 }
@@ -100,10 +96,6 @@ pub fn create(store: &SecretStore) -> Result<SigningKey> {
 
 /// The key named by `path`, else the one in [`KEY_ENV`], else the one in
 /// `store`.
-///
-/// # Errors
-///
-/// When the chosen key cannot be read, or there is none.
 pub fn resolve(path: Option<&Path>, store: &SecretStore) -> Result<SigningKey> {
     if let Some(path) = path {
         return load(path);
@@ -119,10 +111,6 @@ pub fn resolve(path: Option<&Path>, store: &SecretStore) -> Result<SigningKey> {
 /// has one. An empty [`KEY_ENV`] counts as unset, which is what a CI secret
 /// missing from a pull request expands to; a machine with no secret store
 /// (a CI runner) holds no key.
-///
-/// # Errors
-///
-/// When a key is there but cannot be read.
 pub fn discover(store: &SecretStore) -> Result<Option<SigningKey>> {
     if let Ok(text) = std::env::var(KEY_ENV)
         && !text.trim().is_empty()

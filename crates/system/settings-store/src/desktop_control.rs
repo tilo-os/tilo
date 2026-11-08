@@ -110,10 +110,6 @@ impl StopRequest {
     pub const SECTION: &'static str = "desktop_control_stop";
 
     /// Ask to stop `grant`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the settings section can't be written.
     pub fn request(grant: &str) -> std::io::Result<Self> {
         let request = Self {
             requested_unix_ms: unix_now_ms(),

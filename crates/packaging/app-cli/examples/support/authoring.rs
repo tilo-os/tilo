@@ -102,12 +102,6 @@ pub fn manifest_beside(payload_bin: &Path) -> Option<PathBuf> {
 /// publisher would fail `pack`'s own identity check. Third-party
 /// attestations are dropped too: a local test registry can't mint
 /// one, and an empty-signature row only warns at install.
-///
-/// # Errors
-///
-/// Returns an error if the manifest can't be read or parsed, the
-/// staging tempdir or payload tree can't be built, the payload can't
-/// be copied/chmod'd into it, or packing/serialising the `.tapp` fails.
 pub fn author(
     package_id: &str,
     name: &str,

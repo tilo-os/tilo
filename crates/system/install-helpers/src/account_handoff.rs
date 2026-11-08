@@ -28,8 +28,6 @@ impl InstallAccounts {
     }
 
     /// Write only to the installer's private stdin pipe, following password/PIN.
-    /// # Errors
-    /// Propagates pipe failures or an oversized envelope.
     pub fn write_to(&self, output: &mut impl Write) -> io::Result<()> {
         let length = u32::try_from(self.ciphertext.len()).map_err(io::Error::other)?;
         output.write_all(MAGIC)?;
@@ -39,8 +37,6 @@ impl InstallAccounts {
     }
 
     /// Read exactly one bounded frame, refusing truncation and trailing bytes.
-    /// # Errors
-    /// Refuses malformed, oversized or non-key-based artifacts.
     pub fn read_from(input: &mut impl Read) -> io::Result<Self> {
         let mut magic = [0; 8];
         input.read_exact(&mut magic)?;
@@ -69,8 +65,6 @@ impl InstallAccounts {
 
     /// The caller must already have dropped real/effective IDs and supplementary
     /// groups to the destination user. Authentication precedes all vault writes.
-    /// # Errors
-    /// Refuses wrong user, invalid binding/key, or conflicting destination state.
     pub fn import_for_user(
         &self,
         root: &std::path::Path,

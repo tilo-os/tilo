@@ -105,9 +105,6 @@ impl std::error::Error for HintsError {}
 
 impl SealedHints {
     /// Accept a bounded canonical raw-key envelope, without trusting its contents.
-    ///
-    /// # Errors
-    /// Rejects oversized, malformed, or non-raw-key envelopes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, HintsError> {
         if bytes.len() > MAX_SEALED_BYTES {
             return Err(HintsError::InvalidEnvelope);
@@ -201,9 +198,6 @@ fn valid_fields(email: &str, server: &str) -> bool {
 }
 
 /// Encrypt suggestions under a local key and the explicit selection generation.
-///
-/// # Errors
-/// Rejects invalid source bindings or hints, and reports encryption failures.
 pub fn seal(
     key: &SymmetricKey,
     source: &str,
@@ -244,9 +238,6 @@ pub fn seal(
 
 /// Authenticate before parsing; reject the whole payload rather than truncating
 /// or filtering it. Unknown/duplicate fields and trailing JSON are rejected.
-///
-/// # Errors
-/// Rejects invalid source bindings, failed authentication, or invalid hint payloads.
 pub fn open(
     key: &SymmetricKey,
     source: &str,
@@ -292,8 +283,6 @@ impl PasswordHints {
         &self.0
     }
     /// Parse a bounded password envelope without trusting its contents.
-    /// # Errors
-    /// Rejects malformed, oversized or non-password envelopes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, HintsError> {
         if bytes.len() > MAX_SEALED_BYTES + 256 {
             return Err(HintsError::InvalidEnvelope);
@@ -307,8 +296,6 @@ impl PasswordHints {
 }
 
 /// Seal the canonical hint wire format for a later live session.
-/// # Errors
-/// Rejects short passwords, invalid bindings or hints, and encryption failures.
 pub fn seal_password(
     password: &[u8],
     source: &str,
@@ -353,8 +340,6 @@ pub fn seal_password(
 }
 
 /// Authenticate offline suggestions before presenting them for live sign-in.
-/// # Errors
-/// Rejects invalid bindings, authentication failures or malformed hints.
 pub fn open_password(
     password: &[u8],
     source: &str,

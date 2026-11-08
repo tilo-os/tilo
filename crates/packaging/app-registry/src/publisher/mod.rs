@@ -28,10 +28,6 @@ use registry_types::namespace::Forge;
 use serde_json::Value;
 
 /// Sign an application for `claims` and send it. Answers its status.
-///
-/// # Errors
-///
-/// When the registry refuses it; the message names any missing proof.
 pub fn apply(
     client: &RegistryClient,
     key: &SigningKey,

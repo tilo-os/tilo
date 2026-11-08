@@ -205,9 +205,6 @@ impl PendingManagedConnection {
 
     /// Retain cancellation before moving the one-use connection into a worker.
     /// No protocol endpoint or process authority is exposed by this handle.
-    ///
-    /// # Errors
-    /// Refuses a kernel failure to duplicate the retained socket descriptor.
     pub fn cancellation(&self) -> std::io::Result<ManagedConnectionCancellation> {
         self.socket.try_clone().map(ManagedConnectionCancellation)
     }

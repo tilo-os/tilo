@@ -75,9 +75,6 @@ pub struct Args {
 /// Hands an [`EnrolRequest`] to the sibling service.
 pub trait Registrar {
     /// Registers the request and returns the certificate and siblings.
-    ///
-    /// # Errors
-    /// When the service refuses or cannot be reached.
     fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse>;
 }
 
@@ -88,9 +85,6 @@ pub struct SessionRegistrar(pub PathBuf);
 
 impl SessionRegistrar {
     /// The socket of `uid`'s session, or of the one session serving one.
-    ///
-    /// # Errors
-    /// When no session, or more than one, serves the socket.
     pub fn find(uid: Option<u32>) -> Result<Self> {
         if let Some(uid) = uid {
             return Ok(Self(
@@ -363,10 +357,6 @@ fn enrol_with_sealing(
 /// Chooses the unlock networks of an enrolled volume again, leaving its slot,
 /// certificate and siblings as they are. The material is sealed the way it
 /// was: a volume enrolled in the clear stays in the clear.
-///
-/// # Errors
-/// When the volume has no sibling unlock, its material cannot be unsealed,
-/// or cryptsetup refuses the new token.
 pub fn replace_networks(device: &Path, networks: Vec<material::Network>) -> Result<()> {
     let mut token = luks::token(device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
@@ -427,9 +417,6 @@ pub struct Enrolled {
 }
 
 /// Every enrolment described under [`STATE_DIR`].
-///
-/// # Errors
-/// When the directory exists but cannot be read (it is root's alone).
 pub fn enrolled() -> Result<Vec<Enrolled>> {
     enrolled_in(Path::new(STATE_DIR))
 }
@@ -484,9 +471,6 @@ fn dashed_uuid(hex_uuid: &str) -> Option<String> {
 }
 
 /// What is enrolled on `device`.
-///
-/// # Errors
-/// When the volume has no sibling unlock or its token is unreadable.
 pub fn status(device: &Path) -> Result<Status> {
     let token = luks::token(device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
@@ -494,9 +478,6 @@ pub fn status(device: &Path) -> Result<Status> {
 }
 
 /// Removes the sibling slot and its token.
-///
-/// # Errors
-/// When cryptsetup refuses.
 pub fn remove(device: &Path, key_file: Option<&Path>) -> Result<()> {
     let token = luks::token(device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;

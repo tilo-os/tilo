@@ -396,12 +396,6 @@ impl SecretVault {
     /// Seal and atomically persist the vault, returning failures to callers
     /// that must not publish account metadata unless credential custody
     /// succeeded first.
-    ///
-    /// # Errors
-    ///
-    /// Returns a descriptive error when the vault directory or key cannot be
-    /// prepared, serialization or encryption fails, or the sealed file cannot
-    /// be atomically persisted.
     pub fn try_save(&self) -> Result<(), String> {
         match self.written(true)? {
             Written::Durable => Ok(()),

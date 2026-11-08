@@ -80,10 +80,6 @@ pub struct Link(OwnedFd);
 impl Link {
     /// Both ends: the supervisor keeps the first and hands the second to the
     /// greeter. Neither is inherited by a program run in between.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel has no socket to give.
     pub fn pair() -> io::Result<(Self, Self)> {
         let (ours, theirs) = rustix::net::socketpair(
             AddressFamily::UNIX,
@@ -113,10 +109,6 @@ impl Link {
     }
 
     /// The greeter's next message, waiting for it.
-    ///
-    /// # Errors
-    ///
-    /// When the greeter is gone or sent something that is no message.
     pub fn recv_from_greeter(&self) -> io::Result<FromGreeter> {
         let packet = self.recv()?;
         let (tag, body) = packet.split_first().ok_or_else(malformed)?;
@@ -165,10 +157,6 @@ impl Link {
     }
 
     /// The supervisor's next message, waiting for it.
-    ///
-    /// # Errors
-    ///
-    /// When the supervisor is gone or sent something that is no message.
     pub fn recv_from_supervisor(&self) -> io::Result<ToGreeter> {
         let packet = self.recv()?;
         match packet.split_first() {

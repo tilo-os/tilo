@@ -14,11 +14,6 @@ use syn::visit_mut::VisitMut;
 /// own sources and in the sources of the local crates it depends on, such as
 /// a shared model crate. Registry and git dependencies are not scanned, nor
 /// are dev- or build-dependencies, which never hold the app's records.
-///
-/// # Errors
-///
-/// Returns an error when `cargo metadata` fails or a source file cannot be
-/// read or parsed.
 pub fn declared_by_app(app_dir: &Path) -> Result<Vec<String>> {
     let metadata = crate::cargo_metadata(app_dir)?;
     declared_with_metadata(app_dir, &metadata)
@@ -38,11 +33,6 @@ pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result
 /// whose kinds are the framework's. They are what the app's manifest must
 /// list in `[resources] kinds`, so a governed workspace lets the app create
 /// its records.
-///
-/// # Errors
-///
-/// Returns an error when the manifest or a source file cannot be read or
-/// parsed.
 pub fn owned_by_app(app_dir: &Path) -> Result<Vec<String>> {
     let mut kinds: BTreeSet<String> = declared_in(app_dir)?.into_iter().collect();
     for dependency in direct_path_dependencies(app_dir)? {
@@ -71,10 +61,6 @@ fn direct_path_dependencies(app_dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Every kind declared under `crate_dir/src`, sorted and without repeats.
-///
-/// # Errors
-///
-/// Returns an error when a source file cannot be read or parsed.
 pub fn declared_in(crate_dir: &Path) -> Result<Vec<String>> {
     let mut kinds = Kinds::default();
     visit_sources(&crate_dir.join("src"), &mut kinds)?;

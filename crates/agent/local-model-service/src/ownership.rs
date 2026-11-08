@@ -102,9 +102,6 @@ pub fn arguments_digest(arguments: &[String]) -> String {
 }
 
 /// A manager's successful stop alone does not establish process quiescence.
-///
-/// # Errors
-/// Returns an error if the exact unit is active, queued or cannot be observed.
 pub fn verify_stopped_unit(properties: &str) -> Result<(), String> {
     let mut fields = std::collections::BTreeMap::new();
     for line in properties.lines() {

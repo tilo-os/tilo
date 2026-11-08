@@ -406,9 +406,6 @@ pub fn watch_dir(
 
 /// Downloaded system extensions exist only on the Tilo OS image; elsewhere
 /// there is no status to watch.
-///
-/// # Errors
-/// Always.
 #[cfg(not(target_os = "linux"))]
 pub fn watch_dir(
     dir: &Path,

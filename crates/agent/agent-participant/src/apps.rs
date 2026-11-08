@@ -367,12 +367,6 @@ pub fn member_own(descriptor: &ActionDescriptor) -> bool {
 impl Replica {
     /// Hold a record of `app_id` in `workspace` as `participant` (its author id),
     /// acting as `actor` ([`ReplicaActor`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns why the app is unknown, the record could not be created, or
-    /// its changes do not hold a record of the app's kind, or the app's view
-    /// would not open over it.
     pub fn open(
         catalogue: &AppCatalogue,
         app_id: &str,

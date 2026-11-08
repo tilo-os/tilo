@@ -355,10 +355,6 @@ impl PackageStore {
     }
 
     /// The registry as it is now.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the registry exists but cannot be read.
     pub fn registry(&self) -> Result<Registry, StoreError> {
         Ok(Registry::load(&self.layout.registry())?)
     }
@@ -532,11 +528,6 @@ impl PackageStore {
     }
 
     /// Every image this store holds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the package directory cannot be read or an
-    /// image's record is corrupt.
     pub fn images(&self) -> Result<Vec<PackageMeta>, StoreError> {
         crate::image::list_images(&self.layout)
     }
@@ -1052,10 +1043,6 @@ impl PackageStore {
     /// — and a launch that named one by path takes its lease first, which
     /// this holds while it removes the tree, so the launch finds the tree
     /// whole or gone.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the registry cannot be read or a removal fails.
     pub fn collect_orphans(&self, in_use: &InUse) -> Result<Orphans, StoreError> {
         let packages = self.layout.packages();
         if !packages.is_dir() && !self.layout.tmp().is_dir() {
@@ -1353,10 +1340,6 @@ impl PackageStore {
     /// Distinct payload bytes each installed package references, and the
     /// total with shared blobs counted once. Bookkeeping only: no record's
     /// signature is replayed here ([`integrity::verify`] does that).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the registry cannot be read.
     pub fn disk_usage(&self) -> Result<DiskUsage, StoreError> {
         Ok(self.usage_index(&self.registry()?).disk_usage())
     }
@@ -1369,10 +1352,6 @@ impl PackageStore {
     /// The whole sweep runs under the store's lock: usage is measured once,
     /// the evictions are planned from it, the registry is rewritten once and
     /// garbage is collected once.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if usage cannot be measured or a removal fails.
     pub fn sweep(&self, max_bytes: u64) -> Result<Vec<String>, StoreError> {
         self.sweep_keeping(max_bytes, &[])
     }

@@ -67,9 +67,6 @@ impl Service {
 
     /// Discover collections with a canonical Google or Nextcloud credential.
     /// Google requires the calendar grant, not a mail/files grant.
-    ///
-    /// # Errors
-    /// Missing account/grant, unsafe endpoints, refresh or discovery failures.
     pub fn discover(
         &self,
         id: &AccountId,
@@ -106,9 +103,6 @@ impl Service {
     /// Build an opaque origin-bound async client. An account ID selects Google
     /// custody; without one, use the supplied Basic password. Checks precede any
     /// refresh or credential use. Refresh is blocking.
-    ///
-    /// # Errors
-    /// Unsafe URLs, missing/wrong grants or accounts, refresh/transport failures.
     pub fn authorised(
         &self,
         id: Option<&str>,
@@ -249,9 +243,6 @@ pub struct AuthorisedClient {
 // library holds once in the accounts engine.
 impl AuthorisedClient {
     /// `REPORT` with an XML body.
-    ///
-    /// # Errors
-    /// Unsafe target or transport failure.
     pub fn report<'a>(
         &'a self,
         url: &'a str,
@@ -268,9 +259,6 @@ impl AuthorisedClient {
     }
 
     /// `PROPFIND` for properties at depth.
-    ///
-    /// # Errors
-    /// Unsafe target or transport failure.
     pub fn propfind<'a>(
         &'a self,
         url: &'a str,
@@ -287,9 +275,6 @@ impl AuthorisedClient {
     }
 
     /// Conditional `PUT`.
-    ///
-    /// # Errors
-    /// Unsafe target or transport failure.
     pub fn put<'a>(
         &'a self,
         url: &'a str,
@@ -307,9 +292,6 @@ impl AuthorisedClient {
     }
 
     /// Conditional `DELETE`.
-    ///
-    /// # Errors
-    /// Unsafe target or transport failure.
     pub fn delete<'a>(
         &'a self,
         url: &'a str,

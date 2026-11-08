@@ -33,11 +33,6 @@ pub fn encode_image(image: &DynamicImage) -> ImageResult<Vec<u8>> {
 }
 
 /// Encode `rgba` as a PNG file at `path`, replacing any existing file.
-///
-/// # Errors
-///
-/// Fails when the file cannot be written or the buffer does not match the
-/// dimensions.
 pub fn write_rgba8(
     path: impl AsRef<Path>,
     width: u32,
@@ -111,10 +106,6 @@ pub fn decode_rgba8_within(bytes: &[u8], max_pixels: u64) -> ImageResult<Rgba8> 
 }
 
 /// Read and decode the PNG file at `path` into 8-bit RGBA.
-///
-/// # Errors
-///
-/// Fails when the file cannot be read or is not a complete PNG.
 pub fn read_rgba8(path: impl AsRef<Path>) -> ImageResult<Rgba8> {
     decode_rgba8(&std::fs::read(path)?)
 }

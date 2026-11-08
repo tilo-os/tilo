@@ -201,11 +201,6 @@ pub struct EffectiveNotificationPolicy {
 impl NotificationPolicy {
     /// The one persisted Do Not Disturb switch. The shell's palette action and
     /// Quick Settings tile write it here; Personal Settings edits the same key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no config directory is available or the settings
-    /// document cannot be written.
     pub fn save_do_not_disturb(on: bool) -> std::io::Result<()> {
         crate::update_section(SECTION, Self::do_not_disturb_values(on))
     }

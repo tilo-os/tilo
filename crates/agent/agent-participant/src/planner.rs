@@ -92,10 +92,6 @@ impl Wait {
     /// [`MESSAGE_APPS`] and its seconds kept within
     /// [`tilo_agent::tools::MOST_WAIT_SECONDS`]; `rest` is the plan's
     /// `then`.
-    ///
-    /// # Errors
-    ///
-    /// A place no message arrives in, in words for the model.
     pub fn planned(asked: tilo_agent::tools::Wait, rest: Option<String>) -> Result<Self, String> {
         let apps = match asked.app.as_deref() {
             None => Vec::new(),
@@ -603,11 +599,6 @@ pub use crate::apps::readable;
 pub trait Reads {
     /// Run the [`readable`] operation at `address` of the open record at
     /// `route` with `arguments`, and answer with its output.
-    ///
-    /// # Errors
-    ///
-    /// Why it was not run: the record is not open, the operation is not a
-    /// read it publishes, or the record's door refused it.
     fn read(
         &mut self,
         route: &DocumentRoute,
@@ -784,10 +775,6 @@ pub trait Planner: Send {
 
     /// [`Self::plan`], with `reads` to look at the open records while
     /// planning. A planner that reads nothing plans as [`Self::plan`] does.
-    ///
-    /// # Errors
-    ///
-    /// Returns a reason shown to the person who gave the task.
     fn plan_reading(
         &mut self,
         task: &str,

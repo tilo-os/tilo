@@ -117,8 +117,6 @@ impl Drop for SpeechActivity {
 }
 impl SpeechActivity {
     /// Load only an immutable catalogue-verified graph after confinement.
-    /// # Errors
-    /// Rejects changed seals, wrong artifact types or failed native parsing.
     pub fn load_file(model: &super::SealedSpeechModel) -> Result<Self, SpeechError> {
         use std::os::fd::AsRawFd as _;
         model.check_seals()?;

@@ -123,10 +123,6 @@ fn get_privacy_status_from(class: &Path, dev: &Path) -> PrivacyStatus {
 
 /// Snapshot active capture streams through `PipeWire`'s own graph, each
 /// attributed from `/proc`: see [`media::audio::capture`].
-///
-/// # Errors
-///
-/// When `pw-dump` cannot run or prints no graph.
 pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
     Ok(media::audio::capture::media_uses()?
         .into_iter()

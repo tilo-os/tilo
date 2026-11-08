@@ -54,9 +54,6 @@ pub const SIDEBAR_BUTTON_WINDOWS: [(u32, u32); 2] = [(1280, 800), (400, 800)];
 /// the desktop's window bar, and click the bar's sidebar button three times
 /// there: every click flips the sidebar, on the bar, in the window's shell
 /// and on screen ([`FrameHarness::check_window_sidebar_button`]).
-///
-/// # Errors
-/// Which window failed, and how.
 pub fn check_window_sidebar_button<A: ResourceApp>(
     mut open: impl FnMut() -> Result<HeadlessApp<A>, LaunchError>,
 ) -> Result<(), String> {

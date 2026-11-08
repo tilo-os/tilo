@@ -92,9 +92,6 @@ impl OriginalHomeAlias {
         Path::new(std::ffi::OsStr::from_bytes(&self.path))
     }
     /// Shape-only native fixture access to the production argument writer.
-    /// # Errors
-    /// Refuses invalid aliases, truncated or conflicting mounts and opaque
-    /// overlay arguments; reports argument-file creation, write or seal errors.
     #[cfg(feature = "native-home-alias-qualification")]
     pub fn qualification_arguments(&self, argv: &[String], writable: bool) -> io::Result<File> {
         self.args(argv, writable)
@@ -448,8 +445,6 @@ impl ConsumerLaunchBinding {
     }
     /// Canonical existing Shell proof domain, reconstructed by root after it
     /// independently replays signed GUI package, publisher and actual command.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn signed_shell_context_bytes(&self) -> io::Result<Vec<u8>> {
         self.validate()?;
         self.command.validate()?;
@@ -472,8 +467,6 @@ impl ConsumerLaunchBinding {
     }
     /// Reconstruct command bytes and compare the independently certified Shell
     /// digest. Supplying a digest does not itself establish Shell authority.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn verify_shell_context(&self, certified_digest: &str) -> io::Result<()> {
         if !digest(certified_digest)
             || self.shell_context_sha256 != certified_digest
@@ -491,8 +484,6 @@ impl ConsumerLaunchBinding {
     }
     /// Declaration only. Root must compare its actual QPE peer and independently
     /// replay signed package, certified person, personal cluster and current policy.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn matches_peer(&self, peer: &ExecutingPeer) -> io::Result<()> {
         self.validate()?;
         if peer.pid() != self.launcher_pid
@@ -750,8 +741,6 @@ pub struct RetainedViewAdmission {
 impl RetainedViewAdmission {
     /// Receive only on the private endpoint inherited through Shell opcode 2.
     /// The normal signed GUI package is replayed before any root view is taken.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn receive(
         gate: RetainedLaunchGate,
         manifest_path: &Path,
@@ -1198,8 +1187,6 @@ pub struct RootConsumerChannel {
 impl RootConsumerChannel {
     /// Authenticate the actual non-root launcher, then prove this exact fixed
     /// installed root helper back to it. Role and source admission remain distinct.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn authenticate(
         mut stream: UnixStream,
         cancellation: &ServiceCancellation,
@@ -1239,8 +1226,6 @@ impl RootConsumerChannel {
     }
     /// Fixed helper checks before connecting its inherited rendezvous. This
     /// observes current executable custody and constructs no authority token.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn verify_current_helper() -> io::Result<()> {
         own_helper()
     }
@@ -1255,8 +1240,6 @@ impl RootConsumerChannel {
     }
     /// Return a declaration for private installed actor admission; never issue a
     /// view merely because it matches the executing task or this challenge.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn request(
         &mut self,
         challenge: &ConsumerChallenge,
@@ -1288,8 +1271,6 @@ impl RootConsumerChannel {
     /// current certified Shell/person, signed app, policy and source. The caller
     /// retains its entire joint projection owner until the returned stream's
     /// actual `NamespaceWitness` proves the consuming namespace stopped.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn issue(
         mut self,
         grant: ReviewedViewIssue<'_>,
@@ -1467,8 +1448,6 @@ fn normal_publisher(
 
 /// Continue the ordinary verified GUI launch with its inseparable root lease
 /// and canonical namespace owner. No service-mode policy is substituted.
-/// # Errors
-/// Refuses missing, stale or incompatible kernel or signed launch evidence.
 pub fn run_admitted_gui(
     admission: Arc<RetainedViewAdmission>,
     cancellation: ServiceCancellation,
@@ -1489,8 +1468,6 @@ impl ConsumerLaunchBinding {
     /// Root must first bind these declared paths to the certified Shell's actual
     /// ordinary selection and its canonical target installation. Never use a
     /// root-ambient app catalog in place of that independent path admission.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn verify_signed_gui_package(&self) -> io::Result<[u8; 32]> {
         self.validate()?;
         let row: package_store::InstalledPackage = serde_json::from_value(serde_json::json!({
@@ -1528,8 +1505,6 @@ impl ConsumerLaunchBinding {
 
 impl ConsumerLaunchBinding {
     /// Root-only replay of the actual executing launcher image and frozen command.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn verify_peer_program(&self, peer: &ExecutingPeer) -> io::Result<()> {
         self.matches_peer(peer)?;
         if self.command.program != "/usr/libexec/tilo/tilo-launcher" {
@@ -2149,8 +2124,6 @@ pub struct SelectedParentAdmission {
 impl SelectedParentAdmission {
     /// Receive only on the private endpoint inherited through Shell opcode 4.
     /// The normal signed GUI package is replayed before any selected parent is taken.
-    /// # Errors
-    /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn receive(
         gate: RetainedLaunchGate,
         manifest_path: &Path,
@@ -2448,8 +2421,6 @@ fn seal_parent_receipt(receipt: &SelectedParentReceipt) -> io::Result<File> {
     Ok(file)
 }
 /// Ordinary app policy and canonical namespace custody remain unchanged.
-/// # Errors
-/// Refuses retired typed parent admission or ordinary launch failure.
 pub fn run_selected_parent_gui(
     admission: Arc<SelectedParentAdmission>,
     cancellation: ServiceCancellation,

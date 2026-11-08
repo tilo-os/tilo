@@ -288,9 +288,6 @@ pub fn wake_targets(broadcast: Option<&str>) -> Vec<Ipv4Addr> {
 
 /// Send the magic packet for `mac` to each target's [`WAKE_PORT`]; the
 /// targets it went to.
-///
-/// # Errors
-/// No target took it.
 pub fn send_magic_packet(mac: [u8; 6], targets: &[Ipv4Addr]) -> std::io::Result<Vec<String>> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;

@@ -106,9 +106,6 @@ impl EncryptedJournal {
     /// Open under an already provisioned OS-keychain key. This runtime path
     /// never creates a key, migrates a local key or weakens custody when locked.
     /// Provisioning belongs to the separately authorized linking workflow.
-    ///
-    /// # Errors
-    /// Refuses absent/locked/non-OS custody or any journal ownership failure.
     pub fn open_system(root: &Path, owner: &Owner) -> Result<Self, JournalError> {
         let store = tilo_secrets::SecretStore::for_app("so.tilo.messaging-broker");
         if store.protection() != tilo_secrets::Protection::OsKeychain {
@@ -119,9 +116,6 @@ impl EncryptedJournal {
 
     /// Host-injected custody, for hosts supplying their own existing store.
     /// No missing key is created, including for a new journal directory.
-    ///
-    /// # Errors
-    /// Refuses absent/unreadable keys and unsafe or differently owned journals.
     pub fn open_existing_in(
         root: &Path,
         owner: &Owner,
@@ -256,9 +250,6 @@ impl EncryptedJournal {
     }
 
     /// Verify an observation against the original immutable journal route.
-    ///
-    /// # Errors
-    /// Refuses unknown operations, other conversations and unavailable journals.
     pub fn check_observation(&self, operation: &str, route: &Route) -> Result<(), JournalError> {
         if !self.usable
             || self
@@ -274,9 +265,6 @@ impl EncryptedJournal {
 
     /// Persist monotonic evidence for the exact original operation and route.
     /// This never resubmits an uncertain operation or promotes a server ack.
-    ///
-    /// # Errors
-    /// Refuses unrelated observations or a persistence failure.
     pub fn observe_recipient(
         &mut self,
         operation: &str,

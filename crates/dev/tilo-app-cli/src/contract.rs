@@ -107,11 +107,6 @@ impl ContractReport {
 }
 
 /// Check the source contract of the app containing `start`.
-///
-/// # Errors
-///
-/// Returns an error when `start` is not inside an app, or the app's sources
-/// or catalogs cannot be read or parsed.
 pub fn check_app(start: &Path) -> Result<ContractReport> {
     let app_dir = &crate::resolve_app_dir(start)?;
     let mut report = ContractReport::default();
@@ -193,10 +188,6 @@ fn check_translations(app_dir: &Path, source: &BTreeSet<String>) -> Result<Vec<C
 }
 
 /// The findings of one shipped source file.
-///
-/// # Errors
-///
-/// Returns an error when `tokens` is not a Rust file.
 pub fn check_source(
     path: &Path,
     tokens: TokenStream,

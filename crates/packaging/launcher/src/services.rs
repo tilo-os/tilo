@@ -416,9 +416,6 @@ pub fn resolve_identity_bind_for_contract(
 
 /// Name the app and workspace an identity connection signs for, as the first
 /// thing on it.
-///
-/// # Errors
-/// The stream refuses the write.
 pub fn write_identity_handshake(
     stream: &mut UnixStream,
     app_id: &str,
@@ -455,10 +452,6 @@ fn write_identity_handshake_negotiated(
 
 /// The first line the launcher writes on a chooser connection: the app and
 /// the workspace it runs in, read by the shell before anything the app sends.
-///
-/// # Errors
-///
-/// Returns an error if the frame cannot be serialized.
 pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result<Vec<u8>> {
     let mut frame = serde_json::to_vec(&serde_json::json!({
         "protocol": CHOOSER_PROTOCOL,
@@ -695,10 +688,6 @@ fn write_blob_handoff(
 /// Called by whoever binds a service socket — a `bind` into a missing
 /// parent is `ENOENT`. Mode 0700: the sandbox boundary assumes only
 /// this user's session can reach these live connections.
-///
-/// # Errors
-///
-/// Returns an error if the directory cannot be created.
 pub fn ensure_services_root() -> std::io::Result<PathBuf> {
     let root = services_root();
     std::fs::create_dir_all(&root)?;
