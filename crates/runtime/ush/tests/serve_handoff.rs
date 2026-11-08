@@ -111,14 +111,7 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
         let store = Store::at(dir.path().join("store"));
         store.ensure().expect("store");
 
-        let serve_socket = socket.clone();
-        std::thread::spawn(move || {
-            let _ = ush::supervisor::serve(&serve_socket, &store, &PathBuf::from("/"));
-        });
-        let deadline = tilo_test_env::hang_deadline();
-        while !socket.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        serve_in_background(&socket, &store);
 
         let stream = UnixStream::connect(&socket).expect("connect");
         (&stream).write_all(b"{ not json }\n").expect("write");
@@ -158,15 +151,7 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
     let store = Store::at(dir.path().join("store"));
     store.ensure().expect("store");
     let socket = dir.path().join("ush.sock");
-    let serve_socket = socket.clone();
-    let serve_store = store.clone();
-    std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
-    });
-    let deadline = tilo_test_env::hang_deadline();
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    serve_in_background(&socket, &store);
 
     let stream = UnixStream::connect(&socket).expect("connect");
     stream
@@ -644,6 +629,20 @@ fn open_session(socket: &Path, runs: Option<&str>, command: Vec<String>) -> (Uni
     (stream, fd)
 }
 
+/// Serve the supervisor on `socket` with `store` in the background, and wait
+/// until it bound the socket.
+fn serve_in_background(socket: &Path, store: &Store) {
+    let (serve_socket, serve_store) = (socket.to_owned(), store.clone());
+    std::thread::spawn(move || {
+        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "the supervisor never bound its socket");
+}
+
 /// A supervisor serving the fixture environment from `dir`: the scoped
 /// variables its sessions inherit, its store, its socket, and the directory
 /// the record grants.
@@ -667,16 +666,7 @@ fn serve_fixture(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathB
     fixture_environment(&store, &granted);
 
     let socket = dir.join("ush.sock");
-    let serve_socket = socket.clone();
-    let serve_store = store.clone();
-    std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
-    });
-    let deadline = tilo_test_env::hang_deadline();
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(socket.exists(), "the supervisor never bound its socket");
+    serve_in_background(&socket, &store);
     (env, store, socket, granted)
 }
 
@@ -772,15 +762,7 @@ fn serve_with_files(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, Pa
     let store = Store::at(dir.join("store")).with_workspace(&files);
     store.ensure().expect("store");
     let socket = dir.join("ush.sock");
-    let (serve_socket, serve_store) = (socket.clone(), store.clone());
-    std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
-    });
-    let deadline = tilo_test_env::hang_deadline();
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(socket.exists(), "the supervisor never bound its socket");
+    serve_in_background(&socket, &store);
     (env, store, socket, files)
 }
 
@@ -1205,15 +1187,7 @@ fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
         .unwrap();
 
     let socket = dir.path().join("ush.sock");
-    let serve_socket = socket.clone();
-    let serve_store = store.clone();
-    std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
-    });
-    let deadline = tilo_test_env::hang_deadline();
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    serve_in_background(&socket, &store);
     let (stream, master) = open_default_session(&socket);
     let fd = master.as_raw_fd();
     let type_line = |line: &str| {
