@@ -102,10 +102,16 @@ pub enum Kind {
     /// A window whose header names the place it shows while no place in its sidebar stands
     /// chosen: the sidebar offers the place, and the person cannot see which one they are in.
     UnchosenPlace,
+    /// A list scrolling inside the page's own scroller: the page scrolls its rows, and the list
+    /// inside it keeps a scrollbar of its own and cuts the rows it holds at its edge.
+    NestedScroller,
+    /// A row's title written a second time in the item the row opened into: the row became the
+    /// item, its title standing once, in the field that edits it.
+    RepeatedRowTitle,
 }
 
 impl Kind {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 35] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -139,6 +145,8 @@ impl Kind {
         Self::SelectionBleed,
         Self::StackedHeaderRows,
         Self::UnchosenPlace,
+        Self::NestedScroller,
+        Self::RepeatedRowTitle,
     ];
 
     pub fn name(self) -> &'static str {
@@ -176,6 +184,8 @@ impl Kind {
             Self::SelectionBleed => "selection-bleed",
             Self::StackedHeaderRows => "stacked-header-rows",
             Self::UnchosenPlace => "unchosen-place",
+            Self::NestedScroller => "nested-scroller",
+            Self::RepeatedRowTitle => "repeated-row-title",
         }
     }
 }

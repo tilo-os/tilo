@@ -31,7 +31,10 @@ app tilo.std "Standard library"
 /// fold, which are the app's to say, and what it puts inside is the item's row. A list that
 /// nests its rows gives `tree`; one that groups says the name of the items that group under
 /// nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that does
-/// neither gives neither.
+/// neither gives neither. The list is the column's scroller unless `in_column` is off: a list
+/// standing in a page's own scroller is as tall as its rows, and the page scrolls them with the
+/// rest, so no list scrolls inside a scroller that scrolls it. A window too narrow for a page
+/// beside the list gives the row's item a page of its own, opened in front of the list.
 ///
 /// The row the person opened is the list's own state, so a window that lists and nothing else
 /// declares none. A view that opens a row from elsewhere in the window — what `on show` does —
@@ -42,6 +45,7 @@ template view list<T>(
     tree: Bool = false,
     ungrouped: Option<Text> = .none,
     tail_title: Option<Text> = .none,
+    in_column: Bool = true,
     row: (T, Option<Principal>) -> View,
 ) {
     // The item the person opened where it stands: the row grows into it, and pressing it again,
@@ -51,7 +55,8 @@ template view list<T>(
     ui.VirtualList(
         selection_follows_focus: true,
         multi_select: true,
-        in_column: true,
+        in_column: in_column,
+        narrow: space.compact,
         tree: tree,
         ungrouped_title: ungrouped,
         tail_title: tail_title,

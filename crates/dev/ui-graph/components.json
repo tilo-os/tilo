@@ -5435,6 +5435,11 @@
           "type": "bool"
         },
         {
+          "name": "narrow",
+          "doc": "The window is too narrow to hold an item under its row: a row that carries an item opens it in front of the list, where the window's back leads back to the rows, and a row the host held open closes as the window narrows.",
+          "type": "bool"
+        },
+        {
           "name": "page_column",
           "doc": "Each row stands in the page column: a section's gap under the row before it, each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]), and a press that gives a row the keyboard, choosing none.",
           "type": "bool"
@@ -7440,7 +7445,7 @@
         },
         {
           "name": "detail",
-          "doc": "The item's document, shown under the row while the row stands open into it, one lead in under the row's text: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. Without one, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).",
+          "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them. Without a document, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).",
           "accepts": "view"
         }
       ],

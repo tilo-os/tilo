@@ -352,6 +352,8 @@ struct Walk<'a> {
     display_scale: f64,
     /// Inside a box already found off the device pixels: what it holds moves with it.
     off_pixel: bool,
+    /// Inside a page: the box that scrolls a window's content under its heading.
+    in_page: bool,
     /// The counts the window's column headers draw.
     header_counts: Vec<Count>,
     /// The counts a window's places draw beside the place chosen in them.
@@ -416,6 +418,7 @@ pub fn inspect(
         min_target,
         display_scale,
         off_pixel: false,
+        in_page: false,
         header_counts: Vec::new(),
         place_counts: Vec::new(),
         header_titles: Vec::new(),
@@ -484,6 +487,12 @@ impl Walk<'_> {
         if geometric && !has_area(own.intersect(clip)) {
             return;
         }
+        // A page scrolls the window's content under its heading; a list inside it scrolls rows
+        // the page already scrolls.
+        let under_page = self.in_page;
+        if node.widget == "Page" {
+            self.in_page = true;
+        }
         let was_beyond = self.beyond;
         let was_across = self.across;
         let was_off_pixel = self.off_pixel;
@@ -493,6 +502,9 @@ impl Walk<'_> {
             self.lone_door(node, keys, above);
             self.empty_heading(node, keys, own);
             self.empty_surface(node, keys, own);
+            if under_page {
+                self.nested_scroller(node, keys, own);
+            }
         }
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
@@ -580,6 +592,7 @@ impl Walk<'_> {
         self.beyond = was_beyond;
         self.across = was_across;
         self.off_pixel = was_off_pixel;
+        self.in_page = under_page;
     }
 
     /// A box with an edge between two device pixels: the outermost such box only, since what
@@ -815,6 +828,30 @@ impl Walk<'_> {
             format!(
                 "content {content:.0} {axis} in a scroll view {shown:.0} {axis}, which cannot \
                  scroll it into view"
+            ),
+        );
+    }
+
+    /// A list that scrolls rows a page above it already scrolls: one column scrolls in one place,
+    /// so the list stands as tall as its rows and the page carries them past the window's edge.
+    fn nested_scroller(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        if !super::ux::is_list(node) {
+            return;
+        }
+        let Some(rows) = held(node) else {
+            return;
+        };
+        if rows.y1 <= own.y1 + EPSILON {
+            return;
+        }
+        self.push(
+            Kind::NestedScroller,
+            node,
+            keys,
+            format!(
+                "its rows reach {:.0} px past the box it scrolls them in, while the page around it \
+                 scrolls too",
+                rows.y1 - own.y1
             ),
         );
     }
@@ -1708,6 +1745,61 @@ mod tests {
         assert!(
             lost(&lane(600.0)).is_empty(),
             "given the room of a pane, the same cards are there to scroll through"
+        );
+    }
+
+    /// A list keeps no scroller of its own inside the page that scrolls it: the page carries the
+    /// rows past the window's edge, and the list stands as tall as them.
+    #[test]
+    fn a_list_scrolling_inside_the_page_that_scrolls_it_is_caught() {
+        fn list_filling(height: f64) -> InspectionNode {
+            let mut list = node(
+                "DescribedList",
+                "list",
+                [0.0, 40.0, 400.0, height],
+                Some(Role::List),
+            );
+            list.children = (0..10)
+                .map(|index| {
+                    stack_node(
+                        "row",
+                        [0.0, 40.0 + 40.0 * f64::from(index), 400.0, 36.0],
+                        vec![],
+                    )
+                })
+                .collect();
+            list
+        }
+        fn under(widget: &str, list: InspectionNode) -> InspectionNode {
+            let mut above = node(widget, "above", [0.0, 0.0, 400.0, 300.0], None);
+            above.children = vec![list];
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+            shell.children = vec![above];
+            shell
+        }
+        let nested = |root: &InspectionNode| {
+            inspect(root, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::NestedScroller)
+                .map(|problem| problem.keys)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            nested(&under("Page", list_filling(200.0))),
+            vec![vec![
+                "list".to_owned(),
+                "above".to_owned(),
+                "shell".to_owned()
+            ]],
+            "a list scrolling rows the page scrolls in a box of its own"
+        );
+        assert!(
+            nested(&under("Page", list_filling(460.0))).is_empty(),
+            "the list as tall as its rows leaves the page to scroll them"
+        );
+        assert!(
+            nested(&under("Docked", list_filling(200.0))).is_empty(),
+            "a list scrolling in a column of its own is the column's scroller"
         );
     }
 
