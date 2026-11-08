@@ -3,9 +3,11 @@
 //! A workspace's members, their roles, the grants on it, the devices each member
 //! holds it on and its own settings (its name, saved grant sets and its
 //! apps' sandbox capabilities) are changed by actions, under the action
-//! policy (`tilo_action_policy::WorkspacePolicy`). The owner's devices write
-//! every part of the workspace's governance; anyone else writes only these, and
-//! only what their own grants let them.
+//! policy (`tilo_action_policy::WorkspacePolicy`). Every change is judged by
+//! the action that governs it, against its writer's role there: the owner's
+//! role holds them all, so the owner's devices write every part of the
+//! workspace's governance, and anyone else writes what their role and grants
+//! let them.
 //!
 //! A batch is judged where its writer made it: against the workspace as it stood
 //! at the batch's own dependencies, not the receiver's latest state. Every
@@ -21,7 +23,8 @@
 //! The workspace's settings are checked each by the action that governs it
 //! ([`settings`], [`sandbox`]). A share's grants are its sharer's, given
 //! and ended as [`super::share`] decides. Anything else the batch changes in
-//! governance is the owner's.
+//! governance is the work of an operation that names it, judged by its
+//! author's role ([`admit_operations`]).
 //!
 //! An admission through an invitation is the inviter's: any participant that
 //! may invite writes it, with the joiner's device and the redemption receipt
@@ -36,7 +39,8 @@ use tilo_action_policy::{
     Change, Context, Grant, GrantId, Role, WorkspacePolicy, roles, roles::governance,
 };
 
-use super::{WorkspaceGovernance, governance_of};
+use super::{GovernanceRow, WorkspaceGovernance, governance_of};
+use crate::members::{MembershipOpCommand, SignedMembershipOp};
 use crate::state::{GovernedIdentity, RedemptionReceipt};
 
 /// How far ahead of a receiver's clock an admission may say it was made:
@@ -47,7 +51,7 @@ const ADMISSION_CLOCK_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 /// Why a member's governance batch was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MembershipRefusal {
-    /// The batch changes more of governance than a member writes.
+    /// The batch changes governance its writer's operations do not name.
     NotMembership,
     /// Its dependencies are not all held, or it does not apply on them.
     Position(String),
@@ -62,7 +66,9 @@ pub enum MembershipRefusal {
 impl std::fmt::Display for MembershipRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotMembership => f.write_str("governance writer is not the owner's device"),
+            Self::NotMembership => {
+                f.write_str("governance changed beyond what its writer's operations name")
+            }
             Self::Position(error) => write!(f, "membership change does not apply: {error}"),
             Self::Malformed(error) => write!(f, "membership change is malformed: {error}"),
             Self::Refused(error) => write!(f, "membership change refused: {error}"),
@@ -95,15 +101,15 @@ fn stages(at: &AutoCommit, changes: &[Vec<u8>]) -> Result<Vec<AutoCommit>, Membe
     Ok(stages)
 }
 
-/// The workspace as `changes`' writer saw it, and with the changes on it: `before`
-/// at the dependencies the batch names outside itself.
+/// The workspace as `changes`' writer saw it: `before` at the dependencies the
+/// batch names outside itself.
 ///
 /// # Errors
-/// A dependency is not in `before`, or the batch does not apply.
-pub fn position(
+/// A dependency is not in `before`, or the changes do not decode.
+pub fn dependency_state(
     before: &AutoCommit,
     changes: &[Vec<u8>],
-) -> Result<(AutoCommit, AutoCommit), MembershipRefusal> {
+) -> Result<AutoCommit, MembershipRefusal> {
     let decoded = changes
         .iter()
         .map(|bytes| automerge::Change::from_bytes(bytes.clone()))
@@ -117,12 +123,148 @@ pub fn position(
         .collect();
     heads.sort();
     heads.dedup();
-    let mut at = before.clone();
-    let at = at
+    let mut before = before.clone();
+    before
         .fork_at(&heads)
-        .map_err(|error| MembershipRefusal::Position(error.to_string()))?;
+        .map_err(|error| MembershipRefusal::Position(error.to_string()))
+}
+
+/// The workspace as `changes`' writer saw it, and with the changes on it: `before`
+/// at the dependencies the batch names outside itself.
+///
+/// # Errors
+/// A dependency is not in `before`, or the batch does not apply.
+pub fn position(
+    before: &AutoCommit,
+    changes: &[Vec<u8>],
+) -> Result<(AutoCommit, AutoCommit), MembershipRefusal> {
+    let at = dependency_state(before, changes)?;
     let after = super::candidate(Some(&at), changes).map_err(MembershipRefusal::Position)?;
     Ok((at, after))
+}
+
+/// Whether a batch that adds operations changes only what they admit: every
+/// governed part beyond the membership rows is one an operation it adds names,
+/// and its author's role permits it.
+///
+/// The membership rows are the log's projection, and a workspace whose log does
+/// not start yet has nothing to project them from: no batch that adds operations
+/// may move them then.
+///
+/// # Errors
+/// A part is changed without an operation naming it, or by an author whose role
+/// does not permit it.
+pub fn admit_operations(
+    before: Option<&AutoCommit>,
+    candidate: &AutoCommit,
+    changes: &[Vec<u8>],
+    workspace: &str,
+    now_ns: u64,
+) -> Result<(), MembershipRefusal> {
+    let Some(before) = before else {
+        return Ok(());
+    };
+    if !crate::members::starts(candidate, workspace)
+        && !super::governance_unchanged(Some(before), candidate)
+    {
+        return Err(MembershipRefusal::NotMembership);
+    }
+    let (at, after) = position(before, changes)?;
+    let mut declared: Vec<GovernanceRow> = Vec::new();
+    for op in added_ops(Some(before), candidate) {
+        let MembershipOpCommand::Governance { rows } = &op.command else {
+            continue;
+        };
+        for row in rows {
+            if declared.contains(row) {
+                return Err(MembershipRefusal::Refused(format!(
+                    "{} is changed twice",
+                    row_name(*row)
+                )));
+            }
+            declared.push(*row);
+        }
+        rows_permitted(workspace, (&at, &after), &op, rows, now_ns)?;
+    }
+    declared.sort_unstable();
+    let mut held_rows = super::changed_rows(Some(before), Some(candidate), false);
+    held_rows.sort_unstable();
+    if declared != held_rows {
+        return Err(MembershipRefusal::NotMembership);
+    }
+    Ok(())
+}
+
+/// The operations `candidate` adds to the ones `before` holds.
+fn added_ops(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Vec<SignedMembershipOp> {
+    let held = before.map_or_else(BTreeMap::new, crate::members::ops);
+    crate::members::ops(candidate)
+        .into_iter()
+        .filter(|(id, _)| !held.contains_key(id))
+        .map(|(_, op)| op)
+        .collect()
+}
+
+/// Whether `op`'s author may change `rows`, from `at` to `after`.
+fn rows_permitted(
+    workspace: &str,
+    (at, after): (&AutoCommit, &AutoCommit),
+    op: &SignedMembershipOp,
+    rows: &[GovernanceRow],
+    now_ns: u64,
+) -> Result<(), MembershipRefusal> {
+    let held = tilo_desktop_model::projection::workspace_policy_of(at, workspace);
+    let wanted = tilo_desktop_model::projection::workspace_policy_of(after, workspace);
+    let actor = op.person();
+    let foreign = op.author.capabilities.foreign && !held.is_owner(&actor);
+    let bound = roles::foreign_device_bound();
+    let authority = held.person_on_device(&actor, foreign, &bound);
+    let cx = Context::at(op.at_ns / 1_000_000);
+    let writer = (actor.as_str(), &authority, &cx);
+    let (before, written) = (governance_of(Some(at)), governance_of(Some(after)));
+    for row in rows {
+        if let Some(action) = row.action() {
+            held.check_action(&authority, action, &cx, false)
+                .map_err(|refusal| {
+                    MembershipRefusal::Refused(format!(
+                        "{} takes {action}: {refusal}",
+                        row_name(*row)
+                    ))
+                })?;
+            continue;
+        }
+        match row {
+            GovernanceRow::Settings => settings(workspace, at, after, &held, writer)?,
+            GovernanceRow::Identities => {
+                let invited = redemptions(workspace, &held, &wanted, &before, &written, now_ns)?;
+                identities(&held, &wanted, &invited, writer, (&before, &written))?;
+            }
+            _ => {
+                return Err(MembershipRefusal::Refused(format!(
+                    "{} is not a change an operation makes",
+                    row_name(*row)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The name a receiver's refusal gives `row`.
+fn row_name(row: GovernanceRow) -> &'static str {
+    match row {
+        GovernanceRow::Owner => "the workspace's owner",
+        GovernanceRow::Membership => "the workspace's membership",
+        GovernanceRow::Identities => "the devices of the workspace",
+        GovernanceRow::Settings => "the workspace's settings",
+        GovernanceRow::Media => "the media policy",
+        GovernanceRow::Versions => "the app versions the workspace runs",
+        GovernanceRow::Bots => "the workspace's bots",
+        GovernanceRow::Checkpoints => "the workspace's checkpoints",
+        GovernanceRow::Hosts => "the workspace's hosts",
+        GovernanceRow::Layout => "the layout scope",
+        GovernanceRow::Log => "the workspace's operations",
+    }
 }
 
 /// Whether `person`, from their device `device` (hex; `foreign` when it is
@@ -138,11 +280,10 @@ pub fn authorize(
 ) -> Result<(), MembershipRefusal> {
     let before = governance_of(Some(at));
     let written = governance_of(Some(after));
-    if !only_membership_differs(&before, &written)
-        || crate::durability::governed_bytes(at) != crate::durability::governed_bytes(after)
-        || crate::document_import::governed_bytes(Some(at))
-            != crate::document_import::governed_bytes(Some(after))
-    {
+    // A membership batch changes the membership and nothing else governed: any
+    // other part is an operation's, checked where that operation is
+    // ([`admit_operations`]).
+    if !super::changed_rows(Some(at), Some(after), false).is_empty() {
         return Err(MembershipRefusal::NotMembership);
     }
     let held = tilo_desktop_model::projection::workspace_policy_of(at, workspace);
@@ -352,13 +493,6 @@ fn redemptions(
         }
     }
     Ok(invited)
-}
-
-/// Every governance part a member never writes is the same in both.
-fn only_membership_differs(before: &WorkspaceGovernance, written: &WorkspaceGovernance) -> bool {
-    before.owner == written.owner
-        && before.coverage == written.coverage
-        && before.media == written.media
 }
 
 /// The writer of a batch: their person, their authority on the device that

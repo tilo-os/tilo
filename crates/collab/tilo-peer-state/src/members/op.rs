@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_user_identity::DeviceCert;
 
+use crate::workspace::GovernanceRow;
+
 /// The workspace document key holding every membership operation, by
 /// [`SignedMembershipOp::id`] in hex.
 pub const MEMBERS_KEY: &str = "members_v2";
@@ -101,6 +103,12 @@ pub enum MembershipOpCommand {
     /// wrote at the same time each wrote what they did, and neither one's
     /// operation takes the other's away.
     Project { changes: Vec<Change> },
+    /// The governance parts its author's device changed, as the rows they are
+    /// ([`GovernanceRow`]). What the values are is the document's history; the
+    /// operation says which parts of it the change touched, and every receiver
+    /// checks each is its author's to change. A batch that changes a governed
+    /// part without an operation naming it changes nothing at all.
+    Governance { rows: Vec<GovernanceRow> },
 }
 
 /// One member's change to a workspace's authority, signed by their device.

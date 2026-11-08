@@ -90,11 +90,6 @@ fn raw_entries(doc: &AutoCommit) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-/// The governed bytes of every entry: what only the authority may change.
-pub(crate) fn governed_bytes(doc: Option<&AutoCommit>) -> BTreeMap<String, Vec<u8>> {
-    doc.map(raw_entries).unwrap_or_default()
-}
-
 /// Every well-formed proposal the workspace keeps, by key.
 #[must_use]
 pub fn entries(doc: &AutoCommit) -> BTreeMap<String, ImportEntry> {
@@ -266,7 +261,6 @@ mod tests {
         assert_eq!(kept[&key(&[1; 32])].state(100), ImportState::Expired);
         assert_eq!(prune(&mut doc, 500).unwrap(), 1);
         assert_eq!(entries(&doc).len(), 1);
-        assert_eq!(governed_bytes(Some(&doc)).len(), 1);
     }
 
     #[test]

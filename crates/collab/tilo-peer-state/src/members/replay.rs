@@ -293,8 +293,9 @@ fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp) {
     let bound = roles::foreign_device_bound();
     let cx = Context::at(op.at_ns / 1_000_000);
     match &op.command {
-        // The genesis projection is the starting membership, not a change to it.
-        MembershipOpCommand::Genesis { .. } => {}
+        // A governance operation changes no row of the membership: what it
+        // touched is judged where its batch is admitted.
+        MembershipOpCommand::Genesis { .. } | MembershipOpCommand::Governance { .. } => {}
         MembershipOpCommand::Project { changes } => {
             let mut next = policy.clone();
             let foreign = op.author.capabilities.foreign && !next.is_owner(&person);

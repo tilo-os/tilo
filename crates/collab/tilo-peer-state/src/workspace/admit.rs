@@ -96,7 +96,8 @@ pub enum WorkspaceRefusal {
     Malformed(String),
     /// The document names a different workspace than the one it answers.
     DeclaredWorkspaceMismatch,
-    /// The batch changes governance and its sender is not the owner's device.
+    /// The batch changes governance the writer's role does not permit, or
+    /// governance no operation of its own names.
     GovernanceWriter,
     /// A member's membership change is not theirs to make.
     Membership(String),
@@ -132,7 +133,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             | Self::Durability(error)
             | Self::Membership(error) => f.write_str(error),
             Self::DeclaredWorkspaceMismatch => f.write_str("declared workspace mismatch"),
-            Self::GovernanceWriter => f.write_str("governance writer is not the owner's device"),
+            Self::GovernanceWriter => f.write_str("governance is not this writer's to change"),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::RedemptionImmutable => {
                 f.write_str("governed invitation has conflicting redemption receipts")
@@ -179,34 +180,30 @@ pub fn admit_workspace_changes(
             if !writes && !super::only_reader_writes_differ(input.before, &candidate) {
                 return Err(WorkspaceRefusal::WriteForbidden);
             }
-            // Operations are self-authorizing: replay applies a membership
-            // change only where its writer's grants allowed it, so a batch
-            // that adds operations that prove their writers is a membership
-            // change as long as it changes nothing else.
+            // What a batch changes in the workspace's governance is what its
+            // operations say it changes, each of them its author's to make: a
+            // membership change replays under its writer's grants
+            // ([`super::membership`]), and a governance change is the row its
+            // operation names, judged by its author's role.
             let grown = crate::members::growth(input.before, &candidate)
                 .map_err(WorkspaceRefusal::Membership)?;
-            let membership = if grown > 0 && !governs {
-                if !super::governance_except_membership(input.before, &candidate) {
-                    return Err(WorkspaceRefusal::GovernanceWriter);
-                }
-                // The rows a batch brings are never what admits it: they are
-                // the log's projection, and the receiver writes them from the
-                // log it replays ([`crate::members::settle`]). Where the log
-                // does not start yet there is nothing to project from, and the
-                // rows the batch brings would be the change itself: no batch
-                // that carries operations may move them then.
-                if !crate::members::starts(&candidate, input.workspace)
-                    && !super::governance_unchanged(input.before, &candidate)
-                {
-                    return Err(WorkspaceRefusal::GovernanceWriter);
-                }
+            let governed = if grown > 0 && !governs {
+                super::membership::admit_operations(
+                    input.before,
+                    &candidate,
+                    &changes,
+                    input.workspace,
+                    input.now_ns,
+                )
+                .map_err(membership)?;
+                true
+            } else if !governs && !super::governance_unchanged(input.before, &candidate) {
+                membership_authorized(&input, &changes)?;
                 true
             } else {
-                !governs
-                    && !super::governance_unchanged(input.before, &candidate)
-                    && membership_authorized(&input, &changes)?
+                false
             };
-            let media = checked(&input, &candidate, membership)?;
+            let media = checked(&input, &candidate, governed)?;
             crate::members::settle(&mut candidate, input.workspace)
                 .map_err(WorkspaceRefusal::Malformed)?;
             Ok(AdmittedWorkspace {
@@ -240,8 +237,11 @@ pub fn admit_workspace_changes(
 ///
 /// 1. The document names this workspace ([`super::declared_workspace_mismatches`]).
 /// 2. A governance change — owner, capabilities, identities, media,
-///    coverage, receipts, durability or import proposals — comes from the
-///    owner's devices ([`super::governance_unchanged`]).
+///    coverage, receipts, durability or import proposals — is one an operation
+///    of the batch names, and its author's role permits it
+///    ([`super::membership::admit_operations`]); a batch with no operation is
+///    a membership change, judged where its writer made it
+///    ([`super::membership::authorize`]).
 /// 3. The workspace's layout scope changes only by the owner's devices.
 /// 4. Effect receipts are immutable ([`super::immutable_receipts`]), and
 ///    one not from the owner's devices records only its writer's own
@@ -297,12 +297,13 @@ fn membership(refusal: super::membership::MembershipRefusal) -> WorkspaceRefusal
     }
 }
 
-/// `membership`: the batch's governance change was admitted as its writer's
-/// membership change, so only what membership cannot touch is checked here.
+/// `governed`: the batch's governance change was admitted as its writer's
+/// membership change or as the rows its operations name, so only what neither
+/// touches is checked here.
 fn checked(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
-    membership: bool,
+    governed: bool,
 ) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
     let WorkspaceAdmission {
         before,
@@ -317,10 +318,10 @@ fn checked(
     if super::declared_workspace_mismatches(candidate, declared) {
         return Err(WorkspaceRefusal::DeclaredWorkspaceMismatch);
     }
-    if !governs && !membership && !super::governance_unchanged(before, candidate) {
+    if !governs && !governed && !super::governance_unchanged(before, candidate) {
         return Err(WorkspaceRefusal::GovernanceWriter);
     }
-    if !governs {
+    if !governs && !governed {
         if before.and_then(workspace_layout_choice) != workspace_layout_choice(candidate) {
             return Err(WorkspaceRefusal::GovernanceWriter);
         }
@@ -330,6 +331,8 @@ fn checked(
             // The workspace's hosts are its owner's to name.
             return Err(WorkspaceRefusal::GovernanceWriter);
         }
+    }
+    if !governs {
         // The owner's devices relay what members recorded; anyone else
         // records only their own.
         if !super::effect_slices_kept(before, candidate, source.person()) {

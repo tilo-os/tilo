@@ -44,12 +44,6 @@ impl DurableReceipt {
         Ok(())
     }
 }
-/// Identity of the whole governed receipt set for "unchanged"
-/// comparisons; `None` when the workspace carries none.
-pub fn governed_bytes(doc: &AutoCommit) -> Option<Vec<u8>> {
-    crate::governed_routes::identity(doc, LAYOUT)
-}
-
 /// One route value. A receipt for exactly the route's current checkpoint
 /// coverage (the normal case: the governor issues it right after publishing
 /// that coverage) stores only its generation; the receipt, including its
@@ -350,7 +344,7 @@ mod tests {
         monotonic(Some(&before), &doc).unwrap();
         crate::coverage::monotonic(Some(&before), &doc).unwrap();
         assert!(canonical(&doc));
-        assert_ne!(governed_bytes(&before), governed_bytes(&doc));
+        assert!(!crate::workspace::governance_unchanged(Some(&before), &doc));
     }
     #[test]
     fn malformed_route_values_are_refused() {
