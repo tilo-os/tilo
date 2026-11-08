@@ -239,9 +239,6 @@ pub struct GroupRow {
     scroll_quantum: Option<f64>,
     /// The row is drawn into a scene of its own: its parent's draw only records the transform it
     /// would have drawn with.
-    drawn_apart: bool,
-    /// The transform the parent's draw passed while [`Self::drawn_apart`].
-    apart_transform: Option<Affine>,
     /// One per display the strip is partitioned across, left to right.
     /// Empty when the strip is one continuous row (a single display).
     lanes: Vec<Lane>,
@@ -272,9 +269,6 @@ pub struct GroupRow {
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
-    /// How far the strip deck holding this row moved it down from rest: laid out where it rests and
-    /// moved by this, so a strip sliding in or out costs no layout.
-    deck_shift: f64,
     /// Transient: the display another strip's fullscreen covers. This lane collapses there and its
     /// lanes elsewhere stay; a row with no lanes spans every display and collapses whole.
     covered_output: Option<u32>,
@@ -1088,8 +1082,8 @@ struct Lane {
     /// The area the lane's taffy node was built against, so layout can
     /// tell when the row moved under it and a rebuild is due.
     built_viewport: Rect,
-    /// How far the strip deck has the row moved up or down from where it
-    /// rests ([`GroupRow::set_deck_shift`]).
+    /// How far the row moved the lane off its display
+    /// ([`GroupRow::set_shown_outputs`]): the lane's own height, or zero.
     shift: f64,
 }
 
@@ -1100,15 +1094,15 @@ impl Lane {
         Rect::new(area.x0, area.y0, area.x1.max(area.x0), area.y1.max(area.y0))
     }
 
-    /// The lane's viewport on screen: its area, moved with the row by the
-    /// strip deck. A pure vertical move needs no new layout.
+    /// The lane's area on screen: its own, moved by the shift
+    /// [`GroupRow::set_shown_outputs`] gave it.
     fn viewport(&self) -> Rect {
         self.area() + vello::kurbo::Vec2::new(0.0, self.shift)
     }
 
-    /// Whether the deck moved the lane wholly off its display, where another strip fills it: such a
+    /// Whether the row moved the lane wholly off its display, where another strip fills it: such a
     /// lane is neither drawn nor hit.
-    fn off_deck(&self) -> bool {
+    fn off_display(&self) -> bool {
         let height = self.area().height();
         height > 0.0 && self.shift.abs() >= height - 0.5
     }
@@ -1153,9 +1147,6 @@ impl GroupRow {
             drag_reach: DragReach::default(),
             pan: Pan::default(),
             scroll_quantum: None,
-            drawn_apart: false,
-            deck_shift: 0.0,
-            apart_transform: None,
             lanes: Vec::new(),
             group_lanes: HashMap::new(),
             focus_lane: 0,
@@ -1529,7 +1520,7 @@ impl GroupRow {
                             ..pan
                         },
                         built_viewport: Rect::ZERO,
-                        shift: self.deck_shift,
+                        shift: 0.0,
                     }
                 })
                 .collect();
@@ -1624,7 +1615,7 @@ impl GroupRow {
         } else {
             self.lanes
                 .iter()
-                .any(|lane| !lane.off_deck() && lane.viewport().contains(p))
+                .any(|lane| !lane.off_display() && lane.viewport().contains(p))
         }
     }
 
@@ -1685,7 +1676,7 @@ impl GroupRow {
         }
         self.lanes
             .iter()
-            .position(|lane| !lane.off_deck() && lane.viewport().contains(p))
+            .position(|lane| !lane.off_display() && lane.viewport().contains(p))
             .or_else(|| {
                 self.lanes
                     .iter()
@@ -2234,50 +2225,6 @@ impl GroupRow {
         for group in &mut self.groups {
             group.frame_presented();
         }
-    }
-
-    /// Where the strip deck has this row, relative to where it rests:
-    /// `shift` for the row, and for each display's lane its own shift by
-    /// output id in `lanes` (their areas are given where it rests). Each
-    /// display shows a strip of its own, so a lane moves with its display's
-    /// slide of the deck; a lane `lanes` does not name moves with the row.
-    /// The deck sets this before it lays the row out.
-    pub(crate) fn set_deck_shift(&mut self, shift: f64, lanes: &[(u32, f64)]) {
-        self.deck_shift = shift;
-        for lane in &mut self.lanes {
-            lane.shift = lanes
-                .iter()
-                .find(|(output, _)| *output == lane.spec.output)
-                .map_or(shift, |(_, shift)| *shift);
-        }
-    }
-
-    /// Have the parent's draw skip this row, recording only its transform,
-    /// so its owner draws it into a scene of its own
-    /// with [`Self::draw_apart`]: a presenter that pans each strip on its own
-    /// needs each strip's drawing apart from the others'.
-    pub fn set_drawn_apart(&mut self, apart: bool) {
-        self.drawn_apart = apart;
-        self.apart_transform = None;
-    }
-
-    /// Draw the row into `scene` with the transform its parent's draw
-    /// passed, once that draw skipped it ([`Self::set_drawn_apart`]).
-    /// `false`, drawing nothing, when the parent did not draw it.
-    pub fn draw_apart(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> bool {
-        let Some(transform) = self.apart_transform.take() else {
-            return false;
-        };
-        self.drawn_apart = false;
-        self.draw(scene, transform, tr, theme, presence);
-        self.drawn_apart = true;
-        true
     }
 
     /// Set the real strip viewport to an absolute finite offset. Browser and
@@ -3020,16 +2967,6 @@ impl GroupRow {
             || self.cross_strip_drop_target.is_some()
             || self.tab_drag_active()
             || self.group_drag_moving()
-    }
-
-    /// Where a drag that can land on another strip is, while one is in flight from or over this
-    /// row: one of its own tabs, a tab from another strip, or compositor content. The strip deck
-    /// reads it to reach the strip above or below ([`super::StripDeck`]).
-    pub(crate) fn strip_reaching_drag(&self) -> Option<Point> {
-        (self.external_drag_over
-            || self.cross_strip_drop_target.is_some()
-            || self.tab_drag_active())
-        .then_some(self.last_cursor)
     }
 
     /// A whole window of this row is being moved (not one someone else holds,
@@ -4197,9 +4134,8 @@ impl GroupRow {
             children
         } else {
             // One absolutely placed run per lane, over its display. Every handle still gets a node;
-            // one between two lanes (or in a collapsed lane) is parked out of layout. Where the row
-            // rests: the deck's shift is a move, not layout.
-            let row = self.rect - vello::kurbo::Vec2::new(0.0, self.deck_shift);
+            // one between two lanes (or in a collapsed lane) is parked out of layout.
+            let row = self.rect;
             let mut lane_children: Vec<Vec<NodeId>> = vec![Vec::new(); self.lanes.len()];
             let mut parked: Vec<NodeId> = Vec::new();
             let collapsed = plan.collapsed(self.lanes.len());
@@ -4574,8 +4510,7 @@ impl Widget for GroupRow {
         for lane in &mut self.lanes {
             let area = lane.area();
             // Built against another area: lay out again so every lane's
-            // height matches its band. The deck moving the row is no
-            // such change.
+            // height matches its band.
             if (area.y0 - lane.built_viewport.y0).abs() > 0.5
                 || (area.height() - lane.built_viewport.height()).abs() > 0.5
                 || (area.x0 - lane.built_viewport.x0).abs() > 0.5
@@ -4768,11 +4703,6 @@ impl Widget for GroupRow {
             self.pan_unkept.clear();
             self.pan_theme = only_moved.then(|| theme.clone());
         }
-        if self.drawn_apart {
-            self.apart_transform = Some(transform);
-            self.pan_drawings.clear();
-            return;
-        }
         self.reduce_motion = theme.reduce_motion;
         self.motion = theme.tokens.motion;
         self.sync_sibling_fade(theme);
@@ -4788,12 +4718,11 @@ impl Widget for GroupRow {
         let runs: Vec<(usize, Rect)> = if self.lanes.is_empty() {
             vec![(0, self.rect)]
         } else {
-            // A lane the deck has off its display draws nothing: another
-            // strip fills that display.
+            // A lane the row moved off its display draws nothing: another strip fills that display.
             self.lanes
                 .iter()
                 .enumerate()
-                .filter(|(_, lane)| !lane.off_deck())
+                .filter(|(_, lane)| !lane.off_display())
                 .map(|(k, lane)| (k, lane.pan.viewport))
                 .collect()
         };
@@ -4849,7 +4778,7 @@ impl Widget for GroupRow {
             }
             // The stretch of the canvas this draw's pan shows: the viewport, moved by the shift
             // that took the groups there. On a canvas, windows stand anywhere, panned past the
-            // deck's edges too: what is drawn stops at the deck, never over the top bar above it.
+            // row's edges too: what is drawn stops at the row, never over the top bar above it.
             let bounds = if self.canvas.is_some() {
                 viewport
             } else {
@@ -5044,8 +4973,8 @@ impl Widget for GroupRow {
 
     fn wants_pointer_capture(&self) -> bool {
         // A window carried on a canvas owns the pointer until it is let
-        // go: the deck lays every strip's row over the canvas, and none of
-        // the others may take the motion or the release from it.
+        // go: every strip's row lies over the canvas, and none of the others
+        // may take the motion or the release from it.
         (self.canvas.is_some() && self.group_drag.is_some_and(|drag| drag.moved))
             || self.pointer_pan.is_some_and(|pan| pan.engaged)
             || self.edge_drag.is_some()

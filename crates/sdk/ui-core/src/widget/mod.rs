@@ -3340,12 +3340,6 @@ pub use group_row::{
     pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
-mod strip_deck;
-pub use strip_deck::{StripDeck, StripDeckRelease};
-mod strip_view;
-pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
-mod workspace_view;
-pub use workspace_view::{WorkspaceSwitchDirection, WorkspaceView};
 pub mod tooltip;
 pub use tooltip::{Tooltip, TooltipHost};
 pub mod permission_prompt;
