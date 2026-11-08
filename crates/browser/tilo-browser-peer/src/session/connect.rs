@@ -100,7 +100,7 @@ pub(super) async fn connect(
             tilo_relay_session::RelayClient::connect_with_signer(
                 endpoint.clone(),
                 host,
-                Some(config.cert.user_public_key),
+                Some(config.host_cert.user_public_key),
                 Some(config.host_cert.device_public_key),
                 config.cert.clone(),
                 signer,
