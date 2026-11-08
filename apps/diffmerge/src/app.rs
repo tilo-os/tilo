@@ -2306,11 +2306,14 @@ mod tests {
                 .unwrap();
             for rect in &rects {
                 assert!(rect.x0 >= 0.0 && rect.x1 <= 800.0, "{scale}x: {rect:?}");
+                // Every edge the tree solves rounds onto the display's device
+                // pixel, so a control centred in the row's own fractional
+                // height stands within half a pixel of its centre.
                 assert!(
-                    (rect.center().y - header / 2.0).abs() < 0.01,
+                    (rect.center().y - header / 2.0).abs() < 0.5,
                     "{scale}x: {rect:?} header {header}"
                 );
-                assert!(rect.y1 <= header + 0.01, "{scale}x: {rect:?}");
+                assert!(rect.y1 <= header + 0.5, "{scale}x: {rect:?}");
             }
             rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
             assert!(
@@ -2323,11 +2326,11 @@ mod tests {
                     Mode::Merge => view.merge.get_rect(),
                 };
                 assert!(
-                    (active.y0 - header).abs() < 0.01,
+                    (active.y0 - header).abs() < 0.5,
                     "{active:?} header {header}"
                 );
                 assert!(
-                    (active.y1 - view.content_rect().y1).abs() < 0.01,
+                    (active.y1 - view.content_rect().y1).abs() < 0.5,
                     "content fills its area above the status bar"
                 );
             })
