@@ -567,9 +567,9 @@ impl Store for TiloStore {
     }
 
     /// The field `field` of `at` as it was before the change `change`, read in place at the
-    /// change's dependencies: the cost of the value, not of the record. A field whose previous
-    /// value is a whole rich text is not read this way: a change's two sides of one are the
-    /// paragraphs it typed into ([`Self::written`]).
+    /// change's dependencies: the cost of the value, not of the record. A rich text field is a
+    /// document of its own, read whole as it stood then; what a change made of one is the
+    /// paragraphs it typed into instead ([`Self::written`]).
     fn read_before(
         &self,
         at: &ResourceRef,
@@ -596,6 +596,12 @@ impl Store for TiloStore {
         let Some(obj) = located.obj.as_ref() else {
             return Ok(default_value(spec));
         };
+        // A rich text field is a document of its own, held as its paragraphs: read it the way
+        // every other read of one is, at a fork of the change's dependencies.
+        if spec.kind == MergeKind::RichText {
+            let past = source.committed_fork_at(made.deps()).map_err(backend)?;
+            return read_field(&past, &located, spec);
+        }
         let held = tilo_resource::history::held_at(committed, obj, &field.id, made.deps())
             .map_err(backend)?;
         field_of_json(&held, spec)
