@@ -1036,6 +1036,7 @@ pub struct RecordWrite {
 /// What [`Workspaces::refound_record`] did: which record was founded again,
 /// and how many retained entries its old history took to the archive.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "agents")]
 pub struct Refounded {
     pub app: String,
     pub record: String,
@@ -2352,6 +2353,7 @@ impl Workspaces {
     ///
     /// The workspace is not governed here, the record is not one the governor
     /// holds, or the new checkpoint could not be published.
+    #[cfg(feature = "agents")]
     pub async fn refound_record(
         &self,
         workspace: &str,
