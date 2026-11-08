@@ -352,8 +352,8 @@ struct Walk<'a> {
     display_scale: f64,
     /// Inside a box already found off the device pixels: what it holds moves with it.
     off_pixel: bool,
-    /// Inside a page: the box that scrolls a window's content under its heading.
-    in_page: bool,
+    /// The page the node stands in: the box that scrolls a window's content under its heading.
+    page: Option<Rect>,
     /// The counts the window's column headers draw.
     header_counts: Vec<Count>,
     /// The counts a window's places draw beside the place chosen in them.
@@ -418,7 +418,7 @@ pub fn inspect(
         min_target,
         display_scale,
         off_pixel: false,
-        in_page: false,
+        page: None,
         header_counts: Vec::new(),
         place_counts: Vec::new(),
         header_titles: Vec::new(),
@@ -489,9 +489,9 @@ impl Walk<'_> {
         }
         // A page scrolls the window's content under its heading; a list inside it scrolls rows
         // the page already scrolls.
-        let under_page = self.in_page;
+        let under_page = self.page;
         if node.widget == "Page" {
-            self.in_page = true;
+            self.page = Some(own);
         }
         let was_beyond = self.beyond;
         let was_across = self.across;
@@ -502,7 +502,7 @@ impl Walk<'_> {
             self.lone_door(node, keys, above);
             self.empty_heading(node, keys, own);
             self.empty_surface(node, keys, own);
-            if under_page {
+            if under_page.is_some() {
                 self.nested_scroller(node, keys, own);
             }
         }
@@ -592,7 +592,7 @@ impl Walk<'_> {
         self.beyond = was_beyond;
         self.across = was_across;
         self.off_pixel = was_off_pixel;
-        self.in_page = under_page;
+        self.page = under_page;
     }
 
     /// A box with an edge between two device pixels: the outermost such box only, since what

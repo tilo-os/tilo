@@ -927,7 +927,7 @@ fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
             }),
     );
     for child in &node.children {
-        count += titled_within(child, title, at);
+        count = count.saturating_add(titled_within(child, title, at));
     }
     count
 }

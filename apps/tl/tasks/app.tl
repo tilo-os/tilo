@@ -592,27 +592,35 @@ view home(t: Tasks) {
                 }
             }
         }
-        // A task opens where it stands in the list, not in a window of its own.
+        // The place's tasks at the readable measure, on the page's own scroller: a task opens
+        // where it stands under its row, and in front of the list in a window too narrow to
+        // hold one beside the other.
         content: {
-            page(fill) {
-                ui.Docked {
-                    foot: {
-                        stack {
-                            if all_done {
-                                task_list(shown, kids, by_day, done_place, folds, opened, .day)
-                            }
-                            // A task typed in Today that names no day is due today, so it stands
-                            // where it was typed.
-                            let add = new_task(t, p: project, due: if in_today { today })
-                            std.add_entry(entry_placeholder, add)
+            ui.Docked {
+                foot: {
+                    stack {
+                        if all_done {
+                            task_list(shown, kids, by_day, done_place, folds, opened, .day)
                         }
+                        // A task typed in Today that names no day is due today, so it stands
+                        // where it was typed.
+                        let add = new_task(t, p: project, due: if in_today { today })
+                        std.add_entry(entry_placeholder, add)
                     }
-                    if all_done {
-                        ui.EmptyState(phrase("tilolang-all-done"), icon: .list_checks, inline: true)
-                    } else if shown.is_empty() {
-                        ui.EmptyState("No tasks here", icon: .list_checks)
-                    } else {
-                        task_list(shown, kids, by_day, done_place, folds, opened, .day)
+                }
+                ui.Scroll {
+                    page {
+                        if all_done {
+                            ui.EmptyState(
+                                phrase("tilolang-all-done"),
+                                icon: .list_checks,
+                                inline: true,
+                            )
+                        } else if shown.is_empty() {
+                            ui.EmptyState("No tasks here", icon: .list_checks)
+                        } else {
+                            task_list(shown, kids, by_day, done_place, folds, opened, .day)
+                        }
                     }
                 }
             }
@@ -636,6 +644,7 @@ view task_list(
         tree: true,
         ungrouped: if by_day { phrase("tilolang-no-date") },
         tail_title: if folds { phrase("tilolang-done") },
+        in_column: false,
     ) { (x, at) ->
         let heading = task_day(x, by_day, done_place)
         let tail = folds and folded(items, x)
@@ -701,17 +710,21 @@ view project_list(p: Project) {
     let listed = holding(shown, opened)
     ui.NavShell(content_kind: .list, title: p.name) {
         content: {
-            page(fill) {
-                ui.Docked {
-                    foot: {
-                        stack {
-                            std.add_entry("New task in {p.name}", new_task(tasks, p: p))
-                        }
+            // The project's tasks on the page's own scroller, the entry that adds to it docked
+            // at the window's foot: a task opens where it stands, under its own row.
+            ui.Docked {
+                foot: {
+                    stack {
+                        std.add_entry("New task in {p.name}", new_task(tasks, p: p))
                     }
-                    if listed.is_empty() {
-                        ui.EmptyState("No tasks yet", icon: .folder)
-                    } else {
-                        task_list(listed, kids, false, false, false, opened, .project)
+                }
+                ui.Scroll {
+                    page {
+                        if listed.is_empty() {
+                            ui.EmptyState("No tasks yet", icon: .folder)
+                        } else {
+                            task_list(listed, kids, false, false, false, opened, .project)
+                        }
                     }
                 }
             }
@@ -831,8 +844,8 @@ template view task_body(t: Task) {
             }
             ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
         }
-        std.origin(t)
         stack(lead: 1) {
+            std.origin(t)
             ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
         }
     }
