@@ -107,7 +107,16 @@ pub fn client() -> Result<LiveClient, ServiceError> {
         // The device's content store, which the app's window reads its pictures from. A process
         // the launcher handed none (a test, a tool run outside a session) keeps none: the
         // answers' pictures are then left empty rather than naming content nobody holds.
-        content: ui::content::device(),
+        content: {
+            let store = ui::content::device();
+            // A connector whose pictures stay empty is read as the app's fault. Which store
+            // this process reached, and whether it reached one at all, is what says otherwise.
+            tracing::debug!(
+                holds_a_content_store = store.is_some(),
+                "the YouTube client resolved its content store"
+            );
+            store
+        },
         fetch: Arc::new(fetch_over_http),
     })
 }

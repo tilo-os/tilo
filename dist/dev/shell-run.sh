@@ -88,9 +88,10 @@ if ((build)); then
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \
         -p nested-session-bus --bin nested-session-bus \
+        -p tilo-fs --bin fs \
         -p runtime-bundle --bin tilo-runtime-bundle)
 fi
-for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle; do
+for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`
@@ -174,10 +175,20 @@ stop_session() {
         fusermount3 -u -z "$documents" 2>/dev/null || true
     fi
 }
+
+# The document media this session serves its apps (`fs serve-media`).
+media_pid=
+stop_media() {
+    [[ -n $media_pid ]] || return 0
+    kill -TERM "$media_pid" 2>/dev/null || true
+    wait "$media_pid" 2>/dev/null || true
+    media_pid=
+}
 cleanup() {
     # A second signal must not cut the cleanup short and leave the session up.
     trap '' INT TERM HUP
     stop_session
+    stop_media
     rm -rf "$scratch" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -317,6 +328,23 @@ if [[ -z $dbus_daemon ]]; then
     done
 fi
 [[ -n $dbus_daemon ]] || die "no dbus-daemon on PATH and none in $bin (run without --no-build)"
+# The session's document media: this tree's content store and the scoped capability over it,
+# as a Tilo image's filesystem daemon serves both (`fs serve --blob-sock`). A session started
+# from a build under test cannot use that daemon's: the mount belongs to the image underneath,
+# whose wire is an older one, and every app store call would die on its first frame. So this
+# session serves its own, and hands every app it starts the socket (`TILO_FS_BLOB_SOCKET`).
+media_store=$scratch/media
+media_socket=$scratch/run/fs-blobs.sock
+rm -f "$media_socket"
+setsid "$bin/fs" serve-media --store "$media_store" --blob-sock "$media_socket" \
+    > "$scratch/media.log" 2>&1 &
+media_pid=$!
+tries=200
+until [[ -S $media_socket ]]; do
+    kill -0 "$media_pid" 2>/dev/null || { cat "$scratch/media.log" >&2; die "the session serves no document media"; }
+    ((tries--)) || { cat "$scratch/media.log" >&2; die "the document media socket did not open"; }
+    sleep 0.1
+done
 # Start tilo-session headless with the arguments given, its output in $log, and
 # wait until it printed its control socket, which it does last. It runs on the
 # private bus, which goes when the session does.
@@ -330,6 +358,7 @@ start_session() {
         TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
         TILO_LAUNCHER_BIN="$bin/tilo-launcher" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
+        TILO_FS_BLOB_SOCKET="$media_socket" \
         TILO_AGENT_DOOR="$door" \
         setsid "$session_bus" "$dbus_daemon" \
         "$bin/tilo-session" --backend headless --size "$size" --no-x11 \
