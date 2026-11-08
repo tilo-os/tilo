@@ -34,12 +34,22 @@ pub(crate) fn ensure() {
 /// reads them German still.
 pub(crate) struct SeededWords;
 
+/// Let the session read `catalogues` beside its own words: shared, so a package's
+/// language never becomes the one the session draws in.
+fn share(catalogues: &[(String, String)]) {
+    ensure();
+    for (locale, text) in catalogues {
+        ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
+    }
+}
+
 impl tilolang_tilo::runtime::Words for SeededWords {
     fn add(&self, catalogues: &[(String, String)]) {
-        ensure();
-        for (locale, text) in catalogues {
-            ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
-        }
+        share(catalogues);
+    }
+
+    fn add_used(&self, catalogues: &[(String, String)]) {
+        share(catalogues);
     }
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
