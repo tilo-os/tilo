@@ -1,5 +1,5 @@
-# German for the words the sample shows in it. One message is left out on purpose: a window
-# that reads German must not show the English one beside them (`tilolang layout-check`).
+# German for the words the sample shows in it. The check that a window reads in one language
+# leaves one of them out of a copy of this catalogue, made in the test.
 
 d-so-tilo-lang-layoutlanguages = Layoutsprachen
 
@@ -14,3 +14,4 @@ d-urkaowcy = Name
 
 d-gebschzi = Muster
     .w-a-translated-word = Ein übersetztes Wort
+    .w-a-word-only-the-source-language = Ein Wort, das nur die Ausgangssprache hat
