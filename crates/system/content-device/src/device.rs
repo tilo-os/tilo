@@ -236,6 +236,216 @@ pub(crate) fn store() -> Option<ContentStore> {
         .map(|backend| ContentStore::from_backend(Arc::clone(backend) as Arc<dyn ContentBackend>))
 }
 
+/// The document media the session whose runtime directory this process runs in serves its apps
+/// (`TILO_FS_BLOB_SOCKET`, `fs serve-media`), reached as the session it is.
+///
+/// A session's own process draws with the same pictures its apps do — the shell composes views of
+/// records whose stills an app's connector kept — and holds none of the launcher's inherited
+/// descriptors ([`client`]), so it reaches the daemon by its socket instead.
+///
+/// The daemon serves an address through a scope only while that workspace references it, and a
+/// session's process draws places of several workspaces: a store here reads every scope the daemon
+/// gives it with [`SESSION_WORKSPACES`], the workspace in front first, and stays with the one an
+/// address was read through for the addresses drawn beside it.
+#[cfg(unix)]
+pub(crate) fn session_store(workspace: &str) -> Option<ContentStore> {
+    // One connection per socket, shared by every store a process opens over it: the driver thread
+    // behind it serves many calls at once, and a picture drawn every frame is asked for again each
+    // frame.
+    static SESSIONS: OnceLock<Mutex<BTreeMap<std::path::PathBuf, BlobClient>>> = OnceLock::new();
+    let socket = std::env::var_os(SESSION_MEDIA_SOCKET_ENV)
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from(runtime_fs::blobs::DEFAULT_BLOB_SOCKET),
+            std::path::PathBuf::from,
+        );
+    let sessions = SESSIONS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let session = {
+        let mut sessions = sessions.lock().ok()?;
+        if let Some(session) = sessions.get(&socket) {
+            session.clone()
+        } else {
+            let session = BlobClient::connect_session(&socket)
+                .map_err(|error| tracing::debug!(%error, "no session document media"))
+                .ok()?;
+            sessions.insert(socket, session.clone());
+            session
+        }
+    };
+    // The workspaces this store reaches, the one drawn this pass first: the session tells every
+    // workspace it draws with [`set_session_workspaces`], so a place of any of them reads its
+    // pictures.
+    let mut workspaces: Vec<String> = vec![workspace.to_owned()];
+    if let Ok(held) = SESSION_WORKSPACES.lock() {
+        workspaces.extend(held.iter().filter(|held| *held != workspace).cloned());
+    }
+    let mut scopes = Vec::new();
+    for workspace in &workspaces {
+        match session.scope(workspace, SESSION_APP) {
+            Ok(held) => scopes.push(held),
+            // A workspace the daemon names no scope for holds none of its own: the store still
+            // serves the others.
+            Err(error) => {
+                tracing::debug!(%error, %workspace, "no document media scope for the session");
+            }
+        }
+    }
+    if scopes.is_empty() {
+        return None;
+    }
+    Some(
+        ContentStore::from_backend(Arc::new(SessionBackend::new(scopes)) as Arc<dyn ContentBackend>)
+            .for_one_workspace(),
+    )
+}
+
+/// The workspaces the session's own process draws the content of: what a store it opens reads
+/// through, the workspace in front first. Set once as the session starts, and again when the
+/// workspaces the desk holds change.
+#[cfg(unix)]
+static SESSION_WORKSPACES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Tell every store the session's process opens from here on which workspaces it draws, the one
+/// in front first: a place of any of them reads its pictures.
+#[cfg(unix)]
+pub(crate) fn set_session_workspaces(workspaces: Vec<String>) {
+    if let Ok(mut held) = SESSION_WORKSPACES.lock() {
+        *held = workspaces;
+    }
+}
+
+/// Content of the several workspaces a session's process draws: a read asks each scope in turn,
+/// and an address one served is read through that scope from then on, so the stills drawn beside
+/// it cost no further lookups.
+#[cfg(unix)]
+pub struct SessionBackend {
+    /// The scopes, the workspace in front's first.
+    scopes: Vec<DeviceBackend>,
+    cache: Arc<Mutex<Cache>>,
+    /// The scope each address was last read through, by hash.
+    held: Mutex<BTreeMap<String, usize>>,
+}
+
+#[cfg(unix)]
+impl SessionBackend {
+    fn new(scopes: Vec<BlobClient>) -> Self {
+        Self {
+            scopes: scopes.into_iter().map(DeviceBackend::new).collect(),
+            cache: Arc::new(Mutex::new(Cache::new(CACHE_BYTES))),
+            held: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn cached(&self, hash: &str) -> Option<Arc<[u8]>> {
+        self.cache.lock().ok()?.get(hash)
+    }
+
+    /// The scopes to ask for `hash`: the one it was last read through first, then the workspace in
+    /// front's, then the rest.
+    fn order(&self, hash: &str) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.scopes.len()).collect();
+        if let Some(held) = self
+            .held
+            .lock()
+            .ok()
+            .and_then(|held| held.get(hash).copied())
+        {
+            order.retain(|of| *of != held);
+            order.insert(0, held);
+        }
+        order
+    }
+}
+
+#[cfg(unix)]
+impl ContentBackend for SessionBackend {
+    fn put(&self, _: &mut dyn Read, _: &str) -> Result<Stored, ContentError> {
+        // The session draws content; it never stores any of its own: what it shows is what an
+        // app's connector kept.
+        Err(ContentError::Io(
+            "the session's document media reads content, never stores it".to_owned(),
+        ))
+    }
+
+    fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {
+        if !valid_hash(hash) {
+            return Err(ContentError::InvalidHash(hash.to_owned()));
+        }
+        let hash = hash.to_ascii_lowercase();
+        if let Some(bytes) = self.cached(&hash) {
+            return Ok(Some(Box::new(std::io::Cursor::new(bytes))));
+        }
+        for of in self.order(&hash) {
+            let Some(scope) = self.scopes.get(of) else {
+                continue;
+            };
+            let Some(reader) = scope.open(&hash).ok().flatten() else {
+                continue;
+            };
+            if let Ok(mut held) = self.held.lock() {
+                held.insert(hash.clone(), of);
+            }
+            return Ok(Some(Box::new(Filling {
+                inner: Verifying::new(reader, &hash),
+                hash,
+                kept: None,
+                cache: Arc::clone(&self.cache),
+            })));
+        }
+        Ok(None)
+    }
+
+    fn has(&self, hash: &str) -> bool {
+        let hash = hash.to_ascii_lowercase();
+        self.cached(&hash).is_some()
+            || self
+                .order(&hash)
+                .into_iter()
+                .any(|of| self.scopes.get(of).is_some_and(|scope| scope.has(&hash)))
+    }
+
+    fn state(&self, hash: &str) -> ContentState {
+        let hash = hash.to_ascii_lowercase();
+        if self.cached(&hash).is_some() {
+            return ContentState::Resolved;
+        }
+        let mut pending = false;
+        for of in self.order(&hash) {
+            match self.scopes.get(of).map(|scope| scope.state(&hash)) {
+                Some(ContentState::Resolved) => return ContentState::Resolved,
+                Some(ContentState::Pending) => pending = true,
+                _ => {}
+            }
+        }
+        if pending {
+            ContentState::Pending
+        } else {
+            ContentState::Unavailable
+        }
+    }
+
+    fn shared(&self) -> bool {
+        true
+    }
+
+    /// Every scope this store reads is one workspace's, so an address resolves only where that
+    /// workspace references it.
+    fn workspace_scoped(&self) -> bool {
+        true
+    }
+}
+
+/// The variable naming the socket a session serves its document media at
+/// (`fs serve-media`): the same one the launcher reads to scope every app it starts.
+#[cfg(unix)]
+pub(crate) const SESSION_MEDIA_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
+
+/// The app the session's own content is kept under: the workspace's reachability index is per
+/// workspace, not per app, so a still one app's connector kept is read here under the session's
+/// own name and serves every place that shows it.
+#[cfg(unix)]
+const SESSION_APP: &str = "so.tilo.session";
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -130,9 +130,56 @@ fn carried(url: &str) -> Option<PenikoImage> {
 
 /// The bytes of the content at `hash`, from the content store this process holds (the
 /// launcher's device store): `None` where the build has none (the web) or it is not here.
+///
+/// A process the launcher handed no store of its own — the session drawing the windows it runs
+/// itself, over records whose stills an app's connector kept — reads it from the store it was
+/// lent ([`lend_content`]) instead.
 #[cfg(feature = "native")]
 fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
-    crate::content::device()?.read(hash)
+    if let Some(bytes) = crate::content::device().and_then(|store| store.read(hash)) {
+        return Some(bytes);
+    }
+    lent_content()?.read(hash)
+}
+
+/// The store the windows this process draws read a content address from when the launcher
+/// handed the process no store of its own: the session's document media, which the session lends
+/// while it draws ([`lend_content`]).
+///
+/// It is the process's, not a thread's: the pictures load on the toolkit's background threads,
+/// which no window's own thread reaches.
+#[cfg(feature = "native")]
+static LENT_CONTENT: std::sync::RwLock<Option<tilo_content::ContentStore>> =
+    std::sync::RwLock::new(None);
+
+/// [`LENT_CONTENT`], or `None` where nothing was lent.
+#[cfg(feature = "native")]
+fn lent_content() -> Option<tilo_content::ContentStore> {
+    LENT_CONTENT.read().ok().and_then(|lent| lent.clone())
+}
+
+/// Let the windows this process draws read their content addresses from `store`: what a session
+/// lends the windows it draws in its own process, once it knows the store the workspaces' content
+/// is read through. Until it is called a process the launcher handed no store of its own reads
+/// no content address.
+///
+/// The pictures keep the store they were built with, so what this changes is where their bytes
+/// come from, read afresh each time a picture is asked for. `None` forgets the loads that failed
+/// against no store, so the pictures drawn again are asked for afresh; a store already lent is
+/// left to the pictures' own cache.
+#[cfg(feature = "native")]
+pub fn lend_content(store: Option<tilo_content::ContentStore>) {
+    let Ok(mut lent) = LENT_CONTENT.write() else {
+        return;
+    };
+    let fresh = lent.is_none() && store.is_some();
+    *lent = store;
+    drop(lent);
+    if fresh {
+        // A picture asked for before one answered failed, and a failure is kept so it is not
+        // asked for every frame: what failed against no store is asked for again now.
+        Pictures::window().store().forget_failed();
+    }
 }
 
 /// The bytes of the content at `hash`: a web page reads no content store, so a content address
@@ -235,5 +282,41 @@ impl Shown {
     #[must_use]
     pub fn waiting(&self) -> bool {
         self.picture.is_some() && self.image.is_none() && !self.failed()
+    }
+}
+
+#[cfg(all(test, feature = "native"))]
+mod tests {
+    #![allow(clippy::expect_used, reason = "in a test this is the assertion")]
+
+    use super::*;
+
+    /// A session's own process — the shell drawing the windows it runs itself — holds no device
+    /// store of its own: the launcher hands one only to the apps it starts. A content address is
+    /// read from the store the session lends it, and from nowhere before that, which is what a
+    /// place's stills are drawn through.
+    #[test]
+    fn a_content_address_reads_from_the_store_the_session_lent() {
+        let _env = tilo_test_env::lock();
+        let still = b"a still, as the connector kept it";
+        let store = tilo_content::ContentStore::memory();
+        let hash = store.put(still).expect("the still is kept");
+
+        // Nothing lent, and no launcher's capability in this process: the address names nothing.
+        lend_content(None);
+        assert_eq!(
+            blob_bytes(&hash),
+            None,
+            "a process handed no store reads no content address"
+        );
+
+        // The session lends the media of the workspace its places stand in: the address reads.
+        lend_content(Some(store));
+        assert_eq!(
+            blob_bytes(&hash),
+            Some(still.to_vec()),
+            "a place draws what the session's media served"
+        );
+        lend_content(None);
     }
 }

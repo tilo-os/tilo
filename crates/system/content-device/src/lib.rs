@@ -20,6 +20,8 @@ mod public;
 #[cfg(unix)]
 pub use device::DeviceBackend;
 #[cfg(unix)]
+pub use device::SessionBackend;
+#[cfg(unix)]
 pub use public::PublicCopy;
 
 /// What reading a public copy found.
@@ -107,6 +109,40 @@ pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
 #[must_use]
 pub fn for_app() -> ContentStore {
     device().unwrap_or_else(ContentStore::local_for_app)
+}
+
+/// The content the session `workspace` is in serves its apps, read as the session itself: the
+/// daemon at `TILO_FS_BLOB_SOCKET` (`fs serve-media`), serving an address when a workspace this
+/// process draws references it ([`set_session_workspaces`]).
+///
+/// This is the store a process that draws what a workspace holds reads its pictures from when
+/// the launcher handed it no capability of its own — the session's own process, which composes
+/// views of records whose stills an app's connector kept. `None` when no media is served or no
+/// workspace names a scope.
+#[must_use]
+pub fn session(workspace: &str) -> Option<ContentStore> {
+    #[cfg(unix)]
+    {
+        device::session_store(workspace)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = workspace;
+        None
+    }
+}
+
+/// Tell every store a session's process opens from here on which workspaces it draws, the one in
+/// front first: a place of any of them reads its pictures through it.
+pub fn set_session_workspaces(workspaces: Vec<String>) {
+    #[cfg(unix)]
+    {
+        device::set_session_workspaces(workspaces);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = workspaces;
+    }
 }
 
 #[cfg(test)]

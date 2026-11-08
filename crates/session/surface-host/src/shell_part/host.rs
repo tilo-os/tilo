@@ -242,6 +242,9 @@ impl SurfaceHost for ShellPart {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        // What the views draw reads its pictures from the content the session lent, and the
+        // pictures load on the toolkit's own threads: it is lent for the process, not this call.
+        ui::lend_content(self.content.clone());
         let input = std::mem::take(&mut self.input);
         // A surface the desk shows, or a menu it opened, makes the part cover the outputs:
         // standing over them is what lets a press outside it close it.
