@@ -220,8 +220,6 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
   };
 }
 
-/** The most presence frames this page publishes a second: input arrives at
- * display rate, and the members' interpolation only needs a steady stream. */
 /**
  * The live layer of one workspace: this page's presence on the workspace's
  * board, and the members' ephemeral previews.

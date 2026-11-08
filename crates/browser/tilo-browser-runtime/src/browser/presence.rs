@@ -327,6 +327,9 @@ impl Mount {
         if view.members.is_empty() && gone.is_empty() {
             return;
         }
+        let had_caret = std::mem::take(&mut self.presence.carets);
+        let mut carets = Vec::new();
+        let mut cleared = !gone.is_empty();
         self.frame.update_presence(|presence| {
             for publisher in &gone {
                 presence.unregister_peer(publisher);
@@ -346,12 +349,24 @@ impl Mount {
                             PresencePayload::Selection { start, end }
                         };
                         presence.apply_remote_presence(member.publisher.clone(), key, payload);
+                        carets.push(member.publisher.clone());
                     }
-                    None => presence.unregister_peer(&member.publisher),
+                    // Their caret went away: forgetting it costs their whole
+                    // record, so the roster names them again next frame. Who
+                    // they are is not theirs to lose by stopping.
+                    None if had_caret.contains(&member.publisher) => {
+                        presence.unregister_peer(&member.publisher);
+                        cleared = true;
+                    }
+                    None => {}
                 }
             }
             true
         });
+        self.presence.carets = carets;
+        if cleared {
+            self.apply_here();
+        }
     }
 }
 
@@ -369,6 +384,11 @@ fn selection_anchors(selection: Option<&JsSelection>) -> Option<(PresenceKey, us
 }
 
 impl Mount {
+    /// The workspace this mount draws, as the live plane numbers it.
+    fn workspace_number(&self) -> Option<u64> {
+        crate::peer::workspace_number(&self.workspace).ok()
+    }
+
     /// Unix milliseconds, on the clock presence is heard on.
     fn now_ms() -> f64 {
         #[expect(
@@ -475,4 +495,23 @@ pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
         m.apply_here();
         Ok(())
     })
+}
+
+/// A member's word arrived in `workspace` of `peer`: a mount that draws it
+/// asks for a frame at once, because the next frame is what places the
+/// pointer that moved. A desk at rest draws nothing on its own, so without
+/// this the pointer would wait for the next unrelated change.
+pub(crate) fn heard(peer: u32, workspace: u64) {
+    super::MOUNTS.with(|mounts| {
+        // A word that arrives while a mount is being served is laid out by
+        // the frame that service asks for: never a second borrow.
+        let Ok(mounts) = mounts.try_borrow() else {
+            return;
+        };
+        for mount in mounts.values() {
+            if mount.peer == Some(peer) && mount.workspace_number() == Some(workspace) {
+                mount.window.request_redraw();
+            }
+        }
+    });
 }

@@ -580,24 +580,30 @@ pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
 }
 
 /// Take one presence frame another member published in `workspace_id`: the
-/// members' words merge into this page's board for it. `None` for how this
+/// members' words merge into this page's board for it, and the mounts that
+/// draw it ask for the frame that places what changed. `None` for how this
 /// page has no board there.
 pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
     let Some(frame) = tilo_live::presence::decode(body) else {
         return;
     };
-    PAGES.with_borrow_mut(|pages| {
+    let changed = PAGES.with_borrow_mut(|pages| {
         let Some(page) = pages.get_mut(&peer) else {
-            return;
+            return false;
         };
+        let mut changed = false;
         for held in page
             .workspaces
             .values_mut()
             .filter(|held| held.number == workspace_id)
         {
-            held.board.hear(from, &frame, now_ms());
+            changed |= held.board.hear(from, &frame, now_ms());
         }
+        changed
     });
+    if changed {
+        crate::browser::presence::heard(peer, workspace_id);
+    }
 }
 
 /// What `peer`'s board for `workspace` holds, with the members' pointers

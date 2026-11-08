@@ -109,7 +109,8 @@ fn a_pointer_is_placed_on_the_tile_it_is_over_and_a_rest_draws_nothing() {
     assert_eq!(
         board
             .member([1; 32])
-            .and_then(|member| member.pointer_heard_at()),
+            .expect("still here")
+            .pointer_heard_at(),
         Some(1_000.5),
         "a resting pointer said again is still there"
     );

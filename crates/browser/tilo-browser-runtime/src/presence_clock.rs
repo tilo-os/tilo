@@ -66,6 +66,10 @@ pub(crate) struct View {
     /// Who was here, by publisher.
     #[cfg(target_arch = "wasm32")]
     pub(crate) seen: Vec<String>,
+    /// Who a caret is drawn for, by publisher: a member who stops selecting
+    /// has theirs taken away.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) carets: Vec<String>,
     /// When each member's chat said what, by publisher: the text and when it
     /// changed here.
     chat: HashMap<String, (String, f64)>,
