@@ -91,6 +91,7 @@ pub mod fabric;
 mod feedback;
 mod feeds;
 mod file_clipboard;
+pub mod files_daemon;
 mod fs_authority;
 mod held;
 mod here;

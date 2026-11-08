@@ -687,6 +687,16 @@ fn start(
         admin_control,
         ..device_options(machine, config)
     };
+    // The person's files: the login's files daemon serves them as the Files app's windowless
+    // endpoint, so the session records its process before the daemon's connections to the broker
+    // arrive. A session in another desktop's window serves no files daemon of its own.
+    if machine.is_owned() {
+        tilo_session::files_daemon::record(
+            Arc::clone(&options.launches),
+            collab_types::personal_cluster_of(&tilo_session::identity::seated_person(&options))
+                .map(|cluster| cluster.to_string()),
+        );
+    }
     // A headless session has no input device: nothing the person does can ever reset its idle
     // timers, so they would only blank and lock it.
     if backend == Backend::Headless {

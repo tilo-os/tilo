@@ -288,6 +288,22 @@ pub mod xdg {
         })
     }
 
+    /// Where this login's Tilo services bind their sockets: one directory in
+    /// the runtime directory, so a socket found here belongs to this user and
+    /// is gone when their login ends.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn services_dir() -> PathBuf {
+        runtime_dir_or_default().join("tilo/services")
+    }
+
+    /// The socket the service `name` listens on, and the launcher dials.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn service_socket(name: &str) -> PathBuf {
+        services_dir().join(format!("{name}.sock"))
+    }
+
     /// `$XDG_DATA_DIRS` in preference order, else `/usr/local/share` and
     /// `/usr/share`. Relative and empty entries are ignored, as the spec
     /// requires.
