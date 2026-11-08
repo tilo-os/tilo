@@ -634,7 +634,6 @@ async fn exercise_handshake_refusal_reasons(
             &crate::auth::HelloAck2 {
                 sig_over_server_nonce: [0; 64],
             },
-            false,
         )
         .map(|_| ())
         .unwrap_err();

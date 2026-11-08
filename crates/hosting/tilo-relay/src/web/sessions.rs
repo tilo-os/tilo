@@ -84,9 +84,6 @@ enum Admit {
 
 pub(crate) struct Session {
     pub(crate) peer: AuthenticatedPeer,
-    /// The page keeps it beside the workspace it is in, only to deliver for it
-    /// ([`super::SessionFinish::background`]): nobody is online by it.
-    background: bool,
     token: [u8; 32],
     expires: Instant,
     last_poll: Mutex<Instant>,
@@ -218,7 +215,6 @@ impl Sessions {
         self: &Arc<Self>,
         handshake: &[u8; 16],
         ack2: &HelloAck2,
-        background: bool,
     ) -> Result<SessionGrant, SessionError> {
         let pending = lock(&self.handshakes)
             .remove(handshake)
@@ -239,7 +235,6 @@ impl Sessions {
         let (end, mut ended) = watch::channel(false);
         let session = Arc::new(Session {
             peer: peer.clone(),
-            background,
             token,
             expires: Instant::now()
                 .checked_add(SESSION_TTL)
@@ -462,40 +457,6 @@ impl Sessions {
             crate::authority_epoch::bump();
         }
         lock(&self.handshakes).retain(|_, pending| pending.started.elapsed() < HANDSHAKE_TTL);
-    }
-
-    /// Open sessions per person (user root). A public host counts people
-    /// from it (its faces and counts), and tells its one visitor person's
-    /// sessions apart. A background session counts nobody: a page
-    /// keeps it here while its person is in a workspace elsewhere.
-    pub(crate) fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
-        let mut online = std::collections::BTreeMap::new();
-        for session in lock(&self.live)
-            .values()
-            .filter(|session| session.is_open() && !session.background)
-        {
-            let count = online
-                .entry(session.peer.user_public_key)
-                .or_insert(0_usize);
-            *count = count.saturating_add(1);
-        }
-        online
-    }
-
-    /// The devices whose page joined `workspace_id`'s presence plane now,
-    /// each with the person it is certified as: who a page there pairs with
-    /// before anyone says anything.
-    pub(crate) fn persons_in(&self, workspace_id: u64) -> Vec<([u8; 32], [u8; 32])> {
-        let mut persons: Vec<([u8; 32], [u8; 32])> = lock(&self.live)
-            .values()
-            .filter(|session| {
-                session.is_open() && lock(&session.workspaces).contains(&workspace_id)
-            })
-            .map(|session| (session.peer.device_public_key, session.peer.user_public_key))
-            .collect();
-        persons.sort_unstable();
-        persons.dedup();
-        persons
     }
 
     /// Whether `peer` may take part in `workspace_id` now: its certificate

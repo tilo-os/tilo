@@ -140,7 +140,8 @@ pub struct WebHandle {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     published_origin: Option<Arc<String>>,
-    sessions: Arc<Sessions>,
+    /// The pages' plane: the one account of who is here.
+    presence: Arc<wt::Pages>,
 }
 
 impl WebHandle {
@@ -150,7 +151,11 @@ impl WebHandle {
     /// count is its open pages.
     #[must_use]
     pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
-        self.sessions.online_users()
+        self.presence
+            .participants()
+            .into_iter()
+            .map(|(user, devices)| (user, devices.len()))
+            .collect()
     }
 }
 
@@ -394,7 +399,7 @@ impl Relay {
             tasks,
             locator_origin: Arc::clone(&self.browser_origin),
             published_origin,
-            sessions,
+            presence: plane.pages.clone(),
         })
     }
 }
@@ -977,7 +982,7 @@ async fn route(
             let finish: SessionFinish = decode(&bytes)?;
             let grant = web
                 .sessions
-                .finish(&finish.handshake, &finish.ack2, finish.background)
+                .finish(&finish.handshake, &finish.ack2)
                 .map_err(|error| session_status(&error))?;
             Ok(match protocol::encode_grant(&grant, web.features) {
                 Ok(bytes) => reply(StatusCode::OK, bytes),
@@ -1039,7 +1044,9 @@ async fn route(
                 std::time::Instant::now(),
                 tilo_clock::unix_now_ms(),
             );
-            here::pair_members(&mut reply, &web.sessions.persons_in(workspace_id));
+            if let Some(live) = web.live.as_ref() {
+                here::pair_members(&mut reply, &live.pages.persons_in(workspace_id));
+            }
             for person in &mut reply.people {
                 person.profile_ms = web.profiles.issued_at(&person.user).unwrap_or(0);
             }
@@ -1072,7 +1079,11 @@ async fn route(
                 .workspaces
                 .as_ref()
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            let online = web.sessions.online_users().into_keys().collect();
+            let online = web
+                .live
+                .as_ref()
+                .map(|live| live.pages.participants().into_keys().collect())
+                .unwrap_or_default();
             Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
                 workspaces: workspaces.directory(&online).await,
             }))
