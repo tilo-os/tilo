@@ -359,16 +359,23 @@ pub(crate) fn own_identity(here: &tilo_desktop::here::HereState) -> (String, (u8
     (name, rgb)
 }
 
-/// Who is here, placed in `tree` and the records its windows show.
+/// Who is here, placed in `tree` and the records its windows show, each named as presence names
+/// it: the app and the 16-hex digest of its record, which is what a member's focus carries.
 pub(crate) fn here_people(
     here: &tilo_desktop::here::Here,
     shared: &crate::desktop::Shared,
     tree: &DesktopTree,
 ) -> Vec<tilo_desktop::here::Person> {
-    let records: Vec<(TabId, String)> = shared
-        .bound_records()
-        .into_iter()
-        .map(|(tab, checkout)| (tab, checkout.id.as_str().to_owned()))
+    let bindings: HashMap<TabId, ui::record::RecordCheckout> =
+        shared.bound_records().into_iter().collect();
+    let records: Vec<(TabId, String)> = tree
+        .tabs()
+        .filter_map(|tab| {
+            let (app, record) =
+                tilo_desktop_surface::host::records::of_window(tree, &bindings, tab.id)?;
+            let named = tilo_relay_protocol::live::LiveRecord { app, record };
+            Some((tab.id, hex::encode(named.short_digest())))
+        })
         .collect();
     let app_name = |app: &str| crate::desktop::known_application(app).map(str::to_owned);
     here.borrow().people(tree, &records, &app_name, now_ms())

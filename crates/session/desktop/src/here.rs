@@ -1768,6 +1768,65 @@ mod tests {
         assert_eq!(place("cy"), None, "an app this page cannot name");
     }
 
+    /// A member's focus names the record its window shows by that record's short digest, as
+    /// presence names it: the host that holds the same window knows which window they are in.
+    #[test]
+    fn a_focus_naming_a_window_here_puts_them_in_that_window() {
+        use tilo_desktop_model::{
+            Strip, StripId, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
+        };
+        let digest = "0123456789abcdef";
+        let welcome = Tab {
+            id: 7,
+            title: "Welcome".into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: "Notes".into(),
+                note: String::new(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        };
+        let mut strip = Strip::new(StripId(1), "Main");
+        strip.window_groups.push(WindowGroup {
+            id: 8,
+            active_tab: welcome.id,
+            tabs: vec![welcome],
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Design");
+        workspace.strips = vec![strip];
+        let tree = DesktopTree {
+            active: workspace.slot,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let mut here = HereState::default();
+        here.set_members(
+            None,
+            Some(vec![LiveMember {
+                focus: Some(Focus {
+                    app: "so.tilo.notes".into(),
+                    record: digest.into(),
+                }),
+                activity: None,
+                ..member("ann", "person", "Ann")
+            }]),
+        );
+        let app = |id: &str| (id == "so.tilo.notes").then(|| "Notes".to_owned());
+        let held = [(7, digest.to_owned())];
+        let people = here.people(&tree, &held, &app, 0);
+        let ann = people
+            .iter()
+            .find(|person| person.id == "ann")
+            .expect("ann is here");
+        assert_eq!(ann.tab, Some(7), "the window her focus names");
+        assert_eq!(ann.place.as_deref(), Some("Notes"));
+    }
+
     /// Two pages going by one name are numbered, this page included, by their publishers — the same
     /// numbers on every page in the workspace.
     #[test]
