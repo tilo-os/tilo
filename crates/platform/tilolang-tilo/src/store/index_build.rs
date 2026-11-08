@@ -23,7 +23,7 @@ use crate::chunk::{self, ChunkNo, Stamps};
 use crate::index::derive::{Derive, DocReads, Reached};
 use crate::index::view::View;
 use crate::index::{self as idx, Index, IndexError, Opened};
-use crate::reads::changed_by;
+use crate::reads::Places;
 
 /// Where a package's index is in being had.
 pub(super) enum IndexState {
@@ -294,6 +294,10 @@ impl TiloStore {
     /// list shorter than the workspace's. A store that can load them loads them, as one that
     /// was sent every chunk opens; an index kept from an open over all of them needs none.
     /// Returns whether a chunk was read.
+    ///
+    /// An index that answers no row yet is building its first step: the chunk that step derives
+    /// is read first, and a window shows its rows once the step is in. The rest of the record is
+    /// read after them, so a workspace of fifty chunks opens on its rows as one of one does.
     pub fn load_short(&self) -> bool {
         let short: Vec<ChunkNo> = {
             let held = self.held();
@@ -306,13 +310,19 @@ impl TiloStore {
             if held.chunk_loader.is_none() || !held.chunks.has_record() {
                 Vec::new()
             } else {
-                held.chunks
-                    .placement()
-                    .chunks()
+                let placed = held.chunks.placement().chunks();
+                let missing = placed
                     .iter()
                     .copied()
-                    .filter(|chunk| !reflected.contains(chunk))
-                    .collect()
+                    .filter(|chunk| !reflected.contains(chunk));
+                if held.apps.values().all(AppIndex::answers) {
+                    missing.collect()
+                } else {
+                    missing
+                        .filter(|chunk| held.chunks.mirror(*chunk).is_none())
+                        .take(1)
+                        .collect()
+                }
             }
         };
         let mut loaded = false;
@@ -481,13 +491,13 @@ impl Inner {
     /// names, none of which it holds: a workspace opens over the chunks its window shows and
     /// reads the rest as it reaches for them ([`TiloStore::load_short`]), so the build starts
     /// once one of them is read, rather than over a record with no rows. A store that cannot
-    /// read them (no loader) builds over what it has.
+    /// read them builds over what it has, once the round that would have read them has passed
+    /// ([`Inner::build_missing`]).
     fn waits_for_rows(&self) -> bool {
-        if self.chunk_loader.is_none() || !self.chunks.has_record() {
+        if !self.chunks.has_record() {
             return false;
         }
-        let placed = self.chunks.placement();
-        let chunks = placed.chunks();
+        let chunks = self.chunks.placement().chunks();
         !chunks.is_empty()
             && chunks
                 .iter()
@@ -602,12 +612,18 @@ impl Inner {
             self.build_now(app);
             return;
         }
-        self.derive_off_frame(app, self.first_step(), Stamps::new(), true);
+        self.derive_off_frame(app, self.first_step(), Stamps::new(), true, true);
     }
 
-    /// The chunks a fresh index is first derived from: the record's own chunk with the first
-    /// chunk it places that the store holds — where a window's first rows are. The rest of the
-    /// record follows once the window shows them.
+    /// The chunks a fresh index is first derived from: the first chunk the record places that
+    /// the store holds — where a window's first rows are, and what its first screen shows. The
+    /// rest of the record, the record's own chunk among it, follows once the window shows them.
+    ///
+    /// A record that places nothing keeps everything in its own chunk, which is then the step:
+    /// that chunk holds a change an item of a collection wrote of the manifest, and reading it
+    /// costs what the record holds. Read only with the rest, it would hold up the first rows of
+    /// a workspace of a hundred thousand tasks for the manifest's changes, which name no
+    /// resource and show no row.
     fn first_step(&self) -> Vec<ChunkNo> {
         let placed = self.chunks.placement();
         let held = placed
@@ -615,7 +631,7 @@ impl Inner {
             .into_iter()
             .find(|chunk| self.chunks.mirror(*chunk).is_some());
         match held {
-            Some(chunk) => vec![chunk::FIRST, chunk],
+            Some(chunk) => vec![chunk],
             None => vec![chunk::FIRST],
         }
     }
@@ -634,6 +650,9 @@ impl Inner {
         }
         held.state = IndexState::Ready;
         held.readable = true;
+        if !build {
+            self.stats.catch_ups = self.stats.catch_ups.saturating_add(1);
+        }
         let rest = self.unreflected(app);
         if !self.chunks.has_record() {
             // What the step derived names records the store without the record finds by their
@@ -643,7 +662,7 @@ impl Inner {
         if rest.is_empty() {
             return false;
         }
-        self.derive_off_frame(app, rest, heads, build);
+        self.derive_off_frame(app, rest, heads, build, false);
         true
     }
 
@@ -651,7 +670,14 @@ impl Inner {
     /// off the frame, as a step of the build `build` says. A step of a build leaves the index
     /// readable while the rest are derived: what ended here is taken in on a frame
     /// ([`TiloStore::poll_index`]).
-    fn derive_off_frame(&mut self, app: &str, part: Vec<ChunkNo>, from: Stamps, build: bool) {
+    fn derive_off_frame(
+        &mut self,
+        app: &str,
+        part: Vec<ChunkNo>,
+        from: Stamps,
+        build: bool,
+        opening: bool,
+    ) {
         let Some(held) = self.apps.get(app) else {
             return;
         };
@@ -678,7 +704,8 @@ impl Inner {
                     docs: &docs,
                     nested: &nested,
                 };
-                let (heads, reads) = derive(&source, &app_id, &from, &part, &before, clock)?;
+                let (heads, reads) =
+                    derive(&source, &app_id, &from, &part, &before, clock, opening)?;
                 Ok((heads, reads))
             },
             self.wake.clone(),
@@ -734,6 +761,10 @@ impl Inner {
     /// Nothing when it reflects them all — the open over the index an earlier run left. A chunk
     /// the index reflects and the store was not sent asks for nothing here: what reads its rows
     /// loads it.
+    ///
+    /// The changes are derived off the frame whenever a frame can be woken to take them in: a
+    /// workspace that arrives whole reads its rows while the index catches up to what the record
+    /// holds, rather than the frame the chunks arrived in reading all of it.
     fn catch_up(&mut self, app: &str) {
         if !self.chunks.has_record() {
             return;
@@ -742,10 +773,22 @@ impl Inner {
             return;
         };
         let from = held.heads.clone();
+        // Off the frame wherever a frame can be woken to take the step in: a workspace that
+        // arrives whole reads the rows the store already holds while the index catches up to
+        // the rest, rather than the frame the chunks arrived in reading all of it. A store
+        // nothing wakes (a capture, a host without frames) catches up here, in its own time.
+        let off_frame = self.wake.is_some();
         let moved = self.unreflected(app);
         if moved.is_empty() {
             return;
         }
+        if off_frame {
+            self.derive_off_frame(app, moved, from, false, false);
+            return;
+        }
+        let Some(held) = self.apps.get(app) else {
+            return;
+        };
         let now = stamps_after(&self.chunks, &from, &moved);
         // Named against the records the index held: a record made since is derived whole.
         let mut before: BTreeMap<DocId, (AppId, TypeId)> = BTreeMap::new();
@@ -762,7 +805,7 @@ impl Inner {
             docs: &docs,
             nested: &self.nested,
         };
-        let written = derive(&source, app, &from, &moved, &before, clock);
+        let written = derive(&source, app, &from, &moved, &before, clock, false);
         match written {
             Ok((_, reads)) => {
                 if let Some(held) = self.apps.get_mut(app) {
@@ -801,6 +844,7 @@ fn derive(
     part: &[ChunkNo],
     before: &BTreeMap<DocId, (AppId, TypeId)>,
     clock: crate::index::Clock,
+    opening: bool,
 ) -> Result<(Stamps, DocReads), IndexError> {
     let &Source {
         index,
@@ -818,9 +862,20 @@ fn derive(
         let since = doc
             .committed_document()
             .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
-        ends.extend(idx::reflect::ends_of(&since, doc, docs));
-        placed.extend(idx::reflect::placed_by(&since));
-        changed.take_in(changed_by(&since, doc, before));
+        // What wrote a resource of the record, as the run tails a collection's every item
+        // writes in its manifest write none: a workspace of a hundred thousand items holds a
+        // hundred thousand changes that name no resource, and their messages are not read.
+        let mut naming = Vec::new();
+        let mut walked = Places::of(doc);
+        for change in &since {
+            let written = walked.written(change, before);
+            if written.wrote() {
+                naming.push(change);
+            }
+            changed.take_in(written);
+        }
+        ends.extend(idx::reflect::ends_of(naming.iter().copied(), doc, docs));
+        placed.extend(idx::reflect::placed_by(naming));
     }
     for doc in &changed.nested {
         nested.forget(doc);
@@ -844,7 +899,14 @@ fn derive(
     };
     let now = stamps_after(chunks, from, part);
     let written = index.write(|writer| {
-        let mut derive = Derive::new(chunks, docs, nested, clock);
+        // The items of the chunks the step derives are read once, and each change the step
+        // takes in reads the one it names from them: the first step of a build reads only the
+        // chunks it derives, and its items are its rows.
+        let mut derive = if opening {
+            Derive::opening(chunks, docs, nested, clock, part)
+        } else {
+            Derive::step(chunks, docs, nested, clock, part)
+        };
         derive.removed_before(writer, app, &ends, &placed)?;
         derive.changes(writer, app, &reached)?;
         derive.versions(writer, app, &ends)?;

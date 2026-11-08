@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::{ObjId, ReadDoc};
-use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::ids::{AppId, DocId, ItemId, TypeId};
 use tilolang_runtime::place::{Place, Resolved};
 use tilolang_runtime::store::{
     ANY_FIELD, FieldKey, FieldValue, LINKS, Left, LinkHow, Scalar, Version, VersionKind, doc_of,
@@ -20,7 +20,7 @@ use super::lists::Entry;
 use super::reflect::{self, CREATED, Ends, Stamp, UPDATED};
 use super::{CHUNK, CYCLES, IN, IndexError, KEY, LEFT, TYPE, Writer, removed_field};
 use crate::chunk::{ChunkNo, Chunks};
-use crate::items::{Items, Nested, fits};
+use crate::items::{Found, Items, Nested, fits};
 use crate::reads::{Placed, default_value, field_of_slot, type_at};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
 
@@ -507,6 +507,17 @@ pub struct Derive<'d> {
     /// The chunk each item's map is stored in, by its path in the index: a collection derives
     /// where the items of its runs are, and each item's fields are read there.
     chunks_of: BTreeMap<String, ChunkNo>,
+    /// The chunks the step derives, when it derives some: a change is read of the chunks it is
+    /// in, and each item it names is read where those chunks hold it.
+    part: Option<&'d [ChunkNo]>,
+    /// Where the items of the chunks the step derives are, by record and id: read once, so that
+    /// deriving each item a change names is a lookup rather than a search of every chunk the
+    /// store holds (which, an item at a time, is the workspace read once an item).
+    found: BTreeMap<DocId, BTreeMap<ItemId, Found>>,
+    /// Whether a record derives only the items of the chunks the step reads: the first step of
+    /// a build, which is where the window's first rows are, the rest of the record derived as
+    /// the chunks holding it are read.
+    opening: bool,
 }
 
 /// The collection an item is in, and its order key: where its columns' entries go.
@@ -836,7 +847,104 @@ impl<'d> Derive<'d> {
             chunks_of: BTreeMap::new(),
             notified: BTreeMap::new(),
             left: Vec::new(),
+            part: None,
+            found: BTreeMap::new(),
+            opening: false,
         }
+    }
+
+    /// [`Self::new`] for a step that derives the chunks `part`: the items of those chunks are
+    /// read once, where they are, and each item a change of them names is looked up rather than
+    /// searched for in every chunk the store holds.
+    pub fn step(
+        chunks: &'d Chunks,
+        docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
+        nested: &'d Nested,
+        clock: super::Clock,
+        part: &'d [ChunkNo],
+    ) -> Self {
+        let mut derive = Self::new(chunks, docs, nested, clock);
+        derive.read_part(part);
+        derive.part = Some(part);
+        derive
+    }
+
+    /// [`Self::step`] for the first step of a build: a record derives only the items of the
+    /// chunks it reads, which is what a window's first rows are made of, the rest of the record
+    /// derived as the chunks holding it are read.
+    pub fn opening(
+        chunks: &'d Chunks,
+        docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
+        nested: &'d Nested,
+        clock: super::Clock,
+        part: &'d [ChunkNo],
+    ) -> Self {
+        let mut derive = Self::step(chunks, docs, nested, clock, part);
+        derive.opening = true;
+        derive
+    }
+
+    /// Read where the items of the chunks `part` hold them, by record and id.
+    fn read_part(&mut self, part: &[ChunkNo]) {
+        for chunk in part {
+            let Some(doc) = self.chunks.mirror(*chunk) else {
+                continue;
+            };
+            // The records this chunk holds, never every record of the store: a chunk holds the
+            // items of a few of them.
+            for record in crate::reads::held_ids(doc) {
+                let Some((app, ty)) = self.docs.get(&record) else {
+                    continue;
+                };
+                let (app, ty) = (app.clone(), ty.clone());
+                let Some(schema) = lookup(&ty) else {
+                    continue;
+                };
+                let Some(root) = crate::reads::resource_obj(doc, &app, &record) else {
+                    continue;
+                };
+                let found = self.found.entry(record).or_default();
+                for (id, item) in Items::scan(doc, &root, schema, *chunk).found {
+                    let was = found.remove(&id);
+                    found.insert(id, crate::items::later(was, item));
+                }
+            }
+        }
+    }
+
+    /// The item `id` of the record `doc` (of `app`, of type `schema`): where the chunks the step
+    /// reads hold it, and the index reads it from there, else searched for across the chunks the
+    /// store holds, and kept for the items the step names again.
+    ///
+    /// # Errors
+    /// The sink cannot be read, or holds a chunk an item is not in.
+    fn item(
+        &mut self,
+        sink: &mut impl Sink,
+        (app, doc): (&str, &str),
+        schema: &TypeSchema,
+        id: &str,
+    ) -> Result<Option<Found>, IndexError> {
+        let derived: Option<ChunkNo> = sink
+            .text(&item_path(doc, id), CHUNK)?
+            .map(|held| held.parse::<ChunkNo>().map_err(|_| IndexError::Corrupt))
+            .transpose()?;
+        let held = self.found.get(doc).and_then(|found| found.get(id));
+        if let Some(found) = held
+            && derived.is_none_or(|derived| derived == found.chunk)
+        {
+            return Ok(Some(found.clone()));
+        }
+        // An item the store holds two copies of (a move made on two replicas at once) is read
+        // from the copy that is later in the record's order, wherever it stands.
+        let found = crate::items::find_across(self.chunks, app, doc, schema, self.nested, id);
+        if let Some(found) = &found {
+            self.found
+                .entry(doc.to_owned())
+                .or_default()
+                .insert(id.to_owned(), found.clone());
+        }
+        Ok(found)
     }
 
     /// The document the resource `id` is stored in, when the store holds its chunk.
@@ -1188,8 +1296,16 @@ impl<'d> Derive<'d> {
         match (obj, schema) {
             (Some(obj), Some(schema)) => {
                 sink.doc(doc, Some(ty), chunk)?;
-                // A collection's items are spread over the chunks of its runs.
-                let items = Items::across(self.chunks, app, doc, schema);
+                // A collection's items are spread over the chunks of its runs: all of them, or
+                // — the first step of a build — the ones this step reads, where the window's
+                // first rows are, the rest of the items derived as their chunks are read.
+                let items = Items::across_in(
+                    self.chunks,
+                    app,
+                    doc,
+                    schema,
+                    self.opening.then_some(self.part).flatten(),
+                );
                 self.reads.listings = self.reads.listings.saturating_add(1);
                 self.reads.entries = self
                     .reads
@@ -1469,16 +1585,30 @@ impl<'d> Derive<'d> {
     /// Where the resource at `path` is in the record, and its type: `None` when it is not
     /// there. The chunk holding the item's map is kept with it: it is where its fields are read
     /// and its writes go, and an item of a run is in a chunk above the record's.
-    fn locate(&mut self, path: &str) -> Option<(Option<ObjId>, &'static TypeSchema)> {
+    fn locate(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+    ) -> Result<Option<(Option<ObjId>, &'static TypeSchema)>, IndexError> {
         let doc = doc_of(path);
-        let (root, schema) = self.record_of(doc)?;
-        let Some(item) = id_of(path) else {
-            return Some((Some(root), schema));
+        let Some((root, schema)) = self.record_of(doc) else {
+            return Ok(None);
         };
-        let (app, _) = self.docs.get(doc)?;
-        let found = crate::items::find_across(self.chunks, app, doc, schema, self.nested, item)?;
+        let Some(item) = id_of(path) else {
+            return Ok(Some((Some(root), schema)));
+        };
+        let Some((app, _)) = self.docs.get(doc) else {
+            return Ok(None);
+        };
+        let app = app.clone();
+        let Some(found) = self.item(sink, (&app, doc), schema, item)? else {
+            return Ok(None);
+        };
         self.chunks_of.insert(path.to_owned(), found.chunk);
-        Some((found.obj, found.ty.as_deref().and_then(lookup)?))
+        let Some(item_schema) = found.ty.as_deref().and_then(lookup) else {
+            return Ok(None);
+        };
+        Ok(Some((found.obj, item_schema)))
     }
 
     /// Apply what changes to the record reached, of the records of `app`, to `sink`, which
@@ -1604,14 +1734,7 @@ impl<'d> Derive<'d> {
                     continue;
                 }
                 self.reads.located = self.reads.located.saturating_add(1);
-                let found = crate::items::find_across(
-                    self.chunks,
-                    &held_app,
-                    doc,
-                    schema,
-                    self.nested,
-                    &id,
-                );
+                let found = self.item(sink, (&held_app, doc), schema, &id)?;
                 let item_schema = found
                     .as_ref()
                     .and_then(|found| found.ty.as_deref())
@@ -1880,7 +2003,7 @@ impl<'d> Derive<'d> {
         let Some(placed) = placed_in(sink, path)? else {
             return Ok(());
         };
-        let Some((obj, schema)) = self.locate(path) else {
+        let Some((obj, schema)) = self.locate(sink, path)? else {
             return Ok(());
         };
         let own = self.own_fields(sink, path, obj.as_ref(), schema)?;
@@ -1981,7 +2104,7 @@ impl<'d> Derive<'d> {
         if id_of(path).is_some() && sink.text(path, TYPE)?.is_none() {
             return Ok(());
         }
-        let Some((obj, schema)) = self.locate(path) else {
+        let Some((obj, schema)) = self.locate(sink, path)? else {
             return Ok(());
         };
         let Some(spec) = schema.field(field) else {

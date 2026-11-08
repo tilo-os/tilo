@@ -190,8 +190,11 @@ pub(super) fn build(
     let mut removed = crate::index::derive::Removed::new();
     for (_, doc) in chunks.docs() {
         let changes = doc.committed_document().get_changes(&[]);
-        ends.extend(idx::reflect::ends_of(&changes, doc, docs));
-        removed = super::versions::note_versions(&mut versions, &changes, doc, docs);
+        // What wrote a resource: a run's tail in the manifest is written once an item, and a
+        // change that writes nothing else names no resource and makes no version of one.
+        let naming = crate::reads::naming(&changes, doc);
+        ends.extend(idx::reflect::ends_of(naming.iter().copied(), doc, docs));
+        removed = super::versions::note_versions(&mut versions, naming, doc, docs);
     }
     let nested = Nested::default();
     index.write(|writer| {

@@ -1585,7 +1585,8 @@ fn stamps_after(chunks: &Chunks, from: &Stamps) -> Stamps {
 }
 
 /// The versions the changes of the chunks `moved` since their stamps `from` made: what an
-/// index stamped with those heads takes in.
+/// index stamped with those heads takes in. A change that wrote nothing but where the record
+/// places its resources (`$chunks`) made no version of one, and its message is not read.
 fn ends_of_chunks(
     chunks: &Chunks,
     from: &Stamps,
@@ -1598,7 +1599,11 @@ fn ends_of_chunks(
             let since = doc
                 .committed_document()
                 .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
-            ends.extend(idx::reflect::ends_of(&since, doc, docs));
+            ends.extend(idx::reflect::ends_of(
+                crate::reads::naming(&since, doc),
+                doc,
+                docs,
+            ));
         }
     }
     ends
@@ -1614,7 +1619,7 @@ fn placed_of_chunks(chunks: &Chunks, from: &Stamps, moved: &[ChunkNo]) -> idx::r
             let since = doc
                 .committed_document()
                 .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
-            placed.extend(idx::reflect::placed_by(&since));
+            placed.extend(idx::reflect::placed_by(crate::reads::naming(&since, doc)));
         }
     }
     placed

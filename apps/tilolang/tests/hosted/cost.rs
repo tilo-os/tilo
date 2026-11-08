@@ -835,6 +835,7 @@ fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
         let wall = ui::time::Instant::now();
         show_rows(&mut session);
         let rows_us = since(start, wall.elapsed());
+        let shown_us = u64::try_from(wall.elapsed().as_micros()).unwrap_or(u64::MAX);
         shots(&format!("cold-{n}-first-rows"), &mut session);
         assert!(
             !session.titles().is_empty(),
@@ -858,8 +859,10 @@ fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
         shots(&format!("cold-{n}-read"), &mut session);
         let cold = shown(&mut session);
         eprintln!(
-            "cold open at {n} tasks: first rows {:.2} ms, whole {:.2} ms of the window's CPU",
+            "cold open at {n} tasks: first rows {:.2} ms of the window's CPU, shown after \
+             {:.2} ms; whole {:.2} ms",
             rows_us as f64 / 1000.0,
+            shown_us as f64 / 1000.0,
             whole_us as f64 / 1000.0
         );
         measured.push((n, rows_us, whole_us));
@@ -898,7 +901,7 @@ fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
     let ratio = large_rows as f64 / small_rows.max(1) as f64;
     let items = large_n as f64 / small_n.max(1) as f64;
     assert!(
-        ratio <= items / 2.0,
+        ratio < 2.0,
         "the first rows wait for the chunk they are in, not the workspace: {large_n} tasks took \
          {ratio:.1} times what {small_n} did, for {items:.0} times the tasks"
     );
@@ -908,9 +911,10 @@ fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
 /// grows with the tasks, not with the square of the chunks they span. Measured in an optimised
 /// build, where the numbers mean something: `--ignored`.
 ///
-/// The first rows lead the whole open at ten thousand tasks and not at a hundred thousand: there
-/// the record's own chunk is most of the open, and nothing is read off the frame before it. The
-/// hundred thousand open is reported rather than held to a ratio.
+/// The first rows wait for the chunk they are in — and the manifest's run tails, which a hundred
+/// thousand items write as many changes of, are derived after them — at a hundred thousand tasks
+/// as at a thousand. What grows with the workspace is the rest of the record, derived off the
+/// frame once the window shows the first rows.
 #[test]
 #[ignore = "a measurement for an optimised build"]
 fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
@@ -928,15 +932,18 @@ fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
         let wall = ui::time::Instant::now();
         show_rows(&mut session);
         let rows_us = since(start, wall.elapsed());
+        let shown_us = u64::try_from(wall.elapsed().as_micros()).unwrap_or(u64::MAX);
         session.settle();
         let us = since(start, wall.elapsed());
         eprintln!(
-            "cold open at {n} tasks: first rows {:.2} ms, whole {:.2} ms",
+            "cold open at {n} tasks: first rows {:.2} ms of the window's CPU, shown after \
+             {:.2} ms; whole {:.2} ms",
             rows_us as f64 / 1000.0,
+            shown_us as f64 / 1000.0,
             us as f64 / 1000.0
         );
         measured.push((n, us));
-        first_rows.push((n, rows_us));
+        first_rows.push((n, rows_us, shown_us));
     }
     let (small_n, small) = measured[0];
     let (large_n, large) = measured[1];
@@ -946,15 +953,37 @@ fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
         ratio <= items * 2.0,
         "a cold open grows with the tasks: {large_n} took {ratio:.1} times what {small_n} did"
     );
-    let (small_n, small) = first_rows[0];
-    let (large_n, large) = first_rows[1];
-    let ratio = large as f64 / small.max(1) as f64;
-    let items = large_n as f64 / small_n.max(1) as f64;
+    // The first rows read the chunk they are in, whatever the workspace holds behind it: once
+    // more of the tasks, and ten times more of them again, cost what the first ones cost.
+    for (small, large) in [(0, 1), (1, 2)] {
+        let (small_n, small_us, small_shown) = first_rows[small];
+        let (large_n, large_us, large_shown) = first_rows[large];
+        let us = large_us as f64 / small_us.max(1) as f64;
+        let shown = large_shown as f64 / small_shown.max(1) as f64;
+        assert!(
+            us < 2.0,
+            "the first rows do not wait for the workspace: {large_n} tasks took {us:.1} times \
+             the window's CPU that {small_n} did"
+        );
+        assert!(
+            large_shown <= small_shown.saturating_mul(2).saturating_add(50_000),
+            "the first rows at {large_n} tasks were shown after {large_shown}us, {shown:.1} times \
+             the {small_shown}us it took at {small_n}"
+        );
+    }
+    let (large_n, large_us, large_shown) = first_rows[2];
     assert!(
-        ratio <= items / 4.0,
-        "the first rows do not wait for the workspace: {large_n} tasks took {ratio:.1} times \
-         what {small_n} did, for {items:.0} times the tasks"
+        large_us <= FIRST_ROWS_BUDGET_US,
+        "the first rows at {large_n} tasks took {large_us}us of the window's CPU, over \
+         {FIRST_ROWS_BUDGET_US}us"
     );
+    if !cfg!(debug_assertions) {
+        assert!(
+            large_shown < 1_000_000,
+            "the first rows at {large_n} tasks were shown after {large_shown}us, over the second \
+             a person waits"
+        );
+    }
 }
 
 /// A window over a workspace a person has used for years reads the chunks its rows are in, not
@@ -1187,8 +1216,9 @@ fn show_rows(session: &mut Session) -> u64 {
         }
         if !changed {
             // Nothing on the frame to do: what the rows wait for is read beside the frames, and
-            // the host is woken when it is ready to be taken in.
-            session.woken.wait(std::time::Duration::from_millis(50));
+            // the host is woken when it is ready to be taken in. The wait is short, so that how
+            // long the rows took is the work and not the moment the window looked again.
+            session.woken.wait(std::time::Duration::from_millis(10));
         }
     }
     let ready = session.index_ready();

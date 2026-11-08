@@ -53,7 +53,7 @@ pub struct Found {
 
 /// The copy of an item that is later in the record's order: of two chunks holding an item of the
 /// same id (a move made on two replicas at once), the one whose placing change comes later.
-fn later(held: Option<Found>, next: Found) -> Found {
+pub(crate) fn later(held: Option<Found>, next: Found) -> Found {
     fn written(found: &Found) -> (u64, &[u8]) {
         found.held.as_ref().map_or((0, &[][..]), |held| {
             (held.written.0, held.written.1.as_slice())
@@ -380,8 +380,25 @@ impl Items {
     /// replicas at once) reads as the copy that is later in the record's order.
     #[must_use]
     pub fn across(chunks: &Chunks, app: &str, doc: &str, schema: &TypeSchema) -> Self {
+        Self::across_in(chunks, app, doc, schema, None)
+    }
+
+    /// [`Self::across`] over the chunks `only` names (`None`: every chunk the store holds): what
+    /// a record holds of the chunks a step of a build reads, where a window's first rows are,
+    /// the chunks of the rest arriving as they are read.
+    #[must_use]
+    pub fn across_in(
+        chunks: &Chunks,
+        app: &str,
+        doc: &str,
+        schema: &TypeSchema,
+        only: Option<&[ChunkNo]>,
+    ) -> Self {
         let mut items = Self::default();
         for (chunk, held) in chunks.docs() {
+            if only.is_some_and(|only| !only.contains(&chunk)) {
+                continue;
+            }
             let Some(root) = crate::reads::resource_obj(held, app, doc) else {
                 continue;
             };
