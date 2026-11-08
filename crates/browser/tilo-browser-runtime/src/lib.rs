@@ -168,11 +168,11 @@ pub use host_services::{defer_model_clients, install_model_clients, model_client
 mod link;
 // A pairing link drawn as the code a phone reads.
 #[cfg(target_arch = "wasm32")]
-mod qr_code;
-#[cfg(target_arch = "wasm32")]
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
+#[cfg(target_arch = "wasm32")]
+mod qr_code;
 // The page's theme from settings and the browser: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod page_theme;

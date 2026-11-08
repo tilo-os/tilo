@@ -422,7 +422,10 @@ mod tests {
     #[test]
     fn a_page_shows_a_link_as_one_svg_path() {
         let markup = svg("HELLO").unwrap();
-        assert!(markup.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 29 29\""), "{markup}");
+        assert!(
+            markup.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 29 29\""),
+            "{markup}"
+        );
         assert_eq!(markup.matches("<path ").count(), 1);
         assert_eq!(markup.matches("<rect ").count(), 1);
 
@@ -442,7 +445,13 @@ mod tests {
         for (left, top) in [(0, 0), (46, 0), (0, 46)] {
             for (row, expected) in finder.iter().enumerate() {
                 let drawn: String = (0..7)
-                    .map(|x| if code.module(left + x, top + row) { '1' } else { '0' })
+                    .map(|x| {
+                        if code.module(left + x, top + row) {
+                            '1'
+                        } else {
+                            '0'
+                        }
+                    })
                     .collect();
                 assert_eq!(drawn, *expected, "finder at {left},{top}");
             }
