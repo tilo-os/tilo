@@ -568,6 +568,11 @@ impl Staged {
     }
 
     /// Run the toolkit's clock until nothing in the window moves.
+    ///
+    /// The wall clock is the capture's (pinned by [`ui::clock::freeze_for_capture`]), and a
+    /// widget that paints by it — an indeterminate progress bar, a spinner — holds still and
+    /// asks for no frame, so a looping indicator settles here. Anything else still asking for a
+    /// frame after two seconds is an animation that never ends, which no screen should have.
     fn settle(&mut self) -> Result<(), String> {
         // A widget that took a layout switch after its parts were placed asks for the frame
         // that lays them out again, as a live window draws it.
