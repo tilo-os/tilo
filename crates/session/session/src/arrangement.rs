@@ -882,6 +882,9 @@ fn reading_of(tree: &DesktopTree, records: &BTreeMap<TabId, String>, catalog: &C
         reading.workspaces.push(WorkspaceReading {
             key: workspace.slot.0.to_string(),
             name: workspace.name.clone(),
+            // A desk holds every workspace the person is in and shows one: the shell draws the
+            // rows of the one in front, so the reading says which that is.
+            current: workspace.slot == tree.active,
         });
         for row in &workspace.strips {
             reading.rows.push(RowReading {

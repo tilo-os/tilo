@@ -145,7 +145,6 @@ impl Shared {
             &self.services,
             &self.search,
             &|resource| catalog.borrow().get(resource).is_some(),
-            &self.person,
             look,
         );
         if let Some(power) = &self.power {

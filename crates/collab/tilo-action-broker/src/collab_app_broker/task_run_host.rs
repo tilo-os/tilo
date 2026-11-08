@@ -397,12 +397,20 @@ impl TaskRunHost {
         context.group.clone_from(&run.action_context.group);
         context.purpose.clone_from(&run.action_context.purpose);
         request.context = Some(context);
-        let receipt = self.0.state.invoke_host_step_in_run(
+        // The run's turn is the turn a step marked for turns answers: the run host's own
+        // connection carries the person's delegation, and the run it serves names the message.
+        let turn = self
+            .pending_run()
+            .ok()
+            .and_then(|(run, _)| self.0.state.tracker_run_of(&run).ok())
+            .and_then(|run| run.turn);
+        let receipt = self.0.state.invoke_host_step_in_turn(
             &self.0.caller,
             Some(&origin),
             steps,
             &request,
             Some(self),
+            turn.as_ref(),
         )?;
         self.remember(request.invocation, Started::HostStep);
         Ok(receipt)

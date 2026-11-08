@@ -5185,14 +5185,16 @@ impl AppBrokerState {
             .into_iter()
             .filter(|app| !live_apps.contains(&app.package_id))
             .collect::<Vec<_>>();
-        // A task agent's run takes the host's task steps (a task's programs)
-        // as steps of the run: listed for it alone, each admitted by the run
-        // when taken.
+        // A step marked for turns (the session's own actions, a task's programs) is a turn's
+        // step: a task agent's through its issue's run, offered to the agent working a turn; a
+        // session step's listed to every caller the grants allow, as an app action is, and
+        // admitted by the turn when an agent takes it.
+        let by_turn = actor.turn().is_some() || actor.issue().is_some();
         let task_steps = self
             .services
             .host_steps
             .iter()
-            .filter(|steps| actor.issue().is_some() && steps.for_tasks())
+            .filter(|steps| steps.for_turns() || (by_turn && steps.for_tasks()))
             .map(|steps| {
                 let actions = steps.descriptors().into_iter().collect::<Vec<_>>();
                 (steps.provider(), steps.app_id().to_owned(), actions)
@@ -5335,6 +5337,13 @@ impl AppBrokerState {
     /// Invalidate retained discovery only after a real service-surface mutation.
     fn publish_changed_action_catalogue(&self) {
         self.surfaces_changed();
+        self.publish_action_catalogue();
+    }
+
+    /// The host's own steps changed what they offer (the session's
+    /// arrangement gained a place, a window opened): every connection
+    /// following the catalogue is handed it again.
+    pub fn host_steps_changed(&self) {
         self.publish_action_catalogue();
     }
 

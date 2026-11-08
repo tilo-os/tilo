@@ -640,6 +640,16 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().text_bounds(text))
     }
 
+    /// Where every shown part lays out `text` for assistive technology: every node of every part
+    /// whose label, description or value holds it.
+    pub(crate) fn text_bounds_all(&self, text: &str) -> Vec<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .flat_map(|(_, part)| part.borrow_mut().text_bounds_all(text))
+            .collect()
+    }
+
     /// Where each display's part stands now, by connector name: what a test reads to prove a part
     /// on every display, and none on one a fullscreen window owns.
     pub(crate) fn parts(&self) -> Vec<PartPlace> {
@@ -1240,6 +1250,16 @@ impl crate::Session {
     #[must_use]
     pub fn shell_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.text_bounds(text)
+    }
+
+    /// Where every node the shell lays out that says `text` stands, logical `(x, y, w, h)`: every
+    /// label, description or value holding it, on every shown part. A test asks what the whole
+    /// desk says of a name, not what the first one of it says.
+    #[must_use]
+    pub fn shell_text_bounds_all(&self, text: &str) -> Vec<(f64, f64, f64, f64)> {
+        self.shell
+            .as_ref()
+            .map_or_else(Vec::new, |shell| shell.text_bounds_all(text))
     }
 
     /// The apps whose packages the shell's runtime holds loaded, because a place shows them.

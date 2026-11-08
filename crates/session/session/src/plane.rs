@@ -42,8 +42,8 @@ use crate::launches::Launches;
 use crate::lists::Lists;
 use crate::seams::{Seam, Seams};
 
-/// A watch the loop keeps: the resource an app connection watches, and what that connection was
-/// last sent.
+/// A watch the loop keeps: the resource an app connection watches, and what
+/// that connection was last sent.
 struct Watch {
     id: ResourceWatch,
     resource: String,
@@ -70,16 +70,16 @@ enum Ask {
     },
 }
 
-/// The readings the services publish to granted callers only, as of the revision the catalogue was
-/// last read at.
+/// The readings the services publish to granted callers only, as of the
+/// revision the catalogue was last read at.
 #[derive(Default)]
 struct Declared {
     revision: Option<u64>,
     granted: std::collections::HashMap<String, Granted>,
 }
 
-/// The seam between the session's loop and the broker's connections: what an app asks of the
-/// services, and the readings the apps watch.
+/// The seam between the session's loop and the broker's connections: what an
+/// app asks of the services, and the readings the apps watch.
 pub struct Link {
     asks: Mutex<Vec<Ask>>,
     watches: Mutex<Vec<Watch>>,
@@ -89,7 +89,7 @@ pub struct Link {
 }
 
 impl Link {
-    /// A link that wakes the session's loop with `wake` .
+    /// A link that wakes the session's loop with `wake`.
     #[must_use]
     pub fn new(wake: Wake) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
@@ -106,9 +106,9 @@ impl Link {
         (self.wake)();
     }
 
-    /// Answer what the apps asked since the last pass, and send every watched resource's reading
-    /// that moved: what the session's loop calls once per pass, after the services took in what
-    /// their devices did.
+    /// Answer what the apps asked since the last pass, and send every
+    /// watched resource's reading that moved: what the session's loop calls
+    /// once per pass, after the services took in what their devices did.
     pub fn serve(&self, services: &mut Services) {
         self.declare(services);
         let asked = std::mem::take(&mut *self.asks.lock_recover());
@@ -139,12 +139,14 @@ impl Link {
         self.publish(services);
     }
 
-    /// Read which readings the services publish to granted callers only, so the broker admits every
-    /// call about one before this loop sees it. The catalogue is the declaration's only source; it
-    /// moves with the services' revision like everything else they publish.
-    /// The session reads it once its services are all mounted, before the broker answers anyone: an
-    /// app that connects as the session starts is decided by the workspace's grants, not by a
-    /// declaration not yet read.
+    /// Read which readings the services publish to granted callers only, so
+    /// the broker admits every call about one before this loop sees it. The
+    /// catalogue is the declaration's only source; it moves with the
+    /// services' revision like everything else they publish.
+    ///
+    /// The session reads it once its services are all mounted, before the
+    /// broker answers anyone: an app that connects as the session starts is
+    /// decided by the workspace's grants, not by a declaration not yet read.
     pub fn declare(&self, services: &Services) {
         let revision = services.revision();
         let mut declared = self.declared.lock_recover();
@@ -156,8 +158,9 @@ impl Link {
             .into_iter()
             .filter(|resource| resource.readers == tilo_actions::Readers::Granted)
             .map(|resource| {
-                // The session's own resources name the session's app, as its actions do: that is
-                // whose grants the workspace says may read them.
+                // The session's own resources name the session's app, as its
+                // actions do: that is whose grants the workspace says may read
+                // them.
                 let publisher = resource
                     .app_id
                     .unwrap_or_else(|| tilo_action_policy::roles::SESSION_APP.to_owned());
@@ -199,8 +202,8 @@ impl Link {
     }
 }
 
-/// The session's services, as the broker's connections read them: a resource is named by its id,
-/// and what an app reaches is what the services publish.
+/// The session's services, as the broker's connections read them: a resource
+/// is named by its id, and what an app reaches is what the services publish.
 impl PublishedResources for Link {
     fn granted(&self, resource: &str) -> Option<Granted> {
         self.declared.lock_recover().granted.get(resource).cloned()
@@ -274,9 +277,10 @@ impl SpeakerServices for FabricSpeakers {
     }
 }
 
-/// The host service the broker hands apps' search publications to: the session's index of what apps
-/// hold, which the desktop's search reads and which keeps what was published after the app closes
-/// and the session restarts.
+/// The host service the broker hands apps' search publications to: the
+/// session's index of what apps hold, which the desktop's search reads and
+/// which keeps what was published after the app closes and the session
+/// restarts.
 struct ContentIndex(std::sync::Arc<AppContentIndex>);
 
 impl SearchIndexServices for ContentIndex {
@@ -291,79 +295,92 @@ impl SearchIndexServices for ContentIndex {
     }
 }
 
-/// The workspaces' sealed records as this session serves them: the broker the channel service
-/// gates, and where an endpoint follows a route's keys.
+/// The workspaces' sealed records as this session serves them: the broker
+/// the channel service gates, and where an endpoint follows a route's keys.
 pub struct Sealed {
-    /// The broker's side of the workspaces' sealed records: the channel service gates a sealed
-    /// record crossing it.
+    /// The broker's side of the workspaces' sealed records: the channel
+    /// service gates a sealed record crossing it.
     pub broker: std::sync::Arc<Mutex<BrokerChannels>>,
-    /// Where an endpoint follows when a route's keys change, when this session's channel service
-    /// runs.
+    /// Where an endpoint follows when a route's keys change, when this
+    /// session's channel service runs.
     pub keys: Option<ChannelKeyProvider>,
 }
 
-/// What this session hands the broker besides the link and the launcher: the board every app's live
-/// activity shows on, the index its publications land in, the desk it decides a workspace against,
-/// the shortcuts it saves and runs, the workspace's activity it serves, and the runs of what people
-/// ask its agents.
+/// What this session hands the broker besides the link and the launcher: the
+/// board every app's live activity shows on, the index its publications land
+/// in, the desk it decides a workspace against, the shortcuts it saves and
+/// runs, the workspace's activity it serves, and the runs of what people ask
+/// its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
-    /// The calls this session's apps join: the service an app's `join-call` reaches.
+    /// The calls this session's apps join: the service an app's
+    /// `join-call` reaches.
     pub native_media: Option<tilo_native_media::NativeMediaService>,
     pub content: Option<std::sync::Arc<AppContentIndex>>,
-    /// The records' content in that index, read from the records themselves: what search finds of
-    /// an app that never opened them here.
+    /// The records' content in that index, read from the records themselves:
+    /// what search finds of an app that never opened them here.
     pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
     pub desk: std::sync::Arc<DeskAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
-    /// The turns this session's agents answer, which the broker delivers as runs.
+    /// The turns this session's agents answer, which the broker delivers
+    /// as runs.
     pub turns: Option<std::sync::Arc<crate::conversations::Runs>>,
-    /// Who keeps each workspace's agents, as its record of them names them: what the broker admits
-    /// an agent's session on.
+    /// Who keeps each workspace's agents, as its record of them names them:
+    /// what the broker admits an agent's session on.
     pub agents: Option<std::sync::Arc<dyn tilo_action_broker::services::AgentRoster>>,
-    /// The workspaces' sealed records: what the broker gates, and where an endpoint follows a
-    /// route's keys.
+    /// The workspaces' sealed records: what the broker gates, and where an
+    /// endpoint follows a route's keys.
     pub sealed: Sealed,
-    /// How an app on this device runs one of its actions on another of the person's devices: what
-    /// the collaboration plane reaches them through.
+    /// How an app on this device runs one of its actions on another of the
+    /// person's devices: what the collaboration plane reaches them through.
     pub own_device: Option<std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>>,
-    /// This device's workspaces, whose owner is the canonical copy of what the apps record in them:
-    /// an app's write in a workspace the owner commits is committed there before anyone hears of
-    /// it, and leaves for the workspace's peers from there. A change to a workspace's people is
-    /// written through it too, and its person is who the broker admits them as. `None` when the
-    /// session holds no workspaces.
+    /// This device's workspaces, whose owner is the canonical copy of what
+    /// the apps record in them: an app's write in a workspace the owner
+    /// commits is committed there before anyone hears of it, and leaves for
+    /// the workspace's peers from there. A change to a workspace's people is
+    /// written through it too, and its person is who the broker admits them
+    /// as. `None` when the session holds no workspaces.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
-    /// The content the workspaces' records reference: where an app keeps what its record names, and
-    /// the route an app asks the workspace's other devices for what it lacks.
+    /// The content the workspaces' records reference: where an app keeps
+    /// what its record names, and the route an app asks the workspace's other
+    /// devices for what it lacks.
     pub record_content: Option<std::sync::Arc<crate::content::Plane>>,
-    /// Where an app's offloadable action runs: the round this session asks the workspace's other
-    /// devices, when it holds a workspace to ask them in.
+    /// Where an app's offloadable action runs: the round this session asks
+    /// the workspace's other devices, when it holds a workspace to ask them
+    /// in.
     pub action_offload: Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>>,
-    /// Where the broker keeps what it admits, under this session's state: a change is recorded
-    /// before it runs, and answered from its record when it is asked again.
+    /// Where the broker keeps what it admits, under this session's state: a
+    /// change is recorded before it runs, and answered from its record when it
+    /// is asked again.
     pub journal_root: Option<PathBuf>,
-    /// The apps this device has, as search last read them: what the broker admits an app's declared
-    /// actions against, by its signed manifest.
+    /// The apps this device has, as search last read them: what the broker
+    /// admits an app's declared actions against, by its signed manifest.
     pub lists: Lists,
-    /// The session's tools service, while it serves one: what Files' waits for its drive and app
-    /// lists' changes are answered from.
+    /// The session's tools service, while it serves one: what Files' waits
+    /// for its drive and app lists' changes are answered from.
     pub tools: Option<crate::mount::tools::Handle>,
-    /// The programs the agents working this session's tasks write, which this session's door runs
-    /// as steps of their runs.
+    /// The programs the agents working this session's tasks write, which this
+    /// session's door runs as steps of their runs.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
-    /// This session's Nearby Send: the person's other devices, and the spool a file reaches them
-    /// from. `None` on a session that runs none, where Files' send has no route at all.
+    /// The session's own actions — the arrangement, its undo, the windows and the
+    /// notices — offered to a turn's agent as the broker's steps, so it arranges the
+    /// screen as the REPL does.
+    pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
+    /// This session's Nearby Send: the person's other devices, and the spool
+    /// a file reaches them from. `None` on a session that runs none, where
+    /// Files' send has no route at all.
     pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
-    /// Files' clipboard: what a person copied or cut there, pasted into a folder of this desktop's,
-    /// and what it put on the desktop's clipboard.
+    /// Files' clipboard: what a person copied or cut there, pasted into a
+    /// folder of this desktop's, and what it put on the desktop's clipboard.
     pub file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
-    /// The person's own store, which the broker keeps their own records in as well as in this
-    /// desktop: what their other devices' records reach this session's apps through. `None` on a
-    /// session that keeps none.
+    /// The person's own store, which the broker keeps their own records in as
+    /// well as in this desktop: what their other devices' records reach this
+    /// session's apps through. `None` on a session that keeps none.
     pub personal: Option<tilo_peer_state::PersonalSync>,
-    /// What the broker hands the apps that have a record open: shared with the person's store, so a
-    /// write of theirs reaches an app here on the same route this device's own writes do.
+    /// What the broker hands the apps that have a record open: shared with
+    /// the person's store, so a write of theirs reaches an app here on the
+    /// same route this device's own writes do.
     pub fanout: std::sync::Arc<FanoutState>,
 }
 
@@ -398,18 +415,18 @@ pub fn serve(
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
     let fanout = std::sync::Arc::clone(&hosted.fanout);
-    // The identity store's device-certificate checks, on this session's one policy origin: the
-    // broker decides a join and a retained action against them, and the services answer an app's
-    // question about a device with them.
+    // The identity store's device-certificate checks, on this session's one
+    // policy origin: the broker decides a join and a retained action against
+    // them, and the services answer an app's question about a device with them.
     let certificates = std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default());
     let memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>> = hosted
         .engine
         .clone()
         .map(|engine| std::sync::Arc::new(SessionMemberships { engine }) as _);
-    // A session with an identity and a state to keep its workspaces in is the person's device
-    // itself: what its broker admits is recorded before it runs and answered from that record, so a
-    // change survives the session stopping mid-run. A session with neither keeps the doors that
-    // need no identity.
+    // A session with an identity and a state to keep its workspaces in is the
+    // person's device itself: what its broker admits is recorded before it runs
+    // and answered from that record, so a change survives the session stopping
+    // mid-run. A session with neither keeps the doors that need no identity.
     let config =
         hosted
             .engine
@@ -420,12 +437,12 @@ pub fn serve(
                 certificate_authority: std::sync::Arc::clone(&certificates) as _,
             });
     let engine = hosted.engine.clone();
-    // The apps this device has, as its lists last read them: what the broker lists as each app's
-    // name and offered actions, and what decides the reach the device's settings app has of the
-    // settings document.
+    // The apps this device has, as its lists last read them: what the broker
+    // lists as each app's name and offered actions, and what decides the
+    // reach the device's settings app has of the settings document.
     launches.watching(hosted.lists.clone());
-    // What search reads of the records themselves, for the changes this session commits and takes
-    // in below.
+    // What search reads of the records themselves, for the changes this
+    // session commits and takes in below.
     let records = hosted.records.clone();
     let services = host_services(
         link,
@@ -447,9 +464,10 @@ pub fn serve(
     )
 }
 
-/// Where the broker's writes go beyond this device's own apps: into the engine's owner, which
-/// publishes what it committed to each workspace's peers. A session that holds no workspaces keeps
-/// its apps' writes among them.
+/// Where the broker's writes go beyond this device's own apps: into the
+/// engine's owner, which publishes what it committed to each workspace's
+/// peers. A session that holds no workspaces keeps its apps' writes among
+/// them.
 pub(crate) fn owner_publisher(
     engine: Option<std::sync::Arc<crate::engine::Engine>>,
     records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
@@ -467,8 +485,9 @@ pub(crate) fn owner_publisher(
     })
 }
 
-/// A saved shortcut change on its way to the desk, answered once the session's loop applied it: the
-/// desk belongs to the loop, and the broker asks from its own thread.
+/// A saved shortcut change on its way to the desk, answered once the session's
+/// loop applied it: the desk belongs to the loop, and the broker asks from its
+/// own thread.
 pub struct StoreRequest {
     pub workspace: String,
     /// The person the broker admitted the change for.
@@ -477,16 +496,17 @@ pub struct StoreRequest {
     pub done: tokio::sync::oneshot::Sender<Result<(), String>>,
 }
 
-/// The workspace's shortcuts as the broker keeps and runs them: what a person saves through the
-/// action door lands on the desk the loop shows, and a run executes on `runtime` .
+/// The workspace's shortcuts as the broker keeps and runs them: what a person
+/// saves through the action door lands on the desk the loop shows, and a run
+/// executes on `runtime`.
 pub struct ShortcutLibrary {
     runtime: tokio::runtime::Handle,
     changes: tokio::sync::mpsc::UnboundedSender<StoreRequest>,
 }
 
 impl ShortcutLibrary {
-    /// A library whose runs execute on `runtime` , handing what a person saves to the loop through
-    /// the channel it comes with.
+    /// A library whose runs execute on `runtime`, handing what a person saves
+    /// to the loop through the channel it comes with.
     #[must_use]
     pub fn new(
         runtime: tokio::runtime::Handle,
@@ -524,24 +544,27 @@ impl ShortcutLibraryServices for ShortcutLibrary {
     }
 }
 
-/// The desk the broker's thread decides against: the workspaces it shows and their shortcuts, as
-/// the session's loop last published them.
-/// The desk itself belongs to the loop ([`tilo_desktop_surface::DesktopHandle`] hands it out on
-/// this thread only), while the broker asks about a workspace from its own thread. The loop
-/// publishes a copy when the desk it shows moved, and the broker reads the copy.
+/// The desk the broker's thread decides against: the workspaces it shows and
+/// their shortcuts, as the session's loop last published them.
+///
+/// The desk itself belongs to the loop ([`tilo_desktop_surface::DesktopHandle`]
+/// hands it out on this thread only), while the broker asks about a workspace
+/// from its own thread. The loop publishes a copy when the desk it shows
+/// moved, and the broker reads the copy.
 pub struct DeskAuthority {
     tree: Mutex<tilo_desktop_model::DesktopTree>,
-    /// Counts the desk's publications, so a reader that only cares whether the desk changed since
-    /// it last looked asks one atomic.
+    /// Counts the desk's publications, so a reader that only cares whether
+    /// the desk changed since it last looked asks one atomic.
     generation: std::sync::atomic::AtomicU64,
     revocations: crate::engine::Revocations,
     journal: Option<std::path::PathBuf>,
 }
 
 impl DeskAuthority {
-    /// The authority over `tree` , as the loop sees it now, deciding what each of its workspaces
-    /// revokes from `revocations` , and journalling what the broker admits on the person's behalf
-    /// under `journal` (`None` for a session that keeps no state).
+    /// The authority over `tree`, as the loop sees it now, deciding what each
+    /// of its workspaces revokes from `revocations`, and journalling what the
+    /// broker admits on the person's behalf under `journal` (`None` for a
+    /// session that keeps no state).
     #[must_use]
     pub fn new(
         tree: tilo_desktop_model::DesktopTree,
@@ -563,15 +586,16 @@ impl DeskAuthority {
             .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
-    /// How many times the desk was published; equal values mean the desk did not change between the
-    /// two reads.
+    /// How many times the desk was published; equal values mean the desk
+    /// did not change between the two reads.
     pub fn generation(&self) -> u64 {
         self.generation.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
-/// The desk as the identity service reads it: an app signs in the person's workspace through the
-/// desk this session shows, so the workspace the request names is the one the person sees it in.
+/// The desk as the identity service reads it: an app signs in the person's
+/// workspace through the desk this session shows, so the workspace the
+/// request names is the one the person sees it in.
 impl tilo_identity_host::broker::WorkspaceMembership for DeskAuthority {
     fn with_workspace(
         &self,
@@ -594,51 +618,55 @@ impl WorkspaceAuthority for DeskAuthority {
         Ok(())
     }
 
-    /// A workspace this desk shows is one this device was let into, so its shortcuts are proven
-    /// against the revocations its workspace records. A workspace whose document this device does
-    /// not hold — a desk kept from before it joined, or one it left — revokes nothing here: the
-    /// shortcuts it shows are proven by what it does hold, and a call it can no longer make is
-    /// refused elsewhere.
+    /// A workspace this desk shows is one this device was let into, so its
+    /// shortcuts are proven against the revocations its workspace records. A
+    /// workspace whose document this device does not hold — a desk kept from
+    /// before it joined, or one it left — revokes nothing here: the shortcuts
+    /// it shows are proven by what it does hold, and a call it can no longer
+    /// make is refused elsewhere.
     fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
         let tree = self.tree.lock_recover();
         tilo_action_broker::services::workspace_in(&tree, workspace)?;
         Some((self.revocations)(workspace).unwrap_or_default())
     }
 
-    /// Where the broker keeps what it admitted on this device's behalf: a native action — a
-    /// shortcut a trigger starts, a schedule firing — is recorded before it runs and settled after,
-    /// so a session that stops mid-run neither loses it silently nor runs it twice. The broker
-    /// refuses such actions without it, so a session that keeps state keeps this beside the rest of
-    /// it.
+    /// Where the broker keeps what it admitted on this device's behalf: a
+    /// native action — a shortcut a trigger starts, a schedule firing — is
+    /// recorded before it runs and settled after, so a session that stops
+    /// mid-run neither loses it silently nor runs it twice. The broker
+    /// refuses such actions without it, so a session that keeps state keeps
+    /// this beside the rest of it.
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.journal.clone()
     }
 }
 
-/// A workspace's people as this session's engine writes them: the change goes into the workspace's
-/// own record, signed with this device's key, and every device of the workspace admits it as it
-/// admits every member's change.
+/// A workspace's people as this session's engine writes them: the change goes
+/// into the workspace's own record, signed with this device's key, and every
+/// device of the workspace admits it as it admits every member's change.
 struct SessionMemberships {
     engine: std::sync::Arc<crate::engine::Engine>,
 }
 
 impl WorkspaceMemberships for SessionMemberships {
-    /// A workspace this session's engine holds is one whose people change here.
+    /// A workspace this session's engine holds is one whose people change
+    /// here.
     fn requires_workspace(&self, workspace: &str) -> bool {
         tilo_desktop_model::WorkspaceId::parse(workspace)
             .is_some_and(|room| self.engine.holds(room))
     }
 
-    /// The engine keeps no checkpoints of a workspace's records: its owner commits them, and a
-    /// member's changes travel as the changes they are.
+    /// The engine keeps no checkpoints of a workspace's records: its owner
+    /// commits them, and a member's changes travel as the changes they are.
     fn keeps_checkpoints(&self, _workspace: &str) -> bool {
         false
     }
 
-    /// An app opening in `workspace` is let author there when this device's person administers the
-    /// workspace and it does not let that app author yet: the same decision the launch before it
-    /// makes ([`crate::membership::authorship`]). A member whose role only lets them write asks
-    /// nothing of the workspace's people.
+    /// An app opening in `workspace` is let author there when this device's
+    /// person administers the workspace and it does not let that app author
+    /// yet: the same decision the launch before it makes
+    /// ([`crate::membership::authorship`]). A member whose role only lets them
+    /// write asks nothing of the workspace's people.
     fn app_opens_by_granting(
         &self,
         workspace: &str,
@@ -676,9 +704,9 @@ impl WorkspaceMemberships for SessionMemberships {
     }
 }
 
-/// What the apps this session runs reach of it: the resources its services publish, the launcher
-/// that started them, and — when this session runs on a device fabric — the speaker groups Settings
-/// asks that fabric for.
+/// What the apps this session runs reach of it: the resources its services
+/// publish, the launcher that started them, and — when this session runs on a
+/// device fabric — the speaker groups Settings asks that fabric for.
 fn host_services(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
@@ -688,8 +716,9 @@ fn host_services(
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
 ) -> HostServices {
     let decided = seams(link, launches, fabric, hosted, certificates, memberships);
-    // What this session serves nothing of, and why: a session start leaves every decision in its
-    // log, so a seam an app found missing can be found here with the reason it was left out.
+    // What this session serves nothing of, and why: a session start leaves
+    // every decision in its log, so a seam an app found missing can be found
+    // here with the reason it was left out.
     for (seam, why) in decided.decisions() {
         if let Some(why) = why {
             tracing::debug!(seam, why, "this session serves nothing of this seam");
@@ -698,8 +727,9 @@ fn host_services(
     decided.into_host_services()
 }
 
-/// This session's decision for every seam of the broker's [`HostServices`]: what it serves, and for
-/// what it serves nothing, the reason it was left out (see [`crate::seams`]).
+/// This session's decision for every seam of the broker's [`HostServices`]:
+/// what it serves, and for what it serves nothing, the reason it was left
+/// out (see [`crate::seams`]).
 #[allow(
     clippy::too_many_lines,
     reason = "one seam per line, in the broker's order: a reviewer reads every decision at once"
@@ -731,27 +761,28 @@ fn seams(
         lists,
         tools,
         task_programs,
+        session_actions,
         nearby,
         file_clipboard,
         personal,
         fanout: _,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
-    // What each window this session runs shows, kept with its launches: read by the seam a window's
-    // app speaks on, and by the session's own passes.
+    // What each window this session runs shows, kept with its launches: read
+    // by the seam a window's app speaks on, and by the session's own passes.
     let window_notes = launches.notes();
-    // The desk decides who may administer a workspace's identity, and the fabric is where pairing
-    // reaches the person's other devices.
+    // The desk decides who may administer a workspace's identity, and the
+    // fabric is where pairing reaches the person's other devices.
     let desk_authority = std::sync::Arc::clone(&desk);
     let steps_fabric = fabric.clone();
-    // The certificate checks this session's broker decides a join and a retained action against:
-    // the session's own, or one of the tests'.
+    // The certificate checks this session's broker decides a join and a
+    // retained action against: the session's own, or one of the tests'.
     let certificates: std::sync::Arc<dyn tilo_action_broker::CertificateAuthority> = certificates
         .unwrap_or_else(|| {
             std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default())
         });
-    // This person's settings on this device: each app reaches its own entries and the shared
-    // sections, and a display change is written here too.
+    // This person's settings on this device: each app reaches its own entries
+    // and the shared sections, and a display change is written here too.
     let settings = settings_store::source();
     let display_control: Option<std::sync::Arc<dyn DisplayControlServices>> =
         settings.as_ref().map(|source| {
@@ -760,18 +791,19 @@ fn seams(
                 &desk,
             )) as std::sync::Arc<dyn DisplayControlServices>
         });
-    // What each installed app's signed manifest declares it may do on the action door: a ceiling
-    // the broker decides an app's calls against.
+    // What each installed app's signed manifest declares it may do on the
+    // action door: a ceiling the broker decides an app's calls against.
     let app_action_access = crate::seams::declared_access(lists);
-    // Where the broker keeps the actions of apps that are closed, beside the journal of what it
-    // admitted: a closed app's actions survive a restart.
+    // Where the broker keeps the actions of apps that are closed, beside the
+    // journal of what it admitted: a closed app's actions survive a restart.
     let launchable_catalogue = journal_root.as_ref().and_then(|journal| {
         journal
             .parent()
             .map(|state| state.join("actions").join("launchable.json"))
     });
-    // The person's account custody: the vault stays on this device, under their own config root,
-    // and a session with no workspace of its own has no route to decide a call on.
+    // The person's account custody: the vault stays on this device, under
+    // their own config root, and a session with no workspace of its own has
+    // no route to decide a call on.
     let service_sessions: Option<std::sync::Arc<dyn BrowserServiceSessionServices>> =
         engine.as_ref().map(|engine| {
             std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
@@ -779,26 +811,27 @@ fn seams(
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
     Seams {
-        // No approved-check runner is installed with this session: a check a project's app asks for
-        // has nothing to run it.
+        // No approved-check runner is installed with this session: a check a
+        // project's app asks for has nothing to run it.
         approved_checks: Seam::unserved(
             "no project's approved check runs here: this session installs no check service",
         ),
-        // Resources an app asks to look at are published by the app that holds them and reached
-        // through the action door's own catalogue; the session reads none of them on an app's
-        // behalf.
+        // Resources an app asks to look at are published by the app that
+        // holds them and reached through the action door's own catalogue; the
+        // session reads none of them on an app's behalf.
         resource_views: Seam::unserved(
             "an app reads another app's resources through the action door's catalogue, over \
              the holding app's own route",
         ),
-        // A record is held on the collaboration plane of the app that owns it, in everyone's copy
-        // at once; the session keeps no documents of its own to read one from.
+        // A record is held on the collaboration plane of the app that owns
+        // it, in everyone's copy at once; the session keeps no documents of
+        // its own to read one from.
         committed_documents: Seam::unserved(
             "records are read and changed on the collaboration plane each app holds, \
              not through this session's documents",
         ),
-        // A call an app joins is this session's: the channel it is in, who else is there, and what
-        // the app hears of it until it leaves.
+        // A call an app joins is this session's: the channel it is in, who
+        // else is there, and what the app hears of it until it leaves.
         native_media: Seam::when(native_media.map(|media| {
             std::sync::Arc::new(media)
                 as std::sync::Arc<dyn tilo_action_broker::services::NativeMediaServices>
@@ -807,65 +840,70 @@ fn seams(
             "the sound service publishes its outputs as a resource of its own",
         ),
         workspace_memberships: Seam::when(memberships),
-        // What people ask this session's agents to do: a turn a person's message in a conversation
-        // started. A run is the broker's to deliver, and its reports come back to the turn.
+        // What people ask this session's agents to do: a turn a person's
+        // message in a conversation started. A run is the broker's to
+        // deliver, and its reports come back to the turn.
         tracker_runs: Seam::when(turns.map(|turns| turns as std::sync::Arc<dyn TrackerRuns>)),
-        // Which agents each workspace keeps, and whose session runs each: the record the broker
-        // admits an agent's join on.
+        // Which agents each workspace keeps, and whose session runs each: the
+        // record the broker admits an agent's join on.
         agents: Seam::when(agents),
-        // Which devices this person's identity certifies now: what the broker admits a join with,
-        // and what it decides a retained action against.
+        // Which devices this person's identity certifies now: what the broker
+        // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
-        // The certificate this device acts under when the person starts something here themselves —
-        // a shortcut's press, a schedule's fire time — rather than an app or a peer asking for it.
+        // The certificate this device acts under when the person starts
+        // something here themselves — a shortcut's press, a schedule's fire
+        // time — rather than an app or a peer asking for it.
         local_person: Seam::served(
             std::sync::Arc::new(tilo_identity_authority::NativeLocalPerson)
                 as std::sync::Arc<dyn tilo_action_broker::services::LocalPersonServices>,
         ),
-        // A record's own origin is its app's collaboration plane route, and a task's change reaches
-        // it as the app's action; the session applies no record change of its own for the door to
-        // ask.
+        // A record's own origin is its app's collaboration plane route, and a
+        // task's change reaches it as the app's action; the session applies
+        // no record change of its own for the door to ask.
         record_changes: Seam::unserved(
             "an agent's change to a record goes through the record's own app, not through \
              a record origin this session keeps",
         ),
-        // The desk's own migration is the one reader of what an older session journaled, and it
-        // imports it once into this session's workspaces.
+        // The desk's own migration is the one reader of what an older
+        // session journaled, and it imports it once into this session's
+        // workspaces.
         legacy_workspace: Seam::unserved(
             "older workspaces are imported once by the desk's migration, and no app feeds \
              their journal through this session",
         ),
         launcher: Seam::served(launches),
-        // The resources this session's services publish, which the apps it admits read, watch and
-        // invoke.
+        // The resources this session's services publish, which the apps it
+        // admits read, watch and invoke.
         published: Seam::served(link),
-        // A workspace's grants are the desk's: the person gives them on its sheets, and the broker
-        // decides against the desk it was started with.
+        // A workspace's grants are the desk's: the person gives them on its
+        // sheets, and the broker decides against the desk it was started with.
         workspace_governance: Seam::unserved(
             "workspace grants are given in the desk's own sheets, not by an app",
         ),
-        // A shortcut a person saves lands on the desk, and a shortcut's run executes on the
-        // session's runtime.
+        // A shortcut a person saves lands on the desk, and a shortcut's run
+        // executes on the session's runtime.
         shortcut_library: Seam::served(shortcut_library),
-        // The device's shortcut catalogue, as the shortcut guide and Settings read it: the broker
-        // hands over the keymap, and only this machine's callers are offered it.
+        // The device's shortcut catalogue, as the shortcut guide and
+        // Settings read it: the broker hands over the keymap, and only this
+        // machine's callers are offered it.
         keyboard_shortcuts: Seam::served(crate::keyboard_shortcuts::servable()),
-        // The continuation channel a window's app speaks on: its checkpoint and handoff reports are
-        // taken by the session that runs it rather than refused. What a window shows is read from
-        // the broker's record subscriptions instead ([`crate::continuations`]).
+        // The continuation channel a window's app speaks on: its checkpoint
+        // and handoff reports are taken by the session that runs it rather
+        // than refused. What a window shows is read from the broker's record
+        // subscriptions instead ([`crate::continuations`]).
         continuations: Seam::served(window_notes),
-        // What an app publishes of its own content is found whether or not it runs, once it is
-        // closed and after a restart.
+        // What an app publishes of its own content is found whether or not
+        // it runs, once it is closed and after a restart.
         search_index: Seam::when(content.map(|content| {
             std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
         })),
-        // The records' content in that index, read from the records themselves: a change to a
-        // workspace's record is indexed here.
+        // The records' content in that index, read from the records
+        // themselves: a change to a workspace's record is indexed here.
         record_index_changes: Seam::when(records.map(|records| {
             records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
         })),
-        // Content a record references is kept on this device beside the workspace's records, and
-        // asked of the workspace's other devices.
+        // Content a record references is kept on this device beside the
+        // workspace's records, and asked of the workspace's other devices.
         content_store: Seam::when(
             record_content
                 .as_ref()
@@ -879,9 +917,9 @@ fn seams(
         speakers: Seam::when(fabric.clone().map(|fabric| {
             std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
         })),
-        // Files waits on the tools service for both lists to change, and asks it for the lists
-        // themselves: the drive list and the app list are that service's, in this session as in the
-        // launcher's.
+        // Files waits on the tools service for both lists to change, and asks
+        // it for the lists themselves: the drive list and the app list are
+        // that service's, in this session as in the launcher's.
         drives: Seam::when(
             tools
                 .clone()
@@ -893,59 +931,66 @@ fn seams(
         ),
         settings: Seam::when(settings),
         display_control: Seam::when(display_control),
-        // Every app shows its live activity (a running timer, a stopwatch) outside its windows on
-        // this one board.
+        // Every app shows its live activity (a running timer, a stopwatch)
+        // outside its windows on this one board.
         live_activities: Seam::served(live_activities),
-        // The network the person is on is the session's own service: Settings reads where this
-        // device can be woken, and shares a passphrase it learned with the person's other devices —
-        // or joins with one they shared — through the fabric this session runs on.
+        // The network the person is on is the session's own service: Settings
+        // reads where this device can be woken, and shares a passphrase it
+        // learned with the person's other devices — or joins with one they
+        // shared — through the fabric this session runs on.
         wifi_continuity: Seam::when(fabric.map(|fabric| {
             std::sync::Arc::new(crate::wifi_continuity::WifiContinuity::new(fabric))
                 as std::sync::Arc<dyn WifiContinuityServices>
         })),
-        // The session is the custodian of the person's account secrets: Browser resolves, lists and
-        // forgets its website sessions here, Settings seals an account's secret, and Mail is
-        // released the one it keeps. Every call is decided on the certificate the broker attested
-        // for the app's connection in its workspace, and the vault stays on this device.
+        // The session is the custodian of the person's account secrets: Browser
+        // resolves, lists and forgets its website sessions here, Settings seals
+        // an account's secret, and Mail is released the one it keeps. Every
+        // call is decided on the certificate the broker attested for the app's
+        // connection in its workspace, and the vault stays on this device.
         browser_service_sessions: Seam::when(service_sessions),
-        // Files offers a file to the person's other devices over the same device fabric this
-        // session already runs: one Nearby Send stages a screenshot and a file alike, and the
-        // receiving device's person chooses where it lands there.
+        // Files offers a file to the person's other devices over the same
+        // device fabric this session already runs: one Nearby Send stages a
+        // screenshot and a file alike, and the receiving device's person
+        // chooses where it lands there.
         nearby_transfer: Seam::when(nearby.map(|nearby| {
             nearby as std::sync::Arc<dyn tilo_action_broker::services::NearbyTransferServices>
         })),
-        // A person copies and cuts in Files and pastes the copy in another folder or another app:
-        // what they copied is offered here, and every file of it is pasted by the same engine the
-        // desktop's own paste of files runs.
+        // A person copies and cuts in Files and pastes the copy in another
+        // folder or another app: what they copied is offered here, and every
+        // file of it is pasted by the same engine the desktop's own paste of
+        // files runs.
         file_clipboard: Seam::served(file_clipboard),
         app_action_access: Seam::served(app_action_access),
-        // A grant for an app to take another app's action is kept in a workspace's own record,
-        // which this session's engine commits; the host records none of them for the door to ask.
+        // A grant for an app to take another app's action is kept in a
+        // workspace's own record, which this session's engine commits; the
+        // host records none of them for the door to ask.
         app_action_grants: Seam::unserved(
             "an app's grant for another app's actions is recorded in the workspace's own \
              governance, which no app reaches here",
         ),
         launchable_catalogue: Seam::when(launchable_catalogue),
         record_content: Seam::when(record_content.map(|content| content.route())),
-        // This session's channel keys, when it holds workspaces: a route's keys reach its apps
-        // through them, and an endpoint follows their changes here instead of asking again every
-        // second.
+        // This session's channel keys, when it holds workspaces: a route's keys
+        // reach its apps through them, and an endpoint follows their changes
+        // here instead of asking again every second.
         channel_keys: Seam::when(sealed.keys),
-        // An offloadable action runs where the workspace's devices would run it sooner.
+        // An offloadable action runs where the workspace's devices would run
+        // it sooner.
         action_offload: Seam::when(action_offload),
-        // An app's action on another of the person's own devices is carried there by the
-        // collaboration plane.
+        // An app's action on another of the person's own devices is carried
+        // there by the collaboration plane.
         own_device: Seam::when(own_device),
         workspace_nodes: Seam::unserved(
             "a node's workspace is reached through the desk's own sharing, not by an app",
         ),
-        // The person's own records, kept in their store as well as in this desktop: what an app
-        // writes of its own scope reaches their other devices, and what those wrote reaches the app
-        // here.
+        // The person's own records, kept in their store as well as in this
+        // desktop: what an app writes of its own scope reaches their other
+        // devices, and what those wrote reaches the app here.
         personal: Seam::when(personal),
-        // The steps only this session may take for the person: the workspace's activity the
-        // Activity app reads, pairing a nearby device, and administering their identities and the
-        // devices trusted under them, whose secret stays here.
+        // The steps only this session may take for the person: the
+        // workspace's activity the Activity app reads, pairing a nearby
+        // device, and administering their identities and the devices trusted
+        // under them, whose secret stays here.
         host_steps: Seam::served(
             [
                 vec![
@@ -960,10 +1005,17 @@ fn seams(
                         admin: crate::identity_admin::IdentityAdmin::session(),
                     }),
                 ],
-                // An agent's task writes its programs; this session's door runs them as the steps
-                // of the run the task is in.
+                // An agent's task writes its programs; this session's door runs them as the
+                // steps of the run the task is in.
                 task_programs
                     .map(|programs| programs as std::sync::Arc<dyn HostStepServices>)
+                    .into_iter()
+                    .collect(),
+                // The session's own actions, published where every other caller of the
+                // desktop reaches them: the arrangement, its undo, the windows and the
+                // notices, which a turn's agent arranges the screen with (shell.md §8.1).
+                session_actions
+                    .map(|actions| actions as std::sync::Arc<dyn HostStepServices>)
                     .into_iter()
                     .collect(),
             ]
@@ -1012,39 +1064,41 @@ fn receipt(services: &mut Services, resource: &str, action: &str, arguments: &[u
 /// and the broker that answers them on the socket.
 pub(crate) struct Plane {
     pub(crate) link: std::sync::Arc<Link>,
-    /// The socket the broker answers on: what the launcher hands an app, and what a surface app
-    /// connects for itself.
+    /// The socket the broker answers on: what the launcher hands an app, and
+    /// what a surface app connects for itself.
     pub(crate) path: std::path::PathBuf,
-    /// The desk the apps' broker decides against, which the loop keeps level with the desk it
-    /// shows.
+    /// The desk the apps' broker decides against, which the loop keeps level
+    /// with the desk it shows.
     pub(crate) desk: std::sync::Arc<DeskAuthority>,
-    /// Held so the broker's thread ends and its socket is unlinked with the session.
+    /// Held so the broker's thread ends and its socket is unlinked with the
+    /// session.
     pub(crate) broker: tilo_action_broker::collab_broker::BrokerHandle,
-    /// The calls of the workspaces this session takes part in, as the loop heard them: what a voice
-    /// channel shows.
+    /// The calls of the workspaces this session takes part in, as the loop
+    /// heard them: what a voice channel shows.
     pub(crate) calls: std::sync::Arc<crate::calls::Calls>,
-    /// The service apps join a call through, when this session carries calls at all.
+    /// The service apps join a call through, when this session carries
+    /// calls at all.
     pub(crate) calls_service: Option<tilo_native_media::NativeMediaService>,
-    /// Files' clipboard, whose copies the loop puts on the desktop's clipboard: what the person
-    /// pastes into any other app.
+    /// Files' clipboard, whose copies the loop puts on the desktop's
+    /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
-    /// The person's own store open to their other devices, held so its links and the writes it
-    /// keeps end with the session.
+    /// The person's own store open to their other devices, held so its links
+    /// and the writes it keeps end with the session.
     pub(crate) _personal: Option<tilo_action_broker::personal::Door>,
 }
 
 impl Plane {
-    /// Say this device's call where everyone in the workspace reads it, and take in what they say
-    /// of theirs: the channel a person is in and who is in each channel's call, which is what this
-    /// session's apps show of calls.
+    /// Say this device's call where everyone in the workspace reads it, and take
+    /// in what they say of theirs: the channel a person is in and who is in
+    /// each channel's call, which is what this session's apps show of calls.
     pub(crate) fn follow_calls(&self, sync: &crate::sync::Client) {
         let own = self
             .calls_service
             .as_ref()
             .and_then(tilo_native_media::NativeMediaService::own_call);
         let name = own.as_ref().map_or_else(String::new, |call| {
-            // What the app calls the channel, so the workspace reads a name and not an id; what the
-            // people in it said is the fallback.
+            // What the app calls the channel, so the workspace reads a name and
+            // not an id; what the people in it said is the fallback.
             self.action_broker()
                 .and_then(|broker| {
                     crate::calls::channel_name(
@@ -1074,13 +1128,14 @@ impl Plane {
         self.broker.app_action_broker().map(std::sync::Arc::new)
     }
 
-    /// The route to one window's app, for the step of a move it is asked for: what answers on the
-    /// window's continuation channel.
+    /// The route to one window's app, for the step of a move it is asked for:
+    /// what answers on the window's continuation channel.
     pub(crate) fn handoff(&self) -> tilo_action_broker::collab_broker::SessionFollowDispatcher {
         self.broker.follow_dispatcher()
     }
 
-    /// The broker a program the person admitted as an agent is served through, while it takes work.
+    /// The broker a program the person admitted as an agent is served
+    /// through, while it takes work.
     pub(crate) fn agent_broker(
         &self,
     ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
@@ -1207,14 +1262,14 @@ mod tests {
         )
     }
 
-    /// What a session with no index and no desk of its own hands the broker: the services under
-    /// test, and the empty desk it decides against.
+    /// What a session with no index and no desk of its own hands the broker:
+    /// the services under test, and the empty desk it decides against.
     fn hosted(content: Option<std::sync::Arc<AppContentIndex>>) -> Hosted {
         hosted_with(content, Lists::default())
     }
 
-    /// The same, over the app lists the test reads: what each app declared it may do on the action
-    /// door is served out of them.
+    /// The same, over the app lists the test reads: what each app declared it
+    /// may do on the action door is served out of them.
     fn hosted_with(content: Option<std::sync::Arc<AppContentIndex>>, lists: Lists) -> Hosted {
         Hosted {
             live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
@@ -1243,6 +1298,7 @@ mod tests {
             lists,
             tools: None,
             task_programs: None,
+            session_actions: Some(test_session_actions()),
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),
@@ -1267,8 +1323,8 @@ mod tests {
         std::sync::Arc::new(library)
     }
 
-    /// An app publishes what it holds through the broker, and the index the session handed it keeps
-    /// it: it is the same index search reads.
+    /// An app publishes what it holds through the broker, and the index the
+    /// session handed it keeps it: it is the same index search reads.
     #[test]
     fn an_apps_search_publication_lands_in_the_index_search_reads() {
         use ui::search::index_publication::{IndexDelta, IndexEntry};
@@ -1319,9 +1375,10 @@ mod tests {
         );
     }
 
-    /// An app's `offerBlob` , `wantBlob` and `subscribeBlobs` , and the content put door, are
-    /// served by the plane this session keeps: the same store and the same asks of the workspace's
-    /// other devices. A session that keeps no content hands the broker none of it.
+    /// An app's `offerBlob`, `wantBlob` and `subscribeBlobs`, and the content
+    /// put door, are served by the plane this session keeps: the same store
+    /// and the same asks of the workspace's other devices. A session that
+    /// keeps no content hands the broker none of it.
     #[test]
     fn an_app_keeps_and_asks_for_content_through_the_services_of_this_session() {
         let kept = crate::content::Plane::open(None);
@@ -1353,8 +1410,8 @@ mod tests {
         );
     }
 
-    /// Settings reaches the speaker groups of the fabric this session runs on, and of nothing else:
-    /// a session without one has no speaker route.
+    /// Settings reaches the speaker groups of the fabric this session runs
+    /// on, and of nothing else: a session without one has no speaker route.
     #[test]
     fn the_session_answers_settings_speaker_route_from_its_fabric() {
         assert!(
@@ -1388,8 +1445,8 @@ mod tests {
         );
     }
 
-    /// What each shipped app's sources call of the action door: the seam each call reaches, and the
-    /// apps whose sources make it.
+    /// What each shipped app's sources call of the action door: the seam each
+    /// call reaches, and the apps whose sources make it.
     fn seams_shipped_apps_call()
     -> std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>> {
         fn sources(directory: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
@@ -1434,9 +1491,9 @@ mod tests {
     }
 
     /// Every seam a shipped app's sources call is served, or named in
-    /// [`crate::seams::UNSERVED_BUT_CALLED`] as one this session still owes the app; that list
-    /// shrinks as each call is served or moved off the seam, and a call it does not name fails
-    /// here.
+    /// [`crate::seams::UNSERVED_BUT_CALLED`] as one this session still owes
+    /// the app; that list shrinks as each call is served or moved off the
+    /// seam, and a call it does not name fails here.
     fn shipped_apps_calls_are_served(decisions: &[(&'static str, Option<&'static str>)]) {
         let served = |name: &str| {
             decisions
@@ -1478,9 +1535,10 @@ mod tests {
         }
     }
 
-    /// Every seam the broker offers is decided here: served, served where this run has what it
-    /// carries, or not served with the reason it was left out. Every seam a shipped app's sources
-    /// call is served, or named as one still to serve — so an app that starts calling a seam this
+    /// Every seam the broker offers is decided here: served, served where
+    /// this run has what it carries, or not served with the reason it was
+    /// left out. Every seam a shipped app's sources call is served, or named
+    /// as one still to serve — so an app that starts calling a seam this
     /// session serves nothing of fails this test.
     #[test]
     fn every_seam_is_decided_and_no_shipped_app_asks_for_what_is_not_served() {
@@ -1493,8 +1551,9 @@ mod tests {
             None,
         );
         let decisions = decided.decisions();
-        // The broker names its seams, so a seam is decided here and never dropped from the list:
-        // the field's conversion above would not notice a name that went missing.
+        // The broker names its seams, so a seam is decided here and never
+        // dropped from the list: the field's conversion above would not
+        // notice a name that went missing.
         assert_eq!(
             decisions.iter().map(|(seam, _)| *seam).collect::<Vec<_>>(),
             tilo_action_broker::services::HostServices::SEAMS,
@@ -1536,47 +1595,41 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            3,
+            4,
             "the steps this session serves are the workspace's activity, device \
-             pairing and identity administration"
+             pairing, identity administration and its own actions"
         );
         let providers: Vec<&str> = services
             .host_steps
             .iter()
             .map(|steps| steps.provider())
             .collect();
-        assert!(
-            providers.contains(&tilo_actions::remote::device_pairing::PROVIDER),
-            "Settings pairs a device through this session: {providers:?}"
-        );
-        assert!(
-            providers.contains(&tilo_actions::remote::identity_admin::PROVIDER),
-            "Settings administers the person's devices through this session: {providers:?}"
-        );
+        for (provider, why) in [
+            (
+                tilo_actions::remote::device_pairing::PROVIDER,
+                "Settings pairs a device",
+            ),
+            (
+                tilo_actions::remote::identity_admin::PROVIDER,
+                "Settings administers the person's devices",
+            ),
+            (
+                tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+                "a turn's agent arranges the screen",
+            ),
+        ] {
+            assert!(
+                providers.contains(&provider),
+                "{why} through this session: {providers:?}"
+            );
+        }
         assert_eq!(
             services.display_control.is_some(),
             services.settings.is_some(),
             "a display change is written where this person's settings are kept"
         );
-        let keys = services
-            .keyboard_shortcuts
-            .expect("apps on this machine ask the door for the shortcut catalogue");
-        let listed = keys
-            .apply(
-                &settings_store::hardware::ShortcutConfig::default(),
-                &tilo_actions::ActionAddress::new(
-                    tilo_sheets::keyboard_shortcuts::RESOURCE,
-                    tilo_sheets::keyboard_shortcuts::LIST_ACTION,
-                ),
-                None,
-            )
-            .expect("the catalogue is answered")
-            .value
-            .expect("the catalogue is the answer");
         assert!(
-            listed["shortcuts"]
-                .as_array()
-                .is_some_and(|rows| !rows.is_empty()),
+            shortcut_catalogue(&services),
             "every shortcut of this desktop is listed"
         );
         assert!(
@@ -1589,8 +1642,9 @@ mod tests {
         );
     }
 
-    /// An app's settings are this session's own document: the call the broker answers through its
-    /// settings server reads and writes what this device keeps, scoped to that app.
+    /// An app's settings are this session's own document: the call the
+    /// broker answers through its settings server reads and writes what this
+    /// device keeps, scoped to that app.
     #[test]
     fn an_apps_settings_are_the_document_this_session_keeps() {
         let dir = tempfile::tempdir().expect("a profile of the test's own");
@@ -1641,8 +1695,9 @@ mod tests {
         );
     }
 
-    /// What an app declared it may do on the action door is served out of the lists this device
-    /// read: its own declaration, and nothing for an app that declared nothing.
+    /// What an app declared it may do on the action door is served out of the
+    /// lists this device read: its own declaration, and nothing for an app
+    /// that declared nothing.
     #[test]
     fn an_apps_declared_access_is_what_this_device_read() {
         use tilo_action_broker::app_actions::AppActionAccess;
@@ -1679,4 +1734,39 @@ mod tests {
             "an app this device did not read declared nothing"
         );
     }
+}
+
+/// Whether the shortcut catalogue the services hand an app on this machine names every
+/// shortcut of the desktop.
+#[cfg(test)]
+fn shortcut_catalogue(services: &tilo_action_broker::services::HostServices) -> bool {
+    let Some(keys) = services.keyboard_shortcuts.as_ref() else {
+        return false;
+    };
+    let listed = keys
+        .apply(
+            &settings_store::hardware::ShortcutConfig::default(),
+            &tilo_actions::ActionAddress::new(
+                tilo_sheets::keyboard_shortcuts::RESOURCE,
+                tilo_sheets::keyboard_shortcuts::LIST_ACTION,
+            ),
+            None,
+        )
+        .expect("the catalogue is answered")
+        .value
+        .expect("the catalogue is the answer");
+    listed["shortcuts"]
+        .as_array()
+        .is_some_and(|rows| !rows.is_empty())
+}
+
+/// The session's own actions as the broker's steps, for a fixture: a door that is never asked
+/// anything.
+#[cfg(test)]
+fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActions> {
+    let doors =
+        crate::agent_door::SessionDoors::new(tilo_service::LoopWake::default().handle(), "Pat");
+    std::sync::Arc::new(crate::session_actions::SessionActions::new(
+        std::sync::Arc::new(doors),
+    ))
 }

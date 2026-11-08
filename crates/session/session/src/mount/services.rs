@@ -147,6 +147,8 @@ pub(crate) struct Collaboration<'a> {
     pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
     /// The programs agents write in this session's tasks, run by its door.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
+    /// The session's own actions, offered to a turn's agent as the broker's steps.
+    pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
     /// This session's Nearby Send: the fabric it reaches the person's other devices on, and the
     /// spool a file leaves from.
     pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
@@ -274,6 +276,7 @@ pub(crate) fn start_action_plane(
         content,
         records,
         task_programs,
+        session_actions,
         nearby,
     } = collaboration;
     let Some(path) = action_plane_path(options)? else {
@@ -348,6 +351,7 @@ pub(crate) fn start_action_plane(
             // Files' waits for the drive and app lists to change, which the tools service answers.
             tools,
             task_programs,
+            session_actions,
             nearby,
             // What a person copies or cuts in Files, pasted here, and what the loop puts on the
             // desktop's clipboard for another app.

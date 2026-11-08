@@ -412,7 +412,7 @@ fn survey_into(resource: &ResourceSpec, out: &mut Vec<ActionDescriptor>) {
 /// One exported operation of a surveyed forest, in the row it stands in: the
 /// resource of the level above it, and whether its own resource holds rows
 /// below it, which a listing asked with that resource as its parent answers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlacedAction {
     /// The resource this row hangs under; empty at the top level.
     pub parent: String,

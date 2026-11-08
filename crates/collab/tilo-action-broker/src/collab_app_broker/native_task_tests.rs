@@ -38,6 +38,10 @@ struct Native {
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
     /// The tracker's runs, as the person approves, steers and stops them.
     runs: Mutex<Vec<TrackerRun>>,
+    /// What this device looked up about a turn's cause, by the turn's message: what
+    /// `conversations.rs` keeps for the turns it derives, and `authorize_action` decides
+    /// against. A turn with none has not reached this device yet.
+    looked: Mutex<std::collections::HashMap<String, tilo_action_policy::turn::Looked>>,
     /// The grants recorded as given by the person, while they may grant.
     granted: Mutex<Option<Vec<tilo_action_policy::Grant>>>,
     /// The workspace's governor records no effect receipt: one it is asked for
@@ -269,7 +273,22 @@ impl TrackerRuns for Native {
             view.peer()
                 .workspace()
                 .check_admitted_agent(&run.agent, run.delegation()?, now)?;
-            requirement.check_tracker(view.peer(), requested, run, now)
+            let looked = run
+                .turn
+                .as_ref()
+                .and_then(|turn| self.looked.lock().unwrap().get(&turn.message).cloned());
+            requirement.check_tracker_policy(
+                &tilo_desktop_model::projection::workspace_policy_of(
+                    view.peer()
+                        .admitted_workspace()
+                        .ok_or("native document unavailable")?,
+                    requested,
+                ),
+                requested,
+                run,
+                looked.as_ref(),
+                now,
+            )
         })
     }
 }
@@ -347,6 +366,7 @@ impl Fixture {
             capped_connection: std::sync::atomic::AtomicBool::new(false),
             spent_grants: Mutex::new(Vec::new()),
             runs: Mutex::new(Vec::new()),
+            looked: Mutex::default(),
             granted: Mutex::new(None),
             receipts_refused: std::sync::atomic::AtomicBool::new(false),
             opening: std::sync::atomic::AtomicBool::new(false),
@@ -480,6 +500,16 @@ impl Fixture {
                 std::time::SystemTime::now(),
             )
             .unwrap();
+    }
+    /// The person's message `message` was read here, as `conversations.rs` reads the turns of a
+    /// conversation: the cause a turn's step is decided against.
+    fn caused(&self, message: &str) {
+        self.native.looked.lock().unwrap().insert(
+            message.to_owned(),
+            tilo_action_policy::turn::Looked::by(hex::encode(
+                self.native.certificate.user_public_key,
+            )),
+        );
     }
     /// The person approves a run of the issue for the agent: the issue's
     /// next run.
@@ -1626,4 +1656,209 @@ async fn answer_of(job: &super::super::InvocationJob) -> InvocationCompletion {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeRequest};
+
+/// A host's own step that is a turn's (`for_turns`): the session's arrangement, out here.
+#[derive(Default)]
+struct TurnSteps {
+    taken: Mutex<Vec<String>>,
+}
+
+impl crate::services::HostStepServices for TurnSteps {
+    fn provider(&self) -> &'static str {
+        tilo_actions::remote::session_actions::PROVIDER
+    }
+    fn app_id(&self) -> &'static str {
+        tilo_actions::remote::session_actions::PROVIDER
+    }
+    fn for_turns(&self) -> bool {
+        true
+    }
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+        vec![tilo_actions::ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new("shell:arrangement", "place"),
+            resource_kind: "shell".into(),
+            resource_label: "The person's arrangement".into(),
+            action_label: "Put a resource on the canvas".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::default(),
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Undoable,
+                ..tilo_actions::ActionContract::default()
+            },
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        }]
+    }
+    fn start(
+        &self,
+        request: &crate::services::HostStepRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<crate::services::HostStepOutcome>, String> {
+        self.taken
+            .lock()
+            .unwrap()
+            .push(request.actor.id().to_owned());
+        Ok(tilo_actions::remote::Pending::ready(Ok(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
+/// A step marked for turns is a turn's own, as an app action is: the tracker's run for the
+/// turn's message admits it (the person's and the agent's live grants), and a caller working
+/// no turn — or one the turn's grants refuse — takes none.
+#[tokio::test(flavor = "current_thread")]
+async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let steps = Arc::new(TurnSteps::default());
+            let f = Fixture::with_services(None, vec![steps.clone()]);
+            f.approve();
+            // The run's turn: the person's message `conversations.rs` derives from Chat, and
+            // the cause it looked up.
+            let turn =
+                tilo_action_policy::turn::Turn::new("chat.workspace/channels/c_tide", "message-1");
+            f.on_run(|run| run.turn = Some(turn.clone()));
+            f.caused("message-1");
+            grant_the_arrangement(&f, true);
+
+            // The agent answering the person's turn, as the agent door's connection is.
+            let agent = Caller::agent_turn(
+                "scribe",
+                hex::encode(f.native.certificate.user_public_key),
+                turn,
+            )
+            .in_workspace(workspace_id().to_string());
+            stray_invoke(&f.state, &agent, 92).expect("the turn takes the session's step");
+            assert_eq!(
+                steps.taken.lock().unwrap().as_slice(),
+                ["agent:scribe"],
+                "the step ran once, as the turn's agent"
+            );
+
+            // A turn's step is no person's control: the person's own catalogue carries none of
+            // the session's steps, while the agent working the turn is offered them.
+            let listed = |caller: &Caller| {
+                let actor = BrokerActor::for_caller(caller);
+                let catalogue: serde_json::Value = serde_json::from_str(
+                    &f.state
+                        .action_catalogue_json_for(&workspace_id().to_string(), &actor)
+                        .unwrap(),
+                )
+                .unwrap();
+                catalogue["surfaces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|surface| {
+                        surface["provider"] == tilo_actions::remote::session_actions::PROVIDER
+                    })
+            };
+            assert!(
+                listed(&agent),
+                "the agent working the turn is offered the session's step"
+            );
+            // The person at this seat is offered the same step, as they are their other steps:
+            // the REPL types what the agent would, and it runs as the person (shell.md §8.1).
+            let person = Caller::local_person(hex::encode(f.native.certificate.user_public_key))
+                .in_workspace(workspace_id().to_string());
+            assert!(
+                listed(&person),
+                "the person at this seat is offered the session's step too"
+            );
+
+            // An agent working another turn of the conversation has no run: refused.
+            let other = Caller::agent_turn(
+                "scribe",
+                hex::encode(f.native.certificate.user_public_key),
+                tilo_action_policy::turn::Turn::new("chat.workspace/channels/c_tide", "message-9"),
+            )
+            .in_workspace(workspace_id().to_string());
+            let refused = stray_invoke(&f.state, &other, 93);
+            assert!(
+                matches!(refused, Err(ActionHostError::Refused { .. })),
+                "an agent working no run of that turn takes no step: {refused:?}"
+            );
+            assert_eq!(steps.taken.lock().unwrap().len(), 1, "nothing ran for it");
+
+            // The turn's grants refuse it: the same refusal an app action hears.
+            grant_the_arrangement(&f, false);
+            let refused = stray_invoke(&f.state, &agent, 94);
+            assert!(
+                matches!(refused, Err(ActionHostError::Refused { .. })),
+                "the turn's grants refuse the step: {refused:?}"
+            );
+            assert_eq!(steps.taken.lock().unwrap().len(), 1, "nothing ran for it");
+            drop(f);
+        })
+        .await;
+}
+
+/// Let the turn's agent `place` on the session's arrangement, or refuse it, as the person who
+/// started the turn.
+fn grant_the_arrangement(f: &Fixture, may: bool) {
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    let node = tilo_actions::action_node(
+        &TreePath::workspace(workspace_id().to_string()),
+        tilo_actions::remote::session_actions::PROVIDER,
+        "shell",
+        "shell:arrangement",
+        None,
+        "place",
+    );
+    put_grant(
+        f,
+        Grant::new(
+            if may {
+                "fixture-arrangement-place"
+            } else {
+                "fixture-arrangement-deny"
+            },
+            Subject::agent("scribe"),
+            node,
+            if may { KindSet::UNDOABLE } else { KindSet::ALL },
+            if may { Answer::Allow } else { Answer::Deny },
+            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        ),
+    );
+}
+
+/// The step of [`TurnSteps`], invoked by `caller` through the broker as the `invocation`.
+fn stray_invoke(
+    state: &Arc<AppBrokerState>,
+    caller: &Caller,
+    invocation: u128,
+) -> Result<InvocationReceipt, ActionHostError> {
+    state
+        .action_invoke(
+            caller,
+            None,
+            None,
+            &InvokeRequest {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::session_actions::PROVIDER.into(),
+                    address: tilo_actions::ActionAddress::new("shell:arrangement", "place"),
+                },
+                argument: tilo_actions::remote::InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                appearance: None,
+                wait_ms: None,
+            },
+        )
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("admission answers at once")
 }
