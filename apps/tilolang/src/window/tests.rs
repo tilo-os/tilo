@@ -365,8 +365,9 @@ impl Workspace {
 
     /// The tree of the row the window shows first: a task opens where it stands, so what a
     /// person sees of it is drawn in the list itself.
-    fn first_row_tree(&mut self) -> Option<UiNode> {
-        self.show_rows(0..self.root_rows().borrow().len());
+    fn first_row_tree(&mut self) -> Option<tilolang_tilo::runtime::UiNode> {
+        let len = self.root_rows().borrow().len();
+        self.show_rows(0..len);
         let list = self
             .window
             .view()
@@ -377,8 +378,7 @@ impl Workspace {
             .window
             .instance()
             .view(tilo_render_protocol::patch::Lane::Root)?;
-        let row = view.borrow_mut().row(&list, 0).ok().flatten().cloned();
-        row
+        view.borrow_mut().row(&list, 0).ok().flatten().cloned()
     }
 
     /// The rows of the root's list, as its list reads them.
@@ -585,6 +585,14 @@ fn first_input(node: &UiNode) -> Option<&UiNode> {
         return Some(node);
     }
     node.children.iter().find_map(first_input)
+}
+
+/// The key of the first text input under the runtime's node `node`, as a row renders it.
+fn first_input_key(node: &tilolang_tilo::runtime::UiNode) -> Option<String> {
+    if node.kind == "ui.TextInput" {
+        return Some(node.key.clone());
+    }
+    node.children.iter().find_map(first_input_key)
 }
 
 /// What a person types into a rich-text input: one paragraph of `text`.
@@ -1711,46 +1719,50 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
 #[test]
 fn a_control_bound_to_the_state_an_action_toggles_stands_for_that_state_beside_the_title() {
     let mut workspace = Workspace::seeded("tasks");
-    assert!(
-        workspace.window.detail_target().is_some(),
-        "the scenario's item is shown"
-    );
-    let composed = workspace.composed();
-    let more = node_with(&composed, "ui.MenuButton", "label", "More actions")
-        .unwrap_or_else(|| panic!("the page has a \"…\": {composed:#?}"));
-    let commands: Vec<String> = more
-        .children
+    let row = workspace
+        .first_row_tree()
+        .expect("the scenario's item is shown standing in its list");
+    // The item's title and its "…" are the row's, shown where the item stands: what the item
+    // can be done with stands in the row's own actions, not in the window's bar.
+    let items: Vec<(&String, Option<bool>)> = {
+        use tilolang_tilo::runtime::Value as Run;
+        fn collect<'a>(
+            node: &'a tilolang_tilo::runtime::UiNode,
+            out: &mut Vec<(&'a String, Option<bool>)>,
+        ) {
+            if node.kind == "ui.MenuItem"
+                && let Some(Run::Text(label)) = node.props.get("label")
+            {
+                let toggled = match node.props.get("checked") {
+                    Some(Run::Bool(on)) => Some(*on),
+                    Some(Run::Int(n)) => Some(*n != 0),
+                    _ => None,
+                };
+                out.push((label, toggled));
+            }
+            for child in &node.children {
+                collect(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        collect(&row, &mut out);
+        out
+    };
+    let toggled: Vec<Option<bool>> = items
         .iter()
-        .filter(|child| child.kind == "ui.MenuItem")
-        .filter_map(|item| match item.props.get("label") {
-            Some(Value::Text(label)) => Some(label.clone()),
-            _ => None,
-        })
+        .filter(|(label, _)| *label == "Complete" || *label == "Reopen")
+        .map(|(_, toggled)| *toggled)
         .collect();
-    let toggled: Vec<Option<bool>> = more
-        .children
-        .iter()
-        .filter(|child| child.kind == "ui.MenuItem")
-        .filter(|item| {
-            matches!(
-                item.props.get("label"),
-                Some(Value::Text(label)) if label == "Complete" || label == "Reopen"
-            )
-        })
-        .map(|item| match item.props.get("checked") {
-            Some(Value::Bool(on)) => Some(*on),
-            Some(Value::Int(n)) => Some(*n != 0),
-            _ => None,
-        })
-        .collect();
+    let commands: Vec<String> = items.iter().map(|(label, _)| (*label).clone()).collect();
     assert!(
         !toggled.is_empty() && toggled.iter().all(Option::is_some),
-        "the page's \"…\" holds the item's actions, the one that toggles a state saying which way it stands: {toggled:?}"
+        "the row's \"…\" holds the item's actions, the one that toggles a state saying which way it stands: {toggled:?} of {commands:?}"
     );
     assert!(
         commands.iter().any(|label| label == "Delete"),
         "and the one that takes it away: {commands:?}"
     );
+    let composed = workspace.composed();
     let header = header_labels(&composed, "overview_actions");
     assert!(
         !header
@@ -2480,7 +2492,7 @@ fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
     // title is that row's field.
     let mut workspace = Workspace::seeded("tasks");
     let row = workspace.first_row_tree().expect("the item's row renders");
-    let input = first_input(&row).expect("the item's title").key.clone();
+    let input = first_input_key(&row).expect("the item's title");
     // The list mounts the rows its laid-out height shows, measures them as they are laid out,
     // then holds them.
     workspace.lay_out();
@@ -2515,7 +2527,7 @@ fn a_keystroke_repaints_its_field_not_the_window() {
     // The scenario's task is the row the window shows.
     let mut workspace = Workspace::seeded("tasks");
     let row = workspace.first_row_tree().expect("the item's row renders");
-    let input = first_input(&row).expect("the item's title").key.clone();
+    let input = first_input_key(&row).expect("the item's title");
     workspace.lay_out();
     workspace.settle();
     workspace.lay_out();
