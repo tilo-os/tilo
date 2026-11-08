@@ -2766,7 +2766,11 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl disable flatpak-add-fedora-repos.service && \
     systemctl enable tilo-cache-gc.timer tilo-cache-gc-pressure.timer && \
     systemctl --global enable tilo-cache-gc.timer && \
-    systemctl --global enable tilo-app-update.timer && \
+    # The app store's update timer arrives with its component (app-cli, in the
+    # binaries layer), above this one: its enablement is the link enable would make.
+    mkdir -p /etc/systemd/user/timers.target.wants && \
+    ln -sf /usr/lib/systemd/user/tilo-app-update.timer \
+        /etc/systemd/user/timers.target.wants/tilo-app-update.timer && \
     systemctl --global enable tilo-public-content-refresh.timer && \
     systemctl --global enable tilo-runtime-resident.service tilo-runtime-resident.path && \
     systemctl set-default graphical.target && \
