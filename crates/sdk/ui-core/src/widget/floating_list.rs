@@ -141,6 +141,13 @@ pub trait FloatingRow {
     /// Whether the pointer and the arrow keys arm it.
     fn pickable(&self) -> bool;
 
+    /// Whether a panel holding only this row rounds itself concentric with
+    /// it (`floating_surface::single_row_radius`): a menu's action rows do,
+    /// a suggestion list's rows keep the panel's radius.
+    fn alone_row(&self) -> bool {
+        false
+    }
+
     /// Whether it is on its way, showing progress at its content's end.
     fn busy(&self) -> bool {
         false
@@ -155,6 +162,14 @@ pub trait FloatingRow {
     /// How many cells it offers side by side (an emoji bar), 0 for none.
     fn cell_count(&self) -> usize {
         0
+    }
+
+    /// The air between the panel's edge and the rows, across and down. A
+    /// list of suggestions keeps its inset on every side; a menu's rows run
+    /// the panel's full width, as every menu's do, and a panel shorter than
+    /// its own inset keeps a quarter of its height so one row still shows.
+    fn rows_inset(metrics: &FloatingMetrics, _panel: Rect) -> Vec2 {
+        Vec2::new(metrics.inset, metrics.inset)
     }
 
     /// What the row needs across, for a list that sizes itself to its rows.
@@ -195,6 +210,9 @@ pub struct RowState<'a, C> {
     pub index: usize,
     /// The armed row: the one a press or Enter takes.
     pub armed: bool,
+    /// A row drawn armed without being the armed one: a menu's row whose
+    /// nested menu is open.
+    pub marked: bool,
     /// The pointer rests on it, the armed row aside.
     pub hovered: bool,
     /// The armed cell, of a row that offers cells.
@@ -239,6 +257,9 @@ pub struct FloatingList<R: FloatingRow> {
     hover: Option<usize>,
     /// The armed cell, of a row that offers cells.
     cell: usize,
+    /// A row drawn armed although it is not the armed one, beside the armed
+    /// row: a menu's row whose nested menu is open. `None` for none.
+    marked: Option<usize>,
     /// The rows' scrolling: where they are scrolled to, the bar beside them
     /// while they overflow, and the wheel over them.
     scroll: ScrollRegion,
@@ -304,6 +325,7 @@ impl<R: FloatingRow> FloatingList<R> {
             highlight: None,
             hover: None,
             cell: 0,
+            marked: None,
             scroll: ScrollRegion::vertical().with_no_bars(),
             theme: Theme::dark(),
             max_visible: DEFAULT_MAX_VISIBLE,
@@ -433,6 +455,9 @@ impl<R: FloatingRow> FloatingList<R> {
     /// label's line).
     pub fn set_row_height(&mut self, height: Option<f64>) {
         self.pinned_row = height;
+        if let Some(height) = height {
+            self.metrics.row = height.max(self.min_row);
+        }
         self.resolve_heights();
     }
 
@@ -560,6 +585,18 @@ impl<R: FloatingRow> FloatingList<R> {
 
     pub fn set_cell(&mut self, cell: usize) {
         self.cell = cell;
+    }
+
+    /// Draw row `index` armed beside the armed one (`None` clears it): the
+    /// row that leads elsewhere, as a menu's open submenu parent.
+    pub fn set_marked(&mut self, index: Option<usize>) {
+        self.marked = index.filter(|&i| i < self.rows.len());
+    }
+
+    /// The row drawn armed beside the armed one.
+    #[must_use]
+    pub fn marked(&self) -> Option<usize> {
+        self.marked
     }
 
     /// The whole rows in view, at least one.
@@ -772,12 +809,13 @@ impl<R: FloatingRow> FloatingList<R> {
     /// The box inside `panel` the rows take: inside the inset, under the
     /// header.
     fn rows_area(&self, panel: Rect) -> Rect {
-        let m = self.metrics;
+        let inset = R::rows_inset(&self.metrics, panel);
+        let y1 = (panel.y1 - inset.y).max(panel.y0);
         Rect::new(
-            panel.x0 + m.inset,
-            (panel.y0 + m.inset + self.header).min(panel.y1),
-            (panel.x1 - m.inset).max(panel.x0),
-            (panel.y1 - m.inset).max(panel.y0),
+            panel.x0 + inset.x,
+            (panel.y0 + inset.y + self.header).min(y1),
+            (panel.x1 - inset.x).max(panel.x0),
+            y1,
         )
     }
 
@@ -890,14 +928,21 @@ impl<R: FloatingRow> FloatingList<R> {
         }
     }
 
-    /// The part of row `index` in view, in host coordinates.
-    pub fn row_rect(&self, index: usize) -> Option<Rect> {
+    /// Where row `index` is drawn in host coordinates, on screen or scrolled
+    /// past the panel's edge: a reader of the list finds it there rather than
+    /// nowhere.
+    pub fn row_bounds(&self, index: usize) -> Option<Rect> {
         if index >= self.rows.len() {
             return None;
         }
         let shown = self.rows_box();
-        let row = self.row_in(index) + (shown.origin().to_vec2() - self.scroll.offset());
-        let clipped = row.intersect(shown);
+        Some(self.row_in(index) + (shown.origin().to_vec2() - self.scroll.offset()))
+    }
+
+    /// The part of row `index` in view, in host coordinates.
+    pub fn row_rect(&self, index: usize) -> Option<Rect> {
+        let shown = self.rows_box();
+        let clipped = self.row_bounds(index)?.intersect(shown);
         (!shown.is_zero_area() && clipped.height() > 0.0).then_some(clipped)
     }
 
@@ -959,6 +1004,23 @@ impl<R: FloatingRow> FloatingList<R> {
         self.scroll.scroll_by(delta)
     }
 
+    /// How far the rows can scroll.
+    #[must_use]
+    pub fn max_scroll_offset(&self) -> f64 {
+        self.scroll.max_offset().y
+    }
+
+    /// Whether the rows are taller than their box.
+    #[must_use]
+    pub fn overflows(&self) -> bool {
+        self.scroll.overflows_vertically()
+    }
+
+    /// Scroll the rows back to their start.
+    pub fn reset_scroll(&mut self) {
+        self.scroll.set_offset(Vec2::ZERO);
+    }
+
     /// How far the rows are scrolled, in pixels.
     #[must_use]
     pub fn scroll_offset(&self) -> f64 {
@@ -997,6 +1059,25 @@ impl<R: FloatingRow> FloatingList<R> {
         self.scroll.advance()
     }
 
+    /// A press on the rows' bar: it grabs or pages it, answered in `on_bar`
+    /// apart from the context's own handled flag (a host that routed the
+    /// press here may have marked it already). Whether the scroll moved.
+    pub fn press_bar(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+        on_bar: &mut bool,
+    ) -> bool {
+        self.place_scroll();
+        self.scroll.handle_window_event(
+            event,
+            ctx.scale_factor,
+            ctx.modifiers.state(),
+            on_bar,
+            &self.theme,
+        )
+    }
+
     /// Forward `event` to the rows' scroll region: the wheel over the rows,
     /// a press on their bar, a drag of its thumb. `ctx.handled` says whether
     /// the region took it; the return value is whether the scroll changed
@@ -1017,6 +1098,12 @@ impl<R: FloatingRow> FloatingList<R> {
     #[must_use]
     pub fn row_height(&self) -> f64 {
         self.metrics.row
+    }
+
+    /// The inset the rows keep from the panel's edge on every side.
+    #[must_use]
+    pub fn row_inset(&self) -> f64 {
+        self.metrics.inset
     }
 
     /// The height of row `index`.
@@ -1069,9 +1156,9 @@ impl<R: FloatingRow> FloatingList<R> {
     }
 
     /// The panel's radius: one row alone is concentric with it.
-    fn radius(&self, theme: &Theme) -> f64 {
+    pub fn panel_radius(&self, theme: &Theme) -> f64 {
         let single =
-            self.header <= 0.0 && self.rows.iter().filter(|row| row.pickable()).count() == 1;
+            self.header <= 0.0 && self.rows.iter().filter(|row| row.alone_row()).count() == 1;
         if single {
             floating_surface::single_row_radius(theme)
         } else {
@@ -1095,13 +1182,19 @@ impl<R: FloatingRow> FloatingList<R> {
         // The height follows the rows on the platform's spring, growing from
         // the edge that faces the anchor; the rows stay where they will be.
         let now = crate::motion::frame_now();
-        self.height.follow(
-            target.height(),
-            theme.motion(),
-            crate::motion::input_source(),
-            now,
-        );
-        let shown = self.height.get(now).clamp(0.0, target.height());
+        let shown = if self.placed.is_some() {
+            // The host placed the panel by its own rule: its height is the
+            // host's to animate, or not.
+            target.height()
+        } else {
+            self.height.follow(
+                target.height(),
+                theme.motion(),
+                crate::motion::input_source(),
+                now,
+            );
+            self.height.get(now).clamp(0.0, target.height())
+        };
         let above = target.y1 <= self.anchor.y0 + 0.5;
         let panel = if above {
             Rect::new(target.x0, target.y1 - shown, target.x1, target.y1)
@@ -1111,7 +1204,7 @@ impl<R: FloatingRow> FloatingList<R> {
         if let Some(settles) = self.height.settles_at() {
             crate::motion::want_frames_until(settles);
         }
-        let radius = self.radius(theme);
+        let radius = self.panel_radius(theme);
         floating_surface::paint_rounded(scene, transform, panel, radius, theme);
         let m = self.metrics;
         self.drawn_step = self.arriving_step(now);
@@ -1133,6 +1226,7 @@ impl<R: FloatingRow> FloatingList<R> {
             let state = RowState {
                 index,
                 armed: self.highlight == Some(index),
+                marked: self.marked == Some(index),
                 hovered: self.hover == Some(index),
                 cell: self.cell,
                 metrics: m,

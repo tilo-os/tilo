@@ -6,19 +6,13 @@ use super::{
 };
 
 impl ContextMenu {
-    /// Give the scroll region the rows' box and how tall they are, and the
-    /// step a wheel line takes (one row). It keeps the offset inside them.
+    /// Stand the rows in the panel as it is now: a box that no longer holds
+    /// them scrolls them back inside it.
     pub(super) fn place_scroll(&mut self) {
-        let body = self.body_rect();
-        let offset = self.scroll.offset();
-        self.scroll.set_viewport(body, &self.theme);
-        self.scroll
-            .set_content_size(body.width(), self.content_height());
-        self.scroll.set_line_step(self.row_height());
-        // A viewport that no longer holds the rows scrolls them back.
-        if self.scroll.offset() != offset {
-            self.dirty = true;
+        if self.anchor.is_none() {
+            return;
         }
+        self.list.set_rect(self.rect);
     }
 
     /// Mirrors the `build_layout` + `apply_layout` geometry without a taffy
