@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
-use tilo_desktop_model::projection::{WorkspaceLayout, workspace_layout, workspace_members};
+use tilo_desktop_model::projection::workspace_members;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
@@ -208,18 +208,13 @@ impl Replicas {
         .unwrap_or(Ok(false))
     }
 
-    /// `workspace_id`'s workspace, whether its governance keeps each member's
-    /// layout their own, and the members it lists by person id.
-    pub(crate) fn layout(
-        &self,
-        workspace_id: u64,
-    ) -> Option<(String, WorkspaceLayout, Option<BTreeSet<String>>)> {
+    /// `workspace_id`'s workspace and the members it lists by person id.
+    pub(crate) fn members(&self, workspace_id: u64) -> Option<(String, Option<BTreeSet<String>>)> {
         self.with_workspace(workspace_id, |view| {
             let peer = view.peer();
             let doc = peer.admitted_workspace();
             Ok((
                 peer.workspace_id().to_owned(),
-                doc.map(workspace_layout).unwrap_or_default(),
                 doc.and_then(workspace_members),
             ))
         })?

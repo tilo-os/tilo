@@ -241,6 +241,20 @@ fn governance_changes_only_from_the_owners_devices() {
     assert!(admit(Some(&before), as_editor, &OWNER, &echo).is_ok());
 }
 
+/// A workspace made while the arrangement could be one member's own stores
+/// the scope it was given (`layout_v1`). This build reads no scope: the value
+/// is no longer governance, so a member's batch that carries it is admitted as
+/// any other change, and the arrangement a workspace holds is its members'.
+#[test]
+fn a_stored_layout_scope_is_no_governance() {
+    let before = governed();
+    let edit = changes_after(&before, |doc| {
+        doc.put(ROOT, "layout_v1", "personal").unwrap();
+        hold_record(doc, "file:/plan.md");
+    });
+    assert!(admit(Some(&before), member(&key(0x02), EDITOR), &OWNER, &edit).is_ok());
+}
+
 #[test]
 fn a_first_answer_from_someone_not_the_owner_is_refused() {
     let snapshot = all_changes(&governed());

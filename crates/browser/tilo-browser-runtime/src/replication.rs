@@ -91,10 +91,6 @@ enum DesktopSending {
     Snapshot,
     /// The workspace has the document: changes go as deltas.
     Changes,
-    /// The workspace keeps no member's layout: it refused this page's desktop as
-    /// a public workspace does. The attached desktops are their people's own
-    /// from then on: sent to nobody, and not replaced by the workspace's.
-    KeptOwn,
 }
 
 struct Mounted {
@@ -468,9 +464,6 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             warn(&format!("shared desktop not applied: {error}"));
         }
         if let Some((_, shared)) = &attachment.desktop {
-            shared
-                .own_layout
-                .set(joined.desktop_sending == DesktopSending::KeptOwn);
             shared.members.replace(joined.members.clone());
             joined.moderates = Arc::clone(&shared.moderates);
             joined.invitable = Arc::clone(&shared.invitable);
@@ -897,9 +890,7 @@ impl Joined {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
-                    self.follow_layout(&mut woken);
                 }
-                PeerEvent::WorkspaceLayout { .. } => self.follow_layout(&mut woken),
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
                 {
@@ -1080,16 +1071,6 @@ impl Joined {
         reason: &str,
         woken: &mut HashSet<u64>,
     ) {
-        let personal = route.app_id == DESKTOP_APP
-            && reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT;
-        if personal {
-            // Expected in a public workspace, not a fault: said once, quietly.
-            if self.desktop_sending != DesktopSending::KeptOwn {
-                debug("this workspace keeps each member's layout to themselves");
-                self.keep_own_layout(woken);
-            }
-            return;
-        }
         warn(&format!(
             "{}/{}: the workspace refused a change: {reason}",
             route.app_id, route.record
@@ -1478,11 +1459,6 @@ impl Joined {
         if self.desktop_value.as_ref() == Some(&value) {
             return Ok(());
         }
-        // A desktop of the person's own keeps what they arranged.
-        if self.desktop_sending == DesktopSending::KeptOwn {
-            self.desktop_value = Some(value);
-            return Ok(());
-        }
         // A peer renaming the workspace is news to everyone else here; the
         // first desktop this page receives is not.
         let renamed = tilo_desktop_surface::history_log::WorkspaceRename::merged(
@@ -1598,33 +1574,6 @@ impl Joined {
         self.send_desktop();
     }
 
-    /// A workspace whose layout is personal, as a public workspace's is, shares no
-    /// member's windows or layout: what this person arranges is theirs
-    /// alone, never sent, and nothing of it is undone. Known from the workspace's
-    /// governance as soon as the page hears it, or from the workspace refusing
-    /// this page's desktop as personal.
-    fn keep_own_layout(&mut self, woken: &mut HashSet<u64>) {
-        self.desktop_sending = DesktopSending::KeptOwn;
-        for (&id, mounted) in &self.mounts {
-            if let Some((_, shared)) = &mounted.attachment.desktop {
-                shared.own_layout.set(true);
-                woken.insert(id);
-            }
-        }
-    }
-
-    /// [`Self::keep_own_layout`] once the workspace's governance says its layout
-    /// is personal, as the peer heard it (`PeerStatus::personal_rooms`):
-    /// asked on joining, for a scope heard before this workspace listened, and
-    /// whenever a workspace's scope changes.
-    fn follow_layout(&mut self, woken: &mut HashSet<u64>) {
-        if self.desktop_sending != DesktopSending::KeptOwn
-            && self.peer.status().personal_rooms.contains(&self.uuid)
-        {
-            self.keep_own_layout(woken);
-        }
-    }
-
     /// The workspace's members as the peer last heard its governance list them:
     /// the attached desktops release what someone who left made.
     fn follow_members(&mut self, woken: &mut HashSet<u64>) {
@@ -1642,9 +1591,6 @@ impl Joined {
     }
 
     fn send_desktop(&mut self) {
-        if self.desktop_sending == DesktopSending::KeptOwn {
-            return;
-        }
         let Some((desktop, author)) = self.mounts.values().find_map(|mounted| {
             mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
                 (

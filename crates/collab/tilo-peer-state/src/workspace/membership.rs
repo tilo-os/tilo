@@ -262,7 +262,6 @@ fn row_name(row: GovernanceRow) -> &'static str {
         GovernanceRow::Bots => "the workspace's bots",
         GovernanceRow::Checkpoints => "the workspace's checkpoints",
         GovernanceRow::Hosts => "the workspace's hosts",
-        GovernanceRow::Layout => "the layout scope",
         GovernanceRow::Log => "the workspace's operations",
     }
 }
@@ -505,8 +504,7 @@ type Writer<'a> = (
 
 /// The workspace's name and saved grant sets, as the batch changes them: the name
 /// a valid one, given by someone who governs the workspace (a Moderator or above,
-/// or one granted its settings) when it shares its members' layout, as a workspace
-/// behind a public door does not; the grant sets by one granted its settings.
+/// or one granted its settings); the grant sets by one granted its settings.
 fn settings(
     workspace: &str,
     at: &AutoCommit,
@@ -514,7 +512,7 @@ fn settings(
     held: &WorkspacePolicy,
     (actor, authority, cx): Writer<'_>,
 ) -> Result<(), MembershipRefusal> {
-    use tilo_desktop_model::projection::{WORKSPACE_NAME_KEY, WorkspaceLayout, workspace_layout};
+    use tilo_desktop_model::projection::WORKSPACE_NAME_KEY;
     let parts = |doc: &AutoCommit| {
         super::settings_of(Some(doc))
             .into_iter()
@@ -529,7 +527,7 @@ fn settings(
         let governs = held
             .active_role(actor)
             .is_some_and(|role| role >= Role::Moderator);
-        if !(governs || settles) || workspace_layout(at) == WorkspaceLayout::Personal {
+        if !(governs || settles) {
             return Err(MembershipRefusal::Refused(format!(
                 "renaming workspace {workspace} is not the writer's"
             )));

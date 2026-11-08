@@ -718,7 +718,6 @@ impl SessionRules {
         Standing {
             person: &self.person,
             role: Some(Role::Owner),
-            layout_shared: true,
             members: None,
         }
     }

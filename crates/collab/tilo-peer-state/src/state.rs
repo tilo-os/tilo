@@ -76,7 +76,6 @@ mod workspace_hosts;
 pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, workspace_hosts_of};
 mod personal;
 mod seed;
-mod workspace_layout;
 mod workspace_name;
 mod workspace_settings;
 use held::Held;

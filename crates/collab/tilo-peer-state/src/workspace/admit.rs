@@ -13,7 +13,6 @@ use automerge::AutoCommit;
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
-use tilo_desktop_model::projection::workspace_layout_choice;
 
 /// How the receiver knows the sender's standing in the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,7 +241,7 @@ pub fn admit_workspace_changes(
 ///    ([`super::membership::admit_operations`]); a batch with no operation is
 ///    a membership change, judged where its writer made it
 ///    ([`super::membership::authorize`]).
-/// 3. The workspace's layout scope changes only by the owner's devices.
+/// 3. The workspace's hosts change only by the owner's devices.
 /// 4. Effect receipts are immutable ([`super::immutable_receipts`]), and
 ///    one not from the owner's devices records only its writer's own
 ///    ([`super::effect_slices_kept`]).
@@ -321,16 +320,13 @@ fn checked(
     if !governs && !governed && !super::governance_unchanged(before, candidate) {
         return Err(WorkspaceRefusal::GovernanceWriter);
     }
-    if !governs && !governed {
-        if before.and_then(workspace_layout_choice) != workspace_layout_choice(candidate) {
-            return Err(WorkspaceRefusal::GovernanceWriter);
-        }
-        if before.map_or_else(Vec::new, crate::workspace_hosts_of)
+    // The workspace's hosts are its owner's to name.
+    if !governs
+        && !governed
+        && before.map_or_else(Vec::new, crate::workspace_hosts_of)
             != crate::workspace_hosts_of(candidate)
-        {
-            // The workspace's hosts are its owner's to name.
-            return Err(WorkspaceRefusal::GovernanceWriter);
-        }
+    {
+        return Err(WorkspaceRefusal::GovernanceWriter);
     }
     if !governs {
         // The owner's devices relay what members recorded; anyone else

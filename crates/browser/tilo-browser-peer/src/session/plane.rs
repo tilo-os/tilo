@@ -440,7 +440,7 @@ impl Task {
         let now = tilo_clock::unix_now_ms();
         let workspaces: Vec<u64> = self.workspaces.iter().copied().collect();
         for workspace_id in workspaces {
-            let Some((workspace, _, _)) = self.replicas.layout(workspace_id) else {
+            let Some((workspace, _)) = self.replicas.members(workspace_id) else {
                 continue;
             };
             // The workspace scope's keys are the `so.tilo.media/live`

@@ -334,8 +334,7 @@ impl RelayCollabTransport {
                 | PeerEvent::Voice(_)
                 | PeerEvent::CallAudio { .. }
                 | PeerEvent::CallPicture { .. }
-                | PeerEvent::CallDemand { .. }
-                | PeerEvent::WorkspaceLayout { .. } => {}
+                | PeerEvent::CallDemand { .. } => {}
             }
         }
         if self.confirm_pending

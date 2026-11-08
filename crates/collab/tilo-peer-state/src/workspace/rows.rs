@@ -47,14 +47,12 @@ pub enum GovernanceRow {
     Checkpoints,
     /// The hosts serving the workspace.
     Hosts,
-    /// The layout scope, which only there for stored workspaces.
-    Layout,
     /// The operation log itself: its growth is [`crate::members::growth`]'s.
     Log,
 }
 
 impl GovernanceRow {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 10] = [
         Self::Owner,
         Self::Membership,
         Self::Identities,
@@ -64,7 +62,6 @@ impl GovernanceRow {
         Self::Bots,
         Self::Checkpoints,
         Self::Hosts,
-        Self::Layout,
         Self::Log,
     ];
 
@@ -86,7 +83,6 @@ impl GovernanceRow {
             Self::Bots => &BOT_KEYS,
             Self::Checkpoints => &CHECKPOINT_KEYS,
             Self::Hosts => &[HOSTS_KEY],
-            Self::Layout => &[tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY],
             Self::Log => &[crate::members::MEMBERS_KEY],
         }
     }
@@ -98,9 +94,7 @@ impl GovernanceRow {
     pub fn action(self) -> Option<&'static str> {
         match self {
             Self::Bots => Some(governance::GRANT),
-            Self::Media | Self::Checkpoints | Self::Hosts | Self::Layout => {
-                Some(governance::SETTINGS)
-            }
+            Self::Media | Self::Checkpoints | Self::Hosts => Some(governance::SETTINGS),
             Self::Versions => Some(governance::INSTALL_APP),
             Self::Owner | Self::Membership | Self::Identities | Self::Settings | Self::Log => None,
         }

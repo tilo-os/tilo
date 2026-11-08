@@ -215,7 +215,6 @@ impl Standing {
         tilo_desktop_model::commands::Standing {
             person,
             role: self.role(),
-            layout_shared: true,
             members: None,
         }
     }
@@ -375,10 +374,6 @@ pub(crate) struct Shared {
     /// ([`crate::replication`] asks it with the rest of their standing, as
     /// the desk asks its own host).
     pub invitable: Arc<AtomicBool>,
-    /// The workspace keeps no member's layout (a public workspace refused this
-    /// desktop's): its windows and desks are the person's own, sent to
-    /// nobody, and the workspace's later layout no longer replaces them.
-    pub own_layout: Rc<Cell<bool>>,
     /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made is released, anyone's here to
     /// close ([`tilo_desktop_model::ownership::released`]).
@@ -410,7 +405,6 @@ impl Shared {
         members: Option<&'a std::collections::BTreeSet<String>>,
     ) -> tilo_desktop_model::commands::Standing<'a> {
         tilo_desktop_model::commands::Standing {
-            layout_shared: !self.own_layout.get(),
             members,
             ..self.standing.of(person)
         }

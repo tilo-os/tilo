@@ -485,8 +485,9 @@ pub(super) async fn handle_delta(
 
 /// Why the relay refuses `env`, `peer`'s change in `ws`, once authorization
 /// let it through: a change that names nothing it writes, one its author's
-/// role grants nothing of (a Viewer writes none), or one writing the
-/// workspace's shared layout. None keeps and forwards the change.
+/// role grants nothing of (a Viewer writes none), or one taking down what
+/// someone else made without the workspace's leave. None keeps and forwards
+/// the change.
 async fn change_refusal(
     ws: &SharedWorkspace,
     peer: &AuthenticatedPeer,
@@ -573,43 +574,30 @@ pub(super) fn deciding_author(
     }
 }
 
-/// Why the workspace refuses `env`, `author`'s change, when it writes the workspace's
-/// shared layout: its topology or its shared desktop
-/// ([`crate::workspaces::Workspaces::decide_layout_write`]); `None` for any other
-/// change, and in a workspace this relay does not govern.
+/// Why the workspace refuses `env`, `author`'s change, when it writes the
+/// workspace's shared desktop
+/// ([`crate::workspaces::Workspaces::decide_desktop_write`]); `None` for any
+/// other change, and in a workspace this relay does not govern.
 pub(super) async fn desktop_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
 ) -> Option<String> {
     let body = governor_notice(env)?;
-    if !crate::workspaces::writes_desktop(&body) && !writes_topology(&body) {
+    if !crate::workspaces::writes_desktop(&body) {
         return None;
     }
     let authority = ws.lock().await.workspace_authority.clone()?;
     let workspaces = authority.workspaces()?;
     let reason = workspaces
-        .decide_layout_write(authority.workspace(), author, &body)
+        .decide_desktop_write(authority.workspace(), author, &body)
         .await
         .err()?;
     // Neither kept nor forwarded: a document write's verdict is filed in this
     // device's own workspace slice, the one place its author reads it.
     file_refusal_of(ws, env, &reason).await;
-    if reason == crate::workspaces::LAYOUT_REFUSAL {
-        tracing::debug!(%reason, device = %hex::encode(author), "refused a shared layout change");
-    } else {
-        tracing::warn!(%reason, device = %hex::encode(author), "refused a shared layout change");
-    }
+    tracing::warn!(%reason, device = %hex::encode(author), "refused a shared desktop change");
     Some(reason)
-}
-
-/// Whether `body` is a change to some workspace's document (`SyncResp`), told
-/// apart without decoding the changes it carries.
-fn writes_topology(body: &[u8]) -> bool {
-    matches!(
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
-        Ok(neighbour_wire::NeighbourMsg::SyncResp { .. })
-    )
 }
 
 /// What the workspace's governor follows of `env`, a member's state change: its

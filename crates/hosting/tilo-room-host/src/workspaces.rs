@@ -47,11 +47,9 @@ mod device_rejoin_tests;
 mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
-mod layout_scope;
 mod listing;
 mod pages;
 mod peer_parts;
-pub(crate) use layout_scope::LAYOUT_REFUSAL;
 mod publisher;
 mod record_format;
 mod revocations;
@@ -63,6 +61,7 @@ pub use device_keys::{
 };
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_records::fixtures as sealed_fixtures;
+mod desktop_record;
 mod shares;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -70,7 +69,6 @@ mod unbuildable_windows;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
-mod workspace_layout;
 pub(crate) use voice::carried_call_room;
 mod wait_list;
 
@@ -318,8 +316,8 @@ impl GovernedWorkspace {
             // first use: a seed record would go out in the clear before its
             // channel exists, and every member who joins after the channel
             // opened refuses that cleartext. The shared desktop starts with
-            // the first layout written to it, sealed, as in a workspace that never
-            // had one (`prepare_workspace_layout`).
+            // the first arrangement written to it, sealed, as in a workspace that
+            // never had one (`prepare_desktop_record`).
             seed.documents.clear();
         }
         peer.install_seed(seed, key, now)?;
@@ -994,9 +992,6 @@ struct WorkspacesInner {
     unbuildable_windows: std::sync::Mutex<HashMap<String, u64>>,
     /// The workspaces listed as public workspaces, and how lively each is.
     listings: listing::Listings,
-    /// Each workspace's layout scope, as its governance says
-    /// ([`layout_scope`]).
-    layouts: layout_scope::Layouts,
     /// Whether the records its workspaces hold in the clear are sealed: only once
     /// the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
@@ -1183,7 +1178,6 @@ impl Workspaces {
                 queued_writes: std::sync::Mutex::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
                 listings,
-                layouts: layout_scope::Layouts::default(),
                 #[cfg(feature = "agents")]
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
@@ -1212,7 +1206,6 @@ impl Workspaces {
             );
         }
         *this.inner.workspaces.lock().await = workspaces;
-        this.learn_layouts().await;
         let workspaces = this
             .inner
             .workspaces
@@ -1238,14 +1231,13 @@ impl Workspaces {
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
             tracing::info!("recalled");
-            this.prepare_workspace_layout(&mut workspace)
+            this.prepare_desktop_record(&mut workspace)
                 .await
-                .map_err(|e| format!("layout: {e}"))?;
-            tracing::info!("layout ready");
+                .map_err(|e| format!("desktop record: {e}"))?;
+            tracing::info!("desktop record ready");
             // What the relay's log revoked while the workspace was closed.
             this.carry_revocations(&mut workspace, &[]).await?;
         }
-        this.settle_layouts().await;
         this.follow_activity();
         this.follow_missing_surfaces();
         this.inner.hosting.resume().await;
@@ -1793,12 +1785,6 @@ impl Workspaces {
             workspaces: Arc::downgrade(&self.inner),
             workspace: workspace.clone(),
         });
-        // A workspace whose layout is personal shares no member's layout: what
-        // members wrote of it before is replayed to nobody.
-        runtime.store.replay_member_layout(
-            self.is_personal(&workspace)
-                .then_some(host.cert.device_public_key),
-        );
         if runtime.governor_tap.is_none() {
             let (tap, notices) = tokio::sync::mpsc::channel(RECORD_NOTICES);
             runtime.governor_tap = Some(tap);
@@ -2007,8 +1993,8 @@ impl Workspaces {
     async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         let host = &self.inner.host;
         // Every member's record write reaches the governor here, so this is
-        // where one that does not decode is reported (the layout and content
-        // classifiers that read the same body before it leave it to this).
+        // where one that does not decode is reported (the content classifier
+        // that reads the same body before it leaves it to this).
         let message = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
             .map_err(|error| format!("a member's write does not decode: {error}"))?;
         // The relay's own device writes records through the workspace too: the
@@ -2135,7 +2121,7 @@ impl Workspaces {
     }
 
     /// Take a member's own windows into the workspace's governance: the changes
-    /// a member publishes to the workspace's layout. The workspace's admission decides
+    /// a member publishes to the workspace's arrangement. The workspace's admission decides
     /// them exactly as every member's does (a change to what someone else
     /// made, without the workspace's leave, is refused); the governor commits what
     /// it admitted as the workspace's next generation, which every member then
@@ -2153,7 +2139,6 @@ impl Workspaces {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
-        let personal = self.is_personal(workspace);
         let host = &self.inner.host;
         let workspace = self
             .workspace(workspace)
@@ -2161,17 +2146,6 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let mut workspace = workspace.lock().await;
         if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
-            // A workspace whose layout is personal takes in no member's windows;
-            // its doors refuse them before they get here (`layout_scope`).
-            // Its membership, which members change themselves, it takes in.
-            if personal
-                && !workspace
-                    .peer()
-                    .admitted_workspace()
-                    .is_some_and(|before| layout_scope::leaves_layout(before, changes))
-            {
-                return Ok(());
-            }
             let missing = unbuildable_windows::missing_history(
                 workspace.peer().admitted_workspace(),
                 changes,
@@ -2612,7 +2586,7 @@ impl Workspaces {
             if retained.author == self.inner.host.cert.device_public_key {
                 continue;
             }
-            let message = match postcard::from_bytes(&retained.body) {
+            let message: neighbour_wire::NeighbourMsg = match postcard::from_bytes(&retained.body) {
                 Ok(message) => message,
                 Err(error) => {
                     tracing::warn!(
@@ -2623,26 +2597,24 @@ impl Workspaces {
                     continue;
                 }
             };
-            if self.recalls(workspace, &message) {
-                let followed = workspace.follow(retained.author, message.clone());
-                let Followed {
-                    changed: took,
-                    replay_wanted,
-                    refused,
-                } = followed;
-                changed |= took;
-                again |= replay_wanted;
-                if let Some(reason) = refused {
-                    let filed = workspace.refused(
-                        &self.inner.host.cert,
-                        &self.inner.host.key,
-                        &message,
-                        &reason,
-                    );
-                    changed |= filed.changed;
-                } else if took && self.landed(workspace, &message) {
-                    changed = true;
-                }
+            let followed = workspace.follow(retained.author, message.clone());
+            let Followed {
+                changed: took,
+                replay_wanted,
+                refused,
+            } = followed;
+            changed |= took;
+            again |= replay_wanted;
+            if let Some(reason) = refused {
+                let filed = workspace.refused(
+                    &self.inner.host.cert,
+                    &self.inner.host.key,
+                    &message,
+                    &reason,
+                );
+                changed |= filed.changed;
+            } else if took && self.landed(workspace, &message) {
+                changed = true;
             }
         }
         if changed {

@@ -317,9 +317,6 @@ pub struct PeerStatus {
     /// This page's channel state, one line per workspace, certificate and
     /// route, for diagnostics.
     pub channels: String,
-    /// The joined workspaces whose layout is personal, as their governance says:
-    /// the page keeps its strips and windows to itself there.
-    pub personal_rooms: BTreeSet<String>,
     /// The members each joined workspace's governance lists, by workspace, by
     /// person id: what someone no longer among them made on the workspace's
     /// desktop is released ([`tilo_desktop_model::ownership::released`]).
@@ -490,15 +487,6 @@ pub enum PeerEvent {
         route: DocumentRoute,
         /// How many frames the host sent.
         frames: u32,
-    },
-    /// The workspace's governance changed whether it shares its members' layout
-    /// ([`PeerStatus::personal_rooms`]): in a personal one the page keeps
-    /// its strips and windows to itself and sends the workspace no desktop.
-    WorkspaceLayout {
-        /// The workspace (its cluster id).
-        workspace: String,
-        /// Each member's layout is their own.
-        personal: bool,
     },
 }
 
@@ -786,7 +774,6 @@ impl PeerHandle {
                 device: config.cert.device_public_key,
                 generation: 0,
                 channels: String::new(),
-                personal_rooms: BTreeSet::new(),
                 room_members: BTreeMap::new(),
             },
             queues: Vec::new(),
@@ -2839,31 +2826,16 @@ impl Task {
         self.absorb(changes);
     }
 
-    /// Follow what `workspace_id`'s governance says now: whether the workspace
-    /// shares its members' layout, who its members are, and the channel
-    /// commits that waited for a participant it now admits.
+    /// Follow what `workspace_id`'s governance says now: who its members are,
+    /// and the channel commits that waited for a participant it now admits.
     fn follow_governance(&mut self, workspace_id: u64) {
-        if let Some((workspace, layout, members)) = self.replicas.layout(workspace_id) {
-            let personal = layout.is_personal();
-            if self.status().room_members.get(&workspace) != members.as_ref() {
-                self.update(|status| match members {
-                    Some(members) => _ = status.room_members.insert(workspace.clone(), members),
-                    None => _ = status.room_members.remove(&workspace),
-                });
-            }
-            if self.status().personal_rooms.contains(&workspace) != personal {
-                self.update(|status| {
-                    if personal {
-                        status.personal_rooms.insert(workspace.clone());
-                    } else {
-                        status.personal_rooms.remove(&workspace);
-                    }
-                });
-                self.emit(&PeerEvent::WorkspaceLayout {
-                    workspace,
-                    personal,
-                });
-            }
+        if let Some((workspace, members)) = self.replicas.members(workspace_id)
+            && self.status().room_members.get(&workspace) != members.as_ref()
+        {
+            self.update(|status| match members {
+                Some(members) => _ = status.room_members.insert(workspace.clone(), members),
+                None => _ = status.room_members.remove(&workspace),
+            });
         }
         let replicas = &self.replicas;
         let changes = self
@@ -3821,7 +3793,6 @@ mod tests {
             device: [0; 32],
             generation: 0,
             channels: String::new(),
-            personal_rooms: BTreeSet::new(),
             room_members: BTreeMap::new(),
         }
     }
