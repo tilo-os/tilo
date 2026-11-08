@@ -1675,8 +1675,10 @@ impl Instance {
             };
             args.push(Value::resource(&target));
         }
-        // Nothing is left to ask: the palette runs the action as it is.
-        if action.params.len() <= args.len() {
+        // What is still to ask is what the action has no default for, as the label's "…" and
+        // every form read it: when the address's subject leaves nothing, the action runs as it
+        // is, as a control that runs it runs it.
+        if action.unbound(args.len()).next().is_none() {
             return false;
         }
         let Some(view) = self.view(Lane::Root) else {
