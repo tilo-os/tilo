@@ -137,8 +137,13 @@ impl Restore {
             // An app whose model the session runs itself has no window process: the tab the
             // person left open is the place its root stands in, restored by the desk as every
             // place is, and nothing starts for it
-            // (`docs/designs/app-language/one-app-model.md` §3).
+            // (`docs/designs/app-language/one-app-model.md` §3). The tab the saved window was
+            // held in goes with it: the place stands in its workspace.
             if apps.serves(&saved.app) {
+                if let Some(slot) = slot_of(desktop, saved.tab) {
+                    apps.restore_served(&saved.app, slot);
+                }
+                desktop.with_policy(|policy| policy.release_tab(saved.tab));
                 continue;
             }
             // The person may have opened the app while its saved window was still waiting: its
@@ -231,6 +236,25 @@ pub(crate) fn without_unfilled(tree: &mut DesktopTree) {
 
 /// The workspace the tab `tab` stands in, which its app is started into: the app runs where the
 /// person opened it, with that workspace's grants.
+/// The desk slot of the workspace that holds the tab `tab` : where a place stands for it.
+fn slot_of(desktop: &DesktopHost, tab: TabId) -> Option<u64> {
+    desktop.with_policy(|policy| {
+        policy.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|workspace| {
+                    workspace.strips.iter().any(|strip| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
+                    })
+                })
+                .map(|workspace| workspace.slot.0)
+        })
+    })
+}
+
 fn workspace_of(desktop: &DesktopHost, tab: TabId) -> Option<String> {
     desktop.with_policy(|policy| {
         policy.handle().read(|tree| {

@@ -280,6 +280,27 @@ impl Apps {
         Some(placed.map_err(|error| DoorError::Failed(error.to_string())))
     }
 
+    /// Stand the root of the served app `app` on the canvas of the workspace `workspace` (a slot),
+    /// as the place its window would have been: what a device that left the app open restores,
+    /// the place the desk draws from the session's reading instead of a window process. Whether a
+    /// place stands there now.
+    pub(crate) fn restore_served(&self, app: &str, workspace: u64) -> bool {
+        let view = "";
+        let Some(root) = self.hosted(app) else {
+            return false;
+        };
+        let Some(arrangement) = self.state.borrow().arrangement.clone() else {
+            return false;
+        };
+        let person = self.state.borrow().person.clone();
+        matches!(
+            arrangement
+                .borrow_mut()
+                .place_root(&person, workspace, &root, view),
+            Ok(Some(_))
+        )
+    }
+
     /// The desk's slot for the workspace `id` : where a place the session makes in that workspace
     /// stands. `None` for a workspace this desk does not hold.
     fn workspace_slot(&self, id: &str) -> Option<u64> {
