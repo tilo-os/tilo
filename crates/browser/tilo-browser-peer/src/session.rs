@@ -412,7 +412,7 @@ pub enum PeerEvent {
         reason: String,
     },
     /// A frame another member published on the workspace's live plane
-    /// ([`crate::live`]), opened with the scope's channel keys: what a device
+    /// ([`plane`]), opened with the scope's channel keys: what a device
     /// seals on its tracks, carried by the relay that serves the workspace
     /// rather than by this session.
     LivePlane {
@@ -428,7 +428,7 @@ pub enum PeerEvent {
         body: Vec<u8>,
     },
     /// A call's voice heard on `workspace_id`'s plane
-    /// ([`crate::live`]): one Opus frame, opened with the scope's keys, as
+    /// ([`plane`]): one Opus frame, opened with the scope's keys, as
     /// the device `from` published it.
     CallAudio {
         /// The workspace id.
@@ -687,8 +687,7 @@ struct Shared {
     /// leaves ([`PeerHandle::session_token`]).
     session: Option<String>,
     /// What the page shows where its live plane would be, when it has none:
-    /// that this browser has no WebTransport to join with, or that no plane
-    /// could be reached ([`PeerHandle::live_note`]).
+    /// that no plane could be reached ([`PeerHandle::live_note`]).
     live_note: Option<String>,
 }
 
@@ -868,8 +867,8 @@ impl PeerHandle {
     }
 
     /// Why this page shows no live presence, in the words it shows in its
-    /// members' place, or `None` while it has a plane: the browser has no
-    /// WebTransport, or no plane could be reached ([`crate::live::UNREACHABLE`]).
+    /// members' place, or `None` while it has a plane: no plane could be
+    /// reached ([`plane::UNREACHABLE`]).
     pub fn live_note(&self) -> Option<String> {
         lock(&self.shared).live_note.clone()
     }
@@ -1842,7 +1841,7 @@ impl Task {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
             }
-            self.settle_planes(Some(&client));
+            self.settle_planes();
             // App surfaces this page holds documents for go out with what the
             // session owes, and a surface that arrived decides what waited
             // for it before anything else is read.
@@ -3650,13 +3649,6 @@ enum Link {
     #[cfg(feature = "iroh")]
     Iroh {
         client: tilo_relay_session::RelayClient,
-        /// The endpoint the session dialled the host from: the workspace
-        /// planes are joined over it, beside the session.
-        endpoint: iroh::Endpoint,
-        /// This device's statement that the endpoint speaks for it, when the
-        /// device key could not dial itself (a page): the planes' grants carry
-        /// it. Empty for a device that dialled as itself.
-        delegation: Vec<u8>,
     },
 }
 
@@ -3967,12 +3959,6 @@ mod tests {
              at 60000"
         );
         assert_eq!(planes.missed(7), 1, "an answer starts the count again");
-        let mut unsupported = plane::Planes::default();
-        unsupported.no_support();
-        assert_eq!(
-            unsupported.describe(),
-            format!("plane: none — {}", crate::live::UNSUPPORTED)
-        );
     }
 }
 

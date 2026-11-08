@@ -2316,8 +2316,8 @@ impl WasmPeer {
     }
 
     /// Why this page shows no live presence, in the words it shows in the
-    /// members' place, or `null` while it has a plane: this browser has no
-    /// WebTransport, or no plane could be reached.
+    /// members' place, or `null` while it has a plane: no plane could be
+    /// reached.
     #[wasm_bindgen(js_name = liveNote)]
     pub fn live_note(&self) -> Option<String> {
         self.handle.live_note()
