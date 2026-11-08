@@ -24,6 +24,10 @@ tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-action-policy = { path = "../../collab/action-policy" }
+# The shell is an installed package, as every app is: the session reads it from the person's
+# app store, and this build's copy only stands in where the store holds none (shell.md §6).
+app-catalogue = { path = "../../packaging/app-catalogue" }
+package-store = { path = "../../packaging/package-store" }
 chrono = { workspace = true, features = ["std"] }
 # Files dropped on an app arrive as `file:` URIs.
 url.workspace = true

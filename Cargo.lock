@@ -21621,7 +21621,9 @@ dependencies = [
 name = "tilo-surface-host"
 version = "0.1.0"
 dependencies = [
+ "app-catalogue",
  "chrono",
+ "package-store",
  "serde",
  "serde_json",
  "tilo-action-policy",

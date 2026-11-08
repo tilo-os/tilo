@@ -19,12 +19,31 @@ use crate::displays;
 use crate::panels::Held;
 
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
-/// instance runs.
+/// instance runs. The installed `so.tilo.shell` when the person's app store holds one, the
+/// build's fallback copy when it does not (shell.md §6).
 ///
 /// # Errors
-/// A package does not compile: its diagnostics.
+/// Neither the installed shell nor the fallback compiles: the fallback's diagnostics.
 pub fn compile() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
-    tilo_surface_host::shell_part::compile_shell()
+    Ok(shell_packages()?.0)
+}
+
+/// [`compile`], and whether the packages are the store's installed shell rather than this
+/// build's fallback copy: what a test holds the loading path to.
+///
+/// # Errors
+/// As [`compile`].
+pub fn shell_packages() -> Result<(Vec<tilolang_tilo::tilolang::Compiled>, bool), String> {
+    match tilo_surface_host::shell_part::installed_shell() {
+        Ok(Some(packages)) => Ok((packages, true)),
+        Ok(None) => Ok((tilo_surface_host::shell_part::compile_shell()?, false)),
+        Err(error) => {
+            // A store row that does not read is the person's to see, and the desk still stands:
+            // the fallback is what a device with no shell of its own shows.
+            tracing::warn!(%error, "the installed shell does not load; the built-in one stands in");
+            Ok((tilo_surface_host::shell_part::compile_shell()?, false))
+        }
+    }
 }
 
 /// The device's resources the session publishes, as their surfaces: the sound, the network,

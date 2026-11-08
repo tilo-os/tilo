@@ -193,11 +193,60 @@ pub fn screen_layer() -> RootView {
     }
 }
 
+/// The package id of the shell a device installs, and the one this build's fallback copy is.
+pub const SHELL_APP: &str = "so.tilo.shell";
+
+/// The shell package, as the session runs it: the installed `so.tilo.shell` when the person's
+/// app store holds one, and this build's copy (`compile_shell`) when it does not
+/// (shell.md §6, "Where styles come from").
+///
+/// An installed shell is read the way every tilolang app is ([`seeded_apps`]'s path): its
+/// payload from the store row, its module and the modules it uses, each of them compiled by
+/// `tilolang build`. The store is the session's own (`$TILO_APPS_DATA_DIR`, else the person's
+/// `$XDG_DATA_HOME/tilo-apps`), so a development session installs it as it installs the apps.
+///
+/// # Errors
+/// The installed shell's payload does not read. A store that holds no shell is not an error:
+/// the fallback answers.
+pub fn installed_shell() -> Result<Option<Vec<Compiled>>, String> {
+    let Ok(catalog) = package_store::Catalog::from_env() else {
+        return Ok(None);
+    };
+    let found =
+        app_catalogue::apps::read_one(&catalog, SHELL_APP).map_err(|error| error.to_string())?;
+    let Some(app) = found else {
+        return Ok(None);
+    };
+    let bundle = tilolang_tilo::bundle::Bundle::read(&app.payload_root)
+        .map_err(|error| format!("{SHELL_APP}: {error}"))?;
+    // The packages it uses come first, as a bundle holds them, the shell last: the runtime
+    // loads each before the one that uses it.
+    let mut out: Vec<Compiled> = Vec::new();
+    for import in &bundle.imports {
+        out.push(compiled_of(&import.wasm, &import.meta, ""));
+    }
+    out.push(compiled_of(&bundle.wasm, &bundle.meta, &bundle.ids));
+    Ok(Some(out))
+}
+
+/// A compiled package made of the module `wasm`, the metadata `meta` and the ids lock `ids`,
+/// as an installed payload holds them: the shape a shell's instance loads.
+fn compiled_of(wasm: &[u8], meta: &tilolang_tilo::tilolang::PackageMeta, ids: &str) -> Compiled {
+    Compiled {
+        wasm: wasm.to_vec(),
+        meta: meta.clone(),
+        ids: tilolang_tilo::tilolang::IdsLock::parse(ids).unwrap_or_default(),
+    }
+}
+
 /// The shell package, compiled: what a shell's instance loads, over the session's and the
 /// platform's descriptions. No other app's package is the shell's: the package of each app a
 /// place shows comes from the session when a place shows it ([`SessionLink::publish_packages`]).
 /// `Err` when it does not compile, which every build of the shell is checked against, so a
 /// test that fails to compile here fails loudly.
+///
+/// This is the fallback shell, for a device whose app store holds no `so.tilo.shell` (or one
+/// that does not load): [`installed_shell`] answers with the installed copy first.
 ///
 /// # Errors
 /// The package's diagnostics, rendered with their file names.
