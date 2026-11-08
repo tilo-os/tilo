@@ -47,9 +47,11 @@ mod tests {
         // The list is what the compositor strips from a launcher's
         // environment, so an override read through `dev_override` but
         // missing here is honoured by a dev launcher even when the
-        // compositor meant to remove it. Found by reading the sources:
-        // every `dev_override(NAME)` whose `NAME` is a constant defined in
-        // this crate must have that constant's value in the list.
+        // compositor meant to remove it. Found by reading the sources: every
+        // override a call passes by name — `dev_override(NAME)` or
+        // `entitled(.., NAME, ..)`, which reads `NAME` through
+        // `dev_override` — whose `NAME` is a constant defined in this crate
+        // must have that constant's value in the list.
         {
             let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
             let mut sources = String::new();
@@ -74,14 +76,27 @@ mod tests {
                 })
                 .collect();
             let mut read = Vec::new();
-            for after in sources.split("dev_override(").skip(1) {
-                let arg = after.split(')').next().expect("a closing paren");
-                if let Some(name) = arg.rsplit("::").next()
-                    && let Some(value) = consts.get(name)
-                {
-                    read.push((name, *value));
+            // A constant reaches the override reader as the argument of a
+            // call: `dev_override(NAME)` itself, or `hardening::entitled`,
+            // which hands the variable name it was given to `dev_override`.
+            for call in ["dev_override(", "entitled("] {
+                for after in sources.split(call).skip(1) {
+                    let args = after.split(')').next().expect("a closing paren");
+                    for word in args.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                    {
+                        // Only a variable name is an override; the list a
+                        // call also passes is the image's own path.
+                        let name = word.rsplit("::").next().expect("a word");
+                        if name.ends_with("_ENV")
+                            && let Some(value) = consts.get(name)
+                        {
+                            read.push((name, *value));
+                        }
+                    }
                 }
             }
+            read.sort_unstable();
+            read.dedup();
             assert!(
                 read.iter()
                     .any(|(name, _)| *name == "WEB_ENGINE_POLICY_PATH_ENV"),
