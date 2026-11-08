@@ -208,12 +208,13 @@ struct TreePublisher {
     /// asks from when it asks again, so the answer is keys only when they
     /// changed.
     generation: u64,
-    /// The generation the record's unopened changes were last asked about:
-    /// one question per generation, as an app asks one per keys it holds.
-    asked_for_held: Option<u64>,
     /// Changes of a sealed record that arrived before its keys did, in the
     /// order they came.
     unopened: Vec<SignedOp>,
+    /// Changes of the record that arrived before the tree did, in the order
+    /// they came: they change the tree a holder publishes, and apply once
+    /// this device holds it.
+    waiting_for_the_tree: Vec<SignedOp>,
 }
 
 /// What this device may do with the record's content.
@@ -288,8 +289,8 @@ impl TreePublisher {
             },
             keys: None,
             generation: 0,
-            asked_for_held: None,
             unopened: Vec::new(),
+            waiting_for_the_tree: Vec::new(),
         };
         publisher.refresh_keys().await;
         Ok(publisher)
@@ -384,35 +385,55 @@ impl TreePublisher {
 
     /// Apply every change this device holds the keys for, in the order they
     /// arrived, asking for the record's keys once when one of them needs
-    /// them.
+    /// them; then the changes that waited for the tree, once it is here.
     async fn take_unopened(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
-        while let Some(op) = self.unopened.first() {
-            let payload = match self.opened(op) {
-                Open::Opened(payload) => payload,
-                Open::Later => {
-                    // Keys this device does not hold: ask for them, once per
-                    // generation of the ones it has.
-                    if self.asked_for_held == Some(self.generation) {
-                        // This device cannot open changes of the record: the
-                        // tree it reads from a holder is the whole of it.
-                        self.unopened.clear();
-                        self.ask_for_the_tree().await;
-                        return Ok(());
-                    }
-                    self.asked_for_held = Some(self.generation);
-                    self.refresh_keys().await;
-                    continue;
-                }
-                Open::Never => {
-                    self.unopened.remove(0);
-                    tracing::debug!("a change handed to this device is not the tree's to open");
-                    continue;
-                }
-            };
-            let op = self.unopened.remove(0);
-            self.apply(&op, payload, namespace).await?;
+        loop {
+            self.apply_unopened(namespace).await?;
+            if self.waiting_for_the_tree.is_empty() || !namespace.lock_recover().holds_tree() {
+                return Ok(());
+            }
+            // The tree came: the changes that waited for it apply now, in the
+            // order they came.
+            self.unopened = std::mem::take(&mut self.waiting_for_the_tree);
         }
-        Ok(())
+    }
+
+    /// Apply the changes whose keys are here, in the order they arrived; the
+    /// rest wait for the keys that open them ([`Self::keys_changed`]).
+    async fn apply_unopened(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
+        let mut asked = false;
+        loop {
+            let mut waiting = Vec::new();
+            while let Some(op) = self.unopened.first() {
+                let payload = match self.opened(op) {
+                    Open::Opened(payload) => payload,
+                    Open::Later => {
+                        let op = self.unopened.remove(0);
+                        waiting.push(op);
+                        continue;
+                    }
+                    Open::Never => {
+                        self.unopened.remove(0);
+                        tracing::debug!("a change handed to this device is not the tree's to open");
+                        continue;
+                    }
+                };
+                let op = self.unopened.remove(0);
+                self.apply(&op, payload, namespace).await?;
+            }
+            if waiting.is_empty() {
+                return Ok(());
+            }
+            self.unopened = waiting;
+            if asked {
+                return Ok(());
+            }
+            // The keys this device holds may have moved on since the changes
+            // arrived, as a workspace that re-keys hands out new ones: ask
+            // once, and open what they reach.
+            asked = true;
+            self.refresh_keys().await;
+        }
     }
 
     /// The change `op` carries, opened when the workspace seals it.
@@ -431,7 +452,10 @@ impl TreePublisher {
                     return Open::Later;
                 };
                 if keys.channel_id() != metadata.channel {
-                    return Open::Never;
+                    // Sealed under another of the record's channels, as a
+                    // workspace that re-keys hands out: the keys that open
+                    // it are newer than the ones here.
+                    return Open::Later;
                 }
                 if !keys.holds_epoch(metadata.epoch) {
                     // Sealed under an epoch this device's keys have moved
@@ -440,9 +464,11 @@ impl TreePublisher {
                 }
                 match keys.open_content(self.artifact(), metadata, &op.payload) {
                     Ok(opened) => Open::Opened(opened.to_vec()),
-                    Err(error) => {
-                        tracing::debug!(%error, "a change of the tree does not open under its keys");
-                        Open::Never
+                    Err(_) => {
+                        // Sealed under a key from another branch of the
+                        // record's group, as a workspace that re-keys hands
+                        // out: the ones that open it are newer than these.
+                        Open::Later
                     }
                 }
             }
@@ -462,8 +488,14 @@ impl TreePublisher {
         if matches!(mutation, DocumentMutation::Incremental(_))
             && !namespace.lock_recover().holds_tree()
         {
-            // A change of a tree this device was never given: it asks for the
-            // tree whole rather than merging one root beside another.
+            // A change of a tree this device was never given: it waits for
+            // the whole of it rather than merging one root beside another,
+            // and applies once the tree here is that one.
+            if self.waiting_for_the_tree.len() > MAX_UNOPENED {
+                // The tree is not coming: this device reads it whole instead.
+                self.waiting_for_the_tree.clear();
+            }
+            self.waiting_for_the_tree.push(op.clone());
             self.ask_for_the_tree().await;
             return Ok(());
         }
