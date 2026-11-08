@@ -912,3 +912,128 @@ fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
     });
     keep(&mut session, "frames-opened-app");
 }
+
+/// The desk draws the workspace in front and no other. A desk holds every workspace the person is
+/// in — the one it starts from, and one joined through a door (the dev shell joins the community's
+/// Lounge), or one made here — and it shows one. Before this, the strips drew each workspace's rows
+/// one under the other, so a desk of two cut every window's room in half: the joined workspace's
+/// window stood in the lower half, and the empty workspace above it took the upper half for an
+/// empty state. The workspace in front is the one the bar's workspace menu says is current, and its
+/// window has the room between the bar and the dock.
+#[test]
+fn the_desk_draws_the_workspace_in_front_and_no_other() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+
+    // The window the person works in, on the workspace they started on.
+    let note = notes.first().expect("a note").clone();
+    place(&mut session, &note);
+    let shown = shown_as(&session, NOTE_TITLE);
+    until(&mut session, "the placed note's window", |session| {
+        on_screen(session, &shown).is_some()
+    });
+
+    // A second workspace, as joining one through a door leaves it: the desk holds two, and the one
+    // made stands in front, holding nothing.
+    session
+        .invoke(CHROME, "new-workspace", &Map::new())
+        .unwrap_or_else(|error| panic!("a workspace is made: {error:?}"));
+    until(&mut session, "the workspace made", |session| {
+        session.handle().read(|tree| tree.workspaces.len()) == 2
+    });
+    let made = active_workspace(&session);
+    until(&mut session, "the empty desk", |session| {
+        on_screen(session, NO_WINDOW).is_some()
+    });
+    // The empty workspace has the desk's whole room: its empty state is the desk's height, not the
+    // half of it a second workspace's rows would leave it. The workspace behind holds the note, and
+    // none of it stands on this desk.
+    let empty = within(&session, NO_WINDOW, WIDTH, HEIGHT).expect("the empty state is on screen");
+    assert!(
+        empty.3 > f64::from(HEIGHT) / 2.0,
+        "the empty workspace in front has the desk's room, not half of it: {empty:?}"
+    );
+    assert!(
+        on_screen(&session, &shown).is_none(),
+        "the workspace behind stands nowhere on this desk: {shown:?} at {:?}",
+        on_screen(&session, &shown)
+    );
+
+    // Back to the workspace that holds the note: its window has the desk's room again, and no
+    // empty state of the other workspace stands under it.
+    session
+        .invoke(
+            CHROME,
+            "switch-workspace",
+            json!({"delta": -1}).as_object().unwrap(),
+        )
+        .unwrap_or_else(|error| panic!("the workspaces step back one: {error:?}"));
+    until(&mut session, "the first workspace again", |session| {
+        active_workspace(session) != made
+    });
+    until(&mut session, "the note's window again", |session| {
+        on_screen(session, &shown).is_some()
+    });
+    let window = within(&session, &shown, WIDTH, HEIGHT).expect("the window is on the display");
+    assert!(
+        window.3 > f64::from(HEIGHT) / 2.0,
+        "the window in front has the desk's room, not half of it: {window:?}"
+    );
+    assert!(
+        on_screen(&session, NO_WINDOW).is_none(),
+        "the other workspace's empty state stands nowhere on this desk: {:?}",
+        on_screen(&session, NO_WINDOW)
+    );
+    keep(&mut session, "workspace-in-front");
+}
+
+/// The desk carries no strip label of its own: the strip a person is in is what the bar's strip
+/// pill names, and a label over each window's band was bare text a person could not act on, flush
+/// against the desk's edge. The desk of the development shell holds two workspaces (the one it
+/// starts from and the joined Lounge), each with a `Main` row, which is the desk that showed one
+/// bare `Main` over each band. Every `Main` the desk says of a strip is the bar's pill now; nothing
+/// says it over the windows.
+#[test]
+fn the_desk_carries_no_strip_label_of_its_own() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+
+    // A window on the desk, and a second workspace: the desk the development shell's shot showed —
+    // two workspaces, each with a `Main` row, and a window on one of them.
+    place(&mut session, &notes[0]);
+    let shown = shown_as(&session, NOTE_TITLE);
+    until(&mut session, "the placed note's window", |session| {
+        on_screen(session, &shown).is_some()
+    });
+    session
+        .invoke(CHROME, "new-workspace", &Map::new())
+        .unwrap_or_else(|error| panic!("a workspace is made: {error:?}"));
+    until(&mut session, "the workspace made", |session| {
+        session.handle().read(|tree| tree.workspaces.len()) == 2
+    });
+    until(&mut session, "the empty desk in front", |session| {
+        on_screen(session, NO_WINDOW).is_some()
+    });
+
+    // Every saying of the strip's name, once the desk has drawn: the bar's pill, and nothing over a
+    // window's band.
+    let mains: Vec<(f64, f64, f64, f64)> = session.shell_text_bounds_all("Main");
+    assert!(
+        !mains.is_empty(),
+        "the bar names the strip: {:?}",
+        session.accessible_labels()
+    );
+    for rect in &mains {
+        assert!(
+            rect.1 < 40.0,
+            "every name the desk says stands in the bar, none over a window's band: {rect:?} \
+             (all: {mains:?})"
+        );
+    }
+}

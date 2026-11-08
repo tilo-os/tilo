@@ -548,6 +548,11 @@ pub const KINDS: &[OriginKind] = &[
         fields: &[
             field("key", "Text", "Its id, as the record names it."),
             field("name", "Text", "Its name."),
+            field(
+                "current",
+                "Bool",
+                "Whether it is the workspace in front, which the desk shows.",
+            ),
         ],
     },
     OriginKind {
