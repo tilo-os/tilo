@@ -15,9 +15,19 @@ use std::sync::OnceLock;
 use tilo_app_package::pack::SigningIdentity;
 use tilolang_cli::package::{self, BuildOptions};
 
-/// The tilolang apps a development session installs, by the directory under `apps/tl` : the package
-/// ids [`tilo_session::seeded_apps::APPS`] names are these, in this order.
-pub const APPS: [&str; 6] = ["discussion", "notes", "tasks", "chat", "mail", "tube"];
+/// The tilolang packages a development session installs, by the directory under `apps/tl` : the
+/// package ids [`tilo_session::seeded_apps::APPS`] names are these, and the shell is the first:
+/// the session loads `so.tilo.shell` from the store as it loads any app, and this build's copy
+/// stands in only where the store holds none (docs/designs/app-language/shell.md §6).
+pub const APPS: [&str; 7] = [
+    "shell",
+    "discussion",
+    "notes",
+    "tasks",
+    "chat",
+    "mail",
+    "tube",
+];
 
 /// The tree's `apps/tl` .
 fn packages() -> PathBuf {
@@ -67,7 +77,9 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
         let built = package::build(
             &BuildOptions {
                 dir: source.join(app),
-                search: vec![source.clone()],
+                // The packages it uses are the copied tilolang ones, and the native apps whose
+                // surfaces they read (`use so.tilo.session`, `apps/tl/session`'s).
+                search: vec![source.clone(), packages()],
                 out: out.clone(),
                 tilo_runtime: runtime().to_owned(),
                 tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),

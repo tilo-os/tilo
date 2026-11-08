@@ -53,8 +53,10 @@ say() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'shell-run: %s\n' "$*" >&2; exit 1; }
 
 # The tilolang apps a development session installs, by the directory under `apps/tl`:
-# the package id of each is its `app` declaration's.
-tl_apps=(discussion notes tasks chat mail tube)
+# the package id of each is its `app` declaration's. The shell itself is one of them: the
+# session loads `so.tilo.shell` from the store as it loads any app, and this build's copy
+# stands in only where the store holds none (docs/designs/app-language/shell.md §6).
+tl_apps=(shell discussion notes tasks chat mail tube)
 # The Rust apps it installs beside them, by the directory under `apps/`: Chat's record
 # (`so.tilo.chat`) is the one the session's agents answer in and the one the canvas's ask
 # conversation is a channel of (`docs/designs/app-language/shell.md` §8.1), so a session
