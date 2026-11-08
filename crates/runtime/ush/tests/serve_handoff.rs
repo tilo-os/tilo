@@ -1051,7 +1051,9 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
         cols: 100,
         rows: 30,
         term: Some("xterm-256color".into()),
-        command: Vec::new(),
+        // A program: ush's own shell starts the guest only for the first
+        // program it runs, so a session without one never sets a guest up.
+        command: vec!["bash".into()],
         requested_by: ush::host::RequestedBy::Person,
         runs: None,
         editor_protocol: None,
