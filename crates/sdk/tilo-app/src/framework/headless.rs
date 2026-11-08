@@ -477,8 +477,18 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// As [`Self::capture`].
     pub fn drive(scenario: &str) -> Result<Self, LaunchError> {
+        Self::drive_at(scenario, A::shot_viewport(Some(scenario)))
+    }
+
+    /// [`Self::drive`] at `viewport`, as [`Self::capture_at`] is a capture's: the scenario's
+    /// fixtures staged in a window of the size the test drives. Unlike a capture, the window
+    /// moves: a press plays the motion the theme gives it.
+    ///
+    /// # Errors
+    /// As [`Self::capture`].
+    pub fn drive_at(scenario: &str, viewport: (u32, u32)) -> Result<Self, LaunchError> {
         let capture = Capture::driven(Some(scenario.to_owned()));
-        Self::capture_on(capture, A::shot_viewport(Some(scenario)), &[])
+        Self::capture_on(capture, viewport, &[])
     }
 
     /// [`Self::capture`] of the app launched with `arguments`, as
