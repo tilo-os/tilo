@@ -13,14 +13,14 @@ configured and then work on their own (`tilo-vm vm branch`, docs/architecture/wo
 1. `box` boots and records its machine; a person signs in as the VM's person
    (`slot create --identity device`: the session's own onboarding creates the identity in the
    machine's identity tree and certifies the machine) and sets the box up: a Secret Service
-   secret, a model provider's API key in their vault, `~/.gitconfig`, an SSH key, and a
-   workspace of their own with a window on its desk.
+   secret, a model provider's API key in their vault, a login in their passwords vault,
+   `~/.gitconfig`, an SSH key, and a workspace of their own with a window on its desk.
 2. `box` is stopped and branched into `a` and `b`, all three on one local network beside their
    own way out; they boot (b once box has done its part, where the host has no room for three).
 3. Each branch has a device key of its own (the source's and the other branch's differ), a
    machine record of its own UUID, a valid certificate under the same person's root, the
-   person's secret, API key, SSH key and git config readable as them, and a machine id and
-   SSH host keys of its own; `box` keeps its own.
+   person's secret, API key, passwords vault, SSH key and git config readable as them, and a
+   machine id and SSH host keys of its own; `box` keeps its own.
 4. `box` and `a` hold the workspace: a window opened on either shows on the other, also
    after both reboot.
 5. `vm rm box` leaves `a` and `b` bootable.
@@ -61,6 +61,7 @@ WORKSPACE = "Branch e2e"
 # What the person stores: names only, never the values, appear in the report.
 SECRET_ATTRS = {"service": "tilo-e2e-branch", "account": "person"}
 GIT_NAME, GIT_EMAIL = "Ada Branch", "ada@branch.example"
+PASSWORD_TITLE = "Branch e2e mail"
 PROVIDER_LABEL = "Branch e2e"
 PROVIDER_MODEL = "e2e-branch"
 MODEL_PORT = 18431
@@ -427,6 +428,35 @@ def configure_provider(facts: dict, run: Run) -> None:
     facts["api_key_digest"] = digest
 
 
+def configure_passwords(facts: dict, run: Run) -> None:
+    """A login in their passwords vault, through Passwords' own controls."""
+    box = run.vm(SOURCE)
+    open_passwords(box)
+    before = password_items(box)
+    app_action(box, "", "add")
+    box.control("click", "passwords.field.name")
+    box.input("type", PASSWORD_TITLE)
+    app_action(box, "", "generate")
+    app_action(box, "", "save")
+    new = wait_until(lambda: password_items(box) - before, 30, interval=1.0)
+    expect(new, "Passwords lists no new item after the save")
+    facts["password_items"] = sorted(new)
+
+
+def open_passwords(vm: TiloVm) -> None:
+    vm.invoke("applications", "so.tilo.passwords")
+    expect(wait_until(lambda: app_rows(vm, "", "add"), 60, interval=1.0),
+           f"Passwords on {vm.vm} offers no add")
+
+
+def password_items(vm: TiloVm) -> set[str]:
+    """The vault items Passwords publishes rows for, by their resource ids."""
+    listed = vm.control_json("actions", "list", "--json", "--programmatic", "--wait=8000",
+                             "--limit", "2000")
+    return {part for row in listed.get("actions", []) if row.get("provider") == "app-actions"
+            for part in row["id"].split("\x1f") if part.startswith("passwords:item:")}
+
+
 def configure_workspace(facts: dict, run: Run) -> None:
     """A workspace of their own, hosted on this device, with a window on its desk."""
     box = run.vm(SOURCE)
@@ -447,10 +477,11 @@ def serve_model(vm: TiloVm, key_digest: str) -> None:
 
 
 def app_rows(vm: TiloVm, query: str, action: str) -> list[dict]:
+    """The app actions named `action` (the last part of a row's id) the desktop lists."""
     listed = vm.control_json("actions", "list", *([query] if query else []), "--json", "--programmatic",
                              "--wait=8000", "--limit", "2000")
     return [row for row in listed.get("actions", [])
-            if row.get("provider") == "app-actions" and row["id"].endswith(action)]
+            if row.get("provider") == "app-actions" and row["id"].split("\x1f")[-1] == action]
 
 
 def app_action(vm: TiloVm, query: str, action: str, args: dict | None = None, part: str = "") -> dict:
@@ -674,7 +705,7 @@ def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) 
 
 
 def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_ident: dict,
-                 devices: dict, key_digest: str | None) -> dict:
+                 devices: dict, key_digest: str | None, passwords: list[str] | None) -> dict:
     vm = run.vm(name)
     # The certificate a branch without its root in the system tree gets at the person's
     # next sign-in; this one holds it, so the boot issued it. Give the session a moment.
@@ -707,6 +738,17 @@ def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_i
             facts["provider"] = provider_answers(vm)
         except (Failed, VmError) as exc:
             problems.append(f"the model provider's API key: {exc}")
+    if passwords:
+        try:
+            open_passwords(vm)
+            listed = wait_until(lambda: set(passwords) <= (held := password_items(vm)) and held,
+                                60, interval=2.0)
+            facts["passwords"] = "listed" if listed else sorted(password_items(vm))
+            if not listed:
+                problems.append(f"Passwords lists {sorted(password_items(vm))}, not the vault's "
+                                f"{passwords}")
+        except (Failed, VmError) as exc:
+            problems.append(f"the passwords vault: {exc}")
     if not str(p.get("SSH-KEY-READABLE", "")).startswith("-----BEGIN OPENSSH PRIVATE KEY"):
         problems.append("the SSH private key is not readable as the person")
     expect(not problems, "; ".join(problems))
@@ -745,6 +787,7 @@ def steps(run: Run, args) -> None:
              sign_in, run)
     run.step("S03", "the person sets box up: a Secret Service secret, git, an SSH key", configure, run)
     run.step("S03b", "the person saves a model provider's API key through Settings", configure_provider, run)
+    run.step("S03d", "the person saves a login in their passwords vault", configure_passwords, run)
     run.step("S03c", "the person makes a workspace on box and opens a window on its desk",
              configure_workspace, run)
     try:
@@ -756,6 +799,8 @@ def steps(run: Run, args) -> None:
     source_ident = source_person.get("identity") or {}
     key_digest = next((s["facts"].get("api_key_digest") for s in run.steps
                        if s["id"] == "S03b" and s["status"] == "pass"), None)
+    passwords = next((s["facts"].get("password_items") for s in run.steps
+                      if s["id"] == "S03d" and s["status"] == "pass"), None)
     run.step("S04", "box is stopped and branched into a and b", branch, run)
     if not run.passed("S04"):
         return
@@ -771,7 +816,7 @@ def steps(run: Run, args) -> None:
         for name in names:
             run.step(f"S07-{name}", f"{name}: a valid certificate under the person's root, and the "
                      "person's secret, API key, SSH key and git config", judge_person, run, name,
-                     source_person, source_ident, devices, key_digest)
+                     source_person, source_ident, devices, key_digest, passwords)
 
     run.step("S05", f"{', '.join(first)} boot", boot, run, first)
     judge(first)
