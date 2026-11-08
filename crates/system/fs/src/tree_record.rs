@@ -110,6 +110,11 @@ async fn serve_once(
     tokio::spawn(carrying);
 
     let mut publisher = TreePublisher::join(&client, cluster, credentials, identity).await?;
+    // A workspace's keys arrive when a commit brings this device into the
+    // record's group, possibly after the join: the tree is published, and the
+    // changes that waited for them opened, on the change itself.
+    let keys = publisher.handle.clone();
+    let mut keys_after = 0;
     let mut changes = namespace.lock_recover().subscribe_changes();
     let events = publisher
         .handle
@@ -150,17 +155,12 @@ async fn serve_once(
                     publisher.publish_whole(namespace).await?;
                 }
             }
+            keys_at = keys.changed(runtime_collab::wire::Changes::ChannelKeys, keys_after) => {
+                keys_after = keys_at.context("the session says when the record's keys change")?;
+                publisher.keys_changed(namespace).await?;
+            }
         }
     }
-}
-
-/// Whether `error` is this session serving no identity service at all,
-/// rather than one that has not answered yet.
-fn no_identity_service(error: &anyhow::Error) -> bool {
-    error
-        .root_cause()
-        .downcast_ref::<std::io::Error>()
-        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// Whether `cluster` is the store of the person `root` belongs to: records
@@ -231,8 +231,9 @@ enum Access {
     /// Its keys are not here yet: the tree waits for them rather than going
     /// out in the clear into a workspace that seals.
     Waiting,
-    /// The workspace has no channel for this record, or no identity service
-    /// answers on this session: the tree goes as it is.
+    /// The tree is the person's own, kept in their store: their devices
+    /// reach it over the link they prove themselves to each other on, and no
+    /// workspace channel seals it.
     Unsealed,
 }
 
@@ -294,6 +295,28 @@ impl TreePublisher {
         Ok(publisher)
     }
 
+    /// The record's keys changed: take them, publish the tree this device
+    /// holds if the wait is over, and open the changes that waited with it.
+    async fn keys_changed(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
+        self.refresh_keys().await;
+        if !matches!(self.access, Access::Sealed) {
+            return Ok(());
+        }
+        self.take_unopened(namespace).await?;
+        if namespace.lock_recover().holds_tree() {
+            self.publish(namespace).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether the tree may go out: the person's own store takes it as it is,
+    /// and a workspace that seals its records hands this device their keys
+    /// when it is admitted. Until they are here the tree waits rather than
+    /// going out in the clear.
+    fn keys_here(&self) -> bool {
+        !matches!(self.access, Access::Waiting)
+    }
+
     /// Ask a device that holds the tree to publish it whole, as a device
     /// joining it with nothing of its own does.
     async fn ask_for_the_tree(&self) {
@@ -305,6 +328,9 @@ impl TreePublisher {
     /// Publish the tree whole: what the record holds from this device from now
     /// on, and what a device joining it gets.
     async fn publish_whole(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
+        if !self.keys_here() {
+            return Ok(());
+        }
         let (bytes, heads) = {
             let mut namespace = namespace.lock_recover();
             let bytes = namespace.save();
@@ -318,6 +344,9 @@ impl TreePublisher {
     /// Publish what this device changed: the tree whole when it has published
     /// nothing yet, everything since it last did afterwards.
     async fn publish(&mut self, namespace: &Arc<Mutex<Namespace>>) -> Result<()> {
+        if !self.keys_here() {
+            return Ok(());
+        }
         if self.sent.is_empty() {
             return self.publish_whole(namespace).await;
         }
@@ -560,8 +589,9 @@ impl TreePublisher {
     /// the generation this device holds: it is answered the keys when they
     /// changed, and with none when they did not.
     ///
-    /// A session with no identity service at all keeps the tree unsealed; one
-    /// whose service has not handed the keys over yet keeps them waiting.
+    /// A service that is not there yet, or has not handed the keys over,
+    /// keeps them waiting: a workspace that seals its records never has this
+    /// tree published in the clear.
     async fn refresh_keys(&mut self) {
         if matches!(self.access, Access::Unsealed) {
             return;
@@ -574,14 +604,10 @@ impl TreePublisher {
                     self.signer = Some(Arc::clone(&signer));
                     signer
                 }
-                Err(error) if no_identity_service(&error) => {
-                    // Nothing serves this session's identity: as an app of a
-                    // harness, the endpoint has no keys to ask for.
-                    tracing::debug!(%error, "the tree goes unsealed: this session serves no identity service");
-                    self.access = Access::Unsealed;
-                    return;
-                }
                 Err(error) => {
+                    // Not there yet, or refused this device: the workspace
+                    // seals this record either way, so the tree waits rather
+                    // than going out in the clear.
                     tracing::debug!(%error, "the identity service is not here for the tree's keys yet");
                     return;
                 }
