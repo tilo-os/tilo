@@ -271,7 +271,7 @@ const LOCK_SCREEN_TRIES: u32 = 3;
 type Observed = RefCell<Option<Vec<(usize, (u64, u64))>>>;
 
 /// What the session keeps between frames, shared with the loop.
-struct Shared {
+pub(crate) struct Shared {
     handle: DesktopHandle,
     desktop: DesktopHost,
     /// The workspace's activity: the desk's changes, and the records its
@@ -350,7 +350,7 @@ struct Shared {
     /// cluster, the lock screen and the desk read it.
     readings: status::Shared,
     /// The system services, reached for their readings.
-    services: Rc<RefCell<Services>>,
+    pub(crate) services: Rc<RefCell<Services>>,
     /// The services the session serves its apps itself.
     table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
@@ -561,7 +561,7 @@ struct Shared {
 /// A running session: the compositor and the desktop it hosts.
 pub struct Session {
     compositor: Compositor,
-    shared: Shared,
+    pub(crate) shared: Shared,
     banners: tilo_notification_banners::Link,
     /// The input preferences the compositor runs with now.
     input: tilo_compositor::InputConfig,

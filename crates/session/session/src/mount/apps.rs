@@ -1347,7 +1347,18 @@ fn installed_package(app: &str) -> Option<String> {
 /// The resource kinds `app` 's installed package declares for the records it keeps, from its signed
 /// manifest: what a workspace takes a record it starts under ([`crate::engine::Engine`] starting an
 /// app's first record). `None` for an app this device has not installed.
+///
+/// The tilolang host ([`tilolang_tilo::HOST_APP`]) is no installed package — it is the runtime
+/// every tilolang app runs on — and the kinds of the records it keeps are the runtime's own: the
+/// person's personal state of each app's workspace (`tilolang.personal`). A record an app starts
+/// under it is taken in that kind, so a device's first change of one is admitted like any other,
+/// rather than refused as an app this device has not installed.
 pub(crate) fn declared_resource_kinds(app: &str) -> Option<Vec<String>> {
+    if app == tilolang_tilo::HOST_APP {
+        return Some(vec![
+            tilolang_tilo::tilolang::PERSONAL_RECORD_KIND.to_owned(),
+        ]);
+    }
     let package = installed_package(app)?;
     let installed = app_catalogue::apps::read_one_from_env(&package)
         .ok()
@@ -1395,6 +1406,27 @@ mod tests {
 
     fn apps() -> Apps {
         Apps::with_launcher(SessionEnvironment::default(), None, None)
+    }
+
+    /// The tilolang host keeps the person's own state of each app's workspace
+    /// (`tilolang.personal`), and it is no installed package: the record a tilolang app starts
+    /// under it must still be taken in a declared kind, or a device's first change of it — the
+    /// personal record every tilolang app writes — is refused as "tilo.host is not installed on
+    /// this device" and nothing the app does reaches its records.
+    #[test]
+    fn the_tilolang_hosts_record_kind_is_declared_without_an_installed_package() {
+        assert_eq!(
+            declared_resource_kinds(tilolang_tilo::HOST_APP),
+            Some(vec![
+                tilolang_tilo::tilolang::PERSONAL_RECORD_KIND.to_owned()
+            ]),
+            "the host's personal record is a kind the owner may start"
+        );
+        assert_eq!(
+            declared_resource_kinds("so.tilo.not-installed-anywhere"),
+            None,
+            "an app this device has not installed declares no kinds"
+        );
     }
 
     /// An agent is a service the launcher runs, and the agent's own options follow the entrypoint:
