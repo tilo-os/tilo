@@ -466,8 +466,8 @@ class SteadyPushRate(unittest.TestCase):
 
     def check(self, interval, decision):
         windows = self.simulate(interval, decision)
-        # Main is never without a window for longer than the decision that follows
-        # one, and never runs two windows at once.
+        # Main never runs two windows at once, the next one opens within a push of
+        # the last one finishing, and there are windows rather than none.
         self.assertGreaterEqual(len(windows), self.HORIZON // (self.DURATION + 3 * decision))
         for (_, _, end, _), (_, next_start, _, _) in zip(windows, windows[1:]):
             self.assertGreaterEqual(next_start, end)
