@@ -179,13 +179,15 @@ pub struct VirtualListProps {
     /// The list is a column's whole body: its rows' text starts where the column's header
     /// starts its title.
     pub in_column: bool,
-    /// A conversation: each row stands in the page column, the list opens at its newest row
-    /// and follows it.
-    pub transcript: bool,
+    /// The list is read to its end: it opens at its last row and stays there as rows arrive and
+    /// settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand
+    /// in the page column, filling it, a section's gap under each, and each run one author wrote
+    /// under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]).
+    pub follow_end: bool,
     /// Each row stands in the page column, at the readable measure every page sets its blocks
     /// on, a section's gap under the row before it. A list read from its first row to its last
     /// (a conversation's messages, a document's replies) keeps the measure without following
-    /// its end as a transcript does.
+    /// its end (`follow_end`).
     pub page_column: bool,
     /// The title over the list's tail group: the rows whose item says it is one of those done
     /// with ([`ListItemProps::tail`]) stand after every group, under it, closed until the
@@ -204,12 +206,13 @@ pub struct VirtualListProps {
     /// away the row it lands on, one with shift takes the range from the last row chosen, and
     /// Escape puts the selection away. Without it a click chooses the one row the window shows.
     pub multi_select: bool,
-    /// The item a conversation's reader had not seen when they opened it (`first_unseen(c)`):
-    /// the "New messages" divider stands over the row that shows it, and while that is above
-    /// the view a pill at the foot offers to take the reader back to it. `None` draws neither.
-    /// The list works out the row as it builds, so the same list keeps its rows and only the
-    /// two the divider moved between build again.
-    pub unread: Option<ResourceId>,
+    /// The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's
+    /// [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that
+    /// shows it, and while that is above the view a pill at the foot offers the way back to it.
+    /// `None` draws neither, and a list that does not follow its end marks none. The list works
+    /// out the row as it builds, so a list keeps its rows and only the two the divider moved
+    /// between build again.
+    pub unseen_from: Option<ResourceId>,
     /// The items, in order.
     #[component(slot(default))]
     pub rows: DescribedRows,
@@ -645,7 +648,7 @@ struct Face {
     name: Option<String>,
     selection_follows_focus: bool,
     in_column: bool,
-    transcript: bool,
+    follow_end: bool,
     page_column: bool,
     /// The rows stand in a tree: each under the row of the item it names.
     tree: bool,
@@ -1218,13 +1221,13 @@ impl Described for DescribedList {
             name,
             selection_follows_focus,
             in_column,
-            transcript,
+            follow_end,
             page_column,
             tail_title,
             tree,
             ungrouped_title,
             multi_select,
-            unread,
+            unseen_from,
             mut rows,
             removed,
             selection,
@@ -1242,7 +1245,7 @@ impl Described for DescribedList {
             name: name.clone(),
             selection_follows_focus,
             in_column,
-            transcript,
+            follow_end,
             page_column,
             tree,
             rendered: rendered(&rows),
@@ -1254,17 +1257,17 @@ impl Described for DescribedList {
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         // The items the list's events read, kept as the list holds them.
         let reading = Rc::new(RefCell::new(rows.reader()));
-        if transcript || page_column {
-            // A transcript's divider stands over the row that shows the item: a row says which
-            // item it shows, so the list finds it as the rows arrive.
-            let marked = if transcript {
-                unread.as_ref().map(|item| item.0.clone())
+        if follow_end || page_column {
+            // The divider of the unseen part stands over the row that shows the item: a row says
+            // which item it shows, so the list finds it as the rows arrive.
+            let marked = if follow_end {
+                unseen_from.as_ref().map(|item| item.0.clone())
             } else {
                 None
             };
             let divider = marked.clone();
-            // A page column's rows keep the width a page's blocks are read at; a transcript's
-            // fill the column they are in.
+            // A page column's rows keep the width a page's blocks are read at; a list that
+            // follows its end fills the column its rows are in.
             let measure = page_column.then_some(Length::Rem(MEASURE_REM));
             let mut list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
                 message_of(rows, key, divider.as_deref(), feel, measure)
@@ -1274,7 +1277,7 @@ impl Described for DescribedList {
             .filling()
             .with_id(key)
             .with_feel(feel);
-            if transcript {
+            if follow_end {
                 list = list.following_end();
             }
             let list = list.unread_from(marked);
@@ -1401,13 +1404,13 @@ impl Described for DescribedList {
             name,
             selection_follows_focus,
             in_column,
-            transcript,
+            follow_end,
             page_column,
             tail_title,
             tree,
             ungrouped_title,
             multi_select,
-            unread,
+            unseen_from,
             mut rows,
             removed,
             selection: _,
@@ -1425,7 +1428,7 @@ impl Described for DescribedList {
             name,
             selection_follows_focus,
             in_column,
-            transcript,
+            follow_end,
             page_column,
             tree,
             rendered: rendered(&rows),
@@ -1439,7 +1442,7 @@ impl Described for DescribedList {
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
         let replaced = rendered(&rows).is_none();
-        let unread = unread.as_ref().map(|item| item.0.clone());
+        let unseen_from = unseen_from.as_ref().map(|item| item.0.clone());
         // The items given again, as the list's events read them.
         let reading = rows.reader();
         let picked = picked_rows(chosen, &reading, self.chosen_rows());
@@ -1456,9 +1459,9 @@ impl Described for DescribedList {
             // the menus its rows open are the list's own and stay.
             list.update_model(move |model| *model = rows);
         }
-        // The unread row moved without the list's items changing: the list takes it, and the
+        // The unseen row moved without the list's items changing: the list takes it, and the
         // rows it left and arrived at build again.
-        list.set_unread(unread);
+        list.set_unread(unseen_from);
         // The item the host holds open: its row grows into its document where it stands, and
         // an item that left the list opens nothing.
         let standing = open

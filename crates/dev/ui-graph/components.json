@@ -5425,13 +5425,13 @@
           "type": "bool"
         },
         {
-          "name": "transcript",
-          "doc": "A conversation: each row stands in the page column, the list opens at its newest row and follows it.",
+          "name": "follow_end",
+          "doc": "The list is read to its end: it opens at its last row and stays there as rows arrive and settle, unless the person scrolled away ([`VirtualList::following_end`]). Its rows stand in the page column, filling it, a section's gap under each, and each run one author wrote under that author's name and the time ([`ListItemProps::author`], [`ListItemProps::time`]).",
           "type": "bool"
         },
         {
           "name": "page_column",
-          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end as a transcript does.",
+          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end (`follow_end`).",
           "type": "bool"
         },
         {
@@ -5459,8 +5459,8 @@
           "type": "bool"
         },
         {
-          "name": "unread",
-          "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
+          "name": "unseen_from",
+          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it. `None` draws neither, and a list that does not follow its end marks none. The list works out the row as it builds, so a list keeps its rows and only the two the divider moved between build again.",
           "type": {
             "option": "resource"
           }

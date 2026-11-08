@@ -44,10 +44,10 @@ const ARG_PREFIX: &str = "arg.";
 const FOR_EACH: &str = "for:";
 /// The property of a loop's node that holds its items.
 pub const ITEMS: &str = "items";
-/// The property of a `ui.VirtualList` naming the item its reader has not seen
-/// (`first_unseen`): the list draws its "New messages" divider over the row that shows it.
-pub const UNREAD: &str = "unread";
-/// The kind of the divider over a transcript's first unread row.
+/// The property of a `ui.VirtualList` naming the item where the person looking has seen
+/// nothing yet (`first_unseen`): the list draws its divider over the row that shows it.
+pub const UNSEEN_FROM: &str = "unseen_from";
+/// The kind of the divider over the first row the person looking has not seen.
 pub const UNREAD_DIVIDER: &str = "ui.UnreadDivider";
 /// The property of a loop's node that names the parameter of its row view the item goes to.
 const EACH: &str = "each";
@@ -134,7 +134,7 @@ pub(crate) struct Walk<'a> {
     /// Whether the nodes here are the rows of a `list`.
     pub in_list: bool,
     /// Whether the nodes here are a row of a `list` that stands a divider where its unseen part
-    /// starts (`unread:`), which already says of a row there that it is new.
+    /// starts (`unseen_from:`), which already says of a row there that it is new.
     pub says_new: bool,
     /// How many rows that list shows, when it is a card's preview (its `preview` property):
     /// the rows after those are never shown, so they are not built.
@@ -151,7 +151,7 @@ impl<'a> Walk<'a> {
             level: walk.level.saturating_add(1),
             prefix: if calls { Some(key) } else { walk.prefix },
             in_list: listed,
-            says_new: walk.says_new || (listed && n.props.contains_key(UNREAD)),
+            says_new: walk.says_new || (listed && n.props.contains_key(UNSEEN_FROM)),
             preview: match n.props.get(PREVIEW) {
                 Some(Value::Int(rows)) if n.kind == "list" => usize::try_from(*rows).ok(),
                 _ => None,
@@ -211,7 +211,7 @@ pub(crate) struct VirtualRows {
 pub(crate) struct Scoped<'p, 'b> {
     pub prefix: Option<&'p str>,
     /// Whether the tree rendered is a row of a `list` that stands a divider where its unseen
-    /// part starts (`unread:`) (see [`Walk::says_new`]).
+    /// part starts (`unseen_from:`) (see [`Walk::says_new`]).
     pub says_new: bool,
     pub boundaries: Option<&'b mut dyn Boundaries>,
 }
@@ -555,13 +555,13 @@ impl Core {
         let below = Walk::below(walk, n, key.as_str());
         let (mut children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
         let mut props = n.props.clone();
-        // A list draws its "New messages" divider where the app said its reader stopped: over
-        // the row of the item the list was told (`unread: first_unseen(c)`). The list carries
-        // the item; the divider is the same in every conversation.
+        // A list draws its divider where the person looking stopped seeing: over the row of the
+        // item the list was told (`unseen_from: first_unseen(c)`). The list carries the item;
+        // the divider is the toolkit's in every conversation.
         if crate::view::is_virtual(&n.kind)
-            && let Some(Value::Ref(unread)) = props.get(UNREAD).cloned()
+            && let Some(Value::Ref(unseen)) = props.get(UNSEEN_FROM).cloned()
         {
-            place_unread_divider(&mut children, &unread.target);
+            place_unread_divider(&mut children, &unseen.target);
         }
         if below.preview.is_some() {
             // How many rows the list has, the ones not built included: the count it carries
@@ -1379,11 +1379,11 @@ enum RowArg {
     Value(Value),
 }
 
-/// The "New messages" divider over the row of the item `unread`, in `rows`: the row whose own
-/// loop lists that item alone (or, for a row of plain values, that item). A row's first child
-/// is the divider, at a key of its own so a rebuild keeps it where it is.
-fn place_unread_divider(rows: &mut [UiNode], unread: &crate::value::ResourceRef) {
-    let Some(id) = unread.item.as_deref() else {
+/// The divider over the row of the item `unseen`, in `rows`: the row whose own loop lists that
+/// item alone (or, for a row of plain values, that item). A row's first child is the divider, at
+/// a key of its own so a rebuild keeps it where it is.
+fn place_unread_divider(rows: &mut [UiNode], unseen: &crate::value::ResourceRef) {
+    let Some(id) = unseen.item.as_deref() else {
         return;
     };
     let Some(row) = rows.iter_mut().find(|row| shows(row, id)) else {

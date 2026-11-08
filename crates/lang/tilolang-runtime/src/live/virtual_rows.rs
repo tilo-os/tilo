@@ -404,7 +404,7 @@ impl Live {
         self.place_built(list, &at);
         self.render_row(core, id, among)?;
         // After the row is rendered: its render sets the fragment's children.
-        self.divide_unread(&item, &key, &at);
+        self.divide_unseen(&item, &key, &at);
         Ok(Some(key))
     }
 
@@ -894,21 +894,21 @@ impl Live {
         fits
     }
 
-    /// A row built as it shows takes the "New messages" divider with it when it is the row of
-    /// the item the list's reader has not seen (`first_unseen(c)`): the app says which item
-    /// the list was told, and the divider is the same in every conversation.
-    fn divide_unread(&mut self, item: &Value, row: &str, at: &[usize]) {
-        let Some(unread) = self
+    /// A row built as it shows takes the divider with it when it is the row of the item where
+    /// the person looking has seen nothing yet (`first_unseen(c)`): the app says which item the
+    /// list was told (`unseen_from`), and the divider is the toolkit's in every conversation.
+    fn divide_unseen(&mut self, item: &Value, row: &str, at: &[usize]) {
+        let Some(unseen) = self
             .node_at(at)
-            .and_then(|node| node.props.get(crate::render::UNREAD))
+            .and_then(|node| node.props.get(crate::render::UNSEEN_FROM))
             .and_then(|value| match value {
-                Value::Ref(unread) => unread.target.item.clone(),
+                Value::Ref(unseen) => unseen.target.item.clone(),
                 _ => None,
             })
         else {
             return;
         };
-        if item_ref_id(item) != Some(unread.as_str()) {
+        if item_ref_id(item) != Some(unseen.as_str()) {
             return;
         }
         // The row's fragment is the one the row was just built at; the divider is its first

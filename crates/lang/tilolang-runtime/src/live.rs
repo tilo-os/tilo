@@ -866,7 +866,7 @@ impl Live {
             .and_then(|path| path.split_last().and_then(|(_, above)| self.node_at(above)))
             .is_some_and(|list| {
                 crate::view::is_virtual(&list.kind)
-                    && list.props.contains_key(crate::render::UNREAD)
+                    && list.props.contains_key(crate::render::UNSEEN_FROM)
             });
         let old: HashMap<String, BoundId> = old_children
             .iter()

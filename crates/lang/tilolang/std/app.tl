@@ -447,7 +447,7 @@ view transcript<R, T>(
                         composer
                     }
                 }
-                ui.VirtualList(transcript: true, unread: unread) {
+                ui.VirtualList(follow_end: true, unseen_from: unread) {
                     for m in items {
                         let made = created(m)
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {

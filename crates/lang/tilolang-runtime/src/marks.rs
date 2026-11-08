@@ -8,7 +8,7 @@
 //! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which run; a row a list
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
 //!   is read where it happened. A row that is itself new, in a list that stands a divider where
-//!   its unseen part starts (`unread:`), takes no mark: the divider says it is new;
+//!   its unseen part starts (`unseen_from:`), takes no mark: the divider says it is new;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
 //! - a window's header holds a mark with how many changes of what it shows are unseen, and by
