@@ -100,6 +100,26 @@ fn json(doc: &automerge::AutoCommit) -> String {
     serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
 }
 
+/// Add a channel named `name` to the chat document `doc`, made by `author`.
+pub fn add_channel(
+    doc: &mut automerge::AutoCommit,
+    author: &str,
+    name: &str,
+    kind: Option<chat::model::ChannelKind>,
+) {
+    chat::demo::apply_as(
+        doc,
+        author,
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: name.parse().unwrap(),
+            category: None,
+            kind,
+            topic: None,
+        }),
+    )
+    .unwrap();
+}
+
 impl Body for tilo_agent_participant::Replica {
     fn body(&self) -> String {
         self.read(json).unwrap()

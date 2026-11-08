@@ -185,28 +185,13 @@ pub async fn run() {
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    chat::demo::apply_as(
+    common::add_channel(&mut doc, &source_author, "general", None);
+    common::add_channel(
         &mut doc,
         &source_author,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .unwrap();
-    chat::demo::apply_as(
-        &mut doc,
-        &source_author,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "Lounge".parse().unwrap(),
-            category: None,
-            kind: Some(chat::model::ChannelKind::Voice),
-            topic: None,
-        }),
-    )
-    .unwrap();
+        "Lounge",
+        Some(chat::model::ChannelKind::Voice),
+    );
     let channel = chat::projection::read(&doc)
         .channel_rows()
         .into_iter()

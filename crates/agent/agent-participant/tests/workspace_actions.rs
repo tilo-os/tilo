@@ -123,17 +123,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    chat::demo::apply_as(
-        &mut doc,
-        "ada",
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .unwrap();
+    common::add_channel(&mut doc, "ada", "general", None);
     let channel = chat::projection::read(&doc)
         .channel_rows()
         .into_iter()

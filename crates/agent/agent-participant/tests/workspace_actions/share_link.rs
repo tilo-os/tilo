@@ -51,17 +51,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    chat::demo::apply_as(
-        &mut doc,
-        &writer,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .unwrap();
+    common::add_channel(&mut doc, &writer, "general", None);
     let channel = chat::projection::read(&doc)
         .channel_rows()
         .into_iter()

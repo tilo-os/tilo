@@ -106,17 +106,7 @@ pub async fn run(bundle: &str) {
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
     for name in ["general", ARCHIVE] {
-        chat::demo::apply_as(
-            &mut doc,
-            &author,
-            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                name: name.parse().unwrap(),
-                category: None,
-                kind: None,
-                topic: None,
-            }),
-        )
-        .unwrap();
+        common::add_channel(&mut doc, &author, name, None);
     }
     let channels = chat::projection::read(&doc).channel_rows();
     let channel_of = |name: &str| {
