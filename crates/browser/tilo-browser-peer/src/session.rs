@@ -1684,16 +1684,14 @@ impl Task {
                     // subscribes, not from the moment the host answers, so a
                     // host that holds the connection open still reports.
                     self.admission_since = Some(tilo_clock::unix_now_ms());
-                    match self.serve_naming_proxy(client, &mut commands).await {
+                    let exit = self.serve_naming_proxy(client, &mut commands).await;
+                    // A request the host had not answered is answered here:
+                    // nothing waits on a connection that is gone.
+                    self.rooms_lost();
+                    match exit {
                         Exit::Closed => return self.closed(),
-                        Exit::Reconnect => {
-                            self.rooms_lost();
-                            continue;
-                        }
-                        Exit::Lost(reason) => {
-                            self.rooms_lost();
-                            self.fail("transport-ended", reason);
-                        }
+                        Exit::Reconnect => continue,
+                        Exit::Lost(reason) => self.fail("transport-ended", reason),
                     }
                 }
                 Err(error) => {

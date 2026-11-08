@@ -196,9 +196,7 @@ impl Pages {
     /// page alike reach it, and nothing counts a page that never joined.
     pub(crate) fn participants(&self) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
         let mut people: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> = BTreeMap::new();
-        let grants: Vec<Arc<Grant>> = self.grants.lock_recover().values().cloned().collect();
-        let members: Vec<Arc<Grant>> = self.members.lock_recover().values().cloned().collect();
-        for grant in grants.into_iter().chain(members) {
+        for grant in self.carried() {
             if grant.admitted() {
                 people
                     .entry(grant.peer.user_public_key)
@@ -209,14 +207,20 @@ impl Pages {
         people
     }
 
+    /// Every grant the plane carries: a host hands out its own and its
+    /// members' alike, and both count as here once admitted.
+    fn carried(&self) -> Vec<Arc<Grant>> {
+        let grants = self.grants.lock_recover();
+        let members = self.members.lock_recover();
+        grants.values().chain(members.values()).cloned().collect()
+    }
+
     /// The devices the plane carries in `workspace` now, each with the person
     /// it is certified as: who a page there pairs with before anyone speaks.
     pub(crate) fn persons_in(&self, workspace: u64) -> Vec<([u8; 32], [u8; 32])> {
-        let grants: Vec<Arc<Grant>> = self.grants.lock_recover().values().cloned().collect();
-        let members: Vec<Arc<Grant>> = self.members.lock_recover().values().cloned().collect();
-        let mut persons: Vec<([u8; 32], [u8; 32])> = grants
+        let mut persons: Vec<([u8; 32], [u8; 32])> = self
+            .carried()
             .into_iter()
-            .chain(members)
             .filter(|grant| grant.admitted() && grant.workspace == workspace)
             .map(|grant| (grant.peer.device_public_key, grant.peer.user_public_key))
             .collect();
