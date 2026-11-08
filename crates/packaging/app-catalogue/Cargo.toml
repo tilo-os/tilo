@@ -17,6 +17,15 @@ path = "src/lib.rs"
 [dependencies]
 # What each Tilo app's manifest says, for apps not on this device.
 app-fleet = { path = "../app-fleet" }
+# The installed half: the registry of installed packages, each read through
+# the signed manifest it was admitted with.
+package-store = { path = "../package-store" }
+tilo-app-package = { path = "../tilo-app-package" }
+# The ids an app's records were kept under before it was renamed.
+tilo-action-policy = { path = "../../collab/action-policy" }
+# File types, MIME types and URI schemes as the installed manifest claims
+# them, in the one vocabulary the desktop resolves opens with.
+desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 # `CatalogueApp`, the `app list --json` row a Tilo entry is made from.
 registry-types = { path = "../registry-types" }
 tilo-paths.workspace = true

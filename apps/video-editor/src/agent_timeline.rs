@@ -72,9 +72,6 @@ pub fn content_media_id(hash: &str) -> Uuid {
 }
 
 /// The hash a content address names: `tilo.content:<hash>`, or the bare hash.
-///
-/// # Errors
-/// Returns why `address` names no content.
 pub fn content_hash_of(address: &str) -> Result<String, String> {
     let address = address.trim();
     let hash = tilo_actions::content_hash(address)
@@ -742,9 +739,6 @@ impl TitleStyle {
     }
 
     /// Set `text` to this style.
-    ///
-    /// # Errors
-    /// Returns why a colour, size or alignment is not one a title takes.
     pub(crate) fn apply(&self, text: &mut crate::model::TextSource) -> Result<(), Refusal> {
         if let Some(words) = &self.text {
             words.as_str().clone_into(&mut text.content);
@@ -1288,9 +1282,6 @@ pub fn effect<H: 'static>(
 
 /// The bin source the content at `address` makes in `project`: the one
 /// already imported from it, else a new one from its container's metadata.
-///
-/// # Errors
-/// Returns why the content is not here or is not media the editor reads.
 pub fn imported(
     project: &Project,
     store: &ContentStore,

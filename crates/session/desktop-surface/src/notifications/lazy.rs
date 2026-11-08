@@ -1,5 +1,5 @@
-//! The notification centre's code, which a program may fetch the first
-//! time the centre opens ([`NOTIFICATION_CENTRE`]).
+//! The notification centre's code, which a program may fetch the first time the centre opens
+//! ([`NOTIFICATION_CENTRE`]).
 
 use ui::a11y::AccessNode;
 use ui::kurbo::{Affine, Point, Rect};
@@ -11,11 +11,9 @@ use ui::winit::keyboard::Key;
 use super::NotificationHost;
 use super::center::{CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter};
 
-/// What the desktop asks of an open notification centre, laid out by
-/// `layout`.
+/// What the desktop asks of an open notification centre, laid out by `layout` .
 pub trait CentreApi {
-    /// How tall the centre's rows ask the panel to be, `width` wide and at
-    /// most `max` tall.
+    /// How tall the centre's rows ask the panel to be, `width` wide and at most `max` tall.
     fn fitted_height(
         &self,
         host: &dyn NotificationHost,
@@ -177,8 +175,7 @@ impl CentreApi for NotificationCenter {
     }
 }
 
-/// The notification centre's code, as a program that fetches it on first
-/// use hands it over.
+/// The notification centre's code, as a program that fetches it on first use hands it over.
 #[derive(Clone, Copy)]
 pub struct MakeNotificationCentre(fn() -> Box<dyn CentreApi>);
 
@@ -197,8 +194,8 @@ pub fn builtin_notification_centre() -> MakeNotificationCentre {
 }
 
 ui::lazy_code! {
-    /// The notification centre's code: linked, or with
-    /// `lazy-notification-centre` fetched the first time the centre opens.
+    /// The notification centre's code: linked, or with `lazy-notification-centre` fetched the first
+    /// time the centre opens.
     pub static NOTIFICATION_CENTRE: MakeNotificationCentre = builtin_notification_centre,
         feature = "lazy-notification-centre";
 }

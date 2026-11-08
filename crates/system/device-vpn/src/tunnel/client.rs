@@ -167,10 +167,6 @@ async fn handshake(
 }
 
 /// What `exit` offers, without routing through it.
-///
-/// # Errors
-///
-/// The exit refused, or could not be reached.
 pub async fn probe(
     endpoint: &Endpoint,
     exit: impl Into<EndpointAddr>,
@@ -186,10 +182,6 @@ pub async fn probe(
 }
 
 /// Open a tunnel through `exit`.
-///
-/// # Errors
-///
-/// The exit refused, gave no usable address, or could not be reached.
 pub async fn connect(
     endpoint: &Endpoint,
     exit: impl Into<EndpointAddr>,

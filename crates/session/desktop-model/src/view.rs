@@ -51,12 +51,6 @@ impl DesktopTree {
         }
     }
 
-    /// Take the references peers have added since this was last called.
-    /// Drained rather than read so a queue that only grows isn't a leak.
-    pub fn take_inbound_workspace_records(&mut self) -> Vec<(WorkspaceId, String, String)> {
-        std::mem::take(&mut self.workspace_records_inbound)
-    }
-
     pub fn set_active(&mut self, id: WorkspaceSlot) {
         if self.workspaces.iter().any(|w| w.slot == id) {
             self.active = id;

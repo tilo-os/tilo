@@ -1,75 +1,17 @@
-//! The control sockets: `tilo-control` drives a session it was started for, and the device
-//! admin drives their own desktop, over one protocol — one JSON request per line, tagged by
-//! `op`, and one answer per line: `{"ok": {..}}`, `{"answer": ..}`, `{"state": ..}`,
-//! `{"targets": ..}` or `{"err": {"code": .., "message": ..}}`.
-//!
-//! Two sockets serve it, and each answers exactly its own half:
-//!
-//! - the development test-control socket (`tilo-session --test-control PATH`, or
-//!   `$TILO_TEST_CONTROL`, honoured by development builds only, at
-//!   `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` when neither names one), which binds
-//!   whatever the developer asked for and answers every op of the protocol below;
-//! - the owner's own door, `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` for a session
-//!   that owns the machine (a headless one serves `headless-owner-control.sock`), which
-//!   admits only programs of the account whose desktop this is, in its own namespaces, and
-//!   refuses every other connection before reading a byte ([`admin_path`], [`owner_decision`]).
-//!
-//! The owner's door serves what a person's own scripts need to drive their desktop through
-//! the model it publishes — the action model (`actions_enumerate`, `actions_invoke`,
-//! `actions_status` and `actions_cancel`), the state it shows (`state_dump`, `watch` and
-//! `windows`) — and the session's own diagnostics (`process_memory`, and the profiler's
-//! `profile_start`, `profile_status` and `profile_stop`) — and refuses every other op with
-//! `not_permitted` ([`Op::owner_serves`], [`served`]). Injected input, screenshots of the
-//! person's screen, hosted surfaces' controls, fixtures and the test identity live on a
-//! development session's socket only. Nothing is invoked there while the screen is locked,
-//! and the state it shows carries nothing the lock hides.
-//!
-//! What it answers, as the tools that drive a desktop need it:
-//!
-//! - `snapshot` (`tilo-control snapshot PATH`): a PNG of every display, each at its place in the
-//!   layout, as the person in front of them sees it — the lock screen included while the session
-//!   is locked, which no copy that leaves the session shows ([`crate::capture::shown`]), and the
-//!   answer says whether that is what the picture shows;
-//! - `unlock` (`tilo-control unlock`): the session's lock lifted the one way it is — the screen
-//!   dissolves and the compositor comes down once it has, as it does for an accepted password —
-//!   so a tool driving a device off its own display reaches the desk under it;
-//! - `provision_test_identity` (`tilo-control raw '{"op":"provision_test_identity"}'`), which
-//!   mints the throwaway identity a development session opens its desk with instead of first-use
-//!   setup, as the shell's does for a dev image;
-//! - `list_targets` and `click_named`: every control the session's hosted surfaces show, by the
-//!   name they go by (a tab's pill, a place's switch, `onboarding.create.button`, a row of an
-//!   app's own window), and a press of one of them through the same action route an assistive
-//!   technology activates it with — never a point aimed at; `click_named` with `"verb":
-//!   "show-context-menu"` opens that control's context menu the same way;
-//! - the pointer: `pointer_move`, `pointer_button` (left, right or middle), `click_at` and
-//!   `scroll`;
-//! - `drag`: a press at one place, interpolated motion, and the release at another, which is how
-//!   a tab moves into another group or onto another strip;
-//! - `swipe` and `pinch`: the gesture tracker a touchpad feeds the seat, on a shell gesture's
-//!   three fingers or more, so what the person would do with their hand is what runs;
-//! - the keyboard: `key`, `key_down`/`key_up` (a held modifier across a keystroke) and `key`'s
-//!   `modifiers` mask, and `type`, each character typed by the key the seat's layout puts it on,
-//!   or written as text where the layout has no key for it;
-//! - `actions_enumerate`, `actions_invoke`, `actions_status` and `actions_cancel`: the actions the
-//!   session publishes now, across its broker and its own doors ([`crate::agent_door::Host`]),
-//!   invoked and followed as any admitted program invokes them. Nothing here reimplements an
-//!   action: a listing is a catalogue page, and an invocation the action model's own request;
-//! - `watch`: the desk's state as it changes, streamed off the session's own change signal — no
-//!   polling, and nothing is dumped while nobody watches;
-//! - `state_dump` and `windows`: the desk as it is now, and one row per open window;
-//! - `process_memory`: the session's own memory by kind of mapping, read with `mincore` as
-//!   Tilo's kernel has no `smaps`, and `profile_start`/`profile_status`/`profile_stop`: the
-//!   session profiled with its own instruments, frames, phases and threads, for a length the
-//!   owner asks for.
-//!
-//! Each connection is read on a thread of its own. What a request asks of the compositor, the
-//! desk or the hosted surfaces is answered on the loop's pass, the only place that may touch
-//! them, and the loop is woken for it. Input a tool injects — the pointer, the wheel, a gesture,
-//! a key — is answered where the loop takes a device's own input, so the pass it arrives in
-//! carries it, as it carries the person's own press; what asks anything else of the desk waits
-//! for that pass's frame, where it reads the desk the frame shows. What asks only of the actions
-//! and the change signal — the four action requests and `watch` — is answered where it was asked,
-//! so a listing that waits for an app to publish holds no frame.
+//! The control sockets: `tilo-control` drives a session it was started for, and
+//! the device admin drives their own desktop, over one protocol — one JSON request
+//! per line, tagged by `op`, and one answer per line: `{"ok": ..}`,
+//! `{"answer": ..}`, `{"state": ..}`, `{"targets": ..}` or
+//! `{"err": {"code": .., "message": ..}}`.
+//! The development test-control socket (`--test-control PATH` or
+//! `$TILO_TEST_CONTROL`, development builds only) answers every op below,
+//! including injected input, screenshots and fixtures. The owner's own door,
+//! `admin-control.sock`, admits only programs of the account whose desktop this
+//! is, in its own namespaces, and serves only the action model, the state it shows
+//! and the session's diagnostics ([`Op::owner_serves`]).
+//! Each connection is read on a thread of its own; what a request asks of the
+//! compositor, the desk or the hosted surfaces is answered on the loop's pass, and
+//! the loop is woken for it.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -108,18 +50,17 @@ use state::{shown, state_dump, window_rows, within};
 /// and what it prints with the path it opened.
 pub const ENV: &str = "TILO_TEST_CONTROL";
 
-/// The variable a session prints the owner's control socket's path with, as it prints
-/// [`ENV`]'s: the socket [`admin_path`] opened.
+/// The variable a session prints the owner's control socket's path with, as it prints [`ENV`]'s:
+/// the socket [`admin_path`] opened.
 pub const ADMIN_ENV: &str = "TILO_ADMIN_CONTROL";
 
-/// Whether this build opens the test-control socket it is given: development builds, and the
-/// dev image's, whose binaries are release ones built with `dev-overrides`. A production build
-/// leaves the flag without effect, so nothing it ships drives a session as the person through a
-/// socket.
+/// Whether this build opens the test-control socket it is given: development builds, and the dev
+/// image's, whose binaries are release ones built with `dev-overrides` . A production build leaves
+/// the flag without effect, so nothing it ships drives a session as the person through a socket.
 pub const OPENED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
 /// The owner's control socket's file name in a headless session's directory: a headless session
-/// serves no seat, so it never takes the seat's own `admin-control.sock`, which a login's session
+/// serves no seat, so it never takes the seat's own `admin-control.sock` , which a login's session
 /// binds.
 pub const HEADLESS_OWNER_CONTROL_SOCKET_FILE: &str = "headless-owner-control.sock";
 
@@ -196,7 +137,7 @@ fn admin_path_in(
 /// Why a session serves no owner's door.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NotServed {
-    /// The account does not administer the machine: it is not a member of `wheel`.
+    /// The account does not administer the machine: it is not a member of `wheel` .
     NotAdministrator,
     /// The account's identity does not own the device, or it has none yet.
     NotDeviceOwner,
@@ -241,45 +182,44 @@ pub fn owner_decision(
     }
 }
 
-/// What the session is, for the answers that read it: the doors every hosted surface's actions
-/// go through, the desk's tree, what stands over it, the workspaces this computer holds, whether
-/// the person locked the screen, whether the lock screen's own frame is on it, and the agents
-/// seated at the person's door.
+/// What the session is, for the answers that read it: the doors every hosted surface's actions go
+/// through, the desk's tree, what stands over it, the workspaces this computer holds, whether the
+/// person locked the screen, whether the lock screen's own frame is on it, and the agents seated at
+/// the person's door.
 #[derive(Clone, Copy)]
 pub(crate) struct Desk<'a> {
     pub(crate) doors: &'a Doors,
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) overlays: &'a Overlays,
-    /// Whether the overview the person sees is up: its pictures' own flag, which the chrome
-    /// writes as it draws and the shell writes as its views show it, so the state says the one
-    /// overview either way.
+    /// Whether the overview the person sees is up: its pictures' own flag, which the chrome writes
+    /// as it draws and the shell writes as its views show it, so the state says the one overview
+    /// either way.
     pub(crate) overview: &'a std::cell::Cell<bool>,
     pub(crate) engine: Option<&'a Engine>,
     /// The agents the person admitted at its door, as the desk's bar shows them.
     pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
     pub(crate) locked: bool,
     pub(crate) lock_screen_drawn: bool,
-    /// The lock's own state: what unlocking it is, the same one an accepted
-    /// password sets, so a tool that unlocks asks the session to come down the
-    /// one way it does — the screen dissolves and the compositor lifts the
-    /// lock once it has.
+    /// The lock's own state: what unlocking it is, the same one an accepted password sets, so a
+    /// tool that unlocks asks the session to come down the one way it does — the screen dissolves
+    /// and the compositor lifts the lock once it has.
     pub(crate) lock: &'a crate::lock_service::Lock,
 }
 
-/// Answer what `control`, when there is one, was asked since the last pass, and publish the
-/// state its watchers read.
+/// Answer what `control` , when there is one, was asked since the last pass, and publish the state
+/// its watchers read.
 pub(crate) fn serve(control: &Control, compositor: &mut Compositor, desk: Desk<'_>) {
     control.serve(compositor, &desk);
 }
 
-/// What a tool handed the desk's input since the last pass, taken where a device's input
-/// reaches the desk, and publish the desk this pass laid out before it is drawn.
+/// What a tool handed the desk's input since the last pass, taken where a device's input reaches
+/// the desk, and publish the desk this pass laid out before it is drawn.
 pub(crate) fn serve_input(control: &Control, compositor: &mut Compositor, desk: Desk<'_>) {
     control.serve_input(compositor, &desk);
 }
 
-/// Tell the watchers the desk this pass laid out, before it is drawn: the state a reader gets
-/// is the one the frame carries.
+/// Tell the watchers the desk this pass laid out, before it is drawn: the state a reader gets is
+/// the one the frame carries.
 pub(crate) fn publish(control: &Control, desk: Desk<'_>) {
     control.publish(&desk);
 }
@@ -289,8 +229,7 @@ struct Asked {
     /// The op it asks, which the socket it came in on serves.
     op: Op,
     request: Json,
-    /// What it acts as: the socket it came in on, and the app and workspace
-    /// it was admitted for.
+    /// What it acts as: the socket it came in on, and the app and workspace it was admitted for.
     ctx: Context,
     answer: Sender<Json>,
 }
@@ -301,14 +240,14 @@ pub(crate) struct Control {
     /// What every connection asks the actions and the change signal through.
     door: Arc<Door>,
     asked: Receiver<Asked>,
-    /// The keys a `key_down` holds, so `key_up` releases them and `modifiers` knows what to
-    /// press and release to reach the mask it names.
+    /// The keys a `key_down` holds, so `key_up` releases them and `modifiers` knows what to press
+    /// and release to reach the mask it names.
     held: RefCell<BTreeSet<u32>>,
     /// The desk state the loop last published, as its stamp.
     published: std::cell::Cell<Option<u64>>,
     changes: Arc<Changes>,
-    /// What asked anything but the desk's input since the last pass: it is
-    /// answered after the frame, where it sees the desk the frame shows.
+    /// What asked anything but the desk's input since the last pass: it is answered after the
+    /// frame, where it sees the desk the frame shows.
     waiting: RefCell<Vec<Asked>>,
 }
 
@@ -329,8 +268,8 @@ enum Gate {
     Dev,
     /// The owner's door: this account's own programs, and only theirs.
     Owner,
-    /// A program inside an app this session started: it acts in that app's
-    /// workspace, with the app's own permissions, never the owner's.
+    /// A program inside an app this session started: it acts in that app's workspace, with the
+    /// app's own permissions, never the owner's.
     App,
 }
 
@@ -341,8 +280,8 @@ pub(crate) struct Scope {
     workspace: String,
 }
 
-/// What a connection is: the socket it came in on, and, at the app door, the
-/// app and workspace it was admitted for.
+/// What a connection is: the socket it came in on, and, at the app door, the app and workspace it
+/// was admitted for.
 #[derive(Clone)]
 struct Context {
     gate: Gate,
@@ -498,10 +437,10 @@ impl Op {
         }
     }
 
-    /// Whether the owner's door serves it: the action model and the state it shows, which is
-    /// what a person's own scripts drive their desktop through. Synthetic input, screenshots
-    /// of the person's screen, the hosted surfaces' controls, the fixtures and the test
-    /// identity are nobody's but a development session's.
+    /// Whether the owner's door serves it: the action model and the state it shows, which is what a
+    /// person's own scripts drive their desktop through. Synthetic input, screenshots of the
+    /// person's screen, the hosted surfaces' controls, the fixtures and the test identity are
+    /// nobody's but a development session's.
     const fn owner_serves(self) -> bool {
         matches!(
             self,
@@ -521,8 +460,8 @@ impl Op {
 }
 
 impl Op {
-    /// Whether it hands the desk input, which the loop serves where a device's own input
-    /// reaches it: in the pass it arrives in, before that pass draws its frame.
+    /// Whether it hands the desk input, which the loop serves where a device's own input reaches
+    /// it: in the pass it arrives in, before that pass draws its frame.
     const fn hands_input(self) -> bool {
         matches!(
             self,
@@ -542,8 +481,8 @@ impl Op {
     }
 }
 
-/// Whether the socket at `gate` answers `op`: the one place the protocol's ops are divided
-/// between the doors.
+/// Whether the socket at `gate` answers `op` : the one place the protocol's ops are divided between
+/// the doors.
 fn served(gate: Gate, op: Op) -> bool {
     match gate {
         Gate::Dev => true,
@@ -568,8 +507,8 @@ fn not_this_doors(gate: Gate, op: Op) -> Json {
     )
 }
 
-/// The answer for an `op` the protocol does not answer at all, naming the ones the socket
-/// `gate` serves.
+/// The answer for an `op` the protocol does not answer at all, naming the ones the socket `gate`
+/// serves.
 fn unsupported(ctx: &Context, request: &Json) -> Json {
     let answers = Op::ALL
         .iter()
@@ -586,8 +525,8 @@ fn unsupported(ctx: &Context, request: &Json) -> Json {
     )
 }
 
-/// What a connection asks on: the loop's queue and its wake, and the actions and change signal
-/// it may read without the loop.
+/// What a connection asks on: the loop's queue and its wake, and the actions and change signal it
+/// may read without the loop.
 pub(crate) struct Door {
     asks: Mutex<Sender<Asked>>,
     wake: Wake,
@@ -596,8 +535,8 @@ pub(crate) struct Door {
 }
 
 impl Control {
-    /// The sockets `options` name, opened. The actions and the change signal exist whether or
-    /// not one does: the app door answers the programs it admits through them too.
+    /// The sockets `options` name, opened. The actions and the change signal exist whether or not
+    /// one does: the app door answers the programs it admits through them too.
     pub(crate) fn open(options: &crate::Options, host: Arc<agent_door::Host>) -> Self {
         let (asks, asked) = channel();
         let changes = Arc::new(Changes::new(options.wake.handle()));
@@ -662,8 +601,8 @@ impl Control {
     }
 
     /// What a tool handed the desk's input since the last pass, answered where a device's input
-    /// reaches the desk: a key or a press a tool injects takes effect in the frame this pass
-    /// draws, as the same input from a device does. Everything else asked waits for the frame
+    /// reaches the desk: a key or a press a tool injects takes effect in the frame this pass draws,
+    /// as the same input from a device does. Everything else asked waits for the frame
     /// ([`Self::serve`]), where it reads the desk the frame shows.
     fn serve_input(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.door.actions.set_workspace(desk.handle.read(|tree| {
@@ -697,8 +636,8 @@ impl Control {
         *waiting = later;
     }
 
-    /// Take the connections waiting, publish the desk its watchers read, and answer what was
-    /// asked of the loop since the last pass.
+    /// Take the connections waiting, publish the desk its watchers read, and answer what was asked
+    /// of the loop since the last pass.
     fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.door.actions.set_workspace(desk.handle.read(|tree| {
             tree.active_workspace()
@@ -723,16 +662,16 @@ impl Control {
         }
     }
 
-    /// Everything the connections sent the loop since the last look, oldest first. What asks
-    /// for the desk's input is served in the pass it arrives in; the rest waits for the frame.
+    /// Everything the connections sent the loop since the last look, oldest first. What asks for
+    /// the desk's input is served in the pass it arrives in; the rest waits for the frame.
     fn take(&self) {
         while let Ok(asked) = self.asked.try_recv() {
             self.waiting.borrow_mut().push(asked);
         }
     }
 
-    /// Tell the watchers where the desk stands, when it moved since the last pass: the state
-    /// dump is only built when someone reads it.
+    /// Tell the watchers where the desk stands, when it moved since the last pass: the state dump
+    /// is only built when someone reads it.
     fn publish(&self, desk: &Desk<'_>) {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::hash::DefaultHasher::new();
@@ -811,8 +750,8 @@ impl Drop for Control {
     }
 }
 
-/// Tell a connection of the owner's door it is not this desktop's owner, in the control
-/// protocol's own framing, then let it go.
+/// Tell a connection of the owner's door it is not this desktop's owner, in the control protocol's
+/// own framing, then let it go.
 fn refuse_owner(mut stream: UnixStream, refusal: &PeerRefusal) {
     let message = match refusal {
         PeerRefusal::Unidentified => "this program couldn't be identified".to_owned(),
@@ -853,13 +792,13 @@ pub(crate) fn serve_app(
     serve_connection(stream, &ctx, door, Some(first));
 }
 
-/// A connection's writer: shared with the thread that streams the desk's state, so a state line
-/// and an answer never interleave.
+/// A connection's writer: shared with the thread that streams the desk's state, so a state line and
+/// an answer never interleave.
 type Writer = Arc<Mutex<UnixStream>>;
 
-/// Read `stream`'s requests one line at a time, answer each, and write its answer, until the
-/// client closes it or the session ends. `gate` is the socket it came in on: an op that socket
-/// does not serve is refused here, before it reaches anything ([`served`]).
+/// Read `stream` 's requests one line at a time, answer each, and write its answer, until the
+/// client closes it or the session ends. `gate` is the socket it came in on: an op that socket does
+/// not serve is refused here, before it reaches anything ([`served`]).
 fn serve_connection(stream: UnixStream, ctx: &Context, door: &Door, first: Option<String>) {
     if let Err(error) = stream.set_nonblocking(false) {
         tracing::warn!(%error, "control: a connection cannot block");
@@ -870,8 +809,8 @@ fn serve_connection(stream: UnixStream, ctx: &Context, door: &Door, first: Optio
     };
     let writer: Writer = Arc::new(Mutex::new(writer));
     let mut watching: Option<Watching> = None;
-    // The app door reads a client's first line to know what it asks before it
-    // hands the connection over.
+    // The app door reads a client's first line to know what it asks before it hands the connection
+    // over.
     let reader: Box<dyn io::BufRead + Send> = match first {
         Some(first) => Box::new(BufReader::new(io::Read::chain(
             io::Cursor::new(format!("{first}\n").into_bytes()),
@@ -947,8 +886,8 @@ impl Watching {
 }
 
 /// Stream the desk's state to `writer` until it stops watching, off the change signal the loop
-/// publishes on: nothing here polls, and a change wakes the wait. What the connection may see of
-/// it is what it is sent ([`shown`]).
+/// publishes on: nothing here polls, and a change wakes the wait. What the connection may see of it
+/// is what it is sent ([`shown`]).
 fn stream_state(writer: &Writer, ctx: &Context, door: &Door) -> Watching {
     let changes = Arc::clone(&door.changes);
     // Read before attaching: the state attached for is published after this.
@@ -981,8 +920,8 @@ fn stream_state(writer: &Writer, ctx: &Context, door: &Door) -> Watching {
     Watching { stop }
 }
 
-/// The answer to what `op` asks only of the actions and the change signal, when it asks of
-/// them: answered where the connection asked, so a wait holds no frame.
+/// The answer to what `op` asks only of the actions and the change signal, when it asks of them:
+/// answered where the connection asked, so a wait holds no frame.
 fn asked_here(
     op: Op,
     request: &Json,
@@ -1025,8 +964,8 @@ fn watch(
     json!({"ok": {}})
 }
 
-/// The answer to what `op` asks of the desk, the pointer, the gestures and the keyboard, on
-/// the loop's pass.
+/// The answer to what `op` asks of the desk, the pointer, the gestures and the keyboard, on the
+/// loop's pass.
 fn loop_answer(
     op: Op,
     request: &Json,
@@ -1069,14 +1008,14 @@ fn asked_of_desk(
                 .and_then(Json::as_str)
                 .unwrap_or_default();
             match snapshot(compositor, path) {
-                // Whether the picture is of the lock screen, which is all a
-                // locked display shows: a tool reads it, never a blank frame.
+                // Whether the picture is of the lock screen, which is all a locked display shows: a
+                // tool reads it, never a blank frame.
                 Ok(()) => json!({"ok": {"frame": 0, "locked": desk.locked}}),
                 Err((code, message)) => refusal(code, &message),
             }
         }
-        // The session's lock comes down as it does for a password that unlocks:
-        // the screen dissolves, and the compositor lifts the lock once it has.
+        // The session's lock comes down as it does for a password that unlocks: the screen
+        // dissolves, and the compositor lifts the lock once it has.
         Op::Unlock => {
             let was_locked = desk.locked;
             if was_locked {
@@ -1098,9 +1037,8 @@ fn asked_of_desk(
             let Some(name) = request.get("name").and_then(Json::as_str) else {
                 return Some(refusal("parse_error", "`click_named` takes `name`"));
             };
-            // The verb names the action to take on the control: a press
-            // (`activate`, the default) or the context menu it opens without a
-            // point aimed at where it is drawn.
+            // The verb names the action to take on the control: a press (`activate`, the default)
+            // or the context menu it opens without a point aimed at where it is drawn.
             let action = match request.get("verb").and_then(Json::as_str) {
                 None | Some("activate") => ui::window_targets::TargetAction::Activate,
                 Some("show-context-menu") => ui::window_targets::TargetAction::ShowContextMenu,
@@ -1141,8 +1079,8 @@ fn asked_of_desk(
             let rows = if ctx.gate != Gate::Dev && desk.locked {
                 Vec::new()
             } else {
-                // Where each window is drawn, read off the frame's own layout:
-                // a row says what a tool aiming at that window aims at.
+                // Where each window is drawn, read off the frame's own layout: a row says what a
+                // tool aiming at that window aims at.
                 let rect_of = |id: u64| compositor.window_rect(id);
                 match &ctx.scope {
                     None => desk.handle.read(|tree| window_rows(tree, rect_of)),
@@ -1158,8 +1096,8 @@ fn asked_of_desk(
 }
 
 /// Start profiling the session for `seconds` (default [`profile::DEFAULT_SECONDS`], at most
-/// [`profile::MAX_SECONDS`]) into the session's profile directory: the loop records its own
-/// frame rows, phases and threads there, and the summary is written last.
+/// [`profile::MAX_SECONDS`]) into the session's profile directory: the loop records its own frame
+/// rows, phases and threads there, and the summary is written last.
 fn profile_start(request: &Json) -> Json {
     use tilo_frame_metrics::profile;
     let Some(root) = profile::default_root() else {
@@ -1260,7 +1198,7 @@ fn asked_of_pointer(op: Op, request: &Json, compositor: &mut Compositor) -> Opti
         Op::Scroll => {
             let dx = number(request, "dx").unwrap_or(0.0);
             let dy = number(request, "dy").unwrap_or(0.0);
-            // A notch up is the old wire's positive `dy`; the compositor speaks the protocol's
+            // A notch up is the old wire's positive `dy` ; the compositor speaks the protocol's
             // axis, which counts down as positive.
             answer(compositor.input(InputEvent::PointerAxis {
                 horizontal: -dx,
@@ -1290,8 +1228,8 @@ const DEFAULT_GESTURE_STEPS: u32 = 10;
 /// The most updates one gesture is split into: what a touchpad reports over a long swipe.
 const MAX_GESTURE_STEPS: u32 = 288;
 
-/// The seat's own gesture is the shell's: fewer fingers are the focused client's, which the
-/// control door refuses rather than delivering where a person's hand could not reach.
+/// The seat's own gesture is the shell's: fewer fingers are the focused client's, which the control
+/// door refuses rather than delivering where a person's hand could not reach.
 fn client_gesture(fingers: u32) -> Json {
     refusal(
         "client_gesture",
@@ -1303,8 +1241,8 @@ fn client_gesture(fingers: u32) -> Json {
     )
 }
 
-/// A swipe of `fingers` fingers travelling `(dx, dy)` over `steps` updates: a begin, the
-/// updates, and the release at the end unless the request keeps the fingers down.
+/// A swipe of `fingers` fingers travelling `(dx, dy)` over `steps` updates: a begin, the updates,
+/// and the release at the end unless the request keeps the fingers down.
 fn swipe_events(request: &Json) -> Result<Vec<GestureEvent>, Json> {
     let fingers = fingers_of(request)?;
     if !gestures::claims(fingers) {
@@ -1351,7 +1289,7 @@ fn pinch_events(request: &Json) -> Result<Vec<GestureEvent>, Json> {
     Ok(events)
 }
 
-/// A request's `fingers`, which a gesture must name.
+/// A request's `fingers` , which a gesture must name.
 fn fingers_of(request: &Json) -> Result<u32, Json> {
     request
         .get("fingers")
@@ -1360,7 +1298,7 @@ fn fingers_of(request: &Json) -> Result<u32, Json> {
         .ok_or_else(|| refusal("parse_error", "a gesture takes `fingers`"))
 }
 
-/// A request's `steps`, by the tools' default and within what a touchpad reports.
+/// A request's `steps` , by the tools' default and within what a touchpad reports.
 fn gesture_steps(request: &Json) -> u32 {
     request
         .get("steps")
@@ -1476,16 +1414,16 @@ fn asked_of_keys(
 struct Actions {
     /// The broker, with the session's own doors beside it ([`crate::agent_door::Host`]).
     host: Arc<agent_door::Host>,
-    /// The person's own caller, made once and cloned: the broker remembers an invocation under
-    /// the caller that admitted it, so a status or a cancel reads it back as the same caller.
+    /// The person's own caller, made once and cloned: the broker remembers an invocation under the
+    /// caller that admitted it, so a status or a cancel reads it back as the same caller.
     caller: Caller,
     /// The workspace in front, as the loop last read it: what an invocation opens into.
     workspace: Mutex<String>,
     /// The number a tool was answered with, and the invocation it names.
     ledger: Mutex<BTreeMap<u64, InvocationId>>,
     next: AtomicU64,
-    /// Whether the screen is locked, as the loop last read it: the owner's door invokes
-    /// nothing there.
+    /// Whether the screen is locked, as the loop last read it: the owner's door invokes nothing
+    /// there.
     locked: AtomicBool,
 }
 
@@ -1547,8 +1485,8 @@ impl Actions {
     }
 }
 
-/// The answer to `actions_enumerate`: the rows the actions answer with now, in the shape the
-/// tools that drive a desktop read, held until they move past `after_revision` or the listing is
+/// The answer to `actions_enumerate` : the rows the actions answer with now, in the shape the tools
+/// that drive a desktop read, held until they move past `after_revision` or the listing is
 /// complete.
 fn actions_enumerate(
     request: &Json,
@@ -1573,8 +1511,8 @@ fn actions_enumerate(
         .get("after_revision")
         .and_then(Json::as_str)
         .map(str::to_owned);
-    // A query of several words is read as the tools read it: the host narrows to the first
-    // word, and the rest narrow what it answered ([`legacy_rows`]).
+    // A query of several words is read as the tools read it: the host narrows to the first word,
+    // and the rest narrow what it answered ([`legacy_rows`]).
     let words: Vec<String> = request
         .get("query")
         .and_then(Json::as_str)
@@ -1607,7 +1545,7 @@ fn actions_enumerate(
     }
 }
 
-/// Whether the listing `page` is the one to answer: the one after `after`, or, without one, a
+/// Whether the listing `page` is the one to answer: the one after `after` , or, without one, a
 /// complete listing — the whole of it, or its first page when more pages follow.
 fn listing_settled(page: &CataloguePage, after: Option<&str>, paging: bool, waits: bool) -> bool {
     if let Some(after) = after {
@@ -1667,7 +1605,7 @@ fn listing(
         return refusal("stale_cursor", "the listing moved on; list it again");
     }
     // Files and folders are the resources behind actions, left out of a listing unless they were
-    // asked for — by `files`, or by a kind filter that may name them.
+    // asked for — by `files` , or by a kind filter that may name them.
     let resources = files || !kinds.is_empty();
     let mut rows = legacy_rows(page, words, compact, resources);
     if !kinds.is_empty() {
@@ -1717,9 +1655,8 @@ const KIND_APPS: &str = "Apps";
 const KIND_ACTIONS: &str = "Actions";
 
 /// The page's rows as the tools that drive a desktop address them.
-///
-/// An app the workspace can open is `applications:<app id>`; an action an app publishes while it
-/// runs is `app-actions:<provider>␟<address>`; any other action is `<provider>:<address>`. The
+/// An app the workspace can open is `applications:<app id>` ; an action an app publishes while it
+/// runs is `app-actions:<provider>␟<address>` ; any other action is `<provider>:<address>` . The
 /// address is the action model's own — resource, then action ([`ActionAddress::encode`]) — which
 /// the tools print escaped and take back.
 fn legacy_rows(
@@ -1848,8 +1785,8 @@ fn row_mentions(row: &Json, words: &[String]) -> bool {
         .all(|word| word.is_empty() || fields.iter().any(|field| field.contains(word.as_str())))
 }
 
-/// A cursor as the tools carry it: the revision it was cut at and the actions' continuation
-/// after it, so the next page reads on in the listing it was taken from.
+/// A cursor as the tools carry it: the revision it was cut at and the actions' continuation after
+/// it, so the next page reads on in the listing it was taken from.
 fn encode_cursor(revision: &str, cursor: &[u8]) -> String {
     format!("{revision}~{}", hex::encode(cursor))
 }
@@ -1860,11 +1797,10 @@ fn decode_cursor(token: &str) -> Option<(String, Vec<u8>)> {
     Some((revision.to_owned(), hex::decode(cursor).ok()?))
 }
 
-/// The answer to `actions_invoke`: the receipt, by a number the tools follow it with. The
-/// owner's door invokes nothing while the screen is locked: what a person's own scripts run is
-/// what the person at the device could run, and a locked desktop runs nothing. `confirmed`
-/// stands for the person's own answer to an action that asks first, as pressing Allow in its
-/// prompt does.
+/// The answer to `actions_invoke` : the receipt, by a number the tools follow it with. The owner's
+/// door invokes nothing while the screen is locked: what a person's own scripts run is what the
+/// person at the device could run, and a locked desktop runs nothing. `confirmed` stands for the
+/// person's own answer to an action that asks first, as pressing Allow in its prompt does.
 fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     if ctx.gate != Gate::Dev && actions.locked() {
         return refusal(
@@ -1918,8 +1854,8 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
         wait_ms: None,
         appearance: None,
     };
-    // The person's own actions are the seat's; a program inside an app acts
-    // as that app, and the broker's per-action permissions decide for it.
+    // The person's own actions are the seat's; a program inside an app acts as that app, and the
+    // broker's per-action permissions decide for it.
     let started = match ctx.scope {
         Some(_) => actions.host.invoke(&caller, invoke),
         None => actions.host.invoke_at_seat(&caller, invoke),
@@ -1937,7 +1873,7 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     )
 }
 
-/// The answer to `actions_status`: where an invocation a tool started stands now.
+/// The answer to `actions_status` : where an invocation a tool started stands now.
 fn actions_status(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     let Some(number) = request.get("invocation_id").and_then(Json::as_u64) else {
         return refusal("parse_error", "`actions_status` takes `invocation_id`");
@@ -1968,7 +1904,7 @@ fn actions_status(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     }}})
 }
 
-/// The answer to `actions_cancel`: the invocation asked to stop.
+/// The answer to `actions_cancel` : the invocation asked to stop.
 fn actions_cancel(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     let Some(number) = request.get("invocation_id").and_then(Json::as_u64) else {
         return refusal("parse_error", "`actions_cancel` takes `invocation_id`");
@@ -2080,8 +2016,8 @@ fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActi
 /// A host's refusal as the tools read it: the codes they know, and what they mean here.
 fn action_refusal(error: &ActionHostError) -> Json {
     let code = match error {
-        // This door's own refusal is `not_permitted`, which a tool reads as the socket not
-        // serving it at all; an action the person may not run is another answer.
+        // This door's own refusal is `not_permitted` , which a tool reads as the socket not serving
+        // it at all; an action the person may not run is another answer.
         ActionHostError::NotPermitted => "not_allowed",
         ActionHostError::StaleRevision => "stale_cursor",
         ActionHostError::ConfirmationRequired => "needs_confirmation",
@@ -2090,12 +2026,12 @@ fn action_refusal(error: &ActionHostError) -> Json {
     refusal(code, &error.to_string())
 }
 
-/// `request`'s `name` field, when it is a number.
+/// `request` 's `name` field, when it is a number.
 fn number(request: &Json, name: &str) -> Option<f64> {
     request.get(name).and_then(Json::as_f64)
 }
 
-/// The button `request`'s `name` field names: `left` unless it says `right` or `middle`.
+/// The button `request` 's `name` field names: `left` unless it says `right` or `middle` .
 fn button(request: &Json, name: &str) -> Result<u32, Json> {
     match request.get(name).and_then(Json::as_str) {
         None | Some("left") => Ok(BUTTON_LEFT),
@@ -2119,7 +2055,7 @@ const KEY_SHIFT: u32 = 42;
 const KEY_ALT: u32 = 56;
 const KEY_SUPER: u32 = 125;
 
-/// `ok` when the input took `result`, its refusal otherwise.
+/// `ok` when the input took `result` , its refusal otherwise.
 fn answer(result: Result<(), tilo_compositor::Error>) -> Json {
     match result {
         Ok(()) => json!({"ok": {}}),
@@ -2127,7 +2063,7 @@ fn answer(result: Result<(), tilo_compositor::Error>) -> Json {
     }
 }
 
-/// One place of a drag: `from` to `to`, `at` of the way.
+/// One place of a drag: `from` to `to` , `at` of the way.
 fn drag_step(from: (f64, f64), to: (f64, f64), at: f64) -> (f64, f64) {
     (from.0 + (to.0 - from.0) * at, from.1 + (to.1 - from.1) * at)
 }
@@ -2142,7 +2078,7 @@ fn tap(compositor: &mut Compositor, button: u32) -> Json {
     json!({"ok": {}})
 }
 
-/// A press at `from`, `steps` motions spread evenly to `to`, and the release there: the gesture
+/// A press at `from` , `steps` motions spread evenly to `to` , and the release there: the gesture
 /// that moves a tab into another group, or a file into a window.
 fn drag(
     compositor: &mut Compositor,
@@ -2233,9 +2169,9 @@ fn named_key(name: &str) -> Option<u32> {
     })
 }
 
-/// Type `text` as the keyboard attached to the machine would: each character by the key this
-/// seat's layout puts it on, or, where the layout has no key for it, written as text into the
-/// field that takes it.
+/// Type `text` as the keyboard attached to the machine would: each character by the key this seat's
+/// layout puts it on, or, where the layout has no key for it, written as text into the field that
+/// takes it.
 fn type_text(compositor: &mut Compositor, text: &str) -> Result<(), String> {
     for ch in text.chars() {
         let typed = compositor
@@ -2248,8 +2184,8 @@ fn type_text(compositor: &mut Compositor, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Write a PNG of every display, each at its place in the layout, as the
-/// person in front of them sees it, to `path`.
+/// Write a PNG of every display, each at its place in the layout, as the person in front of them
+/// sees it, to `path` .
 fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str, String)> {
     if path.is_empty() {
         return Err(("invalid_path", "snapshot path must not be empty".to_owned()));
@@ -2260,9 +2196,9 @@ fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str
         .map_err(|error| ("snapshot_failed", format!("{path}: {error}")))
 }
 
-/// Mint a throwaway identity for this session's user, the one a session started after it opens
-/// its desk with: what `provision_test_identity` answers on the shell's socket, in the same
-/// shape. A real identity is never replaced; a release build mints none.
+/// Mint a throwaway identity for this session's user, the one a session started after it opens its
+/// desk with: what `provision_test_identity` answers on the shell's socket, in the same shape. A
+/// real identity is never replaced; a release build mints none.
 fn provision_test_identity() -> Json {
     use tilo_identity_host::provisioning::{ProvisionOutcome, THROWAWAY_TEST_IDENTITY_NAME};
     let store = match tilo_onboarding_host::identity_provisioning::DiskIdentityStore::from_env() {
@@ -2299,8 +2235,8 @@ fn refusal_json(code: &str, message: &str) -> Json {
     json!({"err": {"code": code, "message": message}})
 }
 
-/// The session's change signal, as its watchers and the held action requests read it: what the
-/// desk published, generation by generation, and a condvar that wakes everyone waiting on one.
+/// The session's change signal, as its watchers and the held action requests read it: what the desk
+/// published, generation by generation, and a condvar that wakes everyone waiting on one.
 struct Changes {
     state: Mutex<Changed>,
     settled: Condvar,
@@ -2392,7 +2328,7 @@ impl Changes {
         self.settled.notify_all();
     }
 
-    /// The signal after `seen`, and the state dumped then, or `None` when `stop` was set, the
+    /// The signal after `seen` , and the state dumped then, or `None` when `stop` was set, the
     /// session ended, or `until` passed.
     fn wait(
         &self,
@@ -2518,10 +2454,9 @@ mod tests {
 
     #[test]
     fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
-        // Every op of the protocol, and the door that serves it: the owner's door is for a
-        // person's own scripts, which drive the desktop through the model it publishes and
-        // read the state it shows — never through the pointer, the keyboard or a picture of
-        // the screen.
+        // Every op of the protocol, and the door that serves it: the owner's door is for a person's
+        // own scripts, which drive the desktop through the model it publishes and read the state it
+        // shows — never through the pointer, the keyboard or a picture of the screen.
         let owner = [
             Op::ActionsCancel,
             Op::ActionsEnumerate,
@@ -2609,8 +2544,8 @@ mod tests {
         };
         tree.active_strip.insert(WorkspaceSlot(1), StripId(1));
         tree.set_active_group(StripId(1), 10);
-        // The frame draws the one window it has mapped; the other tab is an
-        // app to open again, with no window of its own yet.
+        // The frame draws the one window it has mapped; the other tab is an app to open again, with
+        // no window of its own yet.
         let rows = window_rows(&tree, |id| (id == 7).then_some((14, 96, 946, 984)));
         assert_eq!(rows.len(), 2, "one row per tab: {rows:?}");
         assert_eq!(rows[0]["window"], json!(7));
@@ -2618,8 +2553,8 @@ mod tests {
         assert_eq!(rows[0]["active"], json!(true));
         assert_eq!(rows[1]["window"], Json::Null);
         assert_eq!(rows[1]["rect"], Json::Null);
-        // A frame that no longer maps the window leaves the row without a
-        // rectangle rather than one that is no longer where it is drawn.
+        // A frame that no longer maps the window leaves the row without a rectangle rather than one
+        // that is no longer where it is drawn.
         let closed = window_rows(&tree, |_| None);
         assert_eq!(closed[0]["window"], json!(7));
         assert_eq!(closed[0]["rect"], Json::Null);
@@ -2802,8 +2737,8 @@ mod tests {
             "the input a tool injects is served before the pass lays its frame \
              out, so that frame carries it"
         );
-        // Everything else reads or changes what a frame already shows, and is
-        // answered once the pass has drawn it.
+        // Everything else reads or changes what a frame already shows, and is answered once the
+        // pass has drawn it.
         for op in [
             Op::ClickNamed,
             Op::ActionsInvoke,

@@ -35,9 +35,6 @@ pub fn trash(path: &Path) {
 
 /// Flush `path`'s directory entry, so a rename or a fresh name survives a
 /// power cut.
-///
-/// # Errors
-/// Returns what the filesystem says.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
@@ -46,9 +43,6 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
 /// commit for a batch of copies, rather than one per file. Only Linux commits
 /// one filesystem by descriptor; elsewhere the commit is every filesystem's,
 /// which includes this one.
-///
-/// # Errors
-/// Returns what the filesystem says.
 pub(crate) fn sync_filesystem(receiving: &File) -> io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
@@ -73,9 +67,6 @@ pub(crate) fn sync_filesystem(receiving: &File) -> io::Result<()> {
 
 /// Flush the entry of the folder `name` in `receiving`, so the staging folder
 /// and the copies written inside it survive a power cut.
-///
-/// # Errors
-/// Returns what the filesystem says.
 #[cfg(unix)]
 pub(crate) fn sync_child_directory(receiving: &File, name: &OsStr) -> io::Result<()> {
     use rustix::fs::{Mode, OFlags};
@@ -91,9 +82,6 @@ pub(crate) fn sync_child_directory(receiving: &File, name: &OsStr) -> io::Result
 }
 
 /// Flush the folder `path` is in.
-///
-/// # Errors
-/// Returns what the filesystem says.
 pub fn sync_parent(path: &Path) -> io::Result<()> {
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => sync_directory(parent),

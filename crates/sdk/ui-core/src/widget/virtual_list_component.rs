@@ -20,12 +20,14 @@ use crate::component::{
 };
 use crate::selection::KeySelection;
 use crate::tokens::{Rhythm, TextRole};
-use crate::widget::arrange::{Align, Fit, Page, Row, Slot, Stack, TranscriptEdges};
+use crate::widget::arrange::{
+    Align, Fit, Length, MEASURE_REM, Page, Row, Slot, Stack, TranscriptEdges,
+};
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
     Attachments, Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry,
-    MenuPart, Spacer, SwipeActionProps, Text, Tone, Widget,
+    MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
 };
 
 use super::{ListModel, ListModelChange, TREE_INDENT, TreeMarks, VirtualList};
@@ -107,6 +109,12 @@ pub struct ListItemProps {
     /// The row: a `ui.ListRow`, or any view.
     #[component(slot(default))]
     pub row: ItemRow,
+    /// The item's document, shown under the row while the row stands open into it, one lead
+    /// in under the row's text: a row with a document opens where it stands in the list when
+    /// it is chosen, and the list's own motion grows the row to hold it. Without one, choosing
+    /// the row opens the item elsewhere (`ui.VirtualList`'s `activate`).
+    #[component(slot)]
+    pub detail: ItemRow,
 }
 
 /// The row of a [`ListItemProps`].
@@ -174,6 +182,11 @@ pub struct VirtualListProps {
     /// A conversation: each row stands in the page column, the list opens at its newest row
     /// and follows it.
     pub transcript: bool,
+    /// Each row stands in the page column, at the readable measure every page sets its blocks
+    /// on, a section's gap under the row before it. A list read from its first row to its last
+    /// (a conversation's messages, a document's replies) keeps the measure without following
+    /// its end as a transcript does.
+    pub page_column: bool,
     /// The title over the list's tail group: the rows whose item says it is one of those done
     /// with ([`ListItemProps::tail`]) stand after every group, under it, closed until the
     /// person opens them. `None` leaves those rows among the others.
@@ -214,6 +227,12 @@ pub struct VirtualListProps {
     /// How far the list is scrolled, in logical pixels.
     #[component(state)]
     pub scroll: Option<f64>,
+    /// The item standing open into its document where it stands in the list: its row grows to
+    /// hold what the item's row gives as its `detail`, and Escape or a press beside it closes
+    /// it. A host keeps which item is open and gives it back, so a list it builds again shows
+    /// the item as the person left it.
+    #[component(state)]
+    pub open: Option<ResourceId>,
     /// The pace its rows arrive, leave and change places at, and the rows it builds move at
     /// when they say nothing themselves: the theme's unless it says otherwise.
     pub motion: Option<crate::motion::Feel>,
@@ -228,6 +247,13 @@ pub struct VirtualListProps {
     /// when the selection was put away.
     #[component(event)]
     pub selected: Event,
+    /// The person opened a row into its item where it stands: carries the item.
+    #[component(event(value = ResourceId))]
+    pub opened: Event,
+    /// The row standing open closed: pressed again, Escape, a press beside it, or its item
+    /// left the list.
+    #[component(event)]
+    pub closed: Event,
 }
 
 /// The items of a described list: read from a host that renders them as they are shown, or
@@ -322,6 +348,12 @@ impl SlotType for DescribedRows {
                 }
                 _ => {}
             }
+            if let ItemRow::View(_) = item.detail {
+                return Err(
+                    "a list given its items whole holds list rows, and the document a row opens into is one too; a list of other views renders them as they are shown"
+                        .to_owned(),
+                );
+            }
             if items.iter().any(|other| other.key == item.key) {
                 return Err(format!("has two items of the key {}", item.key));
             }
@@ -402,11 +434,19 @@ impl DescribedRows {
     }
 }
 
-/// An item given whole, again: its row's props are built anew each time it scrolls in.
+/// An item given whole, again: its row's props are built anew each time it scrolls in, and the
+/// document its row opens into, which is a row of the same kind. `None` for an item that is not
+/// rows all the way down: a view given once cannot be built a second time, so a list given its
+/// items whole holds rows (and their documents) rather than views.
 fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
     let row = match &item.row {
         ItemRow::None => ItemRow::None,
         ItemRow::Row(row) => ItemRow::Row(Box::new(row.reusable()?)),
+        ItemRow::View(_) => return None,
+    };
+    let detail = match &item.detail {
+        ItemRow::None => ItemRow::None,
+        ItemRow::Row(document) => ItemRow::Row(Box::new(document.reusable()?)),
         ItemRow::View(_) => return None,
     };
     Some(ListItemProps {
@@ -446,6 +486,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         parent_title: item.parent_title.clone(),
         progress: item.progress.clone(),
         row,
+        detail,
     })
 }
 
@@ -505,6 +546,16 @@ impl ListModel for DescribedRows {
             Held::Rendered(rows) => rows.try_borrow().is_ok_and(|rows| rows.has_changes()),
             _ => false,
         }
+    }
+
+    /// A row whose item brought a document of its own opens where it stands: choosing it
+    /// shows the document under the row, in the list, rather than opening the item elsewhere.
+    fn opens_in_place(&self, index: usize) -> bool {
+        let Some(key) = self.key_at(index) else {
+            return false;
+        };
+        self.with_item(&key, |item| !matches!(item.detail, ItemRow::None))
+            .unwrap_or(false)
     }
 
     /// What the row is grouped by: its item's heading, the list's tail for an item done
@@ -595,6 +646,7 @@ struct Face {
     selection_follows_focus: bool,
     in_column: bool,
     transcript: bool,
+    page_column: bool,
     /// The rows stand in a tree: each under the row of the item it names.
     tree: bool,
     /// The rows the host renders as they are shown, by identity: they then change through
@@ -684,6 +736,19 @@ pub(crate) fn by_hand() -> bool {
     )
 }
 
+/// The list with `open` standing open where it stands in it: the row showing that item, unless
+/// the item is no row of the list (a place that does not hold it).
+fn with_open<M: ListModel<Key = String>>(
+    mut list: VirtualList<M>,
+    open: Option<&ResourceId>,
+    rows: &DescribedRows,
+) -> VirtualList<M> {
+    if let Some(key) = open.and_then(|item| rows.key_presenting(&item.0)) {
+        list.set_open(Some(key));
+    }
+    list
+}
+
 /// The resource the item `key` shows, as an event carries it.
 fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
     rows.with_item(key, |item| item.item.map(|id| Value::Resource(id.0)))
@@ -756,8 +821,9 @@ fn row_of(
     key: &str,
     feel: crate::motion::Feel,
     tree: Option<&TreeMarks<String>>,
+    build: RowBuild,
 ) -> Element {
-    match bare_row(rows, key, feel, tree) {
+    match bare_row(rows, key, feel, tree, build) {
         Some((row, swipe, attached)) => attach(row, swipe, attached),
         None => Box::new(ListRow::new(key.to_owned(), "")),
     }
@@ -791,6 +857,7 @@ fn bare_row(
     key: &str,
     feel: crate::motion::Feel,
     tree: Option<&TreeMarks<String>>,
+    RowBuild { expanded, .. }: RowBuild,
 ) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
     // What the row over it states, read before the row's own: a row that stands under its
     // parent says only what the parent leaves unsaid, so the day fact it shares with the parent
@@ -808,6 +875,7 @@ fn bare_row(
             swipe,
             attached,
             row,
+            detail,
             change,
             removed,
             menu,
@@ -879,6 +947,23 @@ fn bare_row(
                 }
             }
             ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
+        };
+        // A row standing open into its item: the item's document under the row, one lead in
+        // under the text the row's leading control leads to, so the row becomes the item where
+        // it stands in the list rather than opening a page of its own.
+        let row = match (expanded, detail) {
+            (true, ItemRow::View(document)) => {
+                let mut open = Stack::stack().fill_width();
+                open.set_lead(1);
+                Box::new(open.push(row).push(document)) as Element
+            }
+            (true, ItemRow::Row(props)) => {
+                let document = Box::new(ListRow::from_props(key, *props)) as Element;
+                let mut open = Stack::stack().fill_width();
+                open.set_lead(1);
+                Box::new(open.push(row).push(document)) as Element
+            }
+            (true, ItemRow::None) | (false, _) => row,
         };
         (row, swipe, attached)
     })
@@ -952,6 +1037,7 @@ fn message_of(
     key: &str,
     unread: Option<&str>,
     feel: crate::motion::Feel,
+    measure: Option<Length>,
 ) -> Element {
     // The row that shows the item the reader has not seen, of the rows the host rendered. An
     // item is named by its id (`root-x/iy`), the one the app said and the one the row shows.
@@ -966,7 +1052,11 @@ fn message_of(
     });
     let said = rows.with_item(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
-        let row = page_row(row_of(rows, key, feel, None), RUN_GAP);
+        let row = page_row(
+            row_of(rows, key, feel, None, RowBuild::default()),
+            RUN_GAP,
+            measure,
+        );
         return if first_unread { with_unread(row) } else { row };
     };
     let before = rows
@@ -992,8 +1082,12 @@ fn message_of(
                     _ => true,
                 }
         });
-    let Some((said, swipe, attached)) = bare_row(rows, key, feel, None) else {
-        return page_row(row_of(rows, key, feel, None), RUN_GAP);
+    let Some((said, swipe, attached)) = bare_row(rows, key, feel, None, RowBuild::default()) else {
+        return page_row(
+            row_of(rows, key, feel, None, RowBuild::default()),
+            RUN_GAP,
+            measure,
+        );
     };
     let avatar = Avatar::person(author.name.clone(), author.identity.clone());
     let message = Row::row().fill_width().align(Align::Start);
@@ -1041,8 +1135,9 @@ fn message_of(
                     .push(message),
             ),
             gap,
+            measure,
         ),
-        None => page_row(message, gap),
+        None => page_row(message, gap, measure),
     };
     if first_unread { with_unread(row) } else { row }
 }
@@ -1065,9 +1160,15 @@ fn with_unread(row: Element) -> Element {
 /// The gap over a run of messages, and over a day's divider.
 const RUN_GAP: Rhythm = Rhythm::Section;
 
-/// `content` as a row of a transcript's page column, `gap` under the row before it.
-fn page_row(content: Element, gap: Rhythm) -> Element {
-    Box::new(Page::full().row_after(gap).push_slot(Slot::new(content)))
+/// `content` as a row of a transcript's page column, `gap` under the row before it, at `measure`
+/// when the list keeps a page's readable width.
+fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
+    let page = Page::full().row_after(gap);
+    let page = match measure {
+        Some(measure) => page.measure(measure),
+        None => page,
+    };
+    Box::new(page.push_slot(Slot::new(content)))
 }
 
 /// The menu of the row under `at` (its focused row when the keyboard opened it): what its
@@ -1113,6 +1214,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            page_column,
             tail_title,
             tree,
             ungrouped_title,
@@ -1123,16 +1225,20 @@ impl Described for DescribedList {
             selection,
             chosen,
             scroll,
+            open,
             motion,
             select,
             activate,
             selected: selected_changed,
+            opened: opened_changed,
+            closed: closed_changed,
         } = props;
         let face = Face {
             name: name.clone(),
             selection_follows_focus,
             in_column,
             transcript,
+            page_column,
             tree,
             rendered: rendered(&rows),
             removed: removed.keys(),
@@ -1143,20 +1249,29 @@ impl Described for DescribedList {
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         // The items the list's events read, kept as the list holds them.
         let reading = Rc::new(RefCell::new(rows.reader()));
-        if transcript {
-            // The divider stands over the row that shows the item: a row says which item it
-            // shows, so the list finds it as the rows arrive.
-            let marked = unread.as_ref().map(|item| item.0.clone());
+        if transcript || page_column {
+            // A transcript's divider stands over the row that shows the item: a row says which
+            // item it shows, so the list finds it as the rows arrive.
+            let marked = if transcript {
+                unread.as_ref().map(|item| item.0.clone())
+            } else {
+                None
+            };
             let divider = marked.clone();
-            let list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
-                message_of(rows, key, divider.as_deref(), feel)
+            // A page column's rows keep the width a page's blocks are read at; a transcript's
+            // fill the column they are in.
+            let measure = page_column.then_some(Length::Rem(MEASURE_REM));
+            let mut list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
+                message_of(rows, key, divider.as_deref(), feel, measure)
             })
             .flush()
             .with_edges(TranscriptEdges::new(RUN_GAP))
             .filling()
-            .following_end()
             .with_id(key)
             .with_feel(feel);
+            if transcript {
+                list = list.following_end();
+            }
             let list = list.unread_from(marked);
             // A message offers its menu as every row does.
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
@@ -1173,7 +1288,7 @@ impl Described for DescribedList {
         let marks = tree.then(|| Rc::new(TreeMarks::<String>::default()));
         let mut list = VirtualList::with_selection_delegate(rows, ROW_ESTIMATE, {
             let marks = marks.clone();
-            move |rows, _, key, _| row_of(rows, key, feel, marks.as_deref())
+            move |rows, _, key, build| row_of(rows, key, feel, marks.as_deref(), build)
         });
         if let Some(marks) = &marks {
             list = list.with_tree(Rc::clone(marks));
@@ -1249,6 +1364,16 @@ impl Described for DescribedList {
                 fired.fire(Some(Value::List(items)));
             });
         }
+        list = with_open(list, open.as_ref(), &reading.borrow());
+        if !opened_changed.is_none() || !closed_changed.is_none() {
+            let (opened, closed) = (opened_changed, closed_changed);
+            let opening = Rc::clone(&reading);
+            list = list
+                .on_opened(move |key| {
+                    opened.fire(item_of(&opening.borrow(), &key));
+                })
+                .on_closed(move || closed.fire(None));
+        }
         if let Some(offset) = scroll {
             list.set_scroll_offset(offset);
         }
@@ -1272,6 +1397,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            page_column,
             tail_title,
             tree,
             ungrouped_title,
@@ -1282,16 +1408,20 @@ impl Described for DescribedList {
             selection: _,
             chosen,
             scroll: _,
+            open,
             motion,
             select,
             activate,
             selected: selected_changed,
+            opened: opened_changed,
+            closed: closed_changed,
         } = props;
         let face = Face {
             name,
             selection_follows_focus,
             in_column,
             transcript,
+            page_column,
             tree,
             rendered: rendered(&rows),
             removed: removed.keys(),
@@ -1324,6 +1454,12 @@ impl Described for DescribedList {
         // The unread row moved without the list's items changing: the list takes it, and the
         // rows it left and arrived at build again.
         list.set_unread(unread);
+        // The item the host holds open: its row grows into its document where it stands, and
+        // an item that left the list opens nothing.
+        let standing = open
+            .as_ref()
+            .and_then(|item| reading.borrow().key_presenting(&item.0));
+        list.set_open(standing);
         if let Some(picked) = picked {
             list.set_selection(picked);
         }
@@ -1349,6 +1485,7 @@ impl Described for DescribedList {
             }
         });
         let fired = selected_changed;
+        let opening = Rc::clone(&reading);
         list.set_on_selected(move |keys| {
             let items: Vec<Value> = {
                 let selecting = reading.borrow();
@@ -1358,6 +1495,14 @@ impl Described for DescribedList {
             };
             fired.fire(Some(Value::List(items)));
         });
+        if !opened_changed.is_none() {
+            list.set_on_opened(move |key| {
+                opened_changed.fire(item_of(&opening.borrow(), &key));
+            });
+        }
+        if !closed_changed.is_none() {
+            list.set_on_closed(move || closed_changed.fire(None));
+        }
         true
     }
 }
@@ -1439,6 +1584,110 @@ mod tests {
             )
             .unwrap();
         Widget::apply_layout(list, &taffy, node, Point::ZERO);
+    }
+
+    /// The items of a list where each carries a document of its own: they open where they
+    /// stand.
+    fn rows_with_documents(count: usize) -> DescribedRows {
+        let items = (0..count)
+            .map(|at| ListItemProps {
+                key: format!("row-{at}"),
+                item: Some(ResourceId(format!("task-{at}"))),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("row {at}"),
+                    ..ListRowProps::default()
+                })),
+                detail: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("what row {at} is about"),
+                    secondary: Some("with the notes written about it".to_owned()),
+                    ..ListRowProps::default()
+                })),
+                ..ListItemProps::default()
+            })
+            .collect();
+        DescribedRows {
+            held: Held::Given(Rc::new(items)),
+            ..DescribedRows::default()
+        }
+    }
+
+    /// The item a host holds open stands open where it stands: the list it builds again shows
+    /// it as the person left it, and an item it does not hold open does not.
+    #[test]
+    fn the_item_a_host_holds_open_stands_open() {
+        let props = VirtualListProps {
+            open: Some(ResourceId("task-2".into())),
+            ..column_of(rows_with_documents(4))
+        };
+        let mut list = DescribedList::from_props("list", props);
+        let inner = list.list_mut().expect("the list stands");
+        assert_eq!(
+            inner.open_row().map(String::as_str),
+            Some("row-2"),
+            "the item the host holds open is the row standing open"
+        );
+        lay_out(inner, 400.0);
+        let closed = inner.viewport.item_height(0).unwrap_or_default();
+        let open = inner.viewport.item_height(2).unwrap_or_default();
+        assert!(
+            open > closed,
+            "the row grows into its document: {open} over a closed row's {closed}"
+        );
+
+        // The same list given the item again keeps it open, and given none closes it.
+        let same = VirtualListProps {
+            open: Some(ResourceId("task-2".into())),
+            ..column_of(rows_with_documents(4))
+        };
+        assert!(
+            list.set_props(same),
+            "the list takes its items where it stands"
+        );
+        assert_eq!(
+            list.list()
+                .and_then(VirtualList::open_row)
+                .map(String::as_str),
+            Some("row-2")
+        );
+        let closed = VirtualListProps {
+            open: None,
+            ..column_of(rows_with_documents(4))
+        };
+        assert!(
+            list.set_props(closed),
+            "the list takes its items where it stands"
+        );
+        assert_eq!(list.list().and_then(VirtualList::open_row), None);
+    }
+
+    /// The person opening and closing the row they read is reported as the item it shows, so a
+    /// host keeping it can put it back.
+    #[test]
+    fn the_person_opening_a_row_reports_the_item_it_shows() {
+        let queue = crate::Intents::<Fired>::default();
+        let opened = Event::View(Intent::new(&queue, "list", "opened"));
+        let closed = Event::View(Intent::new(&queue, "list", "closed"));
+        let props = VirtualListProps {
+            opened: opened.clone(),
+            closed: closed.clone(),
+            ..column_of(rows_with_documents(4))
+        };
+        let mut list = DescribedList::from_props("list", props);
+        let inner = list.list_mut().expect("the list stands");
+        lay_out(inner, 400.0);
+        inner.activate_key("row-1".to_owned());
+        assert_eq!(inner.open_row().map(String::as_str), Some("row-1"));
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1, "the host hears one event: {fired:?}");
+        assert_eq!(fired[0].event, "opened");
+        assert!(
+            matches!(fired[0].value.clone(), Some(Value::Resource(id)) if id == "task-1"),
+            "the host hears the item the person opened: {fired:?}"
+        );
+        inner.close_open();
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1, "the host hears it close: {fired:?}");
+        assert_eq!(fired[0].event, "closed");
     }
 
     /// A list given its items again keeps where the person scrolled: the items are replaced

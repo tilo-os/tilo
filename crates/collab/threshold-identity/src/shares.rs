@@ -1,4 +1,4 @@
-//! Secret-share wrapper and recovery-share serialisation.
+//! Secret-share wrapper.
 //!
 //! `frost-core::keys::KeyPackage` carries the full per-participant
 //! crypto state (secret `SigningShare`, public `VerifyingShare`, group
@@ -6,26 +6,11 @@
 //! for three reasons: (1) custom `Debug` — `KeyPackage::Debug` leaks the
 //! secret signing share in panic messages, ours prints `"<redacted>"`;
 //! (2) no `Serialize` — deliberately not implemented, so it can't be
-//! JSON-logged (the explicit-export form lives in
-//! [`RecoveryShare`]/`encrypted_blob`); (3) zeroize on drop, via
-//! `frost-core`'s own `ZeroizeOnDrop` on the wrapped `KeyPackage`.
-//!
-//! [`RecoveryShare`] is the paper-share format: the secret half is the
-//! 32-byte signing-share scalar, encoded as 24 BIP39 English words (256
-//! bits entropy + 8 bits checksum); the public half (share index,
-//! threshold, group public key, verifying share) lives in side fields
-//! so the share is self-contained on re-import. BIP39 (not a custom
-//! mnemonic) because its wordlist is well-established, has no
-//! near-homophones, and most password managers store it as a
-//! sequence-of-words note — used purely as an entropy codec, not for its
-//! seed-derivation tree.
+//! JSON-logged; (3) zeroize on drop, via `frost-core`'s own
+//! `ZeroizeOnDrop` on the wrapped `KeyPackage`.
 
-use frost_ed25519::keys::{KeyPackage, SigningShare, VerifyingShare};
-use frost_ed25519::{Identifier, VerifyingKey};
-use serde::{Deserialize, Serialize};
-use serde_bytes as serde_bytes_codec;
-
-use collab_types::Ed25519PublicKey;
+use frost_ed25519::Identifier;
+use frost_ed25519::keys::KeyPackage;
 
 use crate::errors::ThresholdError;
 
@@ -38,8 +23,7 @@ pub struct SecretShare {
 }
 
 impl SecretShare {
-    /// Construct from a verified `KeyPackage` — used by DKG finalisation and
-    /// recovery-share import.
+    /// Construct from a verified `KeyPackage` — used by DKG finalisation.
     pub(crate) fn from_key_package(kp: KeyPackage) -> Self {
         Self { inner: kp }
     }
@@ -51,7 +35,7 @@ impl SecretShare {
     }
 
     /// 1-indexed share number, mirroring the underlying `Identifier`.
-    /// Surfaces in UI ("Share 2 of 3") and `RecoveryShare::share_index`.
+    /// Surfaces in UI ("Share 2 of 3").
     pub fn share_index(&self) -> u16 {
         identifier_to_u16(self.inner.identifier())
     }
@@ -66,112 +50,6 @@ impl std::fmt::Debug for SecretShare {
             "SecretShare(<redacted>, share_index={})",
             self.share_index()
         )
-    }
-}
-
-/// Paper-recovery share for offline storage. The user transcribes
-/// `mnemonic` to paper; the non-secret fields (`share_index`,
-/// `threshold`, `total_shares`, `group_public_key`,
-/// `verifying_share_bytes`) must also be recorded — public, but needed
-/// to reconstruct a `SecretShare` from the mnemonic alone.
-///
-/// **The mnemonic is the secret.** The other fields can be printed
-/// alongside in cleartext.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RecoveryShare {
-    /// 24-word BIP39 English mnemonic of the 32-byte signing scalar.
-    pub mnemonic: String,
-    /// 1-indexed share number this share represents.
-    pub share_index: u16,
-    /// The `t` in t-of-n at generation time, carried so the recovery flow
-    /// can sanity-check the share belongs to the group being restored into.
-    pub threshold: u16,
-    pub total_shares: u16,
-    /// The group public key, so `import_recovery_share` can refuse a
-    /// mnemonic belonging to a different group.
-    pub group_public_key: Ed25519PublicKey,
-    /// The 32-byte public verifying-share for this index, needed to rebuild
-    /// a `KeyPackage` from the mnemonic alone.
-    #[serde(with = "serde_bytes_codec")]
-    pub verifying_share_bytes: Vec<u8>,
-}
-
-impl RecoveryShare {
-    /// Build a recovery share from a `KeyPackage`: the 32-byte signing-share
-    /// scalar is serialised then BIP39-encoded into 24 words; remaining
-    /// (public) fields are read straight off the `KeyPackage`.
-    pub(crate) fn from_key_package(
-        kp: &KeyPackage,
-        total_shares: u16,
-    ) -> Result<Self, ThresholdError> {
-        // Serialize the signing share. frost-ed25519's SigningShare::serialize()
-        // returns the 32-byte canonical scalar form.
-        let scalar_bytes: [u8; 32] = kp
-            .signing_share()
-            .serialize()
-            .as_slice()
-            .try_into()
-            .map_err(|_| {
-                ThresholdError::FrostInternal(
-                    "signing share serialise produced non-32-byte output".to_string(),
-                )
-            })?;
-        let mnemonic = crate::bip39::encode(&scalar_bytes).ok_or_else(|| {
-            ThresholdError::FrostInternal("bip39 encode: 32 bytes did not encode".to_string())
-        })?;
-        let verifying_share_bytes = kp.verifying_share().serialize()?;
-        let gpk_bytes_vec = kp.verifying_key().serialize()?;
-        let gpk_bytes: [u8; 32] = gpk_bytes_vec.as_slice().try_into().map_err(|_| {
-            ThresholdError::FrostInternal(
-                "group verifying key serialise produced non-32-byte output".to_string(),
-            )
-        })?;
-        Ok(Self {
-            mnemonic: mnemonic.to_string(),
-            share_index: identifier_to_u16(kp.identifier()),
-            threshold: *kp.min_signers(),
-            total_shares,
-            group_public_key: Ed25519PublicKey::from_bytes(gpk_bytes),
-            verifying_share_bytes,
-        })
-    }
-
-    /// Decode a recovery share into a usable `SecretShare`. `total_shares`
-    /// comes from `self.total_shares`; the caller is responsible for
-    /// cross-checking threshold/identifier/group-key against the live
-    /// `ThresholdIdentity` being restored into (see
-    /// [`crate::identity::ThresholdIdentity::adopt_recovery_share`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ThresholdError::BadRecoveryMnemonic`] if the mnemonic
-    /// fails to parse or does not decode to exactly 32 bytes of
-    /// entropy, or a FROST-internal error if the resulting scalar
-    /// does not form a valid key package.
-    pub fn into_secret_share(self) -> Result<SecretShare, ThresholdError> {
-        // Decode the mnemonic into 32 bytes of entropy. The BIP39 English
-        // wordlist is ASCII, so the phrase is read as written, without
-        // Unicode normalisation.
-        let entropy = crate::bip39::decode(&self.mnemonic)
-            .map_err(|e| ThresholdError::BadRecoveryMnemonic(e.to_string()))?;
-        let entropy_len = entropy.len();
-        let scalar_bytes: [u8; 32] = entropy.as_slice().try_into().map_err(|_| {
-            ThresholdError::BadRecoveryMnemonic(format!(
-                "expected 32 bytes of entropy, got {entropy_len}"
-            ))
-        })?;
-        let signing_share = SigningShare::deserialize(&scalar_bytes)?;
-        let verifying_share = VerifyingShare::deserialize(&self.verifying_share_bytes)?;
-        let group_pk = VerifyingKey::deserialize(self.group_public_key.as_bytes())?;
-        let identifier = u16_to_identifier(self.share_index)?;
-        let kp = KeyPackage::new(
-            identifier,
-            signing_share,
-            verifying_share,
-            group_pk,
-            self.threshold,
-        );
-        Ok(SecretShare::from_key_package(kp))
     }
 }
 

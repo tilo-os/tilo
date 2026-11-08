@@ -558,8 +558,8 @@ impl Expiry {
 pub enum Effect {
     /// Extend a subject's access within the scope.
     Grant,
-    /// Cap a subject's access within the scope at the capability's
-    /// [`Access`]: `Restrict { Read }` means read-only. A restriction never
+    /// Cap a subject's access within the scope at the
+    /// capability's [`Access`]: `Restrict { Read }` means read-only. A restriction never
     /// denies [`Access::Read`].
     Restrict,
 }

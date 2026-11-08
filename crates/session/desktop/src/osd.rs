@@ -1,19 +1,15 @@
-//! The transient readout for the hardware keys: volume, brightness, the
-//! keyboard's backlight, playback and the machine toggles.
-//!
-//! A key that changes something invisible (the volume) or unreadable (the
-//! brightness, *because* it is what changed) needs an answer on screen: a
-//! slab that appears, says **which device it changed**, shows the new level
-//! as a bar, and gets out of the way. It never takes focus or the pointer and
-//! never outlives the moment it was about. It is deliberately not a
-//! notification, which persists and stacks: pressing volume up eight times
-//! shows one slab counting up, not eight banners.
-//!
-//! Two shapes, one action: [`Osd::Level`] for something read as an amount (a
-//! volume, a backlight) and [`Osd::Hint`] for a mode whose new state words are
-//! enough (night light, Do Not Disturb, a chord taken). Whoever handled the
-//! key shows it through its published action (`desktop:osd/show`), as any
-//! caller would.
+//! The transient readout for the hardware keys: volume, brightness, the keyboard's backlight,
+//! playback and the machine toggles.
+//! A key that changes something invisible (the volume) or unreadable (the brightness, *because* it
+//! is what changed) needs an answer on screen: a slab that appears, says **which device it
+//! changed**, shows the new level as a bar, and gets out of the way. It never takes focus or the
+//! pointer and never outlives the moment it was about. It is deliberately not a notification, which
+//! persists and stacks: pressing volume up eight times shows one slab counting up, not eight
+//! banners.
+//! Two shapes, one action: [`Osd::Level`] for something read as an amount (a volume, a backlight)
+//! and [`Osd::Hint`] for a mode whose new state words are enough (night light, Do Not Disturb, a
+//! chord taken). Whoever handled the key shows it through its published action
+//! (`desktop:osd/show`), as any caller would.
 
 use std::collections::HashMap;
 
@@ -42,39 +38,35 @@ pub const OPERATION: &str = "tilo.desktop.osd";
 /// The readout's resource.
 pub const OSD_RESOURCE: &str = "desktop:osd";
 
-/// How long the readout stays up after the last change, fade included:
-/// long enough to read after one tap, short enough that a burst of presses
-/// does not leave it hanging around.
+/// How long the readout stays up after the last change, fade included: long enough to read after
+/// one tap, short enough that a burst of presses does not leave it hanging around.
 pub const OSD_HOLD: Duration = Duration::from_millis(1_500);
 
-/// The hint pill's height: its glyph's square and the gap above and below it.
-/// Unscaled `BASE` values because a host sizes the surface from this before
-/// any theme is in hand.
+/// The hint pill's height: its glyph's square and the gap above and below it. Unscaled `BASE`
+/// values because a host sizes the surface from this before any theme is in hand.
 pub const OSD_ROW_HEIGHT: f32 =
     ui::tokens::Metrics::BASE.icon_lg + 2.0 * ui::tokens::Spacing::BASE.s3;
 
-/// The level pill's height: the device's row, the bar beneath it, and the gap
-/// above and below.
+/// The level pill's height: the device's row, the bar beneath it, and the gap above and below.
 pub const OSD_LEVEL_HEIGHT: f32 = 2.0 * ui::tokens::Spacing::BASE.s3
     + ui::tokens::Metrics::BASE.icon_lg
     + 2.0 * ui::tokens::Spacing::BASE.s2;
 
-/// Room above and below the pill's body for the shadow it floats on: a
-/// surface sized to the body alone would cut the shadow off in a hard edge.
+/// Room above and below the pill's body for the shadow it floats on: a surface sized to the body
+/// alone would cut the shadow off in a hard edge.
 pub const OSD_MARGIN: f32 = ui::tokens::Spacing::BASE.s8;
 
-/// How far the pill's edge stands above the output's bottom edge (or below
-/// its top, when it moves up): the same inset the readouts have always rested
-/// at, where a glance finds them and no bar or dock sits.
+/// How far the pill's edge stands above the output's bottom edge (or below its top, when it moves
+/// up): the same inset the readouts have always rested at, where a glance finds them and no bar or
+/// dock sits.
 pub const OSD_INSET: f32 = ui::tokens::Spacing::BASE.s16;
 
-/// The pill's content is at least this wide: a short word still leaves a bar
-/// long enough to read as a level rather than a dash.
+/// The pill's content is at least this wide: a short word still leaves a bar long enough to read as
+/// a level rather than a dash.
 pub const OSD_BAR: f32 = ui::tokens::Metrics::BASE.icon_lg * 5.0;
 
-/// How wide the pill's content grows, in glyphs, before it stops and cuts the
-/// device's name with an ellipsis instead: a long device name widens the pill
-/// to a point, never across the display.
+/// How wide the pill's content grows, in glyphs, before it stops and cuts the device's name with an
+/// ellipsis instead: a long device name widens the pill to a point, never across the display.
 pub const OSD_WIDEST: f32 = 12.0;
 
 /// Where a readout stands on its display.
@@ -87,8 +79,8 @@ pub enum Placement {
     Top,
 }
 
-/// The height of the surface a host shows a readout on: the taller pill and
-/// its shadow's room, in whole logical pixels.
+/// The height of the surface a host shows a readout on: the taller pill and its shadow's room, in
+/// whole logical pixels.
 #[must_use]
 pub fn surface_height() -> i32 {
     #[allow(
@@ -99,10 +91,9 @@ pub fn surface_height() -> i32 {
     height
 }
 
-/// Where the readout's surface goes on the output `(x, y, w, h)`: a band
-/// across the output, its pill centred in it, [`OSD_INSET`] in from the edge
-/// `placement` names. The pill is as wide as what it reads, so the band is as
-/// wide as the output and the pill centres itself in it.
+/// Where the readout's surface goes on the output `(x, y, w, h)` : a band across the output, its
+/// pill centred in it, [`OSD_INSET`] in from the edge `placement` names. The pill is as wide as
+/// what it reads, so the band is as wide as the output and the pill centres itself in it.
 #[must_use]
 pub fn place(output: (i32, i32, i32, i32), placement: Placement) -> (i32, i32, i32, i32) {
     #[allow(
@@ -123,14 +114,13 @@ pub fn place(output: (i32, i32, i32, i32), placement: Placement) -> (i32, i32, i
     (x, top, w.max(1), height)
 }
 
-/// How wide a pill may be before it is no longer "under the caret": the
-/// longest a readout's content is drawn, around the middle of the display.
+/// How wide a pill may be before it is no longer "under the caret": the longest a readout's content
+/// is drawn, around the middle of the display.
 const READING_HALF_WIDTH: f64 = 240.0;
 
-/// Where a readout on `output` stands so the text caret `caret` (in the same
-/// desk coordinates) keeps clear of it: the bottom, unless the caret is in
-/// the way there — typing at the bottom of the screen must not be covered by
-/// what the person just changed.
+/// Where a readout on `output` stands so the text caret `caret` (in the same desk coordinates)
+/// keeps clear of it: the bottom, unless the caret is in the way there — typing at the bottom of
+/// the screen must not be covered by what the person just changed.
 #[must_use]
 pub fn clear_of_caret(caret: Option<Rect>, output: (i32, i32, i32, i32)) -> Placement {
     let Some(caret) = caret else {
@@ -184,8 +174,7 @@ pub enum OsdKind {
     CapturedKeys,
     /// The pointer was let go where it was held.
     PointerReleased,
-    /// The keyboard's input source changed: a layout, or a composing input
-    /// method.
+    /// The keyboard's input source changed: a layout, or a composing input method.
     InputSource,
 }
 
@@ -212,8 +201,7 @@ impl OsdKind {
         Self::InputSource,
     ];
 
-    /// Whether the readout is a level with a bar, rather than a state said in
-    /// words.
+    /// Whether the readout is a level with a bar, rather than a state said in words.
     #[must_use]
     pub const fn has_level(self) -> bool {
         matches!(
@@ -239,8 +227,8 @@ pub enum DeviceGlyph {
 }
 
 impl DeviceGlyph {
-    /// The glyph a sink called `name` plays through: headphones and headsets
-    /// say so in their name, everything else is a speaker.
+    /// The glyph a sink called `name` plays through: headphones and headsets say so in their name,
+    /// everything else is a speaker.
     #[must_use]
     pub fn of_sink(name: &str) -> Self {
         let name = name.to_lowercase();
@@ -290,9 +278,9 @@ pub enum Osd {
     Hint(Hint),
 }
 
-/// A reading with a bar: the volume, a display's brightness, the keyboard's
-/// backlight. `level` runs `0.0 ..= 1.0`; `on` is false when what it reads is
-/// muted or off, which fills nothing while the bar keeps its place.
+/// A reading with a bar: the volume, a display's brightness, the keyboard's backlight. `level` runs
+/// `0.0 ..= 1.0` ; `on` is false when what it reads is muted or off, which fills nothing while the
+/// bar keeps its place.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Level {
     pub kind: OsdKind,
@@ -304,8 +292,7 @@ pub struct Level {
     pub device: Option<Device>,
 }
 
-/// A mode change said in words ("Night light on"), with the chord that did it
-/// where there was one.
+/// A mode change said in words ("Night light on"), with the chord that did it where there was one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hint {
     pub kind: OsdKind,
@@ -313,8 +300,8 @@ pub struct Hint {
     pub on: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chord: Option<String>,
-    /// What the person calls what changed, where the kind alone does not say
-    /// it: the name of the input source that now types.
+    /// What the person calls what changed, where the kind alone does not say it: the name of the
+    /// input source that now types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -356,8 +343,8 @@ fn kind_name(kind: OsdKind) -> String {
     }
 }
 
-/// How a readout's glyph is inked: lit, dimmed (the thing is off) or
-/// warning (the microphone is muted and the person may be talking to it).
+/// How a readout's glyph is inked: lit, dimmed (the thing is off) or warning (the microphone is
+/// muted and the person may be talking to it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlyphTone {
     On,
@@ -378,7 +365,7 @@ impl Level {
         )
     }
 
-    /// The short value the pill reads: `65%`, `Muted`, `Off`.
+    /// The short value the pill reads: `65%` , `Muted` , `Off` .
     #[must_use]
     pub fn value_text(&self) -> String {
         let percent = || t_args("osd-percent", &[("percent", percent(self.level).into())]);
@@ -389,8 +376,7 @@ impl Level {
         }
     }
 
-    /// What the pill calls the thing it read: the device's name, else the
-    /// kind's.
+    /// What the pill calls the thing it read: the device's name, else the kind's.
     #[must_use]
     pub fn device_name(&self) -> String {
         self.device
@@ -398,8 +384,8 @@ impl Level {
             .map_or_else(|| kind_name(self.kind), |device| device.name.clone())
     }
 
-    /// The glyph for the device it changed (its own when the session named
-    /// it), and whether it reads as on.
+    /// The glyph for the device it changed (its own when the session named it), and whether it
+    /// reads as on.
     #[must_use]
     pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
         use ui::icons::Icon;
@@ -420,9 +406,8 @@ impl Level {
         }
     }
 
-    /// How much of the level bar is filled: a muted volume keeps its bar and
-    /// empties its fill, so the pill does not change shape while still
-    /// agreeing with the crossed-out volume glyph.
+    /// How much of the level bar is filled: a muted volume keeps its bar and empties its fill, so
+    /// the pill does not change shape while still agreeing with the crossed-out volume glyph.
     #[must_use]
     pub fn filled(&self) -> f64 {
         if self.kind == OsdKind::Volume && !self.on {
@@ -453,9 +438,9 @@ impl Hint {
             OsdKind::AirplaneMode => t("osd-airplane-mode-off"),
             OsdKind::Touchpad if self.on => t("osd-touchpad-on"),
             OsdKind::Touchpad => t("osd-touchpad-off"),
-            // What the transport did, and the song it did it to: a pause names
-            // what stopped, which the words alone cannot. The catalogue says
-            // both as one sentence, so the pill stays a single line of text.
+            // What the transport did, and the song it did it to: a pause names what stopped, which
+            // the words alone cannot. The catalogue says both as one sentence, so the pill stays a
+            // single line of text.
             kind @ (OsdKind::Play | OsdKind::Pause) => {
                 let named = if kind == OsdKind::Play {
                     "osd-play-named"
@@ -463,7 +448,9 @@ impl Hint {
                     "osd-pause-named"
                 };
                 match &self.name {
-                    Some(name) if !name.is_empty() => t_args(named, &[("song", name.clone().into())]),
+                    Some(name) if !name.is_empty() => {
+                        t_args(named, &[("song", name.clone().into())])
+                    }
                     _ if kind == OsdKind::Play => t("osd-play"),
                     _ => t("osd-pause"),
                 }
@@ -530,7 +517,7 @@ impl Osd {
         }
     }
 
-    /// The reading's `kind`.
+    /// The reading's `kind` .
     #[must_use]
     pub fn kind(&self) -> OsdKind {
         match self {
@@ -539,8 +526,8 @@ impl Osd {
         }
     }
 
-    /// The action's flat arguments for this reading, on `display` (the
-    /// connector of the display that changed), as any caller would pass them.
+    /// The action's flat arguments for this reading, on `display` (the connector of the display
+    /// that changed), as any caller would pass them.
     #[must_use]
     pub fn arguments(&self, display: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
         let mut arguments = serde_json::Map::new();
@@ -600,17 +587,16 @@ impl Styles {
     }
 }
 
-/// The pill's geometry: its glyph, the device's name, the level as a bar and
-/// the value, or a hint's words and chord. Kept apart from paint so the rhythm
-/// is testable and every reading, level or state, shares one shape.
+/// The pill's geometry: its glyph, the device's name, the level as a bar and the value, or a hint's
+/// words and chord. Kept apart from paint so the rhythm is testable and every reading, level or
+/// state, shares one shape.
 #[derive(Clone, Debug, PartialEq)]
 struct Pill {
     rect: Rect,
     glyph: Rect,
     /// The device's name (a level) or the hint's words.
     name: Rect,
-    /// The level bar under the name, spanning the content: the level *is* the
-    /// bar.
+    /// The level bar under the name, spanning the content: the level *is* the bar.
     bar: Option<Rect>,
     /// The value at the end of the name's row, for a level.
     value: Option<Rect>,
@@ -626,18 +612,17 @@ struct Words {
     name_w: f64,
     name_h: f64,
     value: String,
-    /// The column a level's value takes: as wide as the widest reading, so the
-    /// number gaining a digit never moves the name beside it.
+    /// The column a level's value takes: as wide as the widest reading, so the number gaining a
+    /// digit never moves the name beside it.
     slot: f64,
-    /// The width the widest line needs: what the bar spans and the pill is as
-    /// wide as.
+    /// The width the widest line needs: what the bar spans and the pill is as wide as.
     content: f64,
     chord: Option<(String, f64, f64)>,
 }
 
 impl Words {
-    /// `osd`'s lines in `styles`, measured: a level's device and value above a
-    /// bar as wide as the widest reading, or a hint's words and its chord.
+    /// `osd` 's lines in `styles` , measured: a level's device and value above a bar as wide as the
+    /// widest reading, or a hint's words and its chord.
     fn of(osd: &Osd, styles: &Styles, text: &mut TextRenderer, gap: f64) -> Self {
         let (name_text, value_text, chord_text) = match osd {
             Osd::Level(level) => (level.device_name(), level.value_text(), None),
@@ -655,9 +640,9 @@ impl Words {
             content += gap / 2.0 + f64::from(w);
             (words, f64::from(w), f64::from(h))
         });
-        // A level's value stands in a column of its own, a gap after the
-        // device's name: the two never share a run of pixels, and the name is
-        // what gives way when there is no room for both.
+        // A level's value stands in a column of its own, a gap after the device's name: the two
+        // never share a run of pixels, and the name is what gives way when there is no room for
+        // both.
         let mut slot = 0.0;
         if matches!(osd, Osd::Level(_)) {
             slot = f64::from(value_w);
@@ -684,7 +669,7 @@ impl Words {
 }
 
 impl Pill {
-    /// Lay the pill out centred in the surface's `band`.
+    /// Lay the pill out centred in the surface's `band` .
     fn layout(band: Rect, theme: &Theme, text: &mut TextRenderer, osd: &Osd) -> Self {
         let sp = &theme.tokens.spacing;
         let styles = Styles::new(theme);
@@ -695,8 +680,8 @@ impl Pill {
         let words = Words::of(osd, &styles, text, gap);
         let content = words.content.min(icon * f64::from(OSD_WIDEST));
         let width = (pad * 2.0 + icon + gap + content).min(band.width());
-        // Two rows for a level (the device and the value above the bar), one
-        // for a hint, never taller than the band has room for.
+        // Two rows for a level (the device and the value above the bar), one for a hint, never
+        // taller than the band has room for.
         let levels = matches!(osd, Osd::Level(_));
         let body = if levels {
             icon.max(words.name_h) + bar_gap + bar_h
@@ -728,9 +713,8 @@ impl Pill {
             Rect::new(content_x0, rect.y0 + vpad, content_x1, rect.y1 - vpad)
         };
         let middle = row.center().y;
-        // The value keeps its own column at the row's end; the name stops a
-        // gap short of it, so a long device name is cut with an ellipsis
-        // rather than running into the reading.
+        // The value keeps its own column at the row's end; the name stops a gap short of it, so a
+        // long device name is cut with an ellipsis rather than running into the reading.
         let slot = if levels {
             words.slot.min((row.x1 - row.x0) / 2.0)
         } else {
@@ -776,15 +760,13 @@ impl Pill {
     }
 }
 
-/// The empty part of the level bar: a hairline wash over the pill's own
-/// ground, so it reads on every palette rather than vanishing under a lift
-/// of the desktop's base.
+/// The empty part of the level bar: a hairline wash over the pill's own ground, so it reads on
+/// every palette rather than vanishing under a lift of the desktop's base.
 fn bar_color(theme: &Theme) -> vello::peniko::Color {
     ui::tokens::colors::Colors::hairline_on(ui::chrome::shell::panel_ground(theme), 80)
 }
 
-/// Paint the readout's pill in `band`, `level` of the bar filled, returning
-/// its resting rect.
+/// Paint the readout's pill in `band` , `level` of the bar filled, returning its resting rect.
 fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -804,8 +786,8 @@ fn draw_pill(
     pill.rect
 }
 
-/// Paint the readout's glyph, inked for what it reads: lit, dimmed when the
-/// thing is off, warning where it asks for the person's attention.
+/// Paint the readout's glyph, inked for what it reads: lit, dimmed when the thing is off, warning
+/// where it asks for the person's attention.
 fn draw_glyph(scene: &mut Scene, transform: Affine, pill: &Pill, theme: &Theme, raised: &Osd) {
     let colors = &theme.tokens.colors;
     let (icon, tone) = raised.glyph();
@@ -824,8 +806,8 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, pill: &Pill, theme: &Theme, 
     );
 }
 
-/// Paint the pill's name (a level's device, a hint's words), and the chord
-/// that asked for it where one did.
+/// Paint the pill's name (a level's device, a hint's words), and the chord that asked for it where
+/// one did.
 fn draw_name(
     scene: &mut Scene,
     transform: Affine,
@@ -908,8 +890,8 @@ fn draw_bar(scene: &mut Scene, transform: Affine, pill: &Pill, theme: &Theme, le
     }
 }
 
-/// Paint the value at the end of the bar's row, dimmed where it stands for
-/// nothing (a muted output).
+/// Paint the value at the end of the bar's row, dimmed where it stands for nothing (a muted
+/// output).
 fn draw_value(
     scene: &mut Scene,
     transform: Affine,
@@ -1047,19 +1029,19 @@ pub fn osd_resource() -> ResourceSpec {
     ResourceSpec::new(OSD_RESOURCE, "desktop", t("desktop-actions-osd")).with_action(spec)
 }
 
-/// The readout up now: what it says, when it came, when it last changed, how
-/// open it is drawn and where its bar stands.
+/// The readout up now: what it says, when it came, when it last changed, how open it is drawn and
+/// where its bar stands.
 struct Raised {
     osd: Osd,
     /// When this run of readouts appeared: a burst of presses keeps it.
     shown_since: Instant,
     /// When it last changed: it stays [`OSD_HOLD`] after.
     changed_at: Instant,
-    /// Its coming and going, on the readout's motion: a new reading mid-flight
-    /// keeps the opener, and a hide it reverses starts from where it is drawn.
+    /// Its coming and going, on the readout's motion: a new reading mid-flight keeps the opener,
+    /// and a hide it reverses starts from where it is drawn.
     presence: Presence,
-    /// The bar's fill, on a spring: it follows the reading rather than
-    /// jumping to it, and a reversed press turns from where it is.
+    /// The bar's fill, on a spring: it follows the reading rather than jumping to it, and a
+    /// reversed press turns from where it is.
     level: MotionValue<f64>,
 }
 
@@ -1087,8 +1069,7 @@ impl OsdSlab {
         }
     }
 
-    /// Show `osd` now: a readout already up changes in place and stays up
-    /// longer.
+    /// Show `osd` now: a readout already up changes in place and stays up longer.
     pub fn show(&mut self, osd: Osd) {
         let now = ui::time::now();
         let motion = self.motion();
@@ -1105,8 +1086,8 @@ impl OsdSlab {
             .as_ref()
             .map_or_else(Presence::closed, |raised| raised.presence);
         presence.show(true, Transient::READOUT, motion, MotionSource::Pointer, now);
-        // A new kind is another thing said: its bar starts where the reading
-        // is. The same reading pressed again springs from where it stands.
+        // A new kind is another thing said: its bar starts where the reading is. The same reading
+        // pressed again springs from where it stands.
         let mut bar = prior
             .as_ref()
             .filter(|_| same)
@@ -1136,8 +1117,8 @@ impl OsdSlab {
             .map(|raised| raised.osd.clone())
     }
 
-    /// How open the readout is drawn at `now`, `0..=1`: its show and hide are
-    /// one interruptible spring, never a fresh fade.
+    /// How open the readout is drawn at `now` , `0..=1` : its show and hide are one interruptible
+    /// spring, never a fresh fade.
     #[cfg(test)]
     #[must_use]
     fn openness_at(&self, now: Instant) -> f64 {
@@ -1146,7 +1127,7 @@ impl OsdSlab {
             .map_or(0.0, |raised| raised.presence.progress(now))
     }
 
-    /// How much of the bar is filled at `now`.
+    /// How much of the bar is filled at `now` .
     #[cfg(test)]
     #[must_use]
     fn level_at(&self, now: Instant) -> f64 {
@@ -1160,8 +1141,8 @@ impl OsdSlab {
         EffectiveMotion::new(Motion::default(), self.reduce_motion)
     }
 
-    /// Take the readout's hold into account at `now`: once it is over, ask it
-    /// to go, and let it go once its spring has closed it.
+    /// Take the readout's hold into account at `now` : once it is over, ask it to go, and let it go
+    /// once its spring has closed it.
     fn follow(&mut self, now: Instant) {
         let motion = self.motion();
         let Some(raised) = &mut self.raised else {
@@ -1182,8 +1163,8 @@ impl OsdSlab {
     }
 }
 
-/// Whether both readings are of the same thing: a level follows on from one
-/// for the same device, and starts afresh for another.
+/// Whether both readings are of the same thing: a level follows on from one for the same device,
+/// and starts afresh for another.
 fn same_target(before: &Osd, after: &Osd) -> bool {
     match (before, after) {
         (Osd::Level(before), Osd::Level(after)) => {
@@ -1204,7 +1185,7 @@ fn expires(raised: &Raised) -> Instant {
         .unwrap_or(raised.changed_at)
 }
 
-/// Whether `raised` is still up at `now`.
+/// Whether `raised` is still up at `now` .
 fn live(raised: &Raised, now: Instant) -> bool {
     now < expires(raised)
 }
@@ -1280,9 +1261,8 @@ impl Widget for OsdSlab {
         if alpha <= 0.0 {
             return;
         }
-        // The pill rises into place as it comes and sinks as it goes: the
-        // slide follows the same spring, so a hide reversed mid-flight
-        // reverses from where the pill is drawn.
+        // The pill rises into place as it comes and sinks as it goes: the slide follows the same
+        // spring, so a hide reversed mid-flight reverses from where the pill is drawn.
         let slide = if theme.reduce_motion {
             0.0
         } else {
@@ -1433,8 +1413,8 @@ mod tests {
             pill(&long).rect.width() > pill(&short).rect.width(),
             "a longer device name makes a wider pill"
         );
-        // Its reading may change without the pill changing shape: the value
-        // slot fits the widest reading, so the bar keeps its length.
+        // Its reading may change without the pill changing shape: the value slot fits the widest
+        // reading, so the bar keeps its length.
         let wide = pill(&volume(0.65)).rect.width();
         let muted = Osd::from(Level {
             kind: OsdKind::Volume,
@@ -1487,8 +1467,8 @@ mod tests {
             let shown =
                 text.elide_to_width_style(&pill.value_text, value.width() as f32, &styles.value);
             let (value_w, _) = text.measure_style(&shown, None, &styles.value);
-            // The two runs of words, where they are drawn: apart, never over
-            // each other, whatever the device is called.
+            // The two runs of words, where they are drawn: apart, never over each other, whatever
+            // the device is called.
             let name_run = pill.name.x0..pill.name.x0 + f64::from(name_w);
             let value_run = value.x1 - f64::from(value_w)..value.x1;
             assert!(
@@ -1497,8 +1477,8 @@ mod tests {
                 pill.name_text
             );
         }
-        // A name a person meets every day fits whole at a normal width, rather
-        // than being cut to make room for a column the value could have kept.
+        // A name a person meets every day fits whole at a normal width, rather than being cut to
+        // make room for a column the value could have kept.
         let everyday = Pill::layout(band(), &theme, &mut text, &volume(0.65));
         assert_eq!(
             text.elide_to_width_style(
@@ -1572,10 +1552,16 @@ mod tests {
             })
             .caption()
         };
-        // A pause says what stopped, so the person knows which of the players
-        // in the room went quiet; without a song it says what the key does.
-        assert_eq!(named(OsdKind::Play, Some("Glasslight")), "Playing Glasslight");
-        assert_eq!(named(OsdKind::Pause, Some("Glasslight")), "Paused Glasslight");
+        // A pause says what stopped, so the person knows which of the players in the room went
+        // quiet; without a song it says what the key does.
+        assert_eq!(
+            named(OsdKind::Play, Some("Glasslight")),
+            "Playing Glasslight"
+        );
+        assert_eq!(
+            named(OsdKind::Pause, Some("Glasslight")),
+            "Paused Glasslight"
+        );
         assert_eq!(named(OsdKind::Play, None), "Play");
         assert_eq!(named(OsdKind::Pause, Some("")), "Pause");
     }
@@ -1614,16 +1600,15 @@ mod tests {
     fn the_readout_moves_out_of_the_text_carets_way() {
         let output = (0, 0, 1280, 800);
         assert_eq!(clear_of_caret(None, output), Placement::Bottom);
-        // Typing in a field near the bottom centre: the readout stands at the
-        // top, clear of the line being typed.
+        // Typing in a field near the bottom centre: the readout stands at the top, clear of the
+        // line being typed.
         let caret = Rect::new(620.0, 700.0, 628.0, 720.0);
         assert_eq!(clear_of_caret(Some(caret), output), Placement::Top);
         let (x, y, w, _) = place(output, Placement::Top);
         assert_eq!(x, 0);
         assert_eq!(y, (OSD_INSET - OSD_MARGIN) as i32);
         assert_eq!(w, 1280);
-        // A caret far from the middle is no concern: the pill stays where a
-        // glance finds it.
+        // A caret far from the middle is no concern: the pill stays where a glance finds it.
         let far = Rect::new(40.0, 700.0, 48.0, 720.0);
         assert_eq!(clear_of_caret(Some(far), output), Placement::Bottom);
         // Nor is one in the middle of the screen, away from the foot.
@@ -1725,8 +1710,8 @@ mod tests {
         let up = ui::time::now();
         assert!(slab.needs_redraw());
         assert!(slab.openness_at(up) > 0.0, "it is up");
-        // Its hold runs, and then it goes: the openness falls on the same
-        // spring the coming used, rather than being cut off.
+        // Its hold runs, and then it goes: the openness falls on the same spring the coming used,
+        // rather than being cut off.
         let leaving = up
             .checked_add(OSD_HOLD)
             .and_then(|at| at.checked_add(Duration::from_millis(20)))

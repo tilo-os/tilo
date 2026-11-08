@@ -158,13 +158,6 @@ pub struct Collaborator {
 }
 
 impl Collaborator {
-    /// [`Self::joined_at`] as the roster's wire carries it: `u64::MAX` for
-    /// none.
-    #[must_use]
-    pub fn packed_joined_at(&self) -> u64 {
-        self.joined_at.unwrap_or(u64::MAX)
-    }
-
     /// The admission time a roster row's packed value names: `None` for
     /// `u64::MAX`.
     #[must_use]

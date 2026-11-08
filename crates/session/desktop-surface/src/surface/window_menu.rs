@@ -45,16 +45,15 @@ use crate::navigation::{ChromeEffect, DeskEffect, Destination, RouteIds, Verb, W
 use super::{DesktopHandle, Shared};
 
 impl DesktopHandle {
-    /// The windows whose bar was asked for its menu since the last call — a
-    /// secondary click — in the order they asked, each with the place on the
-    /// desk the person pressed, where the menu stands.
+    /// The windows whose bar was asked for its menu since the last call — a secondary click — in
+    /// the order they asked, each with the place on the desk the person pressed, where the menu
+    /// stands.
     pub fn take_tab_menus(&self) -> Vec<(TabId, ui::kurbo::Point)> {
         std::mem::take(&mut self.shared.borrow_mut().menus)
     }
 }
 
-/// The tabs whose bar asked for its menu and where it was pressed, in the
-/// row's window order.
+/// The tabs whose bar asked for its menu and where it was pressed, in the row's window order.
 pub(super) fn take_asked_menus(row: &mut ui::widget::GroupRow) -> Vec<(TabId, ui::kurbo::Point)> {
     row.groups
         .iter_mut()
@@ -70,8 +69,7 @@ pub struct WindowSubject {
 }
 
 impl DesktopHandle {
-    /// The window `tab` shows, named as the person knows it: its title and
-    /// the app that paints it.
+    /// The window `tab` shows, named as the person knows it: its title and the app that paints it.
     #[must_use]
     pub fn window_subject(&self, tab: TabId) -> Option<WindowSubject> {
         let shared = self.shared.borrow();
@@ -98,6 +96,8 @@ impl DesktopHandle {
 
 pub const REVEAL: &str = "window-reveal";
 pub const FULLSCREEN: &str = "window-fullscreen";
+pub const FLOAT: &str = "window-float";
+pub const SNAP_BACK: &str = "window-snap-back";
 pub const EXIT_FULLSCREEN: &str = "window-exit-fullscreen";
 pub const MAXIMIZE: &str = "window-maximize";
 pub const RESTORE: &str = "window-restore";
@@ -129,8 +129,8 @@ const WIDTHS: [u32; 3] = [
     WIDTH_WIDE_PERMILLE,
 ];
 
-/// The share row a window offers, when this desktop can share it: how it
-/// reads, and whether the window is shared now.
+/// The share row a window offers, when this desktop can share it: how it reads, and whether the
+/// window is shared now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sharing {
     pub label: String,
@@ -140,35 +140,31 @@ pub struct Sharing {
 /// What the desktop knows about one window beside its place in the tree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// The person who holds the window on a shared desktop, when someone
-    /// else does: their window is theirs to move, to name and to close.
+    /// The person who holds the window on a shared desktop, when someone else does: their window is
+    /// theirs to move, to name and to close.
     pub held: Option<String>,
     /// The window asked for the person and has not had them yet.
     pub asking: bool,
     /// The window runs on this device, so its app can be opened again here.
     pub local: bool,
-    /// This person opens windows and tabs on this desktop (someone let only
-    /// look is offered none).
+    /// This person opens windows and tabs on this desktop (someone let only look is offered none).
     pub opens: bool,
-    /// The share row the window offers; `None` for a window this desktop
-    /// cannot share.
+    /// The share row the window offers; `None` for a window this desktop cannot share.
     pub sharing: Option<Sharing>,
 }
 
-/// One row of a window's menu: what it does, how it reads, and why it
-/// cannot be chosen when it cannot.
+/// One row of a window's menu: what it does, how it reads, and why it cannot be chosen when it
+/// cannot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
-    /// The stable id a menu host sends back with the window it is for; empty
-    /// for a rule, which chooses nothing.
+    /// The stable id a menu host sends back with the window it is for; empty for a rule, which
+    /// chooses nothing.
     pub id: String,
     pub label: String,
-    /// Whether the person can choose it now; a row they cannot is shown
-    /// with `reason` beside it.
+    /// Whether the person can choose it now; a row they cannot is shown with `reason` beside it.
     pub enabled: bool,
     pub reason: Option<String>,
-    /// The picture of the command the row runs, as the window's own controls
-    /// draw it.
+    /// The picture of the command the row runs, as the window's own controls draw it.
     pub icon: Option<Icon>,
     /// The rows a row that opens a submenu offers; empty for a plain row.
     pub children: Vec<Row>,
@@ -206,8 +202,8 @@ impl Row {
         }
     }
 
-    /// A row opening `children` beside it: what is left of a submenu with
-    /// nowhere to go is no row at all.
+    /// A row opening `children` beside it: what is left of a submenu with nowhere to go is no row
+    /// at all.
     fn submenu(id: impl Into<String>, label: String, children: Vec<Row>) -> Self {
         Self {
             children,
@@ -224,8 +220,8 @@ impl Row {
         }
     }
 
-    /// A row for the window's own person: anyone else sees why they cannot
-    /// choose it, their whole submenu with it.
+    /// A row for the window's own person: anyone else sees why they cannot choose it, their whole
+    /// submenu with it.
     fn theirs(self, own: bool, reason: Option<String>) -> Self {
         if own {
             return self;
@@ -252,23 +248,23 @@ impl Row {
     }
 }
 
-/// The id of the row carrying the window into strip `strip`.
+/// The id of the row carrying the window into strip `strip` .
 fn move_to_strip_id(strip: StripId) -> String {
     format!("{MOVE_TO_STRIP}:{}", strip.0)
 }
 
-/// The id of the row taking the window into workspace `workspace`.
+/// The id of the row taking the window into workspace `workspace` .
 fn move_to_workspace_id(workspace: WorkspaceSlot) -> String {
     format!("{MOVE_TO_WORKSPACE}:{}", workspace.0)
 }
 
-/// The id of the row showing the window on display `display`.
+/// The id of the row showing the window on display `display` .
 fn move_to_display_id(display: u32) -> String {
     format!("{MOVE_TO_DISPLAY}:{display}")
 }
 
-/// The menu rows that apply to the window at `route`, in the order to show
-/// them, as `facts` describes the window beyond its place in the tree.
+/// The menu rows that apply to the window at `route` , in the order to show them, as `facts`
+/// describes the window beyond its place in the tree.
 pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
     let Some(group) = group_at(tree, route) else {
         return Vec::new();
@@ -284,6 +280,7 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
             .map(|name| t_args("window-menu-someone-elses", &[("name", name.into())]))
     };
     let fullscreen = tree.fullscreen_group() == Some(group.id);
+    let floating = floating(tree, group.id);
     let renamable = may_rename(tab) && facts.local;
     let mut rows = Vec::new();
     if facts.asking {
@@ -293,8 +290,9 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
         );
     }
     add_group(&mut rows, covering_rows(group, fullscreen));
-    // Where the window can go is the tree's to say; carrying it there is the
-    // owner's, not a viewer's.
+    add_group(&mut rows, float_rows(floating));
+    // Where the window can go is the tree's to say; carrying it there is the owner's, not a
+    // viewer's.
     add_group(
         &mut rows,
         move_rows(tree, route)
@@ -346,8 +344,8 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
     rows
 }
 
-/// What covering and filling the window offer: it covers its display, or
-/// gives it back, and it fills its strip, or fills it again.
+/// What covering and filling the window offer: it covers its display, or gives it back, and it
+/// fills its strip, or fills it again.
 fn covering_rows(group: &WindowGroup, fullscreen: bool) -> Vec<Row> {
     vec![
         Row::offered(
@@ -383,8 +381,34 @@ fn covering_rows(group: &WindowGroup, fullscreen: bool) -> Vec<Row> {
     ]
 }
 
-/// What the window shows: another tab of its app, its name, a split of a
-/// tab out, and a window of its own — each offered to the owner alone.
+/// Whether the workspace holds the window `group` floating above the desk.
+fn floating(tree: &DesktopTree, group: GroupId) -> bool {
+    tree.workspaces
+        .iter()
+        .any(|workspace| workspace.arrangement.float_of(group).is_some())
+}
+
+/// What lifting the window offers: over the desk, or back in its strip.
+fn float_rows(floating: bool) -> Vec<Row> {
+    vec![
+        Row::offered(
+            if floating { SNAP_BACK } else { FLOAT },
+            t(if floating {
+                "window-menu-snap-back"
+            } else {
+                "window-menu-float"
+            }),
+        )
+        .with_icon(if floating {
+            Icon::LayoutGrid
+        } else {
+            Icon::Layers
+        }),
+    ]
+}
+
+/// What the window shows: another tab of its app, its name, a split of a tab out, and a window of
+/// its own — each offered to the owner alone.
 fn show_rows(
     tree: &DesktopTree,
     route: &RouteIds,
@@ -423,8 +447,7 @@ fn show_rows(
     rows
 }
 
-/// What closing offers: the tab alone, while the window has another, and the
-/// window itself.
+/// What closing offers: the tab alone, while the window has another, and the window itself.
 fn closing_rows(tree: &DesktopTree, route: &RouteIds, own: bool, held: Option<String>) -> Vec<Row> {
     let mut rows = Vec::new();
     if crate::navigation::has_a_second_tab(tree, route) {
@@ -442,8 +465,8 @@ fn closing_rows(tree: &DesktopTree, route: &RouteIds, own: bool, held: Option<St
     rows
 }
 
-/// Add `members` as a group of their own: a rule between it and what the
-/// menu offered before, and nothing at all for a group with no rows.
+/// Add `members` as a group of their own: a rule between it and what the menu offered before, and
+/// nothing at all for a group with no rows.
 fn add_group(rows: &mut Vec<Row>, members: Vec<Row>) {
     if members.is_empty() {
         return;
@@ -454,8 +477,8 @@ fn add_group(rows: &mut Vec<Row>, members: Vec<Row>) {
     rows.extend(members);
 }
 
-/// The shares of its strip a window offers, and the steps between them: a
-/// window at the widest or the narrowest says so rather than stepping past.
+/// The shares of its strip a window offers, and the steps between them: a window at the widest or
+/// the narrowest says so rather than stepping past.
 fn width_rows(permille: u32) -> Vec<Row> {
     let wider = WIDTHS.iter().any(|width| *width > permille);
     let narrower = WIDTHS.iter().any(|width| *width < permille);
@@ -475,8 +498,8 @@ fn width_rows(permille: u32) -> Vec<Row> {
     ]
 }
 
-/// The row stepping the width to `id`, or—at the end of the steps—the row
-/// saying there is no further one, why being `reason`.
+/// The row stepping the width to `id` , or—at the end of the steps—the row saying there is no
+/// further one, why being `reason` .
 fn step(id: &str, label: &str, steps: bool, reason: &str) -> Row {
     if steps {
         Row::offered(id, t(label))
@@ -485,8 +508,8 @@ fn step(id: &str, label: &str, steps: bool, reason: &str) -> Row {
     }
 }
 
-/// The rows carrying the window to another strip, workspace or display, each
-/// place by its name; a place with nowhere to go offers no submenu at all.
+/// The rows carrying the window to another strip, workspace or display, each place by its name; a
+/// place with nowhere to go offers no submenu at all.
 fn move_rows(tree: &DesktopTree, route: &RouteIds) -> Vec<Row> {
     let mut rows = Vec::new();
     let strips: Vec<Row> = workspace_at(tree, route)
@@ -558,8 +581,8 @@ fn place_number_of(index: usize) -> i64 {
     i64::try_from(index.saturating_add(1)).unwrap_or(i64::MAX)
 }
 
-/// A strip's name as the strip switcher shows it: "Strip 2" for one nobody
-/// named, by its place in the workspace.
+/// A strip's name as the strip switcher shows it: "Strip 2" for one nobody named, by its place in
+/// the workspace.
 fn strip_shown_name(name: &str, index: usize) -> String {
     if name.trim().is_empty() {
         t_args(
@@ -571,8 +594,8 @@ fn strip_shown_name(name: &str, index: usize) -> String {
     }
 }
 
-/// The verb row `id` of the window at `route` means; `name` is what the
-/// person typed for [`RENAME`]. `None` for a row that does not apply here.
+/// The verb row `id` of the window at `route` means; `name` is what the person typed for
+/// [`RENAME`]. `None` for a row that does not apply here.
 pub fn command(tree: &DesktopTree, route: &RouteIds, id: &str, name: Option<&str>) -> Option<Verb> {
     let group = group_at(tree, route)?;
     let tab = group.tabs.iter().find(|tab| tab.id == route.tab)?;
@@ -593,6 +616,10 @@ pub fn command(tree: &DesktopTree, route: &RouteIds, id: &str, name: Option<&str
         MAXIMIZE | RESTORE => Verb::Chrome(ChromeEffect::Maximize {
             group: group_id,
             on: id == MAXIMIZE,
+        }),
+        FLOAT | SNAP_BACK => Verb::Chrome(ChromeEffect::Float {
+            group: group_id,
+            on: id == FLOAT,
         }),
         WIDER => Verb::Chrome(ChromeEffect::SetWidth {
             group: group_id,
@@ -680,8 +707,8 @@ fn app_of(tab: &Tab) -> Option<String> {
     }
 }
 
-/// Whether the person may name the window `tab`: a host (non-Tilo) window's
-/// tab, whose title is the window's own rather than an app's resource.
+/// Whether the person may name the window `tab` : a host (non-Tilo) window's tab, whose title is
+/// the window's own rather than an app's resource.
 fn may_rename(tab: &Tab) -> bool {
     matches!(
         tab.tile,
@@ -689,8 +716,7 @@ fn may_rename(tab: &Tab) -> bool {
     )
 }
 
-/// Whether the window at `route` runs an app that controls this desktop
-/// beyond its own window now.
+/// Whether the window at `route` runs an app that controls this desktop beyond its own window now.
 fn controls_desktop(tree: &DesktopTree, route: &RouteIds) -> bool {
     let Some((workspace, app)) = holder_of(tree, route) else {
         return false;
@@ -698,21 +724,21 @@ fn controls_desktop(tree: &DesktopTree, route: &RouteIds) -> bool {
     workspace.holds_desktop_control_at(&app, tilo_clock::unix_now())
 }
 
-/// The workspace holding the window at `route`, and the app it runs.
+/// The workspace holding the window at `route` , and the app it runs.
 fn holder_of<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<(&'a Workspace, String)> {
     let group = group_at(tree, route)?;
     let tab = group.tabs.iter().find(|tab| tab.id == route.tab)?;
     Some((workspace_at(tree, route)?, app_of(tab)?))
 }
 
-/// The workspace at `route`, while the tree still holds it.
+/// The workspace at `route` , while the tree still holds it.
 fn workspace_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a Workspace> {
     tree.workspaces
         .iter()
         .find(|workspace| workspace.slot == route.workspace)
 }
 
-/// The window group at `route`, while the tree still holds it.
+/// The window group at `route` , while the tree still holds it.
 fn group_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a WindowGroup> {
     workspace_at(tree, route)
         .and_then(|workspace| {
@@ -726,8 +752,8 @@ fn group_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a WindowGro
         .find(|group| group.id == route.group)
 }
 
-/// Apply a window-menu command to the tree, and name the widget follow-ups
-/// the windows need. False for a command that is not a window menu's.
+/// Apply a window-menu command to the tree, and name the widget follow-ups the windows need. False
+/// for a command that is not a window menu's.
 pub(super) fn apply(
     shared: &mut super::Shared,
     command: &crate::navigation::Admitted,
@@ -741,8 +767,8 @@ pub(super) fn apply(
         Admitted::MoveToDisplay(ids, display) => move_to_display(shared, *ids, *display),
         Admitted::WidthPreset(ids, width) => width_preset(shared, *ids, *width, ops),
         Admitted::EqualizeWidths(ids) => equalize(shared, *ids, ops),
-        // The share is the sharing app's to keep: the ask names the row the
-        // window's bar carries, and the app does the same with it.
+        // The share is the sharing app's to keep: the ask names the row the window's bar carries,
+        // and the app does the same with it.
         Admitted::ShareWindow(ids, shared_now) => {
             ops.push(super::RowOp::WindowShare(ids.tab, *shared_now));
             true
@@ -759,8 +785,8 @@ pub(super) fn apply(
     true
 }
 
-/// Carry the window at `ids` into strip `strip` of its own workspace, before
-/// the window `before` when one is named: its own strip reorders it in place.
+/// Carry the window at `ids` into strip `strip` of its own workspace, before the window `before`
+/// when one is named: its own strip reorders it in place.
 fn move_to_strip(
     shared: &mut Shared,
     ids: RouteIds,
@@ -795,19 +821,18 @@ fn move_to_strip(
             .is_ok()
         });
     if moved {
-        // The person stays with the window they moved: the desk shows the
-        // strip it landed in, with it in front, as dragging it there does.
+        // The person stays with the window they moved: the desk shows the strip it landed in, with
+        // it in front, as dragging it there does.
         tree.active_strip.insert(ids.workspace, strip);
         tree.set_active_group(strip, ids.group);
     }
-    // The windows were rearranged, so the rows follow the tree they are in
-    // now rather than the one they were built from.
+    // The windows were rearranged, so the rows follow the tree they are in now rather than the one
+    // they were built from.
     shared.replaced |= moved;
     moved
 }
 
-/// Put the tab at `ids` into the window `into` of its own strip, its tab
-/// standing last there.
+/// Put the tab at `ids` into the window `into` of its own strip, its tab standing last there.
 fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
     let Shared { tree, minter, .. } = shared;
     let moved = tree
@@ -836,9 +861,9 @@ fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
             .is_ok()
         });
     if moved {
-        // The window the tab joined is the one in front, showing the tab
-        // that just arrived: the window it left may have gone with its last
-        // tab, so the desk would be left with nothing in front.
+        // The window the tab joined is the one in front, showing the tab that just arrived: the
+        // window it left may have gone with its last tab, so the desk would be left with nothing in
+        // front.
         tree.active_strip.insert(ids.workspace, ids.strip);
         tree.set_active_group(ids.strip, into);
         if let Some(group) = tree
@@ -856,7 +881,7 @@ fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
     moved
 }
 
-/// Carry the tab at `ids` into workspace `to`, with a window of its own.
+/// Carry the tab at `ids` into workspace `to` , with a window of its own.
 fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceSlot) -> bool {
     let Shared { tree, minter, .. } = shared;
     let moved = move_tab_to_workspace(tree, ids.tab, to, &mut || Ok(minter.mint())).is_ok();
@@ -864,7 +889,7 @@ fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceSlot) -> b
     moved
 }
 
-/// Carry the window at `ids` onto display `display`.
+/// Carry the window at `ids` onto display `display` .
 fn move_to_display(shared: &mut Shared, ids: RouteIds, display: u32) -> bool {
     let tree = &mut shared.tree;
     let moved = tree
@@ -920,11 +945,10 @@ fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>) -> 
     }
 }
 
-/// Close every tab of the window at `ids`: the window goes, and a reopen
-/// brings its tabs back.
+/// Close every tab of the window at `ids` : the window goes, and a reopen brings its tabs back.
 fn close_window(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>) -> bool {
-    // Backwards, so each close remembers the window's own place and a reopen
-    // puts the tabs back in the order they were in.
+    // Backwards, so each close remembers the window's own place and a reopen puts the tabs back in
+    // the order they were in.
     let tabs: Vec<TabId> = group_at(&shared.tree, &ids)
         .map(|group| group.tabs.iter().rev().map(|tab| tab.id).collect())
         .unwrap_or_default();
@@ -949,8 +973,7 @@ fn close_window(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>)
     }
 }
 
-/// Take the desktop-control grant back from the app the window at `ids`
-/// holds it for.
+/// Take the desktop-control grant back from the app the window at `ids` holds it for.
 fn stop_desktop_control(shared: &mut Shared, ids: RouteIds) -> bool {
     let Some((workspace, app)) = holder_of(&shared.tree, &ids) else {
         return false;
@@ -964,9 +987,8 @@ fn stop_desktop_control(shared: &mut Shared, ids: RouteIds) -> bool {
         .is_some_and(|held| held.stop_desktop_control(&app))
 }
 
-/// Detach the tab at `ids` into a window of its own, at the strip's end
-/// (`at_end`) or right after the window it is in, and make it the one the
-/// strip shows. Whether it moved.
+/// Detach the tab at `ids` into a window of its own, at the strip's end (`at_end`) or right after
+/// the window it is in, and make it the one the strip shows. Whether it moved.
 fn detach(shared: &mut super::Shared, ids: RouteIds, at_end: bool) -> bool {
     let Some(strip) = workspace_at(&shared.tree, &ids)
         .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == ids.strip))
@@ -996,8 +1018,8 @@ fn detach(shared: &mut super::Shared, ids: RouteIds, at_end: bool) -> bool {
 mod tests;
 
 impl crate::surface::DesktopHandle {
-    /// Who holds tab `tab` on a shared desktop, when someone else does: the
-    /// menu offers that person's window only what a viewer may do to it.
+    /// Who holds tab `tab` on a shared desktop, when someone else does: the menu offers that
+    /// person's window only what a viewer may do to it.
     #[must_use]
     pub fn held_by(&self, tab: TabId) -> Option<String> {
         self.shared
@@ -1007,8 +1029,8 @@ impl crate::surface::DesktopHandle {
             .map(|holder| holder.name.clone())
     }
 
-    /// Fill the strip with the window showing `tab`, or give it its width
-    /// back, on the next update pass. False when no window shows it.
+    /// Fill the strip with the window showing `tab` , or give it its width back, on the next update
+    /// pass. False when no window shows it.
     pub fn maximize_tab(&self, tab: TabId, maximized: bool) -> bool {
         let mut shared = self.shared.borrow_mut();
         let Some(ids) = crate::surface::route_of(&shared.tree, tab) else {
@@ -1020,8 +1042,8 @@ impl crate::surface::DesktopHandle {
         true
     }
 
-    /// Cover the display with the window showing `tab`, or give it back, on
-    /// the next update pass. False when no window shows it.
+    /// Cover the display with the window showing `tab` , or give it back, on the next update pass.
+    /// False when no window shows it.
     pub fn fullscreen_tab(&self, tab: TabId, fullscreen: bool) -> bool {
         let mut shared = self.shared.borrow_mut();
         let Some(ids) = crate::surface::route_of(&shared.tree, tab) else {
@@ -1033,9 +1055,8 @@ impl crate::surface::DesktopHandle {
         true
     }
 
-    /// What the desktop knows of tab `tab` beyond its place in the tree:
-    /// who holds it, whether it is waiting for the person, whether it runs
-    /// here and whether the sharing app lists it.
+    /// What the desktop knows of tab `tab` beyond its place in the tree: who holds it, whether it
+    /// is waiting for the person, whether it runs here and whether the sharing app lists it.
     fn window_facts(&self, tab: TabId) -> Facts {
         let (held, asking, local, opens, offered) = {
             let shared = self.shared.borrow();
@@ -1068,8 +1089,8 @@ impl crate::surface::DesktopHandle {
         }
     }
 
-    /// The menu rows of the window showing `tab`, as the desktop would show
-    /// them now. Empty when no window shows it.
+    /// The menu rows of the window showing `tab` , as the desktop would show them now. Empty when
+    /// no window shows it.
     pub fn window_menu(&self, tab: TabId) -> Vec<Row> {
         let facts = self.window_facts(tab);
         self.read(|tree| {
@@ -1096,8 +1117,8 @@ impl crate::surface::DesktopHandle {
         let found = self.read(|tree| {
             let route = super::route_of(tree, tab)?;
             let listed = rows(tree, &route, &facts);
-            // Rows a row opens stand beside the menu, not in it: a choice
-            // of one reaches through its row.
+            // Rows a row opens stand beside the menu, not in it: a choice of one reaches through
+            // its row.
             let offered = listed.iter().find_map(|row| row.find(id)).cloned()?;
             Some((command(tree, &route, id, name), offered))
         });

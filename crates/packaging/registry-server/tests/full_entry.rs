@@ -13,21 +13,16 @@
     reason = "integration-test setup and assertions"
 )]
 
+use app_registry::publisher::RegistryClient;
+use ed25519_dalek::SigningKey;
+use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
+use registry_server::{AppState, PublisherAllowlist, PublisherRow, Storage, bind_and_run};
+use registry_types::entry::MAX_ENTRY_VERSIONS;
+use registry_types::retention::{DEFAULT_RETAINED_PER_CHANNEL, RetentionPolicy};
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
-use std::process::Command;
-use tilo_test_env::SpawnUnderEnvLock as _;
-
-use ed25519_dalek::SigningKey;
-use registry_client::RegistryClient;
-use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
-use registry_server::{
-    AppState, PublisherAllowlist, PublisherRow, ServerIdentity, Storage, bind_and_run,
-};
-use registry_types::entry::MAX_ENTRY_VERSIONS;
-use registry_types::retention::{DEFAULT_RETAINED_PER_CHANNEL, RetentionPolicy};
 
 const PACKAGE_ID: &str = "so.tilo.agent";
 /// Identical in every release, so the registry holds it once.
@@ -36,18 +31,7 @@ fn shared_library() -> Vec<u8> {
 }
 
 fn run(data_dir: &Path, arguments: &[&str]) -> serde_json::Value {
-    let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-        .arg("--data-dir")
-        .arg(data_dir)
-        .args(arguments)
-        .output_locked()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{arguments:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
+    serde_json::from_slice(&crate::support::server_ok(data_dir, arguments).stdout).unwrap()
 }
 
 /// Collect the waiting request and promote it, as the collector and
@@ -127,12 +111,10 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
     let channel = SigningKey::from_bytes(&[62; 32]);
     let publisher = SigningKey::from_bytes(&[63; 32]);
     let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-    let identity = ServerIdentity {
-        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-        name: "test".into(),
-        description: "test".into(),
-        base_url: "https://apps.tilo.so".into(),
-    };
+    let identity = crate::support::identity(
+        hex::encode(owner.verifying_key().to_bytes()),
+        "https://apps.tilo.so",
+    );
     storage.save_identity(&identity).unwrap();
     storage
         .save_allowlist(&PublisherAllowlist {
@@ -185,14 +167,14 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             prereleases: MAX_ENTRY_VERSIONS,
         };
 
-        registry_client::publish(&client, &publisher, full, None, None, &keep_all).unwrap();
+        app_registry::publisher::publish(&client, &publisher, full, None, None, &keep_all).unwrap();
         promote(&data_dir, &publisher_hex, &channel_key);
         let entry = client.entry(PACKAGE_ID).unwrap().unwrap();
         assert_eq!(entry.versions.len(), MAX_ENTRY_VERSIONS);
 
         // Release 129: the client drops the oldest version and the server
         // accepts that request, collects it and promotes it.
-        let submitted = registry_client::publish(
+        let submitted = app_registry::publisher::publish(
             &client,
             &publisher,
             std::slice::from_ref(next),
@@ -233,18 +215,15 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             reqwest::StatusCode::OK
         );
         for _ in 0..SNAPSHOT_HISTORY_RETAINED {
-            let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
-                .arg("--data-dir")
-                .arg(&data_dir)
-                .args(["sign-delegated-snapshot", "--channel-key-file"])
-                .arg(&channel_key)
-                .args(["--valid-for-seconds", "3600"])
-                .output_locked()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
+            crate::support::server_ok(
+                &data_dir,
+                &[
+                    "sign-delegated-snapshot",
+                    "--channel-key-file",
+                    channel_key.to_str().unwrap(),
+                    "--valid-for-seconds",
+                    "3600",
+                ],
             );
         }
 
@@ -319,7 +298,7 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
 
         // Under the default retention the next release keeps only the newest
         // versions, and the server accepts and promotes the shorter entry.
-        registry_client::publish(
+        app_registry::publisher::publish(
             &client,
             &publisher,
             std::slice::from_ref(trimmed),

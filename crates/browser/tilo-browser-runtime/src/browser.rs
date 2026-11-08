@@ -179,10 +179,6 @@ pub(crate) fn refresh_mounts() {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent switches the page passes in its JSON config"
-)]
 struct Config {
     /// One application to mount on its own; absent (or `desktop`) mounts
     /// the session desktop.
@@ -437,11 +433,11 @@ struct Mount {
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The single application's record; `None` for the desktop.
     checkout: Option<RecordCheckout>,
-    /// The single application's id; `None` for the desktop.
-    app: Option<&'static str>,
-    /// The workspace's members' pointers the page last handed over, each
-    /// relative to what it is over; placed again after every frame.
-    remote_pointers: Vec<pointers::RemotePointer>,
+    /// The workspace's presence board, as the last frame read it: who is
+    /// here, where their pointers are, and when what they say animates.
+    presence: crate::presence_clock::View,
+    /// This mount's id, to wake it when a silent member's pointer leaves.
+    id: u64,
     desktop: Option<Desktop>,
     gpu: Option<Gpu>,
     pending: bool,
@@ -487,6 +483,8 @@ struct Mount {
     /// Who is here changed since the last frame, which puts them on their
     /// windows before it lays out ([`Mount::apply_here`]).
     here_stale: bool,
+    /// The workspace the mount's presence board speaks for.
+    workspace: String,
     /// The change of the page's theme this mount draws in
     /// ([`crate::page_theme::generation`]).
     theme_seen: u64,
@@ -1539,8 +1537,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         store,
         stores,
         checkout,
-        app: definition.map(ui::application::ApplicationDefinition::app_id),
-        remote_pointers: Vec::new(),
+        presence: crate::presence_clock::View::default(),
+        id,
         desktop,
         gpu: None,
         pending: true,
@@ -1567,6 +1565,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         oversized_scene: false,
         skipped_frame: false,
         here_stale: false,
+        workspace: config.workspace.clone(),
         theme_seen: crate::page_theme::generation(),
         peer: config.peer,
         replica_changed,
@@ -2266,8 +2265,9 @@ impl Mount {
             }
             host_changed = true;
         }
-        // Presence that arrived since the last frame, laid out by this one.
+        // Who is here, placed in the windows this frame lays out.
         self.place_here();
+        self.place_presence();
         // A frame whose semantics will be built draws every window: one it
         // replayed instead (a pan frame may) would have to be drawn again
         // before its tree could be read.
@@ -2720,7 +2720,7 @@ impl Mount {
         self.failures_logged = failures.len();
         // The windows and strip this frame laid out move the pointers over
         // them.
-        self.place_remote_pointers();
+        self.place_presence();
         // The input method stays on the field the screen shows focused. A
         // status between frames (the tree delivered in the task after a
         // frame) says the presented frame's field. The harness has none
@@ -2842,14 +2842,13 @@ mod here_exports;
 mod live_layout;
 mod live_signals;
 mod mention_notices;
+pub(crate) mod presence;
 mod publication;
-mod remote_presence;
 mod session_asks;
 use crate::first_frame::{self, GpuStep};
 pub(crate) use frame_loop::sleep_ms;
 use frame_loop::watch_first_frame;
 use publication::{FrameChange, SemanticPresentationTarget, emit_text};
-pub(crate) mod pointers;
 mod retained;
 use retained::Retained;
 #[cfg(debug_assertions)]

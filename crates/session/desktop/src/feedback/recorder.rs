@@ -17,8 +17,8 @@ use tilo_resource::model::Doc;
 
 use tilo_feedback_transport::Capture;
 
-/// The saved document of `record` of `app` in `workspace`, as the workspace
-/// committed it, when this device holds it.
+/// The saved document of `record` of `app` in `workspace` , as the workspace committed it, when
+/// this device holds it.
 pub type Documents = Box<dyn Fn(&str, &str, &str) -> Option<Vec<u8>>>;
 /// Whether an app declares its windows withheld from what leaves the device
 /// (`ComponentBehaviour::capture_protected`): such an app is never recorded.
@@ -26,8 +26,7 @@ pub type Protected = Box<dyn Fn(&str) -> bool>;
 /// Keep bytes where the destination Chat's content lives; their hash.
 pub type Keep = Box<dyn Fn(&[u8]) -> Result<String, String>>;
 
-/// Records the window a report is about; its pictures are what `pictures`
-/// takes and keeps.
+/// Records the window a report is about; its pictures are what `pictures` takes and keeps.
 pub struct WindowRecorder {
     pub documents: Documents,
     pub protected: Protected,
@@ -39,8 +38,8 @@ pub struct WindowRecorder {
 }
 
 impl WindowRecorder {
-    /// The document of the record `subject`'s window shows, unless its app
-    /// is withheld from captures.
+    /// The document of the record `subject` 's window shows, unless its app is withheld from
+    /// captures.
     fn document(&self, subject: &Subject) -> Option<Doc> {
         let shown = subject.record.as_ref()?;
         if (self.protected)(&subject.app) {

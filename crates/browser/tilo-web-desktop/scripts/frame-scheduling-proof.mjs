@@ -1,6 +1,8 @@
 // Live regression proof against a built desktop bundle. Uses a fresh Chromium
 // context and the same real launch-to-present path as open-times.mjs.
 // CDP_PORT=9333 node frame-scheduling-proof.mjs http://127.0.0.1:8765/
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
+
 const base = process.argv[2];
 if (!base) throw Error('A built desktop bundle URL is required');
 const pageURL = base.endsWith('/') ? base : `${base}/`;
@@ -44,7 +46,7 @@ try {
         observer.observe(host, {attributes: true, attributeFilter: ['data-frames']});
       });
       try {
-        await mount.navigation.dispatch({kind: 'launch', generation: snapshot.generation, app});
+        await mount.navigation.dispatch(${JSON.stringify(verb.openApp(app))});
         await Promise.race([presented, new Promise((_, reject) => setTimeout(() => reject(Error('No presented launch frame')), 10000))]);
         const after = mount.navigation.getSnapshot();
         if (after.entries.length !== snapshot.entries.length + 1 || !after.active || after.active.tab === snapshot.active?.tab) throw Error('Launch did not open a new active window');

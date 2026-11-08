@@ -58,9 +58,6 @@ pub struct SelectedSources {
 }
 impl SelectedSources {
     /// Select only domains present in distinct reviewed browser profiles.
-    ///
-    /// # Errors
-    /// Refuses invalid profiles, widened or changed selections, duplicates and excessive counts.
     pub fn from_reviewed(profiles: Vec<(Arc<ReviewedProfile>, Profile)>) -> io::Result<Self> {
         if profiles.len() > browser_continuity::MAX_PROFILES {
             return Err(io::Error::new(
@@ -92,9 +89,6 @@ impl SelectedSources {
         &self.profiles
     }
     /// Bind the selected profile metadata to an authenticated transfer identity.
-    ///
-    /// # Errors
-    /// Refuses an invalid binding, identity or profile set.
     pub fn plan(&self, binding: String, identity: [u8; 32]) -> io::Result<Plan> {
         Plan::new(
             binding,
@@ -147,9 +141,6 @@ impl Default for Selection {
 }
 impl Selection {
     /// The caller runs this on its consented discovery worker, not the UI thread.
-    ///
-    /// # Errors
-    /// Propagates source discovery failures, including unsafe directories and oversized scans.
     pub fn discover(home: &Path, candidates: &[Candidate]) -> io::Result<Self> {
         let profiles = browser_profiles::discover(home, candidates)?
             .into_iter()
@@ -273,9 +264,6 @@ impl Selection {
     /// no part of the profile reaches the plan, and journeys clear the profile's
     /// website-session choices in the same edit. Restoring puts back the domains
     /// its reviewed source supports.
-    ///
-    /// # Errors
-    /// Refuses an unknown, replaced or no-longer-valid reviewed source.
     pub fn set_profile(&mut self, id: &str, included: bool) -> Result<(), &'static str> {
         let source = self
             .profiles
@@ -303,10 +291,6 @@ impl Selection {
         Ok(())
     }
     /// Set one profile's domain without touching any other profile.
-    ///
-    /// # Errors
-    /// Refuses an unknown or invalid source and a domain its reviewed profile
-    /// does not have.
     pub fn set_profile_domain(
         &mut self,
         id: &str,

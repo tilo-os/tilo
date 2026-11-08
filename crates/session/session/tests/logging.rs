@@ -1,7 +1,6 @@
-//! The session's log: what it reports reaches its stderr — what its runner
-//! keeps in the journal and the flight record — and `RUST_LOG` sets how much
-//! of it does. That a panic leaves a record with its backtrace is
-//! `tilo-session-logging`'s test, the one that keeps its symbol table.
+//! The session's log: what it reports reaches its stderr — what its runner keeps in the journal and
+//! the flight record — and `RUST_LOG` sets how much of it does. That a panic leaves a record with
+//! its backtrace is `tilo-session-logging` 's test, the one that keeps its symbol table.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -28,14 +27,13 @@ fn private_dir() -> tempfile::TempDir {
     root
 }
 
-/// A headless session started as `dist/dev/shell-run.sh` starts its first
-/// pass, with settings it cannot read, run until it serves its test-control
-/// socket and ended on SIGTERM. What it wrote to its stderr, line by line.
+/// A headless session started as `dist/dev/shell-run.sh` starts its first pass, with settings it
+/// cannot read, run until it serves its test-control socket and ended on SIGTERM. What it wrote to
+/// its stderr, line by line.
 fn session_log(rust_log: &str) -> Vec<String> {
     let runtime = private_dir();
     let home = tempfile::tempdir().expect("a home for the session");
-    // Settings this session cannot read: it says so on its log and goes on
-    // with what it has.
+    // Settings this session cannot read: it says so on its log and goes on with what it has.
     let settings = home.path().join(".config/tilo/records");
     std::fs::create_dir_all(&settings).expect("the settings directory");
     std::fs::write(
@@ -67,8 +65,7 @@ fn session_log(rust_log: &str) -> Vec<String> {
         .env_remove("WAYLAND_DISPLAY")
         .env_remove("DISPLAY")
         .env_remove("TILO_AGENT_DOOR")
-        // A stop of the whole group, as a script stops a session, reaches it
-        // through this group.
+        // A stop of the whole group, as a script stops a session, reaches it through this group.
         .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -115,9 +112,9 @@ fn session_log(rust_log: &str) -> Vec<String> {
     said.clone()
 }
 
-/// What the session reports reaches the stderr its runner keeps, and
-/// `RUST_LOG` sets how much of it does: a warning it takes of its settings is
-/// there with `RUST_LOG=warn` and gone with `RUST_LOG=error`.
+/// What the session reports reaches the stderr its runner keeps, and `RUST_LOG` sets how much of it
+/// does: a warning it takes of its settings is there with `RUST_LOG=warn` and gone with
+/// `RUST_LOG=error` .
 #[test]
 fn what_the_session_reports_reaches_its_log_as_rust_log_says() {
     let warned = session_log("warn");

@@ -1,7 +1,7 @@
 //! View bodies: UI statements lowered to `ui_*` host calls ([`crate::abi`]).
 
 use super::expr::dotted;
-use super::{Checker, Ex, StateRef, conv, store_op};
+use super::{Checker, Ctx, Ex, StateRef, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
@@ -754,7 +754,14 @@ impl Checker<'_> {
         }
         if p.name == "show" && name == "of" {
             let v = self.expr(&a.value, None);
-            if !matches!(v.ty, Ty::Record(_) | Ty::Error) {
+            // A union's value draws through the view its own type has: a row view when the
+            // `show` asks for one (`show(x, row: true)`), as a list of a union draws its rows.
+            let drawn = match &v.ty {
+                Ty::Record(_) | Ty::Error => true,
+                Ty::Union(keys) => keys.iter().all(|key| self.env.row_view(key).is_some()),
+                _ => false,
+            };
+            if !drawn {
                 let t = self.show(&v.ty);
                 self.err(
                     "E020",
@@ -1101,6 +1108,26 @@ impl Checker<'_> {
         let (node_args, param_args): (Vec<&ast::Arg>, Vec<&ast::Arg>) =
             args.iter().partition(|a| is_node_arg(self, a));
         let param_args: Vec<ast::Arg> = param_args.into_iter().cloned().collect();
+        // The literals a view's text parameters show are the caller's messages (i18n.md §2),
+        // as a component's are: what `std.composer(draft, "Comment on this {noun}", send)` puts
+        // over the field is the calling view's words, translated with it.
+        let mut positional = 0usize;
+        for a in &param_args {
+            let param = match &a.name {
+                Some(n) => v.params.iter().find(|p| p.name == n.name),
+                None => {
+                    let found = v.params.get(positional);
+                    positional += 1;
+                    found
+                }
+            };
+            if let Some(p) = param
+                && self.st.ctx == Ctx::View
+                && super::component::shows_text(&p.ty)
+            {
+                self.mark_shown(&a.value);
+            }
+        }
         let bound = self.bind_args(&v.name, &v.params, &param_args, span, &sig);
         let key = self.node_key(c);
         let node = self.view_node(v, bound, key, span);

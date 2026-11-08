@@ -1,8 +1,8 @@
 //! `org.freedesktop.impl.portal.Email`: an app handing a message to the
 //! person's mail app.
 //!
-//! The person sees what is about to be composed (a question of kind
-//! [`EMAIL_QUESTION`]: recipients, subject, how many attachments) and the
+//! The person sees what is about to be composed (a question of
+//! kind [`EMAIL_QUESTION`]: recipients, subject, how many attachments) and the
 //! message opens in the app they chose for `mailto:` links. Attachments are
 //! the document-portal URIs the frontend made ([`crate::documents`]),
 //! passed on as they are.

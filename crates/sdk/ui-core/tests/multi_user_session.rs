@@ -11,7 +11,6 @@ use tilo_ui::widget::{TextInput, Widget};
 )]
 #[test]
 fn relay_fans_out_presence_and_status_to_remote_peers() {
-    // Case `memory_relay_fans_out_presence_updates_to_both_peers`.
     {
         let mut relay = MemoryRelay::new();
         let alice = relay.attach("alice");
@@ -34,7 +33,6 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         assert!(alice_events.is_empty());
     }
 
-    // Case `memory_relay_fans_out_presence_as_remote_presence_update`.
     {
         let mut relay = MemoryRelay::new();
         let alice = relay.attach("alice");
@@ -66,7 +64,6 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         assert!(alice.poll().is_empty());
     }
 
-    // Case `app_broadcast_presence_completes_loop_to_remote_peer`.
     {
         let mut relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");
@@ -109,7 +106,6 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         );
     }
 
-    // Case `status_crosses_the_same_authenticated_workspace_presence_path`.
     {
         let mut relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");
@@ -153,7 +149,6 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
 
 #[test]
 fn control_reports_and_crdt_deltas_reach_the_right_plane() {
-    // Case `continuation_reports_stay_on_the_shell_control_plane`.
     {
         let mut relay = MemoryRelay::new();
         let alice = relay.attach("alice");
@@ -174,7 +169,6 @@ fn control_reports_and_crdt_deltas_reach_the_right_plane() {
         );
     }
 
-    // Case `crdt_incremental_deltas_replay_on_remote_state`.
     {
         use automerge::ReadDoc;
 
@@ -244,7 +238,6 @@ fn control_reports_and_crdt_deltas_reach_the_right_plane() {
 )]
 #[test]
 fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
-    // Case `two_apps_sync_presence_caret_via_memory_relay`.
     {
         let mut relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");
@@ -275,7 +268,6 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         assert_eq!(caret, Some(7));
     }
 
-    // Case `peer_pointer_position_follows_layout_change`.
     {
         let relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");
@@ -311,7 +303,6 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         );
     }
 
-    // Case `peer_caret_in_text_input_renders_on_remote_app`.
     {
         let relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");
@@ -350,7 +341,6 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         );
     }
 
-    // Case `peer_tab_switch_moves_the_presence_dot`.
     {
         // When a peer announces Arrived on one Tab key and then another, the
         // dot must *move*, not accumulate into a trail of ghost dots.
@@ -401,7 +391,6 @@ fn terminal_write() -> PermissionScope {
 
 #[test]
 fn roles_and_permission_changes_apply_across_the_session() {
-    // Case `viewer_role_denies_terminal_edit_after_settings_applied`.
     {
         let relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");
@@ -417,7 +406,6 @@ fn roles_and_permission_changes_apply_across_the_session() {
         )));
     }
 
-    // Case `permission_change_from_peer_reflects_locally_after_sync`.
     {
         let relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");

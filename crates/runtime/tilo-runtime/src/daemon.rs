@@ -62,6 +62,10 @@ pub struct Args {
     /// that profile even inside a Tilo login, where it otherwise relays to
     /// the desktop's agent door ([`crate::session_door`]).
     pub standalone: bool,
+    /// `--device NAME [--workspace ID]`, for `--connect` only: carry the
+    /// client to that device of the person's agent door instead of this
+    /// one's ([`crate::remote_door`]).
+    pub forward: Option<crate::remote_door::Forward>,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -76,8 +80,6 @@ pub fn validate_profile(profile: &Path) -> io::Result<()> {
 }
 
 /// The same persistent profile is used by daemon, app attachment and MCP proxy.
-/// # Errors
-/// Rejects a missing home directory or a relative profile override.
 pub fn default_profile() -> io::Result<PathBuf> {
     let path = if let Some(value) = std::env::var_os("TILO_RUNTIME_PROFILE") {
         PathBuf::from(value)
@@ -97,17 +99,21 @@ pub fn default_profile() -> io::Result<PathBuf> {
 }
 
 /// Parse native modes while preserving opaque application arguments.
-/// # Errors
-/// Rejects ambiguous modes, missing arguments and relative profiles.
 pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Args> {
     let mut arguments = arguments.into_iter();
     let mut profile = None;
     let mut mode = None;
     let mut dev = false;
     let mut standalone = false;
+    let mut device = None;
+    let mut workspace = None;
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--dev") if !dev => dev = true,
+            Some("--device") if device.is_none() => device = Some(device_named(arguments.next())?),
+            Some("--workspace") if workspace.is_none() => {
+                workspace = Some(workspace_named(arguments.next())?);
+            }
             Some("--standalone") if !standalone => standalone = true,
             Some("--profile") if profile.is_none() => {
                 profile = Some(PathBuf::from(
@@ -163,7 +169,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone], --owner-action INVOCATION_JSON, --join INVITATION, --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
+    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone] [--device NAME [--workspace ID]], --owner-action INVOCATION_JSON, --join INVITATION, --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
     if matches!(mode, Mode::AdmissionDaemon { .. }) && !explicit_profile {
         return Err(invalid(
             "native admission requires an explicit isolated profile",
@@ -177,12 +183,51 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
             "--standalone chooses where --connect goes: use it with --connect",
         ));
     }
+    let forward = forward_of(&mode, device, workspace)?;
     Ok(Args {
         profile,
         mode,
         dev,
         standalone: standalone || explicit_profile,
+        forward,
     })
+}
+
+/// Where `--connect --device NAME [--workspace ID]` goes.
+fn forward_of(
+    mode: &Mode,
+    device: Option<String>,
+    workspace: Option<String>,
+) -> io::Result<Option<crate::remote_door::Forward>> {
+    if (device.is_some() || workspace.is_some()) && *mode != Mode::Connect {
+        return Err(invalid(
+            "--device and --workspace choose where --connect goes: use them with --connect",
+        ));
+    }
+    match device {
+        Some(device) => Ok(Some(crate::remote_door::Forward { device, workspace })),
+        None if workspace.is_some() => Err(invalid(
+            "--workspace chooses a workspace on another device: use it with --device",
+        )),
+        None => Ok(None),
+    }
+}
+
+/// The device `--device` names, by its name or its endpoint id.
+fn device_named(argument: Option<OsString>) -> io::Result<String> {
+    argument
+        .and_then(|arg| arg.into_string().ok())
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty() && name.len() <= 256)
+        .ok_or_else(|| invalid("--device requires a device's name or endpoint id"))
+}
+
+/// The workspace `--workspace` names, by its id.
+fn workspace_named(argument: Option<OsString>) -> io::Result<String> {
+    argument
+        .and_then(|arg| arg.into_string().ok())
+        .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
+        .ok_or_else(|| invalid("--workspace requires a workspace id"))
 }
 
 /// `--run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE ARGS...`, after `--run-app`:
@@ -734,8 +779,6 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
 }
 
 /// Start the existing native endpoint under an existing-owner admission policy.
-/// # Errors
-/// Refuses invalid owner/identity, profile, services or endpoint custody.
 pub fn serve_admission<S: RuntimeServices>(profile: &Path, owner_uid: u32) -> io::Result<()> {
     serve_profile::<S>(profile, StartupPolicy::Admission { owner_uid })
 }
@@ -809,6 +852,7 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
         joiner: session.joiner(),
         search,
         media: session.media(),
+        remote: session.remote_doors(),
     };
     endpoint.accept(&listener)
 }
@@ -822,7 +866,13 @@ struct Endpoint<H> {
     search: Arc<tilo_os_search::OsSearch>,
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn crate::MediaReader>>,
+    /// The person's other devices' agent doors, as this runtime reaches them.
+    remote: Option<Arc<crate::remote_door::Doors>>,
 }
+
+/// The longest first line a native connection is read for before it is
+/// served: a forward to another device, or the first request of any other.
+const FIRST_LINE: u64 = 64 * 1024;
 
 impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
     /// Serve each connection to `listener` on its own thread, at most 64 at once.
@@ -839,6 +889,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
             let media = self.media.clone();
+            let remote = self.remote.clone();
             let active = Arc::clone(&active);
             active.fetch_add(1, Ordering::Relaxed);
             let slot = ConnectionSlot(active);
@@ -846,15 +897,57 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .name("tilo-native-mcp".into())
                 .spawn(move || {
                     let _slot = slot;
+                    // The first line says whether the client asks to be
+                    // carried to another device's agent door; anything else
+                    // is served here, that line first.
+                    let mut reader = match stream.try_clone() {
+                        Ok(clone) => BufReader::new(clone),
+                        Err(error) => {
+                            tracing::debug!(%error, "native runtime client socket");
+                            return;
+                        }
+                    };
+                    let mut first = Vec::new();
+                    if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first)
+                    {
+                        tracing::debug!(%error, "native runtime client disconnected");
+                        return;
+                    }
+                    if let Some(forward) = first
+                        .strip_suffix(b"\n")
+                        .and_then(crate::remote_door::forward_request)
+                    {
+                        match &remote {
+                            // A client asks for nothing more before it is told
+                            // whether the door opened.
+                            Some(remote) if reader.buffer().is_empty() => {
+                                remote.serve_forward(stream, &forward);
+                            }
+                            Some(_) => crate::remote_door::refuse_forward(
+                                stream,
+                                "a forward is the only line before its answer".into(),
+                            ),
+                            None => crate::remote_door::refuse_forward(
+                                stream,
+                                "this runtime reaches none of your other devices".into(),
+                            ),
+                        }
+                        return;
+                    }
+                    let input = io::Cursor::new(first).chain(reader);
                     let server = match factory() {
-                        Ok(server) => Arc::new(server.with_media(media)),
+                        Ok(server) => {
+                            Arc::new(server.with_media(media).with_devices(remote.map(|remote| {
+                                remote as Arc<dyn crate::remote_door::DeviceDirectory>
+                            })))
+                        }
                         Err(error) => {
                             tracing::debug!(%error, "native MCP session admission unavailable");
                             return;
                         }
                     };
                     if let Err(error) =
-                        serve_connection(stream, &server, &status, joiner.as_ref(), &search)
+                        serve_connection(stream, input, &server, &status, joiner.as_ref(), &search)
                     {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
@@ -874,6 +967,7 @@ impl Drop for ConnectionSlot {
 /// MCP requests as [`serve_lines`] does, overlapping one another.
 fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>(
     mut stream: UnixStream,
+    input: impl Read + Send + 'static,
     server: &Arc<McpServer<H>>,
     status: &Status,
     joiner: Option<&crate::Joiner>,
@@ -884,7 +978,7 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>
     // Every connection thread waits on the one app runtime rather than
     // building a runtime per connection.
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
-    let input = spawn_reader(stream.try_clone()?)?;
+    let input = spawn_reader(input)?;
     let status = serde_json::to_value(status).map_err(io::Error::other)?;
     let answer = |value: Value| {
         let native = value.get("native").and_then(Value::as_str);
@@ -998,7 +1092,15 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 /// runtime; elsewhere, or when `standalone`, the persistent daemon of
 /// `profile`, started when none runs. EOF closes only this client's
 /// connection; neither applications nor the daemon are owned here.
-pub fn connect(profile: &Path, standalone: bool) -> io::Result<()> {
+///
+/// With `forward`, the host this process belongs to carries the connection on
+/// to the agent door of the device it names, and this process's stdio is that
+/// door's once it opened ([`crate::remote_door::ask_forward`]).
+pub fn connect(
+    profile: &Path,
+    standalone: bool,
+    forward: Option<&crate::remote_door::Forward>,
+) -> io::Result<()> {
     let route = crate::session_door::route(
         standalone,
         tilo_paths::login::is_tilo_login(),
@@ -1007,7 +1109,7 @@ pub fn connect(profile: &Path, standalone: bool) -> io::Result<()> {
         ),
         Path::exists,
     )?;
-    let stream = match route {
+    let mut stream = match route {
         crate::session_door::Route::Session(door) => UnixStream::connect(&door)
             .map_err(|error| crate::session_door::unreachable_door(&door, &error))?,
         crate::session_door::Route::Standalone => {
@@ -1015,6 +1117,9 @@ pub fn connect(profile: &Path, standalone: bool) -> io::Result<()> {
             UnixStream::connect(profile.join("native.sock"))?
         }
     };
+    if let Some(forward) = forward {
+        crate::remote_door::ask_forward(&mut stream, forward)?;
+    }
     bridge_stdio(stream)
 }
 

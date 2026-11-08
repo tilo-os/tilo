@@ -231,6 +231,7 @@ impl TerminalWidget {
     /// the shell lent a tab it shows in its own process; without one the
     /// terminal is the app of its own process's window.
     pub fn show_in_window(&mut self, hosted: Option<HostedWindow>) {
+        self.sessions.in_window(hosted.clone());
         self.life.window = match hosted {
             Some(window) => TerminalWindow::Hosted(window),
             None => TerminalWindow::Own,

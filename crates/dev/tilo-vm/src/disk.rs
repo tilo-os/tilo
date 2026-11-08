@@ -435,9 +435,6 @@ pub fn split_status(stdout: &str) -> (u16, &str) {
 }
 
 /// GET `url`; returns status and body.
-///
-/// # Errors
-/// curl missing or unable to connect.
 pub fn get(
     runner: &mut dyn Runner,
     url: &str,
@@ -492,9 +489,6 @@ pub fn candidate_tags(versions_json: &str) -> Vec<String> {
 }
 
 /// Hex SHA-256 of a file.
-///
-/// # Errors
-/// Read failures.
 pub fn file_sha256(path: &Path) -> Result<String, CliError> {
     let mut file =
         std::fs::File::open(path).map_err(CliError::io(format!("read {}", path.display())))?;
@@ -537,9 +531,6 @@ pub fn cached(path: &Path, disk: &Disk) -> bool {
 
 /// Download `disk` to `dest` (resuming a partial download), verify its
 /// checksum, and mark it verified.
-///
-/// # Errors
-/// Download failures and checksum mismatches.
 pub fn fetch(
     runner: &mut dyn Runner,
     disk: &Disk,

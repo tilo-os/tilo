@@ -9,13 +9,9 @@ use tilo_app_package::{
     BlobSource, DiscardBlobs, Manifest, SigningIdentity, Verification, pack, verify,
 };
 
-/// Reads a publisher key file (see [`registry_client::key`]).
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read or is not a key file.
+/// Reads a publisher key file (see [`app_registry::publisher::key`]).
 pub fn load_identity(path: &Path) -> Result<SigningIdentity> {
-    registry_client::key::load(path).map(SigningIdentity::from_signing_key)
+    app_registry::publisher::key::load(path).map(SigningIdentity::from_signing_key)
 }
 
 /// What [`pack_manifest`] produced.

@@ -546,9 +546,6 @@ impl Boot {
 
     /// Put the image's own kernel back: its default entry returns and every
     /// tilo-vm entry goes.
-    ///
-    /// # Errors
-    /// No supported loader, or I/O failures.
     pub fn restore_image(&self) -> Result<BootChange, DaemonError> {
         let loader = self.loader()?;
         let mut state = self.state();
@@ -603,9 +600,6 @@ impl Boot {
 
     /// After the reboot: is the expected kernel running? Then its entry
     /// becomes the default.
-    ///
-    /// # Errors
-    /// No supported loader, or the default cannot be set.
     pub fn confirm(&self, expect_version: Option<&str>) -> Result<BootConfirmResult, DaemonError> {
         let running = read_trimmed("/proc/sys/kernel/osrelease");
         let version = read_trimmed("/proc/sys/kernel/version");

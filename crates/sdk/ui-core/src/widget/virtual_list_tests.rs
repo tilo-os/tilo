@@ -1206,58 +1206,6 @@ fn a_columns_rows_start_on_its_content_edge_and_leave_the_bar_its_gutter() {
     assert!((row.x0 - edge).abs() < 0.5 && (row.x1 - (300.0 - edge)).abs() < 0.5);
 }
 
-/// The rect of the first widget under `widget` that holds no other.
-fn first_leaf(widget: &dyn Widget) -> Rect {
-    widget
-        .children()
-        .first()
-        .map_or_else(|| widget.get_rect(), |child| first_leaf(*child))
-}
-
-#[test]
-fn flush_page_rows_with_page_edges_stand_where_a_page_puts_its_content() {
-    use crate::widget::arrange::{Page, PageRowEdges};
-    let text = |n: u32| Box::new(crate::widget::Text::new(&format!("row {n}"))) as Element;
-    let mut list = VirtualList::from_items(
-        vec![0_u32, 1, 2],
-        40.0,
-        |item| *item,
-        move |item, _, _| Box::new(Page::full().row().push(text(*item))) as Element,
-    )
-    .unwrap()
-    .with_viewport_height(400.0)
-    .flush()
-    .with_edges(PageRowEdges::new());
-    // The first layout learns the rows' width, the second places them by it.
-    let _ = lay_out(&mut list, 600.0);
-    let _ = lay_out(&mut list, 600.0);
-    let row = first_leaf(list.mounted[0].widget.as_ref());
-
-    let mut page = Page::full().push(text(0));
-    let mut taffy = TaffyTree::new();
-    let mut node_map = HashMap::new();
-    let node = page.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-    taffy
-        .compute_layout(
-            node,
-            Size {
-                width: AvailableSpace::Definite(600.0),
-                height: AvailableSpace::Definite(400.0),
-            },
-        )
-        .unwrap();
-    page.apply_layout(&taffy, node, Point::ZERO);
-    let alone = first_leaf(&page);
-    assert!(
-        (row.x0 - alone.x0).abs() < 0.5,
-        "one content edge: {row:?} {alone:?}"
-    );
-    assert!(
-        (row.y0 - alone.y0).abs() < 0.5,
-        "the page's top spacing: {row:?} {alone:?}"
-    );
-}
-
 #[test]
 fn a_filling_list_takes_its_parents_height_as_its_viewport() {
     let mut list = plain_rows(1000).filling();
@@ -1878,6 +1826,51 @@ fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {
         })
         .collect();
     assert_eq!(selected, [false, true, false], "only the chosen row is");
+}
+
+/// A finger's tap on a row wrapped in its swipe is a click on that row all the same: the swipe
+/// holds the press, the finger lifts where it came down, and the list takes the row.
+#[test]
+fn a_tap_on_a_row_wrapped_in_its_swipe_is_its_click() {
+    let mut list = VirtualList::from_items(
+        vec![0_u32, 1, 2],
+        40.0,
+        |item| *item,
+        |item, _, _| {
+            let row = Box::new(crate::widget::Text::new(&format!("row {item}"))) as Element;
+            Box::new(crate::widget::SwipeRow::new(row, None, None)) as Element
+        },
+    )
+    .unwrap()
+    .with_viewport_height(200.0);
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let at = list.row_rect(&1).expect("the row is placed").center();
+    let send = |list: &mut VirtualList<VecListModel<u32, u32>>, event: &WindowEvent| {
+        Dispatch::new()
+            .layout(&taffy, node)
+            .send(list, event)
+            .handled
+    };
+    let touch = |phase, at: Point| {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            force: None,
+            id: 7,
+        })
+    };
+    // The finger comes down on the row and lifts where it came down: the platform turns that
+    // into the pointer's press and release at the same place.
+    send(&mut list, &touch(winit::event::TouchPhase::Started, at));
+    send(&mut list, &crate::synthetic_input::cursor_moved(at.x, at.y));
+    send(&mut list, &crate::synthetic_input::mouse_press());
+    send(&mut list, &crate::synthetic_input::mouse_release());
+    send(&mut list, &touch(winit::event::TouchPhase::Ended, at));
+    assert!(
+        list.selection().is_selected(&1),
+        "the tapped row is the list's choice, not the swipe's"
+    );
 }
 
 /// A change the person just made moves the rows it displaced from where

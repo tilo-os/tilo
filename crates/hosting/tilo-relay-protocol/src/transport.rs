@@ -573,6 +573,28 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
+
+    /// A device asks the host it is joined to what it may do there and for its
+    /// workspaces: the postcard-encoded [`WorkspacesRequest`], answered
+    /// through [`Self::WorkspacesReply`] with the asker's `request_id`. The
+    /// connection says who asks; the host checks that device's authority over
+    /// each request as every door does.
+    ///
+    /// [`WorkspacesRequest`]: crate::workspaces::WorkspacesRequest
+    WorkspacesRequest {
+        request_id: u64,
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
+
+    /// The host's answer to [`Self::WorkspacesRequest`] with the same
+    /// `request_id`: the postcard-encoded
+    /// [`WorkspacesReply`](crate::workspaces::WorkspacesReply).
+    WorkspacesReply {
+        request_id: u64,
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
 }
 
 impl Envelope {
@@ -623,6 +645,8 @@ impl Envelope {
             // spelling it was first written under.
             Self::WorkspaceBootstrap { .. } => "RoomBootstrap",
             Self::RecordContentWant { .. } => "RecordContentWant",
+            Self::WorkspacesRequest { .. } => "WorkspacesRequest",
+            Self::WorkspacesReply { .. } => "WorkspacesReply",
         }
     }
 
@@ -670,7 +694,12 @@ impl Envelope {
             | Self::RecordOpened { workspace_id, .. }
             | Self::WorkspaceBootstrap { workspace_id, .. }
             | Self::RecordContentWant { workspace_id, .. } => Some(*workspace_id),
-            Self::Ping | Self::Pong | Self::PeerRelayHello { .. } | Self::HostAction { .. } => None,
+            Self::Ping
+            | Self::Pong
+            | Self::PeerRelayHello { .. }
+            | Self::HostAction { .. }
+            | Self::WorkspacesRequest { .. }
+            | Self::WorkspacesReply { .. } => None,
         }
     }
 }

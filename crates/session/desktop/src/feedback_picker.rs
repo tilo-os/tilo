@@ -28,20 +28,19 @@ use crate::i18n::{t, t_args};
 /// The most parts one report is about.
 pub const MAX_PICKS: usize = tilo_app::feedback::report::MAX_PICKS;
 
-/// How far the pointer travels with the button down before it drags a
-/// rectangle rather than clicks.
+/// How far the pointer travels with the button down before it drags a rectangle rather than clicks.
 const DRAG_SLOP: f64 = 4.0;
 /// How far a highlight stands off the part it outlines.
 const OUTSET: f64 = 3.0;
 const RADIUS: f64 = 6.0;
-/// How much of the theme's modal scrim the picker dims with: enough that
-/// the lit part stands out even when it is most of the screen.
+/// How much of the theme's modal scrim the picker dims with: enough that the lit part stands out
+/// even when it is most of the screen.
 const DIM_SHARE: f32 = 0.75;
 /// The hint's distance from the screen's top: over the desktop's top bar,
 /// where the least of what people report sits.
 const HINT_TOP: f64 = 6.0;
-/// The hint's distance from the screen's bottom, when it moves out of the
-/// way of what is lit up top.
+/// The hint's distance from the screen's bottom, when it moves out of the way of what is lit up
+/// top.
 const HINT_BOTTOM: f64 = 28.0;
 
 /// One part of the screen the picker can light up and pick.
@@ -56,13 +55,11 @@ pub struct PickTarget {
 }
 
 impl PickTarget {
-    /// What a part of `app` is called while picking it and in the review:
-    /// what kind of thing the app says it is ("Message in Chat"), else the
-    /// app's own name for it by its role ("The “Send message” button in
-    /// Chat"), else its role (`ListItem`, as assistive technology names it:
-    /// "A list item in Chat"). Content never names a part here. An `app`
-    /// with no display name known leaves the part alone ("A list item"):
-    /// an app's id only routes and is never shown.
+    /// What a part of `app` is called while picking it and in the review: what kind of thing the
+    /// app says it is ("Message in Chat"), else the app's own name for it by its role ("The “Send
+    /// message” button in Chat"), else its role (`ListItem`, as assistive technology names it: "A
+    /// list item in Chat"). Content never names a part here. An `app` with no display name known
+    /// leaves the part alone ("A list item"): an app's id only routes and is never shown.
     #[must_use]
     pub fn caption(app: &str, role: &str, kind: Option<&str>, copy: Option<&str>) -> String {
         let what = match (kind, copy) {
@@ -85,10 +82,9 @@ impl PickTarget {
 
 /// The host's view of what is on screen, from its retained widget tree.
 pub trait PickSource {
-    /// The nameable parts under `point`, the outermost first and the
-    /// deepest last.
+    /// The nameable parts under `point` , the outermost first and the deepest last.
     fn at(&self, point: Point) -> Vec<PickTarget>;
-    /// The outermost nameable parts wholly inside `area`, at most `limit`.
+    /// The outermost nameable parts wholly inside `area` , at most `limit` .
     fn within(&self, area: Rect, limit: usize) -> Vec<PickTarget>;
 }
 
@@ -100,16 +96,15 @@ pub enum PickerOutcome {
 }
 
 struct Session {
-    /// How far the screen is dimmed: it comes as a modal's scrim does, on
-    /// [`Appear`], so a shortcut dims it at once and a click fades it in.
+    /// How far the screen is dimmed: it comes as a modal's scrim does, on [`Appear`], so a shortcut
+    /// dims it at once and a click fades it in.
     dim: Presence,
-    /// What is under the pointer, outermost first; `level` indexes the
-    /// one lit.
+    /// What is under the pointer, outermost first; `level` indexes the one lit.
     chain: Vec<PickTarget>,
     level: usize,
-    /// Where the highlight is drawn: it lands on the first part lit and on
-    /// a part a key lights, and glides on [`ListChange::MOVE`], as a
-    /// selection does, to a part the pointer lights, so the eye follows it.
+    /// Where the highlight is drawn: it lands on the first part lit and on a part a key lights, and
+    /// glides on [`ListChange::MOVE`], as a selection does, to a part the pointer lights, so the
+    /// eye follows it.
     glide: Option<MotionValue<Rect>>,
     selected: Vec<PickTarget>,
     press: Option<Point>,
@@ -143,15 +138,13 @@ impl Session {
 pub struct FeedbackPicker {
     session: Option<Session>,
     outcome: Option<PickerOutcome>,
-    /// The motion the person allows, as of the last draw: what the next
-    /// open dims with.
+    /// The motion the person allows, as of the last draw: what the next open dims with.
     motion: EffectiveMotion,
 }
 
 impl FeedbackPicker {
-    /// Open as the input the toolkit handled last asked for it
-    /// ([`input_source`]): a key or an action dims the screen at once, a
-    /// click fades it in.
+    /// Open as the input the toolkit handled last asked for it ([`input_source`]): a key or an
+    /// action dims the screen at once, a click fades it in.
     pub fn open(&mut self, now: Instant) {
         self.outcome = None;
         let mut dim = Presence::closed();
@@ -184,10 +177,9 @@ impl FeedbackPicker {
         self.session.as_ref().map_or(&[], |s| s.selected.as_slice())
     }
 
-    /// The rectangle being dragged, while the button is down past a click:
-    /// releasing it picks what [`PickSource::within`] finds there. A host
-    /// whose parts are drawn elsewhere asks for them before it lets the
-    /// release through.
+    /// The rectangle being dragged, while the button is down past a click: releasing it picks what
+    /// [`PickSource::within`] finds there. A host whose parts are drawn elsewhere asks for them
+    /// before it lets the release through.
     #[must_use]
     pub fn dragging(&self) -> Option<Rect> {
         self.session.as_ref().and_then(|s| s.drag)
@@ -218,7 +210,7 @@ impl FeedbackPicker {
             .is_some_and(|s| s.dim.is_moving(now) || s.glide.is_some_and(|g| g.is_moving(now)))
     }
 
-    /// Light up what is under `point`.
+    /// Light up what is under `point` .
     pub fn hover(&mut self, point: Point, source: &dyn PickSource, now: Instant) {
         let Some(session) = self.session.as_mut() else {
             return;
@@ -243,8 +235,8 @@ impl FeedbackPicker {
         relight(session, self.motion, MotionSource::Pointer, now);
     }
 
-    /// Widen to the part around what is lit (`out`) or narrow back in, as
-    /// `source` asked: a key lands the highlight, the wheel glides it.
+    /// Widen to the part around what is lit (`out`) or narrow back in, as `source` asked: a key
+    /// lands the highlight, the wheel glides it.
     pub fn widen(&mut self, out: bool, source: MotionSource, now: Instant) {
         let Some(session) = self.session.as_mut() else {
             return;
@@ -260,7 +252,7 @@ impl FeedbackPicker {
         relight(session, self.motion, source, now);
     }
 
-    /// The person pressed or released the primary button at `point`.
+    /// The person pressed or released the primary button at `point` .
     pub fn button(&mut self, point: Point, pressed: bool, shift: bool, source: &dyn PickSource) {
         let Some(session) = self.session.as_mut() else {
             return;
@@ -320,9 +312,8 @@ impl FeedbackPicker {
         true
     }
 
-    /// Route a window event; while open the picker takes every pointer and
-    /// key event, so nothing underneath reacts to a pick. The pointer is
-    /// `cursor`, in logical pixels.
+    /// Route a window event; while open the picker takes every pointer and key event, so nothing
+    /// underneath reacts to a pick. The pointer is `cursor` , in logical pixels.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -371,7 +362,7 @@ impl FeedbackPicker {
         true
     }
 
-    /// Draw over everything else within `bounds`.
+    /// Draw over everything else within `bounds` .
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -467,8 +458,8 @@ fn round(rect: Rect) -> RoundedRect {
     RoundedRect::from_rect(rect.inflate(OUTSET, OUTSET), RADIUS)
 }
 
-/// The screen with a hole for each of `holes`; one inside another is left
-/// out, since an even-odd fill would dim it again.
+/// The screen with a hole for each of `holes` ; one inside another is left out, since an even-odd
+/// fill would dim it again.
 fn dimmed(bounds: Rect, holes: &[Rect]) -> BezPath {
     let mut path = bounds.to_path(0.1);
     for (index, hole) in holes.iter().enumerate() {
@@ -482,8 +473,8 @@ fn dimmed(bounds: Rect, holes: &[Rect]) -> BezPath {
     path
 }
 
-/// A picked part's number, on its top-left corner: the shared badge in
-/// the accent, the selection's colour.
+/// A picked part's number, on its top-left corner: the shared badge in the accent, the selection's
+/// colour.
 fn badge(
     scene: &mut Scene,
     transform: Affine,
@@ -501,8 +492,7 @@ fn badge(
         .paint(scene, transform, text, theme);
 }
 
-/// What the lit part is, just above it (inside its top when it touches the
-/// screen's top).
+/// What the lit part is, just above it (inside its top when it touches the screen's top).
 fn caption(
     scene: &mut Scene,
     transform: Affine,
@@ -540,8 +530,8 @@ fn caption(
     );
 }
 
-/// The calm line at the top saying what to do, with Continue and
-/// Cancel once something is picked. Where its buttons are.
+/// The calm line at the top saying what to do, with Continue and Cancel once something is picked.
+/// Where its buttons are.
 fn hint(
     scene: &mut Scene,
     transform: Affine,
@@ -584,9 +574,8 @@ fn hint(
     let pill_h = button_h + 12.0;
     let pill_w = (w + 2.0 * pad + buttons_w).min(bounds.width() - 16.0);
     let x0 = bounds.center().x - pill_w / 2.0;
-    // Over the top bar, clear of the windows and their composers, unless
-    // that covers what is lit or picked: then low, so the hint never hides
-    // the part it talks about.
+    // Over the top bar, clear of the windows and their composers, unless that covers what is lit or
+    // picked: then low, so the hint never hides the part it talks about.
     let high = Rect::new(
         x0,
         bounds.y0 + HINT_TOP,

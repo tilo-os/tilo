@@ -76,9 +76,6 @@ impl Default for AdmissionLimits {
 }
 impl AdmissionLimits {
     /// Check dimensions and RGBA byte length without allocating pixels.
-    ///
-    /// # Errors
-    /// Refuses zero, excessive or overflowing dimensions and excessive bytes.
     pub fn rgba_len(self, width: u32, height: u32) -> Result<usize, DecodeError> {
         if width == 0 || height == 0 {
             return Err(DecodeError::InvalidDimensions);
@@ -100,9 +97,6 @@ impl AdmissionLimits {
     /// This does not authorize fetches or worker execution. The image library's
     /// metadata allocator limit is best effort; worker execution needs a separate
     /// enforced memory boundary.
-    ///
-    /// # Errors
-    /// Refuses malformed headers and encoded, source-dimension or RGBA excess.
     pub fn admit(self, encoded: &[u8]) -> Result<(u32, u32), DecodeError> {
         if encoded.len() > self.max_encoded_bytes {
             return Err(DecodeError::EncodedLimit);

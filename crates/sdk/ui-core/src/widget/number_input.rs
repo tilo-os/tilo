@@ -1,28 +1,19 @@
-//! `NumberInput` — a compact, click-to-type numeric field with steppers.
+//! `NumberInput` — a compact, click-to-type numeric field with steppers: a number you can nudge
+//! with `−`/`+` or click and type directly, parsed, validated and clamped to a range.
 //!
-//! A number you can nudge with `−`/`+` buttons or click and type directly;
-//! values are parsed, validated, and clamped to a range.
+//! Two stepper buttons flank an embedded local-mode [`TextInput`]. Clicking the field focuses and
+//! pre-selects it; **Enter**, a stepper click, a click outside or blur all **commit** — parsing
+//! the leading number (tolerating a trailing unit like `px`), clamping to `[min, max]`, and
+//! reverting invalid text to the last good value.
 //!
-//! Two stepper buttons flank an embedded local-mode [`TextInput`].
-//! Clicking the field focuses and pre-selects it; **Enter**, a stepper
-//! click, a click outside, or blur all **commit** — parsing the leading
-//! number (tolerating a trailing unit like `px`), clamping to
-//! `[min, max]`, and reverting invalid text to the last good value.
+//! [`take_changed`](NumberInput::take_changed) polls a committed change for the owner to submit;
+//! [`set_value`](NumberInput::set_value) pushes one in silently; [`on_action`](NumberInput::on_action)
+//! routes each commit through an action, and [`from_state`](NumberInput::from_state) supplies typed
+//! process-local two-way binding. The field never writes the document.
 //!
-//! [`take_changed`](NumberInput::take_changed) polls a committed user
-//! change for the owner to submit; [`set_value`](NumberInput::set_value)
-//! pushes one in silently; [`on_action`](NumberInput::on_action) routes each
-//! commit through an action, and [`from_state`](NumberInput::from_state)
-//! supplies typed process-local two-way binding. The field never writes the
-//! document.
-//!
-//! Automatic dimensions use a text-scaled compact minimum and grow horizontally
-//! to fit the formatted value, field padding and steppers. [`NumberInput::with_size`]
-//! keeps an explicit logical allocation; long values then scroll in the field.
-//!
-//! [`NumberStepperFace`] paints the same steppers (and, inline, the value
-//! between them) for a painted host that lays its own rows, so a stepper
-//! drawn by hand is the one the widget draws.
+//! Automatic dimensions use a text-scaled compact minimum and grow to fit the formatted value,
+//! padding and steppers; [`NumberInput::with_size`] keeps an explicit allocation, and long values
+//! then scroll in the field. [`NumberStepperFace`] paints the same steppers for a painted host.
 
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
@@ -341,13 +332,7 @@ impl<'a> NumberStepperFace<'a> {
     /// Paint the whole stepper: the steppers and, inline, the value.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>) {
         if self.disabled {
-            ctx.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                ctx.transform,
-                &self.rect,
-            );
+            crate::widget::paint_disabled(ctx.scene, ctx.transform, &self.rect);
         }
         self.paint_steppers(ctx);
         if !self.framed {
@@ -847,17 +832,19 @@ impl Widget for NumberInput {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        self.dirty = true;
         // Don't clobber the field while the user is mid-edit; the model is
         // adopted as soon as editing ends.
         if self.field.is_focused() {
             return;
         }
+        // A sync is a read of what the document holds, not a paint: only a
+        // pulled number the stepper was not already showing is one.
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(v) = binding.pull(state, root)
         {
             let clamped = v.clamp(self.min, self.max);
             if !clamped.is_nan() && clamped.total_cmp(&self.value).is_ne() {
+                self.dirty = true;
                 self.value = clamped;
                 self.sync_field();
             }
@@ -931,13 +918,7 @@ impl Widget for NumberInput {
     ) {
         let disabled = !self.effectively_enabled();
         if disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &self.rect,
-            );
+            crate::widget::paint_disabled(scene, transform, &self.rect);
         }
 
         // --- Steppers: the shared stepper face, bare when compact. The value

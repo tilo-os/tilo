@@ -18,6 +18,8 @@ COPY os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
 COPY os/external-assets/github-assets.tsv /tilo-components/external-assets/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
+    os/usr/lib/systemd/user/tilo-app-update.service \
+    os/usr/lib/systemd/user/tilo-app-update.timer \
     /tilo-components/usr/lib/systemd/user/
 COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share/licenses/tilo-speech-worker/
 # The interface declaration the session judges apps against travels with it.

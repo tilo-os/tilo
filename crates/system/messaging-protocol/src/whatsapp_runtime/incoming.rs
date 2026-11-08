@@ -28,8 +28,6 @@ impl WhatsappRuntime {
     /// wrappers require their own semantics and are never flattened to text.
     /// The supervisor must durably store accepted events before acknowledging
     /// them; this parser does not register a subscription or send an ACK.
-    /// # Errors
-    /// Refuses foreign sources, stale custody, non-direct or unsupported data.
     pub fn incoming_text(
         &self,
         context: &IncomingContext<'_>,

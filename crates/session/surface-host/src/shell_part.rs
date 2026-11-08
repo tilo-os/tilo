@@ -1,8 +1,8 @@
 //! A part of a tilolang shell, covering one output, drawn under the windows.
 //!
 //! A shell package's views run in a tilolang instance (`tilolang_tilo::instance`), exactly as
-//! an app's do, and draw through the same UI host half (`tilo_ui_host::AppWindow`, here as a
-//! [`AppWindow::part`]: the view as it is, no window shell). The toolkit lays that widget tree
+//! an app's do, and draw through the same UI host half (`tilo_ui_host::AppWindow`, here as
+//! a [`AppWindow::part`]: the view as it is, no window shell). The toolkit lays that widget tree
 //! out and the CPU rasterizes it, as [`WidgetHost`] does for every widget tree the session
 //! shows; the compositor gets the buffer as a layer. Nothing here renders on its own.
 //!
@@ -485,6 +485,25 @@ pub struct ArrangementStripReading {
     pub canvas_y: i64,
     pub canvas_width: i64,
     pub canvas_height: i64,
+    /// Whether the strip's window floats above the workspace's windows,
+    /// rather than standing among them in its row.
+    #[serde(default)]
+    pub floating: bool,
+    /// The corner of the work area a floating window keeps its distance from:
+    /// `top-left`, `top-right`, `bottom-right` or `bottom-left`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub float_corner: String,
+    /// Its distance from that corner's side edge, in canvas pixels.
+    #[serde(default)]
+    pub float_dx: i64,
+    /// Its distance from that corner's top or bottom edge, in canvas pixels.
+    #[serde(default)]
+    pub float_dy: i64,
+    /// Its floating width and height in canvas pixels.
+    #[serde(default)]
+    pub float_width: i64,
+    #[serde(default)]
+    pub float_height: i64,
     pub shell: String,
 }
 
@@ -1713,8 +1732,12 @@ impl Platform for ShellPlatform {
         tilo_ui_host::i18n::word(id, args, id)
     }
 
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_catalogues(catalogues);
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        if window {
+            tilo_ui_host::i18n::add_catalogues(catalogues);
+        } else {
+            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        }
     }
 
     fn words_revision(&self) -> u64 {

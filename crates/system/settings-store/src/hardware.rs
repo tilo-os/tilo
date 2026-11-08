@@ -7,6 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::keyboard_shortcuts::{ShortcutCategory, ShortcutHome};
+
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tilo_lock::MutexRecover as _;
@@ -489,9 +491,6 @@ impl DisplayTransaction {
     /// Construct an admitted request without writing storage. Its identity
     /// stays unique among requests in this process even within one clock tick.
     /// The request becomes effective only after its normal durable save.
-    ///
-    /// # Errors
-    /// Returns an error if the request identity counter is exhausted.
     pub fn prepare_request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static LAST_REQUEST: AtomicU64 = AtomicU64::new(0);
@@ -1245,10 +1244,6 @@ impl DisplayConfig {
     }
 
     /// Remember this as the layout for `set`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the profiles can't be serialised or written.
     pub fn save_for(&self, set: &DisplaySet) -> std::io::Result<()> {
         let mut profiles = DisplayProfiles::load();
         profiles.remember(set, self);
@@ -1855,129 +1850,260 @@ impl RichInputConfig {
     }
 }
 
-#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(remote = "Self", rename_all = "snake_case")]
-pub enum ShortcutAction {
-    Search,
-    WorkspaceOverview,
-    Lock,
-    QuickSettings,
-    ShortcutHelp,
-    FocusPreviousWindow,
-    FocusNextWindow,
-    PreviousTab,
-    NextTab,
-    /// Show the focused tab's shell context menu.
-    TabMenu,
-    PreviousStrip,
-    NextStrip,
-    PreviousWorkspace,
-    NextWorkspace,
-    ToggleMaximize,
-    /// Maximize the focused window group; nothing when it already is.
-    MaximizeWindow,
-    /// Restore the focused window group from maximized; nothing when it is not maximized.
-    RestoreWindow,
-    DetachTab,
-    AttachTabLeft,
-    AttachTabRight,
-    MoveGroupLeft,
-    MoveGroupRight,
-    /// Carry the focused window group, whole, into the strip above.
-    MoveGroupToPreviousStrip,
-    /// Carry the focused window group, whole, into the strip below.
-    MoveGroupToNextStrip,
-    /// Move the focused window group onto the display to the left of its
-    /// own (the previous one in reading order).
-    MoveGroupToPreviousDisplay,
-    /// Move the focused window group onto the display to the right of its
-    /// own (the next one in reading order).
-    MoveGroupToNextDisplay,
-    ResizeNarrower,
-    ResizeWider,
-    /// Bring back the most recently closed tab in the current workspace.
-    ReopenClosedTab,
-    /// Focus the Nth window group of the current strip (Ctrl+Super+1 … Ctrl+Super+9).
-    FocusGroup1,
-    FocusGroup2,
-    FocusGroup3,
-    FocusGroup4,
-    FocusGroup5,
-    FocusGroup6,
-    FocusGroup7,
-    FocusGroup8,
-    FocusGroup9,
-    /// Go to the Nth strip of the workspace, counting from the top
-    /// (Super+1 … Super+9).
-    FocusStrip1,
-    FocusStrip2,
-    FocusStrip3,
-    FocusStrip4,
-    FocusStrip5,
-    FocusStrip6,
-    FocusStrip7,
-    FocusStrip8,
-    FocusStrip9,
-    OpenFiles,
-    OpenTerminal,
-    ClipboardHistory,
-    Notifications,
-    ToggleFullscreen,
-    ToggleMagnifier,
-    MagnifierZoomIn,
-    MagnifierZoomOut,
-    PowerMenu,
-    /// Switch to the next keyboard input source.
-    NextInputSource,
-    /// Open the emoji picker over the focused text field.
-    EmojiPicker,
-    /// Ask an agent about what is selected in the focused window, in the
-    /// quick composer seeded with that selection.
-    AskAgent,
-    /// Say something beside the pointer, to the people in the window
-    /// under it (cursor chat), wherever the keyboard is.
-    SaySomething,
-    /// Point at what is not working and report it (the feedback picker).
-    ReportProblem,
-    DictationToggle,
-    DictationFinish,
-    DictationCancel,
+/// The one table of the desktop's rebindable actions: each row is the
+/// variant, its id, its category and home, the published action it runs and
+/// the chord it answers by default. The enum, [`ShortcutAction::ALL`], ids,
+/// label keys, actions, homes, categories and default chords all come from
+/// the rows, so a shortcut is added, moved or rebound in one place.
+macro_rules! shortcut_actions {
+    ($count:literal; $(
+        $(#[$meta:meta])*
+        $variant:ident => $id:literal, $category:ident, $home:ident, $action:expr, $chord:expr $(,)?
+    );* $(;)?) => {
+        /// A desktop action a shortcut can run.
+        #[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(remote = "Self", rename_all = "snake_case")]
+        pub enum ShortcutAction {
+            $($(#[$meta])* $variant,)*
+        }
+
+        crate::read_through_json_value!(ShortcutAction);
+
+        impl ShortcutAction {
+            /// Every rebindable desktop action, in the order it is listed.
+            pub const ALL: [Self; $count] = [$(Self::$variant),*];
+
+            /// Stable id, as the action door and the Fluent keys spell it.
+            #[must_use]
+            pub const fn id(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $id,)*
+                }
+            }
+
+            /// The action `id` names.
+            #[must_use]
+            pub fn from_id(id: &str) -> Option<Self> {
+                Self::ALL.into_iter().find(|action| action.id() == id)
+            }
+
+            /// Fluent key of what this action is called.
+            #[must_use]
+            pub fn label_key(self) -> String {
+                format!("shortcut-name-{}", self.id())
+            }
+
+            /// The action that does what this shortcut does, as the provider
+            /// that publishes it and its id within that provider, when the
+            /// shell publishes one.
+            ///
+            /// This is the one table a chord and an action share: the overlay
+            /// host runs a chord by running this action, so a key, a palette
+            /// click and an agent's invocation cannot drift into three
+            /// behaviours, and the shortcut guide, Settings and the palette
+            /// name the action beside the chord. A shortcut whose action the
+            /// shell does not publish yet is `None`, and its chord runs the
+            /// shell's own implementation.
+            #[must_use]
+            pub const fn action(self) -> Option<(&'static str, &'static str)> {
+                match self {
+                    $(Self::$variant => $action,)*
+                }
+            }
+
+            /// Which side of the desktop carries this shortcut out
+            /// ([`ShortcutHome`]): its own windows and strips, or the session
+            /// under them the device, its surfaces and its people.
+            #[must_use]
+            pub const fn home(self) -> ShortcutHome {
+                match self {
+                    $(Self::$variant => ShortcutHome::$home,)*
+                }
+            }
+
+            /// What part of the desktop the shortcut belongs to; Settings
+            /// groups by it.
+            #[must_use]
+            pub const fn category(self) -> ShortcutCategory {
+                match self {
+                    $(Self::$variant => ShortcutCategory::$category,)*
+                }
+            }
+        }
+
+        /// The chord each action answers to out of the box.
+        pub(crate) fn default_shortcut_bindings() -> BTreeMap<ShortcutAction, KeyChord> {
+            [
+                $((ShortcutAction::$variant, $chord),)*
+            ]
+            .into_iter()
+            .collect()
+        }
+    };
 }
 
-crate::read_through_json_value!(ShortcutAction);
+#[rustfmt::skip]
+shortcut_actions! {
+    65;
 
+    Search => "search", System, Session, None, default_chord(&["Super"], "space");
+
+    WorkspaceOverview => "workspace-overview", System, Desk, Some(("actions", "overview.toggle")), default_chord(&["Super"], "tab");
+
+    Lock => "lock", System, Session, Some(("session", "lock")), default_chord(&["Super"], "l");
+
+    QuickSettings => "quick-settings", System, Session, Some(("actions", "quick-settings.open")), default_chord(&["Super"], "q");
+
+    /// A physical question-mark press reports the shifted slash key plus
+    /// Shift, so the default is that chord rather than a bare slash.
+    ShortcutHelp => "shortcut-help", System, Session, Some(("actions", "shortcut-help.toggle")), default_chord(&["Shift", "Super"], "/");
+
+    // Spatial arrows are the always-visible desktop model. Alt+Tab remains
+    // an immutable conventional ring alias in the shell.
+    FocusPreviousWindow => "focus-previous-window", Navigation, Desk, None, default_chord(&["Super"], "left");
+    FocusNextWindow => "focus-next-window", Navigation, Desk, None, default_chord(&["Super"], "right");
+
+    // Ctrl+Tab and Ctrl+Shift+Tab belong to the focused app first: browsers,
+    // editors and terminals switch their own tabs with them, and a Tilo app
+    // hands them to the window group only when no widget used them
+    // (`ui::shell_tabs`). Super on top of the same chord is the desktop's
+    // and works whatever the app is. Plain Super+Tab is the overview.
+    PreviousTab => "previous-tab", Navigation, Desk, Some(("actions", "tab.previous")), default_chord(&["Ctrl", "Shift", "Super"], "tab");
+    NextTab => "next-tab", Navigation, Desk, Some(("actions", "tab.next")), default_chord(&["Ctrl", "Super"], "tab");
+
+    /// Show the focused tab's shell context menu.
+    TabMenu => "tab-menu", Windows, Session, Some(("actions", "tab.menu")), default_chord(&["Super"], "f10");
+
+    // Super+Up/Down are the Windows and GNOME maximize and restore. Strips
+    // are one level out, on Ctrl+Super; Shift carries the focused group the
+    // same way (docs/architecture/window-management.md).
+    PreviousStrip => "previous-strip", Navigation, Desk, Some(("actions", "strip.focus-previous")), default_chord(&["Ctrl", "Super"], "up");
+    NextStrip => "next-strip", Navigation, Desk, Some(("actions", "strip.focus-next")), default_chord(&["Ctrl", "Super"], "down");
+    PreviousWorkspace => "previous-workspace", Navigation, Desk, Some(("actions", "workspace.previous")), default_chord(&["Super"], "pageup");
+    NextWorkspace => "next-workspace", Navigation, Desk, Some(("actions", "workspace.next")), default_chord(&["Super"], "pagedown");
+
+    ToggleMaximize => "toggle-maximize", Windows, Desk, Some(("actions", "group.toggle-maximize")), default_chord(&["Super"], "m");
+    /// Maximize the focused window group; nothing when it already is.
+    MaximizeWindow => "maximize-window", Windows, Desk, Some(("actions", "group.maximize")), default_chord(&["Super"], "up");
+    /// Restore the focused window group from maximized; nothing when it is not maximized.
+    RestoreWindow => "restore-window", Windows, Desk, Some(("actions", "group.restore")), default_chord(&["Super"], "down");
+    DetachTab => "detach-tab", Windows, Desk, None, default_chord(&["Shift", "Super"], "enter");
+    AttachTabLeft => "attach-tab-left", Windows, Desk, None, default_chord(&["Super"], "[");
+    AttachTabRight => "attach-tab-right", Windows, Desk, None, default_chord(&["Super"], "]");
+    MoveGroupLeft => "move-group-left", Windows, Desk, Some(("actions", "group.move-left")), default_chord(&["Shift", "Super"], "left");
+    MoveGroupRight => "move-group-right", Windows, Desk, Some(("actions", "group.move-right")), default_chord(&["Shift", "Super"], "right");
+    /// Carry the focused window group, whole, into the strip above.
+    MoveGroupToPreviousStrip => "move-group-to-previous-strip", Windows, Desk, Some(("actions", "group.move-to-strip-previous")), default_chord(&["Ctrl", "Shift", "Super"], "up");
+    /// Carry the focused window group, whole, into the strip below.
+    MoveGroupToNextStrip => "move-group-to-next-strip", Windows, Desk, Some(("actions", "group.move-to-strip-next")), default_chord(&["Ctrl", "Shift", "Super"], "down");
+    /// Move the focused window group onto the display to the left of its
+    /// own (the previous one in reading order).
+    MoveGroupToPreviousDisplay => "move-group-to-previous-display", Windows, Desk, Some(("actions", "group.move-to-display-previous")), default_chord(&["Ctrl", "Shift", "Super"], "left");
+    /// Move the focused window group onto the display to the right of its
+    /// own (the next one in reading order). Super+Shift+arrows already
+    /// reorder within a display; Ctrl widens the gesture to its neighbour.
+    MoveGroupToNextDisplay => "move-group-to-next-display", Windows, Desk, Some(("actions", "group.move-to-display-next")), default_chord(&["Ctrl", "Shift", "Super"], "right");
+    ResizeNarrower => "resize-narrower", Windows, Desk, Some(("actions", "group.narrower")), default_chord(&["Super"], "-");
+    ResizeWider => "resize-wider", Windows, Desk, Some(("actions", "group.wider")), default_chord(&["Super"], "=");
+
+    // Restore the most recently closed frame in this workspace, as Super+T
+    // adds one and Super+W closes one. Ctrl+Shift+T stays the focused app's
+    // and reopens a tab only where the app left it unhandled
+    // (`ui::shell_tabs`).
+    /// Bring back the most recently closed tab in the current workspace.
+    ReopenClosedTab => "reopen-closed-tab", Windows, Desk, Some(("actions", "tab.reopen")), default_chord(&["Shift", "Super"], "t");
+
+    /// Focus the Nth window group of the current strip (Ctrl+Super+1 … Ctrl+Super+9).
+    FocusGroup1 => "focus-group-1", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "1");
+    FocusGroup2 => "focus-group-2", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "2");
+    FocusGroup3 => "focus-group-3", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "3");
+    FocusGroup4 => "focus-group-4", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "4");
+    FocusGroup5 => "focus-group-5", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "5");
+    FocusGroup6 => "focus-group-6", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "6");
+    FocusGroup7 => "focus-group-7", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "7");
+    FocusGroup8 => "focus-group-8", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "8");
+    FocusGroup9 => "focus-group-9", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "9");
+
+    /// Go to the Nth strip of the workspace, counting from the top
+    /// (Super+1 … Super+9).
+    FocusStrip1 => "focus-strip-1", Navigation, Desk, None, default_chord(&["Super"], "1");
+    FocusStrip2 => "focus-strip-2", Navigation, Desk, None, default_chord(&["Super"], "2");
+    FocusStrip3 => "focus-strip-3", Navigation, Desk, None, default_chord(&["Super"], "3");
+    FocusStrip4 => "focus-strip-4", Navigation, Desk, None, default_chord(&["Super"], "4");
+    FocusStrip5 => "focus-strip-5", Navigation, Desk, None, default_chord(&["Super"], "5");
+    FocusStrip6 => "focus-strip-6", Navigation, Desk, None, default_chord(&["Super"], "6");
+    FocusStrip7 => "focus-strip-7", Navigation, Desk, None, default_chord(&["Super"], "7");
+    FocusStrip8 => "focus-strip-8", Navigation, Desk, None, default_chord(&["Super"], "8");
+    FocusStrip9 => "focus-strip-9", Navigation, Desk, None, default_chord(&["Super"], "9");
+
+    OpenFiles => "open-files", Apps, Desk, None, default_chord(&["Super"], "e");
+    OpenTerminal => "open-terminal", Apps, Desk, Some(("actions", "window.new.terminal")), default_chord(&["Ctrl", "Alt"], "t");
+
+    ClipboardHistory => "clipboard-history", System, Session, Some(("actions", "quick-settings.clipboard")), default_chord(&["Super"], "v");
+    // Super+N already opens an app as an adjacent window, so the
+    // notification list takes Windows' other Action Center key.
+    Notifications => "notifications", System, Session, Some(("actions", "notifications.open")), default_chord(&["Super"], "a");
+    ToggleFullscreen => "toggle-fullscreen", Windows, Desk, Some(("actions", "group.fullscreen")), default_chord(&["Super"], "f");
+
+    // GNOME's and Windows' magnifier keys (Super+Alt+8, Super+Plus); Super+=
+    // and Super+- already resize windows, so the zoom keys carry Alt.
+    ToggleMagnifier => "toggle-magnifier", Accessibility, Session, Some(("actions", "magnifier.toggle")), default_chord(&["Alt", "Super"], "8");
+    MagnifierZoomIn => "magnifier-zoom-in", Accessibility, Session, Some(("actions", "magnifier.zoom-in")), default_chord(&["Alt", "Super"], "=");
+    MagnifierZoomOut => "magnifier-zoom-out", Accessibility, Session, Some(("actions", "magnifier.zoom-out")), default_chord(&["Alt", "Super"], "-");
+
+    // The session action sheet: the chord every PC user tries when
+    // something has hung.
+    PowerMenu => "power-menu", System, Session, None, default_chord(&["Ctrl", "Alt"], "delete");
+
+    // Super+Space is global search; the Alt-modified chord is the nearest
+    // free spelling of the GNOME/Windows convention.
+    /// Switch to the next keyboard input source.
+    NextInputSource => "next-input-source", System, Session, Some(("actions", "input.source.next")), default_chord(&["Alt", "Super"], "space");
+
+    // Windows' emoji panel key; GNOME uses Super+. for the same.
+    /// Open the emoji picker over the focused text field.
+    EmojiPicker => "emoji-picker", System, Desk, Some(("actions", "emoji.picker")), default_chord(&["Super"], ".");
+
+    /// Ask an agent about what is selected in the focused window, in the
+    /// quick composer seeded with that selection.
+    AskAgent => "ask-agent", System, Session, None, default_chord(&["Super"], "c");
+    /// Say something beside the pointer, to the people in the window under
+    /// it (cursor chat), wherever the keyboard is; a bare "/" opens it only
+    /// where the focused widget takes no text.
+    SaySomething => "say-something", System, Session, None, default_chord(&["Super"], "/");
+    /// Point at what is not working and report it (the feedback picker).
+    ReportProblem => "report-problem", System, Session, Some(("actions", "feedback.point")), default_chord(&["Super"], "r");
+
+    DictationToggle => "dictation-toggle", Accessibility, Session, None, default_chord(&["Shift", "Super"], "d");
+    DictationFinish => "dictation-finish", Accessibility, Session, None, default_chord(&["Alt", "Super"], "d");
+    DictationCancel => "dictation-cancel", Accessibility, Session, None, default_chord(&["Shift", "Super"], "escape");
+
+    // Next to Super+F, which covers the display with the window: this lifts
+    // it out of its strip instead.
+    /// Lift the focused window above the desk, or put it back into its
+    /// strip.
+    ToggleFloat => "toggle-float", Windows, Desk, None, default_chord(&["Shift", "Super"], "f");
+}
 impl ShortcutAction {
     /// The strip position a `FocusGroupN` action selects, counting from 0.
+    #[must_use]
     pub fn focus_group_index(self) -> Option<usize> {
-        Some(match self {
-            Self::FocusGroup1 => 0,
-            Self::FocusGroup2 => 1,
-            Self::FocusGroup3 => 2,
-            Self::FocusGroup4 => 3,
-            Self::FocusGroup5 => 4,
-            Self::FocusGroup6 => 5,
-            Self::FocusGroup7 => 6,
-            Self::FocusGroup8 => 7,
-            Self::FocusGroup9 => 8,
-            _ => return None,
-        })
+        self.id()
+            .strip_prefix("focus-group-")?
+            .parse::<usize>()
+            .ok()?
+            .checked_sub(1)
     }
 
     /// The strip a `FocusStripN` action goes to, counting from 0 at the top.
+    #[must_use]
     pub fn focus_strip_index(self) -> Option<usize> {
-        Some(match self {
-            Self::FocusStrip1 => 0,
-            Self::FocusStrip2 => 1,
-            Self::FocusStrip3 => 2,
-            Self::FocusStrip4 => 3,
-            Self::FocusStrip5 => 4,
-            Self::FocusStrip6 => 5,
-            Self::FocusStrip7 => 6,
-            Self::FocusStrip8 => 7,
-            Self::FocusStrip9 => 8,
-            _ => return None,
-        })
+        self.id()
+            .strip_prefix("focus-strip-")?
+            .parse::<usize>()
+            .ok()?
+            .checked_sub(1)
     }
 }
 
@@ -2106,10 +2232,6 @@ impl QuickSettingsConfig {
     }
 
     /// [`Self::save`] into `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the setting cannot be serialized or persisted.
     pub fn save_in(&self, source: &dyn crate::SettingsSource) -> std::io::Result<()> {
         source.update_section("quick_settings", self.section()?)
     }
@@ -2356,174 +2478,24 @@ impl std::fmt::Display for ShortcutConfigError {
 impl std::error::Error for ShortcutConfigError {}
 
 impl Default for ShortcutConfig {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the default table is one line per shortcut action"
-    )]
     fn default() -> Self {
-        // Built directly rather than through the fallible `KeyChord::parse`: every
-        // chord here is a literal we already know is well-formed.
-        fn super_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Super".to_string()]),
-                key: key.to_string(),
-            }
-        }
-        fn super_shift_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Shift".to_string(), "Super".to_string()]),
-                key: key.to_string(),
-            }
-        }
-        fn super_ctrl_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Ctrl".to_string(), "Super".to_string()]),
-                key: key.to_string(),
-            }
-        }
-        fn super_ctrl_shift_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from([
-                    "Ctrl".to_string(),
-                    "Shift".to_string(),
-                    "Super".to_string(),
-                ]),
-                key: key.to_string(),
-            }
-        }
-        fn ctrl_alt_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Alt".to_string(), "Ctrl".to_string()]),
-                key: key.to_string(),
-            }
-        }
-        fn super_alt_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Alt".to_string(), "Super".to_string()]),
-                key: key.to_string(),
-            }
-        }
-        let bindings = [
-            (ShortcutAction::Search, super_chord("space")),
-            (ShortcutAction::WorkspaceOverview, super_chord("tab")),
-            (ShortcutAction::Lock, super_chord("l")),
-            (ShortcutAction::QuickSettings, super_chord("q")),
-            // A physical question-mark press reports the shifted slash key
-            // plus Shift. Keep the stored/default chord identical to that
-            // live event rather than accepting the unshifted slash instead.
-            (ShortcutAction::ShortcutHelp, super_shift_chord("/")),
-            // Cursor chat from anywhere: a bare "/" opens it only where the
-            // focused widget takes no text.
-            (ShortcutAction::SaySomething, super_chord("/")),
-            (ShortcutAction::ReportProblem, super_chord("r")),
-            // Spatial arrows are the always-visible desktop model. Alt+Tab
-            // remains an immutable conventional ring alias in the shell.
-            (ShortcutAction::FocusPreviousWindow, super_chord("left")),
-            (ShortcutAction::FocusNextWindow, super_chord("right")),
-            // Ctrl+Tab and Ctrl+Shift+Tab belong to the focused app first:
-            // browsers, editors and terminals switch their own tabs with
-            // them, and a Tilo app hands them to the window group only when
-            // no widget used them (`ui::shell_tabs`). Super on top of the
-            // same chord is the desktop's and works whatever the app is.
-            // Plain Super+Tab is the overview.
-            (ShortcutAction::PreviousTab, super_ctrl_shift_chord("tab")),
-            (ShortcutAction::NextTab, super_ctrl_chord("tab")),
-            (ShortcutAction::TabMenu, super_chord("f10")),
-            // Super+Up/Down are the Windows and GNOME maximize and restore.
-            // Strips are one level out, on Ctrl+Super; Shift carries the
-            // focused group the same way
-            // (docs/architecture/window-management.md).
-            (ShortcutAction::MaximizeWindow, super_chord("up")),
-            (ShortcutAction::RestoreWindow, super_chord("down")),
-            (ShortcutAction::PreviousStrip, super_ctrl_chord("up")),
-            (ShortcutAction::NextStrip, super_ctrl_chord("down")),
-            (ShortcutAction::PreviousWorkspace, super_chord("pageup")),
-            (ShortcutAction::NextWorkspace, super_chord("pagedown")),
-            (ShortcutAction::ToggleMaximize, super_chord("m")),
-            (ShortcutAction::DetachTab, super_shift_chord("enter")),
-            (ShortcutAction::AttachTabLeft, super_chord("[")),
-            (ShortcutAction::AttachTabRight, super_chord("]")),
-            (ShortcutAction::MoveGroupLeft, super_shift_chord("left")),
-            (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
-            (
-                ShortcutAction::MoveGroupToPreviousStrip,
-                super_ctrl_shift_chord("up"),
-            ),
-            (
-                ShortcutAction::MoveGroupToNextStrip,
-                super_ctrl_shift_chord("down"),
-            ),
-            // Super+Shift+arrows already reorder within a display; Ctrl
-            // widens the same gesture to the neighbouring display.
-            (
-                ShortcutAction::MoveGroupToPreviousDisplay,
-                super_ctrl_shift_chord("left"),
-            ),
-            (
-                ShortcutAction::MoveGroupToNextDisplay,
-                super_ctrl_shift_chord("right"),
-            ),
-            (ShortcutAction::ResizeNarrower, super_chord("-")),
-            (ShortcutAction::ResizeWider, super_chord("=")),
-            // Restore the most recently closed frame in this workspace, as
-            // Super+T adds one and Super+W closes one. Ctrl+Shift+T stays
-            // the focused app's and reopens a tab only where the app left it
-            // unhandled (`ui::shell_tabs`).
-            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
-            // Super+number goes to a strip (the top one is 1);
-            // Ctrl+Super+number to a window of the strip.
-            (ShortcutAction::FocusStrip1, super_chord("1")),
-            (ShortcutAction::FocusStrip2, super_chord("2")),
-            (ShortcutAction::FocusStrip3, super_chord("3")),
-            (ShortcutAction::FocusStrip4, super_chord("4")),
-            (ShortcutAction::FocusStrip5, super_chord("5")),
-            (ShortcutAction::FocusStrip6, super_chord("6")),
-            (ShortcutAction::FocusStrip7, super_chord("7")),
-            (ShortcutAction::FocusStrip8, super_chord("8")),
-            (ShortcutAction::FocusStrip9, super_chord("9")),
-            (ShortcutAction::FocusGroup1, super_ctrl_chord("1")),
-            (ShortcutAction::FocusGroup2, super_ctrl_chord("2")),
-            (ShortcutAction::FocusGroup3, super_ctrl_chord("3")),
-            (ShortcutAction::FocusGroup4, super_ctrl_chord("4")),
-            (ShortcutAction::FocusGroup5, super_ctrl_chord("5")),
-            (ShortcutAction::FocusGroup6, super_ctrl_chord("6")),
-            (ShortcutAction::FocusGroup7, super_ctrl_chord("7")),
-            (ShortcutAction::FocusGroup8, super_ctrl_chord("8")),
-            (ShortcutAction::FocusGroup9, super_ctrl_chord("9")),
-            (ShortcutAction::OpenFiles, super_chord("e")),
-            (ShortcutAction::OpenTerminal, ctrl_alt_chord("t")),
-            (ShortcutAction::ClipboardHistory, super_chord("v")),
-            // Super+N already opens an app as an adjacent window, so the
-            // notification list takes Windows' other Action Center key.
-            (ShortcutAction::Notifications, super_chord("a")),
-            (ShortcutAction::ToggleFullscreen, super_chord("f")),
-            // GNOME's and Windows' magnifier keys (Super+Alt+8, Super+Plus)
-            // — the second is already the resize-wider default.
-            (ShortcutAction::ToggleMagnifier, super_alt_chord("8")),
-            // GNOME's zoom keys; Super+= and Super+- already resize windows.
-            (ShortcutAction::MagnifierZoomIn, super_alt_chord("=")),
-            (ShortcutAction::MagnifierZoomOut, super_alt_chord("-")),
-            // The session action sheet: the chord every PC user tries when
-            // something has hung.
-            (ShortcutAction::PowerMenu, ctrl_alt_chord("delete")),
-            // Super+Space is global search; the Alt-modified chord is the
-            // nearest free spelling of the GNOME/Windows convention.
-            (ShortcutAction::NextInputSource, super_alt_chord("space")),
-            // Windows' emoji panel key; GNOME uses Super+. for the same.
-            (ShortcutAction::EmojiPicker, super_chord(".")),
-            // Windows' assistant key (Win+C): ask an agent about the
-            // focused window's selection.
-            (ShortcutAction::AskAgent, super_chord("c")),
-            (ShortcutAction::DictationToggle, super_shift_chord("d")),
-            (ShortcutAction::DictationFinish, super_alt_chord("d")),
-            (ShortcutAction::DictationCancel, super_shift_chord("escape")),
-        ]
-        .into_iter()
-        .collect();
         Self {
-            bindings,
+            bindings: default_shortcut_bindings(),
             actions: Vec::new(),
         }
+    }
+}
+
+/// A chord as the action table spells it: its modifiers and its key. Built
+/// directly rather than through the fallible `KeyChord::parse`: every chord
+/// in the table is a literal already known to be well-formed.
+fn default_chord(modifiers: &[&str], key: &str) -> KeyChord {
+    KeyChord {
+        modifiers: modifiers
+            .iter()
+            .map(|modifier| (*modifier).to_string())
+            .collect(),
+        key: key.to_string(),
     }
 }
 
@@ -2605,10 +2577,6 @@ impl ShortcutConfig {
     /// Whether `chord` may run the published action `target`: a valid,
     /// unreserved chord that is neither one of the shell's fixed chords, nor
     /// bound to a configurable desktop action, nor running another action.
-    ///
-    /// # Errors
-    ///
-    /// Why the chord cannot be bound.
     pub fn check_action_chord(
         &self,
         chord: &KeyChord,
@@ -2792,20 +2760,11 @@ impl ShortcutConfig {
     }
 
     /// [`Self::save`] into `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `self` can't be serialised or the section can't
-    /// be written.
     pub fn save_in(&self, source: &dyn crate::SettingsSource) -> std::io::Result<()> {
         source.update_section("shortcuts", self.section()?)
     }
 
     /// The `shortcuts` section holding this configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `self` can't be serialised.
     pub fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         Ok(value.as_object().cloned().unwrap_or_default())
@@ -3356,7 +3315,7 @@ mod tests {
         }
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 64);
+            assert_eq!(cfg.bindings.len(), 65);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

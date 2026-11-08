@@ -194,6 +194,7 @@ fn grant_for(certificate: &[u8]) -> Vec<u8> {
         &scope().id(),
         1,
         certificate.to_vec(),
+        Vec::new(),
     )
     .unwrap()
     .encode()

@@ -511,10 +511,6 @@ pub fn is_repo(path: &Path) -> bool {
 /// Stage a single path: index-add for modified/new files, or stage a
 /// deletion when the file is gone from the working tree. Mirrors
 /// `git add <path>`.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened or if the index cannot be modified.
 pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let mut index = repo.index()?;
@@ -541,10 +537,6 @@ pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
 /// Unstage a single path back to its HEAD state in the index, leaving the
 /// working tree untouched. Mirrors `git reset HEAD -- <path>` / `git
 /// restore --staged <path>`.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened or if the index cannot be modified.
 pub fn unstage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let rel = Path::new(file);
@@ -562,10 +554,6 @@ pub fn unstage_file(path: &Path, file: &str) -> anyhow::Result<()> {
 
 /// Stage every change (tracked modifications, deletions, and untracked
 /// files). Mirrors `git add -A`.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened or if the index cannot be modified.
 pub fn stage_all(path: &Path) -> anyhow::Result<()> {
     let repo = open(path)?;
     let mut index = repo.index()?;
@@ -577,10 +565,6 @@ pub fn stage_all(path: &Path) -> anyhow::Result<()> {
 }
 
 /// Unstage every staged change back to HEAD. Mirrors `git reset HEAD`.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened or if the index cannot be modified.
 pub fn unstage_all(path: &Path) -> anyhow::Result<()> {
     let repo = open(path)?;
     if let Some(head_commit) = repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
@@ -603,10 +587,6 @@ pub fn unstage_all(path: &Path) -> anyhow::Result<()> {
 /// `hunk_index` is the 0-based position of the hunk within the file's diff
 /// in the relevant direction (worktree diff for staging, index diff for
 /// unstaging) — the same ordering the UI assigns to its hunk buttons.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, the diff cannot be computed, or the hunk cannot be applied.
 pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> anyhow::Result<()> {
     use std::cell::Cell;
     let repo = open(path)?;
@@ -722,10 +702,6 @@ pub fn discard_file(path: &Path, file: &str) -> anyhow::Result<()> {
 /// hunk in the working tree (the discard direction of `git checkout -p`).
 /// `hunk_index` is the 0-based hunk position within the file's worktree diff,
 /// the same ordering the UI assigns to its hunk buttons. Destructive.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, the diff cannot be computed, or the hunk cannot be applied.
 pub fn discard_hunk(path: &Path, file: &str, hunk_index: usize) -> anyhow::Result<()> {
     use std::cell::Cell;
     let repo = open(path)?;
@@ -768,10 +744,6 @@ pub fn discard_hunk(path: &Path, file: &str, hunk_index: usize) -> anyhow::Resul
 /// and committer are read from the repository's signature (git config
 /// `user.name` / `user.email`); a missing identity is an error, matching
 /// `git commit`. Returns the new commit's short id. Mirrors `git commit`.
-///
-/// # Errors
-///
-/// Returns an error if the message is empty, the repository cannot be opened, or the commit cannot be created.
 pub fn commit(path: &Path, message: &str) -> anyhow::Result<String> {
     if message.trim().is_empty() {
         bail!("empty commit message");
@@ -800,10 +772,6 @@ pub fn commit(path: &Path, message: &str) -> anyhow::Result<String> {
 /// Check out an existing local branch and point HEAD at it. Mirrors `git
 /// checkout <branch>`. The working tree and index are updated to the
 /// branch tip (safe checkout — fails on conflicting local changes).
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, the branch does not exist, or checkout fails.
 pub fn checkout_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let (object, reference) = repo
@@ -840,11 +808,6 @@ pub enum CheckoutPlan {
 /// [`CheckoutPlan::Stash`] parks the changes on the stash and reports its
 /// short id; if the checkout then fails, they are put back, so a failed
 /// switch never leaves the person's edits in neither place.
-///
-/// # Errors
-///
-/// Returns an error if the branch does not exist, the checkout would
-/// overwrite uncommitted work, or the stash could not be made.
 pub fn checkout_branch_planned(
     path: &Path,
     name: &str,
@@ -871,10 +834,6 @@ pub fn checkout_branch_planned(
 /// Create a new local branch at HEAD (or at `start_point` if given) and,
 /// when `checkout` is true, switch to it. Mirrors `git branch <name>` /
 /// `git checkout -b <name>`.
-///
-/// # Errors
-///
-/// Returns an error if the branch name is empty, the repository cannot be opened, or the branch cannot be created.
 pub fn create_branch(
     path: &Path,
     name: &str,
@@ -906,10 +865,6 @@ pub fn create_branch(
 /// Delete a local branch. Refuses to delete the currently checked-out
 /// branch. Mirrors `git branch -d <name>` (force-deletes the ref like
 /// `-D`, since the GUI confirms intent).
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, the branch is checked out, or the branch cannot be deleted.
 pub fn delete_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     if let Ok(head) = repo.head()
@@ -959,11 +914,6 @@ impl ConflictCost {
 
 /// What keeping each side of `file` would discard: the lines of the side
 /// that loses.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, the file has no
-/// conflict in the index, or a side's content cannot be read.
 pub fn conflict_cost(path: &Path, file: &str) -> anyhow::Result<ConflictCost> {
     let repo = open(path)?;
     let index = repo.index()?;
@@ -1025,12 +975,6 @@ fn cost_between(
 /// content is written to the working tree and staged, which clears the
 /// file's conflict. The other side is discarded — the merge is still in
 /// progress, so its `MERGE_HEAD` keeps the history that produced both.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, the file has no
-/// such side in the index (it is not conflicted that way), or the write
-/// fails.
 pub fn resolve_conflict(path: &Path, file: &str, side: ConflictSide) -> anyhow::Result<()> {
     let repo = open(path)?;
     let mut index = repo.index()?;
@@ -1065,11 +1009,6 @@ pub fn resolve_conflict(path: &Path, file: &str, side: ConflictSide) -> anyhow::
 
 /// The files `commit` changed against its first parent (the empty tree for a
 /// root commit), each with its added and removed line counts.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened or the commit cannot
-/// be read.
 pub fn commit_files(path: &Path, commit: &str) -> anyhow::Result<Vec<FileChange>> {
     let repo = open(path)?;
     let commit = repo
@@ -1088,11 +1027,6 @@ pub fn commit_files(path: &Path, commit: &str) -> anyhow::Result<Vec<FileChange>
 }
 
 /// One file's diff in `commit`, against the commit's first parent.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened or the commit cannot
-/// be read.
 pub fn commit_file_diff(path: &Path, commit: &str, file: &str) -> anyhow::Result<FileDiff> {
     let repo = open(path)?;
     let commit = repo
@@ -1177,10 +1111,6 @@ fn files_of(diff: &git2::Diff, repo: &Repository) -> Vec<FileChange> {
 /// Fetch refs from a remote (default `origin`, else the first configured
 /// remote). Mirrors `git fetch`. Best-effort credentials: SSH agent and
 /// default credential helpers are tried. Returns the remote name fetched.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, the remote cannot be found, or the fetch fails.
 pub fn fetch(path: &Path, remote_name: Option<&str>) -> anyhow::Result<String> {
     let repo = open(path)?;
     let name = resolve_remote(&repo, remote_name)?;
@@ -1205,10 +1135,6 @@ pub fn fetch(path: &Path, remote_name: Option<&str>) -> anyhow::Result<String> {
 /// Pull = fetch then fast-forward the current branch to its upstream when
 /// possible. A non-fast-forward divergence is reported rather than
 /// silently merging (the GUI surfaces it). Mirrors `git pull --ff-only`.
-///
-/// # Errors
-///
-/// Returns an error if the fetch fails, HEAD cannot be found, or the merge is not a fast-forward.
 pub fn pull(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     let name = fetch(path, remote_name)?;
     let repo = open(path)?;
@@ -1249,10 +1175,6 @@ pub fn pull(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
 
 /// Push the current branch to its remote. Mirrors `git push`. Pushes the
 /// branch to a like-named branch on the resolved remote.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, HEAD cannot be found, or the push fails.
 pub fn push(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     let repo = open(path)?;
     let head = repo.head().context("no HEAD to push")?;
@@ -1282,10 +1204,6 @@ pub fn push(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
 
 /// Apply (without dropping) a stash entry by index. Mirrors `git stash
 /// apply stash@{index}`.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened or the stash entry cannot be applied.
 pub fn stash_apply(path: &Path, index: usize) -> anyhow::Result<()> {
     let mut repo = open(path)?;
     repo.stash_apply(index, None)
@@ -1295,10 +1213,6 @@ pub fn stash_apply(path: &Path, index: usize) -> anyhow::Result<()> {
 
 /// Push the working-tree + index changes onto the stash stack. Mirrors
 /// `git stash push`. Returns the new stash's oid as a short id.
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened, the signature cannot be read, or the stash cannot be saved.
 pub fn stash_save(path: &Path, message: &str) -> anyhow::Result<String> {
     let mut repo = open(path)?;
     let sig = repo
@@ -1387,10 +1301,6 @@ pub fn workdir(path: &Path) -> Option<PathBuf> {
 
 /// Mark a path as an object kind for callers that want to validate a tree
 /// entry exists (used in tests to assert a commit's tree contains a file).
-///
-/// # Errors
-///
-/// Returns an error if the repository cannot be opened or the revision cannot be found.
 pub fn tree_has_path(path: &Path, rev: &str, file: &str) -> anyhow::Result<bool> {
     let repo = open(path)?;
     let obj = repo.revparse_single(rev)?;
@@ -1405,9 +1315,6 @@ pub fn tree_has_path(path: &Path, rev: &str, file: &str) -> anyhow::Result<bool>
 
 /// Read all working directories, failing if any registered directory cannot be read.
 /// The main checkout is included even when called from a linked worktree.
-///
-/// # Errors
-/// Returns an error if the repository or any registered checkout cannot be read.
 pub fn list_worktrees(path: &Path) -> anyhow::Result<Vec<crate::model::Worktree>> {
     let current = Repository::discover(path)?;
     let repo = Repository::open(current.commondir())?;

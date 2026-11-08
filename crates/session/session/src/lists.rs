@@ -1,7 +1,6 @@
-//! The apps search lists of this device: the Tilo apps installed here, the
-//! machine's own, and the apps a person can get. Read on a worker of their
-//! own, and again whenever a directory they are read from changes (an
-//! install, a desktop entry added, a registry's or Flathub's catalogue
+//! The apps search lists of this device: the Tilo apps installed here, the machine's own, and the
+//! apps a person can get. Read on a worker of their own, and again whenever a directory they are
+//! read from changes (an install, a desktop entry added, a registry's or Flathub's catalogue
 //! refreshed, a block made), never on the session's thread.
 
 use std::collections::BTreeMap;
@@ -26,21 +25,18 @@ pub struct AppLists {
     pub host_apps: Vec<HostAppEntry>,
     /// The apps a person can get here: neither installed nor blocked.
     pub catalogue: Vec<app_catalogue::CatalogueEntry>,
-    /// The icon file each installed app's signed manifest names, by package
-    /// id: resolved here so a banner paints an app's artwork without reading
-    /// its manifest on the letter's thread.
+    /// The icon file each installed app's signed manifest names, by package id: resolved here so a
+    /// banner paints an app's artwork without reading its manifest on the letter's thread.
     pub icons: BTreeMap<String, PathBuf>,
-    /// Every app that opens a kind of file or link here, and which kinds:
-    /// what workspace settings offer as default openers.
+    /// Every app that opens a kind of file or link here, and which kinds: what workspace settings
+    /// offer as default openers.
     pub candidates: Vec<desktop_policy::AppCandidate>,
-    /// What each installed app declared it may do on the action door under
-    /// its own identity, by package id: the ceiling the broker admits an
-    /// app's query and invoke against, never a grant.
+    /// What each installed app declared it may do on the action door under its own identity, by
+    /// package id: the ceiling the broker admits an app's query and invoke against, never a grant.
     pub declared: BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess>,
-    /// The apps a service can ask this session to open, as the action door
-    /// lists them: each app's name, the actions its signed manifest offers
-    /// while it is not running, and the capabilities a grant is decided on.
-    /// What decides the reach the device's settings app has of the settings
+    /// The apps a service can ask this session to open, as the action door lists them: each app's
+    /// name, the actions its signed manifest offers while it is not running, and the capabilities a
+    /// grant is decided on. What decides the reach the device's settings app has of the settings
     /// document.
     pub launchable: Vec<LaunchableApplication>,
     /// The person's apps as Files lists them through the `tools` service,
@@ -50,13 +46,12 @@ pub struct AppLists {
 }
 
 impl AppLists {
-    /// Read this device's lists: the installed Tilo apps, the machine's
-    /// desktop entries, and the catalogue (the registries' listing as last
-    /// accepted and Flathub's cached metadata) less what is here or
-    /// blocked. Reads the disk only, never the network.
+    /// Read this device's lists: the installed Tilo apps, the machine's desktop entries, and the
+    /// catalogue (the registries' listing as last accepted and Flathub's cached metadata) less what
+    /// is here or blocked. Reads the disk only, never the network.
     #[must_use]
     pub fn read() -> Self {
-        let installed = tilo_installed_apps::read_from_env().unwrap_or_else(|error| {
+        let installed = app_catalogue::apps::read_from_env().unwrap_or_else(|error| {
             tracing::warn!(%error, "the installed apps are not read");
             Vec::new()
         });
@@ -67,11 +62,10 @@ impl AppLists {
             .filter(|app| app.has_gui)
             .map(|app| AppEntry {
                 id: app.package_id.clone(),
-                // The name the person's interface language gives the app: a
-                // German machine lists the app whose manifest says
-                // `[package.names] de = "Notizen"` as Notizen, and every
-                // surface that names it — a tab, a start card, search —
-                // reads that name from here.
+                // The name the person's interface language gives the app: a German machine lists
+                // the app whose manifest says `[package.names] de = "Notizen"` as Notizen, and
+                // every surface that names it — a tab, a start card, search — reads that name from
+                // here.
                 title: app.name_in(&locales).to_owned(),
                 category: app.category.clone(),
                 description: None,
@@ -82,19 +76,17 @@ impl AppLists {
             .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
             .collect();
         let declared = declared(&installed);
-        // The machine's entries through the memoised scan, which this read
-        // starts on the lists' worker: a later ask for an entry's icon or
-        // name (`crate::app_icons::entry_icon`) finds it read, or meets the
-        // read already under way rather than starting one.
+        // The machine's entries through the memoised scan, which this read starts on the lists'
+        // worker: a later ask for an entry's icon or name (`crate::app_icons::entry_icon`) finds it
+        // read, or meets the read already under way rather than starting one.
         let scan = desktop_entry::cache::cached_scan(&locales);
-        // An installed Tilo app may keep a desktop entry of its own, as its
-        // bundle does: that entry is the same app, listed once.
+        // An installed Tilo app may keep a desktop entry of its own, as its bundle does: that entry
+        // is the same app, listed once.
         let tilo_apps =
             app_catalogue::Installed::from_ids(installed.iter().map(|app| app.package_id.clone()));
-        // The entries Tilo keeps for the person's downloaded programs are
-        // search's own source (`providers::downloaded`): it lists them with
-        // what the registry knows of them (their kind, and a file that went
-        // away), which a host app row says nothing of.
+        // The entries Tilo keeps for the person's downloaded programs are search's own source
+        // (`providers::downloaded`): it lists them with what the registry knows of them (their
+        // kind, and a file that went away), which a host app row says nothing of.
         let host_apps = scan
             .entries
             .iter()
@@ -174,11 +166,10 @@ impl AppLists {
         }
     }
 
-    /// The directories [`Self::read`] reads, whose entries change with
-    /// what it would find.
+    /// The directories [`Self::read`] reads, whose entries change with what it would find.
     #[must_use]
     pub fn directories() -> Vec<PathBuf> {
-        let mut directories = tilo_installed_apps::store_directories();
+        let mut directories = app_catalogue::apps::store_directories();
         directories.extend(desktop_entry::scan::application_dirs());
         directories.extend(app_cli::last_accepted_directories());
         directories.extend(app_catalogue::appstream::cache_directories());
@@ -193,7 +184,7 @@ impl AppLists {
 /// capabilities a grant is decided on are read, and only for the app the
 /// image could grant one to: the manifest is read for that app alone.
 fn launchable(
-    installed: &[tilo_installed_apps::InstalledApp],
+    installed: &[app_catalogue::apps::InstalledApp],
     entries: &[desktop_entry::entry::DesktopEntry],
 ) -> Vec<LaunchableApplication> {
     let packages: std::collections::HashSet<String> = installed
@@ -237,13 +228,12 @@ fn launchable(
         .collect()
 }
 
-/// The person's apps as Files lists them, every kind in one list: the Tilo
-/// apps installed here, then the machine's entries no package answers for.
-/// Where each came from says the one way it leaves the list: a Tilo app the
-/// person added or a downloaded program is uninstalled, a Flatpak of theirs
-/// with its data, and anything the system keeps is only taken off their apps.
+/// The person's apps as Files lists them, every kind in one list: the Tilo apps installed here,
+/// then the machine's entries no package answers for. Where each came from says the one way it
+/// leaves the list: a Tilo app the person added or a downloaded program is uninstalled, a Flatpak
+/// of theirs with its data, and anything the system keeps is only taken off their apps.
 fn listed_apps(
-    installed: &[tilo_installed_apps::InstalledApp],
+    installed: &[app_catalogue::apps::InstalledApp],
     entries: &[desktop_entry::entry::DesktopEntry],
     icons: &BTreeMap<String, PathBuf>,
 ) -> Vec<ListedApp> {
@@ -301,9 +291,8 @@ fn listed_apps(
                         desktop_entry::EntryKind::Flatpak if of_person => {
                             (ListedKind::Flatpak, AppRemoval::UninstallWithData)
                         }
-                        // A Flatpak of the device's installation is uninstalled
-                        // by whoever administers it; here it is taken off the
-                        // person's apps.
+                        // A Flatpak of the device's installation is uninstalled by whoever
+                        // administers it; here it is taken off the person's apps.
                         desktop_entry::EntryKind::Flatpak => {
                             (ListedKind::Flatpak, AppRemoval::RemoveFromApps)
                         }
@@ -360,10 +349,10 @@ fn machine_entry(
         && !tilo_apps.contains(&entry.id)
 }
 
-/// Each app's declared reach of the action door, from its signed manifest:
-/// the ceiling the broker admits its calls against.
+/// Each app's declared reach of the action door, from its signed manifest: the ceiling the broker
+/// admits its calls against.
 fn declared(
-    installed: &[tilo_installed_apps::InstalledApp],
+    installed: &[app_catalogue::apps::InstalledApp],
 ) -> BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess> {
     installed
         .iter()
@@ -380,8 +369,8 @@ fn declared(
         .collect()
 }
 
-/// Where search takes the app lists from: lists fixed up front, or lists
-/// read again whenever their directories change.
+/// Where search takes the app lists from: lists fixed up front, or lists read again whenever their
+/// directories change.
 #[derive(Clone)]
 pub struct Lists(Held);
 
@@ -420,8 +409,8 @@ impl Lists {
             .map(|watched| Self(Held::Followed(watched)))
     }
 
-    /// This device's lists ([`AppLists::read`]), following their
-    /// directories; read once when they cannot be watched.
+    /// This device's lists ([`AppLists::read`]), following their directories; read once when they
+    /// cannot be watched.
     #[must_use]
     pub fn of_device() -> Self {
         Self::follow("tilo-search-lists", AppLists::directories(), AppLists::read).unwrap_or_else(
@@ -432,8 +421,7 @@ impl Lists {
         )
     }
 
-    /// The lists as last read. Never touches the disk: the same value until
-    /// a change was read.
+    /// The lists as last read. Never touches the disk: the same value until a change was read.
     pub(crate) fn latest(&self) -> Arc<AppLists> {
         match &self.0 {
             Held::Fixed(lists) => Arc::clone(lists),
@@ -459,16 +447,16 @@ mod tests {
     #[test]
     fn an_installed_tilo_apps_own_entry_is_not_one_of_the_machines() {
         let tilo_apps = app_catalogue::Installed::from_ids(["so.tilo.notes"]);
-        // The app is listed as itself; the desktop entry its bundle keeps is
-        // the same app, so search names it once.
+        // The app is listed as itself; the desktop entry its bundle keeps is the same app, so
+        // search names it once.
         assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
         // Any other app's entry is one of the machine's.
         assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
     }
 
-    /// The machine's own apps are named in the person's language, not in the
-    /// machine's: on a German desktop with English chosen the list reads
-    /// `Files`, and the same desktop with no language chosen reads `Dateien`.
+    /// The machine's own apps are named in the person's language, not in the machine's: on a German
+    /// desktop with English chosen the list reads `Files` , and the same desktop with no language
+    /// chosen reads `Dateien` .
     #[test]
     fn the_machines_apps_are_named_in_the_persons_language() {
         let home = tempfile::tempdir().unwrap();
@@ -512,8 +500,8 @@ mod tests {
         );
         drop(chosen);
 
-        // Nothing chosen: the machine's locale is the default, not a second
-        // source that survives a choice.
+        // Nothing chosen: the machine's locale is the default, not a second source that survives a
+        // choice.
         let none = settings_store::scoped_source(Some(std::sync::Arc::new(
             settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
         )));
@@ -542,8 +530,7 @@ mod tests {
             },
         )
         .unwrap();
-        // The worker's own read is the one that counts: what this thread has
-        // asked for never does.
+        // The worker's own read is the one that counts: what this thread has asked for never does.
         tilo_test_env::wait_until("the lists' worker to read them", || {
             lists
                 .latest()

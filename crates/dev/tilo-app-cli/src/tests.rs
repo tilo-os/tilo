@@ -3055,8 +3055,8 @@ fn doctor_recognises_the_framework_by_its_parsed_items() {
 }
 
 /// Doctor accumulates actionable failures, accepts registered document actions without widget
-/// glue, finds the SDK in target-specific dependencies, rejects one invalid target-specific UI
-/// dependency, and never asks for the Cap'n Proto compiler the SDK no longer needs.
+/// glue, finds the SDK in target-specific dependencies, and rejects one invalid
+/// target-specific UI dependency.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3157,24 +3157,6 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
         check_ui_dependency(temp.path(), &manifest, &mut checks);
         assert_eq!(checks[0].status, DoctorStatus::Fail, "{checks:#?}");
         assert!(checks[0].detail.contains("not-tilo-app"));
-    }
-
-    // Phase: doctor_does_not_require_the_capnp_compiler.
-    {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let destination = temp.path().join("reading-list");
-        create_app(request(destination.clone())).unwrap();
-
-        let report = doctor_app(&destination).expect("doctor report");
-
-        assert!(
-            report
-                .checks
-                .iter()
-                .all(|check| !check.label.contains("Cap'n Proto")),
-            "{:#?}",
-            report.checks
-        );
     }
 }
 

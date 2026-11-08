@@ -233,9 +233,6 @@ impl ChangeWriter {
     /// writer continues. Apply as soon as a change is big enough
     /// ([`OPS_PER_CHANGE`]): Automerge expands a change's ops in memory while
     /// integrating it.
-    ///
-    /// # Errors
-    /// Returns Automerge's refusal; the document is unchanged.
     pub fn apply(&mut self, doc: &mut Doc) -> Result<(), automerge::AutomergeError> {
         match self.seal() {
             Some(change) => apply_change(doc, change),

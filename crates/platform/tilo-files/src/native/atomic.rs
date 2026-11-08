@@ -277,9 +277,6 @@ fn create_private_parent(path: &Path) -> io::Result<()> {
 
 /// Create and restrict a host-owned private directory before opening locks or
 /// watches. Unix directories have mode `0700`, including an existing directory.
-///
-/// # Errors
-/// The directory cannot be created or its permissions cannot be restricted.
 pub fn create_private_directory(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -394,10 +391,6 @@ pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
 /// After a crash `path` may hold the old contents, the new ones, or a torn file, so the reader
 /// must validate what it finds. Skipping the syncs keeps a write from waiting for the
 /// filesystem to flush every other dirty page first.
-///
-/// # Errors
-///
-/// Returns an error if the temp file can't be created or written, or if the rename fails.
 pub fn write_regenerable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     publish(
         path,
@@ -418,10 +411,6 @@ pub fn write_regenerable(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// synced: for files a crash discards anyway, such as state under `$XDG_RUNTIME_DIR`, where a
 /// sync only makes the writer wait for the filesystem's journal and every other writer with it.
 /// `mode` is ignored where the platform has no permission bits.
-///
-/// # Errors
-///
-/// Returns an error if the temp file can't be created or written, or if the rename fails.
 pub fn write_regenerable_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     publish(
         path,

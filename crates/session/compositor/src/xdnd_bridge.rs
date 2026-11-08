@@ -74,7 +74,7 @@ pub(crate) enum BridgeEvent {
     Status { accept: bool, action: Action },
     /// The X11 window our drag was dropped on is done.
     Finished,
-    /// An X11 window asks for our drag's data as `target`.
+    /// An X11 window asks for our drag's data as `target` .
     Request(Request),
 }
 
@@ -98,7 +98,7 @@ struct Outgoing {
     /// Where messages go: the target, or the window it names as proxy.
     to: Window,
     accepted: bool,
-    /// The drop was sent; waiting for `XdndFinished`.
+    /// The drop was sent; waiting for `XdndFinished` .
     dropped: bool,
 }
 
@@ -135,7 +135,7 @@ pub(crate) struct XdndBridge {
     source_window: Window,
     names: HashMap<Atom, String>,
     ids: HashMap<String, Atom>,
-    /// Whether an X11 client owns `XdndSelection`: it may be dragging.
+    /// Whether an X11 client owns `XdndSelection` : it may be dragging.
     x11_owner: Option<Window>,
     incoming: Option<Incoming>,
     outgoing: Option<Outgoing>,
@@ -248,13 +248,12 @@ impl XdndBridge {
         self.conn.stream().as_fd().try_clone_to_owned()
     }
 
-    /// The proxy window, which the window manager must leave unmapped in
-    /// the scene.
+    /// The proxy window, which the window manager must leave unmapped in the scene.
     pub(crate) const fn proxy(&self) -> Window {
         self.proxy
     }
 
-    /// Whether an X11 client may be dragging: it owns `XdndSelection`.
+    /// Whether an X11 client may be dragging: it owns `XdndSelection` .
     pub(crate) const fn x11_may_drag(&self) -> bool {
         self.x11_owner.is_some()
     }
@@ -329,8 +328,7 @@ impl XdndBridge {
 
     // The proxy as the target of an X11 drag.
 
-    /// Answer the X11 drag's last position: whether a drop there would be
-    /// taken, and how.
+    /// Answer the X11 drag's last position: whether a drop there would be taken, and how.
     pub(crate) fn status(&self, accept: bool, action: Action) {
         let Some(incoming) = &self.incoming else {
             return;
@@ -361,8 +359,7 @@ impl XdndBridge {
         self.show_proxy(false);
     }
 
-    /// Read the X11 drag's data as `target` into `fd`, after any reads
-    /// before it.
+    /// Read the X11 drag's data as `target` into `fd` , after any reads before it.
     pub(crate) fn convert(&mut self, target: String, fd: OwnedFd) {
         self.conversions.push_back(Conversion { target, fd });
         self.next_conversion();
@@ -400,8 +397,7 @@ impl XdndBridge {
 
     // The source window as the source of a Wayland or hosted drag.
 
-    /// Our drag entered X11 window `target`, offering `types`; false when it
-    /// takes no XDND drops.
+    /// Our drag entered X11 window `target` , offering `types` ; false when it takes no XDND drops.
     pub(crate) fn source_enter(&mut self, target: Window, types: &[String]) -> bool {
         self.source_leave();
         match self.enter(target, types) {
@@ -506,8 +502,7 @@ impl XdndBridge {
             .is_some_and(|outgoing| outgoing.accepted)
     }
 
-    /// Drop our drag on the X11 window; false (and a leave) when it would
-    /// not take it.
+    /// Drop our drag on the X11 window; false (and a leave) when it would not take it.
     pub(crate) fn source_drop(&mut self) -> bool {
         if !self.source_accepted() {
             self.source_leave();
@@ -527,8 +522,7 @@ impl XdndBridge {
         true
     }
 
-    /// Answer an X11 window's request for our drag's data (`None`: we have
-    /// none in that format).
+    /// Answer an X11 window's request for our drag's data (`None`: we have none in that format).
     pub(crate) fn answer(&mut self, request: &Request, data: Option<&[u8]>) {
         let result = self.reply(&request.event, data);
         self.flush_or_log(result, "drag data not sent");
@@ -604,8 +598,7 @@ impl XdndBridge {
 
     // Events.
 
-    /// Handle what arrived on the connection; what the state must act on
-    /// is returned.
+    /// Handle what arrived on the connection; what the state must act on is returned.
     pub(crate) fn events(&mut self) -> Vec<BridgeEvent> {
         let mut out = Vec::new();
         loop {

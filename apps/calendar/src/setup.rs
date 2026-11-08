@@ -39,9 +39,6 @@ pub(crate) fn same_origin_url(base: &url::Url, href: &str) -> Result<url::Url, S
 /// Discover calendars using a canonical account's current credential. Call this
 /// blocking helper off the UI/async thread. Google refresh tokens stay in Custodian;
 /// Nextcloud uses the existing password, including adopted credentials.
-///
-/// # Errors
-/// Missing/revoked credentials, unsafe URLs or invalid discovery replies.
 #[cfg(feature = "live")]
 pub fn discover_calendars(
     service: &tilo_dav::oauth::Service,
@@ -69,9 +66,6 @@ pub fn discover_calendars(
 /// Enable only confirmed collections on the original account. The caller saves
 /// the canonical store; Files settings, account ID/type and vault remain intact.
 /// `discovered` must be the result of discovery, not user-entered collection URLs.
-///
-/// # Errors
-/// Empty, duplicate, unrecognized or cross-origin selections and invalid config.
 pub fn select_calendars(
     account: &mut accounts::Account,
     config: &CalDavConfig,

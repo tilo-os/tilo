@@ -1576,6 +1576,13 @@
     {
       "name": "Docked",
       "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer. The bar stands in the column's page, a section's gap under the content and the page's gutter at its sides and below.",
+      "props": [
+        {
+          "name": "page_column",
+          "doc": "The bar stands in the page column the content is read at: the readable measure, its left edge and its width, so a reply answers the messages above it in their own column rather than across a wide window.",
+          "type": "bool"
+        }
+      ],
       "slots": [
         {
           "name": "content",
@@ -4008,6 +4015,11 @@
           "name": "secondary",
           "doc": "It stands beside the content it is about, in secondary ink: when a change was made.",
           "type": "bool"
+        },
+        {
+          "name": "past",
+          "doc": "The moment has already happened, as a message received or an entry logged: a moment the reader's clock has not reached yet (the clock of the device that wrote it runs ahead) reads `just now`, never ahead.",
+          "type": "bool"
         }
       ],
       "semantics": {
@@ -5384,6 +5396,11 @@
           "type": "bool"
         },
         {
+          "name": "page_column",
+          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end as a transcript does.",
+          "type": "bool"
+        },
+        {
           "name": "tail_title",
           "doc": "The title over the list's tail group: the rows whose item says it is one of those done with ([`ListItemProps::tail`]) stand after every group, under it, closed until the person opens them. `None` leaves those rows among the others.",
           "type": {
@@ -5465,6 +5482,15 @@
         {
           "name": "selected",
           "doc": "The selection changed: carries the items selected, in the order they stand, and none when the selection was put away."
+        },
+        {
+          "name": "opened",
+          "doc": "The person opened a row into its item where it stands: carries the item.",
+          "value": "resource"
+        },
+        {
+          "name": "closed",
+          "doc": "The row standing open closed: pressed again, Escape, a press beside it, or its item left the list."
         }
       ],
       "state": [
@@ -5491,6 +5517,13 @@
           "doc": "How far the list is scrolled, in logical pixels.",
           "type": {
             "option": "float"
+          }
+        },
+        {
+          "name": "open",
+          "doc": "The item standing open into its document where it stands in the list: its row grows to hold what the item's row gives as its `detail`, and Escape or a press beside it closes it. A host keeps which item is open and gives it back, so a list it builds again shows the item as the person left it.",
+          "type": {
+            "option": "resource"
           }
         }
       ],
@@ -7360,6 +7393,11 @@
           "doc": "The row: a `ui.ListRow`, or any view.",
           "accepts": "view",
           "default": true
+        },
+        {
+          "name": "detail",
+          "doc": "The item's document, shown under the row while the row stands open into it, one lead in under the row's text: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. Without one, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).",
+          "accepts": "view"
         }
       ],
       "semantics": {

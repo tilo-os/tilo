@@ -105,9 +105,6 @@ impl Storage {
     }
 
     /// Start downloading a payload object; see [`IncomingObject`].
-    ///
-    /// # Errors
-    /// Returns an error if the temporary file cannot be created.
     pub fn incoming_payload_object(&self) -> Result<IncomingObject, StorageError> {
         let dir = self.payload_dir();
         let sequence = INCOMING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -131,27 +128,18 @@ impl Storage {
 
     /// The stored object (whole blob or chunk) named `hash`, opened for
     /// reading, or `None`.
-    ///
-    /// # Errors
-    /// Returns an error if the file exists but cannot be opened.
     pub fn open_payload_object(&self, hash: &BlobHash) -> Result<Option<File>, StorageError> {
         open_if_exists(&self.payload_dir().join(hash.to_hex()))
     }
 
     /// Record the chunk list of a blob about to be fetched, so pruning keeps
     /// its chunks while they arrive. Nothing serves this list.
-    ///
-    /// # Errors
-    /// Returns an error if the list cannot be written.
     pub fn begin_chunked_payload(&self, list: &ChunkList) -> Result<(), StorageError> {
         atomic_write(&self.pending_chunk_list_path(&list.blob), &list.encode())
     }
 
     /// Publish the chunk list of a blob whose every chunk is stored and whose
     /// joined bytes verified.
-    ///
-    /// # Errors
-    /// Returns an error if a chunk is missing or the list cannot be written.
     pub fn finish_chunked_payload(&self, list: &ChunkList) -> Result<(), StorageError> {
         for chunk in list.distinct_chunks() {
             if self.open_payload_object(&chunk)?.is_none() {

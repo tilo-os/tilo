@@ -718,8 +718,8 @@ pub fn ci_rules(profile: CiProfile) -> Result<BTreeMap<i64, Vec<SeccompRule>>, S
     Ok(rules)
 }
 
-/// The CI filter for `profile`, ready to install. Pair it with
-/// [`clone3_compat_program`]: seccomp cannot read `clone3`'s flags, so
+/// The CI filter for `profile`, ready to install. Pair it
+/// with [`clone3_compat_program`]: seccomp cannot read `clone3`'s flags, so
 /// `clone3` answers `ENOSYS` and glibc falls back to `clone`, whose flags
 /// this filter checks.
 #[cfg(target_os = "linux")]

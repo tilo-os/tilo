@@ -174,10 +174,6 @@ pub struct SizeReport {
 impl SizeReport {
     /// Measures every regular file under `payload`, for a package the registry
     /// accepts up to `limit` bytes of ([`tilo_app_package::platform_size_limit`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the payload cannot be read.
     pub fn measure(
         payload: &Path,
         entrypoints: &[PathBuf],

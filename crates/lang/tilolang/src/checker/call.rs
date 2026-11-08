@@ -195,6 +195,7 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
+            "preview_rows" => return self.builtin_preview_rows(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
             "invoke" => return self.builtin_invoke(args, span),
             "query" => return self.builtin_query(args, span),
@@ -367,7 +368,7 @@ impl Checker<'_> {
             }
         }
         // An action a view applies may leave out its last parameters: running it opens its
-        // form, which asks the person for them (forms-and-diagrams.md §1).
+        // form, which asks the person for them.
         let asked = |at: usize| {
             at_press
                 && slots
@@ -385,7 +386,35 @@ impl Checker<'_> {
             .filter(|(at, (p, s))| s.is_none() && p.default.is_none() && !asked(*at))
             .map(|(_, (p, _))| p.name.as_str())
             .collect();
-        if !missing.is_empty() {
+        // A parameter a form cannot ask for says so, naming the action, the parameter and its
+        // type, rather than reading as one the person simply forgot: the action stays a command
+        // only an argument given here or a default reaches.
+        let unaskable: Vec<_> = params
+            .iter()
+            .zip(&slots)
+            .enumerate()
+            .filter(|(at, (p, s))| {
+                at_press
+                    && s.is_none()
+                    && p.default.is_none()
+                    && slots
+                        .get(*at..)
+                        .is_some_and(|rest| rest.iter().all(Option::is_none))
+                    && !p.ty.asked_by_form()
+            })
+            .map(|(_, (p, _))| p)
+            .collect();
+        if let Some(param) = unaskable.first() {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "`{name}` cannot be asked for `{}` of type `{}`: a form asks for text,                      numbers, flags, days, moments, lengths of time, accounts, people, resources                      and enum cases, so give it here or give the parameter a default",
+                    param.name,
+                    param.ty.display(&self.env.app)
+                ),
+            );
+        } else if !missing.is_empty() {
             self.err(
                 "E022",
                 span,
@@ -2322,6 +2351,12 @@ impl Checker<'_> {
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "len") if args.is_empty() => {
                 Ex::host(Imp::ListLen, vec![r], Ty::Int)
             }
+            // How many it holds, once the store has read the whole workspace: none until then,
+            // so a window that counts what it shows never shows a part as the whole
+            // ([`Imp::CollCounted`]).
+            (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "counted") if args.is_empty() => {
+                Ex::host(Imp::CollCounted, vec![r], Ty::Option(Box::new(Ty::Int)))
+            }
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "is_empty") if args.is_empty() => {
                 // Whether it holds nothing reads whether it shows a first item: a filtered
                 // collection's length is only the most it can hold, so measuring it said an
@@ -2330,7 +2365,7 @@ impl Checker<'_> {
             }
             (
                 Ty::List(t) | Ty::Set(t) | Ty::Collection(t),
-                "map" | "filter" | "any" | "all" | "find" | "count",
+                "map" | "flat_map" | "filter" | "any" | "all" | "find" | "count",
             ) => {
                 let elem = (**t).clone();
                 self.higher_order(r, &elem, name, args, span)

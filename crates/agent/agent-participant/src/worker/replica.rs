@@ -303,11 +303,6 @@ impl ConfinedReplica {
 
     /// Perform one published operation through the resource's own door:
     /// [`crate::Replica::invoke`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the door's refusal or the action's failure; a worker that
-    /// could not run it is reported as unavailable.
     pub fn invoke(
         &self,
         address: &ActionAddress,

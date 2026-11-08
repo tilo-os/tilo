@@ -206,9 +206,6 @@ impl AccountActions {
     }
 
     /// Create and retain owner-only staging before any credential work begins.
-    ///
-    /// # Errors
-    /// Returns an error if a private temporary directory cannot be created.
     pub fn create_staging(&mut self) -> std::io::Result<std::sync::Arc<tempfile::TempDir>> {
         let mut builder = tempfile::Builder::new();
         builder.prefix("tilo-prepared-accounts-");

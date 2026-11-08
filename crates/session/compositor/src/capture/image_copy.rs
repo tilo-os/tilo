@@ -54,8 +54,7 @@ fn trusted(client: &Client) -> bool {
         .is_some_and(ClientState::trusted)
 }
 
-/// What a capture source shows; `None` when the client named an output or
-/// window that is not ours.
+/// What a capture source shows; `None` when the client named an output or window that is not ours.
 pub struct SourceData {
     source: Option<Source>,
 }
@@ -80,8 +79,7 @@ pub struct CursorSessionData {
 struct CursorState {
     /// The capture session was taken.
     taken: bool,
-    /// The hotspot's position over the source last sent; `None` while the
-    /// pointer is elsewhere.
+    /// The hotspot's position over the source last sent; `None` while the pointer is elsewhere.
     at: Option<Point<i32, Physical>>,
     hotspot: Option<Point<i32, Physical>>,
 }
@@ -164,7 +162,7 @@ impl Frame {
     }
 }
 
-/// Tell a session's client the buffers it takes for frames of `size`.
+/// Tell a session's client the buffers it takes for frames of `size` .
 fn announce(
     session: &ExtImageCopyCaptureSessionV1,
     size: Size<i32, Physical>,
@@ -194,8 +192,7 @@ fn announce(
     session.done();
 }
 
-/// What frames of `source` copy now, and the size of their buffers; `None`
-/// when it is gone.
+/// What frames of `source` copy now, and the size of their buffers; `None` when it is gone.
 fn frame_target(state: &State, source: &Source) -> Option<(Target, Size<i32, Physical>)> {
     let target = match source {
         Source::Output(name) => {
@@ -212,8 +209,8 @@ fn frame_target(state: &State, source: &Source) -> Option<(Target, Size<i32, Phy
     Some((target, size))
 }
 
-/// Stop sessions whose output or window is gone and tell the others when the size of
-/// their frames changed.
+/// Stop sessions whose output or window is gone and tell the others when the size of their frames
+/// changed.
 pub(super) fn refresh_sessions(state: &mut State) {
     refresh_cursor_sessions(state);
     state.capture.sessions.retain(Session::alive);
@@ -581,8 +578,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for State {
                         "damage outside the buffer",
                     );
                 }
-                // Every copy redraws the whole buffer, so the client's
-                // damage needs no tracking.
+                // Every copy redraws the whole buffer, so the client's damage needs no tracking.
             }
             ext_image_copy_capture_frame_v1::Request::Capture => {
                 if frame_state.captured {

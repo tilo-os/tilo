@@ -11,7 +11,6 @@
 //! join every build takes.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -23,17 +22,12 @@ use tilo_relay_protocol::workspaces::{
     PendingInvite, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_sheets::invite::{self as sheet, Choosing, Invitations, InviteEffect};
-use tilo_sheets::{Seat as _, word, words};
+use tilo_sheets::{Presentation, word, words};
 use tilo_workspace_directory::Store;
 
-use ui::kurbo::{Affine, Point, Rect};
-use ui::presence::PresenceCtx;
-use ui::taffy::{LengthPercentageAuto, NodeId, Position, Style, TaffyTree};
-use ui::vello::Scene;
-use ui::widget::{AppModel, Element, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
-use ui::winit::event::WindowEvent;
-use ui::{LocalState, TextRenderer, Theme};
+use ui::LocalState;
 
+use crate::over_page::OverSheet;
 use crate::shell::{HostRequest, HostRequests};
 
 /// How long a link the sheet makes works, as the session's desk makes one.
@@ -85,7 +79,7 @@ pub(crate) struct PageInvite {
     requests: HostRequests,
     /// Where an invitation is left for the link that names it.
     store: Store,
-    seat: sheet::InviteSeat,
+    presentation: Presentation,
     ask: sheet::Ask,
     config: Option<PageInviteConfig>,
     peer: Option<u32>,
@@ -106,12 +100,9 @@ pub(crate) struct PageInvite {
     creating: Cell<bool>,
     /// The sheet is up and the host has not been asked what stands since.
     asking: Cell<bool>,
-    content: Option<Element>,
     /// What the built sheet shows, and what it was built with, so it is built
     /// again only when one of them moved.
     built: Option<(sheet::Invite, u64, u64)>,
-    replaced: bool,
-    rect: Rect,
     answers: Arc<Mutex<Vec<Answer>>>,
     woken: Arc<AtomicBool>,
 }
@@ -137,7 +128,7 @@ impl PageInvite {
         Self {
             requests,
             store,
-            seat: sheet::InviteSeat::default(),
+            presentation: Presentation::default(),
             ask,
             config: config.cloned(),
             peer,
@@ -152,43 +143,37 @@ impl PageInvite {
             invitable,
             creating: Cell::new(false),
             asking: Cell::new(false),
-            content: None,
             built: None,
-            replaced: false,
-            rect: Rect::ZERO,
             answers: Arc::default(),
             woken,
         }
     }
 
     /// Put the sheet up on the workspace this page is in.
-    pub(crate) fn open(&mut self) {
+    pub(crate) fn open(&self) {
         self.choosing.set(Choosing::default());
         self.link.set(String::new());
         self.made.borrow_mut().opening();
         self.pending.borrow_mut().clear();
         self.creating.set(false);
-        self.seat.presentation().open(false);
-        self.replaced = true;
+        self.presentation.open(false);
         self.refresh();
     }
 
     pub(crate) fn is_open(&self) -> bool {
-        self.seat.presentation().is_open()
+        self.presentation.is_open()
     }
 
     /// Take what the host and the shelf answered, show the sheet as the
     /// workspace stands, and carry out what the person pressed since the last
     /// pass. Whether anything changed.
-    pub(crate) fn follow(&mut self) -> bool {
+    fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
         let mut changed = self.take_answers();
         changed |= self.store.answered();
-        changed |= self.take_shelved();
-        if !self.seat.presentation().is_open() {
-            if self.content.is_some() {
-                self.close();
-                changed = true;
-            }
+        changed |= self.store.follow_shelf(&mut self.made.borrow_mut());
+        if !self.presentation.is_open() {
+            self.close();
+            show(None);
             return changed;
         }
         let asked: Vec<InviteEffect> = std::mem::take(&mut *self.asked.borrow_mut());
@@ -199,8 +184,9 @@ impl PageInvite {
             }
             sheet::answer(&asked, self);
         }
-        if !self.seat.presentation().is_open() {
+        if !self.presentation.is_open() {
             self.close();
+            show(None);
             return changed;
         }
         let shown = sheet::view(self);
@@ -209,19 +195,17 @@ impl PageInvite {
             self.choosing.revision(),
             self.link.revision(),
         );
-        if self.content.is_none() || self.built.as_ref() != Some(&built) {
+        if missing || self.built.as_ref() != Some(&built) {
             self.built = Some(built);
-            self.content = Some(sheet::sheet(
+            show(Some(sheet::sheet(
                 &shown,
                 &self.choosing,
                 &self.link,
                 &self.ask,
-                Some(self.seat.presentation()),
-            ));
-            self.replaced = true;
+                Some(&self.presentation),
+            )));
             changed = true;
         }
-        self.seat.show(shown);
         changed
     }
 
@@ -237,7 +221,7 @@ impl PageInvite {
             return;
         };
         if let Err(error) = self.ask(Answer::Pending, move |_| WorkspacesRequest::Pending {
-            workspace: workspace.clone(),
+            workspace,
         }) {
             self.asking.set(false);
             self.refused("invite-failed", &error);
@@ -269,7 +253,7 @@ impl PageInvite {
 
     /// Take what the host answered since the last pass. Whether anything
     /// arrived.
-    fn take_answers(&mut self) -> bool {
+    fn take_answers(&self) -> bool {
         let answers: Vec<Answer> = std::mem::take(
             &mut *self
                 .answers
@@ -293,8 +277,10 @@ impl PageInvite {
                 }
                 Answer::Cancelled { invite, reply } => {
                     self.pending(reply);
-                    self.made.borrow_mut().revoked(&invite);
-                    self.store.unshelve(&invite);
+                    // The site's copy goes too: a link handed out before is
+                    // not one that waits there to be fetched, and the one this
+                    // opening showed goes with it.
+                    self.store.take_back(&mut self.made.borrow_mut(), &invite);
                     self.say(word("invite-revoked"), false);
                 }
             }
@@ -328,43 +314,19 @@ impl PageInvite {
         // the desk hands it over: what the sheet shows when the site keeps
         // nothing.
         let long = tilo_workspace_join::encode_invitation_text(&invitation);
-        let shelving = self.shelve(&invite, invitation.clone(), expires_at_ns);
-        let created = sheet::made(&invite, &long, invitation, brings, expires_at_ns);
-        self.made.borrow_mut().show(created, shelving);
-    }
-
-    /// Leave the invitation on the shelf of the site this page comes from: the
-    /// link then carries the handle and the key, and opens this page when
-    /// someone follows it.
-    fn shelve(&self, invite: &str, invitation: Vec<u8>, expires_at_ns: u64) -> bool {
-        let Some(site) = self.site() else {
-            return false;
-        };
         let host = self.config.as_ref().map(|config| config.origin.as_str());
-        match self
-            .store
-            .shelve(invite, invitation, expires_at_ns, &site, host)
-        {
-            Ok(()) => true,
-            Err(error) => {
-                web_sys::console::warn_1(&format!("invitation not shelved: {error}").into());
-                false
-            }
+        let site = self.site();
+        if let Err(reason) = self.store.hand_over(
+            &mut self.made.borrow_mut(),
+            &invite,
+            &long,
+            expires_at_ns,
+            brings,
+            site.as_ref(),
+            host,
+        ) {
+            self.refused("invite-failed", &reason);
         }
-    }
-
-    /// Take what the shelf answered: the link the sheet shows becomes the
-    /// short one the site answered with, or stays the invitation's own text
-    /// when the site kept nothing.
-    fn take_shelved(&self) -> bool {
-        let mut changed = false;
-        for (invite, shelved) in self.store.take_shelved() {
-            changed = true;
-            self.made
-                .borrow_mut()
-                .shelved(&invite, shelved.ok().map(|shelved| shelved.link));
-        }
-        changed
     }
 
     /// Make a link, through the host that governs this workspace.
@@ -382,13 +344,13 @@ impl PageInvite {
         };
         let recipient = match recipient {
             "" => None,
-            key => match hex::decode(key).ok().and_then(|key| key.try_into().ok()) {
-                Some(key) => Some(key),
-                None => {
+            key => {
+                let Some(key) = hex::decode(key).ok().and_then(|key| key.try_into().ok()) else {
                     self.refused("invite-failed", "that is not a person's key");
                     return;
-                }
-            },
+                };
+                Some(key)
+            }
         };
         let mut request_id = [0u8; 32];
         if let Err(error) = getrandom::fill(&mut request_id) {
@@ -522,11 +484,8 @@ impl PageInvite {
         tilo_workspace_directory::web_origin(&format!("{origin}/")).ok()
     }
 
-    fn close(&mut self) {
-        self.seat.presentation().close();
-        self.content = None;
-        self.built = None;
-        self.replaced = true;
+    fn close(&self) {
+        self.presentation.close();
     }
 }
 
@@ -674,103 +633,20 @@ fn refused(reply: Result<WorkspacesReply, String>) -> String {
     }
 }
 
-impl Widget for PageInvite {
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        self.follow()
-    }
-
-    fn build_layout(
+impl OverSheet for PageInvite {
+    fn follow_sheet(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let content = self
-            .content
-            .as_mut()
-            .map(|content| content.build_layout(taffy, theme, map));
-        // Over the whole page, out of its flow: the sheet's scrim covers it.
-        let style = Style {
-            position: Position::Absolute,
-            inset: ui::taffy::Rect {
-                left: LengthPercentageAuto::length(0.0),
-                right: LengthPercentageAuto::length(0.0),
-                top: LengthPercentageAuto::length(0.0),
-                bottom: LengthPercentageAuto::length(0.0),
-            },
-            ..Default::default()
-        };
-        let children: Vec<NodeId> = content.into_iter().collect();
-        taffy.widget_node(style, &children, map, self)
+        show: &mut dyn FnMut(Option<ui::widget::Element>),
+        missing: bool,
+    ) -> bool {
+        self.follow(show, missing)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let Some(content) = self.content.as_mut()
-            && let Some(child) = taffy.children(node).unwrap_or_default().first().copied()
-        {
-            content.apply_layout(taffy, child, inner);
-        }
+    fn drawn(&self) -> bool {
+        self.presentation.is_drawn()
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(content) = self.content.as_mut() {
-            content.draw(scene, transform, text, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let Some(content) = self.content.as_mut() else {
-            return;
-        };
-        let Some(&child) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first() else {
-            return;
-        };
-        content.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.content.as_deref().into_iter().collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        match self.content.as_mut() {
-            Some(content) => vec![content.as_mut()],
-            None => Vec::new(),
-        }
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.replaced)
-            | self
-                .content
-                .as_mut()
-                .is_some_and(|content| content.take_structure_dirty())
-    }
-
-    fn traps_focus(&self) -> bool {
-        self.seat.presentation().is_drawn()
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.content
-            .as_ref()
-            .is_some_and(|content| content.needs_redraw())
-    }
-
-    fn name(&self) -> &'static str {
+    fn sheet_name(&self) -> &'static str {
         "PageInvite"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

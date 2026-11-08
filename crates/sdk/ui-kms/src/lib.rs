@@ -225,10 +225,6 @@ impl Host {
 
     /// Run `app` on the display until the [`Proxy`] says to stop.
     /// `presented` is told when the first frame is on screen.
-    ///
-    /// # Errors
-    ///
-    /// When the display or the wake cannot be read any more.
     pub fn run(mut self, app: &mut App, presented: impl FnOnce()) -> Result<(), HostError> {
         let mut presented = Some(presented);
         let mut damage = SurfaceDamage::default();

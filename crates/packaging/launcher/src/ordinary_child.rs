@@ -16,7 +16,7 @@ use std::{
             process::{CommandExt, ExitStatusExt},
         },
     },
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -518,194 +518,6 @@ impl Drop for OwnedOrdinaryChild {
         }
     }
 }
-/// Opaque kernel observations bound to the root actor, not a wire PID grant.
-pub struct PreparedOrdinaryChild {
-    pidfd: OwnedFd,
-    root_pidfd: OwnedFd,
-    root_pid: u32,
-    parent_pidfd: Option<OwnedFd>,
-    delegated_helper: Option<File>,
-    namespace: File,
-    pid: u32,
-    gate: Option<UnixStream>,
-    stdout: Option<File>,
-    stderr: Option<File>,
-    control: UnixStream,
-    reaped: Option<ExitStatus>,
-}
-impl PreparedOrdinaryChild {
-    pub fn receive(
-        stream: &mut UnixStream,
-        root: &ExecutingPeer,
-        command: &ConsumerCommand,
-    ) -> io::Result<Self> {
-        if root.uid() != 0 || !root.current() {
-            return Err(denied());
-        }
-        let mut magic = [0; 4];
-        let mut expected = [0; 32];
-        stream.read_exact(&mut magic)?;
-        stream.read_exact(&mut expected)?;
-        if &magic != MAGIC || expected != digest(command)? {
-            return Err(denied());
-        }
-        let pidfd = tagged_receive(stream, 90)?;
-        let namespace = File::from(tagged_receive(stream, 91)?);
-        let gate = UnixStream::from(tagged_receive(stream, 92)?);
-        let stdout = File::from(tagged_receive(stream, 93)?);
-        let stderr = File::from(tagged_receive(stream, 94)?);
-        let control = UnixStream::from(tagged_receive(stream, 95)?);
-        let root_namespace = File::from(tagged_receive(stream, 96)?);
-        mount_namespace(&root_namespace)?;
-        let pid = kernel_pid(&pidfd)?;
-        for pipe in [&stdout, &stderr] {
-            let facts = pipe.metadata()?;
-            let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
-            if facts.mode() & libc::S_IFMT != libc::S_IFIFO
-                || flags < 0
-                || flags & libc::O_ACCMODE != libc::O_RDONLY
-            {
-                return Err(denied());
-            }
-        }
-        gate.peer_addr()?;
-        control.peer_addr()?;
-        same_root_socket(&gate, root)?;
-        same_root_socket(&control, root)?;
-        let mut status = String::new();
-        File::open(format!("/proc/{pid}/status"))?
-            .take(65537)
-            .read_to_string(&mut status)?;
-        if status.len() > 65536
-            || !status.lines().any(|line| {
-                line.strip_prefix("PPid:")
-                    .is_some_and(|value| value.trim() == root.pid().to_string())
-            })
-        {
-            return Err(denied());
-        }
-
-        if stopped(&pidfd)?
-            || !same(&namespace, &self::namespace(pid)?)?
-            || !same(&namespace, &root_namespace)?
-            || same(&namespace, &self::namespace(std::process::id())?)?
-            || !root.current()
-        {
-            return Err(denied());
-        }
-        control.set_read_timeout(Some(Duration::from_secs(10)))?;
-        control.set_write_timeout(Some(Duration::from_secs(10)))?;
-        Ok(Self {
-            pidfd,
-            root_pidfd: root.pidfd().try_clone_to_owned()?,
-            root_pid: root.pid(),
-            parent_pidfd: None,
-            delegated_helper: None,
-            namespace,
-            pid,
-            gate: Some(gate),
-            stdout: Some(stdout),
-            stderr: Some(stderr),
-            control,
-            reaped: None,
-        })
-    }
-    pub fn id(&self) -> u32 {
-        self.pid
-    }
-    /// # Errors
-    /// Refuses a gate that has already been taken.
-    pub fn gate(&mut self) -> io::Result<UnixStream> {
-        self.gate.take().ok_or_else(denied)
-    }
-    pub fn take_stdout(&mut self) -> Option<File> {
-        self.stdout.take()
-    }
-    pub fn take_stderr(&mut self) -> Option<File> {
-        self.stderr.take()
-    }
-    /// # Errors
-    /// Refuses stale root custody or a peer outside the held launcher namespace.
-    pub fn check_peer(&self, peer: &ExecutingPeer) -> io::Result<()> {
-        self.check_root()?;
-        peer.matches_transferred_pidfd(std::os::fd::AsFd::as_fd(&self.pidfd))?;
-        if peer.pid() != self.pid || !same(&self.namespace, &namespace(peer.pid())?)? {
-            return Err(denied());
-        }
-        Ok(())
-    }
-    fn check_root(&self) -> io::Result<()> {
-        if stopped(&self.root_pidfd)? {
-            return Err(denied());
-        }
-        if let Some(parent) = &self.parent_pidfd
-            && stopped(parent)?
-        {
-            return Err(denied());
-        }
-        if let Some(helper) = &self.delegated_helper
-            && (!same(helper, &protected_consuming_helper()?)?
-                || !same(helper, &File::open(format!("/proc/{}/exe", self.root_pid))?)?)
-        {
-            return Err(denied());
-        }
-        Ok(())
-    }
-    fn request(&mut self, command: u8) -> io::Result<Option<ExitStatus>> {
-        self.check_root()?;
-        if stopped(&self.root_pidfd)? {
-            return Err(denied());
-        }
-        self.control.write_all(&[command])?;
-        let mut state = [0];
-        self.control.read_exact(&mut state)?;
-        self.check_root()?;
-        if stopped(&self.root_pidfd)? {
-            return Err(denied());
-        }
-        match state[0] {
-            b'P' => Ok(None),
-            b'S' => {
-                let mut bytes = [0; 4];
-                self.control.read_exact(&mut bytes)?;
-                let raw = i32::from_be_bytes(bytes);
-                if !stopped(&self.pidfd)? || !(libc::WIFEXITED(raw) || libc::WIFSIGNALED(raw)) {
-                    return Err(denied());
-                }
-                self.reaped = Some(ExitStatus::from_raw(raw));
-                Ok(Some(ExitStatus::from_raw(raw)))
-            }
-            _ => Err(denied()),
-        }
-    }
-    pub fn kill(&mut self) -> io::Result<()> {
-        if self.reaped.is_some() {
-            return Ok(());
-        }
-        let _ = self.request(b'K')?;
-        Ok(())
-    }
-    pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        if let Some(status) = self.reaped {
-            return Ok(status);
-        }
-        loop {
-            if let Some(status) = self.request(b'T')? {
-                return Ok(status);
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-}
-impl Drop for PreparedOrdinaryChild {
-    fn drop(&mut self) {
-        if self.reaped.is_none() {
-            let _ = self.control.write_all(b"K");
-            let _ = self.control.shutdown(std::net::Shutdown::Both);
-        }
-    }
-}
-
 /// Parent root driver retains this through child reap AND its separate source/
 /// inner-namespace cleanup. Thread completion alone is never stop evidence.
 pub struct OrdinaryChildSupervisor {
@@ -769,6 +581,28 @@ impl Drop for OrdinaryChildSupervisor {
         self.retire_before_exit();
         let _ = &self.custody;
     }
+}
+
+/// What a bootstrap magic says: a delegation, or the refusal that ends it.
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+enum BootstrapKind {
+    Refused,
+    Delegated,
+}
+#[cfg(test)]
+fn bootstrap_kind(magic: [u8; 4]) -> io::Result<BootstrapKind> {
+    match &magic {
+        value if value == BOOTSTRAP_MAGIC => Ok(BootstrapKind::Delegated),
+        value if value == BOOTSTRAP_REFUSED => Ok(BootstrapKind::Refused),
+        _ => Err(denied()),
+    }
+}
+#[cfg(test)]
+fn read_bootstrap_kind(stream: &mut UnixStream) -> io::Result<BootstrapKind> {
+    let mut magic = [0; 4];
+    stream.read_exact(&mut magic)?;
+    bootstrap_kind(magic)
 }
 
 #[cfg(test)]
@@ -948,8 +782,6 @@ fn exact_parent(pid: u32, parent: u32) -> io::Result<()> {
 /// Deliver only an actual owned root child already independently authenticated
 /// by the original helper. No command, UID, source or namespace grant is sent.
 /// The proof endpoint must have been created by that exact consuming child.
-/// # Errors
-/// Refuses foreign child/parent, dead peer, replaced installed image or endpoint.
 pub fn send_consuming_bootstrap(
     stream: &mut UnixStream,
     child: &mut Child,
@@ -1028,23 +860,6 @@ impl BootstrapTransfer {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum BootstrapKind {
-    Refused,
-    Delegated,
-}
-fn bootstrap_kind(magic: [u8; 4]) -> io::Result<BootstrapKind> {
-    match &magic {
-        value if value == BOOTSTRAP_MAGIC => Ok(BootstrapKind::Delegated),
-        value if value == BOOTSTRAP_REFUSED => Ok(BootstrapKind::Refused),
-        _ => Err(denied()),
-    }
-}
-fn read_bootstrap_kind(stream: &mut UnixStream) -> io::Result<BootstrapKind> {
-    let mut magic = [0; 4];
-    stream.read_exact(&mut magic)?;
-    bootstrap_kind(magic)
-}
 /// Custody framing outcome only, never view admission or successful launch.
 pub enum DelegationOutcome {
     Delegated,
@@ -1057,161 +872,6 @@ pub fn refuse_consuming_bootstrap(stream: &mut UnixStream, deadline: Instant) ->
     let fence = SocketDeadline::start(stream, ServiceCancellation::default(), deadline)?;
     stream.write_all(BOOTSTRAP_REFUSED)?;
     fence.check()
-}
-
-/// A fresh direct QPE to the exact root child delegated by the original helper.
-/// This owns process observations only; the original authenticated source and
-/// session custody remain mandatory and are never replaced by this value.
-pub struct DelegatedConsumingBootstrap {
-    namespace: File,
-    parent_pidfd: OwnedFd,
-    peer: ExecutingPeer,
-    helper: File,
-    endpoint: UnixStream,
-}
-impl DelegatedConsumingBootstrap {
-    /// Receive on the existing original-root transport, then authenticate both
-    /// directions directly on the consuming child's private proof endpoint.
-    /// # Errors
-    /// Refuses any missing parent, current image, exact pidfd or fresh QPE.
-    pub fn receive(stream: &mut UnixStream, parent: &ExecutingPeer) -> io::Result<Self> {
-        Self::receive_until(
-            stream,
-            parent,
-            Instant::now()
-                .checked_add(Duration::from_secs(10))
-                .ok_or(io::ErrorKind::InvalidInput)?,
-        )
-    }
-    /// # Errors
-    /// Refuses the exact shared frame or direct private child proof before the
-    /// caller's absolute deadline, without renewing it on partial progress.
-    pub fn receive_until(
-        stream: &mut UnixStream,
-        parent: &ExecutingPeer,
-        deadline: Instant,
-    ) -> io::Result<Self> {
-        Self::receive_selected(stream, parent, deadline)??.ok_or_else(denied)
-    }
-    /// Complete shared framing first. A closed refusal or failure on the
-    /// separately authenticated child endpoint is an operation outcome; malformed
-    /// or truncated shared framing remains a bootstrap transport error.
-    /// # Errors
-    /// Refuses stale parent custody, malformed framing or an expired deadline; inner errors report child authentication failure.
-    pub fn receive_selected(
-        stream: &mut UnixStream,
-        parent: &ExecutingPeer,
-        deadline: Instant,
-    ) -> io::Result<io::Result<Option<Self>>> {
-        if parent.uid() != 0 || !parent.current() {
-            return Err(denied());
-        }
-        let shared_fence = SocketDeadline::start(stream, ServiceCancellation::default(), deadline)?;
-        let mut start = [0; 8];
-        if read_bootstrap_kind(stream)? == BootstrapKind::Refused {
-            shared_fence.check()?;
-            return Ok(Ok(None));
-        }
-        stream.read_exact(&mut start)?;
-        let pidfd = tagged_receive(stream, 86)?;
-        let helper = File::from(tagged_receive(stream, 87)?);
-        let endpoint = UnixStream::from(tagged_receive(stream, 88)?);
-        let namespaces = ParentObservedNamespaces {
-            child: File::from(tagged_receive(stream, 97)?),
-            parent: File::from(tagged_receive(stream, 98)?),
-        };
-        shared_fence.check()?;
-        drop(shared_fence);
-        Ok(Self::authenticate_received(
-            parent, start, pidfd, helper, endpoint, namespaces, deadline,
-        )
-        .map(Some))
-    }
-    fn authenticate_received(
-        parent: &ExecutingPeer,
-        start: [u8; 8],
-        pidfd: OwnedFd,
-        helper: File,
-        mut endpoint: UnixStream,
-        namespaces: ParentObservedNamespaces,
-        deadline: Instant,
-    ) -> io::Result<Self> {
-        let fence = SocketDeadline::start(&endpoint, ServiceCancellation::default(), deadline)?;
-        let pid = kernel_pid(&pidfd)?;
-        if pid == parent.pid()
-            || stopped(&pidfd)?
-            || !same(&helper, &protected_consuming_helper()?)?
-        {
-            return Err(denied());
-        }
-        exact_parent(pid, parent.pid())?;
-        consuming_mode(pid)?;
-        namespaces.validate()?;
-        if same(&namespaces.child, &namespace(std::process::id())?)? {
-            return Err(denied());
-        }
-        endpoint.set_read_timeout(Some(Duration::from_secs(10)))?;
-        endpoint.set_write_timeout(Some(Duration::from_secs(10)))?;
-        // Consuming root first authenticates this actual target Shell, just as
-        // the original bootstrap does; then Shell authenticates the delegate.
-        runtime_portal::process_binding::complete(&mut endpoint)?;
-        endpoint.set_read_timeout(Some(Duration::from_secs(10)))?;
-        endpoint.set_write_timeout(Some(Duration::from_secs(10)))?;
-        runtime_portal::process_binding::arm(&endpoint)?;
-        let challenge = fresh_challenge();
-        endpoint.write_all(&runtime_portal::process_binding::MAGIC)?;
-        endpoint.write_all(&challenge)?;
-        let peer = runtime_portal::process_binding::receive(&endpoint, &challenge, 0)?;
-        peer.matches_transferred_pidfd(std::os::fd::AsFd::as_fd(&pidfd))?;
-        drop(pidfd);
-        same_root_socket(&endpoint, &peer)?;
-        if peer.pid() != pid
-            || peer.start_time()? != u64::from_be_bytes(start)
-            || !parent.current()
-            || !peer.current()
-            || !same(&helper, &protected_consuming_helper()?)?
-        {
-            return Err(denied());
-        }
-        exact_parent(pid, parent.pid())?;
-        consuming_mode(pid)?;
-        endpoint.write_all(&[1])?;
-        fence.check()?;
-        Ok(Self {
-            namespace: namespaces.child,
-            parent_pidfd: parent.pidfd().try_clone_to_owned()?,
-            peer,
-            helper,
-            endpoint,
-        })
-    }
-    /// # Errors
-    /// Refuses the private ordinary-child handoff under the same total deadline.
-    pub fn receive_ordinary_until(
-        mut self,
-        command: &ConsumerCommand,
-        deadline: Instant,
-    ) -> io::Result<PreparedOrdinaryChild> {
-        let fence =
-            SocketDeadline::start(&self.endpoint, ServiceCancellation::default(), deadline)?;
-        if stopped(&self.parent_pidfd)?
-            || !self.peer.current()
-            || !same(&self.helper, &protected_consuming_helper()?)?
-        {
-            return Err(denied());
-        }
-        let mut child = PreparedOrdinaryChild::receive(&mut self.endpoint, &self.peer, command)?;
-        if stopped(&self.parent_pidfd)?
-            || !self.peer.current()
-            || !same(&self.namespace, &child.namespace)?
-        {
-            return Err(denied());
-        }
-        child.parent_pidfd = Some(self.parent_pidfd);
-        child.delegated_helper = Some(self.helper);
-        fence.check()?;
-        Ok(child)
-    }
 }
 
 /// Only internal fixed-helper entry; arguments carry one inherited private
@@ -1382,8 +1042,6 @@ impl ManagedConsumingBootstrap {
     }
     /// Send the single child-created direct Shell proof endpoint on the existing
     /// authenticated root bootstrap transport. No listener is created.
-    /// # Errors
-    /// Refuses repeated delegation or lost actual child/program custody.
     pub fn delegate_shell(&mut self, stream: &mut UnixStream) -> io::Result<()> {
         self.check()?;
         let endpoint = self.shell_endpoint.as_ref().ok_or_else(denied)?;
@@ -1395,8 +1053,6 @@ impl ManagedConsumingBootstrap {
     /// for genuine direct Shell QPE before reading or executing this command.
     /// A local refusal emits exactly TCB0; only attempted shared framing errors
     /// escape as errors and require global bootstrap retirement.
-    /// # Errors
-    /// Refuses incomplete shared framing or an elapsed absolute request budget.
     pub fn delegate_shell_command(
         &mut self,
         stream: &mut UnixStream,
@@ -1462,8 +1118,6 @@ pub enum ConsumingBootstrapCommand {
 impl ManagedConsumingBootstrap {
     /// Deliver the exact frozen target command once, over the same private
     /// parent channel. The independently authenticated Shell checks its digest.
-    /// # Errors
-    /// Refuses repeated command, current custody loss or invalid fixed program.
     pub fn send_command(
         &mut self,
         command: &ConsumerCommand,
@@ -1513,8 +1167,6 @@ pub struct ConsumingBootstrapEntry {
 impl ConsumingBootstrapEntry {
     /// Call after isolating this helper's own mount namespace. The inherited
     /// descriptor alone is insufficient: actual root-parent QPE/image are needed.
-    /// # Errors
-    /// Refuses wrong mode, root, parent, installed image or mount namespace.
     pub fn authenticate(mut control: UnixStream) -> io::Result<Self> {
         if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(denied());
@@ -1577,8 +1229,6 @@ impl ConsumingBootstrapEntry {
     }
     /// Observe the actual target Shell over the child-created private endpoint.
     /// Caller must match it to original parent's certified input before spawn.
-    /// # Errors
-    /// Refuses repeated use, root sender, wrong parent or incomplete mutual QPE.
     pub fn authenticate_shell(&mut self) -> io::Result<ExecutingPeer> {
         self.check()?;
         if self.shell_authenticated {
@@ -1612,8 +1262,6 @@ impl ConsumingBootstrapEntry {
     }
     /// The sole bounded parent-control reader. Exposure control will extend its
     /// finite vocabulary, preserving one owner of this stream.
-    /// # Errors
-    /// Refuses unknown opcodes, duplicate commands, invalid bounds or lost parent.
     pub fn next_command(&mut self) -> io::Result<ConsumingBootstrapCommand> {
         self.check()?;
         self.control
@@ -1656,8 +1304,6 @@ impl ConsumingBootstrapEntry {
     }
     /// Deliver actual ordinary child custody on the independently authenticated
     /// direct Shell stream; caller retains the returned root supervisor.
-    /// # Errors
-    /// Refuses missing mutual QPE or current parent/child/command evidence.
     pub fn handoff_ordinary(&mut self, child: &mut OwnedOrdinaryChild) -> io::Result<()> {
         self.check()?;
         if !self.shell_authenticated || !self.command_received {

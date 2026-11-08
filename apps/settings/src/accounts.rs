@@ -291,9 +291,6 @@ impl AccountRoot {
     }
 
     /// Change browser picker visibility in the existing public account record.
-    ///
-    /// # Errors
-    /// Refuses a missing record, a non-identity account or a refused edit.
     pub fn set_browser_identity_enabled(
         &self,
         account: String,
@@ -324,9 +321,6 @@ impl AccountRoot {
     }
 
     /// Remove public picker metadata; existing sign-in custody is untouched.
-    ///
-    /// # Errors
-    /// Refuses a missing record, a non-identity account or a refused edit.
     pub fn remove_browser_identity(&self, account: String) -> Result<(), String> {
         let Some(PersonAccountsRecord(record)) = &self.person else {
             return Err("Settings' personal account record is unavailable".into());
@@ -352,9 +346,6 @@ impl AccountRoot {
     /// keyed by its address, and keep this device's file their projection.
     /// Its secret is sealed apart ([`Self::seal_password`] or the session's
     /// custody), never here.
-    ///
-    /// # Errors
-    /// Returns why the record refused it or the file could not be written.
     pub fn save_email_account(
         &self,
         config: &accounts::email::AccountConfig,
@@ -374,9 +365,6 @@ impl AccountRoot {
     /// vault (a test or `--data-dir` profile). The person's own root is
     /// sealed by the session's custody, which a sandboxed Settings cannot
     /// reach the key of: it is refused here.
-    ///
-    /// # Errors
-    /// Refuses the person's root, an unreadable vault or a failed save.
     pub fn seal_password(&self, id: &accounts::AccountId, password: &str) -> Result<(), String> {
         let Some(root) = &self.explicit else {
             return Err("This device's account custody is unavailable".into());
@@ -396,11 +384,6 @@ impl AccountRoot {
     /// Keep this device's account file the projection of the person's
     /// accounts, for the services outside any app that read it. Nothing to
     /// do outside a host, where the file is the store.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no config root resolves or the file cannot be
-    /// written.
     pub fn project(&self) -> std::io::Result<()> {
         match &self.person {
             Some(PersonAccountsRecord(record)) => {
@@ -412,11 +395,6 @@ impl AccountRoot {
 
     /// Make the person's accounts `store`: in a host, the edits that turn
     /// their record into it, then the device file its projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the record refuses an edit, no config root
-    /// resolves or the file cannot be written.
     pub fn save_store(&self, store: &accounts::AccountStore) -> std::io::Result<()> {
         let root = self.require_io()?;
         let Some(PersonAccountsRecord(record)) = &self.person else {

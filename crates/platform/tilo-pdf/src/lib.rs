@@ -657,10 +657,6 @@ impl Engine {
 
     /// Open a document from bytes. The bytes are copied once into a sealed
     /// memory file the engine reads from.
-    ///
-    /// # Errors
-    ///
-    /// Unreadable or protected documents, or an unavailable engine.
     pub fn open_bytes(&self, bytes: &[u8]) -> Result<Document> {
         self.open_bytes_with_password(bytes, None)
     }
@@ -716,10 +712,6 @@ impl Engine {
 
     /// Wrap an image (PNG, JPEG, WebP, …) as a one-page document, 612 pt
     /// wide. The image is decoded inside the engine.
-    ///
-    /// # Errors
-    ///
-    /// Undecodable images.
     pub fn open_image_bytes(&self, bytes: &[u8]) -> Result<Document> {
         if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
             return Err(Error::Limit("the image is too large".into()));
@@ -729,10 +721,6 @@ impl Engine {
 
     /// Ask the helper to attempt what its sandbox must refuse. Returns
     /// `None` for the in-process engine.
-    ///
-    /// # Errors
-    ///
-    /// Helper failures.
     pub fn probe_sandbox(&self, path: &str) -> Result<Option<ProbeReport>> {
         match &self.inner.backend {
             #[cfg(unix)]
@@ -892,10 +880,6 @@ impl Document {
     }
 
     /// Render a page (or a region of it) at a scale.
-    ///
-    /// # Errors
-    ///
-    /// Out-of-range pages, renders over the pixel budget, engine failures.
     pub fn render(&self, page: usize, options: &RenderOptions) -> Result<Bitmap> {
         let size = self
             .page_size(page)
@@ -942,10 +926,6 @@ impl Document {
     }
 
     /// The raw characters the engine extracted from a page, in engine order.
-    ///
-    /// # Errors
-    ///
-    /// Out-of-range pages, engine failures.
     pub fn raw_text(&self, page: usize) -> Result<Vec<text::RawChar>> {
         dispatch!(self, s => s.text(self.id, page), local => local.0.text(self.id, page), p => p.text(self.id, page))
     }
@@ -990,10 +970,6 @@ impl Document {
     }
 
     /// Search the whole document, stopping after `limit` hits.
-    ///
-    /// # Errors
-    ///
-    /// Engine failures while extracting text.
     pub fn search(
         &self,
         query: &str,
@@ -1021,37 +997,21 @@ impl Document {
     }
 
     /// Link areas on a page.
-    ///
-    /// # Errors
-    ///
-    /// Out-of-range pages, engine failures.
     pub fn links(&self, page: usize) -> Result<Vec<Link>> {
         dispatch!(self, s => s.links(self.id, page), local => local.0.links(self.id, page), p => p.links(self.id, page))
     }
 
     /// Annotations present in the file on a page.
-    ///
-    /// # Errors
-    ///
-    /// Out-of-range pages, engine failures.
     pub fn annotations(&self, page: usize) -> Result<Vec<AnnotationInfo>> {
         dispatch!(self, s => s.annotations(self.id, page), local => local.0.annotations(self.id, page), p => p.annotations(self.id, page))
     }
 
     /// The interactive form's fields (empty without a form).
-    ///
-    /// # Errors
-    ///
-    /// Engine failures.
     pub fn form_fields(&self) -> Result<Vec<FormField>> {
         dispatch!(self, s => s.form_fields(self.id), local => local.0.form_fields(self.id), p => p.form_fields(self.id))
     }
 
     /// The outline (bookmarks).
-    ///
-    /// # Errors
-    ///
-    /// Engine failures.
     pub fn outline(&self) -> Result<Vec<OutlineEntry>> {
         dispatch!(self, s => s.outline(self.id), local => local.0.outline(self.id), p => p.outline(self.id))
     }
@@ -1060,11 +1020,6 @@ impl Document {
     /// document's bytes with pages from it and `imports`, annotations as
     /// standard annotation objects and form values as field values. The
     /// same edits on the same bytes always give the same output.
-    ///
-    /// # Errors
-    ///
-    /// Out-of-range references (pages, imports), documents from another
-    /// engine, engine failures.
     pub fn export(&self, edits: &Edits, imports: &[&Document]) -> Result<Vec<u8>> {
         if imports
             .iter()

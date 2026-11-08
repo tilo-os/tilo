@@ -158,7 +158,7 @@ impl TargetProjectionEndpoint {
         self.service.custody().map(|_| ())
     }
     /// Available before FUSE initialization. The caller starts the actual root
-    /// Capnp relay on this stream before waiting for `observe_ready()`. The target
+    /// filesystem relay on this stream before waiting for `observe_ready()`. The target
     /// worker completes QPE1 on its connected control stream before first RPC.
     pub fn connect_control(&self) -> io::Result<UnixStream> {
         self.check()?;
@@ -233,9 +233,6 @@ impl TargetProjectionEndpoint {
     }
     /// Metadata observations come only from the authenticated fully dropped
     /// canonical worker. This token grants no read/write/lookup permission.
-    ///
-    /// # Errors
-    /// Returns an error if the worker is not ready or the held mount cannot be authenticated and measured.
     pub fn observe_held_view(&self) -> io::Result<ObservedTargetObject<'_>> {
         self.observe_object_inner(&self.view, true)
     }

@@ -1,16 +1,13 @@
 //! Terminal's "This device" target, allowed once by the person.
-//!
-//! The runtime (`ush`) refuses a login on the device's own shell until the
-//! person allowed it here. A window asks on its `shell-ui` connection
-//! ([`FloatingSurfaceClientMessage::AllowHostShell`]): this session puts its
-//! ordinary permission question in front of them, hands their answer to the
-//! supervisor as the allow it records (`ush`'s `allow-host`), and tells the
-//! app on the same connection whether the target is open to it now
+//! The runtime (`ush`) refuses a login on the device's own shell until the person allowed it here.
+//! A window asks on its `shell-ui` connection ([`FloatingSurfaceClientMessage::AllowHostShell`]):
+//! this session puts its ordinary permission question in front of them, hands their answer to the
+//! supervisor as the allow it records (`ush`'s `allow-host` ), and tells the app on the same
+//! connection whether the target is open to it now
 //! ([`FloatingSurfaceHostMessage::HostShellAllowed`]).
-//!
-//! The question is answered between two of the session's passes, and the
-//! supervisor writes the allow to disk before it answers: both run off the
-//! session's own pass, so a slow disk never holds up the desk.
+//! The question is answered between two of the session's passes, and the supervisor writes the
+//! allow to disk before it answers: both run off the session's own pass, so a slow disk never holds
+//! up the desk.
 
 use std::io::{BufRead as _, Write as _};
 use std::os::unix::net::UnixStream;
@@ -26,20 +23,18 @@ use ui::floating_surface::FloatingSurfaceHostMessage;
 
 use crate::desktop_services::DesktopServices;
 
-/// The capability the question is worded for in the person's language
-/// (`portal-access-host-shell`).
+/// The capability the question is worded for in the person's language (`portal-access-host-shell`).
 pub const HOST_SHELL: &str = "host-shell";
 
 /// The runtime's socket: a service of the login, outside every app sandbox,
 /// which is what lets it take the allow this session gives it.
 const USH_SERVICE: &str = "ush";
 
-/// How long this session waits for the supervisor to record an allow before
-/// it takes the answer as not recorded.
+/// How long this session waits for the supervisor to record an allow before it takes the answer as
+/// not recorded.
 const SUPERVISOR_ANSWER: Duration = Duration::from_secs(5);
 
-/// The questions asked for the device's own shell that the person has not
-/// answered yet.
+/// The questions asked for the device's own shell that the person has not answered yet.
 #[derive(Default)]
 pub(crate) struct HostShellAsks {
     waiting: Vec<Waiting>,
@@ -54,8 +49,8 @@ struct Waiting {
 }
 
 impl HostShellAsks {
-    /// Ask the person, for the app on `connection`, whether it may reach the
-    /// device's own shell. The answer reaches the app on the same connection.
+    /// Ask the person, for the app on `connection` , whether it may reach the device's own shell.
+    /// The answer reaches the app on the same connection.
     pub(crate) fn ask(
         &mut self,
         services: Option<&DesktopServices>,
@@ -64,13 +59,13 @@ impl HostShellAsks {
         reply: Arc<Mutex<UnixStream>>,
     ) {
         let Some(services) = services else {
-            // A session without the questions service has nobody to ask, so
-            // the target stays closed and the app is told.
+            // A session without the questions service has nobody to ask, so the target stays closed
+            // and the app is told.
             answer(&reply, app, false);
             return;
         };
-        // Asking again on the same connection replaces the question it is
-        // already waiting on rather than stacking a second one.
+        // Asking again on the same connection replaces the question it is already waiting on rather
+        // than stacking a second one.
         self.closed(connection);
         let details = serde_json::to_value(AccessQuestion {
             capability: HOST_SHELL.to_owned(),
@@ -94,15 +89,15 @@ impl HostShellAsks {
         });
     }
 
-    /// The connection closed: the question it waits on goes with it, and the
-    /// person is asked no more of it.
+    /// The connection closed: the question it waits on goes with it, and the person is asked no
+    /// more of it.
     pub(crate) fn closed(&mut self, connection: u64) {
         self.waiting
             .retain(|waiting| waiting.connection != connection);
     }
 
-    /// Hand the person's answer to the supervisor and tell the app, for every
-    /// question they answered since the last pass.
+    /// Hand the person's answer to the supervisor and tell the app, for every question they
+    /// answered since the last pass.
     pub(crate) fn settle(&mut self, services: Option<&DesktopServices>) {
         if self.waiting.is_empty() {
             return;
@@ -118,8 +113,8 @@ impl HostShellAsks {
                 still.push(waiting);
                 continue;
             };
-            // The question is answered: the app hears of it through the
-            // supervisor, which records the allow before anything opens.
+            // The question is answered: the app hears of it through the supervisor, which records
+            // the allow before anything opens.
             let expiry = lifetime(chosen);
             let app = waiting.app;
             let reply = waiting.reply;
@@ -139,8 +134,7 @@ impl HostShellAsks {
     }
 }
 
-/// The lifetime the person chose, in the runtime's vocabulary; `None` for a
-/// refusal.
+/// The lifetime the person chose, in the runtime's vocabulary; `None` for a refusal.
 fn lifetime(answer: Option<Answer>) -> Option<Expiry> {
     match answer?.choice {
         Some(ALLOW_ONCE) => Some(Expiry::AfterUse),
@@ -150,8 +144,8 @@ fn lifetime(answer: Option<Answer>) -> Option<Expiry> {
     }
 }
 
-/// A waker that does nothing: the questions are looked at again on the next
-/// pass, so nothing waits on being told they changed.
+/// A waker that does nothing: the questions are looked at again on the next pass, so nothing waits
+/// on being told they changed.
 fn noop_waker() -> std::task::Waker {
     use std::task::{RawWaker, RawWakerVTable, Waker};
     const VTABLE: RawWakerVTable = RawWakerVTable::new(
@@ -184,8 +178,8 @@ fn answer(reply: &Arc<Mutex<UnixStream>>, app: &str, allowed: bool) {
     }
 }
 
-/// Hand `expiry` to the supervisor, which records it where the device's own
-/// shell reads it. Returns whether it did.
+/// Hand `expiry` to the supervisor, which records it where the device's own shell reads it. Returns
+/// whether it did.
 fn record(expiry: Expiry) -> bool {
     let socket = launcher::services::socket_for(USH_SERVICE);
     ask_supervisor(&socket, expiry, SUPERVISOR_ANSWER).unwrap_or_else(|error| {
@@ -194,8 +188,8 @@ fn record(expiry: Expiry) -> bool {
     })
 }
 
-/// One `allow-host` request on a fresh connection, waiting at most `patience`
-/// for the supervisor's reply.
+/// One `allow-host` request on a fresh connection, waiting at most `patience` for the supervisor's
+/// reply.
 fn ask_supervisor(
     socket: &std::path::Path,
     expiry: Expiry,
@@ -219,8 +213,7 @@ fn ask_supervisor(
 }
 
 /// The supervisor's own words, as far as this session reads them
-/// ([`ush::supervisor::ServeResponse`]): the allow was recorded, or it was
-/// not.
+/// ([`ush::supervisor::ServeResponse`]): the allow was recorded, or it was not.
 mod ush_supervisor {
     #[derive(Debug, serde::Deserialize)]
     #[serde(tag = "result", rename_all = "kebab-case")]
@@ -269,9 +262,8 @@ mod tests {
         assert_eq!(lifetime(None), None, "the question went away");
     }
 
-    /// A session without the questions service has nobody to ask, so the
-    /// device's own shell stays closed and the app is told on its own
-    /// connection.
+    /// A session without the questions service has nobody to ask, so the device's own shell stays
+    /// closed and the app is told on its own connection.
     #[test]
     fn without_a_question_the_app_is_told_the_shell_stays_closed() {
         let (app, session) = UnixStream::pair().unwrap();
@@ -306,8 +298,8 @@ mod tests {
         lines
     }
 
-    /// The supervisor reads the request the runtime's own type writes: the
-    /// allow, with the lifetime the person chose.
+    /// The supervisor reads the request the runtime's own type writes: the allow, with the lifetime
+    /// the person chose.
     #[test]
     fn the_allow_reaches_the_supervisor_as_the_runtime_reads_it() {
         let dir = tempfile::tempdir().unwrap();

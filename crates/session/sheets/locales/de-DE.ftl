@@ -508,6 +508,7 @@ uninstall-entry-body = Sie gehört zum System, bleibt also auf diesem Computer u
 ## arbeiten.
 agent-door-client = { $client } ({ $program })
 agent-door-client-in-app = { $who } in { $app }
+agent-door-client-from-device = { $client }, von deinem Gerät { $device }
 agent-door-admission = In „{ $workspace }“ als Agent { $agent } arbeiten
 agent-door-admission-detail = Er tritt diesem Arbeitsbereich als Beobachter bei: er liest, was der Arbeitsbereich enthält, und führt die Aktionen aus, die ihm gewährt sind; in den Einstellungen des Arbeitsbereichs kannst du ihn jederzeit entfernen.
 agent-door-no-workspace = Hier gibt es keinen Arbeitsbereich zum Arbeiten.
@@ -515,6 +516,7 @@ agent-door-workspace-gone = Der Arbeitsbereich, in dem dieses Programm arbeiten 
 agent-door-not-administrator = Du verwaltest diesen Arbeitsbereich nicht, daher wurde { $agent } nicht hinzugefügt.
 agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
 agent-door-declined = Du hast dieses Programm nicht als Agenten hier arbeiten lassen.
+agent-door-person-from-device = Nur ein Programm auf diesem Gerät kann als du handeln; ein Agent von einem anderen deiner Geräte arbeitet hier als Agent.
 agent-door-admission-person = In „{ $workspace }“ als du handeln
 agent-door-admission-person-detail = Alles, was es tut, ist deins: es führt aus, was du tippst, als du, dir zugeschrieben, mit allem, was du hier darfst. Erlaube das nur einem Programm, das du selbst gestartet hast, etwa einem Terminal.
 agent-door-session-reads-only = Ein Agent liest hier die eigenen Ressourcen des Desktops; bitte die Person, das zu tun.

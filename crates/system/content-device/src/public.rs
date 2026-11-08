@@ -27,10 +27,6 @@ impl PublicCopy {
     }
 
     /// Keep a copy on this device for this app; the first keeper's fetches it.
-    ///
-    /// # Errors
-    ///
-    /// The daemon knows no public file by this name, or is out of reach.
     pub fn keep(&self) -> io::Result<()> {
         self.client
             .public_keep(self.name)

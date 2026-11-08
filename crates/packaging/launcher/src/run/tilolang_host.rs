@@ -160,10 +160,6 @@ impl VerifiedInstance {
 /// The tilolang app `installed`, installed at `manifest_path` with its payload at
 /// `payload_root`, whose signed root hashes to `expected`: verified (its files, its signature,
 /// its publisher not revoked) and read for a tilolang host.
-///
-/// # Errors
-/// The installation changed or does not verify, its publisher is revoked, it is no tilolang
-/// app, or its module cannot be read.
 pub fn verified_instance(
     installed: &package_store::InstalledPackage,
     manifest_path: &Path,
@@ -199,10 +195,6 @@ pub fn is_tilolang(runtime: &str) -> bool {
 }
 
 /// Start the tilolang host `launch` on its door `door` and wait for it to end.
-///
-/// # Errors
-/// The runtime is malformed, missing or does not verify, the storage is not a directory, or
-/// the sandbox cannot be set up.
 pub fn run_tilolang_host(
     launch: &HostLaunch,
     door: OwnedFd,

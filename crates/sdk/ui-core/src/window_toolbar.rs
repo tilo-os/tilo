@@ -1,78 +1,25 @@
 //! An app's toolbar is slots in the window's bar, never a row it draws.
 //!
-//! The desktop draws one bar per window (`Workspace → Strip → WindowGroup →
-//! Tab`): the app's icon, its tabs, the window's controls. What an app adds
-//! to it it declares here, as slots the bar lays out and draws with the
-//! system's own controls:
+//! The desktop draws one bar per window; what an app adds it declares here, as
+//! slots the bar lays out and draws with the system's own controls:
 //!
-//! - **navigation:** the app's sidebar toggle, back and forward, and
-//!   whether each can go;
-//! - **location:** where the window is and can go, the label the bar shows
-//!   at rest (a page's domain, a folder's path, a document's name), and
-//!   whether it can be edited. An editable location turns into a field
-//!   holding the full value, all of it selected, on a click or Ctrl+L, with a
-//!   go button at its end; Enter or the go button commits the text to the
-//!   app, Esc puts the location back (and the app hears the field hold its
-//!   value again, as an [`ToolbarEvent::Edit`]). A location with a hierarchy (a
-//!   folder's path) declares its levels as [`LocationSegment`]s: the bar
-//!   draws them as a breadcrumb with drawn chevrons, and a click on a level
-//!   commits that level's value. Its own picture ([`ToolbarImage`], a page's
-//!   favicon) stands at the bar's leading edge in place of the app's icon.
-//!   While the field is edited the app hears each change of its text
-//!   ([`ToolbarEvent::Edit`]) and may answer with [`LocationSuggestion`]s,
-//!   which the bar lists under the field. A location that is one of a few
-//!   places (where a terminal's shell runs) declares them as
-//!   [`LocationChoice`]s instead: the label reads as a picker, with a chevron,
-//!   and a click opens the system's menu of them; choosing one commits its
-//!   value;
-//! - **leading actions:** icon buttons that act on where the window is,
-//!   standing right after the navigation (a calendar's previous, next and
-//!   today), at most [`MAX_LEADING`] of them;
-//! - **views:** tabs switching between the app's views of the same
-//!   thing (Month, Week, Day), trailing the location; where the row has no
-//!   room for it, it folds into a views menu that names the chosen view and
-//!   lists them all, the chosen one checked (only a row too narrow even for
-//!   that lists them in the overflow menu). Choosing one sends its id as an
-//!   [`ToolbarEvent::Action`];
-//! - **actions:** icon buttons (reload, bookmark…), at most [`MAX_ACTIONS`]
-//!   of them in the row; the rest, those the row has no room for and those
-//!   declared for the menu ([`ToolbarAction::menu`]) are in the menu of a
-//!   trailing overflow button. An action with items
-//!   ([`ToolbarAction::items`]) is a menu button: a press lists its items
-//!   (a document's Format or Insert commands), and in the overflow menu its
-//!   items follow its name.
+//! - **navigation:** the sidebar toggle, back and forward, and whether each can go;
+//! - **location:** where the window is and can go (a page's domain, a folder's
+//!   path), editable as a field, a hierarchy's levels as a breadcrumb and a few
+//!   places as a picker: see [`LocationSegment`] and [`LocationChoice`];
+//! - **leading actions:** at most [`MAX_LEADING`] icon buttons acting on where it is;
+//! - **views:** tabs switching between the app's views of the same thing, folding
+//!   into a views menu where the row has no room;
+//! - **actions:** at most [`MAX_ACTIONS`] icon buttons, the rest (and those declared
+//!   for the menu) under the row's overflow button; one with items is a menu button.
 //!
-//! Search is the bar's own control, never a slot: it finds in place what the
-//! app's widgets offer ([`WindowOffer`]), or opens the platform search
-//! narrowed to the app.
-//!
-//! The tab label (what tells two tabs apart) is a window's name, and a
-//! window is named by what it shows: the location's label stands in the tab,
-//! the bar, the overview and search — a note's title, a folder's path — and
-//! the window's own title only where its app names nothing. A window whose
-//! app declares no slots shows its title, as before.
-//!
-//! The bar's own controls reach an app in its own process the same way: the
-//! app says what its window offers them ([`WindowOffer`]: what the search
-//! acts on in place and its count, and its History control), and the bar
-//! hands it what the person did with them as [`ToolbarEvent`]s (a query, a
-//! step, a close, the History control). The app answers through its own
-//! widgets, as the window does for an app in its process, and draws neither
-//! control itself.
-//!
-//! An app declares its current slots with [`declare`] whenever they change
-//! (an equal declaration is free) and reads what the person did in the bar
-//! with [`take_events`]. The app runner carries both over the app's
-//! authenticated `shell-ui` connection. While the desktop's bar shows the
-//! slots ([`is_hosted`]) the app draws no toolbar of its own; outside a
-//! Tilo session (a window of its own, a test) nothing hosts them and the app
-//! keeps its own row.
-//!
-//! An app its host runs in the host's own process (every app of the browser
-//! desktop) makes the same calls: while the host runs it ([`enter`]), they
-//! act on the window the host shows it in
-//! ([`crate::hosted_window::HostedWindow`]) instead of the thread's, so apps
-//! sharing a thread never see each other's slots.
+//! Search is the bar's own control, never a slot, and the tab label is the location's,
+//! so a window is named by what it shows. The bar's own controls reach the app as
+//! [`ToolbarEvent`]s through [`WindowOffer`]: it declares its slots with [`declare`] and
+//! reads what the person did with [`take_events`], over its authenticated `shell-ui`
+//! connection. While the desktop's bar shows the slots ([`is_hosted`]) the app draws no
+//! toolbar of its own; an app its host runs in the host's own process makes the same
+//! calls for the window the host shows it in ([`crate::hosted_window::HostedWindow`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -1495,18 +1442,6 @@ pub fn revision() -> u64 {
     REVISION.with(Cell::get)
 }
 
-/// Whether `event` is a press on the app's own slots (a mode, an action,
-/// the sidebar toggle), after which the app takes the keyboard if nothing
-/// in its window holds it. Typing into the bar's location or search, and
-/// its History, keep the keyboard where it is.
-#[must_use]
-pub fn hands_keyboard_to_app(event: &ToolbarEvent) -> bool {
-    matches!(
-        event,
-        ToolbarEvent::Action { .. } | ToolbarEvent::ToggleSidebar
-    )
-}
-
 /// The id of the notice's button `event` presses, if it presses one: such a
 /// press is the notice's poster's ([`take_notice_press`]), never among the
 /// app's slot events.
@@ -1593,6 +1528,19 @@ pub fn take_search_request() -> Option<SearchOpening> {
         return window.take_search_request();
     }
     SEARCH_REQUESTED.with(Cell::take)
+}
+
+/// Hand the app what the person did in the bar, answering whether it is a
+/// press on the app's own slots: the host hands the app the keyboard then,
+/// if nothing in its window holds it. The bar's location, search and
+/// History keep the keyboard where it is.
+pub(crate) fn deliver_to_app(event: ToolbarEvent) -> bool {
+    let hands_keyboard = matches!(
+        event,
+        ToolbarEvent::Action { .. } | ToolbarEvent::ToggleSidebar
+    );
+    deliver(event);
+    hands_keyboard
 }
 
 /// Hand the app what the person did in the bar (the runner, from the

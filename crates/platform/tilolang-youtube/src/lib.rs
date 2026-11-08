@@ -37,9 +37,6 @@ pub use service::{
 
 /// The origin kept in step with YouTube over the connector at the far end of `stream`, waking
 /// the instance with `wake` when an answer is ready.
-///
-/// # Errors
-/// The socket cannot be shared with the service the origin asks.
 pub fn remote_origin(
     stream: std::os::unix::net::UnixStream,
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,

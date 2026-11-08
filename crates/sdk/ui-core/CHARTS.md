@@ -42,9 +42,9 @@ both are independently hoverable, clickable, and accessible.
 
 ## One plot widget
 
-Every chart type except `CartesianPlot` and the trend `Chart`/`Sparkline`
-is the same widget, `Plot`, over that type's marks: `Heatmap` is
-`Plot<HeatmapMarks>`, `SankeyChart` is `Plot<SankeyMarks>`, and so on. Each
+Every chart type except the trend `Chart`/`Sparkline` is the same widget,
+`Plot`, over that type's marks: `Heatmap` is `Plot<HeatmapMarks>`,
+`CartesianPlot` is `Plot<CartesianMarks>`, and so on. Each
 type keeps its own constructor and style, and they all share one builder
 surface and one behaviour:
 
@@ -218,8 +218,8 @@ modifier because the gesture is unambiguous. Dedicated chart surfaces can set
 `zoom_modifier_required: false`.
 Use `viewport()`, `take_view_changed()`, and `reset_view()` to synchronize
 plots, persist navigation, or provide a visible reset control. Restore or link
-views with `set_viewport()`, move them using `pan_view_by()` or the
-size-independent `pan_view_fraction()`, and turn a brush directly into a detail
+views with `set_viewport()`, move them using the size-independent
+`pan_view_fraction()`, and turn a brush directly into a detail
 view with `zoom_to_selection()`.
 
 Set `pan` to `CartesianPan::X` or `CartesianPan::XY` for direct navigation.

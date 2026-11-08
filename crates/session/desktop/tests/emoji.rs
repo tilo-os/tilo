@@ -1,6 +1,6 @@
 //! Super+. on the real chrome: the emoji card opens at the caret of the
-//! field the person types into, and the emoji they pick goes to the host,
-//! which writes it into that field and remembers it.
+//! field the person types into, and the emoji they pick goes to the session,
+//! which writes it into that field.
 
 #![allow(
     clippy::unwrap_used,
@@ -10,10 +10,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use emoji::Recents;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
-use tilo_desktop::emoji_picker::{EmojiLink, EmojiPlace, RecentsStore};
+use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
@@ -21,6 +20,7 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use ui::emoji_catalogue::{self, RecentsStore};
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Rect};
 use ui::synthetic_input::{char_key, key_press, named_key};
@@ -103,30 +103,31 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-/// The recents where the session keeps them: in memory, as the test's own
-/// state file.
+/// The emoji recents where the session keeps them: in memory, as the test's own list.
 #[derive(Clone)]
-struct MemoryRecents(Rc<RefCell<Recents>>);
+struct MemoryRecents(Rc<RefCell<Vec<String>>>);
 
 impl RecentsStore for MemoryRecents {
-    fn load(&self) -> Recents {
+    fn load(&self) -> Vec<String> {
         self.0.borrow().clone()
     }
 
-    fn save(&self, recents: &Recents) -> Result<(), String> {
-        *self.0.borrow_mut() = recents.clone();
-        Ok(())
+    fn save(&self, items: &[String]) {
+        *self.0.borrow_mut() = items.to_vec();
     }
 }
 
-/// The chrome over a desk with one window, keeping the emoji picker's recents
-/// in `recents` and opening the card where the host says.
-fn chrome_with_picker(recents: Rc<RefCell<Recents>>) -> (FrameHarness, DesktopHandle, EmojiLink) {
+/// The chrome over a desk with one window, keeping the emoji card's recents in `recents` and
+/// opening the card where the session says.
+fn chrome_with_picker(
+    recents: Rc<RefCell<Vec<String>>>,
+) -> (FrameHarness, DesktopHandle, EmojiLink) {
+    emoji_catalogue::keep_recents_in(Box::new(MemoryRecents(recents)));
     let tree = desk_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
     desk.relayout();
-    let link = EmojiLink::new(Box::new(MemoryRecents(recents)));
+    let link = EmojiLink::default();
     let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
@@ -145,6 +146,7 @@ fn chrome_with_picker(recents: Rc<RefCell<Recents>>) -> (FrameHarness, DesktopHa
         ui::Theme::dark(),
     );
     frame.relayout();
+    draw_chrome(&mut frame);
     (frame, handle, link)
 }
 
@@ -165,8 +167,7 @@ fn type_text(frame: &mut FrameHarness, text: &str) {
     }
 }
 
-/// Run `visit` on the chrome the frame mounts, as the session's chrome layer
-/// holds it.
+/// Run `visit` on the chrome the frame mounts, as the session's chrome layer holds it.
 fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrome) -> R) -> R {
     let mut chrome = frame.root_mut::<DesktopChrome>();
     visit(&mut chrome)
@@ -184,15 +185,15 @@ fn draw_chrome(frame: &mut FrameHarness) {
 }
 
 /// Super+. opens the card at the caret of the field the person types into;
-/// the emoji picked there is handed to the host, which writes it into that
-/// field and remembers it for the next time the card opens.
+/// the emoji picked there is handed to the session, which writes it into that
+/// field, and the card remembers it for the next time it opens.
 #[test]
 fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
-    let recents = Rc::new(RefCell::new(Recents::default()));
+    let recents = Rc::new(RefCell::new(Vec::new()));
     let (mut frame, _handle, link) = chrome_with_picker(Rc::clone(&recents));
 
-    // The caret of the field the person is typing into, as the session reads
-    // it from the compositor: a text caret on the desk, on the whole display.
+    // The caret of the field the person is typing into, as the session reads it from the
+    // compositor: a text caret on the desk, on the whole display.
     let caret = Rect::new(320.0, 180.0, 322.0, 200.0);
     let display = Rect::new(0.0, 0.0, 1280.0, 800.0);
     link.place_at(EmojiPlace {
@@ -217,7 +218,7 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
 
     frame.relayout();
     draw_chrome(&mut frame);
-    let card = with_chrome(&mut frame, |chrome| chrome.emoji().card_rect());
+    let card = with_chrome(&mut frame, |chrome| chrome.emoji().rect());
     assert!(
         card.y0 >= caret.y1,
         "the card stands below the caret: {card:?} against {caret:?}"
@@ -243,7 +244,7 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
     assert_eq!(
         link.take_picks(),
         ["🎉".to_string()],
-        "the pick is handed to the host once"
+        "the pick is handed to the session once"
     );
     with_chrome(&mut frame, |chrome| {
         assert!(!chrome.emoji().is_open(), "and the card closes");
@@ -253,13 +254,9 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
         );
     });
 
-    // The host writes it into the field it was picked from and reports what
-    // arrived, which is when the emoji joins the recents.
-    link.note_delivered("🎉".into(), false);
-    frame.relayout();
-    draw_chrome(&mut frame);
+    // Picking it is what remembers it.
     assert_eq!(
-        recents.borrow().items(),
+        recents.borrow().as_slice(),
         ["🎉".to_string()],
         "the emoji picked is remembered"
     );
@@ -269,45 +266,26 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
     frame.relayout();
     draw_chrome(&mut frame);
     with_chrome(&mut frame, |chrome| {
-        assert_eq!(chrome.emoji().recents(), ["🎉".to_string()]);
         assert_eq!(
-            chrome.emoji().items().first().map(String::as_str),
-            Some("🎉")
+            chrome.emoji().items().first().copied().flatten(),
+            Some("🎉"),
+            "the recents come first"
         );
     });
 }
 
-/// A field whose content is secret keeps its emoji out of the recents: what
-/// was picked into a password is never remembered.
-#[test]
-fn a_pick_into_a_secret_field_is_never_remembered() {
-    let recents = Rc::new(RefCell::new(Recents::default()));
-    let (mut frame, _handle, link) = chrome_with_picker(Rc::clone(&recents));
-
-    link.note_delivered("👍".into(), true);
-    frame.relayout();
-    draw_chrome(&mut frame);
-
-    assert!(recents.borrow().items().is_empty(), "nothing is remembered");
-    press_emoji_shortcut(&mut frame);
-    with_chrome(&mut frame, |chrome| {
-        assert!(chrome.emoji().is_open());
-        assert!(chrome.emoji().recents().is_empty());
-    });
-}
-
-/// A field that reported no caret opens the card centred over the desk, and
-/// the picker's own chord closes it again.
+/// A field that reported no caret opens the card centred over the desk, and the picker's own chord
+/// closes it again.
 #[test]
 fn the_picker_opens_centred_without_a_caret_and_its_shortcut_closes_it() {
-    let recents = Rc::new(RefCell::new(Recents::default()));
+    let recents = Rc::new(RefCell::new(Vec::new()));
     let (mut frame, _handle, link) = chrome_with_picker(recents);
     link.place_at(EmojiPlace::default());
 
     press_emoji_shortcut(&mut frame);
     frame.relayout();
     draw_chrome(&mut frame);
-    let card = with_chrome(&mut frame, |chrome| chrome.emoji().card_rect());
+    let card = with_chrome(&mut frame, |chrome| chrome.emoji().rect());
     assert!(
         card.x0 > 0.0 && card.x1 < 1280.0 && card.y0 > 0.0 && card.y1 < 800.0,
         "the card is on the desk: {card:?}"

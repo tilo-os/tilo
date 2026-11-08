@@ -214,8 +214,6 @@ impl StageResult {
         }
     }
 }
-/// # Errors
-/// Refuses malformed, oversized or mismatched staging results.
 pub fn decode_stage(bytes: &[u8], request: &LaunchSelected) -> io::Result<StageResult> {
     let value: StageResult = super::decode(bytes)?;
     if !value.matches(request) {
@@ -223,8 +221,6 @@ pub fn decode_stage(bytes: &[u8], request: &LaunchSelected) -> io::Result<StageR
     }
     Ok(value)
 }
-/// # Errors
-/// Refuses malformed or oversized staging results.
 pub fn encode_stage(value: &StageResult) -> io::Result<Vec<u8>> {
     if !value.valid() {
         return Err(super::refused());
@@ -267,8 +263,6 @@ impl ObservedReply {
 fn refused() -> io::Error {
     super::refused()
 }
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
 pub fn decode_request(bytes: &[u8]) -> io::Result<Request> {
     let v: Request = super::decode(bytes)?;
     if !v.valid() {
@@ -276,8 +270,6 @@ pub fn decode_request(bytes: &[u8]) -> io::Result<Request> {
     }
     Ok(v)
 }
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
 pub fn decode_command(bytes: &[u8]) -> io::Result<RootCommand> {
     let v: RootCommand = super::decode(bytes)?;
     if !v.valid() {
@@ -285,17 +277,6 @@ pub fn decode_command(bytes: &[u8]) -> io::Result<RootCommand> {
     }
     Ok(v)
 }
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
-pub fn decode_admission(bytes: &[u8], access: SelectedAccess) -> io::Result<RootReply> {
-    let v: AdmissionReply = super::decode(bytes)?;
-    if v.schema != 2 || v.access != access || !v.reply.valid() {
-        return Err(refused());
-    }
-    Ok(v.reply)
-}
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
 pub fn decode_claim(bytes: &[u8], access: SelectedAccess) -> io::Result<ClaimReply> {
     let v: ClaimResult = super::decode(bytes)?;
     if v.schema != 2 || v.access != access || !v.reply.valid() {
@@ -303,25 +284,12 @@ pub fn decode_claim(bytes: &[u8], access: SelectedAccess) -> io::Result<ClaimRep
     }
     Ok(v.reply)
 }
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
-pub fn decode_target(bytes: &[u8], access: SelectedAccess) -> io::Result<TargetReply> {
-    let v: TargetResult = super::decode(bytes)?;
-    if v.schema != 2 || v.access != access || !v.reply.valid() {
-        return Err(refused());
-    }
-    Ok(v.reply)
-}
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
 pub fn encode_observed(v: &ObservedReply) -> io::Result<Vec<u8>> {
     if !v.valid() {
         return Err(refused());
     }
     super::encode(v)
 }
-/// # Errors
-/// Refuses malformed, oversized or inconsistent version two wire values.
 pub fn decode_observed(bytes: &[u8]) -> io::Result<ObservedReply> {
     let v: ObservedReply = super::decode(bytes)?;
     if !v.valid() {

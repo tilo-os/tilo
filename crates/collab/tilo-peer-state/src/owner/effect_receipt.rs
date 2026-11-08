@@ -24,10 +24,18 @@ pub(crate) fn validate(view: &crate::owner::NativeCommittedView) -> Result<(), S
         .ok_or("effect workspace is absent")?;
     let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(document);
     for (id, stored) in &view.record.effect_receipts {
-        let effect = effects
+        // A receipt this device wrote is the truth about an effect it served;
+        // the workspace's signed half of it arrives when its change is merged,
+        // which is not before this view is restored. Until then the receipt
+        // binds the invocation without a public half to check it against: it
+        // keeps the workspace, and it is what answers a retry of that
+        // invocation.
+        let Some(effect) = effects
             .iter()
             .find(|effect| effect.invocation.0.to_string() == *id)
-            .ok_or("stored effect binding has no admitted public receipt")?;
+        else {
+            continue;
+        };
         let request = OwnerCommitRequest {
             workspace: view.record.workspace.to_string(),
             operation: CommitOperation::EffectReceipt {
@@ -177,10 +185,6 @@ impl NativeWorkspaceOwner {
     /// device's person's slice of the workspace, signed by `key`, the device's
     /// own, and published as any workspace change of its own. Original
     /// arguments and results never enter the workspace.
-    ///
-    /// # Errors
-    /// Refuses invalid receipts, a key that is not this device's, another's
-    /// receipt, changed retries or failed durable publication.
     pub fn commit_effect_receipt(
         &self,
         request: &OwnerCommitRequest,

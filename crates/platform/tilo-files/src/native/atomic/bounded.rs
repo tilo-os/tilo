@@ -46,10 +46,6 @@ impl BoundedOwnerDirectory {
         }
     }
     /// Query the retained directory's identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns the native error when the held directory cannot be inspected.
     pub fn identity(&self) -> io::Result<FileIdentity> {
         self.directory.identity()
     }

@@ -1,16 +1,13 @@
-//! [`QuickTile`]: a Quick Settings control. Its glyph, name and state line
-//! sit on a tile that is filled with the on colour while the control is on;
-//! a press anywhere on it switches the control. The name takes one line and
-//! the state line up to two, broken after a word and elided only past that.
-//! A tile whose control has a
-//! section of its own (the networks under Wi-Fi) gives that section a
+//! [`QuickTile`] — a Quick Settings control. Its glyph, name and state line sit on a tile filled
+//! with the on colour while the control is on, and a press anywhere on it switches the control.
+//! The name takes one line and the state line up to two, broken after a word and elided only
+//! past that. A tile whose control has a section of its own (the networks under Wi-Fi) gives it a
 //! chevron half, set apart by a hairline, that turns as the section opens.
 //!
-//! The tile reports what the person did as a [`QuickTileOutcome`]
-//! ([`QuickTile::take_outcome`]); the host switches the control or opens
-//! its section and hands the new state back. In an app each target is bound
-//! to an action instead ([`QuickTile::on_switch`], [`QuickTile::on_details`]),
-//! the same one the palette, scripts and agents invoke.
+//! The tile reports what the person did as a [`QuickTileOutcome`] ([`QuickTile::take_outcome`]);
+//! the host switches the control or opens its section and hands the new state back. In an app
+//! each target is bound to an action instead ([`QuickTile::on_switch`],
+//! [`QuickTile::on_details`]), the same one the palette, scripts and agents invoke.
 //!
 //! ```ignore
 //! let mut tile = QuickTile::new("quick_settings_network", Icon::Wifi, "Wi-Fi")

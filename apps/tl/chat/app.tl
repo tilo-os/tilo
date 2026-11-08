@@ -18,7 +18,8 @@ type Category {
 }
 
 /// Messages in one stream; any message can start a thread. A post is a change of its channel,
-/// so it is unseen to everyone but its author: the sidebar counts the new ones.
+/// so it is unseen to everyone but its author: Chat's Unread place counts the conversations
+/// holding one.
 type TextChannel {
     name: Text
     topic: Text
@@ -85,6 +86,12 @@ default view channel for TextChannel
 default view direct for Direct
 
 default view thread for Thread
+
+row view channel_summary for TextChannel
+
+row view direct_summary for Direct
+
+row view category_summary for Category
 
 /// Adds a text channel to the sidebar.
 primary action new_channel(all: Conversations, name: Text = "new-channel") -> TextChannel (
@@ -223,6 +230,33 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
     }
 }
 
+/// Chat's Unread place, as another app's page shows it: the conversations with something the
+/// person looking has not read, in the sidebar's order — the channels outside a category, then
+/// each category's own — each drawn by its type's row view. What a conversation holds unseen is
+/// its messages, the items of its own list, so the place is the ones a transcript would stand
+/// its "New messages" line in (`first_unseen`, as the channel and direct views read it);
+/// `unseen` of the conversation itself is the changes to it, which saying where people talk is
+/// not. A message that names them is one of those messages, so a mention counts here as any
+/// unread message does. A category says nothing itself, so it never stands here; its channels
+/// stand where they are.
+view unread(all: Conversations) {
+    let needing = all.channels.flat_map(
+        x -> match x {
+            c: Category => unread_in(c),
+            ch: TextChannel => if first_unseen(ch) != .none { [ch] } else { [] },
+            d: Direct => if first_unseen(d) != .none { [d] } else { [] },
+        },
+    )
+    std.place(all, "Unread", needing) { x ->
+        show(x, row: true)
+    }
+}
+
+/// The conversations `c` holds that the person looking has not read.
+fn unread_in(c: Category) -> List<TextChannel | Direct> {
+    c.channels.filter(ch -> first_unseen(ch) != .none)
+}
+
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
@@ -234,16 +268,23 @@ view sidebar(all: Conversations) {
                 for item in all.channels {
                     match item {
                         c: Category => {
-                            ui.NavSection(c.name, collapsible: true) {
-                                for ch in c.channels {
-                                    ui.NavItem(
-                                        "{c.name}/{ch.name}",
-                                        ch.name,
-                                        icon: .hash,
-                                        item: ch,
-                                        mentions: mentions(ch),
-                                    ) {
-                                        on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
+                            // A group is its channels: one with none shows no header over
+                            // nothing.
+                            if not c.channels.is_empty() {
+                                ui.NavSection(c.name, collapsible: true) {
+                                    for ch in c.channels {
+                                        ui.NavItem(
+                                            "{c.name}/{ch.name}",
+                                            ch.name,
+                                            icon: .hash,
+                                            item: ch,
+                                            mentions: mentions(ch),
+                                        ) {
+                                            on select: set(shown, "{c.name}/{ch.name}")
+                                                .then(
+                                                    open(ch),
+                                                )
+                                        }
                                     }
                                 }
                             }
@@ -348,6 +389,31 @@ view direct(d: Direct) {
             composer(d, draft, replying, "Message {d.name}")
         }
     }
+}
+
+/// A channel as another app's page summarizes it: its name, and what it is about.
+view channel_summary(c: TextChannel) {
+    row(c.name, secondary: c.topic, icon: .hash)
+}
+
+/// A direct conversation as another app's page summarizes it: whose it is and the last thing
+/// said in it. The conversation with yourself is your notes, as the sidebar names it.
+view direct_summary(d: Direct) {
+    let last = d.messages.last()
+    row(
+        if d.person == workspace.me { "Notes to self" } else { d.name },
+        secondary: if let m = last { m.body.excerpt } else { "" },
+        icon: .message_circle,
+    )
+}
+
+/// A category as another app's page summarizes it: its name and how many channels it holds.
+view category_summary(c: Category) {
+    row(
+        c.name,
+        secondary: if c.channels.len() == 1 { "1 channel" } else { "{c.channels.len()} channels" },
+        icon: .folder,
+    )
 }
 
 /// A message of a direct conversation, with what can be done to it on hover.

@@ -365,10 +365,6 @@ impl Core {
     /// reading is still coming rather than failing the screen around it. The boundary reads the
     /// slot that moves when the reading comes, so it runs again then, and the reading is asked
     /// of the host in the meantime. A failure for any other reason is the caller's to report.
-    ///
-    /// # Errors
-    ///
-    /// A view that traps or returns no node, and anything else but a missing reading.
     pub(crate) fn render_boundary_waiting(
         &self,
         target: &ViewTarget,
@@ -525,10 +521,12 @@ impl Core {
             place_unread_divider(&mut children, &unread.target);
         }
         if below.preview.is_some() {
-            props.insert(
-                LIST_LEN.to_owned(),
-                Value::Int(i64::try_from(rows_total).unwrap_or(i64::MAX)),
-            );
+            // How many rows the list has, the ones not built included: the count it carries
+            // when its rows are built in place ([`crate::view::LIST_LEN`]), else the rows its
+            // loops made.
+            props
+                .entry(LIST_LEN.to_owned())
+                .or_insert_with(|| Value::Int(i64::try_from(rows_total).unwrap_or(i64::MAX)));
         }
         let mut node = UiNode {
             kind: n.kind.clone(),
@@ -632,6 +630,7 @@ impl Core {
         mut hook: Option<&mut (dyn Boundaries + 'h)>,
     ) -> Result<(Vec<UiNode>, usize), RuntimeError> {
         let mut rows_total = 0usize;
+        let mut shown = 0usize;
         let mut keys = HashSet::new();
         let mut children = Vec::with_capacity(n.children.len());
         for c in &n.children {
@@ -646,6 +645,16 @@ impl Core {
                 }
                 _ => {
                     rows_total = rows_total.saturating_add(1);
+                    // A card's rows stand in the tree already when a template's list lowers
+                    // them in place: it shows the first of them as a preview of a loop's rows
+                    // does, and the list still counts them all.
+                    let item = cx.nodes.get(*c).is_some_and(|child| child.kind == "item");
+                    if item && below.preview.is_some_and(|rows| shown >= rows) {
+                        continue;
+                    }
+                    if item {
+                        shown = shown.saturating_add(1);
+                    }
                     vec![self.build_node(cx, *c, below, acc, hook.as_deref_mut())?]
                 }
             };
@@ -1162,10 +1171,6 @@ impl Core {
     }
 
     /// Run a block's `b_main`, which takes no arguments, and read its value.
-    ///
-    /// # Errors
-    ///
-    /// A trap or a value of the wrong type.
     pub fn eval_block(
         &self,
         pkg: &Package,

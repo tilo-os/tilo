@@ -42,36 +42,34 @@ use smithay::wayland::shell::wlr_layer::{
 use crate::render::OutputRenderElement;
 use crate::state::{ClientState, State};
 
-/// The layer surfaces, in the order their clients made them: of two on one
-/// layer, the later one is above.
+/// The layer surfaces, in the order their clients made them: of two on one layer, the later one is
+/// above.
 pub(crate) struct Layers {
     shell: WlrLayerShellState,
     surfaces: Vec<Placed>,
-    /// Which layer surfaces the session shows, by the name their client gave
-    /// them: one whose app the session keeps running between openings is
-    /// hidden here instead. A name the session never named is shown.
+    /// Which layer surfaces the session shows, by the name their client gave them: one whose app
+    /// the session keeps running between openings is hidden here instead. A name the session never
+    /// named is shown.
     visibility: std::collections::BTreeMap<String, bool>,
-    /// How the session draws a surface it is moving, by the same name: one
-    /// coming or going is posed here frame by frame until it rests. A name
-    /// the session never posed is drawn as it stands.
+    /// How the session draws a surface it is moving, by the same name: one coming or going is posed
+    /// here frame by frame until it rests. A name the session never posed is drawn as it stands.
     poses: std::collections::BTreeMap<String, LayerPose>,
 }
 
-/// How a layer surface is drawn this frame instead of as it stands: the
-/// panel of another process coming and going, which only the session, who
-/// places it, can pose.
+/// How a layer surface is drawn this frame instead of as it stands: the panel of another process
+/// coming and going, which only the session, who places it, can pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerPose {
     /// Scaled by this much about its [`Self::anchor`] (1: as it is).
     pub scale: f64,
     /// Its opacity, 0 (invisible) to 1.
     pub opacity: f32,
-    /// The point it grows from and shrinks back into, as a fraction of its
-    /// own rectangle: `(0.0, 0.0)` its top-left corner, `(1.0, 0.0)` its
-    /// top-right, `(0.5, 0.5)` its middle. The corner its slot anchors it by.
+    /// The point it grows from and shrinks back into, as a fraction of its own rectangle:
+    /// `(0.0, 0.0)` its top-left corner, `(1.0, 0.0)` its top-right, `(0.5, 0.5)` its middle. The
+    /// corner its slot anchors it by.
     pub anchor: (f64, f64),
-    /// Where it is drawn instead of where it stands, in logical pixels: how
-    /// far it is still toward the anchor it comes from or goes back to.
+    /// Where it is drawn instead of where it stands, in logical pixels: how far it is still toward
+    /// the anchor it comes from or goes back to.
     pub offset: (f64, f64),
 }
 
@@ -99,20 +97,18 @@ impl Default for LayerPose {
 /// One layer surface and where it is on its output.
 struct Placed {
     surface: LayerSurface,
-    /// The name its client gave it, as the session asks for it: `tilo-` and
-    /// the surface's name.
+    /// The name its client gave it, as the session asks for it: `tilo-` and the surface's name.
     namespace: String,
     /// The output it asked for, until an output exists to put it on.
     output: Option<Output>,
     layer: Layer,
-    /// Its rectangle in the logical layout, from its anchors, margins and
-    /// size on the output it is on; empty before it has an output.
+    /// Its rectangle in the logical layout, from its anchors, margins and size on the output it is
+    /// on; empty before it has an output.
     rect: Rectangle<i32, Logical>,
 }
 
 impl Placed {
-    /// Whether the client drew it: a layer surface shows nothing before its
-    /// first buffer.
+    /// Whether the client drew it: a layer surface shows nothing before its first buffer.
     fn has_buffer(&self) -> bool {
         with_renderer_surface_state(self.surface.wl_surface(), |state| state.buffer().is_some())
             .unwrap_or(false)
@@ -161,8 +157,8 @@ impl Layers {
         self.surfaces.retain(|placed| placed.surface.alive());
     }
 
-    /// Whether the session shows `placed`: one its app keeps running
-    /// between openings stands here without drawing instead.
+    /// Whether the session shows `placed` : one its app keeps running between openings stands here
+    /// without drawing instead.
     fn shows(&self, placed: &Placed) -> bool {
         self.visibility
             .get(&placed.namespace)
@@ -170,21 +166,20 @@ impl Layers {
             .unwrap_or(true)
     }
 
-    /// Whether the person sees `placed` and input reaches it: the session
-    /// shows it, and its client has drawn it.
+    /// Whether the person sees `placed` and input reaches it: the session shows it, and its client
+    /// has drawn it.
     fn visible(&self, placed: &Placed) -> bool {
         self.shows(placed) && placed.has_buffer()
     }
 
-    /// Whether the session shows the layer surface `namespace`; `None` when
-    /// it never said, which is shown.
+    /// Whether the session shows the layer surface `namespace` ; `None` when it never said, which
+    /// is shown.
     fn shown(&self, namespace: &str) -> Option<bool> {
         self.visibility.get(namespace).copied()
     }
 
-    /// Whether the client of `namespace` has drawn it: a surface shows
-    /// nothing before its first buffer, so a motion about it has nothing to
-    /// move until then.
+    /// Whether the client of `namespace` has drawn it: a surface shows nothing before its first
+    /// buffer, so a motion about it has nothing to move until then.
     fn drawn(&self, namespace: &str) -> bool {
         self.surfaces
             .iter()
@@ -213,8 +208,8 @@ impl Layers {
             .filter(move |placed| want(placed.layer))
     }
 
-    /// The layer surfaces under `point` (logical) on `output`, top first:
-    /// the ones above the windows when `above`, else the ones below them.
+    /// The layer surfaces under `point` (logical) on `output` , top first: the ones above the
+    /// windows when `above` , else the ones below them.
     fn under(
         &self,
         output: &Output,
@@ -248,8 +243,8 @@ impl Layers {
 }
 
 impl State {
-    /// A layer surface was made: put it on the output it asked for (or the
-    /// first one there is) and tell its client the size it gets.
+    /// A layer surface was made: put it on the output it asked for (or the first one there is) and
+    /// tell its client the size it gets.
     pub(crate) fn add_layer_surface(
         &mut self,
         surface: LayerSurface,
@@ -270,15 +265,15 @@ impl State {
         self.mark_redraw_all();
     }
 
-    /// Put the layer surface at `index` on its output and, with `send`, give
-    /// its client the size it gets.
+    /// Put the layer surface at `index` on its output and, with `send` , give its client the size
+    /// it gets.
     fn place_layer(&mut self, index: usize, send: bool) {
         let Some(placed) = self.layers.surfaces.get(index) else {
             return;
         };
-        // A surface that named no output goes where the session connected
-        // its client for — the on-screen keyboard stands on the display the
-        // person types on — and on the first output otherwise.
+        // A surface that named no output goes where the session connected its client for — the
+        // on-screen keyboard stands on the display the person types on — and on the first output
+        // otherwise.
         let output = placed
             .output
             .clone()
@@ -307,8 +302,8 @@ impl State {
         }
     }
 
-    /// The output the client of `surface` was connected for, while it is
-    /// attached: a client the session placed on a display of its own.
+    /// The output the client of `surface` was connected for, while it is attached: a client the
+    /// session placed on a display of its own.
     fn client_output(&self, surface: &WlSurface) -> Option<Output> {
         let name = surface.client().and_then(|client| {
             client
@@ -321,15 +316,14 @@ impl State {
             .cloned()
     }
 
-    /// A layer surface's client committed on it: it may show now, at the
-    /// size it was given.
+    /// A layer surface's client committed on it: it may show now, at the size it was given.
     pub(crate) fn layer_committed(&mut self, surface: &WlSurface) {
         let Some(index) = self.layers.index_of(surface) else {
             return;
         };
         self.place_layer(index, true);
-        // Frames of a surface the session hid change nothing on the desk and
-        // take no keyboard: it stands there for the opening that shows it.
+        // Frames of a surface the session hid change nothing on the desk and take no keyboard: it
+        // stands there for the opening that shows it.
         if self
             .layers
             .surfaces
@@ -342,9 +336,8 @@ impl State {
         self.mark_redraw_all();
     }
 
-    /// Show the session's layer surface `namespace`, or hide it: a surface
-    /// whose app the session keeps running between openings stands here
-    /// without drawing, taking input or keeping room.
+    /// Show the session's layer surface `namespace` , or hide it: a surface whose app the session
+    /// keeps running between openings stands here without drawing, taking input or keeping room.
     pub(crate) fn set_layer_shown(&mut self, namespace: &str, shown: bool) {
         if self.layers.shown(namespace) == Some(shown) {
             return;
@@ -364,9 +357,9 @@ impl State {
         self.layers.drawn(namespace)
     }
 
-    /// Draw the layer surface `namespace` as `pose` says from the next frame
-    /// on, or as it stands again for `None`: a panel the session moves is
-    /// redrawn every frame it moves, and a settled one costs none.
+    /// Draw the layer surface `namespace` as `pose` says from the next frame on, or as it stands
+    /// again for `None` : a panel the session moves is redrawn every frame it moves, and a settled
+    /// one costs none.
     pub(crate) fn set_layer_pose(&mut self, namespace: &str, pose: Option<LayerPose>) {
         let settle = pose.is_none_or(|pose| pose.settled());
         if settle {
@@ -390,8 +383,8 @@ impl State {
         }
     }
 
-    /// The layer surface `surface` acked a configure: it may show now, and
-    /// a surface that asks for the keyboard takes it.
+    /// The layer surface `surface` acked a configure: it may show now, and a surface that asks for
+    /// the keyboard takes it.
     pub(crate) fn layer_configured(
         &mut self,
         surface: &WlSurface,
@@ -428,8 +421,8 @@ impl State {
         self.mark_redraw_all();
     }
 
-    /// Give the keyboard to the layer surface at `index` when it asks for it
-    /// exclusively, as a lock screen or a search field does.
+    /// Give the keyboard to the layer surface at `index` when it asks for it exclusively, as a lock
+    /// screen or a search field does.
     fn layer_keyboard_focus(&mut self, index: usize) {
         let Some(placed) = self.layers.surfaces.get(index) else {
             return;
@@ -449,8 +442,8 @@ impl State {
         }
     }
 
-    /// A pointer press landed at `point`: a layer surface there that takes
-    /// the keyboard while pressed gets it.
+    /// A pointer press landed at `point` : a layer surface there that takes the keyboard while
+    /// pressed gets it.
     pub(crate) fn layer_focus_on_press(&mut self, point: Point<f64, Logical>) {
         if self.locked() {
             return;
@@ -476,7 +469,7 @@ impl State {
         }
     }
 
-    /// The output whose rectangle holds `point`.
+    /// The output whose rectangle holds `point` .
     fn output_under(&self, point: Point<f64, Logical>) -> Option<Output> {
         self.space
             .outputs()
@@ -488,8 +481,8 @@ impl State {
             .cloned()
     }
 
-    /// The layer surface under `point` and where its surface starts, for the
-    /// pointer: the ones above the windows, or the ones below them.
+    /// The layer surface under `point` and where its surface starts, for the pointer: the ones
+    /// above the windows, or the ones below them.
     pub(crate) fn layer_surface_under(
         &self,
         point: Point<f64, Logical>,
@@ -502,9 +495,8 @@ impl State {
         self.layers.under(&output, point, above)
     }
 
-    /// The elements the layer surfaces above or below the windows show on
-    /// `output`: drawn with the other buffers of the scene, at the scale the
-    /// output shows them.
+    /// The elements the layer surfaces above or below the windows show on `output` : drawn with the
+    /// other buffers of the scene, at the scale the output shows them.
     pub(crate) fn layer_elements<R>(
         &self,
         renderer: &mut R,
@@ -549,8 +541,8 @@ impl State {
             if (pose.scale - 1.0).abs() < f64::EPSILON {
                 elements.extend(drawn.into_iter().map(OutputRenderElement::Surface));
             } else {
-                // Its anchor stays where the session placed it, and the rest
-                // of it grows from or shrinks back into there.
+                // Its anchor stays where the session placed it, and the rest of it grows from or
+                // shrinks back into there.
                 let placed_from: Point<i32, Physical> = location.to_physical_precise_round(scale);
                 #[allow(
                     clippy::cast_possible_truncation,
@@ -574,10 +566,9 @@ impl State {
         elements
     }
 
-    /// Send the layer surfaces on `output` their frame callbacks and take
-    /// their presentation feedback with the other buffers of the frame: a
-    /// surface the session shows draws on these, so one it keeps running
-    /// between openings draws again as soon as it is shown.
+    /// Send the layer surfaces on `output` their frame callbacks and take their presentation
+    /// feedback with the other buffers of the frame: a surface the session shows draws on these, so
+    /// one it keeps running between openings draws again as soon as it is shown.
     pub(crate) fn layer_frame_drawn(
         &self,
         output: &Output,
@@ -613,9 +604,8 @@ impl State {
         }
     }
 
-    /// What the layer surfaces on `output` keep for themselves at its
-    /// edges: the areas a desktop should keep windows out of, from the
-    /// exclusive zones they asked for.
+    /// What the layer surfaces on `output` keep for themselves at its edges: the areas a desktop
+    /// should keep windows out of, from the exclusive zones they asked for.
     pub(crate) fn layer_reserved(&self, output: &Output) -> Vec<Rectangle<i32, Logical>> {
         let Some(geometry) = self.space.output_geometry(output) else {
             return Vec::new();
@@ -630,8 +620,8 @@ impl State {
                 };
                 let zone = i32::try_from(zone).unwrap_or(i32::MAX);
                 let anchor = request.anchor;
-                // Only a zone along one edge keeps an area: a bar along the
-                // top, a rail along a side.
+                // Only a zone along one edge keeps an area: a bar along the top, a rail along a
+                // side.
                 let top = anchor.contains(Anchor::TOP) && !anchor.contains(Anchor::BOTTOM);
                 let bottom = anchor.contains(Anchor::BOTTOM) && !anchor.contains(Anchor::TOP);
                 let left = anchor.contains(Anchor::LEFT) && !anchor.contains(Anchor::RIGHT);
@@ -668,9 +658,9 @@ impl State {
     }
 }
 
-/// Where a surface asking `request` of `output` is put: the edges it is
-/// anchored to keep it at the margin, both edges of an axis stretch it
-/// between them, and one edge with a size of its own keeps that size there.
+/// Where a surface asking `request` of `output` is put: the edges it is anchored to keep it at the
+/// margin, both edges of an axis stretch it between them, and one edge with a size of its own keeps
+/// that size there.
 fn placement(
     request: &LayerSurfaceCachedState,
     output: Rectangle<i32, Logical>,

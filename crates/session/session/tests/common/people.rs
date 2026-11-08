@@ -52,12 +52,12 @@ use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-/// The invitation text a site issues for a person: a [`tilo_workspace_join`]
-/// invitation, as a link carries it.
+/// The invitation text a site issues for a person: a [`tilo_workspace_join`] invitation, as a link
+/// carries it.
 pub type Invitation = String;
 
-/// A site: a relay of this machine that governs one workspace, hosts it for
-/// the people in it and admits people to it at its door.
+/// A site: a relay of this machine that governs one workspace, hosts it for the people in it and
+/// admits people to it at its door.
 pub struct Site {
     runtime: tokio::runtime::Runtime,
     relay: Option<tilo_relay::daemon::Relay>,
@@ -65,8 +65,8 @@ pub struct Site {
     pub workspaces: tilo_relay::workspaces::Workspaces,
     /// The person this site is: the workspace's owner.
     pub owner: [u8; 32],
-    /// The site's device, the one it governs and signs with — a device of
-    /// [`Self::owner`], as a home peer is.
+    /// The site's device, the one it governs and signs with — a device of [`Self::owner`], as a
+    /// home peer is.
     pub host: DeviceCert,
     /// The workspace the site serves here, by id.
     pub workspace: String,
@@ -93,9 +93,9 @@ impl Site {
     pub fn start(owner: &Person, name: &str) -> Self {
         // The site runs in this process: its log is this test's stderr.
         install_log();
-        // The site keeps the keys of the channels it seals in the platform
-        // secret store, which this process keeps in memory: a site without one
-        // can host no sealed record, and its people's devices reach no plane.
+        // The site keeps the keys of the channels it seals in the platform secret store, which this
+        // process keeps in memory: a site without one can host no sealed record, and its people's
+        // devices reach no plane.
         tilo_secrets::keep_in_memory_for_process();
         let state = tempfile::tempdir().expect("a directory for the site's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -113,8 +113,8 @@ impl Site {
             let relay = tilo_relay::daemon::Relay::start(
                 tilo_relay::RelayConfig {
                     state_root: state.path().join("host"),
-                    // Devices of this machine find the site on loopback, as
-                    // they do on a person's own network.
+                    // Devices of this machine find the site on loopback, as they do on a person's
+                    // own network.
                     iroh_listen: "127.0.0.1:0".parse().expect("a loopback address"),
                     ..tilo_relay::RelayConfig::default()
                 },
@@ -136,8 +136,8 @@ impl Site {
                 .await
                 .expect("the site's workspace")
                 .workspace;
-            // The site's own device is in the workspace it governs, as a
-            // site's is: it hosts what its people record there.
+            // The site's own device is in the workspace it governs, as a site's is: it hosts what
+            // its people record there.
             workspaces
                 .enter(&workspace, &host)
                 .await
@@ -160,8 +160,8 @@ impl Site {
         }
     }
 
-    /// Make the workspace public with `role` for everyone who joins at the
-    /// door, as its owner does: from now on the door admits people.
+    /// Make the workspace public with `role` for everyone who joins at the door, as its owner does:
+    /// from now on the door admits people.
     pub fn publish(&self, role: WorkspaceRole) {
         self.runtime
             .block_on(self.workspaces.publish(
@@ -221,8 +221,8 @@ impl Site {
         Ok(answer.invitation)
     }
 
-    /// Make `person` one of the workspace's `role`, as its owner does: a
-    /// moderator invites and removes, an editor writes.
+    /// Make `person` one of the workspace's `role` , as its owner does: a moderator invites and
+    /// removes, an editor writes.
     pub fn set_role(&self, person: [u8; 32], role: WorkspaceRole) {
         self.runtime
             .block_on(self.workspaces.set_member_role(
@@ -237,9 +237,8 @@ impl Site {
             .expect("the workspace's owner sets a member's role");
     }
 
-    /// The invitation the site's owner issues for `person`, as a person
-    /// invites someone into their workspace: it binds the person's root, so
-    /// only their devices redeem it.
+    /// The invitation the site's owner issues for `person` , as a person invites someone into their
+    /// workspace: it binds the person's root, so only their devices redeem it.
     pub fn invite(&self, person: [u8; 32], role: WorkspaceRole) -> Invitation {
         let issued = self
             .runtime
@@ -259,8 +258,8 @@ impl Site {
         tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
     }
 
-    /// The workspace's people as its host records them: each person's root in
-    /// hex, and their role and whether they are removed.
+    /// The workspace's people as its host records them: each person's root in hex, and their role
+    /// and whether they are removed.
     pub fn members(
         &self,
     ) -> std::collections::BTreeMap<String, tilo_relay::workspaces::MemberMark> {
@@ -280,25 +279,24 @@ impl Site {
         });
     }
 
-    /// The apps the workspace's governance lets author its records, as its
-    /// host records them now.
+    /// The apps the workspace's governance lets author its records, as its host records them now.
     pub fn authors(&self) -> std::collections::BTreeSet<String> {
         self.runtime
             .block_on(self.workspaces.app_authors(&self.workspace))
             .expect("the workspace's app authors")
     }
 
-    /// The records of the workspace this site holds, by the app and record
-    /// they belong to: what its people wrote there, as their host keeps it.
+    /// The records of the workspace this site holds, by the app and record they belong to: what its
+    /// people wrote there, as their host keeps it.
     pub fn records(&self) -> Vec<(String, String)> {
         self.runtime
             .block_on(self.workspaces.record_routes(&self.workspace))
             .expect("the site's records")
     }
 
-    /// What the site's copy of record `record` of `app` holds, saved, read
-    /// through the keys it holds as a member of the record's channel: `None`
-    /// while it holds no such record, or cannot open it yet.
+    /// What the site's copy of record `record` of `app` holds, saved, read through the keys it
+    /// holds as a member of the record's channel: `None` while it holds no such record, or cannot
+    /// open it yet.
     pub fn record(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.runtime
             .block_on(
@@ -309,10 +307,9 @@ impl Site {
             .flatten()
     }
 
-    /// Wait until the site holds a record of `app`: what a window of
-    /// `device`, which wrote in it, had reach the workspace's host. What that
-    /// device's session and app said comes with the failure: a write that
-    /// never left its device says why there.
+    /// Wait until the site holds a record of `app` : what a window of `device` , which wrote in it,
+    /// had reach the workspace's host. What that device's session and app said comes with the
+    /// failure: a write that never left its device says why there.
     pub fn wait_for_record_of(&self, app: &str, device: &Device) {
         let held = Held {
             site: self,
@@ -326,21 +323,18 @@ impl Site {
         });
     }
 
-    /// Wait until the workspace's governance lets `app` author its records:
-    /// what the owner's device granting it there leaves the host holding, and
-    /// what a member's device joins with.
+    /// Wait until the workspace's governance lets `app` author its records: what the owner's device
+    /// granting it there leaves the host holding, and what a member's device joins with.
     pub fn wait_for_author(&self, app: &str) {
         tilo_test_env::wait_until(format!("the workspace lets {app} author"), || {
             self.authors().contains(app)
         });
     }
 
-    /// Let the apps `apps` author the workspace's records, as the host of a
-    /// workspace does before its people open them there
-    /// ([`tilo_relay::workspaces::Workspaces::settle_app_authorship`]): a
-    /// member whose role lets them write writes through an app the workspace
-    /// lets author, and a member may not grant that themselves — the
-    /// workspace's own devices do.
+    /// Let the apps `apps` author the workspace's records, as the host of a workspace does before
+    /// its people open them there ([`tilo_relay::workspaces::Workspaces::settle_app_authorship`]):
+    /// a member whose role lets them write writes through an app the workspace lets author, and a
+    /// member may not grant that themselves — the workspace's own devices do.
     pub fn author_apps(&self, apps: &[&str]) {
         let apps: std::collections::BTreeSet<String> =
             apps.iter().map(|app| (*app).to_owned()).collect();
@@ -357,8 +351,8 @@ impl Site {
         }
     }
 
-    /// The workspace's shared desktop as the site keeps it now: its strips and
-    /// windows, or nothing while the workspace holds no desk of its own.
+    /// The workspace's shared desktop as the site keeps it now: its strips and windows, or nothing
+    /// while the workspace holds no desk of its own.
     pub fn desktop(&self) -> Option<tilo_desktop_model::DesktopTree> {
         let bytes = self.record(
             tilo_desktop_model::ownership::DESKTOP_APP,
@@ -385,9 +379,8 @@ impl Site {
         }
     }
 
-    /// The workspace's shared desktop as the site keeps it, described for a
-    /// step that waited for it: how many bytes and changes it holds, and how
-    /// many windows read out of it.
+    /// The workspace's shared desktop as the site keeps it, described for a step that waited for
+    /// it: how many bytes and changes it holds, and how many windows read out of it.
     pub fn desk_report(&self) -> String {
         let Some(bytes) = self.record(
             tilo_desktop_model::ownership::DESKTOP_APP,
@@ -416,10 +409,9 @@ impl Site {
     }
 }
 
-/// What the site holds, named on the wait that found it short: the routes it
-/// kept are the difference between a write that never left its device and one
-/// the host has but nobody reads. With the device that wrote, its session's
-/// and its app's own words follow.
+/// What the site holds, named on the wait that found it short: the routes it kept are the
+/// difference between a write that never left its device and one the host has but nobody reads.
+/// With the device that wrote, its session's and its app's own words follow.
 struct Held<'a> {
     site: &'a Site,
     app: &'a str,
@@ -441,10 +433,9 @@ impl std::fmt::Display for Held<'_> {
     }
 }
 
-/// The door a site serves: its entry, the directory of what it lists, and the
-/// door of the workspace it governs, which admits a person the workspace is
-/// public to — the same handlers the production door answers with
-/// (`tilo_relay::web`).
+/// The door a site serves: its entry, the directory of what it lists, and the door of the workspace
+/// it governs, which admits a person the workspace is public to — the same handlers the production
+/// door answers with (`tilo_relay::web`).
 fn door_responder(
     runtime: &tokio::runtime::Runtime,
     workspaces: &tilo_relay::workspaces::Workspaces,
@@ -535,9 +526,9 @@ fn door_responder(
     responder
 }
 
-/// The log of what runs in this test's own process — the site's relay above
-/// all — as `RUST_LOG` asks for it, warnings and worse by default: what the
-/// host did with a change a device published is only said there.
+/// The log of what runs in this test's own process — the site's relay above all — as `RUST_LOG`
+/// asks for it, warnings and worse by default: what the host did with a change a device published
+/// is only said there.
 fn install_log() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -551,23 +542,21 @@ fn install_log() {
     });
 }
 
-/// A person: the root their devices are certified under, and the identity this
-/// machine provisions them with before any of their devices run.
+/// A person: the root their devices are certified under, and the identity this machine provisions
+/// them with before any of their devices run.
 pub struct Person {
     /// What they go by.
     pub name: String,
     /// Their root, as a workspace names them.
     pub public: [u8; 32],
     root: runtime_identity::SigningIdentity,
-    /// The identity the first use of this machine provisioned for them: the
-    /// record each of their devices carries, and the root secret devices
-    /// certify their own keys with.
+    /// The identity the first use of this machine provisioned for them: the record each of their
+    /// devices carries, and the root secret devices certify their own keys with.
     identity: tempfile::TempDir,
 }
 
 impl Person {
-    /// The person `name`, provisioned as a computer's first use provisions
-    /// them.
+    /// The person `name` , provisioned as a computer's first use provisions them.
     pub fn new(name: &str) -> Self {
         let identity = tempfile::tempdir().expect("a directory for the person's identity");
         let config = identity.path().join("config");
@@ -600,17 +589,16 @@ impl Person {
         }
     }
 
-    /// Certify the device key `paths` holds under this person's root, as the
-    /// person admits a device of theirs: `label` is what it is called, and
-    /// the capabilities are the ones the identity layer grants a joined
-    /// device.
+    /// Certify the device key `paths` holds under this person's root, as the person admits a device
+    /// of theirs: `label` is what it is called, and the capabilities are the ones the identity
+    /// layer grants a joined device.
     pub fn certify(&self, paths: &IdentityPaths, label: &str) -> DeviceCert {
         self.certify_with(paths, label, None)
     }
 
-    /// Certify the device key `paths` holds as this person's site: the device
-    /// a site runs, which governs the workspaces it hosts and takes part in
-    /// their channels, so the records it keeps are sealed ones.
+    /// Certify the device key `paths` holds as this person's site: the device a site runs, which
+    /// governs the workspaces it hosts and takes part in their channels, so the records it keeps
+    /// are sealed ones.
     pub fn certify_as_host(&self, paths: &IdentityPaths, label: &str) -> DeviceCert {
         self.certify_with(
             paths,
@@ -619,8 +607,8 @@ impl Person {
         )
     }
 
-    /// [`Self::certify`], with what the person lets the device do said here
-    /// rather than taken from the identity layer.
+    /// [`Self::certify`], with what the person lets the device do said here rather than taken from
+    /// the identity layer.
     fn certify_with(
         &self,
         paths: &IdentityPaths,
@@ -641,8 +629,8 @@ impl Person {
         )
         .expect("the device is certified under its person's root");
         if let Some(capabilities) = capabilities {
-            // What a person lets this device do is theirs to say; the
-            // certificate is signed again over what it now says.
+            // What a person lets this device do is theirs to say; the certificate is signed again
+            // over what it now says.
             cert.capabilities = capabilities;
             let digest = tilo_user_identity::device_cert_signing_digest(&cert)
                 .expect("a device certificate digest");
@@ -658,16 +646,16 @@ impl Person {
         cert
     }
 
-    /// Another of this person's devices, certified under their root as a
-    /// device is enrolled: `label` is what it is called.
+    /// Another of this person's devices, certified under their root as a device is enrolled:
+    /// `label` is what it is called.
     pub fn device(&self, label: &str) -> Device {
         let home = tempfile::tempdir().expect("a directory for the device");
         let root = home.path();
         for directory in ["config", "data", "state", "cache", "runtime", "home"] {
             std::fs::create_dir_all(root.join(directory)).expect("a device directory");
         }
-        // The record of who the person is, which every device of theirs holds:
-        // never the root secret, which stays with the person.
+        // The record of who the person is, which every device of theirs holds: never the root
+        // secret, which stays with the person.
         copy_dir(
             &self.identity.path().join("config/tilo/identity"),
             &root.join("config/tilo/identity"),
@@ -691,8 +679,7 @@ pub struct Device {
     pub person: String,
     /// What the device is called.
     pub label: String,
-    /// The certificate its person's root signed for it, as a workspace admits
-    /// it.
+    /// The certificate its person's root signed for it, as a workspace admits it.
     pub cert: DeviceCert,
     home: tempfile::TempDir,
     child: Option<Child>,
@@ -700,8 +687,8 @@ pub struct Device {
 }
 
 impl Device {
-    /// Start this device's session without joining anything: a session on
-    /// someone's desk before they join a workspace.
+    /// Start this device's session without joining anything: a session on someone's desk before
+    /// they join a workspace.
     pub fn start(&mut self) {
         self.spawn(None);
     }
@@ -718,8 +705,7 @@ impl Device {
         let Some(child) = self.child.take() else {
             return;
         };
-        // The session leads its own process group: an ending reaches everything
-        // it started.
+        // The session leads its own process group: an ending reaches everything it started.
         let pid = i32::try_from(child.id()).unwrap_or(0);
         if pid > 0 {
             // SAFETY: a signal to a process group this test started.
@@ -745,14 +731,14 @@ impl Device {
         }
     }
 
-    /// The device's own directory: its home, its config, its state and the
-    /// identity root its session runs on.
+    /// The device's own directory: its home, its config, its state and the identity root its
+    /// session runs on.
     pub fn directory(&self) -> &Path {
         self.home.path()
     }
 
-    /// The identity this device holds: the person's root's public key, the
-    /// device's own key and the certificate the root signed for it.
+    /// The identity this device holds: the person's root's public key, the device's own key and the
+    /// certificate the root signed for it.
     pub fn identity(&self) -> IdentityPaths {
         IdentityPaths::under(self.home.path().join("identity"))
     }
@@ -769,14 +755,13 @@ impl Device {
         }
     }
 
-    /// The device's own session file: what it logged, when something went
-    /// wrong.
+    /// The device's own session file: what it logged, when something went wrong.
     pub fn log(&self) -> String {
         std::fs::read_to_string(self.logs_dir().join("session.log")).unwrap_or_default()
     }
 
-    /// What this device's session logged as a warning or an error, oldest
-    /// first: what a failed step says when it never happened.
+    /// What this device's session logged as a warning or an error, oldest first: what a failed step
+    /// says when it never happened.
     pub fn warnings(&self) -> String {
         let log = self.log();
         let warnings: Vec<&str> = log
@@ -844,8 +829,8 @@ impl Device {
         )
     }
 
-    /// Everything this device logged, session and apps alike: what a step that
-    /// compares devices reads when they disagree.
+    /// Everything this device logged, session and apps alike: what a step that compares devices
+    /// reads when they disagree.
     pub fn every_log(&self) -> String {
         let mut all = format!("{} session:\n{}\n", self.label, self.log());
         if let Ok(entries) = std::fs::read_dir(self.logs_dir()) {
@@ -858,22 +843,28 @@ impl Device {
         all
     }
 
-    /// Run this device's session: its own home, its own identity root, its own
-    /// state and its own control socket, as a device's session runs.
+    /// Run this device's session: its own home, its own identity root, its own state and its own
+    /// control socket, as a device's session runs.
     fn spawn(&mut self, invitation: Option<&str>) {
         let root = self.home.path().to_path_buf();
         let control = self.control.clone();
         let logs = self.logs_dir();
         std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
-        let log = std::fs::File::create(logs.join("session.log")).expect("a log for the session");
+        // A device started again keeps what its session said when it stopped: what it answered
+        // last, a crash included, is what a step that fails after the restart reads.
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("session.log"))
+            .expect("a log for the session");
+        let _ = writeln!(log, "\n--- this device's session starts ---");
         let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-session"));
         command
             .args([
                 "--backend",
                 "headless",
-                // The person's desk, with the shell that shows it: what a
-                // device's session mounts and what [`Device::open`] opens
-                // into.
+                // The person's desk, with the shell that shows it: what a device's session mounts
+                // and what [`Device::open`] opens into.
                 "--shell",
                 "screen",
                 "--no-x11",
@@ -891,16 +882,14 @@ impl Device {
             .env("XDG_CACHE_HOME", root.join("cache"))
             .env("XDG_RUNTIME_DIR", root.join("runtime"))
             .env("TILO_IDENTITY_ROOT", root.join("identity"))
-            // The apps installed on this device: what its desk opens, and
-            // what it starts them from.
+            // The apps installed on this device: what its desk opens, and what it starts them from.
             .env("TILO_APPS_DATA_DIR", root.join("data/tilo-apps"))
-            // This device keeps the channel keys of the workspaces it is in
-            // here, as a machine with no keychain does: without them it holds
-            // a workspace it cannot read or reach its people through.
+            // This device keeps the channel keys of the workspaces it is in here, as a machine with
+            // no keychain does: without them it holds a workspace it cannot read or reach its
+            // people through.
             .env(tilo_secrets::SECRETS_DIR_ENV, root.join("secrets"))
             .env(FILE_SECRETS_ENV, "1")
-            // The session says at info why a join did not land: what a failed
-            // step reads.
+            // The session says at info why a join did not land: what a failed step reads.
             .env("RUST_LOG", "info")
             .env("TILO_APP_STDERR_DIR", &logs)
             .env_remove("TILO_TEST_CONTROL")
@@ -955,8 +944,7 @@ impl Device {
         self.child = Some(child);
     }
 
-    /// Ask the device's session `request`, as `tilo-control` does, and return
-    /// its answer.
+    /// Ask the device's session `request` , as `tilo-control` does, and return its answer.
     pub fn ask(&self, request: &Value) -> Value {
         let mut stream = UnixStream::connect(&self.control)
             .unwrap_or_else(|error| panic!("{}'s control socket: {error}", self.label));
@@ -968,15 +956,10 @@ impl Device {
             .expect("the socket reads");
         let mut line = String::new();
         if let Err(error) = BufReader::new(stream).read_line(&mut line) {
-            let log = self.log();
-            let last = log
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or_default();
             panic!(
-                "{} did not answer {request}: {error}; its session last said: {last}",
+                "{} did not answer {request}: {error}; its session last said:\n{}",
                 self.label,
+                self.read_line_of_log(),
             );
         }
         serde_json::from_str(&line).unwrap_or_else(|error| {
@@ -988,14 +971,13 @@ impl Device {
         })
     }
 
-    /// The desk as this device shows it now: the tree, the workspaces its
-    /// engine holds, its agents and its chrome.
+    /// The desk as this device shows it now: the tree, the workspaces its engine holds, its agents
+    /// and its chrome.
     pub fn state(&self) -> Value {
         self.ask(&json!({"op": "state_dump"}))
     }
 
-    /// The workspaces this device keeps, by id: a workspace it joined is one
-    /// of them.
+    /// The workspaces this device keeps, by id: a workspace it joined is one of them.
     pub fn held(&self) -> Vec<String> {
         self.state()["state"]["held_workspaces"]
             .as_array()
@@ -1007,8 +989,8 @@ impl Device {
             .unwrap_or_default()
     }
 
-    /// Wait until this device keeps the workspace `workspace`, failing with
-    /// what its session logged if it never does.
+    /// Wait until this device keeps the workspace `workspace` , failing with what its session
+    /// logged if it never does.
     pub fn wait_holding(&self, workspace: &str) {
         let deadline = tilo_test_env::hang_deadline();
         let mut pause = Duration::from_millis(10);
@@ -1029,8 +1011,7 @@ impl Device {
         }
     }
 
-    /// The workspace in front on this device's desk, by id: what the door
-    /// opens an app into.
+    /// The workspace in front on this device's desk, by id: what the door opens an app into.
     pub fn showing(&self) -> Option<String> {
         let tree = &self.state()["state"]["workspace_tree"];
         let active = tree["active"].as_u64()?;
@@ -1041,9 +1022,8 @@ impl Device {
             .and_then(|workspace| workspace["room"].as_str().map(str::to_owned))
     }
 
-    /// Wait until the desk shows the workspace `workspace` in front: a person
-    /// who joins a workspace lands in it, so the door opens apps into it
-    /// rather than into the desk they were on.
+    /// Wait until the desk shows the workspace `workspace` in front: a person who joins a workspace
+    /// lands in it, so the door opens apps into it rather than into the desk they were on.
     pub fn wait_showing(&self, workspace: &str) {
         tilo_test_env::wait_until(format!("{} shows {workspace} in front", self.label), || {
             self.showing().as_deref() == Some(workspace)
@@ -1055,14 +1035,11 @@ impl Device {
         self.home.path().join("data/tilo-apps")
     }
 
-    /// Install Chat in this device's store, as a device with the app
-    /// installed has it: the app this run built, under its own manifest, in
-    /// the registry the session launches installed apps from.
-    ///
-    /// The manifest is the app's own (`apps/chat/tilo-app.toml`), except for
-    /// the runtime bundle it names: an app of this build runs on the machine
-    /// it was built on, and the bundle an installed desktop carries is not
-    /// here. The runtime host is the build's own, beside the app, as
+    /// Install Chat in this device's store, as a device with the app installed has it: the app this
+    /// run built, under its own manifest, in the registry the session launches installed apps from.
+    /// The manifest is the app's own (`apps/chat/tilo-app.toml`), except for the runtime bundle it
+    /// names: an app of this build runs on the machine it was built on, and the bundle an installed
+    /// desktop carries is not here. The runtime host is the build's own, beside the app, as
     /// `runtime_portal::native` looks for it before the installed one.
     pub fn install_chat(&self) {
         let payload = chat_payload().to_path_buf();
@@ -1086,16 +1063,14 @@ impl Device {
         self.ask(&json!({"op": "actions_enumerate"}))
     }
 
-    /// Map a window of `app` called `title` on this device's desk, as an app
-    /// starting its own window does: a window of the workspace it shows, kept
-    /// up while the returned value lives.
-    pub fn window(&self, app: &str, title: &str) -> super::window::Window {
-        super::window::Window::open(self.directory(), app, title)
+    /// Map a window of `app` called `title` on this device's desk, as an app starting its own
+    /// window does: a window of the workspace it shows, kept up while the returned value lives.
+    pub fn window(&self, app: &str, title: &str) -> super::window::Client {
+        super::window::Client::open(self.directory(), app, title)
     }
 
-    /// Open the installed app `app` on this device's desk, as a person
-    /// starting it does: what an installed desktop opens from its applications
-    /// list.
+    /// Open the installed app `app` on this device's desk, as a person starting it does: what an
+    /// installed desktop opens from its applications list.
     pub fn open(&self, app: &str) {
         let answer = self.act("applications", app, &json!({}));
         assert!(
@@ -1106,8 +1081,8 @@ impl Device {
         );
     }
 
-    /// Invoke `id` of `provider` on this device, as a program of the person's
-    /// does, and return the receipt.
+    /// Invoke `id` of `provider` on this device, as a program of the person's does, and return the
+    /// receipt.
     pub fn act(&self, provider: &str, id: &str, args: &Value) -> Value {
         self.ask(&json!({
             "op": "actions_invoke",
@@ -1117,21 +1092,20 @@ impl Device {
         }))
     }
 
-    /// [`Self::act`] held open until the invocation settles, as `tilo-control`
-    /// does when it waits: the answer says how the action ended, and carries
-    /// the value it returned when it returns one.
+    /// [`Self::act`] held open until the invocation settles, as `tilo-control` does when it waits:
+    /// the answer says how the action ended, and carries the value it returned when it returns one.
     pub fn act_wait(&self, provider: &str, id: &str, args: &Value) -> Value {
         self.invoke(provider, id, args, false)
     }
 
-    /// [`Self::act_wait`], with the person's own confirmation of an action
-    /// that asked first: what pressing Allow in its prompt answers.
+    /// [`Self::act_wait`], with the person's own confirmation of an action that asked first: what
+    /// pressing Allow in its prompt answers.
     pub fn act_confirming(&self, provider: &str, id: &str, args: &Value) -> Value {
         self.invoke(provider, id, args, true)
     }
 
-    /// [`Self::act_wait`], with what the person said when the action asked
-    /// first (`confirmed`), followed until it settles.
+    /// [`Self::act_wait`], with what the person said when the action asked first (`confirmed`),
+    /// followed until it settles.
     fn invoke(&self, provider: &str, id: &str, args: &Value, confirmed: bool) -> Value {
         let started = self.ask(&json!({
             "op": "actions_invoke",
@@ -1157,14 +1131,13 @@ impl Device {
         }
     }
 
-    /// Chat as this device runs it: the actions the app publishes to its
-    /// session's door, and the answers they give.
+    /// Chat as this device runs it: the actions the app publishes to its session's door, and the
+    /// answers they give.
     pub fn chat(&self) -> Chat<'_> {
         Chat { device: self }
     }
 
-    /// Press the control named `named`, as an assistive technology activates
-    /// it.
+    /// Press the control named `named` , as an assistive technology activates it.
     pub fn press(&self, named: &str) {
         let answer = self.ask(&json!({"op": "click_named", "name": named}));
         assert!(
@@ -1194,8 +1167,8 @@ impl Device {
     }
 }
 
-/// A device whose desk still shows no `app` window, named on the wait that
-/// found it short: what it shows, and what its session and its apps said.
+/// A device whose desk still shows no `app` window, named on the wait that found it short: what it
+/// shows, and what its session and its apps said.
 struct NoWindow<'a> {
     device: &'a Device,
     app: &'a str,
@@ -1214,15 +1187,14 @@ impl std::fmt::Display for NoWindow<'_> {
     }
 }
 
-/// Chat as a device runs it: the app publishes its reading and sending as
-/// actions of its own, so a test asks the app what it shows rather than its
-/// session or its records.
+/// Chat as a device runs it: the app publishes its reading and sending as actions of its own, so a
+/// test asks the app what it shows rather than its session or its records.
 pub struct Chat<'a> {
     device: &'a Device,
 }
 
 impl Chat<'_> {
-    /// The row the device's session publishes for the app's `operation`.
+    /// The row the device's session publishes for the app's `operation` .
     fn row(&self, operation: &str) -> Value {
         let answer = self.device.actions();
         answer["answer"]["actions"]
@@ -1259,10 +1231,9 @@ impl Chat<'_> {
         )
     }
 
-    /// Invoke the app's `operation` with `args` and wait for what it answered:
-    /// the value it returned, or the refusal it gave. An action the workspace
-    /// asks the person about first is answered, as the person at the device
-    /// answers its prompt.
+    /// Invoke the app's `operation` with `args` and wait for what it answered: the value it
+    /// returned, or the refusal it gave. An action the workspace asks the person about first is
+    /// answered, as the person at the device answers its prompt.
     fn invoke(&self, operation: &str, args: &Value) -> Value {
         let answer = self.settled(operation, args);
         let update = &answer["answer"]["receipt"]["update"];
@@ -1281,8 +1252,8 @@ impl Chat<'_> {
         }
     }
 
-    /// The app's answer to `operation` with `args` once it settled: the
-    /// person's confirmation given where the action asked for it.
+    /// The app's answer to `operation` with `args` once it settled: the person's confirmation given
+    /// where the action asked for it.
     fn settled(&self, operation: &str, args: &Value) -> Value {
         let (provider, id) = self.action(operation);
         let answer = self.device.act_wait(&provider, &id, args);
@@ -1292,15 +1263,14 @@ impl Chat<'_> {
         answer
     }
 
-    /// The person a conversation with `peer` is with, as the app's direct
-    /// actions take it: their root key, which the workspace names them by.
+    /// The person a conversation with `peer` is with, as the app's direct actions take it: their
+    /// root key, which the workspace names them by.
     fn conversation_key(peer: &str) -> String {
         peer.to_owned()
     }
 
-    /// Open the conversation with `peer` in the app, as clicking their name
-    /// does: what is on screen is read, so their messages stop counting as
-    /// unread here.
+    /// Open the conversation with `peer` in the app, as clicking their name does: what is on screen
+    /// is read, so their messages stop counting as unread here.
     pub fn open(&self, peer: &str) {
         self.invoke(
             "open-direct-conversation",
@@ -1308,8 +1278,8 @@ impl Chat<'_> {
         );
     }
 
-    /// Send `text` to the person `peer`, as typing it in the conversation
-    /// does: the app answers when it accepted the message into the record.
+    /// Send `text` to the person `peer` , as typing it in the conversation does: the app answers
+    /// when it accepted the message into the record.
     pub fn send(&self, peer: &str, text: &str) {
         let answer = self.invoke(
             "send-direct-message",
@@ -1323,8 +1293,8 @@ impl Chat<'_> {
         );
     }
 
-    /// The conversation with `peer` as Chat reads it now: its messages in the
-    /// order the app shows them, and how many of them its person has not read.
+    /// The conversation with `peer` as Chat reads it now: its messages in the order the app shows
+    /// them, and how many of them its person has not read.
     pub fn conversation(&self, peer: &str) -> Conversation {
         let answer = self.invoke(
             "read-direct-conversation",
@@ -1336,8 +1306,7 @@ impl Chat<'_> {
         }
     }
 
-    /// The texts of the conversation with `peer`, in the order Chat shows
-    /// them.
+    /// The texts of the conversation with `peer` , in the order Chat shows them.
     pub fn texts(&self, peer: &str) -> Vec<String> {
         self.conversation(peer)
             .messages
@@ -1346,15 +1315,15 @@ impl Chat<'_> {
             .collect()
     }
 
-    /// How many of the messages `peer` wrote this device's person has not
-    /// read, as Chat counts them.
+    /// How many of the messages `peer` wrote this device's person has not read, as Chat counts
+    /// them.
     pub fn unread(&self, peer: &str) -> u64 {
         self.conversation(peer).unread
     }
 
-    /// What Chat answers when asked for the conversation with `peer`: `None`
-    /// when it can read it, and why not when it refuses — a person who is in
-    /// no workspace with this device's person has no conversation here.
+    /// What Chat answers when asked for the conversation with `peer` : `None` when it can read it,
+    /// and why not when it refuses — a person who is in no workspace with this device's person has
+    /// no conversation here.
     pub fn refusal(&self, peer: &str) -> Option<String> {
         let answer = self.settled(
             "read-direct-conversation",
@@ -1379,9 +1348,8 @@ impl Chat<'_> {
         }
     }
 
-    /// Wait until Chat offers `peer` as someone to talk to: until the
-    /// workspace's people are in its shared record, a conversation with them
-    /// reads as unavailable rather than as held.
+    /// Wait until Chat offers `peer` as someone to talk to: until the workspace's people are in its
+    /// shared record, a conversation with them reads as unavailable rather than as held.
     pub fn wait_for_contact(&self, peer: &str) {
         let deadline = tilo_test_env::hang_deadline();
         while let Some(refusal) = self.refusal(peer) {
@@ -1403,10 +1371,9 @@ impl Chat<'_> {
         self.wait_for_texts_ordered(peer, texts, true);
     }
 
-    /// Wait until the conversation with `peer` shows `texts`, and nothing
-    /// else, in whatever order: for messages written at the same time on
-    /// devices that had not seen each other's, whose order is the records'
-    /// and not the writers'.
+    /// Wait until the conversation with `peer` shows `texts` , and nothing else, in whatever order:
+    /// for messages written at the same time on devices that had not seen each other's, whose order
+    /// is the records' and not the writers'.
     pub fn wait_for_texts_in_any_order(&self, peer: &str, texts: &[&str]) {
         self.wait_for_texts_ordered(peer, texts, false);
     }
@@ -1469,15 +1436,15 @@ impl Chat<'_> {
         }
     }
 
-    /// Whether the app answered a read of the conversation with `peer`: it
-    /// refuses one with someone it does not know in the workspace.
+    /// Whether the app answered a read of the conversation with `peer` : it refuses one with
+    /// someone it does not know in the workspace.
     fn reads(&self, peer: &str) -> bool {
         self.refusal(peer).is_none()
     }
 }
 
-/// A conversation as Chat shows it: its messages in the app's order, and what
-/// of it its person has not read.
+/// A conversation as Chat shows it: its messages in the app's order, and what of it its person has
+/// not read.
 pub struct Conversation {
     /// Each message as the app answers it: its id, its author and its text.
     pub messages: Vec<Value>,
@@ -1491,11 +1458,10 @@ impl Drop for Device {
     }
 }
 
-/// The payload every device of this test installs Chat from: the app and the
-/// runtime host the run built, beside each other as an installed payload keeps
-/// them, with Chat's manifest. Staged once per test process, in the build's own
-/// directory, so the two programs are hardlinks of what the run built and no
-/// device pays for a copy of a debug binary.
+/// The payload every device of this test installs Chat from: the app and the runtime host the run
+/// built, beside each other as an installed payload keeps them, with Chat's manifest. Staged once
+/// per test process, in the build's own directory, so the two programs are hardlinks of what the
+/// run built and no device pays for a copy of a debug binary.
 fn chat_payload() -> &'static Path {
     static PAYLOAD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     PAYLOAD.get_or_init(|| {
@@ -1514,10 +1480,9 @@ fn chat_payload() -> &'static Path {
     })
 }
 
-/// Chat's manifest as one of this machine's stores installs it: the app's own
-/// description (`apps/chat/tilo-app.toml`), without the runtime bundle it
-/// names. An installed desktop carries that bundle; a build runs on the
-/// machine it was built on.
+/// Chat's manifest as one of this machine's stores installs it: the app's own description
+/// (`apps/chat/tilo-app.toml`), without the runtime bundle it names. An installed desktop carries
+/// that bundle; a build runs on the machine it was built on.
 fn chat_manifest() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/chat/tilo-app.toml");
     let manifest = std::fs::read_to_string(&path)
@@ -1538,8 +1503,8 @@ fn chat_manifest() -> String {
     kept
 }
 
-/// The role a member holds in a workspace, as [`WorkspaceRole`] names the
-/// workspace's listing of it.
+/// The role a member holds in a workspace, as [`WorkspaceRole`] names the workspace's listing of
+/// it.
 fn member_role(role: WorkspaceRole) -> tilo_workspace_join::MemberRole {
     match role {
         WorkspaceRole::Viewer => tilo_workspace_join::MemberRole::Viewer,
@@ -1549,8 +1514,7 @@ fn member_role(role: WorkspaceRole) -> tilo_workspace_join::MemberRole {
     }
 }
 
-/// An id of this test's own, distinct from every other it makes: what a request
-/// is remembered by.
+/// An id of this test's own, distinct from every other it makes: what a request is remembered by.
 fn fresh_id() -> [u8; 32] {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1560,7 +1524,7 @@ fn fresh_id() -> [u8; 32] {
     id
 }
 
-/// Copy the tree `from` to `to`, keeping the modes files are read with.
+/// Copy the tree `from` to `to` , keeping the modes files are read with.
 fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("a copied directory");
     for entry in std::fs::read_dir(from).expect("a readable directory") {

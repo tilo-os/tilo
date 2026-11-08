@@ -535,3 +535,113 @@ fn the_device_identity_releases_a_key_bound_to_device_person_and_salt() {
     assert!(matches!(keys.release(), Err(Locked::Unreadable(_))));
     assert_eq!(std::fs::read(&salt).unwrap(), b"short");
 }
+
+/// A person's vault in `home` under the device key `paths` holds, and the
+/// same vault as a branched machine's re-key sees it.
+fn person_vault(home: &Path, paths: &IdentityPaths, account: &str) -> (Store, DeviceVault) {
+    let secrets = home.join(".local/share/tilo/secrets");
+    let store = Store::new(
+        secrets.join("vault.tseal"),
+        Box::new(DeviceIdentityKey::new(
+            paths.clone(),
+            secrets.join("salt"),
+            account,
+        )),
+    );
+    let vault = DeviceVault {
+        vault: secrets.join("vault.tseal"),
+        salt: secrets.join("salt"),
+        account: account.into(),
+    };
+    (store, vault)
+}
+
+/// A branched machine re-keys its device identity: each person's vault opens
+/// under the new key with every item it held, the old key no longer opens
+/// it, and a vault the old key never sealed is left as it was.
+#[test]
+fn a_branched_machine_keeps_every_persons_secrets_under_its_new_key() {
+    use tilo_user_identity::branch::{self, Branch, Machine, Resealed, SealedStore as _, Settled};
+    use tilo_user_identity::persist::{load_or_create_device_key, read_device_key};
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = IdentityPaths::under(dir.path().join("system"));
+    let (source, _) = load_or_create_device_key(&paths).unwrap();
+    let source_machine = Machine::parse("4c4c4544-0042-3510-8048-b4c04f4d3232").unwrap();
+    branch::record_machine(&paths, &source_machine).unwrap();
+
+    let (store, ada) = person_vault(&dir.path().join("home/ada"), &paths, "1000");
+    // The key of the accounts vault the passwords app keeps its entries in,
+    // and a model provider's API key a provider profile refers to.
+    let passwords = store
+        .create_item(
+            &system(),
+            "default",
+            new_item(
+                "Accounts vault",
+                &[("application", "so.tilo.accounts")],
+                b"vault key",
+            ),
+            true,
+        )
+        .unwrap();
+    let provider = store
+        .create_item(
+            &system(),
+            "default",
+            new_item("Model provider", &[("locator", "anthropic")], b"sk-ant-api"),
+            true,
+        )
+        .unwrap();
+    drop(store);
+
+    // Another person's vault on the same disk, sealed under another device.
+    let elsewhere = IdentityPaths::under(dir.path().join("elsewhere"));
+    load_or_create_device_key(&elsewhere).unwrap();
+    let (stranger, bea) = person_vault(&dir.path().join("home/bea"), &elsewhere, "1001");
+    stranger
+        .create_item(&system(), "default", new_item("theirs", &[], b"s"), true)
+        .unwrap();
+    drop(stranger);
+    let theirs = std::fs::read(&bea.vault).unwrap();
+    let (_, nobody) = person_vault(&dir.path().join("home/cy"), &paths, "1002");
+
+    let settled = branch::settle(
+        &paths,
+        Machine::parse("8a1f02d6-91c4-4f0e-9b9a-2d1f5c3e7a10").as_ref(),
+        &Branch {
+            stores: vec![&ada, &bea, &nobody],
+            machine: None,
+            now_ns: 1_800_000_000_000_000_000,
+            after: &|_| Ok(()),
+        },
+    )
+    .unwrap();
+    let Settled::Branched(branched) = settled else {
+        panic!("not re-keyed: {settled:?}");
+    };
+    assert!(branched.finished());
+    let outcomes: Vec<Resealed> = branched
+        .stores
+        .iter()
+        .map(|(_, outcome)| *outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![Resealed::Moved, Resealed::Foreign, Resealed::Absent]
+    );
+    let device = read_device_key(&paths.device_privkey).unwrap();
+    assert_ne!(device.to_bytes(), source.to_bytes());
+
+    let (store, _) = person_vault(&dir.path().join("home/ada"), &paths, "1000");
+    assert_eq!(store.locked(), None);
+    let (secret, _) = store.read_secret(&system(), &passwords).unwrap();
+    assert_eq!(secret.expose(), b"vault key");
+    let (secret, _) = store.read_secret(&system(), &provider).unwrap();
+    assert_eq!(secret.expose(), b"sk-ant-api");
+    assert_eq!(std::fs::read(&bea.vault).unwrap(), theirs);
+
+    // The source's key opens the vault no more; the new one does.
+    assert_eq!(ada.reseal(&[], &source).unwrap(), Resealed::Foreign);
+    assert_eq!(ada.reseal(&[], &device).unwrap(), Resealed::AlreadyNew);
+}

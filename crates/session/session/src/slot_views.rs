@@ -1,16 +1,12 @@
-//! The shell's slots whose view is written in tilolang, run in the session's
-//! own process.
-//!
-//! A slot's view is a program of its own (a surface app) unless the app the
-//! person bound is a tilolang package this machine installed: then the view is
-//! the package's, and the session runs it in an instance of its own
-//! ([`tilo_surface_host::slot_view::SlotView`]), over the reading it publishes
-//! for the slot. The pointer and the keys reach it while the overlay stack says
-//! its surface is the one over the desk; what it asks goes through the session's
-//! door, as any caller's does.
-//!
-//! A package that does not start is no view for the slot: the slot keeps the
-//! view the session ships with, as a missing program does.
+//! The shell's slots whose view is written in tilolang, run in the session's own process.
+//! A slot's view is a program of its own (a surface app) unless the app the person bound is a
+//! tilolang package this machine installed: then the view is the package's, and the session runs it
+//! in an instance of its own ([`tilo_surface_host::slot_view::SlotView`]), over the reading it
+//! publishes for the slot. The pointer and the keys reach it while the overlay stack says its
+//! surface is the one over the desk; what it asks goes through the session's door, as any caller's
+//! does.
+//! A package that does not start is no view for the slot: the slot keeps the view the session ships
+//! with, as a missing program does.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -26,23 +22,22 @@ use crate::panels::Held;
 
 /// The tilolang views the session runs for the shell's slots.
 pub(crate) struct SlotViews {
-    /// The desk whose own state, the search it opens, takes the keyboard
-    /// before the chrome has published its surface.
+    /// The desk whose own state, the search it opens, takes the keyboard before the chrome has
+    /// published its surface.
     handle: DesktopHandle,
-    /// The overlay stack that says which surface holds the pointer and the
-    /// keys.
+    /// The overlay stack that says which surface holds the pointer and the keys.
     overlays: Overlays,
     /// Physical pixels per logical pixel the desktop draws at.
     scale: f64,
-    /// One host per slot the session has run a package for. The compositor
-    /// keeps what it was given, so a slot's host stands there for the
-    /// session's life, drawing nothing while the slot runs something else.
+    /// One host per slot the session has run a package for. The compositor keeps what it was given,
+    /// so a slot's host stands there for the session's life, drawing nothing while the slot runs
+    /// something else.
     hosts: BTreeMap<&'static str, Rc<RefCell<SlotView>>>,
 }
 
 impl SlotViews {
-    /// The views the session runs itself, feeding the keyboard's target from
-    /// `overlays` and the desk `handle`, drawing at `scale`.
+    /// The views the session runs itself, feeding the keyboard's target from `overlays` and the
+    /// desk `handle` , drawing at `scale` .
     pub(crate) const fn new(handle: DesktopHandle, overlays: Overlays, scale: f64) -> Self {
         Self {
             handle,
@@ -52,8 +47,8 @@ impl SlotViews {
         }
     }
 
-    /// The host of `slot`'s tilolang views, put in the compositor the first
-    /// time the session runs one.
+    /// The host of `slot` 's tilolang views, put in the compositor the first time the session runs
+    /// one.
     fn host(&mut self, slot: &'static str, compositor: &mut Compositor) -> Rc<RefCell<SlotView>> {
         if let Some(host) = self.hosts.get(slot) {
             return Rc::clone(host);
@@ -90,8 +85,7 @@ impl SlotViews {
         host.borrow_mut().open(spec, person, waker, reading)
     }
 
-    /// Stop what runs for `slot`: the part is not up any more, or another view
-    /// took it.
+    /// Stop what runs for `slot` : the part is not up any more, or another view took it.
     pub(crate) fn stop(&self, slot: &str) {
         if let Some(host) = self.hosts.get(slot) {
             host.borrow_mut().close();
@@ -112,8 +106,8 @@ impl SlotViews {
         }
     }
 
-    /// Run what the view in `slot` asked through `invoke` (the session's
-    /// door), as any caller of the action protocol does.
+    /// Run what the view in `slot` asked through `invoke` (the session's door), as any caller of
+    /// the action protocol does.
     pub(crate) fn serve(&self, slot: &str, invoke: impl FnMut(&Asked) -> Result<(), String>) {
         if let Some(host) = self.hosts.get(slot) {
             host.borrow().serve(invoke);
@@ -127,16 +121,16 @@ impl SlotViews {
             .is_some_and(|host| host.borrow().has_asks())
     }
 
-    /// Take whether a press landed away from what the view in `slot` drew
-    /// while it held the pointer: the slot closes.
+    /// Take whether a press landed away from what the view in `slot` drew while it held the
+    /// pointer: the slot closes.
     pub(crate) fn take_pressed_outside(&self, slot: &str) -> bool {
         self.hosts
             .get(slot)
             .is_some_and(|host| host.borrow_mut().take_pressed_outside())
     }
 
-    /// Where the control the view in `slot` shows as `name` stands, logical
-    /// `(x, y, w, h)`: what a test presses it by.
+    /// Where the control the view in `slot` shows as `name` stands, logical `(x, y, w, h)` : what a
+    /// test presses it by.
     pub(crate) fn control(&self, slot: &str, name: &str) -> Option<(f64, f64, f64, f64)> {
         let host = self.hosts.get(slot)?;
         host.borrow_mut().control_bounds(name)

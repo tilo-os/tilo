@@ -1,37 +1,13 @@
-//! Finishing the staged system update: applied live, with the desktop
-//! restarted onto the new interface once the person has stepped away, and a
-//! restart of the machine asked for at most every two days.
-//!
-//! The update service stages the newest image on its own schedule and the
-//! live update applies what it can in place: the system services restart,
-//! the apps and the runtime are new at their next start. What waits for the
-//! desktop (the compositor, the session services, the interface versions apps
-//! speak) is this module's to finish, through the `system-update` resource's
-//! own actions ([`tilo_system_service::update::RESTART_DESKTOP`]): the
-//! session invokes one exactly as an app or the person would, and the
-//! service's worker starts the unit that restarts this desktop in place. The
-//! login stays, and the session comes back on the new interface with the
-//! windows it had open.
-//!
-//! Nothing is finished while someone is at the machine: they are away when
-//! the screen is locked or blanked and no input has come since
-//! ([`tilo_system_service::update::AWAY_FOR`]). A desktop restart and a
-//! request to restart the machine share one clock
-//! ([`tilo_system_service::update::ASK_INTERVAL`]), so the updates of those
-//! two days apply together. An always-on host has nobody to ask and no work
-//! to batch the restarts around: it finishes the update whenever it is away.
-//!
-//! Something that needs a newer system now (a collaborator's device at a
-//! newer protocol version) has the session fetch the update
-//! ([`tilo_system_service::update::UPDATE_NOW`]); what applied live is
-//! finished at the next moment the person is away, whatever the last restart.
-//!
-//! How an update ended is told here too. One the machine could not finish
-//! because a deployment did not start was settled before any session ran
-//! (`tilo-deployment fallback`), which left its report on the machine; the
-//! reports reach the session in the update's reading and the person is told
-//! of each once ([`Finish::tell_went_back`]), the ids they heard of recorded
-//! beside the restart record so no later session says it again.
+//! Finishing the staged system update: applied live, with the desktop restarted onto the new
+//! interface once the person has stepped away, and a restart of the machine asked for at most every
+//! two days. What waits for the desktop (the compositor, the session services, the interface
+//! versions apps speak) is finished here through the `system-update` resource's own actions
+//! ([`tilo_system_service::update::RESTART_DESKTOP`]), invoked exactly as an app or the person
+//! would; the login stays and the session comes back with the windows it had open. Nothing is
+//! finished while someone is at the machine: they are away when the screen is locked or blanked and
+//! no input has come since. A desktop restart and a machine restart share one clock, so those days'
+//! updates apply together; an always-on host has nobody to ask and finishes whenever it is away.
+//! How an update ended is told here too, once per report ([`Finish::tell_went_back`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -44,8 +20,7 @@ use tilo_system_service::update::{self, Fallback, Presence, Update};
 use crate::Session;
 use crate::notices::RESTART_ACTION;
 
-/// When the session first looks for an update to finish: once the desk has
-/// settled.
+/// When the session first looks for an update to finish: once the desk has settled.
 const FIRST_LOOK_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often it looks again. Both looks are one file read and one reading.
 const LOOK_EVERY: Duration = Duration::from_secs(60);
@@ -63,38 +38,36 @@ pub(crate) enum Due {
     Ask,
 }
 
-/// The clock on finishing the update, and what the person asked of its
-/// notice.
+/// The clock on finishing the update, and what the person asked of its notice.
 pub(crate) struct Finish {
     /// When it next looks.
     next: Instant,
-    /// Something needed the update now, and what applied live waits for the
-    /// desktop: the next moment the person is away finishes it.
+    /// Something needed the update now, and what applied live waits for the desktop: the next
+    /// moment the person is away finishes it.
     urgent: bool,
-    /// Whether this session saw an update run, so the reading that says it
-    /// ended is the one that says whether to finish it now.
+    /// Whether this session saw an update run, so the reading that says it ended is the one that
+    /// says whether to finish it now.
     was_updating: bool,
-    /// When the person was last asked to restart, or the desktop or machine
-    /// last restarted, as recorded at `asked`.
+    /// When the person was last asked to restart, or the desktop or machine last restarted, as
+    /// recorded at `asked` .
     asked: Option<PathBuf>,
-    /// Where the ids of the deployment fallbacks the person was told about are
-    /// recorded; `None` where there is nowhere to keep them.
+    /// Where the ids of the deployment fallbacks the person was told about are recorded; `None`
+    /// where there is nowhere to keep them.
     heard: Option<PathBuf>,
     /// The fallbacks the person was told about, as the record names them;
     /// `None` until the record at `heard` is read.
     told: Option<Vec<String>>,
-    /// What the person asked of the update's notice, from the notifications
-    /// service's taps, which run wherever it publishes.
+    /// What the person asked of the update's notice, from the notifications service's taps, which
+    /// run wherever it publishes.
     taken: Receiver<()>,
-    /// Whether the person was already told that the published update state
-    /// does not read back: it is said once, not on every look.
+    /// Whether the person was already told that the published update state does not read back: it
+    /// is said once, not on every look.
     unreadable_told: bool,
 }
 
 impl Finish {
-    /// The clock this session finishes its updates on, recording what it
-    /// asks, and which fallbacks the person heard of, where a restart of the
-    /// desktop keeps them.
+    /// The clock this session finishes its updates on, recording what it asks, and which fallbacks
+    /// the person heard of, where a restart of the desktop keeps them.
     pub(crate) fn for_session(desktop: Option<&crate::desktop_services::DesktopServices>) -> Self {
         Self::new(
             Instant::now(),
@@ -104,12 +77,10 @@ impl Finish {
         )
     }
 
-    /// A clock that first looks when the desk has settled, recording what it
-    /// asks at `asked`, which survives a restart of the desktop; the
-    /// person's answers to the update's notice come back through
-    /// `notifications`, when this session tells the person through one, and
-    /// which fallbacks they already heard of is read from and written to
-    /// `heard`.
+    /// A clock that first looks when the desk has settled, recording what it asks at `asked` ,
+    /// which survives a restart of the desktop; the person's answers to the update's notice come
+    /// back through `notifications` , when this session tells the person through one, and which
+    /// fallbacks they already heard of is read from and written to `heard` .
     pub(crate) fn new(
         now: Instant,
         asked: Option<PathBuf>,
@@ -139,21 +110,19 @@ impl Finish {
         }
     }
 
-    /// Tell the person, once, that the published update state does not read
-    /// back: `true` the first time a look meets it, `false` after.
+    /// Tell the person, once, that the published update state does not read back: `true` the first
+    /// time a look meets it, `false` after.
     pub(crate) fn note_unreadable(&mut self) -> bool {
         !std::mem::replace(&mut self.unreadable_told, true)
     }
 
-    /// When the session next looks with no event in between, once it has
-    /// settled.
+    /// When the session next looks with no event in between, once it has settled.
     pub(crate) fn next_deadline(&self) -> Instant {
         self.next
     }
 
-    /// One look: what finishing the update asks now, if anything. `machine`
-    /// says whether this device is an always-on host, and `wanted` that
-    /// something asked for the newest system now.
+    /// One look: what finishing the update asks now, if anything. `machine` says whether this
+    /// device is an always-on host, and `wanted` that something asked for the newest system now.
     pub(crate) fn step(
         &mut self,
         at: Instant,
@@ -163,15 +132,15 @@ impl Finish {
         host: bool,
         wanted: bool,
     ) -> Option<Due> {
-        // The person pressed the notice's restart: they asked for it, and
-        // nothing waits for a better moment.
+        // The person pressed the notice's restart: they asked for it, and nothing waits for a
+        // better moment.
         if self.taken.try_iter().next().is_some() {
             self.record(clock);
             return Some(Due::RestartMachine);
         }
-        // An update that ended waiting for the desktop is finished at the next
-        // moment they are away; one that needs a restart of the machine is
-        // asked for at once, however lately it was asked.
+        // An update that ended waiting for the desktop is finished at the next moment they are
+        // away; one that needs a restart of the machine is asked for at once, however lately it was
+        // asked.
         let was_updating = std::mem::replace(&mut self.was_updating, update.updating);
         if was_updating && !update.updating {
             if update.desktop_pending && !update.restart_needed {
@@ -188,8 +157,8 @@ impl Finish {
             return None;
         }
         self.next = at.checked_add(LOOK_EVERY).unwrap_or(at);
-        // A restart of the machine covers what waits for the desktop, so two
-        // of them never follow one another.
+        // A restart of the machine covers what waits for the desktop, so two of them never follow
+        // one another.
         if update::desktop_restart_due(
             update,
             self.last_asked(),
@@ -213,13 +182,12 @@ impl Finish {
         None
     }
 
-    /// Tell the person, once, of each deployment this machine went back from
-    /// that they have not heard of yet: a report the boot-time settling left
-    /// ([`tilo_system_service::update::Fallback`]) reaches the session in the
-    /// update's reading, and the ids it told are recorded beside the restart
-    /// record, so a later session says nothing of the same fallback. Called
-    /// with every reading, so it is cheap when there is nothing to say and
-    /// says the fallback of this boot as soon as the reading carries it.
+    /// Tell the person, once, of each deployment this machine went back from that they have not
+    /// heard of yet: a report the boot-time settling left
+    /// ([`tilo_system_service::update::Fallback`]) reaches the session in the update's reading, and
+    /// the ids it told are recorded beside the restart record, so a later session says nothing of
+    /// the same fallback. Called with every reading, so it is cheap when there is nothing to say
+    /// and says the fallback of this boot as soon as the reading carries it.
     pub(crate) fn tell_went_back(
         &mut self,
         fell_back: &[Fallback],
@@ -228,8 +196,8 @@ impl Finish {
         if fell_back.is_empty() {
             return;
         }
-        // Nothing is told that could not be recorded: it would be said at
-        // every sign-in instead of once.
+        // Nothing is told that could not be recorded: it would be said at every sign-in instead of
+        // once.
         let Some(heard) = self.heard.clone() else {
             return;
         };
@@ -244,8 +212,7 @@ impl Finish {
         }
     }
 
-    /// When the person was last asked, or the desktop or machine last
-    /// restarted.
+    /// When the person was last asked, or the desktop or machine last restarted.
     fn last_asked(&self) -> Option<SystemTime> {
         self.asked.as_deref().and_then(last_asked_at)
     }
@@ -277,21 +244,21 @@ fn record_asked_at(path: &Path, now: SystemTime) {
     }
 }
 
-/// Where the session records when it last asked for a restart, or restarted
-/// the desktop or the machine.
+/// Where the session records when it last asked for a restart, or restarted the desktop or the
+/// machine.
 #[must_use]
 pub(crate) fn asked_path() -> Option<PathBuf> {
     tilo_paths::state_dir().map(|root| root.join("tilo/update-restart-asked"))
 }
 
-/// Where the session records which deployment fallbacks the person was
-/// already told about: one report's directory name per line.
+/// Where the session records which deployment fallbacks the person was already told about: one
+/// report's directory name per line.
 #[must_use]
 pub(crate) fn heard_path() -> Option<PathBuf> {
     tilo_paths::state_dir().map(|root| root.join("tilo/boot-fallback-seen"))
 }
 
-/// The fallbacks the person was told about, as recorded at `path`.
+/// The fallbacks the person was told about, as recorded at `path` .
 fn heard_ids(path: &Path) -> Vec<String> {
     let record = match std::fs::read_to_string(path) {
         Ok(record) => record,
@@ -310,7 +277,7 @@ fn heard_ids(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Record the fallbacks the person was told about at `path`, one per line.
+/// Record the fallbacks the person was told about at `path` , one per line.
 fn record_heard(path: &Path, ids: &[String]) {
     let mut text = ids.join("\n");
     text.push('\n');
@@ -319,23 +286,20 @@ fn record_heard(path: &Path, ids: &[String]) {
     }
 }
 
-/// Whether this machine is an always-on host: a board or a host image with
-/// nobody at it to ask.
+/// Whether this machine is an always-on host: a board or a host image with nobody at it to ask.
 fn host() -> bool {
     static HOST: OnceLock<bool> = OnceLock::new();
     *HOST.get_or_init(|| tilo_power_mgmt::this_machine_duty() == tilo_power_mgmt::MachineDuty::Host)
 }
 
 impl Session {
-    /// Finish the staged update on the session's own clock: fetch it now when
-    /// something needs it, restart the desktop onto it once nobody has been
-    /// at the machine for a while, restart an always-on host into it, and ask
-    /// the person for a restart of the machine. Called once per pass of the
-    /// loop.
+    /// Finish the staged update on the session's own clock: fetch it now when something needs it,
+    /// restart the desktop onto it once nobody has been at the machine for a while, restart an
+    /// always-on host into it, and ask the person for a restart of the machine. Called once per
+    /// pass of the loop.
     pub(super) fn follow_update(&mut self) {
-        // A collaborator's device at another protocol version is the person's
-        // to know: this device updates when theirs is the newer one, and
-        // otherwise theirs is the one that must.
+        // A collaborator's device at another protocol version is the person's to know: this device
+        // updates when theirs is the newer one, and otherwise theirs is the one that must.
         let mismatched = self
             .shared
             .sync
@@ -359,8 +323,8 @@ impl Session {
             idle: self.compositor.input_idle(),
             away: self.compositor.locked() || self.compositor.blanked(),
         };
-        // What the services last published: the update service keeps it
-        // current, and it is absent where this session hosts none.
+        // What the services last published: the update service keeps it current, and it is absent
+        // where this session hosts none.
         let update = match self
             .read(tilo_system_service::SYSTEM_UPDATE)
             .map(serde_json::from_value::<Update>)
@@ -371,9 +335,8 @@ impl Session {
                     %error,
                     "the published update state does not read back; this pass reads it as no update"
                 );
-                // A state the person can see nothing of is not acted on, so
-                // it is theirs to know about: told once, and the warning
-                // above stays for operators.
+                // A state the person can see nothing of is not acted on, so it is theirs to know
+                // about: told once, and the warning above stays for operators.
                 if self.update_finish.note_unreadable() {
                     self.shared
                         .notifications
@@ -384,9 +347,9 @@ impl Session {
             }
             None => Update::default(),
         };
-        // How the update this computer tried ended is the person's to know
-        // before anything else waits: a deployment that did not start was
-        // settled before this session ran, and its report is in the reading.
+        // How the update this computer tried ended is the person's to know before anything else
+        // waits: a deployment that did not start was settled before this session ran, and its
+        // report is in the reading.
         let shared = &self.shared;
         self.update_finish
             .tell_went_back(&update.fell_back, |notice| {
@@ -410,10 +373,9 @@ impl Session {
         }
     }
 
-    /// Invoke one of the update resource's actions, as an app or the person
-    /// would: the service's worker makes the change, so the loop keeps
-    /// drawing until the desktop restarts. The session is the person's own
-    /// here, so what waits for their confirmation is confirmed in their name.
+    /// Invoke one of the update resource's actions, as an app or the person would: the service's
+    /// worker makes the change, so the loop keeps drawing until the desktop restarts. The session
+    /// is the person's own here, so what waits for their confirmation is confirmed in their name.
     fn finish_update(&self, action: &str) {
         let mut services = self.shared.services.borrow_mut();
         match services.invoke_confirmed(
@@ -555,8 +517,8 @@ mod tests {
             ),
             None
         );
-        // It ended, and the desktop is what waits: the next moment the person
-        // is away finishes it, whatever the last restart.
+        // It ended, and the desktop is what waits: the next moment the person is away finishes it,
+        // whatever the last restart.
         assert_eq!(
             finish.step(now, clock, working(), &pending_desktop(), false, false),
             None
@@ -595,8 +557,8 @@ mod tests {
             finish.step(now, clock, working(), &running, false, true),
             Some(Due::UpdateNow)
         );
-        // It ended with part of it waiting for the machine: the person hears
-        // so at once, not at the next two-day turn of the clock.
+        // It ended with part of it waiting for the machine: the person hears so at once, not at the
+        // next two-day turn of the clock.
         let kernel = Update {
             staged: Some("sha256:aa".into()),
             restart_needed: true,
@@ -643,8 +605,8 @@ mod tests {
             None,
             "one request every two days"
         );
-        // An always-on host has nobody to ask: it restarts into the update
-        // itself once nobody is at it.
+        // An always-on host has nobody to ask: it restarts into the update itself once nobody is at
+        // it.
         let mut always_on = a_finish(now, None);
         assert_eq!(
             always_on.step(look, clock, working(), &staged, true, false),
@@ -686,9 +648,9 @@ mod tests {
         assert_eq!(last_asked_at(&path), Some(at));
     }
 
-    /// A deployment the machine went back from is what the person hears
-    /// after the reboot: the session tells them once, records that it did, and
-    /// a session that starts later says nothing of it.
+    /// A deployment the machine went back from is what the person hears after the reboot: the
+    /// session tells them once, records that it did, and a session that starts later says nothing
+    /// of it.
     #[test]
     fn a_deployment_the_machine_went_back_from_is_told_once_and_recorded_once() {
         let dir = tempdir();
@@ -738,15 +700,15 @@ mod tests {
             "told once is recorded once"
         );
 
-        // The reading keeps carrying the report of every earlier fallback:
-        // this session says nothing more of it.
+        // The reading keeps carrying the report of every earlier fallback: this session says
+        // nothing more of it.
         finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
             notice.tell(&notifications);
         });
         assert_eq!(notifications.live().len(), 1, "said once per session");
 
-        // A later session reads the record and says nothing at all: the
-        // person hears of one fallback once, however many sign-ins follow.
+        // A later session reads the record and says nothing at all: the person hears of one
+        // fallback once, however many sign-ins follow.
         let mut later = Finish::new(Instant::now(), None, Some(heard.clone()), None);
         later.tell_went_back(std::slice::from_ref(&fallback), |notice| {
             notice.tell(&notifications);
@@ -755,9 +717,8 @@ mod tests {
         assert_eq!(heard_ids(&heard), [id.to_owned()], "and recorded once");
     }
 
-    /// A second deployment that did not start is news of its own, and a
-    /// machine with nowhere to record what was told says nothing rather than
-    /// saying it at every sign-in.
+    /// A second deployment that did not start is news of its own, and a machine with nowhere to
+    /// record what was told says nothing rather than saying it at every sign-in.
     #[test]
     fn a_later_fallback_is_told_and_nothing_is_told_that_cannot_be_recorded() {
         let dir = tempdir();

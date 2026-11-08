@@ -1,12 +1,10 @@
-//! A surface app that reaches its session: it reads what the session
-//! publishes, changes it, and reports both in a file.
-//!
-//! The tests start it the way the session starts a panel of the desktop, so
-//! what it proves is what a panel does — an ordinary app, started by the
-//! session as its launch, reading and invoking through the connection the
-//! session's broker admits it for. The test names what it reads, what it
-//! changes and where it reports on this process's environment, beside what
-//! the session writes there.
+//! A surface app that reaches its session: it reads what the session publishes, changes it, and
+//! reports both in a file.
+//! The tests start it the way the session starts a panel of the desktop, so what it proves is what
+//! a panel does — an ordinary app, started by the session as its launch, reading and invoking
+//! through the connection the session's broker admits it for. The test names what it reads, what it
+//! changes and where it reports on this process's environment, beside what the session writes
+//! there.
 
 #![allow(
     clippy::expect_used,
@@ -20,62 +18,58 @@ use std::time::{Duration, Instant};
 
 use ui::collaboration::SessionResource;
 
-/// Where the app reports what it read and changed. A probe started only to
-/// stand in for a view that draws a part of the shell reports nothing.
+/// Where the app reports what it read and changed. A probe started only to stand in for a view that
+/// draws a part of the shell reports nothing.
 const REPORT: &str = "SURFACE_PROBE_REPORT";
 /// The resource it reads.
 const RESOURCE: &str = "SURFACE_PROBE_RESOURCE";
 /// The action it takes on it, with its arguments as JSON.
 const ACTION: &str = "SURFACE_PROBE_ACTION";
 const ARGUMENTS: &str = "SURFACE_PROBE_ARGUMENTS";
-/// Set when the probe stands in for a view that draws a part of the shell: it
-/// reports what it read, if it was told where, and stays up as such a view
-/// does, until the session stops the process.
+/// Set when the probe stands in for a view that draws a part of the shell: it reports what it read,
+/// if it was told where, and stays up as such a view does, until the session stops the process.
 const STAY: &str = "SURFACE_PROBE_STAY";
 
-/// How long the change may take to land: the session publishes the reading
-/// again when the device has taken it, and a device that never does is the
-/// failure the test reads. A loaded machine runs the device slowly, so the
-/// wait is long: the reading itself says whether the change landed.
+/// How long the change may take to land: the session publishes the reading again when the device
+/// has taken it, and a device that never does is the failure the test reads. A loaded machine runs
+/// the device slowly, so the wait is long: the reading itself says whether the change landed.
 const CHANGING: Duration = Duration::from_secs(60);
 
-/// How long the app asks the session for its reading: an app's ask waits on
-/// the session's loop, and a machine running a whole suite at once takes a
-/// while over it. The app asks again while it is not answered rather than
-/// calling the session absent after one ask.
+/// How long the app asks the session for its reading: an app's ask waits on the session's loop, and
+/// a machine running a whole suite at once takes a while over it. The app asks again while it is
+/// not answered rather than calling the session absent after one ask.
 const ANSWERING: Duration = Duration::from_secs(60);
 
-/// How long the reading must stand still before it is the one the action
-/// landed at: a reading that has only begun to move is drawn as it is.
+/// How long the reading must stand still before it is the one the action landed at: a reading that
+/// has only begun to move is drawn as it is.
 const SETTLING: Duration = Duration::from_millis(250);
 
 fn main() {
-    // What every surface app does before its window opens. From here on the
-    // session's published resources are this app's, as they are any app's.
+    // What every surface app does before its window opens. From here on the session's published
+    // resources are this app's, as they are any app's.
     ui::surface_services::connect();
     if let Ok(report) = std::env::var(REPORT) {
-        // Written whole and then put in place, so the test reads a report or
-        // nothing rather than the middle of one.
+        // Written whole and then put in place, so the test reads a report or nothing rather than
+        // the middle of one.
         let whole = format!("{report}.whole");
         std::fs::write(&whole, read_and_change()).expect("the report is written");
         std::fs::rename(&whole, &report).expect("the report is put in place");
     }
     if std::env::var_os(STAY).is_some() {
-        // A view drawing a part of the shell is up while that part is: it
-        // ends when the session stops the process, never on its own.
+        // A view drawing a part of the shell is up while that part is: it ends when the session
+        // stops the process, never on its own.
         loop {
             std::thread::park();
         }
     }
 }
 
-/// The session's silence, which is an ask to make again: its loop had not got
-/// to the app yet, and a loaded machine takes a while over it.
+/// The session's silence, which is an ask to make again: its loop had not got to the app yet, and a
+/// loaded machine takes a while over it.
 const UNANSWERED: &str = "The session did not answer.";
 
-/// Open `resource`, asking again while the session stays silent, and taking
-/// any other answer as the answer it is: a session that says why it refuses
-/// the ask has answered it.
+/// Open `resource` , asking again while the session stays silent, and taking any other answer as
+/// the answer it is: a session that says why it refuses the ask has answered it.
 fn open(resource: &str) -> Result<SessionResource, String> {
     let deadline = Instant::now() + ANSWERING;
     loop {
@@ -110,10 +104,9 @@ fn read_and_change() -> String {
         return format!("{report}error: {error}\n");
     }
     report.push_str("taken\n");
-    // The action is taken once the session has taken it; what the resource
-    // reads afterwards is the change itself, and it arrives on the watch, in
-    // as many readings as the device takes to land it. The reading the panel
-    // draws is the last one: every one it saw is reported, and the one it
+    // The action is taken once the session has taken it; what the resource reads afterwards is the
+    // change itself, and it arrives on the watch, in as many readings as the device takes to land
+    // it. The reading the panel draws is the last one: every one it saw is reported, and the one it
     // ends at is the change.
     let deadline = Instant::now() + CHANGING;
     let mut drawn = first.clone();

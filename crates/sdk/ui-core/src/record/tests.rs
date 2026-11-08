@@ -314,7 +314,6 @@ fn members_creating_the_same_record_converge_on_one() {
 
 #[test]
 fn record_identities_keys_and_homes_are_stable_and_distinct() {
-    // Case `blob_references_are_idempotent_and_validated`.
     {
         let mut doc = AutoCommit::new();
         let blob = BlobRef {
@@ -339,7 +338,6 @@ fn record_identities_keys_and_homes_are_stable_and_distinct() {
         assert_eq!(blob_references(&reloaded), vec![blob]);
     }
 
-    // Case `a_file_record_is_identified_by_its_path`.
     {
         #[cfg(windows)]
         let (root, expected) = ("C:/work", r"file:C:\work\report.odt");
@@ -358,12 +356,10 @@ fn record_identities_keys_and_homes_are_stable_and_distinct() {
         );
     }
 
-    // Case `minted_records_are_distinct`.
     {
         assert_ne!(RecordId::minted(), RecordId::minted());
     }
 
-    // Case `storage_keys_are_stable_safe_and_distinct`.
     {
         let a = RecordId::for_file("/work/report.odt");
         let b = RecordId::for_file("/work/other.odt");
@@ -390,7 +386,6 @@ fn record_identities_keys_and_homes_are_stable_and_distinct() {
         );
     }
 
-    // Case `a_record_carries_its_identity_type_and_home`.
     {
         let mut doc = AutoCommit::new();
         let id = RecordId::for_file("/work/report.odt");
@@ -402,7 +397,6 @@ fn record_identities_keys_and_homes_are_stable_and_distinct() {
         assert_eq!(home(&doc).as_deref(), Some("workspace-1"));
     }
 
-    // Case `re_opening_a_record_from_another_workspace_does_not_move_its_home`.
     {
         let mut doc = AutoCommit::new();
         let id = RecordId::minted();
@@ -416,14 +410,12 @@ fn record_identities_keys_and_homes_are_stable_and_distinct() {
         );
     }
 
-    // Case `derived_file_record_ids_are_valid_workspace_names`.
     {
         let file = RecordId::for_file("/tmp/shared/report.pdf");
         let derived = RecordId::derived("annotations", &file);
         assert!(RecordId::parse(derived.as_str()).is_some(), "{derived}");
     }
 
-    // Case `duplicate_is_a_different_record`.
     {
         let mut workspace_doc = AutoCommit::new();
         let origin = RecordCheckout::new(RecordId::minted(), RecordKind::new("book"));
@@ -444,7 +436,6 @@ fn native(root: &Path) -> Rc<dyn DurableStore> {
 
 #[test]
 fn canonical_records_persist_through_the_host_store_and_report_save_status() {
-    // Case `save_status_older_ack_keeps_newer_pending_edit_saving`.
     {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(temp.path().join("state"));
@@ -502,7 +493,6 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         drop(owners);
     }
 
-    // Case `canonical_records_persist_through_a_host_acknowledged_store`.
     {
         use durable_store::{DurableStore, MemoryStore, StorageKey};
         let backend = Rc::new(MemoryStore::queued());
@@ -560,7 +550,6 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         );
     }
 
-    // Case `save_status_returns_busy_during_record_loan`.
     {
         let store = RecordStore::in_memory();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
@@ -579,7 +568,6 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         );
     }
 
-    // Case `canonical_startup_failure_retains_reservation_and_stale_drop_is_inert`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
@@ -656,7 +644,6 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         ));
     }
 
-    // Case `canonical_repeated_handles_do_not_duplicate_writes_or_rebase_history`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));
@@ -705,7 +692,6 @@ fn text(doc: &AutoCommit, key: &str) -> Option<String> {
 
 #[test]
 fn workspaces_hold_references_and_discover_metadata_only() {
-    // Case `annotations_reference_the_document_rather_than_living_in_it`.
     {
         let mut markup = AutoCommit::new();
         let book = RecordId::for_file("/work/book.pdf");
@@ -730,7 +716,6 @@ fn workspaces_hold_references_and_discover_metadata_only() {
         assert_eq!(refs[0].relation, "marks-up");
     }
 
-    // Case `a_workspace_holds_references_and_can_drop_them`.
     {
         let mut workspace_doc = AutoCommit::new();
         let a = RecordId::for_file("/work/a.odt");
@@ -753,7 +738,6 @@ fn workspaces_hold_references_and_discover_metadata_only() {
         assert!(index::holds(&workspace_doc, &b), "and touches nothing else");
     }
 
-    // Case `workspace_discovery_is_metadata_only_and_tracks_remote_grants`.
     {
         let mut remote_workspace = AutoCommit::new();
         let remote = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
@@ -789,7 +773,6 @@ fn workspaces_hold_references_and_discover_metadata_only() {
         assert!(set.open_records().is_empty());
     }
 
-    // Case `workspace_discovery_rejects_hostile_entries_and_is_bounded`.
     {
         let mut workspace_doc = AutoCommit::new();
         let idx = workspace_doc
@@ -814,7 +797,6 @@ fn workspaces_hold_references_and_discover_metadata_only() {
         assert!(set.open_records().is_empty());
     }
 
-    // Case `workspace_discovery_never_crosses_scopes_after_restart`.
     {
         let dir = tempfile::tempdir().expect("temporary state directory");
         let documents = native(dir.path());
@@ -847,7 +829,6 @@ fn workspaces_hold_references_and_discover_metadata_only() {
         assert!(set_a.open_records().is_empty());
     }
 
-    // Case `a_records_annotations_are_found_through_the_reference`.
     {
         let mut workspace_doc = AutoCommit::new();
         let mut set = RecordSet::in_memory();
@@ -870,7 +851,6 @@ fn workspaces_hold_references_and_discover_metadata_only() {
 
 #[test]
 fn records_persist_per_file_and_never_alias_across_workspaces() {
-    // Case `same_record_id_in_two_workspaces_has_independent_in_memory_state`.
     {
         // An id is an app-level name, not a capability.  Two workspace-scoped
         // sets must not accidentally turn a matching id into shared state.
@@ -900,7 +880,6 @@ fn records_persist_per_file_and_never_alias_across_workspaces() {
         );
     }
 
-    // Case `same_record_id_in_two_workspaces_never_aliases_and_each_hydrates_after_restart`.
     {
         let tmp = tempfile::tempdir().expect("temp dir");
         let documents = native(tmp.path());
@@ -927,7 +906,6 @@ fn records_persist_per_file_and_never_alias_across_workspaces() {
         }
     }
 
-    // Case `rejects_a_remote_document_stamped_for_another_workspace`.
     {
         let id = RecordId::minted();
         let kind = RecordKind::new("note");
@@ -948,7 +926,6 @@ fn records_persist_per_file_and_never_alias_across_workspaces() {
         assert_eq!(workspace_scope(&remote).as_deref(), Some("workspace-a"));
     }
 
-    // Case `each_record_persists_to_its_own_file_and_comes_back`.
     {
         let tmp = tempfile::tempdir().expect("temp dir");
         let documents = native(tmp.path());
@@ -1016,7 +993,6 @@ fn records_persist_per_file_and_never_alias_across_workspaces() {
 
 #[test]
 fn checkout_parks_the_previous_record_or_keeps_the_live_one() {
-    // Case `checking_out_a_second_record_parks_the_first_intact`.
     {
         // A second record must not clear the first — it's a different
         // document.
@@ -1044,7 +1020,6 @@ fn checkout_parks_the_previous_record_or_keeps_the_live_one() {
         assert_eq!(text(&state.doc, "note").as_deref(), Some("a's note"));
     }
 
-    // Case `checking_out_the_live_record_changes_nothing`.
     {
         let mut set = RecordSet::in_memory();
         let mut state = State::new();
@@ -1106,7 +1081,6 @@ fn history_existing_records_reopen_and_refuse_corruption() {
         assert!(store.read(&missing.id, |_| ()).is_none());
     }
 
-    // Case `history_existing_scoped_refuses_corruption_empty_and_mismatched_identity`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let documents = native(tmp.path());
@@ -1200,7 +1174,6 @@ fn absent_private_checkpoint_store_is_empty_but_never_accepts_evidence() {
 
 #[test]
 fn history_new_record_creation_refuses_reuse_and_reports_busy_loans() {
-    // Case `history_new_record_creation_refuses_reuse_and_preserves_the_live_graph`.
     {
         let store = RecordStore::in_memory();
         let checkout = RecordCheckout::new(RecordId::for_tab(404), RecordKind::new("tab"));
@@ -1221,7 +1194,6 @@ fn history_new_record_creation_refuses_reuse_and_reports_busy_loans() {
         );
     }
 
-    // Case `history_explicit_canonical_creation_survives_reopen_and_refuses_collision`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
@@ -1256,7 +1228,6 @@ fn history_new_record_creation_refuses_reuse_and_reports_busy_loans() {
         );
     }
 
-    // Case `history_new_record_creation_reports_busy_during_an_existing_record_loan`.
     {
         let store = RecordStore::in_memory();
         let existing = RecordCheckout::new(RecordId::for_tab(421), RecordKind::new("tab"));
@@ -1269,7 +1240,6 @@ fn history_new_record_creation_refuses_reuse_and_reports_busy_loans() {
         assert!(store.read(&new.id, |_| ()).is_none());
     }
 
-    // Case `history_new_canonical_record_creation_reports_busy_during_read_loan`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));

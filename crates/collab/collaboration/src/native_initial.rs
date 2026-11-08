@@ -47,14 +47,8 @@ pub trait ComponentBinding {
     /// The record the component is bound to.
     fn checkout(&self) -> &crate::record::RecordCheckout;
     /// Enter the component's owner.
-    ///
-    /// # Errors
-    /// Why the owner refused the entry.
     fn enter(&self) -> Result<Self::Entry, Self::EnterError>;
     /// Merge a committed history into the bound record.
-    ///
-    /// # Errors
-    /// Why the record refused it.
     fn merge_committed(&self, mutation: collab_types::DocumentMutation) -> Result<(), String>;
 }
 
@@ -136,18 +130,12 @@ impl PrimaryRead {
     /// The read `manager`'s primary route needs before its record is built;
     /// `None` when it needs none (a route whose reads are not committed, a
     /// manager without the broker).
-    ///
-    /// # Errors
-    /// The manager's route is not admitted.
     pub fn of(manager: &CollaborationManager) -> Result<Option<Self>, String> {
         Ok(InitialReadBridge::from_manager(manager)?.map(Self))
     }
 
     /// Wait for the read, on the calling thread, for as long as the broker
     /// takes; its worker's end and the route's failure end the wait.
-    ///
-    /// # Errors
-    /// The read failed or its worker ended.
     pub fn read(&self) -> Result<CommittedDocument, String> {
         self.0.read_primary()
     }
@@ -167,10 +155,6 @@ impl NativeConstruction {
     /// Enter as [`Self::enter`] does, with the primary read `read` already
     /// taken off this thread through [`PrimaryRead`]; `None` when
     /// [`PrimaryRead::of`] found none to take.
-    ///
-    /// # Errors
-    /// Construction is entered already, or the read is not of this manager's
-    /// route.
     pub fn enter_read(
         manager: CollaborationManager,
         read: Option<(PrimaryRead, CommittedDocument)>,

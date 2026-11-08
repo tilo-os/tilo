@@ -1,9 +1,8 @@
-//! The requests of people who asked at the door of a workspace that takes people
-//! by invitation, without one: each is an address their invitation goes to
-//! ([`WaitListEntry`]), not a person the workspace could admit. Unlike a page's
-//! redemption, which waits in memory while its page is open, the person is
-//! not online for this: the workspace keeps it until it leaves the list, so it
-//! outlives restarts. One address is one entry, however it was typed
+//! The addresses of people who asked at the door of a workspace that takes
+//! people by invitation, without one: each is an address their invitation
+//! goes to ([`WaitListEntry`]), not a person the workspace could admit. The
+//! person is not online for this: the workspace keeps it until it leaves the
+//! list, so it outlives restarts. One address is one entry, however it was typed
 //! ([`contact_key`]); it keeps the form first typed.
 //!
 //! Where the door sends mail, an entry is first unconfirmed: hidden from

@@ -49,9 +49,6 @@ pub enum Interaction {
 impl Interaction {
     /// The interaction `spec` spells, as `--then` takes it: `key:Tab`, `click:120,300`,
     /// `type:Shopping`, `scroll:0,480`.
-    ///
-    /// # Errors
-    /// `spec` names no interaction, or its numbers do not read.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let (what, rest) = spec
             .split_once(':')

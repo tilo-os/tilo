@@ -2,8 +2,8 @@
 //! configured follow them to every device they sign in on, never to a
 //! collaborator.
 //!
-//! [`PersonAccounts`] is a resource kept in the person's own scope, a
-//! [`SharedRecord`]: its owner app ([`ACCOUNTS_OWNER`], Settings) and Mail,
+//! [`PersonAccounts`] is a resource kept in the person's own scope,
+//! a [`SharedRecord`]: its owner app ([`ACCOUNTS_OWNER`], Settings) and Mail,
 //! whose provider sign-in adds mail accounts, edit it through its actions;
 //! every other app reads it. Each app process keeps a copy of the one
 //! record, in step with the others where their personal store carries it;
@@ -109,9 +109,6 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
 #[resource(kind = "tilo.accounts", label = "Accounts", version = 2, migrate = upgrade)]
 impl PersonAccounts {
     /// Project public browser choices from the existing typed account document.
-    ///
-    /// # Errors
-    /// Refuses a document that cannot be read as Settings' account resource.
     pub fn browser_accounts_from_doc(
         doc: &tilo_resource::Doc,
         root: &str,
@@ -163,9 +160,6 @@ impl PersonAccounts {
     /// This changes the Settings account record only; it creates no credential,
     /// certificate, room membership or content key. Republishing preserves a
     /// person's disabled choice and chosen account name.
-    ///
-    /// # Errors
-    /// Refuses malformed public metadata or an occupied identity account id.
     #[action]
     pub fn publish_browser_identity(
         &mut self,
@@ -241,151 +235,6 @@ impl PersonAccounts {
         }
         self.active.entry(type_id).or_insert(id);
         Ok(())
-    }
-
-    /// Publish a reviewed new Signal identity without replacing another
-    /// account. Names are labels; a configured own ACI requires its existing
-    /// relinking path. This is public metadata, never a credential or grant.
-    /// # Errors
-    /// Refuses malformed identities, duplicate scopes or an occupied account ID.
-    #[action]
-    pub fn publish_signal_account(
-        &mut self,
-        id: String,
-        display_name: String,
-        aci: String,
-        generation: u64,
-    ) -> Result<(), Refusal> {
-        for value in [&id, &aci] {
-            if uuid::Uuid::parse_str(value)
-                .map_err(|_| Refusal::from("a canonical Signal account identity is required"))?
-                .to_string()
-                != *value
-            {
-                return Err(Refusal::from(
-                    "a canonical Signal account identity is required",
-                ));
-            }
-        }
-        if generation == 0
-            || display_name.trim().is_empty()
-            || display_name.chars().count() > 160
-            || display_name.chars().any(char::is_control)
-        {
-            return Err(Refusal::from(
-                "a bounded account name and link generation are required",
-            ));
-        }
-        let scope = format!("signal:{aci}");
-        if self.accounts.get(&Id::from_raw(&id)).is_some()
-            || self.accounts.iter().any(|(_, account)| {
-                account.type_id == "signal"
-                    && account
-                        .config
-                        .get("messaging_scope")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(scope.as_str())
-            })
-        {
-            return Err(Refusal::from(
-                "this identity already has an account; use its existing setup",
-            ));
-        }
-        self.save_account(
-            id,
-            "signal".into(),
-            display_name,
-            serde_json::json!({"messaging_scope": scope, "linking_generation": generation}),
-            true,
-            0,
-        )
-    }
-
-    /// Publish a protected native SIM account. The scope is an opaque identity;
-    /// modem paths, phone numbers and SIM identifiers stay in private custody.
-    /// # Errors
-    /// Refuses malformed identities, duplicate accounts or an invalid name/generation.
-    #[action]
-    pub fn publish_sms_account(
-        &mut self,
-        id: String,
-        display_name: String,
-        scope: String,
-        generation: u64,
-    ) -> Result<(), Refusal> {
-        if uuid::Uuid::parse_str(&id)
-            .map_err(|_| Refusal::from("a canonical SMS account identity is required"))?
-            .to_string()
-            != id
-            || scope != format!("sms:{id}")
-            || generation == 0
-            || display_name.trim().is_empty()
-            || display_name.chars().count() > 160
-            || display_name.chars().any(char::is_control)
-        {
-            return Err(Refusal::from(
-                "a canonical SIM account, bounded name and generation are required",
-            ));
-        }
-        if self.accounts.get(&Id::from_raw(&id)).is_some() {
-            return Err(Refusal::from(
-                "this account already exists; use its existing setup",
-            ));
-        }
-        self.save_account(
-            id,
-            "sms".into(),
-            display_name,
-            serde_json::json!({"messaging_scope": scope, "linking_generation": generation}),
-            true,
-            0,
-        )
-    }
-
-    /// Publish the explicitly reviewed self identity of one native `WhatsApp`
-    /// profile. The caller retains provider proof and credential authority;
-    /// this record contains no credential, pairing payload or messaging state.
-    /// # Errors
-    /// Refuses invalid self identity, generation, name or an occupied account.
-    #[action]
-    pub fn publish_whatsapp_account(
-        &mut self,
-        id: String,
-        display_name: String,
-        jid: String,
-        generation: u64,
-    ) -> Result<(), Refusal> {
-        if !uuid::Uuid::parse_str(&id).is_ok_and(|parsed| parsed.to_string() == id)
-            || generation == 0
-            || display_name.trim().is_empty()
-            || display_name.chars().count() > 160
-            || display_name.chars().any(char::is_control)
-            || jid.len() > 128
-            || !jid.split_once('@').is_some_and(|(user, server)| {
-                server == "s.whatsapp.net"
-                    && !user.is_empty()
-                    && user.bytes().all(|c| c.is_ascii_digit())
-            })
-            || self.accounts.get(&Id::from_raw(&id)).is_some()
-            || self.accounts.iter().any(|(_, row)| {
-                row.type_id == "whatsapp"
-                    && row
-                        .config
-                        .get("whatsapp_jid")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(jid.as_str())
-            })
-        {
-            return Err(Refusal::from(
-                "a fresh account and reviewed WhatsApp self identity are required",
-            ));
-        }
-        let scope = format!("whatsapp:{id}");
-        self.save_account(
-            id, "whatsapp".into(), display_name,
-            serde_json::json!({"messaging_scope":scope, "linking_generation":generation, "whatsapp_jid":jid}),
-            true, 0,
-        )
     }
 
     /// Remove account.
@@ -509,9 +358,6 @@ impl PersonAccounts {
     /// Keep this device's account file under `config_root` the projection
     /// of the person's accounts, for the services that read it. Writes only
     /// when it differs. Whether it wrote.
-    ///
-    /// # Errors
-    /// The file could not be written.
     pub fn project_in(&self, config_root: &Path) -> std::io::Result<bool> {
         let store = self.store();
         if AccountStore::load_in(config_root) == store {
@@ -596,96 +442,6 @@ mod tests {
             accounts.store().get(&"mail-1".into()).unwrap().config["port"],
             993
         );
-    }
-
-    #[test]
-    fn publish_signal_account_keeps_names_separate_and_scope_exact() {
-        let mut record = Replica::<PersonAccounts>::new();
-        for (id, aci) in [
-            (
-                "11111111-1111-4111-8111-111111111111",
-                "22222222-2222-4222-8222-222222222222",
-            ),
-            (
-                "33333333-3333-4333-8333-333333333333",
-                "44444444-4444-4444-8444-444444444444",
-            ),
-        ] {
-            record
-                .apply(PersonAccounts::PUBLISH_SIGNAL_ACCOUNT.with((
-                    id.into(),
-                    "Same name".into(),
-                    aci.into(),
-                    7,
-                )))
-                .unwrap();
-            let state = record.state().unwrap();
-            let account = state.accounts.get(&Id::from_raw(id)).unwrap();
-            assert_eq!(account.type_id, "signal");
-            assert_eq!(
-                account.config,
-                serde_json::json!({"messaging_scope":format!("signal:{aci}"),"linking_generation":7})
-            );
-        }
-        assert_eq!(record.state().unwrap().accounts.len(), 2);
-    }
-
-    #[test]
-    fn publish_signal_account_refuses_duplicate_id_or_scope_without_replacing_state() {
-        let mut record = Replica::<PersonAccounts>::new();
-        let id = "11111111-1111-4111-8111-111111111111";
-        let aci = "22222222-2222-4222-8222-222222222222";
-        record
-            .apply(PersonAccounts::PUBLISH_SIGNAL_ACCOUNT.with((
-                id.into(),
-                "Original".into(),
-                aci.into(),
-                1,
-            )))
-            .unwrap();
-        let before = record.state().unwrap();
-        for (next_id, next_aci) in [
-            (id, "33333333-3333-4333-8333-333333333333"),
-            ("44444444-4444-4444-8444-444444444444", aci),
-        ] {
-            assert!(
-                record
-                    .apply(PersonAccounts::PUBLISH_SIGNAL_ACCOUNT.with((
-                        next_id.into(),
-                        "Replacement".into(),
-                        next_aci.into(),
-                        2
-                    )))
-                    .is_err()
-            );
-            assert_eq!(record.state().unwrap(), before);
-        }
-    }
-
-    #[test]
-    fn publish_signal_account_refuses_invalid_publication_without_creating_an_account() {
-        let id = "11111111-1111-4111-8111-111111111111";
-        let aci = "22222222-2222-4222-8222-222222222222";
-        let mut record = Replica::<PersonAccounts>::new();
-        for (next_id, name, next_aci, generation) in [
-            ("account-name", "Work", aci, 1),
-            (id, "Work", "not-an-aci", 1),
-            (id, "Work", aci, 0),
-            (id, "", aci, 1),
-            (id, "line\nname", aci, 1),
-        ] {
-            assert!(
-                record
-                    .apply(PersonAccounts::PUBLISH_SIGNAL_ACCOUNT.with((
-                        next_id.into(),
-                        name.into(),
-                        next_aci.into(),
-                        generation
-                    )))
-                    .is_err()
-            );
-            assert!(record.state().unwrap().accounts.is_empty());
-        }
     }
 
     #[test]

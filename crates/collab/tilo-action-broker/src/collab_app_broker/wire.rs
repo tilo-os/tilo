@@ -2685,10 +2685,6 @@ async fn next_call<R: AsyncRead + Unpin>(mut reader: R) -> NextCall<R> {
 
 /// Serve `connection` until the endpoint hangs up. Must run on a
 /// `LocalSet`; dropping the future ends the connection's subscriptions.
-///
-/// # Errors
-///
-/// A malformed frame or a failed write.
 pub(super) async fn serve<R, W>(
     connection: Rc<WireConnection>,
     mut outgoing: mpsc::UnboundedReceiver<HostFrame>,

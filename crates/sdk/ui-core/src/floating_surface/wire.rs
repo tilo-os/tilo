@@ -20,6 +20,10 @@ pub enum RecipientKind {
     Person,
     /// A conversation, opened where it is and posted in.
     Conversation,
+    /// The one place a report about Tilo itself goes, which the session names
+    /// when it opens the box there: the search never finds it, and it never
+    /// stands beside another recipient.
+    Feedback,
 }
 
 impl RecipientKind {
@@ -31,6 +35,7 @@ impl RecipientKind {
             Self::Agent => "Agent",
             Self::Person => "Person",
             Self::Conversation => "Conversation",
+            Self::Feedback => "Feedback",
         }
     }
 }
@@ -442,8 +447,8 @@ pub enum FloatingSurfaceClientMessage {
         shared: Vec<crate::window_share::SharedWindow>,
     },
     /// The controls of this window's own content, as the app's accessibility
-    /// tree exports them (`crate::window_targets`), at most
-    /// [`crate::window_targets::MAX_TARGETS`]: what a session, a test or an
+    /// tree exports them (`crate::window_targets`), at
+    /// most [`crate::window_targets::MAX_TARGETS`]: what a session, a test or an
     /// agent finds them by name and presses
     /// ([`FloatingSurfaceHostMessage::PressTarget`]). Sent whenever the tree
     /// they come from changes, never per frame. `instance` names the tab, as
@@ -540,7 +545,13 @@ pub enum FloatingSurfaceHostMessage {
     /// [`FloatingSurfaceClientMessage::SendTo`] for what the box shows, or
     /// nothing when it shows none. Sent only to an app that announced
     /// [`FloatingSurfaceClientMessage::SelectionCapable`].
-    ShareSelection,
+    ///
+    /// `to` is whom the box opens to when the session names it — the one
+    /// place a report goes — and empty when the person names whom it goes to.
+    ShareSelection {
+        #[serde(default)]
+        to: Vec<Recipient>,
+    },
     /// What the one search finds for
     /// [`FloatingSurfaceClientMessage::SearchRecipients`] `request`:
     /// agents, people and conversations to send to, the people and

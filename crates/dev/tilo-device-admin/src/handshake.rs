@@ -249,9 +249,6 @@ impl std::fmt::Display for Untrusted {
 }
 
 /// The dialer's check of the device's [`Challenge`].
-///
-/// # Errors
-/// What makes the answering device untrustworthy.
 pub fn trust_device(
     challenge: &Challenge,
     own_user_public_key: &[u8; 32],
@@ -292,9 +289,6 @@ pub fn nonce() -> std::io::Result<[u8; 32]> {
 }
 
 /// Write one length-prefixed postcard frame.
-///
-/// # Errors
-/// Encoding and transport failures.
 pub async fn write_frame<T: Serialize + Sync>(
     writer: &mut (impl AsyncWrite + Unpin + Send),
     frame: &T,
@@ -310,9 +304,6 @@ pub async fn write_frame<T: Serialize + Sync>(
 }
 
 /// Read one length-prefixed postcard frame.
-///
-/// # Errors
-/// Transport failures, oversized frames and undecodable ones.
 pub async fn read_frame<T: for<'de> Deserialize<'de>>(
     reader: &mut (impl AsyncRead + Unpin + Send),
 ) -> std::io::Result<T> {

@@ -156,8 +156,8 @@ impl Vt {
 
 impl Ty {
     /// Whether an action's form can ask the person for a value of this type when nobody gave
-    /// it (forms-and-diagrams.md §1): text, a number, a flag, a day or a moment, a person, a
-    /// resource, a case of an enum, or none of one of those. Each has its control.
+    /// it: text, a number, a flag, a day, a moment, a length of time, an account of a service,
+    /// a person, a resource, a case of an enum, or none of one of those. Each has its control.
     #[must_use]
     pub fn asked_by_form(&self) -> bool {
         match self {
@@ -168,6 +168,8 @@ impl Ty {
             | Self::RichText
             | Self::Date
             | Self::Time
+            | Self::Duration
+            | Self::Identifier
             | Self::Principal
             | Self::Record(_)
             | Self::Enum(_) => true,
@@ -331,13 +333,17 @@ impl Ty {
     /// Whether a value of this type may stand where `want` is expected: itself, a case of a
     /// union, or — where `host.Resource` is expected — any resource at all, since that type is
     /// what the language has for "a resource of whichever app" (a place a shell holds, a hit
-    /// `find` answers), and every resource is one.
+    /// `find` answers), and every resource is one. A list whose items fit `want`'s items fits
+    /// it too (`List<TextChannel>` where `List<TextChannel | Direct>` is expected): a list's
+    /// items are read, and an item written back goes through the collection that holds it,
+    /// never through a list value.
     #[must_use]
     pub fn fits(&self, want: &Self) -> bool {
         match (self, want) {
             (Self::Record(k), Self::Union(keys)) => keys.contains(k),
             (Self::Union(a), Self::Union(b)) => a.iter().all(|k| b.contains(k)),
             (Self::Record(_) | Self::Union(_), Self::Record(k)) if is_any_resource(k) => true,
+            (Self::List(found), Self::List(want)) => found.fits(want),
             _ => self.same(want),
         }
     }
@@ -651,6 +657,59 @@ impl MetaTy<'_> {
                 })
             }
             _ => Some(Ty::Record(key(&name, self.app))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ty;
+
+    /// Every type a form has a control for is asked by it; the rest are reached only by an
+    /// argument given where the action runs or by a default.
+    #[test]
+    fn every_type_is_asked_by_a_form_or_is_not() {
+        let asked = [
+            "Int",
+            "Float",
+            "Bool",
+            "Text",
+            "RichText",
+            "Date",
+            "Time",
+            "Duration",
+            "std.Identifier",
+            "Principal",
+            "Thing",
+            "enum Colour",
+            "Option<Duration>",
+            "Option<enum Colour>",
+            "Option<Thing>",
+        ];
+        for ty in asked {
+            let parsed = Ty::parse_meta(ty, "t.forms").unwrap_or_else(|| panic!("{ty} parses"));
+            assert!(parsed.asked_by_form(), "a form asks for {ty}");
+        }
+        let unasked = [
+            "std.Repeat",
+            "std.Reminder",
+            "Bytes",
+            "Response",
+            "json.Value",
+            "Action",
+            "View",
+            "List<Text>",
+            "Set<Text>",
+            "Map<Text>",
+            "Collection<Thing>",
+            "Filter<Thing>",
+            "Option<List<Text>>",
+            "Option<Option<Text>>",
+        ];
+        assert!(!Ty::Unit.asked_by_form(), "no form asks for no value");
+        for ty in unasked {
+            let parsed = Ty::parse_meta(ty, "t.forms").unwrap_or_else(|| panic!("{ty} parses"));
+            assert!(!parsed.asked_by_form(), "no form asks for {ty}");
         }
     }
 }

@@ -86,9 +86,6 @@ pub enum UpgradeFrom {
 const FROM_FORMS: &str = "tilo-vm vm upgrade --from local (build this worktree's dev image)   |   --from ci:main-<sha7> or --from sha:<commit> (a CI build)   |   --from local:localhost/tilo-vm:<tag> (one already built)   |   --image registry.tilo.so/tilo/tilo-vm:<tag> (a published one)";
 
 /// Parse `--from`; a `sha:` is resolved through the worktree's git.
-///
-/// # Errors
-/// Anything else.
 pub fn parse_from(
     from: &str,
     worktree: Option<&crate::context::Worktree>,
@@ -404,9 +401,6 @@ fn refused(image: &str, problem: impl Into<String>, fix: impl Into<String>) -> C
 }
 
 /// Only an unsealed dev image with a dev name may go into a dev VM.
-///
-/// # Errors
-/// A production name, a missing dev flavour, a sealed image.
 pub fn check_image(reference: &str, facts: &ImageFacts) -> Result<(), CliError> {
     let build = "build the dev image FROM it: tilo-vm vm upgrade --from local   (or TILO_DEV_DISK=0 ./os/build.sh --dev)";
     if !is_dev_name(reference) {
@@ -935,9 +929,6 @@ fn blob_path(layout: &Path, digest: &str) -> Option<PathBuf> {
 }
 
 /// Every blob the layout's index reaches: manifests, configs, layers.
-///
-/// # Errors
-/// An unreadable index or manifest.
 pub fn referenced_blobs(layout: &Path) -> std::io::Result<BTreeSet<String>> {
     fn walk(layout: &Path, descriptor: &Value, seen: &mut BTreeSet<String>) -> std::io::Result<()> {
         let Some(digest) = descriptor.get("digest").and_then(Value::as_str) else {
@@ -991,9 +982,6 @@ pub fn referenced_blobs(layout: &Path) -> std::io::Result<BTreeSet<String>> {
 
 /// Keep only the tag this tool writes, then delete the blobs nothing
 /// references any more. Returns the bytes freed.
-///
-/// # Errors
-/// An unreadable layout.
 pub fn prune_layout(layout: &Path) -> std::io::Result<u64> {
     let index_path = layout.join("index.json");
     let mut index: Value =

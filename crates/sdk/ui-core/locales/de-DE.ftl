@@ -404,6 +404,8 @@ secret-prompt-attempts-left = { $count ->
 secret-prompt-pins-differ = Die neuen PINs stimmen nicht überein
 secret-prompt-keypad-delete = Löschen
 secret-prompt-keypad-enter = Fertig
+secret-prompt-keypad-shift = Umschalt
+secret-prompt-keypad-space = Leertaste
 
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Willkommen zurück
@@ -781,6 +783,8 @@ menu-ask-typed = Senden: { $text }
 # The box beside a context menu: whom a message goes to, what it is about,
 # and its words.
 send-to-name = Senden an
+# The same box opened to the one place reports go.
+send-to-report-name = Problem melden
 send-to-to = An
 send-to-new-agent = Neuer Agent
 send-to-recipients-name = Empfänger
@@ -791,6 +795,7 @@ send-to-subjects-name = Betreffe
 send-to-add-subject = Betreff hinzufügen
 send-to-message-name = Nachricht
 send-to-message-placeholder = Nachricht schreiben
+send-to-report-placeholder = Was ist schiefgelaufen?
 send-to-send = Senden
 send-to-remove = Entfernen
 send-to-recipient-set = An { $name } gesendet
@@ -965,9 +970,9 @@ change-window = { $count ->
     [one] Eine Änderung von { $who }
    *[other] { $count } Änderungen von { $who }
 }
-change-window-changed = { $who } hat { $count ->
-    [one] eine { $noun } geändert
-   *[other] { $count } { $noun } geändert
+change-window-changed = Geändert von { $who }: { $count ->
+    [one] { $count } { $one }
+   *[other] { $count } { $noun }
 }
 change-mark-names-two = { $first } und { $second }
 change-mark-names-three = { $first }, { $second } und { $third }
@@ -977,13 +982,13 @@ change-mark-said-more = { $said } und { $count ->
     [one] eine weitere
    *[other] { $count } weitere
 }
-change-window-more = { $who } hat mindestens { $count ->
-    [one] eine Änderung geändert
-   *[other] { $count } Änderungen geändert
-}
-change-window-changed-more = { $who } hat mindestens { $count ->
-    [one] eine { $noun } geändert
-   *[other] { $count } { $noun } geändert
+change-window-more = Mindestens { $count ->
+    [one] eine Änderung
+   *[other] { $count } Änderungen
+} von { $who }
+change-window-changed-more = Geändert von { $who }: mindestens { $count ->
+    [one] { $count } { $one }
+   *[other] { $count } { $noun }
 }
 
 # One step of an agent's task: the program it ran, what it answered, what it

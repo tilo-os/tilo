@@ -219,6 +219,13 @@ pub trait ListModel {
     fn discloses(&self) -> bool {
         false
     }
+
+    /// Whether the row `index` opens into its item where it stands: the row carries the
+    /// item's document under it, and choosing the row opens it there rather than anywhere
+    /// else. `false` for a row that opens elsewhere, or a model whose rows open nothing.
+    fn opens_in_place(&self, _index: usize) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,7 +239,7 @@ impl fmt::Display for DuplicateListKey {
 
 impl std::error::Error for DuplicateListKey {}
 
-type RowBuilder<M> = Box<dyn FnMut(&M, usize, &<M as ListModel>::Key, RowSelection) -> Element>;
+type RowBuilder<M> = Box<dyn FnMut(&M, usize, &<M as ListModel>::Key, RowBuild) -> Element>;
 type KeyCallback<K> = Box<dyn FnMut(K)>;
 type FoldCallback<K> = Box<dyn FnMut(&K, bool)>;
 type SemanticKey<K> = Box<dyn Fn(&K) -> String>;
@@ -259,7 +266,7 @@ type ReorderValidator<M> =
     Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 use super::row_selection::selection_sink;
-pub use super::row_selection::{RowSelection, RowSelectionSink};
+pub use super::row_selection::{RowBuild, RowSelection, RowSelectionSink};
 
 struct MountedRow<K> {
     key: K,
@@ -412,8 +419,24 @@ pub struct VirtualList<M: ListModel> {
     /// A press on a row opens it, without waiting for a second one
     /// ([`VirtualList::open_on_press`]).
     open_on_press: bool,
-    /// Told a row's subtasks folded or opened ([`VirtualList::on_fold`]).
+    /// A row's subtasks folded or opened ([`VirtualList::on_fold`]).
     on_fold: Option<FoldCallback<M::Key>>,
+    /// Told the item the person opened where it stands ([`VirtualList::on_opened`]), and told
+    /// that it closed ([`VirtualList::on_closed`]).
+    on_opened: Option<KeyCallback<M::Key>>,
+    on_closed: Option<Box<dyn FnMut()>>,
+    /// The row standing open into its item where it stands: a row that
+    /// [`opens in place`](ListModel::opens_in_place) opens here when it is chosen, and an item
+    /// that leaves the list closes with it ([`Self::set_open`]). One row stands open at a
+    /// time, and the row builder is told which row it is drawing.
+    open: Option<M::Key>,
+    /// Rows whose measured height is on its way to another, at the height they show now: a row
+    /// that grew into its item, or whose content changed, moves the rows after it as it
+    /// arrives, and the list clips it to the height it shows.
+    growth: Vec<(M::Key, crate::motion::MotionValue<f64>)>,
+    /// The rows whose height the list is moving on purpose, because it opened or closed them
+    /// into their item: a row that changed for any other reason stands at its height at once.
+    growing: HashSet<M::Key>,
     /// The menu the rows and the list's own space open, or the host's report of a row's menu
     /// ([`VirtualList::with_context_menu`], [`VirtualList::with_row_menu_reporter`]).
     menus: RowMenus<M>,
@@ -425,6 +448,10 @@ pub struct VirtualList<M: ListModel> {
     last_cursor: Option<Point>,
     is_focused: bool,
     drag_scroll: DragScroller,
+    /// The row a left press landed on. A row takes the press for a gesture of its own (a
+    /// swipe) and the release is still a click on that row when it was a tap, so the press
+    /// is kept until the release, whoever the press went to.
+    pressed_row: Option<(usize, M::Key)>,
     reorder: ReorderController<M::Key>,
     reorder_validator: Option<ReorderValidator<M>>,
     reorder_commit: Option<ReorderCommit<M>>,
@@ -590,7 +617,7 @@ impl<M: ListModel> VirtualList<M> {
     pub fn with_selection_delegate(
         model: M,
         estimated_row_height: f32,
-        row_builder: impl FnMut(&M, usize, &M::Key, RowSelection) -> Element + 'static,
+        row_builder: impl FnMut(&M, usize, &M::Key, RowBuild) -> Element + 'static,
     ) -> Self {
         let mut list = Self::build(model, estimated_row_height, Box::new(row_builder), true);
         list.delegate_selection = true;
@@ -632,6 +659,11 @@ impl<M: ListModel> VirtualList<M> {
             on_activate: None,
             open_on_press: false,
             on_fold: None,
+            on_opened: None,
+            on_closed: None,
+            open: None,
+            growth: Vec::new(),
+            growing: HashSet::new(),
             menus: RowMenus::None,
             row_builds: 0,
             access_rows: std::cell::RefCell::default(),
@@ -643,6 +675,7 @@ impl<M: ListModel> VirtualList<M> {
             last_cursor: None,
             is_focused: false,
             drag_scroll: DragScroller::new(),
+            pressed_row: None,
             reorder: ReorderController::new(),
             reorder_validator: None,
             reorder_commit: None,
@@ -958,6 +991,32 @@ impl<M: ListModel> VirtualList<M> {
         self.on_activate = Some(Box::new(callback));
     }
 
+    /// Told the item the person opened where it stands. A host keeping which item is open puts
+    /// it back as the list's `open` prop, so a list built again shows it.
+    #[must_use]
+    pub fn on_opened(mut self, callback: impl FnMut(M::Key) + 'static) -> Self {
+        self.set_on_opened(callback);
+        self
+    }
+
+    /// [`Self::on_opened`] on a list already built.
+    pub fn set_on_opened(&mut self, callback: impl FnMut(M::Key) + 'static) {
+        self.on_opened = Some(Box::new(callback));
+    }
+
+    /// Told the row standing open closed: the person pressed it again, pressed Escape, pressed
+    /// beside it, or its item left the list.
+    #[must_use]
+    pub fn on_closed(mut self, callback: impl FnMut() + 'static) -> Self {
+        self.set_on_closed(callback);
+        self
+    }
+
+    /// [`Self::on_closed`] on a list already built.
+    pub fn set_on_closed(&mut self, callback: impl FnMut() + 'static) {
+        self.on_closed = Some(Box::new(callback));
+    }
+
     /// Told when a row's subtasks fold away or open, which way it went, however they were
     /// folded: its disclosure, the keyboard, or assistive technology. A host keeping the
     /// person's folding (a session's open folders) hears it here.
@@ -976,13 +1035,13 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
-    fn key_for_semantic_target(&self, target: &str) -> Option<M::Key> {
-        let encoded = target.strip_prefix("key:")?;
+    /// The row the name `encoded` gives: the key it encodes, which is the name the accessibility
+    /// tree keys the row by and an agent chooses a row of a list by ([`Self::with_semantic_key`]).
+    fn key_for_name(&self, encoded: &str) -> Option<M::Key> {
         let encode = self.semantic_key.as_ref()?;
-        self.mounted
-            .iter()
-            .find(|row| encode(&row.key) == encoded)
-            .map(|row| row.key.clone())
+        (0..self.model.len())
+            .filter_map(|index| self.model.key_at(index))
+            .find(|key| encode(key) == encoded)
     }
 
     /// Enable row reordering. `validate` controls which stable-key targets
@@ -1355,88 +1414,6 @@ impl<M: ListModel> VirtualList<M> {
         })
     }
 
-    /// Choose `key` as the gesture says: `toggle` adds it to a choice or takes it away, and
-    /// `extend` grows the choice to it. A gesture that only changes a choice does not open
-    /// what it touches, so only a plain choice tells the row's listener it was chosen.
-    fn apply_selection(&mut self, key: M::Key, toggle: bool, extend: bool, choosing: Choosing) {
-        let model = &self.model;
-        super::rows::choose(
-            &mut self.selection,
-            key.clone(),
-            (toggle, extend),
-            self.multi_select,
-            |key| model.index_of(key),
-            |index| model.key_at(index),
-        );
-        if !toggle && !extend {
-            self.emit_selection(key);
-        }
-        self.report_selection(choosing);
-    }
-
-    /// Move the selection onto `key` without reporting the choice: an action that opens
-    /// the row moves it there on the way, and the opening is what the host hears.
-    fn choose_quietly(&mut self, key: M::Key) {
-        let model = &self.model;
-        super::rows::choose(
-            &mut self.selection,
-            key,
-            (false, false),
-            self.multi_select,
-            |key| model.index_of(key),
-            |index| model.key_at(index),
-        );
-        self.report_selection(Choosing::Following);
-    }
-
-    fn emit_selection(&mut self, key: M::Key) {
-        let selected = self.selection.is_selected(&key);
-        if let Some((_, handler)) = &mut self.view {
-            // The person's choice is the published view action's own run:
-            // no host decides a view or records it.
-            if selected {
-                handler(key);
-            }
-        } else if let Some(callback) = &mut self.on_select {
-            callback(key, selected);
-        }
-    }
-
-    /// Tell a listener which rows are selected now, in the order they stand.
-    ///
-    /// What a window keeps of a choice is a choice the person made by hand, a choice of more
-    /// than one row, and the way back from one of many to one row or none: a selection that
-    /// only followed the focus or the row that opened is the list's own.
-    fn report_selection(&mut self, choosing: Choosing) {
-        if self.on_selected.is_none() {
-            return;
-        }
-        let keys = self.selected_keys();
-        let many = keys.len() > 1;
-        let worth = choosing == Choosing::ByHand || many || self.reported_many;
-        self.reported_many = many;
-        if !worth {
-            return;
-        }
-        if let Some(callback) = &mut self.on_selected {
-            callback(&keys);
-        }
-    }
-
-    /// Every selected row's key, in the order the rows stand: a select-all names all of them.
-    fn selected_keys(&self) -> Vec<M::Key> {
-        let mut keys: Vec<M::Key> = if self.selection.is_select_all() {
-            (0..self.model.len())
-                .filter_map(|index| self.model.key_at(index))
-                .filter(|key| self.selection.is_selected(key))
-                .collect()
-        } else {
-            self.selection.stored_keys().cloned().collect()
-        };
-        keys.sort_by_key(|key| self.model.index_of(key));
-        keys
-    }
-
     fn focus_index(&mut self, index: usize, extend: bool) -> bool {
         let Some(key) = self.model.key_at(index) else {
             return false;
@@ -1538,6 +1515,9 @@ impl<M: ListModel> VirtualList<M> {
                 self.report_selection(Choosing::ByHand);
                 true
             }
+            // Escape closes the row standing open into its item before it puts a selection
+            // away: the document closes; the row it stood on stays the row the person is on.
+            Key::Named(NamedKey::Escape) if self.open.is_some() => self.close_open(),
             // Escape puts a selection away, as it puts away what a window opened over the
             // list: what was selected stays where it is.
             Key::Named(NamedKey::Escape)
@@ -2016,7 +1996,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             };
             let first = !self.viewport.is_measured(&key);
             let before = geometry(&self.viewport);
-            self.viewport.measure(index, key, height.max(1.0));
+            let shown = self.grown_height(index, &key, height.max(1.0), first);
+            self.viewport.measure(index, key, shown);
             let moved = geometry(&self.viewport) != before;
             if first {
                 first_measured |= moved;
@@ -2112,15 +2093,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.push_row_selection();
         // Only the rows near the box: the list clips the others away.
         let near = self.placed_near();
-        let rects: Vec<Option<Rect>> = self
+        let boxes: Vec<(Option<Rect>, bool)> = self
             .mounted
             .iter()
             .enumerate()
             .map(|(at, row)| {
                 if !near.contains(&at) {
-                    return None;
+                    return (None, false);
                 }
-                self.row_box(row.index)
+                let growing = self.growth.iter().any(|(key, _)| key == &row.key);
+                (self.row_box(row.index), growing)
             })
             .collect();
         let selections: Vec<RowSelection> = self
@@ -2143,10 +2125,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         let guide_color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
         let _kept = crate::draw_cull::keep_scope(scene, self.draw_keep(opacity, now));
         let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
-        for (((row, row_rect), selection), (dy, alpha)) in self
+        for (((row, (row_rect, growing)), selection), (dy, alpha)) in self
             .mounted
             .iter_mut()
-            .zip(rects)
+            .zip(boxes)
             .zip(selections)
             .zip(poses)
         {
@@ -2156,7 +2138,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             // A row the frame keeps on screen, unchanged, is not drawn
             // again: its selection, its ring and its widget are as they were.
             let lift = (selection.selected && !self.delegate_selection).then_some(row_rect);
-            if focused != Some(&row.key) && row_kept(scene, transform, row.widget.as_ref(), lift) {
+            if focused != Some(&row.key)
+                && !growing
+                && row_kept(scene, transform, row.widget.as_ref(), lift)
+            {
                 continue;
             }
             let row_rect = row_rect + vello::kurbo::Vec2::new(0.0, dy);
@@ -2211,6 +2196,27 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 }
             }
             let slot = row.widget.get_rect() + vello::kurbo::Vec2::new(0.0, dy);
+            // A row arriving at a height of its own is drawn as far as it
+            // stands there: the rest of its item shows as the row reaches it.
+            let clipped = growing.then(|| {
+                let shown = self
+                    .viewport
+                    .item_height(row.index)
+                    .unwrap_or(slot.height());
+                Rect::from_points(
+                    slot.origin(),
+                    vello::kurbo::Point::new(slot.x1, slot.y0 + shown.min(slot.height())),
+                )
+            });
+            if let Some(clip) = clipped {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &clip,
+                );
+            }
             self.arrivals.paint(
                 &row.key,
                 pending_shape,
@@ -2234,6 +2240,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     );
                 }
                 chevrons.paint(marks, scene, transform, theme, &row.key, row_rect);
+            }
+            if clipped.is_some() {
+                scene.pop_layer();
             }
             if faded {
                 scene.pop_layer();
@@ -2350,6 +2359,29 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         let taking_press = self.takes_row_press(event);
+        // A left press inside the list is a click waiting on its release, whichever widget the
+        // press goes to: a row with a swipe takes the press for the swipe, and a tap it lets go
+        // of without moving is still a click on that row. What the press landed on is taken
+        // from the list as soon as the finger lifts, whoever answers the release.
+        let pressed = match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let inside = self
+                    .last_cursor
+                    .is_some_and(|point| self.rect.contains(point));
+                self.pressed_row = if inside { self.row_at_cursor() } else { None };
+                None
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.pressed_row.take(),
+            _ => None,
+        };
         if !taking_press && !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
             let reached = self.rows_reached(event);
             if let Some(rows) = self.mounted.get_mut(reached) {
@@ -2446,7 +2478,18 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         }
                     } else if let Some((index, key)) = self.row_at_cursor() {
                         self.press_row_at(index, key, *ctx.modifiers);
+                    } else {
+                        // A press where no row stands, beside a row opened into its item: the
+                        // person pressed outside it, and it closes.
+                        self.close_open();
                     }
+                    *ctx.handled = true;
+                } else if let Some((index, key)) = pressed
+                    && self.row_at_cursor().is_some_and(|(_, at)| at == key)
+                {
+                    // The press went to a row's own gesture and came back without one: the
+                    // tap's click is the list's.
+                    self.press_row_at(index, key, *ctx.modifiers);
                     *ctx.handled = true;
                 }
             }
@@ -2876,11 +2919,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty
             || self.scroll_dirty
+            || !self.growth.is_empty()
             || self.mounted.iter().any(|row| row.widget.is_layout_dirty())
     }
 
     fn layout_needs_measure(&self) -> bool {
         self.layout_dirty
+            || !self.growth.is_empty()
             || self
                 .mounted
                 .iter()
@@ -2948,6 +2993,16 @@ mod mount_tests;
 #[cfg(test)]
 #[path = "virtual_list_tree_tests.rs"]
 mod tree_tests;
+
+#[cfg(test)]
+#[path = "virtual_list_open_tests.rs"]
+mod open_tests;
+
+#[path = "virtual_list_choosing.rs"]
+mod choosing;
+
+#[path = "virtual_list_open.rs"]
+mod open;
 
 #[path = "virtual_list_component.rs"]
 mod component;

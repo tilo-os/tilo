@@ -48,9 +48,6 @@ pub const EMBEDDED: &[Embedded] = &[
 ];
 
 /// The surface of a host running every built-in package.
-///
-/// # Errors
-/// A built-in package does not compile, or the surface cannot be written.
 pub fn surface() -> Result<Vec<u8>, String> {
     let sources: Vec<(&str, &str)> = EMBEDDED
         .iter()

@@ -156,12 +156,6 @@ impl SurfaceTable {
     }
 
     /// Apply `delta`, or change nothing and say why it does not apply.
-    ///
-    /// # Errors
-    ///
-    /// A shape that carries a resource's own fields, a template naming a
-    /// shape neither this delta nor the table holds, or a resource naming a
-    /// template neither holds.
     pub fn apply(&mut self, delta: &SurfaceDelta) -> Result<(), String> {
         for (_, shape) in &delta.shapes {
             if !shape.resource.is_empty()

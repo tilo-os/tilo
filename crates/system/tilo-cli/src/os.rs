@@ -140,9 +140,6 @@ pub fn newest_for(board: Option<&str>) -> String {
 }
 
 /// Decide what to move onto.
-///
-/// # Errors
-/// `--to` on a production image, whose signed route picks its own image.
 pub fn plan(facts: &Facts, to: Option<&str>) -> Result<Plan> {
     if !facts.development {
         if let Some(to) = to {

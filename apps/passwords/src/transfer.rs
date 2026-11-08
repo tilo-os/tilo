@@ -131,9 +131,6 @@ pub enum Saving {
 impl Saving {
     /// Open `request`'s Save chooser; `bytes` makes what is saved, with how
     /// many items it holds, for a host that takes the bytes up front.
-    ///
-    /// # Errors
-    /// Making the bytes failed.
     pub fn send(
         request: ui::portal::PickRequest,
         bytes: impl FnOnce() -> Result<(Zeroizing<Vec<u8>>, usize), String>,

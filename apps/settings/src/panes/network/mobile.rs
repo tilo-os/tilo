@@ -391,9 +391,6 @@ pub(crate) trait MobileService: Send + Sync {
     /// Read the modems, the data connection and the radios.
     fn snapshot(&self) -> MobileSnapshot;
     /// Carry out `change`.
-    ///
-    /// # Errors
-    /// A wrong code, or why the device refused or failed it.
     fn change(&self, change: &MobileChange) -> Result<(), ModemError>;
     /// Follow the modems: `changed` is called, on another thread, each time
     /// the modem service or the network service reports a change (signal,

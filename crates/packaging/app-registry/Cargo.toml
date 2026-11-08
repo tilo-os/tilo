@@ -4,24 +4,33 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Client edges of the Tilo app registry: fail-closed .tapp verification and payload blobs fetched from a registry server over HTTPS."
+description = "The Tilo app registry protocol on the client side: fail-closed .tapp verification, payload blobs, and a publisher's keys, signed entries and uploads."
 
 [lib]
 name = "app_registry"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-app-package = { path = "../tilo-app-package" }
-# Payload blobs come from the registry server over HTTPS; rustls-tls only
-# (no openssl / native-tls) to match the rest of the tree.
+registry-types = { path = "../registry-types" }
+tilo-automation = { path = "../../collab/automation" }
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+# Payload blobs and publisher uploads come from the registry server over
+# HTTPS; rustls-tls only (no openssl / native-tls) to match the rest of the
+# tree.
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
-tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
-reqwest.workspace = true
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "http"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
 
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+getrandom.workspace = true
 hex.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

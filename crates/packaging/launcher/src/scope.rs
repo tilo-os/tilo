@@ -198,10 +198,11 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
         ],
         vec!["OOMPolicy".into(), "s".into(), OOM_POLICY.into()],
     ];
-    // The person just asked for this app: it starts in the foreground tier
-    // (see `priority`).
+    // The person just asked for this app: it is born in the startup tier and
+    // served before everything else while it opens, then the session moves it
+    // to the tier of what the person can see (see `priority`).
     let tier = crate::priority::tier_properties(
-        crate::priority::Tier::Foreground,
+        crate::priority::Tier::Startup,
         crate::priority::mem_total_bytes(),
     );
     properties.extend(
@@ -254,7 +255,7 @@ mod tests {
     fn a_scope_request_names_its_unit_slice_session_and_process() {
         let request = request_args("app-tilo-com.spotify.Client-42.scope", 42, "Spo\ntify");
         let tier = crate::priority::tier_properties(
-            crate::priority::Tier::Foreground,
+            crate::priority::Tier::Startup,
             crate::priority::mem_total_bytes(),
         );
         let mut request = request;

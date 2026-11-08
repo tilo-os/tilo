@@ -130,9 +130,6 @@ pub trait UriOpener: Send + Sync {
     /// Open `uri` without waiting for the handler to finish. May block until
     /// the handler is launched or the request is refused, so the toolkit
     /// calls it off the UI thread.
-    ///
-    /// # Errors
-    /// The host refused or cannot open URIs at all.
     fn open(&self, uri: &str) -> std::io::Result<()>;
 }
 

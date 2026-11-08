@@ -228,9 +228,6 @@ pub fn read(path: &Path) -> io::Result<File> {
 /// Unix ciphertext may retain inherited read permissions; this API is only for
 /// authenticated ciphertext, never plaintext credentials or encryption keys.
 /// Other platforms retain the canonical private-file ACL requirements.
-///
-/// # Errors
-/// Rejects symbolic links, special files and foreign owners, or native ACL failures.
 #[cfg(unix)]
 pub fn read_ciphertext(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -270,9 +267,6 @@ pub fn rewrite(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 /// Flush a directory after publishing a private file.
-///
-/// # Errors
-/// Returns directory open or flush errors; durability failures are not ignored.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.read(true);

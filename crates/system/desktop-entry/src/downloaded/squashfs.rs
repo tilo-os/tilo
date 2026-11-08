@@ -445,10 +445,6 @@ impl<R: Read + Seek> Image<R> {
     }
 
     /// The names in the image's top directory.
-    ///
-    /// # Errors
-    ///
-    /// The image is damaged.
     pub fn root_names(&mut self) -> io::Result<Vec<String>> {
         let root = self.inode(self.superblock.root_inode)?;
         Ok(self
@@ -547,10 +543,6 @@ impl<R: Read + Seek> Image<R> {
     /// The contents of the regular file at `path`, symlinks inside the image
     /// followed; `None` when there is no such file. A file larger than
     /// `limit` bytes is an error, never read.
-    ///
-    /// # Errors
-    ///
-    /// The image is damaged or the file is larger than `limit`.
     pub fn read_file(&mut self, path: &str, limit: usize) -> io::Result<Option<Vec<u8>>> {
         let Some(inode) = self.resolve(path)? else {
             return Ok(None);

@@ -45,39 +45,36 @@ use crate::window_flight::WindowFlight;
 use layout::{Metrics, StripControl};
 pub use layout::{PANEL_RISE_PX, PANEL_START_SCALE, panel_curve};
 
-/// What the overview shows: every workspace, and what only the host knows
-/// about them.
+/// What the overview shows: every workspace, and what only the host knows about them.
 #[derive(Clone, Debug, Default)]
 pub struct OverviewDesk {
     /// Every workspace, in order; the one you are in is marked current.
     pub cards: Vec<WorkspaceCard>,
-    /// Each window group's size on its display; a group not given one is
-    /// drawn at its share of the display.
+    /// Each window group's size on its display; a group not given one is drawn at its share of the
+    /// display.
     pub group_sizes: HashMap<GroupId, Size>,
-    /// The strips of the workspace you are in that this machine names and
-    /// moves.
+    /// The strips of the workspace you are in that this machine names and moves.
     pub renamable: HashSet<StripId>,
     /// Each person's colour, by id: their cursor's.
     pub colors: HashMap<String, (u8, u8, u8)>,
-    /// What a workspace held through a site says in place of who has
-    /// access: the site, and how many are there.
+    /// What a workspace held through a site says in place of who has access: the site, and how many
+    /// are there.
     pub sites: HashMap<WorkspaceSlot, String>,
     /// The workspaces that can be left from here.
     pub leavable: HashSet<WorkspaceSlot>,
-    /// The windows the host draws the pictures of itself: the panel leaves
-    /// their wells to it.
+    /// The windows the host draws the pictures of itself: the panel leaves their wells to it.
     pub pictured: HashSet<TabId>,
     /// A new workspace can be made.
     pub can_add: bool,
     /// A workspace can be joined.
     pub can_join: bool,
-    /// The picture of the workspace you are in is left out (the host shows
-    /// its windows elsewhere for now).
+    /// The picture of the workspace you are in is left out (the host shows its windows elsewhere
+    /// for now).
     pub hide_windows: bool,
 }
 
 impl OverviewDesk {
-    /// `cards`, with nothing else known: a new workspace can be made.
+    /// `cards` , with nothing else known: a new workspace can be made.
     pub fn of(cards: Vec<WorkspaceCard>) -> Self {
         Self {
             cards,
@@ -101,8 +98,7 @@ pub enum OverviewPick {
     LeaveWorkspace(WorkspaceSlot),
     /// Close this window; the overview stays up.
     CloseWindow(TabId),
-    /// Move this window to another workspace; the overview stays up to
-    /// show it leave.
+    /// Move this window to another workspace; the overview stays up to show it leave.
     MoveWindow {
         tab: TabId,
         to: WorkspaceSlot,
@@ -116,7 +112,7 @@ pub enum OverviewPick {
         strip: StripId,
         name: String,
     },
-    /// Move a strip to stand before `before` (the bottom when `None`).
+    /// Move a strip to stand before `before` (the bottom when `None` ).
     MoveStrip {
         strip: StripId,
         before: Option<StripId>,
@@ -164,13 +160,12 @@ pub struct OverviewPanel {
     reduce_motion: bool,
     /// The list's scroll.
     scroll_y: f64,
-    /// The keyboard's workspace, by its place among the cards; past them, New
-    /// workspace and then Join.
+    /// The keyboard's workspace, by its place among the cards; past them, New workspace and then
+    /// Join.
     selection: Option<usize>,
     /// The pictured window the keyboard is on.
     window_selection: Option<TabId>,
-    /// The selected window went away under the keyboard: the next Enter
-    /// does nothing.
+    /// The selected window went away under the keyboard: the next Enter does nothing.
     window_interrupted: bool,
     /// A press on the overview until it is let go.
     press: Option<OverviewPress>,
@@ -225,13 +220,6 @@ impl OverviewPanel {
         }
     }
 
-    /// Offer "New workspace" only when the host can make one.
-    #[must_use]
-    pub fn with_new_workspace(mut self, offered: bool) -> Self {
-        self.offer_add = offered;
-        self
-    }
-
     /// Offer a new workspace or not, as the host's policy answers now.
     pub fn set_new_workspace(&mut self, offered: bool) {
         if self.offer_add != offered {
@@ -240,8 +228,8 @@ impl OverviewPanel {
         }
     }
 
-    /// Pictures of the windows are drawn by the host through `flight`, and
-    /// the overview arrives and leaves on its clock.
+    /// Pictures of the windows are drawn by the host through `flight` , and the overview arrives
+    /// and leaves on its clock.
     pub fn set_flight(&mut self, flight: WindowFlight) {
         self.flight = Some(flight);
         self.bump();
@@ -251,14 +239,13 @@ impl OverviewPanel {
         self.open
     }
 
-    /// Open over `cards` (every workspace, as
-    /// [`crate::overview::workspace_cards`] returns them), or close.
+    /// Open over `cards` (every workspace, as [`crate::overview::workspace_cards`] returns them),
+    /// or close.
     pub fn set_open(&mut self, open: bool, cards: Vec<WorkspaceCard>) {
         self.open_on(open, OverviewDesk::of(cards));
     }
 
-    /// Open over `desk`, or close. Each opening starts the keyboard on the
-    /// workspace you are in.
+    /// Open over `desk` , or close. Each opening starts the keyboard on the workspace you are in.
     pub fn open_on(&mut self, open: bool, desk: OverviewDesk) {
         if open {
             self.desk = desk;
@@ -284,7 +271,7 @@ impl OverviewPanel {
         self.set_desk(desk);
     }
 
-    /// Show `desk`, keeping the keyboard where it is.
+    /// Show `desk` , keeping the keyboard where it is.
     pub fn set_desk(&mut self, desk: OverviewDesk) {
         self.desk = desk;
         if self
@@ -345,7 +332,7 @@ impl OverviewPanel {
         self.open && self.key(key, mods)
     }
 
-    /// Choose `pick`, as the person did.
+    /// Choose `pick` , as the person did.
     pub fn choose(&mut self, pick: OverviewPick) {
         self.picks.push_back(pick);
         self.bump();
@@ -370,8 +357,8 @@ impl OverviewPanel {
         self.dirty = true;
     }
 
-    /// How far the overview has arrived: its flight's clock, or all the
-    /// way while it is open with no flight.
+    /// How far the overview has arrived: its flight's clock, or all the way while it is open with
+    /// no flight.
     fn progress(&self) -> f64 {
         match &self.flight {
             Some(flight) => flight.progress(),
@@ -385,13 +372,7 @@ impl OverviewPanel {
         self.open || self.progress() > 0.0
     }
 
-    /// Where workspace `index`'s row is (the "you are here" block for the workspace
-    /// you are in), for a host's tests and scripts.
-    pub fn workspace_rect(&self, index: usize) -> Option<Rect> {
-        (self.open && index < self.desk.cards.len()).then(|| self.row_rect(index))
-    }
-
-    /// The pointer moved to `p`; whether what it is over changed.
+    /// The pointer moved to `p` ; whether what it is over changed.
     fn hover(&mut self, p: Point) {
         let before = self.hover_key();
         self.cursor = Some(p);
@@ -479,7 +460,7 @@ impl OverviewPanel {
         )
     }
 
-    /// Act on semantic `target`; whether it named something here.
+    /// Act on semantic `target` ; whether it named something here.
     fn activate(&mut self, target: &str) -> bool {
         let number = |prefix: &str| {
             target
@@ -524,8 +505,7 @@ impl OverviewPanel {
         true
     }
 
-    /// Put the keyboard on semantic `target`; whether it named something
-    /// here.
+    /// Put the keyboard on semantic `target` ; whether it named something here.
     fn focus(&mut self, target: &str) -> bool {
         let number = |prefix: &str| {
             target
@@ -576,8 +556,8 @@ impl Widget for OverviewPanel {
         }
     }
 
-    /// The overview fills its node and lays out its rows itself: there is
-    /// never a size for the layout solver to measure.
+    /// The overview fills its node and lays out its rows itself: there is never a size for the
+    /// layout solver to measure.
     fn layout_needs_measure(&self) -> bool {
         false
     }
@@ -665,8 +645,8 @@ impl Widget for OverviewPanel {
         self.open.then_some(self.rect)
     }
 
-    /// The open overview holds the keyboard: its workspaces and windows are
-    /// walked by keys, Tab included.
+    /// The open overview holds the keyboard: its workspaces and windows are walked by keys, Tab
+    /// included.
     fn is_focusable(&self) -> bool {
         self.open
     }
@@ -808,9 +788,8 @@ impl Widget for OverviewPanel {
         }
     }
 
-    /// Every target a script presses, by name: each workspace's row in order
-    /// (`overview_card[i]`), the rows that make and join a workspace, each
-    /// pictured window, each strip's name.
+    /// Every target a script presses, by name: each workspace's row in order (`overview_card[i]`),
+    /// the rows that make and join a workspace, each pictured window, each strip's name.
     fn test_rects(&self) -> Vec<(String, Rect)> {
         if !self.open {
             return Vec::new();

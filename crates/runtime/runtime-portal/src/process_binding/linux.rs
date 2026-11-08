@@ -70,8 +70,6 @@ impl ExecutingPeer {
 
     /// Match a privately transferred kernel pidfd to this authenticated task.
     /// This checks kernel fdinfo and liveness, never a serialized PID claim.
-    /// # Errors
-    /// Refuses non-pidfds, exited or different tasks, and unavailable evidence.
     pub fn matches_transferred_pidfd(
         &self,
         descriptor: std::os::fd::BorrowedFd<'_>,
@@ -118,9 +116,6 @@ impl ExecutingPeer {
     }
 
     /// Read the pinned live task's kernel launch time; refuse unavailable facts.
-    ///
-    /// # Errors
-    /// Returns permission denied if the task exited or its facts cannot be read.
     pub fn start_time(&self) -> io::Result<u64> {
         if !self.current() {
             return Err(refused("executing task exited"));
@@ -138,9 +133,6 @@ impl ExecutingPeer {
     /// The owner arms credentials before handing out the connected descriptor.
     /// A descendant inheriting the FD cannot impersonate its pinned producer.
     /// This proves process custody, not resource or application authority.
-    ///
-    /// # Errors
-    /// Refuses a changed/dead sender, rights, truncation or an empty message.
     pub fn receive_packet(&self, socket: &impl AsFd, message: &mut [u8]) -> io::Result<usize> {
         if message.is_empty() || message.len() > 16384 {
             return Err(refused("native message bound is invalid"));
@@ -212,8 +204,6 @@ pub fn arm(socket: &impl AsFd) -> io::Result<()> {
 
 /// Complete the executing-app handshake on its owned native service stream.
 /// The caller runs this before any RPC, on its startup/transport worker.
-/// # Errors
-/// Refuses a missing/malformed challenge, unusable socket, or refused ready ack.
 pub fn complete(socket: &mut UnixStream) -> io::Result<()> {
     socket.set_nonblocking(false)?;
     // No wall-clock deadline: the host answers as soon as it is scheduled,
@@ -301,8 +291,6 @@ fn receive_chunk(socket: &impl AsFd, answer: &mut [u8]) -> io::Result<Received> 
 
 /// Receive the challenge answer with kernel sender credentials and one proof
 /// socket. All other rights are closed; the returned pidfd pins the sender.
-/// # Errors
-/// Refuses wrong/truncated data, rights, user, creator, or a dead process.
 pub fn receive(socket: &impl AsFd, challenge: &[u8; 32], uid: u32) -> io::Result<ExecutingPeer> {
     let mut receiver = Receiver::new(*challenge, uid);
     loop {
@@ -317,8 +305,6 @@ pub fn receive(socket: &impl AsFd, challenge: &[u8; 32], uid: u32) -> io::Result
 /// only: it grants no file access, session, package or identity authority.
 /// Unlike `receive`, its caller must verify the returned task against the
 /// installed certified session before admitting any operation.
-/// # Errors
-/// Refuses a non-root controller, root sender, malformed frame or dead task.
 pub fn receive_nonroot_for_authentication(
     socket: &impl AsFd,
     challenge: &[u8; 32],

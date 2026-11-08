@@ -13,11 +13,6 @@ const ANSWER: Duration = Duration::from_secs(5);
 
 /// Ask the runtime serving `native_socket` to open `entry`, and wait for its
 /// answer.
-///
-/// # Errors
-///
-/// Returns transport errors, or the runtime's refusal: the entry is
-/// unknown, or no longer opens for the runtime's owner.
 pub fn open(native_socket: &Path, entry: &str) -> io::Result<()> {
     let mut request = request_line(entry)?;
     request.push('\n');

@@ -18,9 +18,6 @@ use tilo_app_package::pack::SigningIdentity;
 /// siblings), compiled in dependency order against what the platform and the native apps among
 /// them publish ([`tilolang_tilo::catalogue::published_packages`]); and that published metadata. The one
 /// resolution `check`, `build`, `describe`, `dev` and `layout-check` share.
-///
-/// # Errors
-/// What is published does not read, or a package cannot be found, read or compiled.
 pub fn compile(
     dir: &Path,
     search: &[PathBuf],
@@ -40,9 +37,6 @@ pub fn compile(
 }
 
 /// The package directories [`compile`] reads for `dir`: the ones to watch.
-///
-/// # Errors
-/// What is published does not read, or a package cannot be found or read.
 pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let published =
         tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, search))?;
@@ -50,9 +44,6 @@ pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, Stri
 }
 
 /// The signing identity in the publisher key file at `path` ([`registry_types::key_file`]).
-///
-/// # Errors
-/// The file is missing or not a key file.
 pub fn load_identity(path: &Path) -> Result<SigningIdentity, String> {
     registry_types::key_file::load(path)
         .map(SigningIdentity::from_signing_key)
@@ -64,9 +55,6 @@ pub fn load_identity(path: &Path) -> Result<SigningIdentity, String> {
 /// together) all get the one key: it is written whole beside `path` and linked into place, so
 /// the key file is never seen half written, and a command that finds another's key there takes
 /// that one.
-///
-/// # Errors
-/// The file cannot be read or written.
 pub fn identity_at(path: &Path) -> Result<SigningIdentity, String> {
     if path.exists() {
         return load_identity(path);

@@ -1,34 +1,20 @@
 //! A workspace's shared desktop as one Automerge record, entry by entry.
-//!
-//! Every workspace, strip, window group and window is its own map under its
-//! id, holding where it is (its parent and an order among its siblings) and
-//! who made it. Concurrent changes to different entries merge: two people
-//! opening, moving or closing their own windows at once each keep their
-//! change, and a page that reconnects with an old desktop only writes the
-//! entries it changed itself, never over what others did meanwhile. Who may
-//! change which entry is [`crate::ownership`]'s rule.
-//!
-//! Shape, at the record's root:
-//!
+//! Every workspace, strip, window group and window is its own map under its id,
+//! holding where it is (its parent and an order among its siblings) and who made
+//! it, so concurrent changes to different entries merge and a page that reconnects
+//! with an old desktop writes only the entries it changed itself. Who may change
+//! which entry is [`crate::ownership`]'s rule.
 //! ```text
 //! workspaces: { <id>: { order: f64, workspace: <map, no strips>, arrangement? } }
 //! strips:     { <id>: { workspace: <id>, order: f64, name, author? } }
 //! groups:     { <id>: { strip: <id>, order: f64, place? } }
 //! windows:    { <id>: { group: <id>, order: f64, tab: <map>, author?, record? } }
 //! ```
-//!
-//! A workspace's `arrangement` is its kind when that is not the strips, and
-//! a group's `place` where it stands on the canvas: each its own field.
-//! A workspace, a window and a place are maps of their own fields too, not
-//! one blob of text each, so two people editing different fields of the same
-//! one at once — renaming a workspace while the other gives it a shortcut —
-//! each keep their change, as people moving different windows at once keep
-//! their moves.
-//! What only one device decides (which window is focused, widths,
-//! maximization) is never written. [`read`] tolerates what concurrency
-//! leaves behind: a window whose group was removed meanwhile gets a group
-//! of its own in the first strip, and a group or strip whose parent was
-//! removed is placed in the first one, so nothing anyone opened vanishes.
+//! A workspace, a window and a place are maps of their own fields, not one blob of
+//! text each, so two people editing different fields of the same one keep both
+//! changes. What only one device decides (focus, widths, maximization) is never
+//! written, and [`read`] tolerates what concurrency leaves behind, so nothing
+//! anyone opened vanishes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_automerge::json;
@@ -37,7 +23,7 @@ use tilo_sort::CompactSort as _;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
+use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
@@ -59,6 +45,7 @@ const TAB: &str = "tab";
 const RECORD: &str = "record";
 const ARRANGEMENT: &str = "arrangement";
 const PLACE: &str = "place";
+const FLOAT: &str = "float";
 
 /// A document read now or as of some heads.
 struct At<'a, D: ReadDoc> {
@@ -195,6 +182,8 @@ struct Parts {
     windows: HashMap<u64, Vec<(f64, u64, Tab)>>,
     /// Where groups stand on their workspace's canvas.
     places: HashMap<GroupId, CanvasPlace>,
+    /// Which of those groups float, and where.
+    floats: HashMap<GroupId, FloatPlace>,
     /// Workspaces and strips written blind ([`At::placed_entries`]).
     blind: HashSet<u64>,
 }
@@ -254,6 +243,7 @@ impl Parts {
                         ArrangementKind::parse(&kind)
                     }),
                 places: BTreeMap::new(),
+                floats: BTreeMap::new(),
             };
             workspaces.push((at.number(&entry, ORDER).unwrap_or(0.0), id, workspace));
         }
@@ -282,6 +272,12 @@ impl Parts {
                 .and_then(|value| serde_json::from_value::<CanvasPlace>(value).ok())
             {
                 parts.places.insert(id, place);
+            }
+            if let Some(float) = at
+                .json(&entry, FLOAT)
+                .and_then(|value| serde_json::from_value::<FloatPlace>(value).ok())
+            {
+                parts.floats.insert(id, float);
             }
             parts
                 .groups
@@ -399,6 +395,9 @@ impl Parts {
             for group in groups {
                 if let Some(place) = self.places.get(&group) {
                     workspace.arrangement.places.insert(group, *place);
+                }
+                if let Some(float) = self.floats.get(&group) {
+                    workspace.arrangement.floats.insert(group, *float);
                 }
             }
         }
@@ -722,12 +721,19 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
             let group_orders = orders(&ids, &held_orders(&held.groups, Some(strip.id.0)));
             for (group, order) in strip.window_groups.iter().zip(group_orders) {
                 let parent = Some((STRIP, strip.id.0));
-                let fields = workspace
+                let mut fields: Vec<(&'static str, Field)> = workspace
                     .arrangement
                     .place_of(group.id)
                     .and_then(|place| serde_json::to_value(place).ok())
                     .map(|place| vec![(PLACE, Field::Json(place))])
                     .unwrap_or_default();
+                if let Some(float) = workspace
+                    .arrangement
+                    .float_of(group.id)
+                    .and_then(|float| serde_json::to_value(float).ok())
+                {
+                    fields.push((FLOAT, Field::Json(float)));
+                }
                 want.groups.insert(
                     group.id,
                     Entry {
@@ -812,7 +818,7 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
     Levels {
         workspaces: level(WORKSPACES, None, &[(WORKSPACE, Json), (ARRANGEMENT, Text)]),
         strips: level(STRIPS, Some(WORKSPACE), &[(NAME, Text), (AUTHOR, Text)]),
-        groups: level(GROUPS, Some(STRIP), &[(PLACE, Json)]),
+        groups: level(GROUPS, Some(STRIP), &[(PLACE, Json), (FLOAT, Json)]),
         windows: level(
             WINDOWS,
             Some(GROUP),

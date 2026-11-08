@@ -1,17 +1,9 @@
-//! The broker transport: the `runtime-collab` collaboration client on a
-//! worker thread the transport owns.
-//!
-//! The worker (the "shovel") runs a `current_thread` Tokio runtime and a
-//! `LocalSet` that keeps every route's state on that thread. The owner thread
-//! reaches it over a pair of bounded queues: [`CollabTransport::submit`]
-//! enqueues commands and [`CollabTransport::drain`] empties the event queue.
-//! Overload never closes the bridge. Only transient presence is shed;
-//! other durable commands that do not fit wait in the owner's ordered spill
-//! (a newer action surface replaces an older one) until the shovel frees
-//! workspace. Document mutations have their own budget and are deferred (`Busy`)
-//! or refused (`TooLarge`). Joining,
-//! document signing and envelope verification all happen on the worker with
-//! the certified launcher (or host-supplied) identity.
+//! The broker transport: the `runtime-collab` client on a worker thread (the
+//! "shovel") whose `LocalSet` keeps every route's state. The owner reaches it
+//! over bounded queues ([`CollabTransport::submit`] / [`CollabTransport::drain`]).
+//! Overload never closes the bridge: durable commands wait in the owner's
+//! ordered spill, documents defer (`Busy`) or are refused (`TooLarge`), and
+//! only presence is shed. Signing and verification happen on the worker.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the shovel thread bridges a blocking socket"
@@ -30,9 +22,6 @@ use super::{
 use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
 
-// Worker-owned Cloud facilities: committed-document reads, the paged
-// directory client, managed sender attempts and the native media lane all
-// share this worker's queues, byte budgets and route handles.
 #[path = "audio_output.rs"]
 mod audio_output;
 #[path = "broker_bytes.rs"]
@@ -99,15 +88,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
 
-/// A disconnected/slow UI must apply backpressure to broker callbacks rather
-/// than allow an unbounded cross-thread queue to become a memory `DoS`.
+/// Backpressure a slow UI rather than let a cross-thread queue grow unbounded.
 const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 
-/// Whether the identity service answered and declined to sign, as opposed
-/// to being unreachable: it reports a refusal as permission denied.
 /// Presence is a workspace signal, not the app's request: a publish the peer
-/// refused is logged where it happened, and the request that carried the
-/// update still answers.
+/// refused is logged, and the request that carried the update still answers.
 async fn publish_presence(
     what: &'static str,
     publish: impl std::future::Future<Output = Result<(), runtime_portal::NotAvailable>>,
@@ -116,6 +101,8 @@ async fn publish_presence(
         tracing::warn!(%error, presence = what, "collab: presence publish refused");
     }
 }
+/// Whether the identity service answered and declined to sign, as opposed to
+/// being unreachable: it reports a refusal as permission denied.
 fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
     matches!(
         error,
@@ -124,35 +111,26 @@ fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
     )
 }
 
-/// One absolute deadline for each host identity request/response exchange.
-/// The identity client drops a failed stream, so this also bounds shutdown of
-/// partial and late replies without blocking the shovel's `LocalSet`.
+/// One deadline per host identity exchange; the client drops a failed stream,
+/// so this also bounds shutdown without blocking the shovel's `LocalSet`.
 const HOST_IDENTITY_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Maximum number of UI-to-shovel commands waiting behind a slow broker.
-/// This deliberately caps commands, rather than bytes, because the protocol
-/// already bounds its payloads at each broker boundary.
+/// Commands waiting behind a slow broker. Capped by count, not bytes: the
+/// protocol already bounds every payload.
 const SDK_COMMAND_QUEUE: usize = 256;
-/// Maximum number of shovel-to-UI events waiting behind a busy event loop.
+/// Events waiting behind a busy event loop.
 const SDK_EVENT_QUEUE: usize = 256;
-/// Aggregate retained payload budget for each cross-thread queue. This is
-/// independent of the item-count cap because a single document snapshot or
-/// invocation argument may be large.
+/// Retained payload budget per cross-thread queue, independent of the count
+/// cap because one document snapshot or argument may be large.
 const SDK_COMMAND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const SDK_EVENT_QUEUE_BYTES: usize = 4 * 1024 * 1024;
-/// The retained budget of the one action catalogue snapshot in flight
-/// (each read waits for the previous one to be taken): apart from control
-/// events, so a large workspace's catalogue neither starves action results
-/// nor fails the bridge. A snapshot larger than this is trimmed to fit
+/// Budget of the one action catalogue in flight: a big workspace's catalogue
+/// neither starves action results nor fails the bridge, and is trimmed to fit
 /// ([`fit_catalogue`]).
 const SDK_CATALOGUE_EVENT_BYTES: usize = 16 * 1024 * 1024;
-/// Separate retained budgets for document traffic. A document change may be
-/// as large as [`collab_types::MAX_DOCUMENT_TRANSFER_BYTES`]; accounting it
-/// apart from control traffic means one large edit in flight can neither
-/// starve action results nor make them fail the bridge. When the budget is
-/// exhausted, outbound documents report [`TransportError::Busy`] so the
-/// caller retries, and inbound document events wait for the owner to drain
-/// rather than disconnecting.
+/// Document budgets, apart from control traffic so one large edit neither
+/// starves nor fails action results. Outbound documents report
+/// [`TransportError::Busy`], inbound ones wait for the owner to drain.
 const SDK_DOCUMENT_COMMAND_BYTES: usize =
     collab_types::MAX_DOCUMENT_TRANSFER_BYTES + SDK_COMMAND_QUEUE_BYTES;
 const SDK_DOCUMENT_EVENT_BYTES: usize =
@@ -161,9 +139,8 @@ const SDK_DOCUMENT_EVENT_BYTES: usize =
 const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
 const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The connected transport's outbound queue, as the process reaches it from
-/// outside the transport: the session's published resources
-/// ([`SessionResource`]) and the device commands
+/// The transport's outbound queue as the process reaches it from outside: the
+/// session's published resources ([`SessionResource`]) and the device commands
 /// ([`wifi_continuity_command`], [`speaker_command`]).
 static PUBLISHED_COMMAND_BRIDGE: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
@@ -172,11 +149,6 @@ static PUBLISHED_COMMAND_BRIDGE: std::sync::OnceLock<
 /// Invoke the shell's launcher-authenticated, sealed Wi-Fi continuity path.
 /// Callers should run this off the frame thread; the bounded timeout turns a
 /// lost broker into an ordinary unavailable result.
-///
-/// # Errors
-///
-/// Returns an unavailable message when the collaboration bridge is absent,
-/// its bounded queue rejects the command, or the broker does not reply in time.
 pub fn wifi_continuity_command(
     command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
@@ -212,11 +184,6 @@ const SPEAKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 /// Ask the shell's speaker-group authority over the launcher-authenticated
 /// Settings route. Run it off the frame thread; a lost broker times out into
 /// an ordinary unavailable result.
-///
-/// # Errors
-///
-/// Returns an unavailable message when the collaboration bridge is absent,
-/// its bounded queue rejects the command, or the broker does not reply in time.
 pub fn speaker_command(
     command: runtime_collab::SpeakerCommand,
 ) -> Result<runtime_collab::SpeakerReply, String> {
@@ -249,9 +216,6 @@ static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::Onc
 
 /// Ask the native host to inspect or change its display transaction. Call off
 /// the frame thread; the existing bridge and response wait remain bounded.
-///
-/// # Errors
-/// Reports disconnected authority, refused requests and timed out replies.
 pub fn display_control(
     command: Vec<u8>,
     origin: runtime_collab::settings::DisplayOrigin,
@@ -2463,31 +2427,6 @@ impl NativeRefreshProbe {
 }
 
 impl CollaborationManager {
-    /// Connect to the launcher-inherited typed collaboration service and
-    /// announce an explicit route. Headless participants use this instead of
-    /// relying on process-wide `QUICK_APP_ID` / `TILO_WORKSPACE_ID` variables.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`runtime_portal::NotAvailable`] when the launcher did not
-    /// hand down a collab service connection.
-    pub fn for_route(
-        app_id: impl Into<String>,
-        cluster_id: Uuid,
-        record: Option<String>,
-        handle: Option<String>,
-    ) -> Result<Self, runtime_portal::NotAvailable> {
-        Self::for_route_from(
-            SdkConnectSource::Env,
-            app_id.into(),
-            cluster_id,
-            record,
-            handle,
-            None,
-            "person",
-        )
-    }
-
     /// Connect a headless service of `app_id` in `cluster_id` that holds no
     /// document of its own: it publishes actions and answers them. It never
     /// asks the broker for a committed document, which a workspace holds only for
@@ -2537,41 +2476,6 @@ impl CollaborationManager {
             None,
             "person",
         )
-    }
-
-    /// Hold `route`, a record of `kind` that need not exist yet, over `fd`,
-    /// a connection to the broker its host made itself, joined as the
-    /// certified device `identity` presents: what a host holding a record
-    /// without a window does when it reaches its broker its own way (one of
-    /// several sessions in one process). A route the broker does not take
-    /// leaves the manager offline, as a background connect's does.
-    #[must_use]
-    pub fn for_record_fd_with_identity(
-        fd: RawFd,
-        route: RouteSpec,
-        kind: Option<String>,
-        handle: Option<String>,
-        identity: CertifiedEndpointIdentity,
-    ) -> Self {
-        match Self::connect_route_kind(
-            SdkConnectSource::Fd(fd),
-            route,
-            kind,
-            handle,
-            Some(SdkJoinIdentity {
-                presentation: identity.presentation.clone(),
-                participant_kind: "person",
-                signer: identity.document_signer(),
-            }),
-            "person",
-        ) {
-            Ok(connected) => Self::from_connected(connected),
-            Err(error) => {
-                let mut manager = Self::offline(error.to_string());
-                manager.sync_expected = true;
-                manager
-            }
-        }
     }
 
     /// Connect to an explicit endpoint with a certified device presentation.
@@ -2762,11 +2666,6 @@ impl CollaborationManager {
     /// against what the host says, and refuses a hello for another app or
     /// workspace. Nothing is read from the process's environment, which is the
     /// host's, not the app's. `identity` must outlive the manager.
-    ///
-    /// # Errors
-    ///
-    /// The identity service did not answer, or its identity has no certified
-    /// device.
     #[cfg(all(feature = "native", unix))]
     pub fn join_instance(
         kind: &crate::record::RecordKind,
@@ -2792,12 +2691,6 @@ impl CollaborationManager {
     /// on the calling thread for the broker's answer, for as long as it
     /// takes, and fails with the broker's reason or the connection's end. A
     /// manager with nothing to join is returned as it is.
-    ///
-    /// # Errors
-    ///
-    /// The broker refused the route, or the connection ended before it
-    /// answered; a manager that was to sync and could not reach its service
-    /// says why.
     pub fn finish_join(mut self) -> Result<Self, runtime_portal::NotAvailable> {
         if !self.awaiting_primary {
             return match &self.backend {
@@ -3400,15 +3293,6 @@ pub struct SessionServices {
 impl SessionServices {
     /// Connect to the session's services at `socket`, as the launch of
     /// `app_id` in `workspace` the session recorded for this process.
-    ///
-    /// # Errors
-    ///
-    /// The socket cannot be reached, the handoff cannot be written, or the
-    /// broker does not answer the connection.
-    ///
-    /// Linux only, like the launch handoff a surface writes: the session
-    /// serves whose surfaces these are runs on Linux.
-    #[cfg(target_os = "linux")]
     pub fn connect(
         socket: &std::path::Path,
         app_id: &str,
@@ -3672,7 +3556,10 @@ fn follow_channel_keys(
     tokio::task::spawn_local(async move {
         let mut after = 0;
         loop {
-            match channel.channel_keys_changed(after).await {
+            match channel
+                .changed(runtime_collab::wire::Changes::ChannelKeys, after)
+                .await
+            {
                 Ok(change) if change != after => {
                     after = change;
                     if signals.send(KeySignal::Changed(route.clone())).is_err() {
@@ -4320,9 +4207,9 @@ struct SdkJoinContext<'a> {
 }
 
 struct SdkRoute {
-    _checks: Option<super::approved_checks::Registration>,
-    _moderation: Option<super::external_moderation::Registration>,
-    _attribution: Option<super::write_attribution_lane::Registration>,
+    _checks: Option<crate::lane::Registration<super::approved_checks::Endpoint>>,
+    _moderation: Option<crate::lane::Registration<super::external_moderation::Endpoint>>,
+    _attribution: Option<crate::lane::Registration<super::write_attribution_lane::Endpoint>>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,

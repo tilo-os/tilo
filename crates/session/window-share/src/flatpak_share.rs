@@ -21,11 +21,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::config::{EncoderChoice, FlatpakShareConfig};
-use crate::diagnostics::{CapturePath, PeerSurfaceMetrics};
 use crate::encoder::nv12::Region;
 use crate::encoder::{Codec, Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, build};
 use crate::hdr_metadata::{Hdr10Metadata, HdrConfig};
-use crate::streaming::{InputEvent, ShareRegistry, StreamingShare};
+use crate::streaming::{ShareRegistry, StreamingShare};
 use media::realtime::{CodecCapabilities, RealtimePolicy, negotiate, negotiate_hdr};
 use neighbour_wire::colorimetry::Colorimetry;
 use neighbour_wire::{NeighbourMsg, PeerId, SurfaceId};
@@ -34,7 +33,6 @@ use smithay::backend::allocator::Buffer as _;
 #[cfg(all(target_os = "linux", feature = "dmabuf"))]
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use tilo_callstream::encoder::EncodeError;
-use tilo_callstream::stream::SurfaceStreamSender;
 use tilo_callstream::throttle::StreamingThrottle;
 use tilo_lock::MutexRecover as _;
 
@@ -43,6 +41,11 @@ use tilo_lock::MutexRecover as _;
 /// them; this bounds what viewers asking repeatedly (or a hostile one) cost
 /// the encoder and the link.
 pub const KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Largest encoded unit a share publishes. A frame past it is a broken
+/// encoder rather than something a viewer could show, and sending it would
+/// let one share spend an unbounded amount of the link.
+const MAX_ENCODED_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 /// The time between two frames at `hz`, rounded up so a second never holds
 /// one more.
@@ -147,7 +150,6 @@ struct Started {
     width: u32,
     height: u32,
     local_caps: CodecCapabilities,
-    metrics: Option<PeerSurfaceMetrics>,
     paint: bool,
 }
 
@@ -334,8 +336,6 @@ pub struct SharedFlatpakSession {
     codec_state: Arc<Mutex<CodecState>>,
     /// This machine's capabilities, read once at start.
     local_caps: CodecCapabilities,
-    metrics: Option<PeerSurfaceMetrics>,
-    capture_path: Arc<Mutex<CapturePath>>,
     throttle: Arc<Mutex<StreamingThrottle>>,
     /// Frames a second a changing window is streamed at.
     rate_hz: AtomicU32,
@@ -367,12 +367,9 @@ pub struct SharedFlatpakSession {
     dmabuf_layouts: Mutex<std::collections::HashMap<(u32, u64), bool>>,
     origin: Instant,
     active: Arc<AtomicBool>,
-    /// Per-share video substream sender — every `encode_next_frame` deposits
-    /// here in addition to returning the frame; the transport adapter polls
-    /// per subscriber and writes bytes on the wire. Per-subscriber bounded
-    /// queue with drop-oldest backpressure; a keyframe flag in the header
-    /// lets late-joining viewers know when it's safe to start decoding.
-    stream_sender: Arc<SurfaceStreamSender>,
+    /// Place of the next unit in the share's encoded sequence, which viewers
+    /// tell missing units and keyframe requests by.
+    frame_seq: AtomicU64,
     /// Sequence of a paint share's frames, which bypass the encoder.
     paint_seq: AtomicU64,
     /// `seq` of the newest keyframe encoded, plus one; `0` before the first.
@@ -409,29 +406,19 @@ impl SharedFlatpakSession {
         height: u32,
         config: &FlatpakShareConfig,
     ) -> Result<Self, ShareError> {
-        Self::start_with_metrics(
-            host_user_id,
-            app_id,
-            surface_id,
-            width,
-            height,
-            config,
-            &[],
-            None,
-        )
+        Self::start_negotiated(host_user_id, app_id, surface_id, width, height, config, &[])
     }
 
     /// Same as [`Self::start`], negotiating the codec with `receivers` (the
     /// viewers' advertised capabilities; see
-    /// the compositor's `media_caps::capabilities`) and attaching a shared
-    /// [`PeerSurfaceMetrics`] handle so the OSD sees encode-side counters.
+    /// the compositor's `media_caps::capabilities`).
     ///
     /// # Errors
     ///
     /// Same failure modes as [`Self::start`], plus
     /// [`ShareError::EncoderUnavailable`] when this machine can produce no
     /// codec every receiver decodes.
-    pub fn start_with_metrics(
+    pub fn start_negotiated(
         host_user_id: PeerId,
         app_id: impl Into<String>,
         surface_id: SurfaceId,
@@ -439,16 +426,12 @@ impl SharedFlatpakSession {
         height: u32,
         config: &FlatpakShareConfig,
         receivers: &[CodecCapabilities],
-        metrics: Option<PeerSurfaceMetrics>,
     ) -> Result<Self, ShareError> {
         if width == 0 || height == 0 || width > 4096 || height > 4096 {
             return Err(ShareError::DimensionsExceeded { width, height });
         }
         let local_caps = usable_local(config.encoder.policy());
         let (encoder, state) = Self::open_encoder(config, &local_caps, receivers, width, height)?;
-        if let Some(m) = &metrics {
-            m.set_chosen_encoder(state.kind);
-        }
         Ok(Self::assemble(
             Started {
                 host_user_id,
@@ -457,7 +440,6 @@ impl SharedFlatpakSession {
                 width,
                 height,
                 local_caps,
-                metrics,
                 paint: false,
             },
             config,
@@ -499,7 +481,6 @@ impl SharedFlatpakSession {
                 width,
                 height,
                 local_caps: CodecCapabilities::default(),
-                metrics: None,
                 paint: true,
             },
             config,
@@ -521,15 +502,9 @@ impl SharedFlatpakSession {
             width,
             height,
             local_caps,
-            metrics,
             paint,
         } = started;
         let effective_fps = config.target_fps.max(1);
-        let stream_sender = Arc::new(SurfaceStreamSender::new(surface_id, host_user_id));
-        stream_sender.set_format(
-            state.codec,
-            display_size(state.codec, state.encoded.0, state.encoded.1),
-        );
 
         Self {
             host_user_id,
@@ -547,8 +522,6 @@ impl SharedFlatpakSession {
             encoder: Arc::new(Mutex::new(encoder)),
             codec_state: Arc::new(Mutex::new(state)),
             local_caps,
-            metrics,
-            capture_path: Arc::new(Mutex::new(CapturePath::ShmReadback)),
             throttle: Arc::new(Mutex::new(StreamingThrottle::with_interval(
                 frame_interval(effective_fps),
             ))),
@@ -564,7 +537,7 @@ impl SharedFlatpakSession {
             dmabuf_layouts: Mutex::new(std::collections::HashMap::new()),
             origin: Instant::now(),
             active: Arc::new(AtomicBool::new(true)),
-            stream_sender,
+            frame_seq: AtomicU64::new(0),
             paint_seq: AtomicU64::new(0),
             keyframe_after: AtomicU64::new(0),
             keyframe_requested: Mutex::new(None),
@@ -668,13 +641,6 @@ impl SharedFlatpakSession {
         self.dmabuf_layouts.lock_recover().clear();
         *self.codec_state.lock_recover() = state;
         *self.standing_keyframe.lock_recover() = None;
-        self.stream_sender.set_format(
-            state.codec,
-            display_size(state.codec, state.encoded.0, state.encoded.1),
-        );
-        if let Some(m) = &self.metrics {
-            m.set_chosen_encoder(state.kind);
-        }
         true
     }
 
@@ -708,30 +674,9 @@ impl SharedFlatpakSession {
         self.codec_state.lock_recover().codec
     }
 
-    /// Update the capture path (SHM ↔ DMABUF); propagates into the shared
-    /// metrics handle so the OSD sees the switch immediately.
-    pub fn set_capture_path(&self, path: CapturePath) {
-        let mut slot = self.capture_path.lock_recover();
-        *slot = path;
-        drop(slot);
-        if let Some(m) = &self.metrics {
-            m.set_capture_path(path);
-        }
-    }
-
-    pub fn capture_path(&self) -> CapturePath {
-        *self.capture_path.lock_recover()
-    }
-
     /// The window's size, the size frames are captured at.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
-    }
-
-    /// The size frames are encoded and announced at: the window's, or less
-    /// for a receiver's hardware decoder.
-    pub fn encoded_dimensions(&self) -> (u32, u32) {
-        self.codec_state.lock_recover().encoded
     }
 
     /// Name the workspace tab the window is in, for the stream start.
@@ -1050,58 +995,36 @@ impl SharedFlatpakSession {
         // DMABUF paths lift plane fd/offset/stride off the `Dmabuf` handle
         // (Arc keeps the fds alive for the borrow); RGBA paths just hand the
         // byte slice through.
-        let (encode_result, path_taken) = match &staged.kind {
-            StagedKind::Rgba(rgba) => (
-                encoder.encode(FrameInput::Rgba(rgba), &mut nalus),
-                CapturePath::ShmReadback,
-            ),
+        let encode_result = match &staged.kind {
+            StagedKind::Rgba(rgba) => encoder.encode(FrameInput::Rgba(rgba), &mut nalus),
             StagedKind::Window => {
                 let input = match &window {
                     Some((rgba, Some(changed))) => FrameInput::RgbaChanged { rgba, changed },
                     Some((rgba, None)) => FrameInput::Rgba(rgba),
                     None => return None,
                 };
-                (encoder.encode(input, &mut nalus), CapturePath::ShmReadback)
+                encoder.encode(input, &mut nalus)
             }
             #[cfg(all(target_os = "linux", feature = "dmabuf"))]
-            StagedKind::Dmabuf(dmabuf) => (
-                encoder.encode(dmabuf_frame_input(dmabuf), &mut nalus),
-                CapturePath::DmabufDirect,
-            ),
+            StagedKind::Dmabuf(dmabuf) => encoder.encode(dmabuf_frame_input(dmabuf), &mut nalus),
         };
         drop(encoder);
         match encode_result {
             Ok(stats) => {
                 self.throttle.lock_recover().mark_encoded(now);
-                // Record capture path only after the encoder actually
-                // succeeds, not merely when a DMABUF buffer was detected.
-                self.set_capture_path(path_taken);
-                if let Some(m) = &self.metrics {
-                    m.record_encode_wallclock(
-                        u64::try_from(stats.encode_wallclock.as_nanos()).unwrap_or(u64::MAX),
+                if nalus.len() > MAX_ENCODED_FRAME_BYTES {
+                    tracing::warn!(
+                        surface = self.surface_id,
+                        bytes = nalus.len(),
+                        "dropping an encoded frame past the share's size limit"
                     );
-                    if stats.keyframe {
-                        m.record_keyframe();
-                    }
-                    // Rough bitrate sample: bytes-per-frame * fps.
-                    let bytes_per_sec = (stats.bytes as u64).saturating_mul(u64::from(self.rate()));
-                    m.record_bitrate(bytes_per_sec);
+                    // The next unit would reference this one without a gap
+                    // in the sequence to tell viewers it is missing.
+                    self.encoder.lock_recover().force_keyframe();
+                    *self.standing_keyframe.lock_recover() = None;
+                    return None;
                 }
-                let seq = match self.stream_sender.publish(stats.keyframe, nalus.clone()) {
-                    Ok(seq) => seq,
-                    Err(error) => {
-                        tracing::warn!(
-                            surface = self.surface_id,
-                            error = ?error,
-                            "dropping encoded frame rejected by stream limits"
-                        );
-                        // The next unit would reference this one without a
-                        // gap in the sequence to tell viewers it is missing.
-                        self.encoder.lock_recover().force_keyframe();
-                        *self.standing_keyframe.lock_recover() = None;
-                        return None;
-                    }
-                };
+                let seq = self.frame_seq.fetch_add(1, Ordering::AcqRel);
                 if stats.keyframe {
                     self.keyframe_after
                         .fetch_max(seq.saturating_add(1), Ordering::AcqRel);
@@ -1119,7 +1042,6 @@ impl SharedFlatpakSession {
             Err(err) => {
                 tracing::debug!(
                     surface = self.surface_id,
-                    ?path_taken,
                     error = ?err,
                     "encoder rejected frame, dropping"
                 );
@@ -1170,24 +1092,19 @@ impl SharedFlatpakSession {
     }
 
     /// Register a peer as a viewer with the given read-only state (flip
-    /// later via [`Self::set_read_only`]) and subscribe them to the
-    /// [`SurfaceStreamSender`]. It starts at [`Self::start_reader`]'s
-    /// keyframe.
+    /// later via [`Self::set_read_only`]). It starts at
+    /// [`Self::start_reader`]'s keyframe.
     pub fn add_viewer(&self, peer: PeerId, read_only: bool) {
         let mut reg = self.share_registry.lock_recover();
         reg.insert(peer, self.surface_id, StreamingShare { read_only });
         drop(reg);
-        self.stream_sender.subscribe(peer);
         let _ = self.start_reader();
     }
 
-    /// Drop a viewer — subsequent `RemoteInput` events fall on the floor and
-    /// their substream subscription closes.
+    /// Drop a viewer — subsequent `RemoteInput` events fall on the floor.
     pub fn drop_viewer(&self, peer: PeerId) {
         let mut reg = self.share_registry.lock_recover();
         reg.remove(peer, self.surface_id);
-        drop(reg);
-        self.stream_sender.unsubscribe(peer);
     }
 
     /// Make the live viewer set exactly match the workspace's replicated
@@ -1229,28 +1146,6 @@ impl SharedFlatpakSession {
         }
     }
 
-    /// Cumulative drop-oldest count for a viewer's substream — diagnostic,
-    /// surfaces "peer is falling behind" in the owner's UI.
-    pub fn stream_drops_for(&self, peer: PeerId) -> u64 {
-        self.stream_sender.drops_for(peer)
-    }
-
-    pub fn stream_total_drops(&self) -> u64 {
-        self.stream_sender.total_drops()
-    }
-
-    pub fn stream_pending_for(&self, peer: PeerId) -> usize {
-        self.stream_sender.pending_for(peer)
-    }
-
-    pub fn poll_stream_frame(&self, peer: PeerId) -> Option<tilo_callstream::stream::SurfaceFrame> {
-        self.stream_sender.poll(peer)
-    }
-
-    pub fn stream_sender(&self) -> Arc<SurfaceStreamSender> {
-        self.stream_sender.clone()
-    }
-
     pub fn set_read_only(&self, peer: PeerId, read_only: bool) {
         let mut reg = self.share_registry.lock_recover();
         reg.set_read_only(peer, self.surface_id, read_only);
@@ -1275,21 +1170,6 @@ impl SharedFlatpakSession {
             .peers_for(self.surface_id)
     }
 
-    /// Route an inbound `InputEvent` through the share-registry gate only —
-    /// see [`crate::streaming::ShareRegistry::route_to`]. A sink
-    /// that is the compositor's seat must not be driven from here;
-    /// the compositor state's `review_remote_input` runs the
-    /// region/z-order/scrubber/rate checks.
-    pub fn route_input<S: crate::streaming::RemoteInputSink>(
-        &self,
-        peer: PeerId,
-        event: InputEvent,
-        sink: &mut S,
-    ) -> bool {
-        let reg = self.share_registry.lock_recover();
-        reg.route_to(peer, self.surface_id, event, sink)
-    }
-
     /// Monotonic ns counter for outgoing wire messages; wraps at u64
     /// overflow (~584 years), not a practical concern.
     #[allow(
@@ -1299,28 +1179,6 @@ impl SharedFlatpakSession {
     fn monotonic_ns_now(&self) -> u64 {
         self.origin.elapsed().as_nanos() as u64
     }
-
-    /// Reference `Instant` every `capture_ts_ns` is measured from — lets a
-    /// receiver compute `origin.elapsed().as_nanos() - capture_ts_ns` for
-    /// motion-to-photon latency without its own clock domain.
-    pub fn origin(&self) -> Instant {
-        self.origin
-    }
-
-    pub fn elapsed_ns(&self) -> u64 {
-        self.monotonic_ns_now()
-    }
-}
-
-/// The display size stamped on substream frames; H.264 frames keep the
-/// original format without one.
-fn display_size(codec: Codec, width: u32, height: u32) -> Option<(u16, u16)> {
-    (codec != Codec::H264).then(|| {
-        (
-            u16::try_from(width).unwrap_or(u16::MAX),
-            u16::try_from(height).unwrap_or(u16::MAX),
-        )
-    })
 }
 
 /// Ending the session ends the thread encoding it.
@@ -1391,7 +1249,6 @@ mod tests {
         );
         assert!(SharedFlatpakSession::start_paint(1, "x", 1, 0, 600, &cfg_software()).is_err());
     }
-    use crate::streaming::test_support::RecordingSink;
 
     fn cfg_software() -> FlatpakShareConfig {
         FlatpakShareConfig {
@@ -1509,9 +1366,8 @@ mod tests {
                 return;
             }
             let legacy = [CodecCapabilities::legacy_peer()];
-            let s =
-                SharedFlatpakSession::start_with_metrics(1, "x", 7, 64, 64, &cfg, &legacy, None)
-                    .expect("start");
+            let s = SharedFlatpakSession::start_negotiated(1, "x", 7, 64, 64, &cfg, &legacy)
+                .expect("start");
             assert_eq!(s.chosen_codec(), Codec::H264);
             assert!(!s.renegotiate(&legacy), "same viewers, same codec");
         }
@@ -1526,7 +1382,7 @@ mod tests {
                 return;
             }
             assert!(matches!(
-                SharedFlatpakSession::start_with_metrics(1, "x", 7, 64, 64, &cfg, &legacy, None),
+                SharedFlatpakSession::start_negotiated(1, "x", 7, 64, 64, &cfg, &legacy),
                 Err(ShareError::EncoderUnavailable { .. })
             ));
         }
@@ -1773,28 +1629,17 @@ mod tests {
             );
             assert!(s.accept_remote_input(20));
         }
-        // Phase `route_input_delivers_only_when_accepted`.
         {
             let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
             let peer: PeerId = 42;
-            let mut sink = RecordingSink::default();
 
-            assert!(!s.route_input(
-                peer,
-                InputEvent::PointerMotion { x: 1.0, y: 2.0 },
-                &mut sink
-            ));
-            assert!(sink.events.is_empty());
+            assert!(
+                !s.accept_remote_input(peer),
+                "input from someone the share has not admitted"
+            );
 
             s.add_viewer(peer, false);
-            assert!(s.route_input(
-                peer,
-                InputEvent::PointerMotion { x: 3.0, y: 4.0 },
-                &mut sink
-            ));
-            assert_eq!(sink.events.len(), 1);
-            assert_eq!(sink.events[0].0, peer);
-            assert_eq!(sink.events[0].1, 7);
+            assert!(s.accept_remote_input(peer));
         }
     }
 

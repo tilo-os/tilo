@@ -6,7 +6,7 @@
     reason = "test fixtures: a failed step is the test failing"
 )]
 use crate::owner::{
-    NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
+    NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner,
     VerifiedNativeEnrollmentIntent, WorkspaceId, publication,
 };
 use crate::owner_commit::OwnerCommitRequest;
@@ -14,7 +14,7 @@ use crate::{SeedDocument, SeedState, StatePeer, join, seed_workspace, workspace:
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use std::{collections::BTreeMap, sync::Arc, time::SystemTime};
+use std::{collections::BTreeMap, time::SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -29,6 +29,65 @@ pub(crate) fn record_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBuf,
 
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const APP: &str = "so.tilo.chat";
+
+/// Where `certificate`'s device keeps a workspace it founds on itself:
+/// `workspace`'s own host, reached at `endpoint`, signed by the device.
+pub fn own_host_hint(
+    workspace: WorkspaceId,
+    endpoint: iroh_base::EndpointAddr,
+    certificate: &DeviceCert,
+    key: &SigningKey,
+) -> join::TransportHint {
+    let room = workspace.to_string();
+    IrohWorkspaceHostHintV1 {
+        version: 1,
+        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        workspace_id: join::room_workspace_id(&room).unwrap(),
+        room,
+        endpoint_addr: endpoint,
+        host_user_public_key: certificate.user_public_key,
+        host_device_certificate: certificate.clone(),
+        packet_relay_url: "iroh:direct".into(),
+    }
+    .transport_hint(key)
+    .unwrap()
+}
+
+/// [`own_host_hint`] for a device reached at its own endpoint id.
+pub fn own_host_hint_here(
+    workspace: WorkspaceId,
+    certificate: &DeviceCert,
+    key: &SigningKey,
+) -> join::TransportHint {
+    own_host_hint(
+        workspace,
+        iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
+        ),
+        certificate,
+        key,
+    )
+}
+
+/// Found `name` on `owner` as `certificate`'s device, naming its own host.
+pub fn founded(
+    owner: &NativeWorkspaceOwner,
+    name: &str,
+    certificate: &DeviceCert,
+    key: &SigningKey,
+    now: SystemTime,
+) -> Result<WorkspaceId, String> {
+    let workspace = WorkspaceId::new();
+    owner.create_workspace(
+        workspace,
+        name,
+        certificate,
+        key,
+        Some(own_host_hint_here(workspace, certificate, key)),
+        now,
+    )?;
+    Ok(workspace)
+}
 
 /// Enroll an empty interactive workspace through the real signed join protocol.
 /// This helper neither seeds application records nor grants capabilities.
@@ -122,17 +181,27 @@ pub fn enroll_into(
         .unwrap();
     Ok(governor)
 }
-/// Most outgoing entries one workspace holds.
-pub const MAX_OUTGOING_ENTRIES: usize = publication::MAX_ENTRIES;
-/// Largest outgoing publication one workspace holds.
-pub const MAX_OUTGOING_BYTES: usize = publication::MAX_BYTES;
-
 pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+    certificate_with(root, key, label, DeviceCapabilities::primary())
+}
+
+/// `key`'s ordinary member certificate for `root`'s person.
+pub fn member_certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+    certificate_with(root, key, label, DeviceCapabilities::member())
+}
+
+/// `key`'s certificate for `root`'s person, with `capabilities` and no expiry.
+pub fn certificate_with(
+    root: &SigningKey,
+    key: &SigningKey,
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
-        capabilities: DeviceCapabilities::primary(),
+        capabilities,
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -333,8 +402,6 @@ pub fn raw_fixture_at(
     .unwrap();
     (intent, bootstrap, messages, governor.device_public_key, now)
 }
-/// # Errors
-/// As the enrollment a pinned host's Complete response finalizes.
 pub fn finalize(
     intent: VerifiedNativeEnrollmentIntent,
     pending: crate::owner::PendingEnrollmentId,
@@ -351,27 +418,12 @@ pub fn pending_id(
 ) -> crate::owner::PendingEnrollmentId {
     crate::owner::PendingEnrollmentId::new(workspace, generation, [0; 32])
 }
-/// The host an owner opened with [`crate::owner::open_file_with`] follows its
-/// publications through, for a host test to downcast.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn file_host(owner: &NativeWorkspaceOwner) -> Option<Arc<dyn crate::owner::FileHost>> {
-    let store: Arc<dyn Store> = Arc::clone(&owner.0.store);
-    let store: Arc<dyn std::any::Any + Send + Sync> = store;
-    store
-        .downcast::<crate::owner::file_store::FileStore>()
-        .ok()
-        .map(|store| Arc::clone(&store.host))
-}
 /// # Errors
 /// `now` is before the epoch or beyond `u64` nanoseconds.
 pub fn ns(now: SystemTime) -> Result<u64, String> {
     crate::owner::enrollment::ns(now)
 }
 /// The exact bytes of every original outgoing entry.
-///
-/// # Errors
-/// The workspace has no publication state.
 pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
     Ok(publication::state(view)?
         .entries
@@ -379,8 +431,6 @@ pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
         .map(|entry| entry.bytes.clone())
         .collect())
 }
-/// # Errors
-/// As the owner's own outgoing encoding.
 pub fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     publication::prepare(request)
 }
@@ -391,38 +441,16 @@ pub fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, String> {
 pub fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), String> {
     publication::metadata(message)
 }
-/// # Errors
-/// As the owner's own local append.
 pub fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
     publication::append_local(view, bytes)
 }
-pub fn peer_mut(view: &mut NativeCommittedView) -> &mut StatePeer {
-    &mut view.peer
-}
-#[must_use]
-pub fn durable_peer(view: &NativeCommittedView) -> &[u8] {
-    &view.record.peer
-}
 /// Record the live peer as the view's durable peer.
-///
-/// # Errors
-/// The peer cannot be saved.
 pub fn seal(view: &mut NativeCommittedView) -> Result<(), String> {
     view.record.peer = view.peer.durable()?;
     Ok(())
 }
 pub fn bump_generation(view: &mut NativeCommittedView) {
     view.record.generation = view.record.generation.saturating_add(1);
-}
-pub fn insert_workspace(
-    storage: &mut NativeAuthorityStorage,
-    workspace: WorkspaceId,
-    view: NativeCommittedView,
-) {
-    storage.workspaces.insert(workspace, view.record);
-}
-pub fn bump_revision(storage: &mut NativeAuthorityStorage) {
-    storage.revision = storage.revision.saturating_add(1);
 }
 /// What a record keeps of one workspace.
 pub struct Stored {

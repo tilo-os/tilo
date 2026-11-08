@@ -37,7 +37,8 @@ target_dir=$(cargo metadata --format-version 1 --no-deps --offline | python3 -c 
 mkdir -p "$out/pkg/compute"
 "$bindgen" "$target_dir/wasm32-unknown-unknown/$artifact/tilo_browser_compute.wasm" --target web --out-dir "$out/pkg/compute" --out-name tilo_browser_compute
 if [[ $optimize == 1 ]]; then
-  wasm-opt -Os --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue \
+  # Read: xargs collapses the lines, the comments are dropped.
+  wasm-opt $(grep -v '^[[:space:]]*#' "$repo/tools/web/wasm-opt-flags" | xargs) \
     "$out/pkg/compute/tilo_browser_compute_bg.wasm" -o "$out/pkg/compute/tilo_browser_compute_bg.wasm"
 fi
 [[ $parts == module ]] || assets

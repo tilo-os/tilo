@@ -701,8 +701,13 @@ impl WorkspacePolicy {
                 let id = roles::restriction_grant_id(&person);
                 self.grants.retain(|grant| grant.id != id);
             }
-            Change::Grant(mut grant) => {
-                grant.granted_by = Subject::Person(actor_person.to_owned());
+            Change::Grant(grant) => {
+                // The change names its grantor, and every device keeps that
+                // name: one who may grant records a grant for the member who
+                // asked through them (a page asks its workspace's host to
+                // share), and the share stays whose it is. Nothing here reads
+                // this device's own state, so every device reads the same
+                // change the same way.
                 self.grants.push(grant);
             }
             Change::Revoke(id) => self.grants.retain(|grant| grant.id != id),

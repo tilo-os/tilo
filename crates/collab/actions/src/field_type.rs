@@ -52,6 +52,9 @@ pub enum FieldType {
     /// An outbox of these entries: what a change queues there reaches
     /// outside the record once delivered.
     Outbox(Box<FieldType>),
+    /// A length of time, held as its number of seconds. Not a stored
+    /// field's type: a field keeps a number the app reads in its own unit.
+    Duration,
 }
 
 impl FieldType {

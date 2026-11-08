@@ -45,12 +45,8 @@ pub struct OriginalOutputFiles {
 /// disjointness, mount ownership/alias and operation lease checks.
 pub trait OriginalOutputCustody: ServiceAuthority {
     /// Clone the controller's held source and output descriptors.
-    /// # Errors
-    /// Refuses unavailable custody or descriptor duplication failures.
     fn held_files(&self) -> io::Result<OriginalOutputFiles>;
     /// Return the authenticated output transaction binding.
-    /// # Errors
-    /// Refuses unavailable, retired or changed transaction authority.
     fn binding(&self) -> io::Result<OriginalOutputBinding>;
 }
 pub struct OriginalOutputAdmission {
@@ -171,8 +167,6 @@ fn validate_files(files: &OriginalOutputFiles, binding: &OriginalOutputBinding) 
 }
 impl OriginalOutputAdmission {
     /// Admit output held by the authenticated root transaction controller.
-    /// # Errors
-    /// Refuses non-root callers, invalid bindings, changed custody or insufficient space.
     pub fn admit(custody: Arc<dyn OriginalOutputCustody>) -> io::Result<Self> {
         // SAFETY: observes current real/effective/filesystem UIDs, no change.
         if rustix::process::getuid().as_raw() != 0

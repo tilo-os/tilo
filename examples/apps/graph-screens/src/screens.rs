@@ -9,37 +9,21 @@ use ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, U
 pub const NAMES: &[&str] = &["about", "main"];
 
 /// Build the `about` screen.
-///
-/// # Errors
-///
-/// Returns a graph parse, validation, component, or construction error.
 pub fn about(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {
     about_with(theme, UiBuildContext::default())
 }
 
 /// Build `about` with app-owned component factories and other services.
-///
-/// # Errors
-///
-/// Returns a graph parse, validation, component, or construction error.
 pub fn about_with(theme: &Theme, context: UiBuildContext) -> Result<Box<dyn Widget>, UiGraphError> {
     build_with("about", include_str!("../ui/about.json"), theme, context)
 }
 
 /// Build the `main` screen.
-///
-/// # Errors
-///
-/// Returns a graph parse, validation, component, or construction error.
 pub fn main(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {
     main_with(theme, UiBuildContext::default())
 }
 
 /// Build `main` with app-owned component factories and other services.
-///
-/// # Errors
-///
-/// Returns a graph parse, validation, component, or construction error.
 pub fn main_with(theme: &Theme, context: UiBuildContext) -> Result<Box<dyn Widget>, UiGraphError> {
     build_with("main", include_str!("../ui/main.json"), theme, context)
 }
@@ -69,19 +53,11 @@ fn get_routed(
 }
 
 /// Build a history-aware host for all registered screens.
-///
-/// # Errors
-///
-/// Returns an error when the initial route or a screen is invalid.
 pub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {
     router_with(initial, theme, UiBuildContext::default())
 }
 
 /// Build the screen router with app-owned component factories and services.
-///
-/// # Errors
-///
-/// Returns an error when the initial route or a screen is invalid.
 pub fn router_with(
     initial: &str,
     theme: &Theme,

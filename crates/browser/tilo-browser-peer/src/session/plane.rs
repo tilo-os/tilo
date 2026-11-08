@@ -6,14 +6,11 @@
 //! that bridges anything — seals its tracks under the workspace scope's
 //! channel content keys ([`route`]) and opens only what the devices its
 //! governance admits published ([`tilo_browser_peer::replica`]'s
-//! participants). The one step that differs in a browser is the carrier: a
-//! WebTransport session, admitted by the workspace grant `/live` issued, to a
-//! listener whose certificate `/live` names. That join is
-//! [`crate::live::join`]; this module is the session's bookkeeping around it.
-//!
-//! A native peer (an agent, the desktop's page-shaped peers) joins the same
-//! plane over iroh ([`tilo_live::native`]) to the device that serves it, with
-//! the device certificate as its grant.
+//! participants). The carrier is the one every device dials: a direct iroh
+//! session to the device that serves the workspace ([`tilo_live::native`]),
+//! its grant this device's certificate and its signed statement that the
+//! page's endpoint speaks for it. This module is the session's bookkeeping
+//! around that join.
 //!
 //! The plane lives as long as the page is in the workspace and the session's
 //! grant holds: it is joined again after a reconnect (the grant is the
@@ -24,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+#[cfg(feature = "iroh")]
 use tilo_live::plane::Join;
 use tilo_live::plane::Plane;
 use tilo_live::roster::Roster;
@@ -33,8 +30,13 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 #[cfg(feature = "iroh")]
 use super::Host;
-use super::{Command, Link, PeerEvent, Task, lock};
+use super::{Command, PeerEvent, Task, lock};
 use crate::ChannelContentKeys;
+
+/// The message a page shows in its members' place when its live plane cannot
+/// be joined: the page keeps asking quietly, and nobody is listed from the
+/// plane until one opens.
+pub(crate) const UNREACHABLE: &str = "this page cannot reach live presence";
 
 /// The wait before a plane this page could not reach is asked for again.
 pub(crate) const RETRY_MS: u64 = 5_000;
@@ -98,9 +100,6 @@ pub(crate) enum Waiting {
 /// What asking for a workspace's plane came to when it did not open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Failed {
-    /// This browser has no WebTransport, or none its relay negotiates: no
-    /// workspace's plane can be joined, and every ask would answer the same.
-    Unsupported,
     /// The workspace does not admit this page now.
     Refused,
     /// The host or the relay was not reached, or did not answer as the live
@@ -119,8 +118,6 @@ pub(crate) struct Planes {
     asking: BTreeMap<u64, Waiting>,
     /// Per workspace, how many asks in a row did not reach a plane.
     misses: BTreeMap<u64, u8>,
-    /// This browser has no WebTransport: no plane is asked for again.
-    unsupported: bool,
 }
 
 impl Planes {
@@ -146,9 +143,6 @@ impl Planes {
     pub(crate) fn describe(&self) -> String {
         use std::fmt::Write as _;
         let mut lines: Vec<String> = Vec::new();
-        if self.unsupported {
-            lines.push(format!("plane: none — {}", crate::live::UNSUPPORTED));
-        }
         for (workspace_id, joined) in &self.joined {
             let mut line = format!(
                 "plane {workspace_id}: epoch {}, reads {} device(s), heard {} object(s)",
@@ -201,7 +195,7 @@ impl Planes {
     /// Whether `workspace_id`'s plane is to be asked for at `now_ms`: it is
     /// neither joined nor waiting.
     pub(crate) fn due(&self, workspace_id: u64, now_ms: u64) -> bool {
-        if self.unsupported || self.joined.contains_key(&workspace_id) {
+        if self.joined.contains_key(&workspace_id) {
             return false;
         }
         match self.asking.get(&workspace_id) {
@@ -263,38 +257,62 @@ impl Planes {
         *misses = misses.saturating_add(1);
         *misses
     }
-
-    /// This browser has no WebTransport.
-    pub(crate) fn no_support(&mut self) {
-        self.unsupported = true;
-        self.asking.clear();
-    }
 }
 
-/// Ask `origin`'s host for `workspace_id`'s plane and join it as this page's
-/// own device, off the session's task; the outcome comes back as
-/// [`Command::PlaneJoined`].
-pub(crate) fn join(
-    client: Arc<dyn tilo_relay_client::https::HttpClient>,
-    session: String,
-    commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
-    device: [u8; 32],
-    workspace_id: u64,
-    workspace: String,
-    keys: ChannelContentKeys,
-    members: BTreeSet<[u8; 32]>,
-) {
+/// Join `workspace_id`'s plane over iroh, as this device, against the device
+/// that serves it; the outcome comes back as [`Command::PlaneJoined`].
+///
+/// The grant is this device's certificate (the roster every member applies),
+/// so a page-shaped peer reaches the same plane a browser reaches over
+/// WebTransport: it seals and opens as itself, under the workspace scope's
+/// keys, and the serving device copies bytes it cannot open.
+#[cfg(feature = "iroh")]
+pub(crate) struct NativeJoin {
+    /// The endpoint this device dials from.
+    pub endpoint: iroh::Endpoint,
+    /// The serving device's address.
+    pub host: iroh_base::EndpointAddr,
+    /// Where the outcome goes.
+    pub commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
+    /// This device's certificate, presented as the grant.
+    pub cert: tilo_user_identity::DeviceCert,
+    /// This device's statement that the endpoint speaks for it, when the
+    /// endpoint is not the device's own key (a page): the grant carries it.
+    pub delegation: Vec<u8>,
+    /// This device.
+    pub device: [u8; 32],
+    /// The workspace joined.
+    pub workspace_id: u64,
+    /// The workspace.
+    pub workspace: String,
+    /// The workspace's content keys.
+    pub keys: ChannelContentKeys,
+    /// The workspace's members.
+    pub members: BTreeSet<[u8; 32]>,
+}
+
+#[cfg(feature = "iroh")]
+pub(crate) fn join_native(join: NativeJoin) {
+    let NativeJoin {
+        endpoint,
+        host,
+        commands,
+        cert,
+        delegation,
+        device,
+        workspace_id,
+        workspace,
+        keys,
+        members,
+    } = join;
     n0_future::task::spawn(async move {
-        let request = tilo_relay_protocol::web::LiveRequest {
-            workspace_id,
-            workspace: workspace.clone(),
-        };
-        let joined = ask(
-            client.as_ref(),
-            &session,
-            &request,
-            workspace,
+        let joined = native(
+            &endpoint,
+            host,
+            &cert,
+            &delegation,
             device,
+            &workspace,
             keys,
             members,
         )
@@ -312,63 +330,14 @@ pub(crate) fn join(
     });
 }
 
-/// Join `workspace_id`'s plane over iroh, as this device, against the device
-/// that serves it; the outcome comes back as [`Command::PlaneJoined`].
-///
-/// The grant is this device's certificate (the roster every member applies),
-/// so a page-shaped peer reaches the same plane a browser reaches over
-/// WebTransport: it seals and opens as itself, under the workspace scope's
-/// keys, and the serving device copies bytes it cannot open.
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
-pub(crate) struct NativeJoin {
-    /// The endpoint this device dials from.
-    pub endpoint: iroh::Endpoint,
-    /// The serving device's address.
-    pub host: iroh_base::EndpointAddr,
-    /// Where the outcome goes.
-    pub commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
-    /// This device's certificate, presented as the grant.
-    pub cert: tilo_user_identity::DeviceCert,
-    /// This device.
-    pub device: [u8; 32],
-    /// The workspace joined.
-    pub workspace_id: u64,
-    /// The workspace.
-    pub workspace: String,
-    /// The workspace's content keys.
-    pub keys: ChannelContentKeys,
-    /// The workspace's members.
-    pub members: BTreeSet<[u8; 32]>,
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
-pub(crate) fn join_native(join: NativeJoin) {
-    let NativeJoin {
-        endpoint,
-        host,
-        commands,
-        cert,
-        device,
-        workspace_id,
-        workspace,
-        keys,
-        members,
-    } = join;
-    n0_future::task::spawn(async move {
-        let joined = native(&endpoint, host, &cert, device, &workspace, keys, members).await;
-        if let Some(commands) = commands.upgrade() {
-            let _ = commands.send(Command::PlaneJoined(workspace_id, joined));
-        }
-    });
-}
-
 /// The join itself: the grant this device presents, then the plane on the
 /// serving device's carrier.
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+#[cfg(feature = "iroh")]
 async fn native(
     endpoint: &iroh::Endpoint,
     host: iroh_base::EndpointAddr,
     cert: &tilo_user_identity::DeviceCert,
+    delegation: &[u8],
     device: [u8; 32],
     workspace: &str,
     keys: ChannelContentKeys,
@@ -385,6 +354,7 @@ async fn native(
         &scope.id(),
         keys.epoch(),
         certificate,
+        delegation.to_vec(),
     )
     .map_err(|_| Failed::Unavailable)?;
     Plane::join(
@@ -433,47 +403,6 @@ pub(crate) fn arrived(workspace_id: u64) -> Result<Arc<Plane>, Failed> {
         .unwrap_or(Err(Failed::Unavailable))
 }
 
-/// `/live`, then the carrier: the page's grant is its session's token, and the
-/// listener is the one the host named, pinned to its certificate.
-async fn ask(
-    client: &dyn tilo_relay_client::https::HttpClient,
-    session: &str,
-    request: &tilo_relay_protocol::web::LiveRequest,
-    workspace: String,
-    device: [u8; 32],
-    keys: ChannelContentKeys,
-    members: BTreeSet<[u8; 32]>,
-) -> Result<Arc<Plane>, Failed> {
-    use tilo_relay_client::https::LinkError;
-    let info = tilo_relay_client::https::live(client, session, request)
-        .await
-        .map_err(|error| match error {
-            LinkError::Refused(_) => Failed::Refused,
-            _ => Failed::Unavailable,
-        })?;
-    let grant = tilo_relay_protocol::web::LiveGrant::from_session(request.workspace_id, session)
-        .ok_or(Failed::Unavailable)?;
-    let roster = Roster::new(members);
-    crate::live::join(
-        &info.webtransport_origin,
-        &info.certificate_sha256,
-        grant,
-        Scope::workspace(workspace),
-        device,
-        keys,
-        roster,
-    )
-    .await
-    .map(Arc::new)
-    .map_err(|error| match error {
-        crate::live::LiveError::Unsupported => Failed::Unsupported,
-        crate::live::LiveError::Plane(tilo_live::plane::PlaneError::Denied) => Failed::Refused,
-        crate::live::LiveError::WrongProtocol | crate::live::LiveError::Plane(_) => {
-            Failed::Unavailable
-        }
-    })
-}
-
 /// Ask the plane's `wake` to run when it hears something, and its `ended` to
 /// run when the session ends — as the session's own commands, so a page that
 /// has no plane left answers neither.
@@ -502,8 +431,9 @@ impl Task {
     /// ([`route`]'s channel keys, the devices its governance admits),
     /// joined again after a reconnect, and dropped when the page leaves the
     /// workspace.
-    pub(super) fn settle_planes(&mut self, client: Option<&Link>) {
-        let Some(client) = client else {
+    #[cfg(feature = "iroh")]
+    pub(super) fn settle_planes(&mut self) {
+        let Some((endpoint, delegation)) = self.dial.plane() else {
             return;
         };
         self.planes.keep_only(&self.workspaces);
@@ -559,41 +489,38 @@ impl Task {
                 continue;
             }
             self.planes.began(workspace_id, now, keys.epoch(), &members);
-            match client {
-                Link::Https(link) => join(
-                    link.client().clone(),
-                    link.session().to_owned(),
-                    self.commands.clone(),
-                    self.config.cert.device_public_key,
-                    workspace_id,
-                    workspace,
-                    keys,
-                    members,
-                ),
-                #[cfg(feature = "iroh")]
-                Link::Iroh { endpoint, .. } => {
-                    let Host::Iroh { addr, relay_url } = &self.config.host else {
-                        continue;
-                    };
-                    let host = match relay_url {
-                        Some(url) => addr.clone().with_relay_url(url.clone()),
-                        None => addr.clone(),
-                    };
-                    join_native(NativeJoin {
-                        endpoint: endpoint.clone(),
-                        host,
-                        commands: self.commands.clone(),
-                        cert: self.config.cert.clone(),
-                        device: self.config.cert.device_public_key,
-                        workspace_id,
-                        workspace,
-                        keys,
-                        members,
-                    });
-                }
-            }
+            // The workspace's own governance names where its host listens; a
+            // host that has not named itself yet is dialled where the session
+            // reached it.
+            let (addr, relay_url) = match self.replicas.host_endpoint(workspace_id) {
+                Some(named) => named,
+                None => match &self.config.host {
+                    Host::Iroh { addr, relay_url } => (addr.clone(), relay_url.clone()),
+                    Host::Https(_) => continue,
+                },
+            };
+            let host = match relay_url {
+                Some(url) => addr.with_relay_url(url),
+                None => addr,
+            };
+            join_native(NativeJoin {
+                endpoint: endpoint.clone(),
+                host,
+                commands: self.commands.clone(),
+                cert: self.config.cert.clone(),
+                delegation: delegation.clone(),
+                device: self.config.cert.device_public_key,
+                workspace_id,
+                workspace,
+                keys,
+                members,
+            });
         }
     }
+
+    /// A build without iroh dials no plane: nothing to settle.
+    #[cfg(not(feature = "iroh"))]
+    pub(super) const fn settle_planes(&self) {}
 
     /// The answer to this page's ask for `workspace_id`'s plane.
     pub(super) fn plane_joined(&mut self, workspace_id: u64, joined: Result<Arc<Plane>, Failed>) {
@@ -625,12 +552,6 @@ impl Task {
                 // The members' place goes back to listing who is on the plane.
                 self.set_live_note(None);
             }
-            Err(Failed::Unsupported) => {
-                // There is no fallback: no workspace's plane can be joined,
-                // and none is asked for again.
-                self.planes.no_support();
-                self.set_live_note(Some(crate::live::UNSUPPORTED));
-            }
             Err(Failed::Refused) => {
                 // A workspace the host admitted the page to that refuses its
                 // plane does not admit the page to the plane's channel; one
@@ -646,7 +567,7 @@ impl Task {
                 // place that it lists nobody from the plane; the reason is in
                 // the channel diagnostics either way.
                 if self.planes.missed(workspace_id) >= MISSES_BEFORE_NOTE {
-                    self.set_live_note(Some(crate::live::UNREACHABLE));
+                    self.set_live_note(Some(UNREACHABLE));
                 }
                 self.planes.later(
                     workspace_id,

@@ -207,9 +207,6 @@ impl Sampler {
     }
 
     /// End every process of `app`.
-    ///
-    /// # Errors
-    /// Why the session refused.
     pub fn end_app(&mut self, app: &str) -> Result<u32, String> {
         self.connection()?
             .end_app(app, false)

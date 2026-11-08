@@ -12,10 +12,11 @@ use tilo_action_policy::ActionKind;
 use tilo_actions::{
     ActionContext, ActionItem, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 
 use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
+use crate::owner::testing::member_certificate as certificate;
 use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -35,7 +36,13 @@ impl ReceiptSurface for App {
         KIND
     }
     fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)> {
-        (action == "comment").then(|| (ActionKind::Undoable, Some("comments".into())))
+        match action {
+            "comment" => Some((ActionKind::Undoable, Some("comments".into()))),
+            // Moderation is the workspace's, not an editor's, as in every app
+            // whose surface fields its verbs under `moderation`.
+            "moderate" => Some((ActionKind::Undoable, Some("moderation".into()))),
+            _ => None,
+        }
     }
     fn editable(&self, _: &[PathStep]) -> bool {
         true
@@ -79,20 +86,6 @@ fn now() -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(2000))
         .unwrap()
-}
-
-fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
 }
 
 /// A workspace whose record keeps its comments as units, and a member of
@@ -235,6 +228,18 @@ fn guest_write(
     what: Did,
     item: Option<&str>,
 ) -> NeighbourMsg {
+    guest_write_at(peer, key, write, what, item, 1)
+}
+
+/// [`guest_write`] as the guest's `seq`th write of the record.
+fn guest_write_at(
+    peer: &StatePeer,
+    key: &SigningKey,
+    write: impl FnOnce(&mut AutoCommit),
+    what: Did,
+    item: Option<&str>,
+    seq: u64,
+) -> NeighbourMsg {
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
@@ -242,7 +247,38 @@ fn guest_write(
     let heads = doc.get_heads();
     write(&mut doc);
     step(&mut doc, what, item);
-    signed_write(&mut doc, &heads, key)
+    signed_write_at(&mut doc, &heads, key, seq)
+}
+
+/// The heads of the record as `peer` holds it now.
+fn recorded_heads(peer: &StatePeer) -> Vec<automerge::ChangeHash> {
+    AutoCommit::load(&peer.document(APP, RECORD).unwrap())
+        .unwrap()
+        .get_heads()
+}
+
+/// [`guest_write_at`] of `write` made on the record as it stood at `heads`:
+/// a page that continued the writer from a copy that went another way writes
+/// the writer's sequence a second time.
+fn guest_write_from(
+    peer: &StatePeer,
+    key: &SigningKey,
+    heads: &[automerge::ChangeHash],
+    write: impl FnOnce(&mut AutoCommit),
+    what: Did,
+    item: Option<&str>,
+    seq: u64,
+) -> NeighbourMsg {
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let actor = doc.get_actor().clone();
+    let mut forked = doc.fork_at(heads).unwrap();
+    forked.set_actor(actor);
+    write(&mut forked);
+    step(&mut forked, what, item);
+    signed_write_at(&mut forked, heads, key, seq)
 }
 
 /// The guest's signed write, committed as `what` by `invoker`.
@@ -275,6 +311,16 @@ fn signed_write(
     heads: &[automerge::ChangeHash],
     key: &SigningKey,
 ) -> NeighbourMsg {
+    signed_write_at(doc, heads, key, 1)
+}
+
+/// [`signed_write`] as the author's `seq`th write of the record.
+fn signed_write_at(
+    doc: &mut AutoCommit,
+    heads: &[automerge::ChangeHash],
+    key: &SigningKey,
+    seq: u64,
+) -> NeighbourMsg {
     let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(heads));
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
@@ -284,7 +330,7 @@ fn signed_write(
         collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
         collab_types::OpKind::Change,
         now(),
-        1,
+        seq,
     )
     .with_surface(Some(PINNED));
     collab_types::sign_op(&mut envelope, key).unwrap();
@@ -318,6 +364,87 @@ fn receive(peer: &mut StatePeer, guest: &DeviceCert, message: NeighbourMsg) -> R
 }
 
 use automerge::ReadDoc as _;
+
+fn moderation() -> Did {
+    Did::Verb(VerbCall::new(ActionKey::new(APP, KIND, "moderate"), []))
+}
+
+/// One record carries a writer's repeated sequence and a change the
+/// workspace refuses. Both are dropped on their own: the writer's other
+/// changes, before and after them, are read. A page
+/// ([`StatePeer::decide_relayed_document`]) and a host
+/// ([`StatePeer::receive_from`]) refuse the same change the same way.
+#[test]
+fn a_refused_change_leaves_the_rest_of_the_record() {
+    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
+    let first = guest_write_at(&peer, &key, comment_on("c1"), comment(), Some("c1"), 1);
+    receive(&mut peer, &guest, first).expect("an editor may comment");
+    let after_first = recorded_heads(&peer);
+    let kept = guest_write_at(&peer, &key, comment_on("c9"), comment(), Some("c9"), 2);
+    receive(&mut peer, &guest, kept).expect("the second change of the sequence");
+    // A page that continued the writer from the record as it stood before
+    // that change writes the same sequence again.
+    let repeated = guest_write_from(
+        &peer,
+        &key,
+        &after_first,
+        comment_on("c8"),
+        comment(),
+        Some("c8"),
+        3,
+    );
+    let moderation_write = guest_write_at(
+        &peer,
+        &key,
+        |doc| {
+            let moderation = doc.put_object(ROOT, "moderation", ObjType::Map).unwrap();
+            doc.put(&moderation, "category", "rules").unwrap();
+        },
+        moderation(),
+        None,
+        4,
+    );
+    let later = guest_write_at(&peer, &key, comment_on("c2"), comment(), Some("c2"), 5);
+    let page = peer.clone();
+    // A record holds one change under each writer's sequence, so the one the
+    // page wrote under a sequence the record holds is refused.
+    let refused = receive(&mut peer, &guest, repeated).unwrap_err();
+    assert!(refused.contains("duplicate seq"), "{refused}");
+    let refused = page
+        .decide_relayed_document(
+            TransportOrigin::RelayDelta(guest.device_public_key),
+            &moderation_write,
+            now(),
+        )
+        .unwrap_err();
+    assert!(refused.contains("not granted"), "{refused}");
+    let refused = receive(&mut peer, &guest, moderation_write).unwrap_err();
+    assert!(refused.contains("not granted"), "{refused}");
+    page.decide_relayed_document(
+        TransportOrigin::RelayDelta(guest.device_public_key),
+        &later,
+        now(),
+    )
+    .expect("a page reads the record on past the refused changes");
+    receive(&mut peer, &guest, later)
+        .expect("the host reads the record on past the refused changes");
+
+    let doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
+        panic!("the record keeps its comments");
+    };
+    for id in ["c1", "c9", "c2"] {
+        assert!(doc.get(&comments, id).unwrap().is_some(), "{id} is read");
+    }
+    assert!(
+        doc.get(&comments, "c8").unwrap().is_none(),
+        "the change under a sequence the record holds is refused"
+    );
+    assert!(
+        doc.get(ROOT, "moderation").unwrap().is_none(),
+        "the refused change wrote nothing"
+    );
+}
 
 /// A commenter's comment is granted; their edit of the record is not.
 #[test]

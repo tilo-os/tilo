@@ -14,6 +14,9 @@ struct RebuildHarness {
     request_reset: bool,
     /// Keep the children across layouts instead of recreating them.
     keep_children: bool,
+    /// The field the rebuild makes answers to a name, so a rebuilt tree can
+    /// hold the answer the person was on.
+    named_field: bool,
     children: Vec<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -25,6 +28,7 @@ impl RebuildHarness {
             show_offer: false,
             request_reset: false,
             keep_children: false,
+            named_field: false,
             children: Vec::new(),
             rect: Rect::ZERO,
         }
@@ -49,7 +53,12 @@ impl RebuildHarness {
         // `with_initial_value` parks the caret at the END ("hello" -> 5),
         // so a restored caret of 3 is distinguishable from both the
         // reset-to-0 bug and the new instance's own default.
-        kids.push(Box::new(TextInput::local().with_initial_value("hello")));
+        let field = TextInput::local().with_initial_value("hello");
+        kids.push(Box::new(if self.named_field {
+            field.with_id("only-field")
+        } else {
+            field
+        }));
         if self.show_status {
             kids.push(Box::new(Text::new("status")));
         }
@@ -138,7 +147,6 @@ fn caret(app: &App) -> Option<String> {
 
 #[test]
 fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
-    // Case `caret_preserved_across_structure_rebuild`.
     {
         let mut app =
             App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
@@ -176,7 +184,6 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
         assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
     }
 
-    // Case `focus_reset_does_not_restore_caret`.
     {
         let mut app =
             App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
@@ -268,4 +275,44 @@ fn a_rebuild_that_restores_focus_by_identity_leaves_one_focused_field() {
         .filter_map(|child| child.test_id().map(str::to_owned))
         .collect();
     assert_eq!(flagged, ["first"], "exactly one field is drawn as focused");
+}
+
+/// A rebuild replaces the focused control with a fresh instance of it. The
+/// keyboard stays on the answer the person was on: the field that answers to
+/// the same name and stands alone in the new tree holds it, without the app
+/// asking to be refocused on every change.
+#[test]
+fn a_rebuild_that_replaces_the_focused_control_keeps_the_keyboard_on_its_answer() {
+    let mut harness = RebuildHarness::new();
+    harness.named_field = true;
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(harness));
+    app.autofocus_first = true;
+    app.init_layout();
+    let focused = app.focused_node.expect("the field has the keyboard");
+    assert!(
+        app.inspect_node(focused, |widget| widget.test_id() == Some("only-field"))
+            .unwrap()
+    );
+
+    let mut tmp = AutoCommit::new();
+    app.root_widget.on_external_event(
+        "show_status",
+        &mut crate::widget::Edits::lend(&mut tmp),
+        &automerge::ROOT,
+    );
+    app.rebuild_structure();
+
+    let focused = app
+        .focused_node
+        .expect("the keyboard stays on the field's answer");
+    assert!(
+        app.inspect_node(focused, |widget| widget.test_id() == Some("only-field"))
+            .unwrap(),
+        "the rebuilt field is the one that had the keyboard"
+    );
+    assert!(
+        app.inspect_node(focused, |widget| widget.is_focused())
+            .unwrap(),
+        "the control drawn as focused is the one with the keyboard"
+    );
 }

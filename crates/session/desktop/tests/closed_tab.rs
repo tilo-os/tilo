@@ -1,5 +1,5 @@
-//! The desktop's reopen chord on the real chrome: a window the person closed
-//! comes back where it was, and the close is undone once.
+//! The desktop's reopen chord on the real chrome: a window the person closed comes back where it
+//! was, and the close is undone once.
 
 #![allow(
     clippy::unwrap_used,
@@ -103,9 +103,8 @@ fn desk_tree(groups: Vec<WindowGroup>) -> DesktopTree {
     tree
 }
 
-/// The desk with `tree` on it and the chrome that carries the desktop's
-/// chords over it: the desk and the chrome are the two layers the session
-/// hosts, both driving the one desktop.
+/// The desk with `tree` on it and the chrome that carries the desktop's chords over it: the desk
+/// and the chrome are the two layers the session hosts, both driving the one desktop.
 fn desk_and_chrome(tree: &DesktopTree) -> (FrameHarness, FrameHarness, DesktopHandle) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
@@ -138,7 +137,7 @@ fn press(frame: &mut FrameHarness, key: Key) {
     frame.send_host_event(&key_press(key, None));
 }
 
-/// The windows of group `group`, in the order the strip shows them.
+/// The windows of group `group` , in the order the strip shows them.
 fn windows_of(handle: &DesktopHandle, group: &str) -> Vec<String> {
     handle
         .snapshot("g", vec![])
@@ -157,8 +156,8 @@ fn in_front(handle: &DesktopHandle) -> Option<u64> {
         .and_then(|route| route.tab.parse().ok())
 }
 
-/// A window closed from its ✕ comes back where it was when the person asks
-/// for it back: at its old index in its group, in front, and only the once.
+/// A window closed from its ✕ comes back where it was when the person asks for it back: at its old
+/// index in its group, in front, and only the once.
 #[test]
 fn the_reopen_chord_brings_a_closed_window_back_where_it_was() {
     let tree = desk_tree(vec![
@@ -198,8 +197,8 @@ fn the_reopen_chord_brings_a_closed_window_back_where_it_was() {
     );
     assert_eq!(in_front(&handle), Some(30), "and in front");
 
-    // The close has been undone: the chord brings back nothing a second
-    // time, and the desktop still answers it.
+    // The close has been undone: the chord brings back nothing a second time, and the desktop still
+    // answers it.
     press(&mut frame, Key::Character("t".into()));
     for _ in 0..4 {
         desk.relayout();

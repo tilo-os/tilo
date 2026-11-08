@@ -10,9 +10,9 @@
 
 use super::{Apps, Launch, Sockets};
 use crate::unix::{ServiceConnections, ServiceSockets};
+use app_catalogue::apps::InstalledApp;
 use std::ffi::OsString;
 use std::os::fd::AsRawFd as _;
-use tilo_installed_apps::InstalledApp;
 
 pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Result<Launch, String> {
     let catalog = apps

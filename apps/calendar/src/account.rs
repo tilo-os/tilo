@@ -228,8 +228,8 @@ impl CalendarAccount {
     }
 }
 
-/// The opaque config payload a [`CalendarAccount`] serialises into a shared
-/// [`StoredAccount`]: the `CalDAV` settings (password skipped), the discovered
+/// The opaque config payload a [`CalendarAccount`] serialises into a
+/// shared [`StoredAccount`]: the `CalDAV` settings (password skipped), the discovered
 /// calendars, and the sidebar collapse state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
@@ -291,9 +291,6 @@ impl AccountStore {
     }
 
     /// Load accounts under an explicit root, returning custody failures.
-    ///
-    /// # Errors
-    /// Returns an error if the existing credential vault cannot be opened safely.
     pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
         let credentials = AccountCredentials::open_in(config_root)?;
         Ok(Self::from_shared(

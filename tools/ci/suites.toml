@@ -510,6 +510,9 @@ inputs = [
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
+  # tools/perf/test_adapters.py holds the browser adapter's KPI names equal to
+  # the budgets and its workloads' samples to the qualification's report.
+  "tools/perf/test_adapters.py",
   "tools/perf/test_check_kpi.py",
   "tools/perf/test_image_size.py",
   "tools/perf/test_record.py",
@@ -618,6 +621,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/sealed-link.test.mjs",
   "crates/browser/tilo-browser-runtime/web/reconnect.test.mjs",
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
@@ -845,6 +849,7 @@ package = "tilolang-youtube"
 inputs = ["apps/tl/tube/"]
 readers = [
   "crates/platform/tilolang-youtube/tests/origin.rs",
+  "crates/platform/tilolang-youtube/tests/recorded_answer.rs",
 ]
 
 [[cargo]]
@@ -1186,6 +1191,8 @@ inputs = [
   "os/usr/share/tilo/system-interfaces.toml",
   # A check runs inside the test environment, as cargo's runner starts every test.
   "tools/with-test-environment.sh",
+  # The web target embeds the wasm-opt argument list the pages build with.
+  "tools/web/wasm-opt-flags",
 ]
 # The record-kinds tests read the sources of the local crates the apps depend on, the
 # production resource regression Music's whole normal local dependency closure.
@@ -1218,7 +1225,10 @@ readers = ["crates/dev/tilo-app-template-smoke/src/lib.rs"]
 
 [[cargo]]
 package = "tilo-user-identity"
-inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
+inputs = [
+  "os/usr/lib/systemd/system/tilo-device-key-init.service",
+  "os/usr/lib/systemd/system/tilo-device-branch.service",
+]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
@@ -1483,8 +1493,8 @@ readers = [
   "crates/session/session/tests/no_locale_leaks.rs",
   "crates/session/session/src/mount/doors.rs",
   "crates/session/session/src/plane.rs",
-  "crates/session/session/src/seeded_apps.rs",
   "crates/session/session/src/shell.rs",
+  "crates/session/session/tests/common/dev_apps.rs",
   "crates/session/session/tests/common/mod.rs",
   "crates/session/session/tests/common/people.rs",
   "crates/session/session/tests/firstboot.rs",

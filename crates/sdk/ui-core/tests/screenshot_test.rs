@@ -28,7 +28,6 @@ use vello::peniko::{Color, Fill};
     reason = "w/h and bar_w/bar_h are small fixed test-canvas dimensions, exactly representable in f32"
 )]
 fn headless_renderer_paints_writes_and_captures_widgets() {
-    // Case `headless_renderer_paints_a_solid_background_and_a_filled_rect`.
     {
         fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
             let mut renderer = tilo_test_env::require_capability!(
@@ -78,7 +77,6 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
         headless_renderer_paints_a_solid_background_and_a_filled_rect();
     }
 
-    // Case `headless_renderer_writes_a_png_file`.
     {
         fn headless_renderer_writes_a_png_file() {
             let mut renderer = tilo_test_env::require_capability!(
@@ -117,7 +115,6 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
         headless_renderer_writes_a_png_file();
     }
 
-    // Case `headless_renderer_captures_a_widget_tree`.
     {
         fn headless_renderer_captures_a_widget_tree() {
             // Drives a real widget through `build_layout` → taffy compute →
@@ -190,7 +187,6 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
         headless_renderer_captures_a_widget_tree();
     }
 
-    // Case `tab_bar_renders_pills_inside_six_px_insets`.
     // Render the real `TabBar` widget and assert the 44px / 6px-inset-pill
     // layout shows up in the rasterised output.
     //

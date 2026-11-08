@@ -411,8 +411,8 @@ impl WakeHandle {
         }
     }
 
-    /// Whether nothing is owed and no reply landed since
-    /// [`Self::begin_pass`]: a pass that began after it took up everything
+    /// Whether nothing is owed and no reply landed
+    /// since [`Self::begin_pass`]: a pass that began after it took up everything
     /// that was owed. A closed or detached scope is settled; one that is not
     /// is woken when a reply lands, so its owner asks again then.
     pub fn settled(&self) -> bool {

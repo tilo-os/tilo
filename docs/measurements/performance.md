@@ -65,28 +65,47 @@ The `browser` group qualifies the browser runtime: the release desktop bundle
 Chrome through `scripts/perf/browser_qualification.mjs`, which first proves the
 page ran exactly that commit's clean bundle on the WebGPU adapter the records
 name, then measures load, first opens, window activation, the demo workload's
-frame intervals and per-frame runtime CPU, and an idle desktop, and reports them
-against the runtime's goals (30 fps minimum and 120 fps for the demo, 50 ms
-activation). Load is recorded as its time, and as what the first load transferred
+frame intervals and per-frame runtime CPU, keys typed into a note at a fast
+typist's rate, and an idle desktop, and reports them against the runtime's goals
+(30 fps minimum and 120 fps for the demo, 50 ms activation, a typed key on
+screen within 50 ms). Each measured frame also names what it repainted and what
+asked for it, so a frame that need not have been drawn points at the widget to
+fix; the idle workload reports that attribution for every frame an idle desktop
+presents. Load is recorded as its time, and as what the first load transferred
 and how many requests it took (every resource that started before the desktop's
 first presented frame, by Performance Resource Timing's `encodedBodySize`), so a
 change that costs bytes or round trips shows in the `browser.load.*` records
 even when the runner's wall-clock does not move. The runner has no GPU, and Chrome gives WebGPU no CPU driver but
 its own SwiftShader, so the records name `renderer=swiftshader`. SwiftShader
 takes tens of seconds over a panned FHD frame there, so the nightly run leaves
-the demo out (`--demo-seconds 0`); its frame rate and goals are judged where a
-GPU draws.
+the demo out (`--demo-seconds 0`) and types a short line (`--typing-keys 16`):
+what a key's presentation costs there is the software rasterizer's, not the
+runtime's, so the typing goal is judged where a GPU draws, and the nightly
+records the frame's runtime CPU beside it.
 A hardware qualification is the same harness on the machine under test, quiet
 and with the goals enforced:
 
 ```bash
 crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/target/qualify" --bundle desktop
 node scripts/perf/browser_qualification.mjs target/qualify --out qualify.json \
-  --renderer gpu --expect-revision "$(git rev-parse HEAD)" --max-load 0.25 --enforce-goals
+  --renderer gpu --typing-keys 60 --expect-revision "$(git rev-parse HEAD)" \
+  --max-load 0.25 --enforce-goals
 ```
+
+`--renderer gpu` starts Chrome with Vulkan and ANGLE's Vulkan backend and the
+GPU blocklist off, so headless Chrome gets the machine's own WebGPU adapter;
+the report names the adapter it measured, and a run whose adapter is not the
+one asked for is invalid.
 
 `--cpu-throttle 4` slows the page's CPU fourfold, a stand-in for older hardware
 on a fast machine; such a run is never this group's series.
+
+`--network 20mbit/40ms` gives every request the throughput and round-trip
+latency of a home line, so a load is the wait a first visit is rather than
+loopback's; the load's `browser.load.start_module_bytes` record is the runtime
+module's encoded size either way, which is what a page pays before it can
+present anything. Such a run is a different series too, so the nightly stays on
+loopback and names the module's size from the bytes it served.
 
 The `hosting` group measures the relay's cost per collaborator-hour
 (`relay_load`, workspaces of four): fan-out latency and the priced capacity of a relay VM.

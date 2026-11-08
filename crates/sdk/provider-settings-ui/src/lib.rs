@@ -597,9 +597,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
         sections
     }
     /// Inspect the configured deployment limits for a provider's model.
-    ///
-    /// # Errors
-    /// Returns an error when the provider or model is unavailable.
     pub fn inspect_limits(&self, provider: &str, model: &str) -> Result<serde_json::Value, String> {
         let config = self.provider_config().clone();
         let selected = config
@@ -760,9 +757,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
     }
 
     /// Apply a provider change to the person's settings.
-    ///
-    /// # Errors
-    /// Returns an error for unsupported effects, missing profiles or invalid details.
     pub fn proposed_config(&self, effect: ProviderEffect) -> Result<ProviderConfig, String> {
         let mut config = self.provider_config().clone();
         match effect {
@@ -1654,9 +1648,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
     }
 }
 /// Change only the selected model's policy, retaining other profile metadata.
-///
-/// # Errors
-/// Returns an error for a missing model or limits outside its supported range.
 pub fn set_model_limits(
     config: &mut ProviderConfig,
     provider: &str,
@@ -1690,9 +1681,6 @@ pub fn set_model_limits(
 /// if it was written by hand rather than listed. `listed` is what the
 /// provider's list says of it; without it, a model the profile does not
 /// have yet gets what its family is known to do.
-///
-/// # Errors
-/// An invalid model id, or a provider that is gone.
 pub(crate) fn take_model(
     config: &mut ProviderConfig,
     provider: &str,
@@ -1723,9 +1711,6 @@ pub(crate) fn take_model(
 /// Set what `model` of `provider` can do. Either flag given makes both the
 /// person's, the other kept as it reads now; neither gives them back to the
 /// family table.
-///
-/// # Errors
-/// Returns an error for a missing provider or model.
 pub fn set_model_capabilities(
     config: &mut ProviderConfig,
     provider: &str,

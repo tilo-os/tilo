@@ -58,6 +58,15 @@ fn listed(names: impl Iterator<Item = String>) -> String {
     }
 }
 
+/// The components whose actions a view places itself: what an item shows of them (its menu and
+/// its swipe) on an item's node, and the window's bar on its shell. The host puts what the view
+/// names where it names it, in that order, and everything else behind its own "More"; the
+/// palette, an agent and a program still offer every action however a view places them.
+const PLACES: [&str; 4] = ["ListItem", "TreeViewNode", "BoardCard", "NavShell"];
+
+/// The argument a view places actions with.
+const ACTIONS: &str = "actions";
+
 /// The toolkit's component a UI call names, when it names one: `ui.ListRow`.
 pub(super) fn component_of(c: &UiCall) -> Option<(&ast::Expr, &str)> {
     let callee = match &c.call.kind {
@@ -148,6 +157,10 @@ impl Checker<'_> {
         let positional: Vec<&str> = d.positional().map(|p| p.name.as_str()).collect();
         let mut given: HashSet<String> = HashSet::new();
         let mut at = 0usize;
+        // The actions a view places itself (`actions:`): read once the item they stand on is
+        // lowered, as what that item is is what the names are checked against.
+        let places = PLACES.iter().any(|kind| *kind == d.name);
+        let mut placement: Option<&ast::Expr> = None;
         for a in args {
             if a.name.is_none() && self.is_flag(None, &a.value) {
                 self.flag_arg(n, &a.value);
@@ -182,7 +195,14 @@ impl Checker<'_> {
                 );
                 continue;
             }
+            if places && name == ACTIONS {
+                placement = Some(&a.value);
+                continue;
+            }
             self.component_arg(n, d, &name, &a.value);
+        }
+        if let Some(value) = placement {
+            self.placement_prop(n, d, value, args);
         }
         for p in d.props.iter().filter(|p| p.required) {
             if !given.contains(&p.name) {
@@ -207,6 +227,264 @@ impl Checker<'_> {
             self.component_block(n, d, block, span);
         }
         n
+    }
+
+    /// `actions:` on a node that places actions: the view names, in its order, the actions it
+    /// puts on what it shows — an item's menu and swipe, or the window's bar. The host puts each
+    /// where the view names it, in that order, with the group and the primacy the view gives it,
+    /// and everything else behind its own "More". A name the app does not declare, or one that
+    /// does not apply to what the node shows, is reported here, where the type is known.
+    fn placement_prop(
+        &mut self,
+        n: LocalId,
+        d: &Description,
+        value: &ast::Expr,
+        args: &[ast::Arg],
+    ) {
+        let item = self.placed_item(d, args);
+        let items = match &value.kind {
+            ExprKind::List(items) => items.as_slice(),
+            _ => {
+                self.err(
+                    "E137",
+                    value.span,
+                    format!(
+                        "{} places the actions it names, in order: `{ACTIONS}: [name, ...]`",
+                        shown(d)
+                    ),
+                );
+                return;
+            }
+        };
+        let mut entries = Vec::new();
+        for at in items {
+            if let Some(entry) = self.placed_entry(at, item.as_ref()) {
+                entries.push(entry);
+            }
+        }
+        let list = self.placed_list(entries);
+        let node = Ex::local(n, Ty::View);
+        self.prop(node, ACTIONS, list, value.span);
+    }
+
+    /// What a node that places actions shows: the item of a row, a card or a tree node, or the
+    /// resource the view is of for a window's bar. `None` when it is not a local this can read
+    /// the type of, which places the actions by name alone.
+    fn placed_item(&self, d: &Description, args: &[ast::Arg]) -> Option<Ty> {
+        if d.name == "NavShell" {
+            return self.st.subject.as_ref().map(|(_, ty)| ty.clone());
+        }
+        let value = args
+            .iter()
+            .find(|a| a.name.as_ref().is_some_and(|id| id.name == "item"))
+            .or_else(|| {
+                args.iter()
+                    .find(|a| a.name.is_none() && !self.is_flag(None, &a.value))
+            })?
+            .value
+            .clone();
+        match &value.kind {
+            ExprKind::Ident(name) => self.lookup(name).map(|(_, ty)| ty),
+            _ => None,
+        }
+    }
+
+    /// One action a view places: the name it writes, with what it says of the action
+    /// (`group: "Due"`, `primary: true`), as the id the host matches its offers by.
+    fn placed_entry(
+        &mut self,
+        at: &ast::Expr,
+        item: Option<&Ty>,
+    ) -> Option<(String, Option<String>, bool)> {
+        let (name, given) = match &at.kind {
+            ExprKind::Ident(name) => (name, &[][..]),
+            ExprKind::Call { callee, args, .. } => match &callee.kind {
+                ExprKind::Ident(name) if args.iter().all(|a| a.name.is_some()) => {
+                    (name, args.as_slice())
+                }
+                _ => {
+                    self.err(
+                        "E137",
+                        at.span,
+                        "an action a view places is named: `check`, or `schedule (group: \"Due\", \
+                         primary: true)`",
+                    );
+                    return None;
+                }
+            },
+            _ => {
+                self.err(
+                    "E137",
+                    at.span,
+                    "an action a view places is named: `check`, or `schedule (group: \"Due\", \
+                     primary: true)`",
+                );
+                return None;
+            }
+        };
+        let named = self
+            .own_callable(name)
+            .filter(|c| matches!(c.kind, crate::resolve::CKind::Action))
+            .map(|c| (c.id.clone(), c.params.clone()));
+        let Some((id, params)) = named else {
+            self.err(
+                "E137",
+                at.span,
+                format!(
+                    "`{}` is not one of the app's actions{}; what it places: {}",
+                    name,
+                    self.near_action(name, item),
+                    self.placing(item)
+                ),
+            );
+            return None;
+        };
+        if let Some(item) = item
+            && let Ty::Record(key) = item
+            && !params
+                .iter()
+                .take(2)
+                .any(|p| matches!(&p.ty, Ty::Record(held) if held == key))
+        {
+            self.err(
+                "E138",
+                at.span,
+                format!(
+                    "`{}` does not apply to a {}; what it places: {}",
+                    name,
+                    self.show(item),
+                    self.placing(Some(item))
+                ),
+            );
+            return None;
+        }
+        let mut group: Option<String> = None;
+        let mut primary = false;
+        for a in given {
+            let Some(named) = &a.name else { continue };
+            match named.name.as_str() {
+                "group" => match &a.value.kind {
+                    ExprKind::Str(parts) => match parts.as_slice() {
+                        [ast::StrPart::Lit(text)] => group = Some(text.clone()),
+                        _ => {
+                            self.err("E137", a.value.span, "`group:` is text: `group: \"Due\"`");
+                        }
+                    },
+                    _ => {
+                        self.err("E137", a.value.span, "`group:` names the run of commands this one stands in, as text: `group: \"Due\"`");
+                    }
+                },
+                "primary" => match &a.value.kind {
+                    ExprKind::Bool(flag) => primary = *flag,
+                    _ => {
+                        self.err(
+                            "E137",
+                            a.value.span,
+                            "`primary:` says whether it is the primary one: `primary: true`",
+                        );
+                    }
+                },
+                other => {
+                    let lone = format!(
+                        "an action a view places takes `group:` and `primary:`; `{other}` is neither"
+                    );
+                    self.err("E137", a.value.span, lone);
+                }
+            }
+        }
+        Some((id, group, primary))
+    }
+
+    /// The names of the actions that apply to what `item` holds, for a message: the ones the
+    /// view could have placed.
+    fn placing(&self, item: Option<&Ty>) -> String {
+        listed(self.applicable(item).map(|c| c.name.clone()))
+    }
+
+    /// The app's actions that apply to what `item` holds: the ones the view could have placed,
+    /// in the order the app declares them.
+    fn applicable<'a>(
+        &'a self,
+        item: Option<&'a Ty>,
+    ) -> impl Iterator<Item = &'a crate::resolve::Callable> {
+        self.env.callables.iter().filter(move |c| {
+            c.app == self.env.app
+                && matches!(c.kind, crate::resolve::CKind::Action)
+                && !c.hidden()
+                && item.is_none_or(|item| match item {
+                    Ty::Record(key) => c
+                        .params
+                        .iter()
+                        .take(2)
+                        .any(|p| matches!(&p.ty, Ty::Record(held) if held == key)),
+                    _ => true,
+                })
+        })
+    }
+
+    /// `; did you mean `check`?` for a name that is not an action.
+    fn near_action(&self, name: &str, item: Option<&Ty>) -> String {
+        crate::diag::did_you_mean(name, self.applicable(item).map(|c| c.name.as_str()))
+            .map(|near| format!("; did you mean `{near}`?"))
+            .unwrap_or_default()
+    }
+
+    /// The placement as the node holds it: each action's id, the group the view puts it in (none
+    /// for the action's own), and whether the view makes it the primary one.
+    fn placed_list(&mut self, entries: Vec<(String, Option<String>, bool)>) -> Ex {
+        let opt = Ty::Option(Box::new(Ty::Text));
+        let entry = Ty::Tuple(vec![Ty::Text, opt.clone(), Ty::Bool]);
+        let list = Ty::List(Box::new(entry.clone()));
+        let held = self.fresh(list.clone());
+        let mut stmts = vec![Stmt::Set(
+            held,
+            Ex::host(Imp::ListNew, Vec::new(), list.clone()),
+        )];
+        for (id, group, primary) in entries {
+            let one = self.fresh(entry.clone());
+            stmts.push(Stmt::Set(
+                one,
+                Ex::host(
+                    Imp::TupleNew,
+                    vec![Ex::new(crate::ir::Ek::I32(3), Ty::Bool)],
+                    entry.clone(),
+                ),
+            ));
+            let group = match group {
+                Some(group) => Ex::host(Imp::SomeH, vec![Ex::str(&group)], opt.clone()),
+                None => Ex::host(Imp::NoneV, Vec::new(), opt.clone()),
+            };
+            for (field, value) in [
+                Ex::str(&id),
+                group,
+                Ex::new(crate::ir::Ek::Bool(primary), Ty::Bool),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (imp, c) =
+                    super::store_op(&value.ty, Imp::TupleSetI, Imp::TupleSetF, Imp::TupleSetH);
+                stmts.push(host(
+                    imp,
+                    vec![
+                        Ex::local(one, entry.clone()),
+                        Ex::new(
+                            crate::ir::Ek::I32(i32::try_from(field).unwrap_or(0)),
+                            Ty::Bool,
+                        ),
+                        super::conv(c, value, Ty::Int),
+                    ],
+                ));
+            }
+            stmts.push(host(
+                Imp::ListPushH,
+                vec![Ex::local(held, list.clone()), Ex::local(one, entry.clone())],
+            ));
+        }
+        Ex::new(
+            crate::ir::Ek::Seq(stmts, Box::new(Ex::local(held, list.clone()))),
+            list,
+        )
     }
 
     /// One argument of a component call: a prop, a binding, a piece of state, or a sizing
@@ -1084,8 +1362,17 @@ fn offers_actions(ty: &Type) -> bool {
     }
 }
 
+/// Whether a value of `ty` shows text: text, or an option or list of it.
+pub(super) fn shows_text(ty: &Ty) -> bool {
+    match ty {
+        Ty::Text => true,
+        Ty::Option(inner) | Ty::List(inner) => shows_text(inner),
+        _ => false,
+    }
+}
+
 /// Whether a prop of `ty` shows text: text, or an option or list of it.
-fn shows_words(ty: &Type) -> bool {
+pub(super) fn shows_words(ty: &Type) -> bool {
     match ty {
         Type::Text => true,
         Type::Option(inner) | Type::List(inner) => shows_words(inner),
@@ -1159,6 +1446,9 @@ fn lang_type(ty: &Type) -> Ty {
 /// or a Time too, which the host shows the person's way.
 fn fits(ty: &Type, found: &Ty) -> bool {
     match (ty, found) {
+        // An option prop takes an optional value of its own too: the item a window holds open,
+        // or the selection it keeps.
+        (Type::Option(inner), Ty::Option(held)) => fits(inner, held),
         (Type::Option(inner), found) => fits(inner, found),
         // A list or a set takes either of the language's.
         (Type::List(inner) | Type::Set(inner), Ty::List(item) | Ty::Set(item)) => fits(inner, item),

@@ -1,6 +1,5 @@
-//! What the desktop's layers ask of the native session: the bar's source
-//! (the clock, the person, their notifications) and the rules of what the
-//! person may change.
+//! What the desktop's layers ask of the native session: the bar's source (the clock, the person,
+//! their notifications) and the rules of what the person may change.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -31,8 +30,7 @@ use ui::vello::kurbo::Rect;
 
 use crate::notifications::NoticeSignals;
 
-/// The app whose live activity is the clocks app's when the desk reads the
-/// running timer.
+/// The app whose live activity is the clocks app's when the desk reads the running timer.
 pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
 
 /// What the board published, parsed, at the revision it was read at.
@@ -49,12 +47,11 @@ pub(crate) struct Activities {
     board: Arc<runtime_collab::LiveActivities>,
     /// The cards the apps draw themselves, and where the layer gives them.
     cards: crate::cards::Cards,
-    /// What the board last published, parsed, with the revision it was read
-    /// at: the bar and the layer read it several times a frame, and the
-    /// activities are JSON.
+    /// What the board last published, parsed, with the revision it was read at: the bar and the
+    /// layer read it several times a frame, and the activities are JSON.
     shown: RefCell<Option<Parsed>>,
-    /// Per activity, the identity (its id and title) the person put away:
-    /// it stays away until the app shows something with another identity.
+    /// Per activity, the identity (its id and title) the person put away: it stays away until the
+    /// app shows something with another identity.
     hidden: RefCell<std::collections::BTreeMap<String, (String, String)>>,
     /// Activities folded back into the bar.
     collapsed: RefCell<std::collections::BTreeSet<String>>,
@@ -64,7 +61,7 @@ pub(crate) struct Activities {
     touched: RefCell<Vec<String>>,
     /// Where each card was left loose (this device only).
     loose: RefCell<std::collections::BTreeMap<String, Rect>>,
-    /// The announcements posted, by `app:id`.
+    /// The announcements posted, by `app:id` .
     announced: RefCell<std::collections::BTreeSet<String>>,
 }
 
@@ -99,8 +96,8 @@ impl Activities {
             .ok()
     }
 
-    /// Every activity shown now, as the bar's pill names them: the app and
-    /// its summary, in app id order.
+    /// Every activity shown now, as the bar's pill names them: the app and its summary, in app id
+    /// order.
     pub(crate) fn summaries(&self) -> Vec<(String, Summary)> {
         self.read()
             .iter()
@@ -112,15 +109,14 @@ impl Activities {
             .collect()
     }
 
-    /// The bar's pill: the activity that stands first and how many wait
-    /// behind it.
+    /// The bar's pill: the activity that stands first and how many wait behind it.
     pub(crate) fn pill(&self) -> ui::floating_layer::Pill {
         ui::floating_layer::pill(&self.summaries())
     }
 
-    /// The cards the floating layer draws: what asks to float and what the
-    /// person pulled out of the bar, at most [`ui::floating_layer::MAX_CARDS`]
-    /// — the least recently touched fold into the pill.
+    /// The cards the floating layer draws: what asks to float and what the person pulled out of the
+    /// bar, at most [`ui::floating_layer::MAX_CARDS`] — the least recently touched fold into the
+    /// pill.
     pub(crate) fn cards(&self) -> Vec<Card> {
         let mut cards: Vec<(usize, Card)> = self
             .read()
@@ -137,9 +133,9 @@ impl Activities {
                     return None;
                 }
                 let mut card = Card::new(app.clone(), summary);
-                // A call or a route is drawn by its app: the layer keeps its
-                // place, and its body comes from the app's own window while
-                // that app has no window of its own on the desk.
+                // A call or a route is drawn by its app: the layer keeps its place, and its body
+                // comes from the app's own window while that app has no window of its own on the
+                // desk.
                 if let Some(size) = self.cards.size(&card.app, &card.summary.id) {
                     if self.cards.in_view(&card.app, &card.summary.id) {
                         return None;
@@ -197,9 +193,8 @@ impl Activities {
         );
     }
 
-    /// The person ended or put away an activity: an app that offers a close
-    /// has it asked to end it, and one that cannot be stopped from outside
-    /// goes away until it shows something else.
+    /// The person ended or put away an activity: an app that offers a close has it asked to end it,
+    /// and one that cannot be stopped from outside goes away until it shows something else.
     pub(crate) fn close(&self, app: &str, activity: &str) {
         let summary = self
             .read()
@@ -231,9 +226,9 @@ impl Activities {
         self.collapsed.borrow_mut().insert(key);
     }
 
-    /// The person pulled the activity out of the bar's pill: its card shows
-    /// again, however the app asked for it. An activity's id is its app's
-    /// own, so the app the pill named is half of what it names.
+    /// The person pulled the activity out of the bar's pill: its card shows again, however the app
+    /// asked for it. An activity's id is its app's own, so the app the pill named is half of what
+    /// it names.
     pub(crate) fn expand(&self, app: &str, activity: &str) {
         let summary = self
             .read()
@@ -250,8 +245,8 @@ impl Activities {
         self.touch(app, activity);
     }
 
-    /// The person left a card `at` a place of its own (`None`: back in the
-    /// column the layer docks it in).
+    /// The person left a card `at` a place of its own (`None`: back in the column the layer docks
+    /// it in).
     pub(crate) fn moved(&self, app: &str, activity: &str, at: Option<Rect>) {
         let key = format!("{app}:{activity}");
         match at {
@@ -304,9 +299,9 @@ impl Activities {
                         })
                         .ok()
                         .map(|mut published: Published| {
-                            // A card's header names the app that shows the
-                            // activity, in the person's language: the app knows
-                            // its own copy, never the name this device calls it.
+                            // A card's header names the app that shows the activity, in the
+                            // person's language: the app knows its own copy, never the name this
+                            // device calls it.
                             if let Some(summary) = &mut published.summary
                                 && summary.source.is_empty()
                             {
@@ -321,8 +316,8 @@ impl Activities {
         shown
     }
 
-    /// Whether `summary` shows: an activity the person put away stays away
-    /// until the app shows another one.
+    /// Whether `summary` shows: an activity the person put away stays away until the app shows
+    /// another one.
     fn shows(&self, app: &str, summary: &Summary) -> bool {
         let key = key(app, summary);
         let hidden = self.hidden.borrow().get(&key).cloned();
@@ -353,7 +348,7 @@ impl Activities {
     }
 }
 
-/// `<app>:<activity>`: what the person's say over one activity is kept under.
+/// `<app>:<activity>` : what the person's say over one activity is kept under.
 fn key(app: &str, summary: &Summary) -> String {
     format!("{app}:{}", summary.id)
 }
@@ -369,33 +364,29 @@ pub(crate) struct BarFeeds {
     pub(crate) notices: DesktopNotifications,
     /// The applications' tray items, when their watcher serves.
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
-    /// The monitors of the displays a fullscreen window owns, as the loop
-    /// found them this pass.
+    /// The monitors of the displays a fullscreen window owns, as the loop found them this pass.
     pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,
-    /// The windows this session shares with its workspaces, which the bar says
-    /// are being shared while anyone views one.
+    /// The windows this session shares with its workspaces, which the bar says are being shared
+    /// while anyone views one.
     pub(crate) shares: Rc<RefCell<crate::window_share::WindowShares>>,
-    /// Whether each display's bar shows over the window covering it, which
-    /// the bar reads for itself and the chrome follows as the pointer, a key
-    /// or a finger reaches for it.
+    /// Whether each display's bar shows over the window covering it, which the bar reads for itself
+    /// and the chrome follows as the pointer, a key or a finger reaches for it.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
-    /// Settings' Identify as the session read it: each display's number and
-    /// the name Settings gives it, which the chrome says on that display for
-    /// a moment.
+    /// Settings' Identify as the session read it: each display's number and the name Settings gives
+    /// it, which the chrome says on that display for a moment.
     pub(crate) identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
-    /// Whether the person may invite someone into the workspace in front, as
-    /// the session's loop last answered it: the bar offers its invite button
-    /// on it.
+    /// Whether the person may invite someone into the workspace in front, as the session's loop
+    /// last answered it: the bar offers its invite button on it.
     pub(crate) invitable: Rc<Cell<bool>>,
 }
 
-/// What the chrome hands the session while it runs: the intents and asks its
-/// bar raises, over the feeds that keep the bar current.
+/// What the chrome hands the session while it runs: the intents and asks its bar raises, over the
+/// feeds that keep the bar current.
 pub(crate) struct ChromeWiring {
     pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    /// The desktop's one shortcut table, shared with the session: what the
-    /// chrome matches a press against and what it shows beside its rows.
+    /// The desktop's one shortcut table, shared with the session: what the chrome matches a press
+    /// against and what it shows beside its rows.
     pub(crate) shortcuts: crate::mount::panels::Shortcuts,
     pub(crate) feeds: BarFeeds,
     /// This device's workspaces, as their records hold them.
@@ -424,44 +415,41 @@ struct Seen {
     identify: Option<u64>,
     activities: u64,
     words: u64,
-    /// The name and colour this person wears: renaming themselves or
-    /// choosing a colour relabels and repaints their chip in the bar.
+    /// The name and colour this person wears: renaming themselves or choosing a colour relabels and
+    /// repaints their chip in the bar.
     own_name: Option<String>,
     own_colour: Option<String>,
     /// The name and identity the bar's own avatar is drawn from.
     own_face: (String, String),
 }
 
-/// The bar's view of the session: the desktop's tree, the wall clock, and
-/// the person at this device.
+/// The bar's view of the session: the desktop's tree, the wall clock, and the person at this
+/// device.
 pub(crate) struct SessionChrome {
     pub(crate) handle: DesktopHandle,
     /// Where the bar's intents go: the chrome carries them out.
     pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
     pub(crate) person: String,
-    /// What the bar reads of the notifications: the unread count, the
-    /// silenced bell and each app's own badge.
+    /// What the bar reads of the notifications: the unread count, the silenced bell and each app's
+    /// own badge.
     pub(crate) signals: Rc<NoticeSignals>,
-    /// The session has no quick settings panel: the status cluster is the
-    /// bell that opens the notification centre.
+    /// The session has no quick settings panel: the status cluster is the bell that opens the
+    /// notification centre.
     pub(crate) notifications_only: bool,
-    /// Who is here, when this session takes part in the collaboration
-    /// plane: the bar's trees carry them as the active workspace's
-    /// collaborators.
+    /// Who is here, when this session takes part in the collaboration plane: the bar's trees carry
+    /// them as the active workspace's collaborators.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    /// The machine as the services last published it: the status cluster's
-    /// battery, network and volume glyphs, and the streams being captured.
+    /// The machine as the services last published it: the status cluster's battery, network and
+    /// volume glyphs, and the streams being captured.
     pub(crate) readings: crate::status::Shared,
-    /// The apps' live activities, which the bar's pill names and the
-    /// floating layer shows as cards.
+    /// The apps' live activities, which the bar's pill names and the floating layer shows as cards.
     pub(crate) activities: Rc<Activities>,
     /// The desk's notifications, where a due timer is announced.
     pub(crate) notices: DesktopNotifications,
-    /// The running applications' status-notifier items, as their host keeps
-    /// them.
+    /// The running applications' status-notifier items, as their host keeps them.
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
-    /// The monitors of the displays a fullscreen window owns, which the
-    /// loop takes from the compositor each pass.
+    /// The monitors of the displays a fullscreen window owns, which the loop takes from the
+    /// compositor each pass.
     fullscreen: Rc<RefCell<Vec<String>>>,
     /// The windows this session shares, which the bar's sharing chip names.
     shares: Rc<RefCell<crate::window_share::WindowShares>>,
@@ -533,10 +521,9 @@ impl SessionChrome {
         }
     }
 
-    /// The machine as the services last published it, in the bar's own
-    /// terms: what its battery, network and volume glyphs draw and what its
-    /// status cluster says of them. A part no service read draws no glyph
-    /// (absence, never a zero).
+    /// The machine as the services last published it, in the bar's own terms: what its battery,
+    /// network and volume glyphs draw and what its status cluster says of them. A part no service
+    /// read draws no glyph (absence, never a zero).
     fn status(&self) -> SystemStatus {
         self.readings.borrow().status()
     }
@@ -548,13 +535,11 @@ impl DesktopChromeSource for SessionChrome {
         let waved = self.sync.as_ref().and_then(|sync| sync.wave_notice());
         // A due event is announced once, here, where the bar reads it.
         self.activities.announce(&self.notices);
-        // The pill the bar shows, built once here: the bar reads its
-        // snapshot many times a frame, and the activities' own words do not
-        // change between its reads.
+        // The pill the bar shows, built once here: the bar reads its snapshot many times a frame,
+        // and the activities' own words do not change between its reads.
         let activities = self.activities.pill();
-        // The bar's pixels for an ask that comes, opens, folds, is answered
-        // or is put off change with it, so the revision moves for those as
-        // it does for the tree.
+        // The bar's pixels for an ask that comes, opens, folds, is answered or is put off change
+        // with it, so the revision moves for those as it does for the tree.
         let exposures = self.shares.borrow().exposures();
         let identify = self.identify.borrow().clone();
         let own_name = ui::local_identity::load().map(|identity| identity.display_name);
@@ -569,10 +554,9 @@ impl DesktopChromeSource for SessionChrome {
         let (red, green, blue) = crate::people::own_rgb(&own_chip_identity);
         let seen = Seen {
             tree: self.handle.revision(),
-            // Who is here, the window they are in and the call they are in
-            // reach the bar as its faces and roster, and none of it moves
-            // the tree: without this the face of everyone who arrives after
-            // the first frame never draws.
+            // Who is here, the window they are in and the call they are in reach the bar as its
+            // faces and roster, and none of it moves the tree: without this the face of everyone
+            // who arrives after the first frame never draws.
             people: self.sync.as_ref().map_or(0, |sync| sync.people_revision()),
             minute: clock.unix_seconds.div_euclid(60),
             waved: waved.as_ref().map(|notice| notice.from.clone()),
@@ -588,14 +572,13 @@ impl DesktopChromeSource for SessionChrome {
             invitable: self.invitable.get(),
             identify: identify.as_ref().map(|ask| ask.id),
             activities: self.activities.board().revision(),
-            // The bar says its words in the person's language: another one
-            // relabels it as any other change to what it shows does.
+            // The bar says its words in the person's language: another one relabels it as any other
+            // change to what it shows does.
             words: ui::I18nManager::revision(),
             own_name,
             own_colour,
-            // The name and identity their own avatar is drawn from: the
-            // presence label they gave themselves moves the bar as their
-            // display name does.
+            // The name and identity their own avatar is drawn from: the presence label they gave
+            // themselves moves the bar as their display name does.
             own_face: (own_chip_name.clone(), own_chip_identity.clone()),
         };
         if *self.seen.borrow() != seen {
@@ -604,8 +587,8 @@ impl DesktopChromeSource for SessionChrome {
         }
         DesktopChromeSnapshot {
             revision: self.revision.get(),
-            // The bar steps aside for the window covering its display, which
-            // only this device's desk knows: the state, never a chord.
+            // The bar steps aside for the window covering its display, which only this device's
+            // desk knows: the state, never a chord.
             fullscreen: self.handle.read(|tree| tree.fullscreen_group().is_some()),
             status: self.status(),
             clock,
@@ -613,8 +596,8 @@ impl DesktopChromeSource for SessionChrome {
             waved,
             arrived: self.sync.as_ref().and_then(|sync| sync.arrival_notice()),
             own: Some(OwnChip {
-                // The name they go by, and the root key the picture they
-                // chose hangs on: the id is never shown as their name.
+                // The name they go by, and the root key the picture they chose hangs on: the id is
+                // never shown as their name.
                 name: own_chip_name,
                 rgb: (red, green, blue),
                 identity: own_chip_identity,
@@ -622,8 +605,8 @@ impl DesktopChromeSource for SessionChrome {
             notification_badge: self.signals.unread(),
             notifications_quiet: self.signals.quiet(),
             notifications_only: self.notifications_only,
-            // Who views the windows this session shares: the bar says the
-            // share is live while anyone does.
+            // Who views the windows this session shares: the bar says the share is live while
+            // anyone does.
             active_exposures: exposures,
             identify,
             invite: Invite::when(self.invitable.get()),
@@ -633,17 +616,16 @@ impl DesktopChromeSource for SessionChrome {
 
     fn tree(&self) -> DesktopTree {
         let mut tree = self.handle.read(Clone::clone);
-        // Who is here, as the active workspace's collaborators: the bar's
-        // faces and every roster read the tree, not a list of their own.
+        // Who is here, as the active workspace's collaborators: the bar's faces and every roster
+        // read the tree, not a list of their own.
         if let Some(sync) = &self.sync {
             sync.show(&mut tree, &|_: &str| None);
         }
         tree
     }
 
-    /// One bar per display: the one in use full, the others compact, each
-    /// on its own display's rectangle. A fullscreen window on a display
-    /// names it, so that display's bar steps aside.
+    /// One bar per display: the one in use full, the others compact, each on its own display's
+    /// rectangle. A fullscreen window on a display names it, so that display's bar steps aside.
     fn bars(&self) -> Placement {
         let fullscreen = self.fullscreen.borrow();
         self.handle
@@ -654,15 +636,14 @@ impl DesktopChromeSource for SessionChrome {
         self.signals.badge(app_id)
     }
 
-    /// Changes whenever an application's tray item appears, changes or
-    /// goes, so the bar redraws that icon and nothing else.
+    /// Changes whenever an application's tray item appears, changes or goes, so the bar redraws
+    /// that icon and nothing else.
     fn app_tray_revision(&self) -> u64 {
         self.tray.as_ref().map_or(0, |tray| tray.revision())
     }
 
-    /// The running applications' tray items, in the order they registered:
-    /// each one's own title, the app that registered it, and its picture or
-    /// letter badge.
+    /// The running applications' tray items, in the order they registered: each one's own title,
+    /// the app that registered it, and its picture or letter badge.
     fn app_tray(&self) -> Vec<AppTrayItem> {
         let Some(tray) = &self.tray else {
             return Vec::new();
@@ -670,9 +651,8 @@ impl DesktopChromeSource for SessionChrome {
         tray.snapshot().into_iter().map(app_tray_item).collect()
     }
 
-    /// The ask waiting on the person's own avatar: what the session put to
-    /// them there (see [`crate::identity::offer`]), open beside their face
-    /// until they answer it or put it off.
+    /// The ask waiting on the person's own avatar: what the session put to them there (see
+    /// [`crate::identity::offer`]), open beside their face until they answer it or put it off.
     fn avatar_ask(&self) -> Option<AvatarAsk> {
         self.handle.personal_ask().map(|ask| AvatarAsk {
             question: ask.title,
@@ -688,9 +668,8 @@ impl DesktopChromeSource for SessionChrome {
     }
 }
 
-/// One tray item as the bar draws it: the app's own words for it, the app
-/// it demonstrably belongs to, and the pixels it sent or named, with a
-/// letter badge for an icon nothing could draw.
+/// One tray item as the bar draws it: the app's own words for it, the app it demonstrably belongs
+/// to, and the pixels it sent or named, with a letter badge for an icon nothing could draw.
 fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
     AppTrayItem {
         key: item.key,
@@ -722,13 +701,13 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
     }
 }
 
-/// The person at this device owns its desktop: the desktop's one policy
-/// answers what they may change, as it answers a workspace's owner.
+/// The person at this device owns its desktop: the desktop's one policy answers what they may
+/// change, as it answers a workspace's owner.
 pub(crate) struct SessionRules {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
-    /// This device's workspaces, as their records hold them: what says
-    /// whether a workspace may be deleted.
+    /// This device's workspaces, as their records hold them: what says whether a workspace may be
+    /// deleted.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// Who made each strip and opened each window.
     pub(crate) authors: RefCell<Authors>,
@@ -832,14 +811,12 @@ impl crate::Session {
     }
 }
 
-/// What holds the keyboard over the desk: the desk's search from the pass it
-/// says it is open, and what the overlay stack says otherwise.
-///
-/// The palette is the desk's own state while it is the chrome that draws it
-/// and publishes its surface. A key typed between the desk opening it and the
-/// chrome drawing it is the palette's, not the window's behind it: what the
-/// person typed goes into the search, and the frame that key asks for is the
-/// one that publishes the palette's surface.
+/// What holds the keyboard over the desk: the desk's search from the pass it says it is open, and
+/// what the overlay stack says otherwise.
+/// The palette is the desk's own state while it is the chrome that draws it and publishes its
+/// surface. A key typed between the desk opening it and the chrome drawing it is the palette's, not
+/// the window's behind it: what the person typed goes into the search, and the frame that key asks
+/// for is the one that publishes the palette's surface.
 pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Target {
     if handle.search_open() {
         Target::Surface(Slot::Search)
@@ -848,15 +825,15 @@ pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Ta
     }
 }
 
-/// The chrome above the windows (the top bar, overview, menus) as the
-/// session hosts it: its own tree beside the desk's, covering the outputs.
+/// The chrome above the windows (the top bar, overview, menus) as the session hosts it: its own
+/// tree beside the desk's, covering the outputs.
 pub(crate) fn host(
     handle: &DesktopHandle,
     options: &crate::Options,
     wiring: ChromeWiring,
     sync: Option<Rc<crate::sync::Client>>,
     overview: &crate::mount::overview::Overview,
-    emoji: &tilo_desktop::emoji_picker::EmojiLink,
+    emoji: &tilo_desktop::emoji::EmojiLink,
     overlays: &Overlays,
     switcher: &tilo_desktop::window_switcher::Switcher,
 ) -> WidgetHost {
@@ -903,9 +880,8 @@ pub(crate) fn host(
     chrome.set_switcher(switcher.clone());
     chrome.set_reveals(reveals);
     chrome.set_shortcuts(shortcuts);
-    // Keys come to the chrome while one of the surfaces it draws holds the
-    // keyboard: the stack says which, and it says the window's again as soon
-    // as the top surface closes.
+    // Keys come to the chrome while one of the surfaces it draws holds the keyboard: the stack says
+    // which, and it says the window's again as soon as the top surface closes.
     let desk = handle.clone();
     let holds = overlays.clone();
     let keyboard = Rc::new(move || {
@@ -938,8 +914,8 @@ pub(crate) fn host(
                     window: picture.window,
                     rect: (x, y, width, height),
                     opacity: 1.0,
-                    // A picture stays in its well: paging the cards never spills a
-                    // window over the panel's edge.
+                    // A picture stays in its well: paging the cards never spills a window over the
+                    // panel's edge.
                     clip: Some((x, y, width, height)),
                 }
             }));
@@ -947,24 +923,23 @@ pub(crate) fn host(
         }))
         .covering_outputs()
         .with_keyboard(keyboard);
-    // The stack takes a surface down — a press outside it, another one
-    // opening — and the widget drawing it has to take up a pass to close it:
-    // nothing else tells a host the chrome stands over.
+    // The stack takes a surface down — a press outside it, another one opening — and the widget
+    // drawing it has to take up a pass to close it: nothing else tells a host the chrome stands
+    // over.
     overlays.wake_with(host.asking());
     host
 }
 
 impl crate::Shared {
-    /// A verb of the empty desk's launchpad, as its card, its host action
-    /// and its resource action all ask for it: the app action the verb
-    /// declares, what only the session can do, and else the app itself.
+    /// A verb of the empty desk's launchpad, as its card, its host action and its resource action
+    /// all ask for it: the app action the verb declares, what only the session can do, and else the
+    /// app itself.
     pub(crate) fn launchpad(&self, action: LaunchpadAction) {
         if let Some(app_action) = action.app_action() {
             return self.invoke_app_action(app_action);
         }
         match action {
-            // Bringing people in: the link into this workspace is made in
-            // the invite sheet.
+            // Bringing people in: the link into this workspace is made in the invite sheet.
             LaunchpadAction::Invite => self.open_invite(),
             LaunchpadAction::Activity => self
                 .intents
@@ -992,8 +967,8 @@ mod tests {
     use super::*;
     use ui::live_activity::{Control, ControlKind, Kind, Tone};
 
-    /// A timer's summary as Clocks publishes it: the label and countdown
-    /// every timer carries, and what `extra` adds.
+    /// A timer's summary as Clocks publishes it: the label and countdown every timer carries, and
+    /// what `extra` adds.
     fn timer(id: &str, title: &str, countdown: i64) -> Summary {
         Summary::new(
             Kind::Timer,
@@ -1010,8 +985,7 @@ mod tests {
         board.show(app, Some(serde_json::to_value(published).expect("JSON")));
     }
 
-    /// A running timer is the bar's pill, and its card floats because Clocks
-    /// asks for it.
+    /// A running timer is the bar's pill, and its card floats because Clocks asks for it.
     #[test]
     fn a_floating_timer_is_the_bars_pill_and_its_card() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
@@ -1037,9 +1011,9 @@ mod tests {
         assert!(activities.cards().is_empty());
     }
 
-    /// A call's card stands where its app's presentation put it, and the
-    /// layer paints the summary there until the app's own window is up: a
-    /// card appears, and the screen never shows a blank card or two of them.
+    /// A call's card stands where its app's presentation put it, and the layer paints the summary
+    /// there until the app's own window is up: a card appears, and the screen never shows a blank
+    /// card or two of them.
     #[test]
     fn a_call_card_is_the_layers_until_the_apps_own_window_is_up() {
         const CHAT_APP: &str = "so.tilo.chat";
@@ -1075,8 +1049,8 @@ mod tests {
         cards.present(CHAT_APP, 1, &request).expect("a card");
         let card = cards.presented().remove(0);
 
-        // Its place is held for the app's body, and the summary stands in
-        // until that body's window is up.
+        // Its place is held for the app's body, and the summary stands in until that body's window
+        // is up.
         let waiting = activities.cards();
         assert_eq!(waiting.len(), 1);
         assert_eq!(
@@ -1093,17 +1067,16 @@ mod tests {
         cards.placements().mapped(&card.token, 3);
         assert!(activities.cards()[0].rich, "the app draws it now");
 
-        // Chat's own window comes on screen: the call is drawn there, and no
-        // card stands on the desk at all.
+        // Chat's own window comes on screen: the call is drawn there, and no card stands on the
+        // desk at all.
         cards.see(CHAT_APP, "chat-call:voice", true);
         assert!(activities.cards().is_empty());
         cards.see(CHAT_APP, "chat-call:voice", false);
         assert_eq!(activities.cards().len(), 1, "and it comes back");
     }
 
-    /// Ending an activity that offers a close asks its app to end it; one
-    /// that cannot be stopped from outside is put away until the app shows
-    /// another one, and comes back the moment it does.
+    /// Ending an activity that offers a close asks its app to end it; one that cannot be stopped
+    /// from outside is put away until the app shows another one, and comes back the moment it does.
     #[tokio::test]
     async fn an_activity_is_ended_by_its_app_or_put_away() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
@@ -1151,8 +1124,8 @@ mod tests {
         assert!(shown(), "shown again");
     }
 
-    /// A control pressed on a card reaches the app it belongs to, with the
-    /// activity it names, and makes that activity the most recently touched.
+    /// A control pressed on a card reaches the app it belongs to, with the activity it names, and
+    /// makes that activity the most recently touched.
     #[tokio::test]
     async fn a_pressed_control_reaches_its_app() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
@@ -1171,8 +1144,7 @@ mod tests {
         );
     }
 
-    /// At most three cards stand at once: the least recently touched folds
-    /// into the bar's pill.
+    /// At most three cards stand at once: the least recently touched folds into the bar's pill.
     #[test]
     fn at_most_three_cards_keep_the_most_recently_touched() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
@@ -1205,8 +1177,8 @@ mod tests {
         assert_eq!(activities.summaries().len(), 4);
     }
 
-    /// Collapsing a card folds it into the bar; pulling an activity out
-    /// brings its card back, however it asked.
+    /// Collapsing a card folds it into the bar; pulling an activity out brings its card back,
+    /// however it asked.
     #[test]
     fn collapse_and_expand_move_an_activity_between_the_bar_and_a_card() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
@@ -1219,8 +1191,8 @@ mod tests {
         assert!(activities.cards().is_empty(), "folded into the bar");
         assert_eq!(activities.summaries().len(), 1, "the pill still names it");
 
-        // An activity's id is its own app's: another app that names the
-        // same id is not the activity the pill named.
+        // An activity's id is its own app's: another app that names the same id is not the activity
+        // the pill named.
         activities.expand("so.tilo.other", "timer-1");
         assert!(
             activities.cards().is_empty(),
@@ -1232,8 +1204,8 @@ mod tests {
         assert_eq!(activities.cards()[0].summary.tone, Tone::Neutral);
     }
 
-    /// A due event is announced once, in the app's own words when it has
-    /// them and in the desktop's otherwise.
+    /// A due event is announced once, in the app's own words when it has them and in the desktop's
+    /// otherwise.
     #[test]
     fn a_due_event_is_announced_once() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
@@ -1267,8 +1239,7 @@ mod tests {
         activities.announce(&notices);
         assert_eq!(announced().len(), 1, "still one");
 
-        // An app that names its own due event in no words gets the
-        // desktop's.
+        // An app that names its own due event in no words gets the desktop's.
         board.show(CLOCKS_APP, None);
         publish(
             &board,

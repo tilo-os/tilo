@@ -51,6 +51,24 @@ fn a_union_holds_any_of_its_types_and_a_match_takes_it_apart_by_type() {
 }
 
 #[test]
+fn flat_map_joins_the_lists_a_lambda_gives_into_one() {
+    // The conversations a page lists: a group holds channels, a channel or a conversation
+    // stands for itself, joined in the order the lists and their items keep. A list of one
+    // type is read as the list of the union: items are read, never written back through it.
+    let kinds = "type TextChannel {\n    name: Text\n}\ntype VoiceChannel {\n    name: Text\n}\ntype Channel = TextChannel | VoiceChannel\ntype Group {\n    name: Text\n    channels: Collection<TextChannel>\n}\ntype Node = Group | TextChannel | VoiceChannel\ntype Conversations {\n    nodes: Collection<Node>\n}\nroot Conversations\ndefault view conversations for Conversations\nview conversations(c: Conversations) {\n    text(\"x\")\n}\n";
+    ok(&format!(
+        "{kinds}fn listed(n: Node) -> List<Channel> {{\n    match n {{\n        g: Group => g.channels.filter(ch -> ch.name != \"\"),\n        t: TextChannel => [t],\n        v: VoiceChannel => [v],\n    }}\n}}\nfn all(c: Conversations) -> List<Channel> {{\n    c.nodes.flat_map(n -> listed(n))\n}}"
+    ));
+    // What the lambda gives is a list to join, not one value.
+    expect(
+        "E020",
+        &format!(
+            "{kinds}fn f(c: Conversations) -> List<Text> {{\n    c.nodes.flat_map(n -> \"x\")\n}}"
+        ),
+    );
+}
+
+#[test]
 fn enum_cases_hold_no_data() {
     ok("enum Order {\n    created\n    title\n}");
     expect("E110", "enum Shape {\n    dot\n    line(len: Int)\n}");
@@ -118,4 +136,26 @@ fn a_record_keeps_the_ids_of_the_collection_root_it_replaces() {
         .expect("notes");
     assert_eq!(field.id, "tmqqtkeb");
     assert_eq!(compiled.meta.roots, ["v7cub7aw"]);
+}
+
+#[test]
+fn a_union_draws_its_rows_by_the_row_view_of_each_item_type() {
+    // One page over channels that say different things: each item is drawn by the row view of
+    // the type it is, so the list's rows all stand as rows.
+    let rows = "row view text_row for TextChannel\nview text_row(c: TextChannel) {\n    row(c.name)\n}\nrow view voice_row for VoiceChannel\nview voice_row(c: VoiceChannel) {\n    row(c.name, secondary: \"voice\")\n}\n";
+    ok(&format!(
+        "{CHANNELS}{rows}view listing(s: Server) {{\n    list(s.channels) {{ c ->\n        show(c, row: true)\n    }}\n}}\nview one(c: Channel) {{\n    show(c, row: true)\n}}"
+    ));
+    // A type of the union without a row view is named, and so is what to declare for it.
+    let only_text =
+        "row view text_row for TextChannel\nview text_row(c: TextChannel) {\n    row(c.name)\n}\n";
+    let got = codes(&format!(
+        "{CHANNELS}{only_text}view listing(s: Server) {{\n    list(s.channels) {{ c ->\n        show(c, row: true)\n    }}\n}}"
+    ));
+    assert!(got.iter().any(|c| c == "E097"), "got {got:?}");
+    // A list of a union writes its rows: a row is the row of the type the item is.
+    expect(
+        "E097",
+        &format!("{CHANNELS}{rows}view listing(s: Server) {{\n    list(s.channels)\n}}"),
+    );
 }

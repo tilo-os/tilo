@@ -189,6 +189,27 @@ fn a_vertical_drag_is_the_lists_scroll_and_moves_nothing() {
 }
 
 #[test]
+fn a_tap_is_the_lists_click_and_not_the_rows() {
+    let runs = Runs::new();
+    let mut row = row(None, Some(counted("Reply", &runs)));
+    let at = now();
+    let spot = Point::new(f64::from(WIDTH) / 2.0, 24.0);
+    with_monotonic_time(at, || {
+        row.send(&touch(TouchPhase::Started, spot));
+        // A finger that lifts where it came down is a click here: the row holds the press for
+        // its swipe and lets the tap go to its list.
+        row.send(&crate::synthetic_input::cursor_moved(spot.x, spot.y));
+        row.send(&crate::synthetic_input::mouse_press());
+        assert!(
+            !row.send(&crate::synthetic_input::mouse_release()),
+            "the tap is not the swipe's"
+        );
+        assert!(row.offset().abs() < 0.5, "and the row did not move");
+    });
+    assert_eq!(runs.get(), 0);
+}
+
+#[test]
 fn a_touch_during_the_settle_catches_the_row_where_it_is_drawn() {
     let runs = Runs::new();
     let mut row = row(None, Some(counted("Reply", &runs)));
@@ -227,4 +248,27 @@ fn an_armed_or_destructive_label_reads_at_body_text_contrast_in_both_shades() {
             );
         }
     }
+}
+
+/// A row the frame did not draw owes nothing after it: the list culls the rows away from its box,
+/// and the offset such a row moved by unseen is where the next frame draws it. A window at rest is
+/// not kept awake by it.
+#[test]
+fn a_row_the_frame_did_not_draw_rests_after_it() {
+    let runs = Runs::new();
+    let mut row = row(None, Some(counted("Reply", &runs)));
+    let at = now();
+    with_monotonic_time(at, || {
+        row.send(&touch(TouchPhase::Started, Point::new(200.0, 24.0)));
+        row.send(&touch(TouchPhase::Moved, Point::new(180.0, 24.0)));
+        assert!(
+            Widget::needs_redraw(&row.row),
+            "the row moved since the last frame drew it"
+        );
+        Widget::mark_drawn(&mut row.row);
+        assert!(
+            !Widget::needs_redraw(&row.row),
+            "a row the frame did not draw asks for none after it"
+        );
+    });
 }

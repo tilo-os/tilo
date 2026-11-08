@@ -1,29 +1,26 @@
-//! The Tilo mark and the workspace pill: the brand's own shapes, the name the
-//! pill shows and the budget it has for it, the chevron that opens the
-//! workspace menu, and the rects a press on either addresses.
+//! The Tilo mark and the workspace pill: the brand's own shapes, the name the pill shows and the
+//! budget it has for it, the chevron that opens the workspace menu, and the rects a press on either
+//! addresses.
 
 use super::*;
 
 impl TopBarChrome {
-    /// Lead the bar with the Tilo mark, which asks for
-    /// [`ChromeIntent::ToggleTiloMenu`]: a host with no other place for
-    /// what Tilo is (the browser) offers it there. Off by default.
+    /// Lead the bar with the Tilo mark, which asks for [`ChromeIntent::ToggleTiloMenu`]: a host
+    /// with no other place for what Tilo is (the browser) offers it there. Off by default.
     #[must_use]
     pub fn with_tilo_mark(mut self) -> Self {
         self.tilo_mark = Some(false);
         self
     }
 
-    /// The menu the mark opens is shown or gone; the mark reads as pressed
-    /// while it is.
+    /// The menu the mark opens is shown or gone; the mark reads as pressed while it is.
     pub fn set_tilo_menu_open(&mut self, open: bool) {
         if let Some(shown) = self.tilo_mark.as_mut() {
             *shown = open;
         }
     }
 
-    /// Where the Tilo mark was last drawn, for anchoring its menu; zero
-    /// without the mark.
+    /// Where the Tilo mark was last drawn, for anchoring its menu; zero without the mark.
     pub fn tilo_mark_rect(&self) -> Rect {
         if self.tilo_mark.is_some() {
             self.control_rect(Self::CONTROL_TILO_MARK)
@@ -33,23 +30,22 @@ impl TopBarChrome {
     }
 
     /// Where the workspace name was last drawn, for anchoring its menu
-    /// ([`ChromeIntent::ToggleWorkspaceMenu`]: the workspaces, where it is
-    /// hosted, joining and leaving, renaming, the overview, a new desk).
+    /// ([`ChromeIntent::ToggleWorkspaceMenu`]: the workspaces, where it is hosted, joining and
+    /// leaving, renaming, the overview, a new desk).
     pub fn workspace_menu_rect(&self) -> Rect {
         self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS)
     }
 
-    /// Semibold — a clickable title without tipping into the clock's
-    /// h1/h2 tier.
+    /// Semibold — a clickable title without tipping into the clock's h1/h2 tier.
     pub fn workspace_name_text_weight(&self) -> TextWeight {
         TextWeight::Semibold
     }
 
-    // The following `draw_*` helpers exist only to keep `Widget::draw`
-    // under the line budget; none is meaningful on its own.
+    // The following `draw_*` helpers exist only to keep `Widget::draw` under the line budget; none
+    // is meaningful on its own.
 
-    /// The Tilo mark as the bar's leading control, starting at `x`; returns
-    /// where the next control starts (`x` itself without the mark).
+    /// The Tilo mark as the bar's leading control, starting at `x` ; returns where the next control
+    /// starts (`x` itself without the mark).
     pub(super) fn draw_tilo_mark(
         &mut self,
         scene: &mut Scene,
@@ -62,8 +58,8 @@ impl TopBarChrome {
             self.tilo_mark_rect = Rect::ZERO;
             return x;
         };
-        // The opt-in web menu keeps its minimum pointer target inside the
-        // compact bar; native controls retain the smaller bar-control size.
+        // The opt-in web menu keeps its minimum pointer target inside the compact bar; native
+        // controls retain the smaller bar-control size.
         let control = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
         self.tilo_mark_rect = Rect::new(
             x,
@@ -99,8 +95,7 @@ impl TopBarChrome {
         ws_text_style: &TextStyle,
         label_budget: f32,
     ) -> String {
-        // The name alone: the workspace menu lists the others, so no
-        // position count.
+        // The name alone: the workspace menu lists the others, so no position count.
         text_renderer.elide_to_width_style(
             &self.workspace_name,
             label_budget.max(0.0),
@@ -110,9 +105,8 @@ impl TopBarChrome {
         )
     }
 
-    /// How wide the workspace name may grow in `workspace`. Named strips follow
-    /// the pill, so the name leaves them their width down to a short
-    /// name's.
+    /// How wide the workspace name may grow in `workspace` . Named strips follow the pill, so the
+    /// name leaves them their width down to a short name's.
     pub(super) fn workspace_label_budget(
         &self,
         text_renderer: &mut TextRenderer,
@@ -128,8 +122,8 @@ impl TopBarChrome {
         ui::num::f32_of_f64((room - strips_room).max(room.min(96.0)).clamp(32.0, 260.0))
     }
 
-    /// Workspace-name pill (click toggles the workspace menu) and its
-    /// trailing chevron, starting at `x`.
+    /// Workspace-name pill (click toggles the workspace menu) and its trailing chevron, starting at
+    /// `x` .
     pub(super) fn draw_workspace_pill(
         &mut self,
         scene: &mut Scene,
@@ -142,19 +136,19 @@ impl TopBarChrome {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let ws_text_style = tokens.typography.style(TextRole::Label);
-        // Measured at the same weight it's drawn at (Semibold), so the
-        // pill width tracks the glyph advance, not the narrower Regular.
+        // Measured at the same weight it's drawn at (Semibold), so the pill width tracks the glyph
+        // advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
         // The centre carousel owns a fixed central lane.  Long translated or
         // user-authored workspace names must yield to it instead of painting
         // underneath it.
         let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
             - self.center_band_width(theme, text_renderer) / 2.0;
-        // Capsule chrome around the label: a leading pad, the gap to the
-        // chevron, the chevron itself and a trailing pad of the same size — so
-        // the pill reads centred on its contents. The `s4` beyond that is
-        // the breathing room `long_workspace_name_yields_to_the_center_lane`
-        // keeps between the pill and the centre selector.
+        // Capsule chrome around the label: a leading pad, the gap to the chevron, the chevron
+        // itself and a trailing pad of the same size — so the pill reads centred on its contents.
+        // The `s4` beyond that is the breathing room
+        // `long_workspace_name_yields_to_the_center_lane` keeps between the pill and the centre
+        // selector.
         let pad = f64::from(tokens.spacing.s2);
         let chevron = SMALL_GLYPH_PX;
         let pill_chrome = pad * 3.0 + chevron;
@@ -170,8 +164,8 @@ impl TopBarChrome {
             None,
             &ws_text_style.clone().with_weight(ws_weight),
         );
-        // A bar control's height, grown with its label at a large text
-        // scale (as `ControlSize` grows), never taller than the bar.
+        // A bar control's height, grown with its label at a large text scale (as `ControlSize`
+        // grows), never taller than the bar.
         let pill_h = BAR_CONTROL_PX
             .max((f64::from(ws_h) + f64::from(tokens.spacing.s1) / 2.0).ceil())
             .min(self.rect.height().max(BAR_CONTROL_PX));
@@ -196,8 +190,8 @@ impl TopBarChrome {
             center_y + pill_h / 2.0,
         );
         if self.renaming_workspace() {
-            // The new name is typed where the name stands, so it reads as
-            // renaming the workspace, not the strip named after it.
+            // The new name is typed where the name stands, so it reads as renaming the workspace,
+            // not the strip named after it.
             let field_h = ui::widget::FieldFace::height(ui::widget::ControlSize::Regular, theme);
             let room = (center_left - breathing - ws_pill_outer.x0).max(BAR_CONTROL_PX);
             let field = Rect::new(
@@ -228,7 +222,7 @@ impl TopBarChrome {
     }
 }
 
-/// The Tilo mark, the brand's own shapes, centred in `rect`: the toolkit's
+/// The Tilo mark, the brand's own shapes, centred in `rect` : the toolkit's
 /// ([`ui::icons::paint_tilo_mark`]), in the dark variant on a dark palette.
 pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     ui::icons::paint_tilo_mark(scene, transform, rect, theme.tokens.colors.palette.dark);

@@ -209,9 +209,6 @@ impl TilolangHost {
     }
 
     /// Run the programs of the task the session handed over, until the door closes it.
-    ///
-    /// # Errors
-    /// The task's modules cannot be read or loaded.
     pub fn begin_task(
         &mut self,
         request: &runtime_portal::tilolang_host::TaskRequest,
@@ -245,9 +242,6 @@ impl TilolangHost {
     }
 
     /// Where the instances of `app` keep their workspace record's copy and indexes.
-    ///
-    /// # Errors
-    /// The package's directory cannot be made.
     pub fn kept(&self, app: &str) -> std::io::Result<Kept> {
         let Some(storage) = &self.storage else {
             return Ok(Kept {
@@ -301,9 +295,6 @@ impl TilolangHost {
     /// Open the instance the session handed over on the door: its module is read, its
     /// connection joins and its record is read off the host's loop, and it runs once all three
     /// are done ([`Self::turn`]).
-    ///
-    /// # Errors
-    /// Its window's connection is unusable.
     pub fn admit(&mut self, request: InstanceRequest, fds: InstanceFds) -> Result<(), AdmitError> {
         let (window, change) = if request.applies_change {
             (None, Some(fds.window))

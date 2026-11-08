@@ -75,9 +75,6 @@ pub fn menu_category(declared: &str) -> &'static str {
 }
 
 /// The icon artwork of a declared `icon:` (`.file_text`, the platform glyph `file-text`).
-///
-/// # Errors
-/// The platform has no glyph of that name.
 pub fn icon_artwork(declared: &str) -> Result<String, String> {
     let name = declared.replace('_', "-");
     ui::icons::Icon::from_name(&name)
@@ -116,35 +113,51 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
     origins
 }
 
+/// A package's `[sandbox]`: the capabilities, namespaces and network mode of a package holding
+/// the outside `origins`.
+///
+/// A package whose types hold an outside service's resources runs that origin's connector: it
+/// reaches the service, and reads the credentials from custody, both in the runtime's native
+/// code and never the package's. The origins are the ones the platform runs a connector for; a
+/// package with none opens no socket of its own.
+fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
+    if origins.is_empty() {
+        return (
+            "optional = []",
+            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
+            "mode = \"off\"",
+        );
+    }
+    // The mail origin also reads the account's credentials from custody; the others hold none.
+    let capabilities = if origins.contains(&"imap") {
+        "required = [\"network.http\"]\noptional = [\"secrets\"]"
+    } else {
+        "required = [\"network.http\"]\noptional = []"
+    };
+    (
+        capabilities,
+        "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+        "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
+         # the launcher runs it in.\nmode = \"host\"",
+    )
+}
+
+/// The manifest's `[entrypoint]` line naming each of the outside `origins`' connectors: one
+/// launch per origin the package's types hold, and nothing when it holds none.
+fn connector_origins(origins: &[&str]) -> String {
+    if origins.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = origins.iter().map(|origin| toml_string(origin)).collect();
+    format!("origins = [{}]\n", list.join(", "))
+}
+
 /// The manifest of the app `meta` is, signed by `publisher` (hex Ed25519 key).
 #[must_use]
 pub fn manifest_text(meta: &PackageMeta, options: &BuildOptions, publisher: &str) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
-    // A package whose types hold an outside service's resources runs that origin's connector:
-    // it reaches the service and reads the credentials from custody, both in the runtime's
-    // native code, never the package's. The origins are the ones the platform runs a connector
-    // for; a package with none opens no socket of its own.
     let origins = origins_of(meta);
-    // The mail origin also reads the account's credentials from custody; the others hold none.
-    let mail = origins.contains(&"imap");
-    let (capabilities, namespaces, net) = if !origins.is_empty() {
-        (
-            if mail {
-                "required = [\"network.http\"]\noptional = [\"secrets\"]"
-            } else {
-                "required = [\"network.http\"]\noptional = []"
-            },
-            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
-            "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
-             # the launcher runs it in.\nmode = \"host\"",
-        )
-    } else {
-        (
-            "optional = []",
-            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
-            "mode = \"off\"",
-        )
-    };
+    let (capabilities, namespaces, net) = sandbox(&origins);
     let mut extra = if meta.icon.is_some() {
         format!("icon = {}\n", toml_string(ICON_FILE))
     } else {
@@ -233,12 +246,7 @@ ext = []
         net = net,
         // The system runs one connector per outside origin the app's types hold, in this
         // sandbox, window or not.
-        origins = if origins.is_empty() {
-            String::new()
-        } else {
-            let list: Vec<String> = origins.iter().map(|origin| toml_string(origin)).collect();
-            format!("origins = [{}]\n", list.join(", "))
-        },
+        origins = connector_origins(&origins),
     )
 }
 
@@ -264,9 +272,6 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
 }
 
 /// Stage, pack and sign an app as the `.tapp` a session installs.
-///
-/// # Errors
-/// A file cannot be written, the generated manifest does not validate, or the app does not pack.
 fn deliver(
     app: Assembled,
     options: &BuildOptions,

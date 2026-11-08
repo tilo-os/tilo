@@ -31,26 +31,17 @@ const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surf
 
 /// The session's package: its resources' types and actions, which a shell's views, an agent's
 /// task and the REPL call as any package's (`session.place(resource: …, x: 80, y: 60)`).
-///
-/// # Errors
-/// The description does not read.
 pub fn session_package() -> Result<PackageMeta, String> {
     crate::catalogue::described(SESSION_APP, "Session", SESSION_DESCRIPTION)
 }
 
 /// The resource each of the session's loose actions is published on, by the action's id.
-///
-/// # Errors
-/// The description does not read.
 pub fn session_addresses() -> Result<std::collections::BTreeMap<String, String>, String> {
     crate::catalogue::addresses(SESSION_DESCRIPTION)
 }
 
 /// The session's actions as its description declares them, by id: what a call's arguments
 /// are sent as ([`tilo_actions::surface::nest_arguments`]).
-///
-/// # Errors
-/// The description does not read.
 pub fn session_verbs()
 -> Result<std::collections::BTreeMap<String, tilo_actions::surface::VerbSurface>, String> {
     Ok(crate::catalogue::parse_surfaces(SESSION_DESCRIPTION)?
@@ -99,9 +90,6 @@ pub fn platform_roots() -> Vec<(&'static str, String)> {
 }
 
 /// The device's resources the session publishes, as their surfaces.
-///
-/// # Errors
-/// The committed file is not a surface file.
 pub fn device_surfaces() -> Result<Vec<Surface>, String> {
     #[derive(Deserialize)]
     struct File {
@@ -117,9 +105,6 @@ pub fn device_surfaces() -> Result<Vec<Surface>, String> {
 ///
 /// The surfaces are this build's own, so they are read once: every build of a package reads
 /// them, a development loop included.
-///
-/// # Errors
-/// A surface does not read, or does not have a type a view names.
 pub fn platform_packages() -> Result<Vec<PackageMeta>, String> {
     static PACKAGES: std::sync::OnceLock<Result<Vec<PackageMeta>, String>> =
         std::sync::OnceLock::new();

@@ -125,9 +125,6 @@ impl Connection {
     }
 
     /// Submit `ask`; the door's verdict.
-    ///
-    /// # Errors
-    /// The door's refusal, in its own words.
     pub fn submit(&self, ask: &Ask) -> Result<(), String> {
         self.answers.submit(ask)
     }

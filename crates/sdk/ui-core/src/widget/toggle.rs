@@ -3,6 +3,7 @@ use super::bool_control::{
 };
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::Interaction;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -246,16 +247,6 @@ impl Toggle {
     bool_control_api!();
 }
 
-/// Interaction state for the immediate-mode toggle face; the retained
-/// [`Toggle`] tracks these itself. A canvas app doing its own hit-testing
-/// usually only knows `hovered`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct ToggleInteract {
-    pub hovered: bool,
-    pub focused: bool,
-    pub disabled: bool,
-}
-
 /// The switch's visual footprint: a 44×24 pill centred in whatever target
 /// rect layout assigns (32 px tall at a fine pointer, 48 at a coarse one), so
 /// the pill itself never stretches. Off the spacing scale on purpose: 24 is
@@ -470,7 +461,7 @@ fn knob_end(on: bool) -> f64 {
 /// knob is a raised white object with a derived ring, never a dark disc; on a
 /// dark one it is the secondary ink, and hover lifts it to the primary ink.
 /// Focus is your colour round the track.
-pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> ToggleColors {
+pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> ToggleColors {
     let colors = &theme.tokens.colors;
     let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
     // A lift of the window ground: lighter on a dark material, darker on a
@@ -589,7 +580,7 @@ pub(crate) fn ink_across(
 
 pub struct ToggleFace {
     rect: Rect,
-    interact: ToggleInteract,
+    interact: Interaction,
     pose: SwitchPose,
 }
 
@@ -597,7 +588,7 @@ impl ToggleFace {
     pub fn new(rect: Rect, on: bool) -> Self {
         Self {
             rect,
-            interact: ToggleInteract::default(),
+            interact: Interaction::default(),
             pose: SwitchPose::at_rest(on),
         }
     }
@@ -683,13 +674,7 @@ impl Toggle {
         let track_shape = RoundedRect::from_rect(face.rect, radius);
         let dim = face.interact.disabled;
         if dim {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &track_shape,
-            );
+            crate::widget::paint_disabled(scene, transform, &track_shape);
         }
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -1036,10 +1021,11 @@ mod tests {
                     &crate::presence::PresenceCtx::default(),
                 );
 
-                let interact = ToggleInteract {
+                let interact = Interaction {
                     hovered,
                     focused,
                     disabled: !enabled,
+                    ..Interaction::default()
                 };
                 let colors = toggle_face_colors(&theme, on, interact);
                 let mut expected = Scene::new();
@@ -1108,8 +1094,8 @@ mod tests {
 
         {
             let theme = Theme::dark();
-            let off = toggle_face_colors(&theme, false, ToggleInteract::default());
-            let on = toggle_face_colors(&theme, true, ToggleInteract::default());
+            let off = toggle_face_colors(&theme, false, Interaction::default());
+            let on = toggle_face_colors(&theme, true, Interaction::default());
             assert_eq!(
                 on.track, theme.tokens.colors.intent.on_state,
                 "on-track is the on colour"
@@ -1132,14 +1118,14 @@ mod tests {
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let colors = &theme.tokens.colors;
-                let off = toggle_face_colors(&theme, false, ToggleInteract::default());
-                let on = toggle_face_colors(&theme, true, ToggleInteract::default());
+                let off = toggle_face_colors(&theme, false, Interaction::default());
+                let on = toggle_face_colors(&theme, true, Interaction::default());
                 let white = toggle_face_colors(
                     &theme,
                     true,
-                    ToggleInteract {
+                    Interaction {
                         hovered: true,
-                        ..ToggleInteract::default()
+                        ..Interaction::default()
                     },
                 );
                 assert_eq!(white.knob, colors.intent.on_state_mark, "{}", theme.name);
@@ -1181,11 +1167,11 @@ mod tests {
 
         {
             let theme = Theme::high_contrast();
-            let rest = toggle_face_colors(&theme, true, ToggleInteract::default());
+            let rest = toggle_face_colors(&theme, true, Interaction::default());
             let focused = toggle_face_colors(
                 &theme,
                 true,
-                ToggleInteract {
+                Interaction {
                     focused: true,
                     ..Default::default()
                 },
@@ -1211,7 +1197,7 @@ mod tests {
                 toggle_face_colors(
                     &theme,
                     true,
-                    ToggleInteract {
+                    Interaction {
                         hovered: true,
                         ..Default::default()
                     }

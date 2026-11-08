@@ -99,8 +99,6 @@ impl RootReceipt {
 fn refused() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid selected-open envelope")
 }
-/// # Errors
-/// Refuses malformed, invalid or oversized selected-open wire values.
 pub fn decode_root_request(bytes: &[u8]) -> io::Result<RootRequest> {
     let value: RootRequest = decode(bytes)?;
     if !value.valid() {
@@ -108,16 +106,12 @@ pub fn decode_root_request(bytes: &[u8]) -> io::Result<RootRequest> {
     }
     Ok(value)
 }
-/// # Errors
-/// Refuses malformed, invalid or oversized selected-open wire values.
 pub fn encode_receipt(value: &RootReceipt) -> io::Result<Vec<u8>> {
     if !value.valid() {
         return Err(refused());
     }
     encode(value)
 }
-/// # Errors
-/// Refuses malformed, invalid or oversized selected-open wire values.
 pub fn decode_receipt(bytes: &[u8]) -> io::Result<RootReceipt> {
     let value: RootReceipt = decode(bytes)?;
     if !value.valid() {
@@ -125,8 +119,6 @@ pub fn decode_receipt(bytes: &[u8]) -> io::Result<RootReceipt> {
     }
     Ok(value)
 }
-/// # Errors
-/// Refuses malformed, invalid or oversized selected-open wire values.
 pub fn decode_request(bytes: &[u8]) -> io::Result<Request> {
     let value: Request = decode(bytes)?;
     if !value.valid() {
@@ -134,8 +126,6 @@ pub fn decode_request(bytes: &[u8]) -> io::Result<Request> {
     }
     Ok(value)
 }
-/// # Errors
-/// Refuses malformed, invalid or oversized selected-open wire values.
 pub fn encode<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
     if bytes.is_empty() || bytes.len() > MAX_WIRE_BYTES {
@@ -227,16 +217,12 @@ impl RootReply {
         }
     }
 }
-/// # Errors
-/// Refuses malformed, invalid or oversized selected-open wire values.
 pub fn encode_reply(reply: &RootReply) -> io::Result<Vec<u8>> {
     if !reply.valid() {
         return Err(refused());
     }
     encode(reply)
 }
-/// # Errors
-/// Refuses malformed, invalid or oversized selected-open wire values.
 pub fn decode_reply(bytes: &[u8]) -> io::Result<RootReply> {
     let value: RootReply = decode(bytes)?;
     if !value.valid() {
@@ -434,8 +420,6 @@ impl ObservedOpenReply {
             && self.target.request_id == self.request_id
     }
 }
-/// # Errors
-/// Refuses unknown commands, malformed labels or values exceeding the bound.
 pub fn decode_command(bytes: &[u8]) -> io::Result<RootCommand> {
     let value: RootCommand = decode(bytes)?;
     if !value.valid() {
@@ -443,34 +427,12 @@ pub fn decode_command(bytes: &[u8]) -> io::Result<RootCommand> {
     }
     Ok(value)
 }
-/// # Errors
-/// Refuses malformed or oversized claim replies.
-pub fn decode_claim_reply(bytes: &[u8]) -> io::Result<ClaimReply> {
-    let value: ClaimReply = decode(bytes)?;
-    if !value.valid() {
-        return Err(refused());
-    }
-    Ok(value)
-}
-/// # Errors
-/// Refuses malformed or oversized target replies.
-pub fn decode_target_reply(bytes: &[u8]) -> io::Result<TargetReply> {
-    let value: TargetReply = decode(bytes)?;
-    if !value.valid() {
-        return Err(refused());
-    }
-    Ok(value)
-}
-/// # Errors
-/// Refuses malformed or oversized observed launch replies.
 pub fn encode_observed(value: &ObservedOpenReply) -> io::Result<Vec<u8>> {
     if !value.valid() {
         return Err(refused());
     }
     encode(value)
 }
-/// # Errors
-/// Refuses malformed or oversized observed launch replies.
 pub fn decode_observed(bytes: &[u8]) -> io::Result<ObservedOpenReply> {
     let value: ObservedOpenReply = decode(bytes)?;
     if !value.valid() {
@@ -480,8 +442,6 @@ pub fn decode_observed(bytes: &[u8]) -> io::Result<ObservedOpenReply> {
 }
 /// Destination spelling derived from an already bounded navigation component.
 /// It grants no access to the original path or source filesystem.
-/// # Errors
-/// Refuses an invalid component sequence.
 pub fn selected_destination(components: &[Vec<u8>]) -> io::Result<String> {
     if !valid_components(components) {
         return Err(refused());

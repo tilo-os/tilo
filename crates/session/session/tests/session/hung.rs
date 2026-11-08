@@ -1,7 +1,6 @@
-//! An app that stops answering: its window says so over the desk, the desk
-//! offers to wait for it or to quit it, and the person's choice reaches the
-//! compositor. The client that stops answering is a real one, and the desk is
-//! the session's own.
+//! An app that stops answering: its window says so over the desk, the desk offers to wait for it or
+//! to quit it, and the person's choice reaches the compositor. The client that stops answering is a
+//! real one, and the desk is the session's own.
 
 use super::*;
 use serde_json::json;
@@ -19,8 +18,8 @@ fn later(ms: u64) -> Instant {
         .expect("in range")
 }
 
-/// Click the middle of the window at `rect`: the app given input is the app
-/// the compositor asks to answer.
+/// Click the middle of the window at `rect` : the app given input is the app the compositor asks to
+/// answer.
 fn click(session: &mut Session, rect: (i32, i32, i32, i32)) {
     let (x, y, width, height) = rect;
     session
@@ -149,9 +148,8 @@ fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_
         "force-quit-app",
         &json!({ "tab": tab.to_string() }),
     );
-    // The compositor ends that app's connection alone, and the desk says
-    // nothing more of it. The app reads the error and its window goes, as a
-    // real app's event loop would.
+    // The compositor ends that app's connection alone, and the desk says nothing more of it. The
+    // app reads the error and its window goes, as a real app's event loop would.
     assert!(session.compositor().not_responding_windows().is_empty());
     stuck.exchange();
     until_answered(

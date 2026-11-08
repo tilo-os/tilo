@@ -323,14 +323,6 @@ pub struct Invocation {
     pub bind: Option<String>,
 }
 
-impl Invocation {
-    /// Whether this step expects the door to refuse it.
-    #[must_use]
-    pub fn expects_refusal(&self) -> bool {
-        self.expect_error.is_some()
-    }
-}
-
 /// One thing done to the surface rather than to the model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "input", rename_all = "snake_case", deny_unknown_fields)]
@@ -494,7 +486,7 @@ impl StateQuery {
     }
 }
 
-/// [`StepKind::name`]: a step kind's wire name, for a report that names the
+/// [`StepKind::name`] — a step kind's wire name, for a report that names the
 /// step a scenario could not take.
 impl StepKind {
     #[must_use]

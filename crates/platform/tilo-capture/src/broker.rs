@@ -234,10 +234,6 @@ fn recv_with_fd(socket: &UnixDatagram) -> io::Result<Option<(Vec<u8>, Option<Own
 pub trait Policy: Send + Sync {
     /// Whether a capture of `device` may start now, asking the person where
     /// nobody has decided yet.
-    ///
-    /// # Errors
-    ///
-    /// Why it may not; the app is told this.
     fn admit(&self, device: DeviceKind) -> Result<(), String>;
     /// Whether a running capture of `device` may go on.
     fn allows(&self, device: DeviceKind) -> bool;
@@ -270,10 +266,6 @@ impl Sources for SystemSources {
 /// Serve one app's capture requests on `control` until it closes it: each
 /// admitted by `policy` is captured from `sources` on a thread of its own
 /// and streamed until the app hangs up or `policy` stops allowing it.
-///
-/// # Errors
-///
-/// Receiving on `control` failed.
 pub fn serve(
     control: &UnixDatagram,
     policy: &Arc<dyn Policy>,

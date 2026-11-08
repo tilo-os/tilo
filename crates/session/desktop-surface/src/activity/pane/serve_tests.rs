@@ -64,7 +64,7 @@ fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_workspace_alone()
     let before = pane.serve_summary();
     assert_eq!(before.workspace, "Design review");
     assert!(!before.briefs.is_empty(), "a peer's changes are new");
-    let unread = pane.glance_signal(workspace).1;
+    let unread = pane.passive_unread;
     assert!(unread > 0);
 
     let outcome = pane
@@ -72,20 +72,18 @@ fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_workspace_alone()
             wire::MARK_VIEWED,
             &serde_json::from_value(serde_json::json!({ "entries": shown(&before) })).unwrap(),
             &mut tree,
-            None,
         )
         .expect("marking what was shown viewed");
     assert!(outcome.handled);
     let after = pane.serve_summary();
     assert!(after.briefs.is_empty(), "what was shown is no longer new");
-    assert_eq!(pane.glance_signal(workspace).1, 0);
+    assert_eq!(pane.passive_unread, 0);
     assert_eq!(tree.doc.get_heads(), heads, "seeing history writes nothing");
 }
 
-/// Two people in one workspace, each with Activity open on their own device:
-/// what is new is each person's own. One marking it viewed moves only their
-/// summary and unread count; it writes nothing to the workspace the other could
-/// receive.
+/// Two people in one workspace, each with Activity open on their own device: what is new is each
+/// person's own. One marking it viewed moves only their summary and unread count; it writes nothing
+/// to the workspace the other could receive.
 #[test]
 fn two_people_in_one_workspace_each_see_their_own_whats_new() {
     let (mut mine, workspace) = workspace_a_peer_changed();
@@ -99,7 +97,7 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
         pane.begin_summary(workspace);
     }
     let theirs_before = their_pane.serve_summary();
-    let their_unread = their_pane.glance_signal(workspace).1;
+    let their_unread = their_pane.passive_unread;
     assert!(!theirs_before.briefs.is_empty() && their_unread > 0);
 
     let shown_to_me = shown(&my_pane.serve_summary());
@@ -108,11 +106,10 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
             wire::MARK_VIEWED,
             &serde_json::from_value(serde_json::json!({ "entries": shown_to_me })).unwrap(),
             &mut mine,
-            None,
         )
         .expect("marking what was shown viewed");
     assert!(my_pane.serve_summary().briefs.is_empty());
-    assert_eq!(my_pane.glance_signal(workspace).1, 0);
+    assert_eq!(my_pane.passive_unread, 0);
 
     // Whatever my device has that theirs lacks reaches theirs.
     let sent = mine.export_changes_since(&theirs.doc.get_heads());
@@ -127,7 +124,7 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
         theirs_before,
         "their what's new is as it was"
     );
-    assert_eq!(their_pane.glance_signal(workspace).1, their_unread);
+    assert_eq!(their_pane.passive_unread, their_unread);
 
     their_pane
         .serve_action(
@@ -135,7 +132,6 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
             &serde_json::from_value(serde_json::json!({ "entries": shown(&theirs_before) }))
                 .unwrap(),
             &mut theirs,
-            None,
         )
         .expect("they mark what they were shown viewed");
     assert!(their_pane.serve_summary().briefs.is_empty());
@@ -191,7 +187,6 @@ fn the_feed_lists_newest_first_and_a_range_selects_by_id() {
             compare: false,
         },
         &mut tree,
-        None,
     );
     assert!(!detail.gone);
     assert!(!detail.title.is_empty());
@@ -201,7 +196,6 @@ fn the_feed_lists_newest_first_and_a_range_selects_by_id() {
             compare: false,
         },
         &mut tree,
-        None,
     );
     assert!(gone.gone, "a change not in the history has no detail");
 
@@ -260,7 +254,6 @@ fn a_deep_link_is_offered_until_an_app_shows_it() {
             .cloned()
             .unwrap(),
         &mut tree,
-        None,
     )
     .unwrap();
     assert_eq!(

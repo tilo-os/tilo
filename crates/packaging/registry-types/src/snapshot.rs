@@ -183,9 +183,6 @@ pub fn snapshot_signing_message(
 
 /// Hash identifying the exact signed snapshot, used as the next snapshot's
 /// predecessor and by clients' durable anti-rollback checkpoints.
-///
-/// # Errors
-/// Returns an encoding error if the signed snapshot cannot be serialized.
 pub fn snapshot_hash(snapshot: &SignedRegistrySnapshot) -> Result<String, SnapshotError> {
     let bytes = postcard::to_stdvec(snapshot).map_err(|_| SnapshotError::Encoding)?;
     Ok(blake3::hash(&bytes).to_hex().to_string())

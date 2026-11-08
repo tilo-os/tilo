@@ -33,10 +33,6 @@ pub(super) enum NativeGate {
 
 impl AppBrokerState {
     /// Decide how `reask`'s child may start.
-    ///
-    /// # Errors
-    /// The child waits for the person, the person declined it, or the run
-    /// or action can no longer be read.
     pub(super) fn native_confirmation_gate(
         &self,
         reask: &ChildReask<'_>,

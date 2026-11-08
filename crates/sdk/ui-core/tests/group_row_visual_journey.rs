@@ -22,6 +22,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
+use crate::support::render::{pixel_hash, write_png};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -91,28 +92,8 @@ fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
     renderer.render(&scene, bg)
 }
 
-fn pixel_hash(buf: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in buf {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    h
-}
-
-fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
-    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
-        return;
-    };
-    let path = std::path::Path::new(&dir).join(format!("{name}.png"));
-    std::fs::create_dir_all(&dir).ok();
-    tilo_ui::png::write_rgba8(&path, w, h, rgba).expect("write screenshot png");
-    eprintln!("wrote {} to {}", name, path.display());
-}
-
 #[test]
 fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
-    // Case `group_row_visual_journey_distinguishes_all_states`.
     // Every state must produce a distinct pixel hash; if any two match, a
     // layout or paint invariant has regressed.
     {
@@ -140,7 +121,7 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
 
             let baseline = render_row(&mut renderer, &mut row);
             let baseline_hash = pixel_hash(&baseline);
-            maybe_write_png(&baseline, w, h, "group_row_baseline");
+            write_png("group_row_baseline", w, h, &baseline);
 
             // Group 0 now has 2 pills, group 1 has 3 — distribution across the
             // row visibly shifts left-to-right.
@@ -150,7 +131,7 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
             );
             let after_transfer = render_row(&mut renderer, &mut row);
             let after_transfer_hash = pixel_hash(&after_transfer);
-            maybe_write_png(&after_transfer, w, h, "group_row_after_transfer");
+            write_png("group_row_after_transfer", w, h, &after_transfer);
             assert_ne!(
                 baseline_hash, after_transfer_hash,
                 "transferring a tab between groups must change the rendered output",
@@ -164,7 +145,7 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
             );
             let after_split = render_row(&mut renderer, &mut row);
             let after_split_hash = pixel_hash(&after_split);
-            maybe_write_png(&after_split, w, h, "group_row_after_split");
+            write_png("group_row_after_split", w, h, &after_split);
             assert_ne!(
                 baseline_hash, after_split_hash,
                 "splitting a tab into a new group must change the rendered output",
@@ -177,7 +158,6 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
         group_row_visual_journey_distinguishes_all_states();
     }
 
-    // Case `group_row_fresh_render_is_deterministic`.
     // Without this, the journey test's pixel-hash comparisons are
     // meaningless. "The same image" isn't "the same bytes": the GPU
     // rasteriser may move an antialiased edge pixel one 8-bit step between
@@ -218,7 +198,6 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
 )]
 #[test]
 fn group_row_maximize_and_reorder_paint_visibly() {
-    // Case `group_row_maximized_paints_distinct_pixels_and_fades_siblings`.
     // Verified by checking the maximized group's stored rect absorbs the
     // row's full inner width while fading siblings keep their tiled width.
     {
@@ -241,12 +220,12 @@ fn group_row_maximize_and_reorder_paint_visibly() {
 
             let baseline = render_row(&mut renderer, &mut row);
             let baseline_hash = pixel_hash(&baseline);
-            maybe_write_png(&baseline, w, h, "group_row_maximize_baseline");
+            write_png("group_row_maximize_baseline", w, h, &baseline);
 
             row.groups[1].maximized = true;
             let maximized = render_row(&mut renderer, &mut row);
             let maximized_hash = pixel_hash(&maximized);
-            maybe_write_png(&maximized, w, h, "group_row_maximized");
+            write_png("group_row_maximized", w, h, &maximized);
 
             assert_ne!(
                 baseline_hash, maximized_hash,
@@ -280,7 +259,6 @@ fn group_row_maximize_and_reorder_paint_visibly() {
         group_row_maximized_paints_distinct_pixels_and_fades_siblings();
     }
 
-    // Case `group_row_reorder_drop_indicator_is_visible_mid_drag`.
     // Grab a group's tab-bar background, drag past a sibling, and render the
     // in-flight state — the drop-rule accent at the target gap must make the
     // frame visibly differ from the idle strip.
@@ -303,7 +281,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
             ]);
 
             let idle = render_row(&mut renderer, &mut row);
-            maybe_write_png(&idle, w, h, "group_row_reorder_idle");
+            write_png("group_row_reorder_idle", w, h, &idle);
 
             // Lay out so child rects populate, then read geometry for the gesture.
             let (taffy, root) = lay_out(&mut row, w, h);
@@ -355,7 +333,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
             // No reorder is committed yet, so group positions are unchanged;
             // the drop indicator paints from the retained target.
             let mid = render_row(&mut renderer, &mut row);
-            maybe_write_png(&mid, w, h, "group_row_reorder_mid");
+            write_png("group_row_reorder_mid", w, h, &mid);
 
             assert_ne!(
                 pixel_hash(&idle),

@@ -60,7 +60,10 @@ device identity is unavailable, or the store belongs to another device
 identity or is damaged. Then a new identity key falls back to the file store
 above and Settings says so, while a key already in the Secret Service fails to
 load: it is neither re-keyed nor moved to a file, and the store file is never
-replaced, so the key loads again once the device identity is back.
+replaced, so the key loads again once the device identity is back. A machine copied from
+another one re-keys its device identity at boot and re-seals each person's
+store to the new key before anything opens it
+([workspace.md](architecture/workspace.md#a-machine-copied-from-another)).
 
 Metadata replacement uses an exclusive no-follow temporary file, fsync,
 rename, and directory fsync. Record and secret reads open once with

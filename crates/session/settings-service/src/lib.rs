@@ -12,8 +12,8 @@
 //! document's own history, as they do in Settings' window.
 //!
 //! Beside them it publishes every setting people look for by name
-//! ([`settings_store::index`]) that search can change in place, under
-//! [`INDEX`]: a yes-or-no setting is a switch that says whether it is on
+//! ([`settings_store::index`]) that search can change in place,
+//! under [`INDEX`]: a yes-or-no setting is a switch that says whether it is on
 //! and flips; a setting holding one of a few values offers each value by
 //! its name; a setting set to a value (a timer, the keyboard layout) takes
 //! one. Each runs the section's own field edit or verb, as the control in

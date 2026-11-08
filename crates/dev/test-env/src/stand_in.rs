@@ -74,10 +74,6 @@ impl Drop for Lifeline {
 /// asked (`printf '%s\n' "$$" >> '…'`), then calls `hold` where the program
 /// it stands in for would keep running. A stand-in that only records and
 /// exits needs no `hold`, and still gets the atomic write of [`script`].
-///
-/// # Errors
-///
-/// Returns the I/O error if the script or its FIFO cannot be written.
 pub fn stand_in(path: impl AsRef<Path>, body: &str) -> io::Result<StandIn> {
     let path = path.as_ref();
     let name = path

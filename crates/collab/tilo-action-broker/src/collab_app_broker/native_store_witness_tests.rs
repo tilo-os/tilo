@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "every test here keeps its fixture and guards alive through its assertions"
+)]
 //! Native Store submissions keep task custody and require exact host disclosure consent.
 use super::*;
 use crate::app_actions::{AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest};
@@ -177,10 +181,6 @@ fn provision_receipt_signer(
     .unwrap();
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() {
     let identity = tempfile::tempdir().unwrap();
@@ -278,10 +278,6 @@ impl crate::services::LauncherServices for StoreLauncher {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_draft() {
     let identity = tempfile::tempdir().unwrap();

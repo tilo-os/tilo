@@ -1,15 +1,13 @@
-//! This session's way onto the person's certified devices: the fabric state
-//! it holds ([`tilo_device_fabric::runtime::FabricRuntime`]), the commands
-//! that carry it to their other devices, and what a service on the fabric
-//! can ask of them.
-//!
-//! A session that took part as nobody — no certificate of the person's —
-//! keeps no fabric and is handed to nothing: there would be no device to
-//! name as the author of what it copies.
+//! This session's way onto the person's certified devices: the fabric state it holds
+//! ([`tilo_device_fabric::runtime::FabricRuntime`]), the commands that carry it to their other
+//! devices, and what a service on the fabric can ask of them.
+//! A session that took part as nobody — no certificate of the person's — keeps no fabric and is
+//! handed to nothing: there would be no device to name as the author of what it copies.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use iroh::EndpointId;
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
@@ -36,7 +34,7 @@ pub struct Continuity {
 
 impl Continuity {
     /// Take the switches from a settings document, as Settings writes it.
-    pub(crate) fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
+    pub fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
         let section = document.get("continuity");
         let on = |name: &str| match section {
             None => settings_store::continuity_privacy::ON_UNLESS_SET,
@@ -75,20 +73,18 @@ impl Continuity {
     }
 }
 
-/// The session's own link to the person's other devices: the fabric it
-/// converges, and the way its frames leave.
+/// The session's own link to the person's other devices: the fabric it converges, and the way its
+/// frames leave.
 pub(crate) struct SessionFabric {
     runtime: Arc<Mutex<FabricRuntime>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
-    /// The person's root key: a frame goes only to the devices that proved a
-    /// certificate of it.
+    /// The person's root key: a frame goes only to the devices that proved a certificate of it.
     user_public_key: [u8; 32],
-    /// This device's key: what a credential one of the person's devices
-    /// sealed for it opens with.
+    /// This device's key: what a credential one of the person's devices sealed for it opens with.
     device_signing_key: ed25519_dalek::SigningKey,
     continuity: Continuity,
-    /// This session's Nearby Send, once the session made it: where the bytes
-    /// of a transfer one of the person's devices offers or streams come in.
+    /// This session's Nearby Send, once the session made it: where the bytes of a transfer one of
+    /// the person's devices offers or streams come in.
     nearby: Mutex<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
 }
 
@@ -118,16 +114,14 @@ impl SessionFabric {
         })
     }
 
-    /// This session's Nearby Send takes what the person's devices offer and
-    /// stream here.
+    /// This session's Nearby Send takes what the person's devices offer and stream here.
     pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
         *self.nearby.lock_recover() = Some(nearby);
     }
 
-    /// One of the person's devices proved itself on its session with this
-    /// one. What it proves is the grant to tell it this device's fabric, so
-    /// it is told at once: both sides announce on the session's start and
-    /// neither has to ask first.
+    /// One of the person's devices proved itself on its session with this one. What it proves is
+    /// the grant to tell it this device's fabric, so it is told at once: both sides announce on the
+    /// session's start and neither has to ask first.
     pub(crate) fn sibling(
         &self,
         peer: EndpointId,
@@ -140,16 +134,21 @@ impl SessionFabric {
         self.announce();
     }
 
-    /// The session with one of the person's devices ended: it is no longer
-    /// here, and what it said stays as what it last said.
+    /// The session with one of the person's devices ended: it is no longer here, and what it said
+    /// stays as what it last said.
     pub(crate) fn sibling_left(&self, peer: EndpointId) {
         self.runtime.lock_recover().sibling_left(peer);
     }
 
-    /// Take one frame of the fabric a device sent on its session: what it
-    /// says of itself, an action for this device, or its request for this
-    /// device's fabric.
-    pub(crate) fn arrived(&self, peer: EndpointId, payload: &PersonalFabricPayload) {
+    /// Take one frame of the fabric a device sent on its session, at the moment the transport took
+    /// it: what it says of itself, an action for this device, or its request for this device's
+    /// fabric.
+    pub(crate) fn arrived(
+        &self,
+        peer: EndpointId,
+        payload: &PersonalFabricPayload,
+        received: Instant,
+    ) {
         match payload {
             PersonalFabricPayload::Snapshot(bytes) => {
                 let taken = self.runtime.lock_recover().snapshot(peer, bytes);
@@ -161,6 +160,15 @@ impl SessionFabric {
                 let taken = self.runtime.lock_recover().action(peer, bytes);
                 match taken {
                     Ok(Some(action)) => {
+                        // A clock probe is answered where its frame arrived,
+                        // and a report is measured from there: the exchange is
+                        // worth only the timestamps it carries.
+                        let device = self.runtime.lock_recover().device_behind(peer);
+                        if let Some(device) = device
+                            && tilo_device_fabric::clock::arrived(self, &device, &action, received)
+                        {
+                            return;
+                        }
                         tracing::debug!(%peer, action = ?action, "an action from one of the person's devices");
                     }
                     Ok(None) => {}
@@ -169,14 +177,12 @@ impl SessionFabric {
                     }
                 }
             }
-            // The other side has none of this device's fabric yet: it gets
-            // what this device says of itself, whether or not anything
-            // changed since the last announcement.
+            // The other side has none of this device's fabric yet: it gets what this device says of
+            // itself, whether or not anything changed since the last announcement.
             PersonalFabricPayload::Request => self.announce(),
-            // Where one of the person's devices says its outputs stand, and
-            // what their hardware says: the fabric admits both for the exact
-            // revision the device's own record carries, and the shared
-            // arrangement reads them from there.
+            // Where one of the person's devices says its outputs stand, and what their hardware
+            // says: the fabric admits both for the exact revision the device's own record carries,
+            // and the shared arrangement reads them from there.
             PersonalFabricPayload::DisplayConnectors { stamp, outputs } => {
                 let taken = self.runtime.lock_recover().observe_display_connectors(
                     peer,
@@ -197,8 +203,8 @@ impl SessionFabric {
                     tracing::warn!(%error, %peer, "a device's output facts are not taken");
                 }
             }
-            // The bytes of a Nearby Send this device took: the transfer
-            // engine holds them for the device that proved itself here.
+            // The bytes of a Nearby Send this device took: the transfer engine holds them for the
+            // device that proved itself here.
             PersonalFabricPayload::NearbyTransfer(frame) => {
                 let nearby = self.nearby.lock_recover().clone();
                 let device = self.runtime.lock_recover().device_behind(peer);
@@ -206,10 +212,9 @@ impl SessionFabric {
                     nearby.frame(&device, frame);
                 }
             }
-            // What the person's devices carry for each other beyond the
-            // fabric state this session keeps — records — belongs to their
-            // own planes; this session routes none of it and drops it rather
-            // than half-handling it.
+            // What the person's devices carry for each other beyond the fabric state this session
+            // keeps — records — belongs to their own planes; this session routes none of it and
+            // drops it rather than half-handling it.
             PersonalFabricPayload::Document { .. }
             | PersonalFabricPayload::RecordContentWant { .. }
             | PersonalFabricPayload::RecordContentPiece { .. }
@@ -217,10 +222,9 @@ impl SessionFabric {
         }
     }
 
-    /// Tell the person's other devices what this device says of itself, when
-    /// its record moved since the last announcement: a copy it made that its
-    /// clipboard now shares, or a restarted session. Nothing is announced
-    /// while nothing moved.
+    /// Tell the person's other devices what this device says of itself, when its record moved since
+    /// the last announcement: a copy it made that its clipboard now shares, or a restarted session.
+    /// Nothing is announced while nothing moved.
     pub(crate) fn announce_if_changed(&self) {
         let mut runtime = self.runtime.lock_recover();
         if !runtime.changed() {
@@ -233,8 +237,8 @@ impl SessionFabric {
         self.announce_display();
     }
 
-    /// Tell the person's other devices where this device's displays stand
-    /// and what their hardware says, on the revision its record announced.
+    /// Tell the person's other devices where this device's displays stand and what their hardware
+    /// says, on the revision its record announced.
     fn announce_display(&self) {
         let display = self.runtime.lock_recover().local_display();
         let Some((stamp, connectors, outputs)) = display else {
@@ -264,10 +268,15 @@ impl SessionFabric {
         self.announce_display();
     }
 
-    /// The actions addressed to this device since the last call, for the
-    /// session's pass to route.
+    /// The actions addressed to this device since the last call, for the session's pass to route.
     pub(crate) fn take_actions(&self) -> Vec<PersonalFabricActionEnvelope> {
         self.runtime.lock_recover().take_actions()
+    }
+
+    /// Probe the clock of every peer something here holds in sync, and forget every estimate while
+    /// Media continuity is off: the session's loop calls this every pass.
+    pub(crate) fn pump_clock(&self) {
+        tilo_device_fabric::clock::pump(self, self.continuity.media_permitted());
     }
 
     fn publish(&self, target: Option<EndpointId>, payload: PersonalFabricPayload) {
@@ -340,8 +349,8 @@ impl FabricLink for SessionFabric {
                 .map_err(|error| PersonalFabricSendError::Rejected(error.to_string()))?;
             let bytes = postcard::to_allocvec(&envelope)
                 .map_err(|error| PersonalFabricSendError::Rejected(error.to_string()))?;
-            // The fabric is this device's own state, not the transport's:
-            // the frame leaves with the lock released.
+            // The fabric is this device's own state, not the transport's: the frame leaves with the
+            // lock released.
             let built = (request_id, endpoint, bytes);
             drop(runtime);
             built
@@ -481,14 +490,12 @@ impl FabricLink for SessionFabric {
     }
 }
 
-/// What this session does with the actions the person's other devices sent
-/// it: the services that take their own, and the offer a device's session
-/// becomes here.
+/// What this session does with the actions the person's other devices sent it: the services that
+/// take their own, and the offer a device's session becomes here.
 impl crate::Session {
-    /// Carry out one action one of the person's devices addressed to this
-    /// one. The speaker services take their own; a session another device
-    /// offers becomes the now-playing card's offer, which this device
-    /// continues from.
+    /// Carry out one action one of the person's devices addressed to this one. The speaker services
+    /// take their own; a session another device offers becomes the now-playing card's offer, which
+    /// this device continues from.
     pub(crate) fn route_fabric_action(
         &self,
         fabric: &tilo_device_fabric::link::SharedLink,
@@ -500,9 +507,9 @@ impl crate::Session {
         }
         match &envelope.action {
             PersonalFabricAction::ResumeMedia { .. } => self.offer_media(fabric, envelope),
-            // A notification an app sent on another of the person's devices
-            // is shown here named after that device; what the person does
-            // with one shown here goes back to where it came from.
+            // A notification an app sent on another of the person's devices is shown here named
+            // after that device; what the person does with one shown here goes back to where it
+            // came from.
             PersonalFabricAction::NotificationProject { notification } => {
                 self.show_remote_notification(fabric, envelope, notification);
             }
@@ -512,18 +519,17 @@ impl crate::Session {
                     .borrow()
                     .remote_retire(&envelope.source, *id);
             }
-            // A choice on one this device projected: the app's notification
-            // closes here, and every copy goes with it.
+            // A choice on one this device projected: the app's notification closes here, and every
+            // copy goes with it.
             PersonalFabricAction::NotificationDismiss { .. }
             | PersonalFabricAction::NotificationInvoke { .. } => {
                 self.shared.notifications.borrow_mut().answered(&envelope.action);
             }
-            // Nothing on this session holds a media offer, and what the
-            // person's devices send each other that no service here carries —
-            // placement, input, accessories, files, calls, displays, wake —
-            // is dropped rather than half-acted on. The speaker services and
-            // the certification above answer for theirs; the rest reach here
-            // only when their own preconditions refuse.
+            // Nothing on this session holds a media offer, and what the person's devices send each
+            // other that no service here carries — placement, input, accessories, files, calls,
+            // displays, wake — is dropped rather than half-acted on. The speaker services and the
+            // certification above answer for theirs; the rest reach here only when their own
+            // preconditions refuse.
             PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
             | PersonalFabricAction::MediaCancelled { .. }
@@ -536,17 +542,17 @@ impl crate::Session {
             | PersonalFabricAction::SpatialInputSequenced { .. }
             | PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
-            // A Nearby Send reaches no session here: the client that carries
-            // one hands its offer, checkpoint, withdrawal and ending to its
-            // own engine, so what is left is a session running none.
+            // A Nearby Send reaches no session here: the client that carries one hands its offer,
+            // checkpoint, withdrawal and ending to its own engine, so what is left is a session
+            // running none.
             | PersonalFabricAction::NearbyTransferOffer { .. }
             | PersonalFabricAction::NearbyTransferReady { .. }
             | PersonalFabricAction::NearbyTransferCancel { .. }
             | PersonalFabricAction::NearbyTransferRestart { .. }
             | PersonalFabricAction::NearbyTransferResult { .. }
-            // A move of a Bluetooth accessory between devices that was not
-            // addressed to this session's person ([`Shared::bluetooth`]
-            // answers for those) is somebody else's to carry.
+            // A move of a Bluetooth accessory between devices that was not addressed to this
+            // session's person ([`Shared::bluetooth`] answers for those) is somebody else's to
+            // carry.
             | PersonalFabricAction::BluetoothHandoffPrepare { .. }
             | PersonalFabricAction::BluetoothHandoffPrepared { .. }
             | PersonalFabricAction::BluetoothHandoffCommit { .. }
@@ -555,30 +561,33 @@ impl crate::Session {
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. }
-            | PersonalFabricAction::RealtimeOffer { .. }
-            | PersonalFabricAction::RealtimeAccept { .. }
-            | PersonalFabricAction::RealtimeMediaReady { .. }
-            | PersonalFabricAction::RealtimeStopSource { .. }
-            | PersonalFabricAction::RealtimeCancel { .. }
+            // What no build sends and the fabric refuses before it reaches here; the variants stay
+            // for the wire's numbering alone.
+            | PersonalFabricAction::RetiredRealtimeOffer
+            | PersonalFabricAction::RetiredRealtimeAccept
+            | PersonalFabricAction::RetiredRealtimeMediaReady
+            | PersonalFabricAction::RetiredRealtimeStopSource
+            | PersonalFabricAction::RetiredRealtimeCancel
+            | PersonalFabricAction::RetiredRemoteCaptureSignal
+            | PersonalFabricAction::RetiredRemoteCaptureChunk
             | PersonalFabricAction::GamepadForwardRequest { .. }
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. }
-            | PersonalFabricAction::RemoteCaptureSignal { .. }
-            | PersonalFabricAction::RemoteCaptureChunk { .. }
-            | PersonalFabricAction::DeviceHealthProbe { .. }
-            | PersonalFabricAction::DeviceHealthReport { .. }
+            | PersonalFabricAction::RetiredDeviceHealthProbe
+            | PersonalFabricAction::RetiredDeviceHealthReport
+            | PersonalFabricAction::RetiredTethering
+            // A clock probe is answered where its frame arrived and a report measured from there,
+            // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
             | PersonalFabricAction::FabricClockReport { .. }
-            | PersonalFabricAction::Tethering { .. }
             | PersonalFabricAction::WakeDevice { .. }
             | PersonalFabricAction::WakeReport { .. }
             | PersonalFabricAction::WakeProbe { .. }
             | PersonalFabricAction::WakeProbeReply { .. }
             | PersonalFabricAction::WindowViews { .. }
             | PersonalFabricAction::ShowTab { .. }
-            // The device-certification exchange answered above, for the other
-            // door's preconditions.
+            // The device-certification exchange answered above, for the other door's preconditions.
             | PersonalFabricAction::CertifyAsk { .. }
             | PersonalFabricAction::CertifyAnswer { .. }
             | PersonalFabricAction::SpeakerGroupInvite { .. }
@@ -602,9 +611,9 @@ impl crate::Session {
         }
     }
 
-    /// Whether one of this session's services took `envelope`'s action:
-    /// a Bluetooth accessory's move, a device to wake, a certification, a
-    /// speaker service's. What they did not take is the session's own.
+    /// Whether one of this session's services took `envelope` 's action: a Bluetooth accessory's
+    /// move, a device to wake, a certification, a speaker service's. What they did not take is the
+    /// session's own.
     fn service_took(
         &self,
         fabric: &tilo_device_fabric::link::SharedLink,
@@ -644,15 +653,15 @@ impl crate::Session {
             .remote_project(&envelope.source, &label, notification);
     }
 
-    /// Offer what another device was playing as the now-playing card, so the
-    /// person can pick it up here.
+    /// Offer what another device was playing as the now-playing card, so the person can pick it up
+    /// here.
     fn offer_media(
         &self,
         fabric: &tilo_device_fabric::link::SharedLink,
         envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
     ) {
-        // What continues on this device follows the same media switch as what
-        // leaves it: with media continuity off here, the offer is not made.
+        // What continues on this device follows the same media switch as what leaves it: with media
+        // continuity off here, the offer is not made.
         if fabric.require_media().is_err() {
             return;
         }
@@ -679,9 +688,8 @@ impl crate::Session {
             tilo_device_fabric::MediaSourceLocator::AppResource { uri } => {
                 media::handoff::HandoffSource::AppResource { uri: uri.clone() }
             }
-            // What arrives that way is held in the receiving shell's verified
-            // transfer store, which this session has none of, so there is
-            // nothing here the card could resume.
+            // What arrives that way is held in the receiving shell's verified transfer store, which
+            // this session has none of, so there is nothing here the card could resume.
             tilo_device_fabric::MediaSourceLocator::PersonalTransfer { .. } => return,
         };
         let label = fabric

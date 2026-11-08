@@ -220,10 +220,10 @@ pub struct Journal {
     /// make.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<Principal>,
-    /// The key the run's outside effects are queued under, so that running it again queues
-    /// each of them once.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<String>,
+    /// How many outside effects the run has queued: the next one's key counts from it, so a run
+    /// that goes on after a wait queues none under a key it used.
+    #[serde(default)]
+    pub effects: u32,
     /// The run this one is a step of, when it was invoked from another run: its result goes
     /// back there and it goes on.
     #[serde(default, skip_serializing_if = "Option::is_none")]

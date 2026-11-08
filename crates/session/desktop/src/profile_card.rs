@@ -38,8 +38,7 @@ use crate::i18n::{t, t_args};
 use tilo_app::linked_accounts::service_icon;
 pub use tilo_app::linked_accounts::{LinkState, LinkedAccount};
 
-/// The words for a status preset.
-/// The words for one way of sharing what you are doing.
+/// The words for a status preset. The words for one way of sharing what you are doing.
 fn sharing_key(mode: ui::StatusSharing) -> &'static str {
     match mode {
         ui::StatusSharing::Automatic => "profile-sharing-auto",
@@ -100,46 +99,41 @@ pub struct ProfileAction {
 pub struct ProfileModel {
     /// The name everyone here sees.
     pub name: String,
-    /// The stable identity the avatar's colour and initials derive from
-    /// when the person chose no colour.
+    /// The stable identity the avatar's colour and initials derive from when the person chose no
+    /// colour.
     pub identity: String,
     pub colour: Option<Color>,
     pub can_rename: bool,
-    /// The person has not named themselves yet (`name` is their login
-    /// account's): the card asks, once, for the name people here should
-    /// see, until they give one.
+    /// The person has not named themselves yet (`name` is their login account's): the card asks,
+    /// once, for the name people here should see, until they give one.
     pub ask_name: bool,
     pub actions: Vec<ProfileAction>,
-    /// The services the workspace is connected to, with the person's account
-    /// at each; none hides the section.
+    /// The services the workspace is connected to, with the person's account at each; none hides
+    /// the section.
     pub linked: Vec<LinkedAccount>,
     /// How available the person says they are.
     pub availability: ui::Availability,
     /// The short status they wrote, if any.
     pub status: String,
-    /// Whether what they are doing is shared on its own, only in their
-    /// words, or not at all; `None` where the host keeps no such choice.
+    /// Whether what they are doing is shared on its own, only in their words, or not at all; `None`
+    /// where the host keeps no such choice.
     pub sharing: Option<ui::StatusSharing>,
-    /// The colour they chose, by its id; `None` while their identity's own
-    /// colour is worn.
+    /// The colour they chose, by its id; `None` while their identity's own colour is worn.
     pub colour_id: Option<String>,
-    /// What the people in the workspace on screen see of them; `None`
-    /// outside any shared workspace.
+    /// What the people in the workspace on screen see of them; `None` outside any shared workspace.
     pub sight: Option<WorkspaceSight>,
-    /// The host keeps the person's status, colour and what people see:
-    /// the card offers them.
+    /// The host keeps the person's status, colour and what people see: the card offers them.
     pub offers_presence: bool,
-    /// Whether the desktop's control hints show; `None` where the host has
-    /// none to offer.
+    /// Whether the desktop's control hints show; `None` where the host has none to offer.
     pub control_hints: Option<bool>,
-    /// The person's root key (hex): the id that stays theirs on every
-    /// device and never changes, shown short with Copy.
+    /// The person's root key (hex): the id that stays theirs on every device and never changes,
+    /// shown short with Copy.
     pub key: Option<String>,
-    /// The devices the person is here on, each as it calls itself and as it
-    /// said it was: which of their machines are here.
+    /// The devices the person is here on, each as it calls itself and as it said it was: which of
+    /// their machines are here.
     pub devices: Vec<crate::here::PersonDevice>,
-    /// The card is about someone else: what they say they are doing and
-    /// what this person can do with them. `None` for the person's own card.
+    /// The card is about someone else: what they say they are doing and what this person can do
+    /// with them. `None` for the person's own card.
     pub other: Option<OtherPerson>,
 }
 
@@ -153,27 +147,26 @@ pub struct OtherPerson {
     pub status: Option<crate::collaborators::RosterStatus>,
     /// Where they are ("In Chat"), when it adds to the status.
     pub place: Option<String>,
-    /// How they said they are here; `None` for an agent, which says nothing
-    /// of it.
+    /// How they said they are here; `None` for an agent, which says nothing of it.
     pub presence: Option<ui::Availability>,
     /// This person follows their view now.
     pub following: bool,
     /// The host can follow them (bring forward what they are in).
     pub can_follow: bool,
-    /// The host can open the conversation this person has with them: their
-    /// root key is known and the app that holds it is here.
+    /// The host can open the conversation this person has with them: their root key is known and
+    /// the app that holds it is here.
     pub can_message: bool,
     /// Their accounts elsewhere, as their profile names them.
     pub linked: Vec<tilo_app::linked_accounts::ProfileLink>,
 }
 
-/// The most characters a linked account's line holds beside Unlink: the
-/// card is one utility panel wide, so longer is cut short, never wrapped.
+/// The most characters a linked account's line holds beside Unlink: the card is one utility panel
+/// wide, so longer is cut short, never wrapped.
 const LINKED_LINE_CHARS: usize = 22;
 
-/// A linked account on one line: its handle, and the name it shows when that
-/// is another, each cut short with an ellipsis to fit
-/// [`LINKED_LINE_CHARS`]; the name is left out before the handle is cut.
+/// A linked account on one line: its handle, and the name it shows when that is another, each cut
+/// short with an ellipsis to fit [`LINKED_LINE_CHARS`]; the name is left out before the handle is
+/// cut.
 fn linked_line(name: &tilo_app::linked_accounts::AccountName) -> (String, Option<String>) {
     let cut = |text: &str, room: usize| -> String {
         if text.chars().count() <= room {
@@ -194,8 +187,8 @@ fn linked_line(name: &tilo_app::linked_accounts::AccountName) -> (String, Option
     (handle, shown)
 }
 
-/// The host actions about the person's picture, which the card offers
-/// beside their avatar rather than in its list of identity actions.
+/// The host actions about the person's picture, which the card offers beside their avatar rather
+/// than in its list of identity actions.
 pub const SET_PHOTO: &str = "set-photo";
 pub const RESET_PHOTO: &str = "reset-photo";
 
@@ -227,8 +220,8 @@ pub enum ProfileChoice {
     Rename(String),
     /// The host's command, by id.
     Action(String),
-    /// Link the person's account with this connector's service (its app
-    /// id). The card stays open for the code.
+    /// Link the person's account with this connector's service (its app id). The card stays open
+    /// for the code.
     Link(String),
     /// Unlink the person's account with this connector's service.
     Unlink(String),
@@ -255,8 +248,8 @@ pub enum ProfileChoice {
 }
 
 impl ProfileChoice {
-    /// Whether the card closes on it: a linked account's choice keeps it
-    /// open to show what came of it.
+    /// Whether the card closes on it: a linked account's choice keeps it open to show what came of
+    /// it.
     fn closes(&self) -> bool {
         matches!(
             self,
@@ -266,12 +259,10 @@ impl ProfileChoice {
     }
 }
 
-/// The card behind the bar's own avatar.
-/// The card itself as a place keyboard focus can rest: opening the card is
-/// not editing, so focus lands here, on the whole card, rather than in its
-/// name field. A click on the field, or Tab, enters it. It lies under the
-/// card's content, filling it, draws nothing and takes no input; assistive
-/// technology reads it as the card.
+/// The card behind the bar's own avatar. The card itself as a place keyboard focus can rest:
+/// opening the card is not editing, so focus lands here, on the whole card, rather than in its name
+/// field. A click on the field, or Tab, enters it. It lies under the card's content, filling it,
+/// draws nothing and takes no input; assistive technology reads it as the card.
 struct CardFocus {
     rect: Rect,
     focused: bool,
@@ -374,13 +365,12 @@ pub struct ProfileCard {
     shown: String,
     chosen: Rc<RefCell<Option<ProfileChoice>>>,
     focus_reset: bool,
-    /// What the open card shows, to build it again when a linked account
-    /// changes, and the anchor and viewport it opened at.
+    /// What the open card shows, to build it again when a linked account changes, and the anchor
+    /// and viewport it opened at.
     model: Option<ProfileModel>,
     placed: (Rect, Rect),
-    /// The card's widgets were built again (it opened, or a linked account
-    /// changed while open): a layout that still maps the ones they replaced
-    /// must be built again before it reaches them.
+    /// The card's widgets were built again (it opened, or a linked account changed while open): a
+    /// layout that still maps the ones they replaced must be built again before it reaches them.
     replaced: bool,
 }
 
@@ -420,9 +410,8 @@ impl ProfileCard {
             })
     }
 
-    /// The person's stable id, short, with a button that copies it whole.
-    /// Their own card keeps it quiet, under their identity: it says who they
-    /// are, it is not what they came to change.
+    /// The person's stable id, short, with a button that copies it whole. Their own card keeps it
+    /// quiet, under their identity: it says who they are, it is not what they came to change.
     fn key_row(key: &str, quiet: bool) -> Box<dyn Widget> {
         let copy = key.to_owned();
         let shown = Text::new(&short_key(key))
@@ -455,8 +444,8 @@ impl ProfileCard {
         )
     }
 
-    /// What someone says they are doing: their own words plainly, a line
-    /// software wrote marked as automatic.
+    /// What someone says they are doing: their own words plainly, a line software wrote marked as
+    /// automatic.
     fn status_row(status: &crate::collaborators::RosterStatus) -> Box<dyn Widget> {
         let written = status.source == crate::collaborators::LineSource::Written;
         let row = ListRow::new("profile-other-status", status.text.clone()).two_line_title();
@@ -468,8 +457,8 @@ impl ProfileCard {
         })
     }
 
-    /// Someone else's card: who they are, what they are doing, and what
-    /// this person can do with them.
+    /// Someone else's card: who they are, what they are doing, and what this person can do with
+    /// them.
     fn other_body(&self, model: &ProfileModel, other: &OtherPerson) -> Column {
         let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
         if let Some(colour) = model.colour {
@@ -484,8 +473,8 @@ impl ProfileCard {
                     .with_role(TextRole::Subheading)
                     .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
             ));
-        // How they are here, under their name: their presence, before
-        // anything about where they are.
+        // How they are here, under their name: their presence, before anything about where they
+        // are.
         if let Some(presence) = other.presence {
             who = who.push(Box::new(
                 Text::new(&t(availability_key(presence)))
@@ -572,9 +561,9 @@ impl ProfileCard {
         body
     }
 
-    /// The devices someone is here on, each named as it calls itself and as
-    /// it said it was: the secondary row under who they are. The two are
-    /// separate facts, laid out with space between them.
+    /// The devices someone is here on, each named as it calls itself and as it said it was: the
+    /// secondary row under who they are. The two are separate facts, laid out with space between
+    /// them.
     fn devices_section(devices: &[crate::here::PersonDevice]) -> Column {
         let mut column = Column::new()
             .with_no_padding()
@@ -591,9 +580,9 @@ impl ProfileCard {
         column
     }
 
-    /// One row per device: what it calls itself (or, on a device that named
-    /// itself nothing, which one it is) and how available its person is
-    /// there. Its key is kept for a copy affordance, never shown as its name.
+    /// One row per device: what it calls itself (or, on a device that named itself nothing, which
+    /// one it is) and how available its person is there. Its key is kept for a copy affordance,
+    /// never shown as its name.
     fn device_rows(devices: &[crate::here::PersonDevice]) -> Vec<Box<dyn Widget>> {
         devices
             .iter()
@@ -637,8 +626,8 @@ impl ProfileCard {
             .collect()
     }
 
-    /// Change the picture, and take it away again, where the host offers
-    /// it: beside the avatar, not among the identity actions.
+    /// Change the picture, and take it away again, where the host offers it: beside the avatar, not
+    /// among the identity actions.
     fn photo_buttons(&self, model: &ProfileModel) -> Option<Box<dyn Widget>> {
         let offered = |id: &str| model.actions.iter().find(|action| action.id == id);
         let set = offered(SET_PHOTO)?;
@@ -677,16 +666,15 @@ impl ProfileCard {
                 t("profile-name"),
             ))
         } else {
-            // A name with no spaces (a key, before one is chosen) still
-            // wraps inside the card.
+            // A name with no spaces (a key, before one is chosen) still wraps inside the card.
             Box::new(
                 Text::new(&model.name)
                     .with_role(TextRole::Subheading)
                     .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
             )
         };
-        // Not named yet: in place of the hint, a field asking for the name
-        // people here should see. Gone once they give one.
+        // Not named yet: in place of the hint, a field asking for the name people here should see.
+        // Gone once they give one.
         let below: Box<dyn Widget> = if model.ask_name && !model.can_rename {
             Box::new(self.name_field(
                 "profile-add-name",
@@ -717,15 +705,14 @@ impl ProfileCard {
             return self.other_body(model, other);
         }
         let header = self.own_header(model);
-        // As tall as what the card says: the card is placed by its own
-        // content, so a column filling its parent would measure the card
-        // short and draw its last rows outside it.
+        // As tall as what the card says: the card is placed by its own content, so a column filling
+        // its parent would measure the card short and draw its last rows outside it.
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
             .with_intrinsic_height()
-            // First in the card's focus order: the card opens focused on
-            // itself, not in its name field.
+            // First in the card's focus order: the card opens focused on itself, not in its name
+            // field.
             .push(Box::new(CardFocus::new(t("profile-card"))))
             .push(Box::new(header));
         if let Some(photo) = self.photo_buttons(model) {
@@ -747,21 +734,20 @@ impl ProfileCard {
                 .filter(|action| action.group == group)
                 // The picture's are offered beside the avatar.
                 .filter(|action| action.id != SET_PHOTO && action.id != RESET_PHOTO)
-                // Keeping who you are and backing it up: the two clear
-                // asks, so a third overlapping one never competes here; the
-                // rest stay in search.
+                // Keeping who you are and backing it up: the two clear asks, so a third overlapping
+                // one never competes here; the rest stay in search.
                 .take(if group == ProfileGroup::Identity {
                     2
                 } else {
                     usize::MAX
                 })
                 .collect();
-            // The devices this person is here on are listed once, under
-            // the heading their pairing action shares.
+            // The devices this person is here on are listed once, under the heading their pairing
+            // action shares.
             let devices = (group == ProfileGroup::Devices && !model.devices.is_empty())
                 .then_some(model.devices.as_slice());
-            // Their own id, kept quiet under their identity: it says who they
-            // are, not what they came here to change.
+            // Their own id, kept quiet under their identity: it says who they are, not what they
+            // came here to change.
             let key = (group == ProfileGroup::Identity)
                 .then_some(model.key.as_deref())
                 .flatten();
@@ -828,8 +814,8 @@ impl ProfileCard {
         ))
     }
 
-    /// Where the host keeps only how what they do is shared (a page): what
-    /// they are doing in their own words, and how it is shared.
+    /// Where the host keeps only how what they do is shared (a page): what they are doing in their
+    /// own words, and how it is shared.
     fn page_sharing(&self, body: Column, model: &ProfileModel) -> Column {
         let body = body
             .push(Box::new(Divider::horizontal()))
@@ -842,8 +828,7 @@ impl ProfileCard {
         self.push_sharing(body, model)
     }
 
-    /// What they are doing in their own words: Enter says it, an empty
-    /// field clears it.
+    /// What they are doing in their own words: Enter says it, an empty field clears it.
     fn status_field(&self) -> TextInput {
         let chosen = Rc::clone(&self.chosen);
         TextInput::from_state(&self.status_draft)
@@ -855,8 +840,8 @@ impl ProfileCard {
             })
     }
 
-    /// Status, colour and what people see: how the person shows to others.
-    /// How what they are doing is shared, when the host keeps that choice.
+    /// Status, colour and what people see: how the person shows to others. How what they are doing
+    /// is shared, when the host keeps that choice.
     fn push_sharing(&self, body: Column, model: &ProfileModel) -> Column {
         let Some(current) = model.sharing else {
             return body;
@@ -932,8 +917,8 @@ impl ProfileCard {
         // Colour: the twelve people colours.
         let chosen = Rc::clone(&self.chosen);
         let hues = ui::tokens::PresenceHue::ALL;
-        // The colours as people travel in them: the dark material's presence
-        // palette, the one identity colours are defined at.
+        // The colours as people travel in them: the dark material's presence palette, the one
+        // identity colours are defined at.
         let palette = Theme::dark().tokens.colors.presence;
         let mut colours = ColorSwatchPicker::new(
             hues.iter()
@@ -946,8 +931,8 @@ impl ProfileCard {
                 *chosen.borrow_mut() = Some(ProfileChoice::Colour(hue.id().to_owned()));
             }
         });
-        // The colour they chose, or, until they choose one, the colour their
-        // identity wears: the card marks the one their face is drawn in.
+        // The colour they chose, or, until they choose one, the colour their identity wears: the
+        // card marks the one their face is drawn in.
         let worn = model
             .colour_id
             .as_deref()
@@ -962,8 +947,7 @@ impl ProfileCard {
         self.push_visibility(body, model)
     }
 
-    /// What the people in this workspace see of the person, when the
-    /// host keeps that choice.
+    /// What the people in this workspace see of the person, when the host keeps that choice.
     fn push_visibility(&self, mut body: Column, model: &ProfileModel) -> Column {
         let Some(sight) = &model.sight else {
             return body;
@@ -1023,9 +1007,9 @@ impl ProfileCard {
         )
     }
 
-    /// One service's row: connecting it, the account a link offers with
-    /// Link and Cancel, or the linked account with Unlink, and what went
-    /// wrong last. `me` is the person's name, as the offer asks it.
+    /// One service's row: connecting it, the account a link offers with Link and Cancel, or the
+    /// linked account with Unlink, and what went wrong last. `me` is the person's name, as the
+    /// offer asks it.
     fn linked_row(&self, account: &LinkedAccount, me: &str) -> Box<dyn Widget> {
         let service = || ui::i18n::ArgValue::Text(account.service.clone());
         let icon = service_icon(&account.app);
@@ -1034,8 +1018,8 @@ impl ProfileCard {
         let mut column = Column::new()
             .with_no_padding()
             .with_rhythm(ui::tokens::Rhythm::Tight)
-            // As tall as what it says: the card's body measures itself by
-            // its rows, and this one must answer with its own height.
+            // As tall as what it says: the card's body measures itself by its rows, and this one
+            // must answer with its own height.
             .with_intrinsic_height();
         match &account.state {
             LinkState::Unlinked { connect, elsewhere } => {
@@ -1086,8 +1070,7 @@ impl ProfileCard {
         Box::new(column)
     }
 
-    /// The account a link offers, asking whether to link it to `me`, with
-    /// Link and Cancel.
+    /// The account a link offers, asking whether to link it to `me` , with Link and Cancel.
     fn offered(
         &self,
         column: Column,
@@ -1181,9 +1164,8 @@ impl ProfileCard {
         let icon = service_icon(&account.app);
         let chosen = Rc::clone(&self.chosen);
         let app = account.app.clone();
-        // One line under the section's "Linked accounts": the handle, and
-        // the name the account shows when that is another, muted. Cut
-        // short rather than wrapped; read out whole.
+        // One line under the section's "Linked accounts": the handle, and the name the account
+        // shows when that is another, muted. Cut short rather than wrapped; read out whole.
         let (handle, shown) = linked_line(name);
         let mut who = Row::new()
             .no_wrap()
@@ -1242,8 +1224,8 @@ impl ProfileCard {
         self.replaced = true;
     }
 
-    /// Open the card for `model` under `anchor` (the own avatar) within
-    /// `viewport`, or close it when it is open.
+    /// Open the card for `model` under `anchor` (the own avatar) within `viewport` , or close it
+    /// when it is open.
     pub fn toggle(&mut self, model: &ProfileModel, anchor: Rect, viewport: Rect) {
         if self.is_open() {
             self.close();
@@ -1264,9 +1246,8 @@ impl ProfileCard {
         self.focus_reset = true;
     }
 
-    /// Keep the open card under `anchor` within `viewport` as they move:
-    /// a card opened while the page was still finding its size goes where
-    /// it belongs once it has. Whether it moved.
+    /// Keep the open card under `anchor` within `viewport` as they move: a card opened while the
+    /// page was still finding its size goes where it belongs once it has. Whether it moved.
     pub fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool {
         if !self.is_open() || self.placed == (anchor, viewport) || anchor.is_zero_area() {
             return false;
@@ -1278,9 +1259,9 @@ impl ProfileCard {
         true
     }
 
-    /// What came of a linked account's choice (a link made its code, an
-    /// account was linked or unlinked): the open card shows `linked` now.
-    /// They are the person's own, so someone else's card stays as it is.
+    /// What came of a linked account's choice (a link made its code, an account was linked or
+    /// unlinked): the open card shows `linked` now. They are the person's own, so someone else's
+    /// card stays as it is.
     pub fn set_linked(&mut self, linked: Vec<LinkedAccount>) {
         let Some(model) = self.model.as_mut().filter(|model| model.other.is_none()) else {
             return;
@@ -1291,8 +1272,8 @@ impl ProfileCard {
         model.linked = linked;
         let model = model.clone();
         if self.is_open() {
-            // The same card, its contents built again: the popover keeps
-            // where it is and the pointer it is tracking.
+            // The same card, its contents built again: the popover keeps where it is and the
+            // pointer it is tracking.
             let body = Box::new(self.body(&model));
             self.popover.content_mut().set_child(body);
             self.replaced = true;
@@ -1305,8 +1286,8 @@ impl ProfileCard {
         self.model.as_ref().map_or(&[], |model| &model.linked)
     }
 
-    /// Close the card. A name typed but not yet entered is kept, as a field
-    /// that loses focus keeps what was typed.
+    /// Close the card. A name typed but not yet entered is kept, as a field that loses focus keeps
+    /// what was typed.
     pub fn close(&mut self) {
         if self.is_open() {
             self.popover.close();
@@ -1435,8 +1416,7 @@ impl Widget for ProfileCard {
     }
 }
 
-/// What the desktop asks of a profile card, as the trait object
-/// [`PROFILE_CARD`] makes.
+/// What the desktop asks of a profile card, as the trait object [`PROFILE_CARD`] makes.
 pub trait ProfileCardApi: Widget {
     fn toggle(&mut self, model: &ProfileModel, anchor: Rect, viewport: Rect);
     fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool;
@@ -1467,8 +1447,7 @@ impl ProfileCardApi for ProfileCard {
     }
 }
 
-/// The profile card's code, as a program that fetches it on first use
-/// hands it over.
+/// The profile card's code, as a program that fetches it on first use hands it over.
 #[derive(Clone, Copy)]
 pub struct MakeProfileCard(fn() -> Box<dyn ProfileCardApi>);
 
@@ -1479,20 +1458,20 @@ pub fn builtin_profile_card() -> MakeProfileCard {
 }
 
 ui::lazy_code! {
-    /// The profile card's code: linked, or with `lazy-profile-card`
-    /// fetched the first time a card opens.
+    /// The profile card's code: linked, or with `lazy-profile-card` fetched the first time a card
+    /// opens.
     pub static PROFILE_CARD: MakeProfileCard = builtin_profile_card, feature = "lazy-profile-card";
 }
 
-/// A profile card whose code may still be on its way: it opens once it is
-/// in, and a quiet panel stands under the avatar meanwhile.
+/// A profile card whose code may still be on its way: it opens once it is in, and a quiet panel
+/// stands under the avatar meanwhile.
 pub struct LazyProfileCard {
     /// Where the card's code comes from: [`PROFILE_CARD`].
     code: &'static ui::lazy_code::LazyCode<MakeProfileCard>,
     card: Option<Box<dyn ProfileCardApi>>,
-    /// The card was asked to open before its code was in: with what, under
-    /// which anchor and in which viewport. Linked accounts that arrive
-    /// meanwhile go into this model, so the card opens showing them.
+    /// The card was asked to open before its code was in: with what, under which anchor and in
+    /// which viewport. Linked accounts that arrive meanwhile go into this model, so the card opens
+    /// showing them.
     opening: Option<(ProfileModel, Rect, Rect)>,
     /// The empty node a card that is not made yet lays out as.
     empty: Option<NodeId>,
@@ -1510,7 +1489,7 @@ impl LazyProfileCard {
         Self::default()
     }
 
-    /// A card whose code comes from `code`.
+    /// A card whose code comes from `code` .
     fn with_code(code: &'static ui::lazy_code::LazyCode<MakeProfileCard>) -> Self {
         Self {
             code,
@@ -1540,8 +1519,8 @@ impl LazyProfileCard {
         }
     }
 
-    /// Follow the anchor; whether the card moved. A card asked to open
-    /// before its code was in opens here once it is.
+    /// Follow the anchor; whether the card moved. A card asked to open before its code was in opens
+    /// here once it is.
     pub fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool {
         if let Some((model, _, _)) = self.opening.as_ref()
             && self.code.get().is_some()
@@ -1564,10 +1543,9 @@ impl LazyProfileCard {
             .is_some_and(|card| card.follow_anchor(anchor, viewport))
     }
 
-    /// As [`ProfileCard::set_linked`]. A card still waiting on its code
-    /// takes them into the model it opens with: they answer the refresh
-    /// its opening asked for, and arrive before a card made later would
-    /// take them (a card that never opened has no model to put them in).
+    /// As [`ProfileCard::set_linked`]. A card still waiting on its code takes them into the model
+    /// it opens with: they answer the refresh its opening asked for, and arrive before a card made
+    /// later would take them (a card that never opened has no model to put them in).
     pub fn set_linked(&mut self, linked: Vec<LinkedAccount>) {
         if let Some(card) = self.card.as_mut() {
             card.set_linked(linked);
@@ -1594,8 +1572,8 @@ impl LazyProfileCard {
         self.card.as_mut().and_then(|card| card.take_choice())
     }
 
-    /// Where the quiet panel stands while the card's code is on its way:
-    /// under the anchor, as wide as the card, inside the viewport.
+    /// Where the quiet panel stands while the card's code is on its way: under the anchor, as wide
+    /// as the card, inside the viewport.
     fn waiting_rect(anchor: Rect, viewport: Rect, theme: &Theme) -> Rect {
         let width = f64::from(theme.tokens.metrics.panel_width_utility * theme.text_scale.max(1.0));
         let height = f64::from(theme.text(TextRole::Body).line_height_px())
@@ -1804,7 +1782,7 @@ mod tests {
         })
     }
 
-    /// The card open with `linked`, in a frame that clicks.
+    /// The card open with `linked` , in a frame that clicks.
     fn framed(linked: Vec<LinkedAccount>) -> ui::headless::Framed<ProfileCard> {
         ui::i18n::I18nManager::init("en-US");
         let mut card = ProfileCard::new();
@@ -1846,10 +1824,9 @@ mod tests {
         assert!(!card.is_open());
     }
 
-    /// A card nobody opened is an empty leaf of a fixed size: it asks no
-    /// frame of the page to re-solve the layout, as it did by reading as
-    /// layout-dirty, which made every frame (each keystroke's, each of an
-    /// animation's) measure the whole desktop.
+    /// A card nobody opened is an empty leaf of a fixed size: it asks no frame of the page to
+    /// re-solve the layout, as it did by reading as layout-dirty, which made every frame (each
+    /// keystroke's, each of an animation's) measure the whole desktop.
     #[test]
     fn an_unopened_lazy_card_asks_no_frame_to_measure() {
         let card = LazyProfileCard::new();
@@ -1857,9 +1834,9 @@ mod tests {
         assert!(!card.layout_needs_measure());
     }
 
-    /// Linked accounts that arrive while the card's code is on its way
-    /// (the refresh opening the own card asks for) show once it opens: the
-    /// Discord row is there, as it is on a card whose code was linked.
+    /// Linked accounts that arrive while the card's code is on its way (the refresh opening the own
+    /// card asks for) show once it opens: the Discord row is there, as it is on a card whose code
+    /// was linked.
     #[test]
     fn a_lazy_card_opens_with_accounts_that_arrived_while_it_loaded() {
         static CODE: ui::lazy_code::LazyCode<MakeProfileCard> = ui::lazy_code::LazyCode::fetched();
@@ -1887,12 +1864,12 @@ mod tests {
         assert!(said.contains("type /link"), "{said}");
     }
 
-    /// Opening the card is not editing: focus rests on the card itself, and
-    /// Tab (or a click) enters the name field.
+    /// Opening the card is not editing: focus rests on the card itself, and Tab (or a click) enters
+    /// the name field.
     #[test]
     fn the_card_opens_focused_on_itself_and_tab_enters_the_name() {
-        // The card's keyboard stops in tree order, as both shells' focus
-        // order walks them; a trap that opens focuses the first.
+        // The card's keyboard stops in tree order, as both shells' focus order walks them; a trap
+        // that opens focuses the first.
         fn stops(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
             if widget.is_focusable()
                 && let Some(node) = widget.accessibility()
@@ -1927,8 +1904,8 @@ mod tests {
         );
     }
 
-    /// A person who has not named themselves is asked, gently, in the card:
-    /// "Add your name", in place of the hint, until they have.
+    /// A person who has not named themselves is asked, gently, in the card: "Add your name", in
+    /// place of the hint, until they have.
     #[test]
     fn a_person_without_a_name_is_asked_for_one() {
         let open = |ask_name: bool| {
@@ -1955,10 +1932,9 @@ mod tests {
         assert!(said.contains(&t("profile-name-hint")));
     }
 
-    /// Of the host's ways to keep who you are, the card offers the two it
-    /// lists first: keeping the identity and backing it up. A third
-    /// overlapping ask stays in search, where it does not compete here.
-    /// Devices stay as listed.
+    /// Of the host's ways to keep who you are, the card offers the two it lists first: keeping the
+    /// identity and backing it up. A third overlapping ask stays in search, where it does not
+    /// compete here. Devices stay as listed.
     #[test]
     fn the_card_offers_two_ways_to_keep_your_identity() {
         ui::i18n::I18nManager::init("en-US");
@@ -2031,8 +2007,8 @@ mod tests {
         assert!(said.contains("type /link"), "{said}");
     }
 
-    /// A link from Discord's /link asks before it links: the account it
-    /// offers and the person it links to, with Link and Cancel.
+    /// A link from Discord's /link asks before it links: the account it offers and the person it
+    /// links to, with Link and Cancel.
     #[test]
     fn an_offered_account_asks_before_it_links() {
         let mut frame = framed(vec![discord(offered())]);
@@ -2054,9 +2030,9 @@ mod tests {
         assert!(frame.is_open());
     }
 
-    /// A page's own card with a linked account keeps its status field its
-    /// height, and its rows follow one another: a linked row that outgrew
-    /// its first measure squashed the field above it to nothing.
+    /// A page's own card with a linked account keeps its status field its height, and its rows
+    /// follow one another: a linked row that outgrew its first measure squashed the field above it
+    /// to nothing.
     #[test]
     fn a_linked_card_keeps_its_status_field() {
         ui::i18n::I18nManager::init("en-US");
@@ -2160,9 +2136,8 @@ mod tests {
         assert!(says(&mut frame).contains("ran out after ten minutes"));
     }
 
-    /// Hosts the card as a shell does: the linked accounts change during a
-    /// frame's update, not through the harness's own access to its root
-    /// (which lays out from scratch).
+    /// Hosts the card as a shell does: the linked accounts change during a frame's update, not
+    /// through the harness's own access to its root (which lays out from scratch).
     struct Shell {
         card: ProfileCard,
         next: Rc<RefCell<Option<Vec<LinkedAccount>>>>,
@@ -2217,10 +2192,9 @@ mod tests {
         }
     }
 
-    /// The card builds its widgets again when a linked account changes.
-    /// A layout kept from before would still point at the ones they
-    /// replaced, freed: the page read them as garbage once their memory was
-    /// reused (after an app's code loaded), and trapped in an indirect call.
+    /// The card builds its widgets again when a linked account changes. A layout kept from before
+    /// would still point at the ones they replaced, freed: the page read them as garbage once their
+    /// memory was reused (after an app's code loaded), and trapped in an indirect call.
     #[test]
     fn a_rebuilt_card_is_laid_out_again_before_a_frame_reaches_it() {
         ui::i18n::I18nManager::init("en-US");
@@ -2252,10 +2226,9 @@ mod tests {
         assert!(harness.inspection_json().unwrap().contains("@ada.l"));
     }
 
-    /// The linked accounts the host hears about are the person's own. While
-    /// someone else's card is open (opened from an author in Chat) they keep
-    /// arriving, the first answer a couple of seconds after opening: the
-    /// card is not built again under the pointer for them, it stays open
+    /// The linked accounts the host hears about are the person's own. While someone else's card is
+    /// open (opened from an author in Chat) they keep arriving, the first answer a couple of
+    /// seconds after opening: the card is not built again under the pointer for them, it stays open
     /// as it was and goes on answering presses.
     #[test]
     fn someone_elses_card_stays_as_it_was_when_your_linked_accounts_arrive() {
@@ -2295,9 +2268,8 @@ mod tests {
         );
     }
 
-    /// Where the host keeps only how what they do is shared (a page), the
-    /// card still has the field for what they are doing in their own
-    /// words, holding what they said.
+    /// Where the host keeps only how what they do is shared (a page), the card still has the field
+    /// for what they are doing in their own words, holding what they said.
     #[test]
     fn a_page_card_offers_what_they_are_doing_in_their_own_words() {
         ui::i18n::I18nManager::init("en-US");

@@ -57,11 +57,6 @@ pub struct Config {
 impl Config {
     /// Read the listen address and required token file named by the
     /// environment. `None` when no address is configured.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an unparsable address, a missing, unreadable or empty token
-    /// file, or a malformed workspace UUID.
     pub fn from_env() -> io::Result<Option<Self>> {
         let Some(address) = std::env::var_os(ADDRESS_ENV) else {
             return Ok(None);

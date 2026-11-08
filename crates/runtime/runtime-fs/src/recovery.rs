@@ -197,8 +197,6 @@ impl NativeReplacementPin {
     }
     /// Called by the enrolled host only after its canonical signed transaction
     /// and archive map durably own this exact capture. Does not delete bytes.
-    /// # Errors
-    /// Refuses unavailable publication or changed journal phase.
     pub fn check(&self, current: &FsSession, parent: &DirectoryGrant) -> Result<(), FsError> {
         let owner = current.operation_store()?;
         if !Arc::ptr_eq(&owner, &self.claim.owner)
@@ -330,8 +328,6 @@ impl OperationOwner {
     }
     /// Obtain a success observation only from the genuine completed native job,
     /// independently root-sealed source owner and held current parent/capture.
-    /// # Errors
-    /// Refuses uncertain outcomes, absent rights, substituted inodes or restore.
     pub fn pin_replacement(
         self: &Arc<Self>,
         current: &FsSession,
@@ -515,8 +511,6 @@ impl OperationOwner {
     /// Open the authentic host-delegated persistent journal and adopt only live
     /// device-number observations beneath the same verified original Home and
     /// protected capture inodes. No saved locator supplies a grant.
-    /// # Errors
-    /// Refuses unrelated roots/private namespace, unavailable grant or publication.
     pub fn open_retained(
         opened: std::fs::File,
         owner: FsOwner,
@@ -983,9 +977,6 @@ impl OperationOwner {
         })
     }
     /// Start an explicit new recovery operation using only current live grants.
-    /// # Errors
-    /// Returns scope, identity, collision, note-length and admission failures;
-    /// an unsuccessful restore always retains the original recovery receipt.
     pub fn resolve(
         &self,
         id: &RecoveryId,

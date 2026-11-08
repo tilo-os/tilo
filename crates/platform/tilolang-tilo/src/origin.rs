@@ -167,9 +167,6 @@ pub fn register_remote(name: &'static str, remote: &'static Remote) {
 
 /// The origin `name`'s client of the connector at the far end of `stream`, when a crate
 /// registered one here.
-///
-/// # Errors
-/// No crate registered an origin `name`, or its client could not be made.
 pub fn remote(
     name: &str,
     stream: std::os::unix::net::UnixStream,

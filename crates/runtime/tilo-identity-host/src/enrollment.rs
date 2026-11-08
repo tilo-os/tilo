@@ -140,10 +140,6 @@ impl NonceStore {
     }
 
     /// Whether `nonce` has been redeemed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the marker cannot be examined.
     pub fn is_consumed(&self, nonce: &[u8; 16]) -> io::Result<bool> {
         match fs::symlink_metadata(self.path(nonce)) {
             Ok(_) => Ok(true),

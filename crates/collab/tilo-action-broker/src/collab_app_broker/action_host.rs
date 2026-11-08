@@ -3051,11 +3051,6 @@ impl AppBrokerState {
 
     /// Close `app_id`'s windows in `workspace` and record the terminal
     /// outcome as an invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not change the application or
-    /// the host cannot close applications.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the dispatch permit is spent here: taken by value, a caller cannot complete it twice"
@@ -3170,8 +3165,8 @@ impl AppBrokerState {
 
     /// `Self::action_next_change` counting only changes after this call:
     /// the `next_change` of a host whose waiter asks before it observes, so a
-    /// change between the two still wakes it. Authorized exactly as
-    /// [`Self::action_observe`]: `None` for an invocation `caller` did not
+    /// change between the two still wakes it. Authorized exactly
+    /// as [`Self::action_observe`]: `None` for an invocation `caller` did not
     /// admit.
     pub fn action_next_change_after_now(
         &self,

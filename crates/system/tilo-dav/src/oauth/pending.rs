@@ -19,9 +19,6 @@ pub struct PendingGoogleCalendar {
 impl PendingGoogleCalendar {
     /// Redeem the existing browser authorization on a worker thread.
     /// The authorization must request Google's calendar scope.
-    ///
-    /// # Errors
-    /// Invalid authorization, failed exchange or a narrowed calendar grant.
     pub fn complete(authorization: Authorization) -> Result<Self, String> {
         let url = Url::parse(authorization.url()).map_err(|_| "invalid authorization URL")?;
         let expected = account_custody::OAuthIssuer::Google.endpoints();
@@ -99,9 +96,6 @@ impl PendingGoogleCalendar {
     }
 
     /// Resolve the Google Drive mount from this combined consent grant.
-    ///
-    /// # Errors
-    /// Missing files permission or provider lookup failure.
     pub fn resolve_storage(&self, custody: &Custodian) -> Result<serde_json::Value, String> {
         custody
             .resolve_storage(account_custody::OAuthCloud::GoogleDrive, &self.tokens)
@@ -109,9 +103,6 @@ impl PendingGoogleCalendar {
     }
 
     /// Resolve the Gmail identity without exposing the combined consent grant.
-    ///
-    /// # Errors
-    /// Missing mail permission or provider lookup failure.
     pub fn mail_identity(&self, custody: &Custodian) -> Result<String, String> {
         custody
             .gmail_identity(&self.tokens)
@@ -154,9 +145,6 @@ pub struct PendingNextcloudCalendar {
 
 impl PendingNextcloudCalendar {
     /// Validate the deployment URL before accepting credentials for discovery.
-    ///
-    /// # Errors
-    /// Invalid or unsafe Nextcloud deployment URL.
     pub fn new(server: &str, username: &str, password: &str) -> Result<Self, String> {
         let mut base =
             account_custody::nextcloud::server_url(server).map_err(|error| error.to_string())?;
@@ -177,9 +165,6 @@ impl PendingNextcloudCalendar {
     }
 
     /// Discover collections with bounded, same-origin DAV requests. Blocking.
-    ///
-    /// # Errors
-    /// Authentication, unsafe redirects or malformed discovery replies.
     pub fn discover(&self) -> Result<PendingCalendars, String> {
         let client = DavClient::new(&options())
             .map_err(|error| error.to_string())?

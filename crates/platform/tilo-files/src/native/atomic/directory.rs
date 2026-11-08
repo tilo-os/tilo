@@ -23,10 +23,6 @@ impl StorageDirectory {
     }
 
     /// Admit a trusted-host directory path and retain its opened handle.
-    ///
-    /// # Errors
-    ///
-    /// Returns the native error when `path` cannot be opened as a directory.
     pub fn open(path: &Path) -> io::Result<Self> {
         native::Directory::open(path).map(|inner| Self { inner })
     }
@@ -72,10 +68,6 @@ impl StorageDirectory {
     }
 
     /// Query the identity of the retained directory handle.
-    ///
-    /// # Errors
-    ///
-    /// Returns the native error when the handle cannot be inspected.
     pub fn identity(&self) -> io::Result<FileIdentity> {
         self.inner.identity().map(|inner| FileIdentity { inner })
     }

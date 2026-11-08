@@ -2,8 +2,8 @@
 //!
 //! A window's records sync through its App (`super::document_routes`). A
 //! host that holds records of its own (the session keeps the person's
-//! settings sections) syncs them the same way through a
-//! [`RecordRouteParticipant`]: each record joins its route on the broker, its
+//! settings sections) syncs them the same way through
+//! a [`RecordRouteParticipant`]: each record joins its route on the broker, its
 //! changes go out as the window's do, and what the person's other devices
 //! (or any other holder) send is merged in. Signing, encryption and a
 //! route's admission stay the SDK's, as for a window.

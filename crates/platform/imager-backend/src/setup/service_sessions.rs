@@ -108,8 +108,6 @@ impl SelectedSource {
 }
 impl PreparedSessions {
     /// Explicit inclusion consent is required before this credential-reading operation.
-    /// # Errors
-    /// Refuses unavailable/changed sources, unsupported cookies or duplicate selections.
     #[cfg(target_os = "linux")]
     pub fn capture(
         identity: [u8; 32],
@@ -127,8 +125,6 @@ impl PreparedSessions {
     }
     /// Capture only explicitly selected material, independently of cookie availability.
     /// A selected source refusal fails the whole operation; another source never hides it.
-    /// # Errors
-    /// Refuses invalid bindings, duplicate material, changed sources or unsupported storage.
     #[cfg(target_os = "linux")]
     pub fn capture_selected(
         identity: [u8; 32],
@@ -274,8 +270,6 @@ pub fn transport_binding(binding: &str) -> Vec<u8> {
     value
 }
 /// Authenticate into fresh private quarantine, then validate all secret bindings before target writes.
-/// # Errors
-/// Refuses changed declarations, passwords, identity, setup or secret shapes.
 pub fn validate_artifact(
     artifact: &PasswordSealedAccounts,
     declaration: &Declaration,

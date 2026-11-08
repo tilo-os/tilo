@@ -57,3 +57,26 @@ pub use launch::{Launch, Open};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
 pub use spawner::{Cause, End, Event, Spawner, Started};
 pub use workspace::Workspace;
+
+/// Name the surface the package `planned` runs ships, before its process
+/// starts: the person-record kinds it declares are what the identity service
+/// this host serves admits the app's join into the person's own store against,
+/// so the service knows a dev-launched app's surface the way it knows an
+/// installed one's. A launch that runs no package names none, and neither does
+/// one whose package ships no signed surface: such an app declares nothing of
+/// the person's.
+pub fn name_surface(planned: &Planned) {
+    if planned.kind != Kind::Package {
+        return;
+    }
+    match app_catalogue::apps::signed_surface_of_from_env(&planned.app) {
+        Ok(Some(surface)) => collaboration::app_surface::register_package(&planned.app, &surface),
+        Ok(None) => tracing::debug!(
+            app = %planned.app,
+            "the package ships no signed surface; it declares no person records"
+        ),
+        Err(error) => {
+            tracing::warn!(%error, app = %planned.app, "the app's signed surface is unreadable");
+        }
+    }
+}

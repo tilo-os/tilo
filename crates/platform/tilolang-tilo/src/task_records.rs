@@ -30,9 +30,6 @@ use crate::host::Host;
 pub trait RecordSource {
     /// The record `record` (empty for the app's record of the workspace) of the app `app`: its
     /// content (an Automerge document), or `None` when the workspace holds no such record.
-    ///
-    /// # Errors
-    /// Why it cannot be read: the task may not, or the workspace's records are not here.
     fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String>;
 }
 
@@ -114,9 +111,6 @@ impl RecordReads {
     /// app `app`: what this program and every later one of the task reads holds it, without
     /// waiting for the workspace. A record this program has not read is read whole when it is next
     /// read, with the change in it.
-    ///
-    /// # Errors
-    /// The change does not apply to the record.
     pub fn take_in(&self, app: &str, change: &[u8]) -> Result<(), String> {
         self.written
             .borrow_mut()
@@ -149,9 +143,6 @@ impl RecordReads {
     }
 
     /// What the app `app`'s record answers to a program's `request`.
-    ///
-    /// # Errors
-    /// The record cannot be read, or the request is none a program makes.
     pub fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
         let request: ReadRequest = serde_json::from_value(request.clone())
             .map_err(|error| format!("the request is not one a program makes: {error}"))?;
@@ -162,9 +153,6 @@ impl RecordReads {
     /// the app's package over its record as this program read it, for `caller`: the preview the
     /// record's origin compares its own run with. The origin runs the action again against
     /// the record as it is then, so this decides nothing.
-    ///
-    /// # Errors
-    /// The record cannot be read, or the action does not run on it (a requirement fails).
     pub fn plan(&self, call: &Json, caller: &crate::publish::Caller) -> Result<Json, String> {
         let app = call["app"].as_str().ok_or("a call names its app")?;
         let action = call["action"].as_str().ok_or("a call names its action")?;

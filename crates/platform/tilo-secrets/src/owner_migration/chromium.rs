@@ -52,10 +52,6 @@ impl ChromiumKey {
     }
     /// Existing password only: no item, collection, password, or fallback is created.
     /// The owner's Secret Service may display its own unlock prompt.
-    ///
-    /// # Errors
-    /// Refuses changed consent custody, a foreign bus/service, ambiguous matches,
-    /// locked/denied custody, and unavailable or malformed passwords.
     pub fn read_blocking(&self) -> Result<Option<Secret>, SecretError> {
         let facts = self.profile.metadata().map_err(|_| SecretError::Denied)?;
         if !facts.is_dir()

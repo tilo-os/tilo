@@ -100,6 +100,9 @@ impl Nodes {
     }
 }
 
+/// The components a view places actions on itself: an item's node and the window's shell.
+const PLACES: [&str; 4] = ["ListItem", "TreeViewNode", "BoardCard", "NavShell"];
+
 /// Reports `name` on a node of the described component `kind` unless the component declares it,
 /// or it is a name every node may carry: a sizing argument, the binding a control takes, or the
 /// companion of a prop the component declares (`value:as`, `meta:time`).
@@ -117,6 +120,10 @@ fn declared(kind: &str, name: &str, func: &crate::ir::Func, diags: &mut Vec<Diag
         || name == "bind"
         || prims::NODE_ARGS.contains(&sizing(name))
         || tilo_ui_graph::component::companion(name).is_some_and(|(prop, _)| carried(prop))
+        // The actions a view places on what it shows: the host reads them while it builds the
+        // item's surfaces and takes them before the tree is sent, as it takes a `show`'s own
+        // props, so the widget it hands over carries only what its description declares.
+        || (name == "actions" && PLACES.contains(&component))
     {
         return;
     }

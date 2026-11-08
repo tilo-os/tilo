@@ -22,12 +22,12 @@ mod unlock;
 pub(crate) use approvers::{AgentQuestion, KIND as AGENT_QUESTION};
 pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name};
 
-/// A collaborator's device heard at another peer protocol version: one of
-/// the two devices must update before the two work together again.
+/// A collaborator's device heard at another peer protocol version: one of the two devices must
+/// update before the two work together again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VersionMismatch {
-    /// Where the other device is reached: the only name the transport knows
-    /// it by. The session names the device from its fabric ([`device_at`]).
+    /// Where the other device is reached: the only name the transport knows it by. The session
+    /// names the device from its fabric ([`device_at`]).
     pub endpoint: String,
     /// The version it speaks.
     pub theirs: u32,
@@ -36,20 +36,17 @@ pub(crate) struct VersionMismatch {
 }
 
 impl VersionMismatch {
-    /// Whether the other device is the newer one, so this device is the one
-    /// that updates.
+    /// Whether the other device is the newer one, so this device is the one that updates.
     pub(crate) fn theirs_is_newer(&self) -> bool {
         self.theirs > self.ours
     }
 }
 
-/// Install the session's services for the actor started from now on: the
-/// person's other devices' disk unlock ([`unlock`]), the questions their
-/// agents ask ([`approvers`]), and the word that a collaborator's device is
-/// at another protocol version.
-///
-/// A session that is no certified device of the person's offers no door: it
-/// has no key to answer as.
+/// Install the session's services for the actor started from now on: the person's other devices'
+/// disk unlock ([`unlock`]), the questions their agents ask ([`approvers`]), and the word that a
+/// collaborator's device is at another protocol version.
+/// A session that is no certified device of the person's offers no door: it has no key to answer
+/// as.
 pub(crate) fn install(
     link: Option<&Arc<crate::fabric::SessionFabric>>,
     questions: Option<Questions>,
@@ -84,17 +81,16 @@ fn device_unlock(unlocking: Arc<unlock::Unlock>) -> DeviceUnlock {
     })
 }
 
-/// A fresh actor's approver sessions ask the person on `questions`.
+/// A fresh actor's approver sessions ask the person on `questions` .
 fn approvers(questions: Option<Questions>) -> ApproversOf {
     Arc::new(move || {
         Box::new(approvers::Answering::new(questions.clone())) as Box<dyn services::Approvers>
     })
 }
 
-/// Tell the session that a collaborator's device is at another protocol
-/// version, once per device and version: one of the two must update before
-/// they work together again. The session answers the person, and a newer one
-/// on their side has it fetch the newest system ([`crate::update_finish`]).
+/// Tell the session that a collaborator's device is at another protocol version, once per device
+/// and version: one of the two must update before they work together again. The session answers the
+/// person, and a newer one on their side has it fetch the newest system ([`crate::update_finish`]).
 fn peer_versions(updates: std::sync::mpsc::Sender<VersionMismatch>) -> PeerVersion {
     let told = Arc::new(Mutex::new(HashSet::new()));
     Arc::new(move |endpoint: String, theirs: u32| {
@@ -125,9 +121,8 @@ fn peer_versions(updates: std::sync::mpsc::Sender<VersionMismatch>) -> PeerVersi
     })
 }
 
-/// What the person calls the device reached at `endpoint`, when their fabric
-/// holds it: the label that device says of itself. A workspace host this
-/// device never met on the fabric has none.
+/// What the person calls the device reached at `endpoint` , when their fabric holds it: the label
+/// that device says of itself. A workspace host this device never met on the fabric has none.
 pub(crate) fn device_at(fabric: Option<&SharedLink>, endpoint: &str) -> Option<String> {
     let endpoint: iroh::EndpointId = endpoint.parse().ok()?;
     let fabric = fabric?;
@@ -155,9 +150,8 @@ mod tests {
     use super::*;
     use iroh::SecretKey;
 
-    /// A peer at another version is reported once per endpoint and version:
-    /// the person is told, a repeat says nothing new, and a peer moving to
-    /// yet another version is news again.
+    /// A peer at another version is reported once per endpoint and version: the person is told, a
+    /// repeat says nothing new, and a peer moving to yet another version is news again.
     #[test]
     fn another_versions_peer_is_reported_once() {
         let ours = neighbour_wire::PEER_PROTOCOL_VERSION;
@@ -186,8 +180,8 @@ mod tests {
         assert!(heard.try_recv().is_ok(), "a further move is news again");
     }
 
-    /// A device the fabric holds nothing of has no name here, so nothing is
-    /// guessed from its endpoint.
+    /// A device the fabric holds nothing of has no name here, so nothing is guessed from its
+    /// endpoint.
     #[test]
     fn a_device_the_fabric_does_not_hold_has_no_name() {
         assert!(device_at(None, "not-an-endpoint").is_none());

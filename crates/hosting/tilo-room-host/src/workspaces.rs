@@ -31,6 +31,7 @@ mod collaboration;
 mod content;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
+mod surfaces;
 pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, WorkspaceContent};
 mod desktop_writes;
@@ -196,7 +197,7 @@ struct GovernedWorkspace {
     device: Option<DeviceKeys>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
-    /// The requests of people who asked at its door without an invitation.
+    /// The addresses people left at its door without an invitation.
     wait_list: wait_list::WaitList,
     /// Whom moderation removed, and when: the public door keeps them out for
     /// the day.
@@ -972,7 +973,6 @@ struct WorkspacesInner {
     /// once create it once.
     creating: AsyncMutex<()>,
     calls: Arc<voice::Calls>,
-    page_joins: std::sync::Mutex<pages::PageJoins>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
     /// Each record write of a member the governor's copy took in.
@@ -1175,7 +1175,6 @@ impl Workspaces {
                 workspaces,
                 calls: Arc::default(),
                 creating: AsyncMutex::new(()),
-                page_joins: std::sync::Mutex::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 record_writes: tokio::sync::broadcast::channel(256).0,
                 content: content::ContentSlot::default(),
@@ -1232,6 +1231,9 @@ impl Workspaces {
                 .await
                 .map_err(|e| format!("settle: {e}"))?;
             tracing::info!("settled");
+            this.name_own_host(&mut workspace)
+                .await
+                .map_err(|e| format!("hosts: {e}"))?;
             this.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
@@ -1245,6 +1247,7 @@ impl Workspaces {
         }
         this.settle_layouts().await;
         this.follow_activity();
+        this.follow_missing_surfaces();
         this.inner.hosting.resume().await;
         Ok(this)
     }
@@ -1341,7 +1344,10 @@ impl Workspaces {
             .lock()
             .await
             .insert(summary.workspace.clone(), Arc::clone(&workspace));
-        self.settle(&mut *workspace.lock().await).await?;
+        let mut governed = workspace.lock().await;
+        self.settle(&mut governed).await?;
+        self.name_own_host(&mut governed).await?;
+        drop(governed);
         tracing::info!(workspace = %summary.workspace, workspace_id = summary.workspace_id, "governed room created");
         Ok(summary)
     }
@@ -2041,6 +2047,15 @@ impl Workspaces {
             return Ok(());
         };
         let (app_id, record_id) = (app_id.clone(), record_id.clone());
+        // The change is decided against the surface its op names: the one this
+        // host runs the app with, or one the workspace keeps for it
+        // ([`crate::surfaces`]). What it lacks it asks the workspace's members
+        // for, and the change is held until one answers.
+        if let Some(surface) = envelope.surface
+            && crate::surfaces::kept(&app_id, &hex::encode(surface)).is_none()
+        {
+            self.note_missing_surface(workspace, &app_id, &hex::encode(surface));
+        }
         let workspace = self
             .workspace(workspace)
             .await

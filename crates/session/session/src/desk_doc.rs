@@ -1,28 +1,20 @@
-//! The desk as this device keeps it: one automerge document, whose own change
-//! history is what happened to the desk, who did it and when.
-//!
-//! The session keeps no second copy of the desk. The tree it draws is a
-//! projection of this document ([`desktop_doc`]): a pass that finds the desk
-//! changed writes one change of it, a version restored from the history is
-//! another change on top, and the activity pane lists the document's own
-//! changes. A desk kept as one document means one file, one history and one
-//! answer to what the desk is.
-//!
-//! Every window is kept in the form that opens it again, never as it is
-//! running: a live window's surface id names a buffer belonging to the
-//! compositor that mapped it, and after a restart the same number is another
-//! window or none. So a running app's tab is written as the app
-//! ([`tilo_desktop_model::TileContent::LocalApp`]), which the next session
-//! launches into the tab it was in; a tab whose content already opens again —
-//! a local app, a placeholder, a stub, a window hosted on another device — is
-//! written as it is.
-//!
-//! The document is written away from the frame that changed it
-//! ([`tilo_durable_writer`]): a drag writes once, when the drag is over.
-//!
-//! A desk this build cannot read is never written over: the session starts on
-//! an empty one, keeps nothing, and the person is told where their own desk
-//! still is ([`StateNotice`]).
+//! The desk as this device keeps it: one automerge document, whose own change history is what
+//! happened to the desk, who did it and when.
+//! The session keeps no second copy of the desk. The tree it draws is a projection of this document
+//! ([`desktop_doc`]): a pass that finds the desk changed writes one change of it, a version
+//! restored from the history is another change on top, and the activity pane lists the document's
+//! own changes. A desk kept as one document means one file, one history and one answer to what the
+//! desk is.
+//! Every window is kept in the form that opens it again, never as it is running: a live window's
+//! surface id names a buffer belonging to the compositor that mapped it, and after a restart the
+//! same number is another window or none. So a running app's tab is written as the app
+//! ([`tilo_desktop_model::TileContent::LocalApp`]), which the next session launches into the tab it
+//! was in; a tab whose content already opens again — a local app, a placeholder, a stub, a window
+//! hosted on another device — is written as it is.
+//! The document is written away from the frame that changed it ([`tilo_durable_writer`]): a drag
+//! writes once, when the drag is over.
+//! A desk this build cannot read is never written over: the session starts on an empty one, keeps
+//! nothing, and the person is told where their own desk still is ([`StateNotice`]).
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -43,8 +35,8 @@ use crate::i18n::{t, t_args};
 /// The document beside the rest of this device's state.
 pub(crate) const FILE: &str = "desk.automerge";
 
-/// The key in the document that says which shape of desk it holds: a build
-/// that does not know the shape leaves the desk alone rather than guess.
+/// The key in the document that says which shape of desk it holds: a build that does not know the
+/// shape leaves the desk alone rather than guess.
 const SCHEMA_KEY: &str = "schema";
 
 /// The key an older build kept the arrangement's view choices and pins under,
@@ -64,31 +56,29 @@ struct Marks {
     pins: std::collections::BTreeSet<u64>,
 }
 
-/// How long a drag or a burst of switches waits for its last frame before how
-/// the desk looks is written.
+/// How long a drag or a burst of switches waits for its last frame before how the desk looks is
+/// written.
 const DRAG_QUIET: Duration = Duration::from_secs(2);
 
-/// Where the document lives under `state`, this device's state directory.
+/// Where the document lives under `state` , this device's state directory.
 pub(crate) fn path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
 }
 
 /// What became of the desk this device kept.
 pub(crate) enum Kept {
-    /// The desk as it was left, ready to be put back. Boxed: the whole desk
-    /// is many times the size of the other two answers, and every call that
-    /// returns one pays for the largest.
+    /// The desk as it was left, ready to be put back. Boxed: the whole desk is many times the size
+    /// of the other two answers, and every call that returns one pays for the largest.
     Desk(Box<DesktopTree>),
     /// This device kept no desk, or one with nothing on it: a first start.
     None,
-    /// The desk is on disk and this build will not open it, with what the
-    /// person is told about it.
+    /// The desk is on disk and this build will not open it, with what the person is told about it.
     Refused(StateNotice),
 }
 
-/// Why the desk on disk was left closed. It is still there and untouched:
-/// this session starts on an empty desk instead, and the person has to be
-/// told, because a desk that is not theirs looks exactly like theirs.
+/// Why the desk on disk was left closed. It is still there and untouched: this session starts on an
+/// empty desk instead, and the person has to be told, because a desk that is not theirs looks
+/// exactly like theirs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum StateNotice {
     /// The file was written by a newer Tilo than this build understands.
@@ -99,15 +89,14 @@ pub(crate) enum StateNotice {
     },
     /// The file exists and could not be read at all.
     Unreadable { path: PathBuf, error: String },
-    /// The desk the shell this session replaced kept was written by a newer
-    /// Tilo than this build understands.
+    /// The desk the shell this session replaced kept was written by a newer Tilo than this build
+    /// understands.
     OldDeskNewer {
         path: PathBuf,
         found: u32,
         understood: u32,
     },
-    /// The desk the shell this session replaced kept is there and could not
-    /// be read.
+    /// The desk the shell this session replaced kept is there and could not be read.
     OldDeskUnreadable { path: PathBuf, error: String },
 }
 
@@ -176,8 +165,8 @@ impl StateNotice {
     }
 }
 
-/// Leave `notice` with the desk file it is about, for anyone not looking at
-/// the screen when it happened: repair mode, support, the next login.
+/// Leave `notice` with the desk file it is about, for anyone not looking at the screen when it
+/// happened: repair mode, support, the next login.
 pub(crate) fn refuse(notice: &StateNotice) {
     let path = match notice {
         StateNotice::NewerSchema { path, .. }
@@ -205,34 +194,28 @@ pub(crate) fn refuse(notice: &StateNotice) {
 /// The desk's document, and where it is kept.
 pub(crate) struct DeskDoc {
     doc: Rc<RefCell<AutoCommit>>,
-    /// The desk's history as this session drives it: each change of the desk
-    /// is one step of the person's, and the next undo takes back all of the
-    /// last one.
+    /// The desk's history as this session drives it: each change of the desk is one step of the
+    /// person's, and the next undo takes back all of the last one.
     undo: RefCell<UndoLog>,
-    /// The person here, whose the desk is: their changes are theirs to take
-    /// back.
+    /// The person here, whose the desk is: their changes are theirs to take back.
     person: String,
-    /// Where the document is kept; a session without a state directory keeps
-    /// it in memory alone, and one that did not open the desk on disk keeps
-    /// nothing at all.
+    /// Where the document is kept; a session without a state directory keeps it in memory alone,
+    /// and one that did not open the desk on disk keeps nothing at all.
     path: Option<PathBuf>,
     /// The desk on disk this build did not open, if any.
     refused: Option<StateNotice>,
-    /// The desk an older Tilo kept on this device, which this one did not
-    /// bring over, if any. The person is told where it still is; this device
-    /// starts on an empty desk and keeps it.
+    /// The desk an older Tilo kept on this device, which this one did not bring over, if any. The
+    /// person is told where it still is; this device starts on an empty desk and keeps it.
     notice: Option<StateNotice>,
-    /// When how the desk looks was last written, so a drag or a burst of
-    /// switches stays one change.
+    /// When how the desk looks was last written, so a drag or a burst of switches stays one change.
     looks_at: Cell<Option<Instant>>,
 }
 
 impl DeskDoc {
-    /// The document kept under `state`, read into from what older Tilos kept
-    /// there ([`crate::desk_migration`]) when it holds no desk yet, and empty
-    /// on a device that has no desk yet. `old_desk` is the desk file the
-    /// shell this session replaced kept, for a device that upgraded and has
-    /// no desk of its own here. Its changes are written by `person`, so the
+    /// The document kept under `state` , read into from what older Tilos kept there
+    /// ([`crate::desk_migration`]) when it holds no desk yet, and empty on a device that has no
+    /// desk yet. `old_desk` is the desk file the shell this session replaced kept, for a device
+    /// that upgraded and has no desk of its own here. Its changes are written by `person` , so the
     /// activity names them as this person's own.
     pub(crate) fn load(state: Option<&Path>, old_desk: Option<&Path>, person: &str) -> Self {
         let actor = actor_of_person(person);
@@ -243,16 +226,16 @@ impl DeskDoc {
         let mut doc = match read(&at) {
             Read::Document(doc) => *doc,
             Read::Refused(notice) => return Self::refusing(notice, actor, person),
-            // No document yet: the desk older sessions kept here moves into
-            // one before the files it came from go.
+            // No document yet: the desk older sessions kept here moves into one before the files it
+            // came from go.
             Read::Nothing => match crate::desk_migration::adopt(state, &at, actor.clone()) {
                 Adopted::Document(doc) => *doc,
                 Adopted::Nothing => AutoCommit::new(),
                 Adopted::Refused(notice) => return Self::refusing(notice, actor, person),
             },
         };
-        // A device that ran the shell kept its desk nowhere this session
-        // reads: the first start with no desk of its own brings it over.
+        // A device that ran the shell kept its desk nowhere this session reads: the first start
+        // with no desk of its own brings it over.
         let notice = match old_desk {
             Some(old) => {
                 match crate::desk_migration::shell::bring_over(old, &at, &mut doc, actor.clone()) {
@@ -290,8 +273,7 @@ impl DeskDoc {
         }
     }
 
-    /// An empty desk that keeps nothing: the desk on disk is this build's to
-    /// leave alone.
+    /// An empty desk that keeps nothing: the desk on disk is this build's to leave alone.
     fn refusing(notice: StateNotice, actor: automerge::ActorId, person: &str) -> Self {
         refuse(&notice);
         let mut doc = AutoCommit::new();
@@ -308,9 +290,8 @@ impl DeskDoc {
         }
     }
 
-    /// What became of the desk this device kept, with the refusal it did not
-    /// open, if any: the desk on disk, or why the desk the person left is not
-    /// the one they are looking at.
+    /// What became of the desk this device kept, with the refusal it did not open, if any: the desk
+    /// on disk, or why the desk the person left is not the one they are looking at.
     pub(crate) fn opened(&self) -> Kept {
         if let Some(notice) = self.refused.as_ref().or(self.notice.as_ref()) {
             return Kept::Refused(notice.clone());
@@ -321,11 +302,10 @@ impl DeskDoc {
         }
     }
 
-    /// The desk the document holds, as this session draws it, and `None` on a
-    /// document that holds no workspace yet.
-    /// The record each window of the desk shows, by tab, as the document
-    /// keeps it: a window placed on a record names it there, so the place
-    /// shows the record it was placed on.
+    /// The desk the document holds, as this session draws it, and `None` on a document that holds
+    /// no workspace yet. The record each window of the desk shows, by tab, as the document keeps
+    /// it: a window placed on a record names it there, so the place shows the record it was placed
+    /// on.
     pub(crate) fn records(&self) -> Vec<(tilo_desktop_model::TabId, String)> {
         desktop_doc::records(&self.doc.borrow())
     }
@@ -338,12 +318,11 @@ impl DeskDoc {
         (!tree.workspaces.is_empty()).then_some(tree)
     }
 
-    /// Record `desktop` as it stands, at `time` (seconds since the epoch): one
-    /// change of the desk, kept. Whether the desk changed at all.
-    ///
-    /// Only how the person shows the desk — a drag, a switch — is written once
-    /// the drag or the burst of switches is over: a resize writes the view on
-    /// every frame, and those are not changes of the desk.
+    /// Record `desktop` as it stands, at `time` (seconds since the epoch): one change of the desk,
+    /// kept. Whether the desk changed at all.
+    /// Only how the person shows the desk — a drag, a switch — is written once the drag or the
+    /// burst of switches is over: a resize writes the view on every frame, and those are not
+    /// changes of the desk.
     pub(crate) fn record(
         &self,
         desktop: &DesktopTree,
@@ -353,8 +332,8 @@ impl DeskDoc {
         self.write(desktop, time, true, None, shows)
     }
 
-    /// [`Self::record`], and write even how the desk looks now: what ends the
-    /// session, which the next one starts from.
+    /// [`Self::record`], and write even how the desk looks now: what ends the session, which the
+    /// next one starts from.
     pub(crate) fn record_now(
         &self,
         desktop: &DesktopTree,
@@ -364,11 +343,10 @@ impl DeskDoc {
         self.write(desktop, time, false, None, shows)
     }
 
-    /// Record `desktop` as it stands as `asked`'s arranging action: one change
-    /// of the desk whose own entry says who asked and what they did, so the
-    /// history names it and the step is the person's to take back. It is a
-    /// change of the desk and never a frame of a drag: an action asked for is
-    /// written as it is made. Whether the desk changed at all.
+    /// Record `desktop` as it stands as `asked` 's arranging action: one change of the desk whose
+    /// own entry says who asked and what they did, so the history names it and the step is the
+    /// person's to take back. It is a change of the desk and never a frame of a drag: an action
+    /// asked for is written as it is made. Whether the desk changed at all.
     pub(crate) fn record_action(
         &self,
         desktop: &DesktopTree,
@@ -379,9 +357,8 @@ impl DeskDoc {
         self.write(desktop, time, false, Some(asked), shows)
     }
 
-    /// Record `desktop`, and that the windows in `shows` show the records they
-    /// name: a place the person put on a record, or the windows an arrangement
-    /// a build before this one kept.
+    /// Record `desktop` , and that the windows in `shows` show the records they name: a place the
+    /// person put on a record, or the windows an arrangement a build before this one kept.
     fn write(
         &self,
         desktop: &DesktopTree,
@@ -391,14 +368,12 @@ impl DeskDoc {
         shows: &[(tilo_desktop_model::TabId, String)],
     ) -> bool {
         let mut doc = self.doc.borrow_mut();
-        // Where this change starts: taken before the schema is stamped, so the
-        // stamp is part of the change it was needed for and never a change of
-        // the desk's history of its own.
+        // Where this change starts: taken before the schema is stamped, so the stamp is part of the
+        // change it was needed for and never a change of the desk's history of its own.
         let before = doc.get_heads();
         stamp_schema(&mut doc);
-        // A document with no desk holds one after this change: the desk is
-        // being opened, here or as it arrived from the workspace, and that is
-        // no change of the person's to take back.
+        // A document with no desk holds one after this change: the desk is being opened, here or as
+        // it arrived from the workspace, and that is no change of the person's to take back.
         let opened = !desktop_doc::holds(&*doc);
         let looks_only = desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
         // What each window shows is the desk's, not how this device shows it,
@@ -420,13 +395,11 @@ impl DeskDoc {
             options = options.with_message(message);
         }
         doc.commit_with(options);
-        // One change of the desk is one step of the person's: what they did
-        // here is theirs to take back, whichever of their agents asked; so is
-        // a change asked for that only moves the view, a width or a
-        // maximization, which is a step like any other when an action asks
-        // for it. How the desk looks alone, unasked, is no step: those
-        // changes ride with the change before or after them. Nor is the desk
-        // as it was opened.
+        // One change of the desk is one step of the person's: what they did here is theirs to take
+        // back, whichever of their agents asked; so is a change asked for that only moves the view,
+        // a width or a maximization, which is a step like any other when an action asks for it. How
+        // the desk looks alone, unasked, is no step: those changes ride with the change before or
+        // after them. Nor is the desk as it was opened.
         if !opened && (asked.is_some() || !looks_only) {
             self.undo.borrow_mut().record_committed_action_authored(
                 &mut doc,
@@ -450,7 +423,7 @@ impl DeskDoc {
         }
     }
 
-    /// Take back `person`'s last change of the desk. Whether there was one.
+    /// Take back `person` 's last change of the desk. Whether there was one.
     pub(crate) fn undo(&self, person: &str) -> bool {
         self.rewind(|undo, doc| undo.undo_as(doc, Some(&user(person)), None, None).is_some())
     }
@@ -472,14 +445,13 @@ impl DeskDoc {
         stepped
     }
 
-    /// The last step of the desk's history, as who made it and what it did:
-    /// what the history names it by.
+    /// The last step of the desk's history, as who made it and what it did: what the history names
+    /// it by.
     pub(crate) fn last_step(&self, person: &str) -> Option<(String, String)> {
         let doc = self.doc.borrow();
         let entry = self.undo.borrow().next_undo_as(&doc, Some(&user(person)))?;
         let step = entry.step?;
-        // Who asked for it: the invoker the step records, else the person
-        // whose desk it is.
+        // Who asked for it: the invoker the step records, else the person whose desk it is.
         let who = step
             .invoker
             .map_or_else(|| person.to_owned(), |invoker| invoker.actor);
@@ -490,8 +462,8 @@ impl DeskDoc {
         Some((who, what))
     }
 
-    /// Whether how the desk looks was kept so lately that what is written now
-    /// is still one drag or one burst of switches.
+    /// Whether how the desk looks was kept so lately that what is written now is still one drag or
+    /// one burst of switches.
     fn looks_kept_recently(&self) -> bool {
         self.looks_at
             .get()
@@ -535,10 +507,9 @@ impl DeskDoc {
 }
 
 impl crate::Shared {
-    /// Record this device's desk as it stands: its workspaces, the windows in
-    /// them and the strips and displays they are laid out on, so the next
-    /// session starts here. The change of the desk's document is written away
-    /// from the frame, and a drag or a rename is one change however many
+    /// Record this device's desk as it stands: its workspaces, the windows in them and the strips
+    /// and displays they are laid out on, so the next session starts here. The change of the desk's
+    /// document is written away from the frame, and a drag or a rename is one change however many
     /// frames it takes.
     pub(crate) fn keep_desk(&self) {
         let tree = self.handle.read(Clone::clone);
@@ -559,10 +530,10 @@ impl crate::Shared {
     }
 }
 
-/// Read the arrangement's marks (`MARKS_KEY`) into the desk's own windows —
-/// the view each place shows, whether the person pinned it — and delete them.
-/// A document a build before this one wrote keeps them there: the desk itself
-/// has no other way to know them, and its windows carry them from now on.
+/// Read the arrangement's marks (`MARKS_KEY`) into the desk's own windows — the view each place
+/// shows, whether the person pinned it — and delete them. A document a build before this one wrote
+/// keeps them there: the desk itself has no other way to know them, and its windows carry them from
+/// now on.
 fn adopt_marks(doc: &mut AutoCommit) {
     let Some(marks) = marks_key(doc) else {
         return;
@@ -598,14 +569,13 @@ fn marks_key(doc: &AutoCommit) -> Option<Marks> {
     serde_json::from_str(text).ok()
 }
 
-/// The actor `person` writes the desk's changes as: their handle itself, so a
-/// change of the desk reads as theirs here without anything else naming it
-/// ([`ui::history_source::actor_handle`]).
+/// The actor `person` writes the desk's changes as: their handle itself, so a change of the desk
+/// reads as theirs here without anything else naming it ([`ui::history_source::actor_handle`]).
 pub(crate) fn actor_of_person(person: &str) -> automerge::ActorId {
     automerge::ActorId::from(person.as_bytes())
 }
 
-/// The person `person`, as the history names them.
+/// The person `person` , as the history names them.
 fn user(person: &str) -> UserId {
     UserId(person.to_owned())
 }
@@ -620,7 +590,7 @@ enum Read {
     Refused(StateNotice),
 }
 
-/// The document kept at `path`, if it is one this build opens.
+/// The document kept at `path` , if it is one this build opens.
 fn read(path: &Path) -> Read {
     let unreadable = |error: String| {
         Read::Refused(StateNotice::Unreadable {
@@ -659,8 +629,8 @@ pub(crate) fn schema_of(doc: &AutoCommit) -> Option<u32> {
     }
 }
 
-/// Say which shape of desk `doc` holds, in the change about to be made: a
-/// newer build that finds a newer one leaves the desk alone.
+/// Say which shape of desk `doc` holds, in the change about to be made: a newer build that finds a
+/// newer one leaves the desk alone.
 pub(crate) fn stamp_schema(doc: &mut AutoCommit) {
     if schema_of(doc) == Some(STATE_SCHEMA_VERSION) {
         return;
@@ -670,8 +640,8 @@ pub(crate) fn stamp_schema(doc: &mut AutoCommit) {
     }
 }
 
-/// `desktop` as the document keeps it: every window in the form that opens it
-/// again, and no window that opens again in no way.
+/// `desktop` as the document keeps it: every window in the form that opens it again, and no window
+/// that opens again in no way.
 pub(crate) fn relaunchable(desktop: &DesktopTree) -> DesktopTree {
     let mut desktop = desktop.clone();
     desktop.schema_version = STATE_SCHEMA_VERSION;
@@ -681,11 +651,10 @@ pub(crate) fn relaunchable(desktop: &DesktopTree) -> DesktopTree {
                 for tab in &mut group.tabs {
                     *tab = tab.relaunchable();
                 }
-                // A window whose app could not be told apart from any other —
-                // the compositor named none — is kept as a tab with no app to
-                // open it: nothing would ever come back into it, and the tab
-                // would wait on the desk for good. What cannot open again is
-                // not kept.
+                // A window whose app could not be told apart from any other — the compositor named
+                // none — is kept as a tab with no app to open it: nothing would ever come back into
+                // it, and the tab would wait on the desk for good. What cannot open again is not
+                // kept.
                 group.tabs.retain(|tab| {
                     !matches!(&tab.tile, tilo_desktop_model::TileContent::LocalApp { app_id, .. }
                         if app_id.trim().is_empty())
@@ -750,8 +719,8 @@ mod tests {
         )
     }
 
-    /// The view and the pins a build before this one kept beside the desk are
-    /// read into the desk's own windows once, and then gone.
+    /// The view and the pins a build before this one kept beside the desk are read into the desk's
+    /// own windows once, and then gone.
     #[test]
     fn the_marks_a_build_before_this_one_kept_move_into_the_desks_windows() {
         let (tree, tab) = desk();

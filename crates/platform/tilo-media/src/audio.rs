@@ -859,10 +859,6 @@ pub fn dump() -> Result<String, String> {
 }
 
 /// There is no audio graph to read on this target.
-///
-/// # Errors
-///
-/// Always.
 #[cfg(target_arch = "wasm32")]
 pub fn try_enumerate() -> Result<AudioGraph, String> {
     Err("there is no audio graph on this target".into())

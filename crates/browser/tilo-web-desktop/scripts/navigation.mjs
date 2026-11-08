@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 
 const bundle = process.argv[2];
 if (!bundle) throw Error('usage: node navigation.mjs BUNDLE_DIR');
@@ -47,7 +48,7 @@ await evaluate(`(() => {
   globalThis.__tiloRuntimePanic = raw => { console.error('runtime panic ' + raw); report?.(raw); };
 })()`);
 const snapshot = () => evaluate('tiloMount.navigation.getSnapshot()');
-const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
+const command = action => evaluate(`(async()=>{await tiloMount.navigation.dispatch(${JSON.stringify(action)});return true;})()`);
 const label = s => s.entries.find(e => e.route.workspace === s.active.workspace && e.route.strip === s.active.strip && e.route.tab === s.active.tab)?.label;
 const workspace = s => s.workspaces.findIndex(w => w.id === s.activeWorkspace);
 // Waits for what an input asked for: `read` returns `expected`. A change
@@ -183,7 +184,7 @@ const apps = (await snapshot()).applications.map(a => a.id);
 for (const app of ['so.tilo.clocks', 'so.tilo.calculator', 'so.tilo.notes']) {
   assert.ok(apps.includes(app), `${app} is in this bundle: ${apps}`);
   const before = (await snapshot()).entries.length;
-  await command({kind: 'launch', app});
+  await command(verb.openApp(app));
   await settles(`${app} opens`, s => s.entries.length, before + 1);
   await sleep(1000);
 }
@@ -354,7 +355,7 @@ console.log(JSON.stringify({step: 'workspace menu', ok: true}));
 
 
 // The shortcuts while an app's text field holds the keyboard: a new note.
-await command({kind: 'select', route: (await snapshot()).entries.find(e => e.label === 'Notes').route});
+await command(verb.focus((await snapshot()).entries.find(e => e.label === 'Notes').route));
 await settles('Notes is active', label, 'Notes');
 await sleep(1000);
 // The empty notebook's own button, which opens the note in its editor.
@@ -386,7 +387,7 @@ console.log(JSON.stringify({step: 'shortcuts from a text field', ok: true}));
 // bundle can take over ten seconds in CI.
 const active = (await snapshot()).activeWorkspace;
 const activityWindows = s => s.entries.filter(e => e.app === 'so.tilo.activity').length;
-await command({kind: 'workspace-activity', workspace: active, view: 'explore'});
+await command(verb.activity(active, 'explore'));
 await settles('History opens the Activity app', activityWindows, 1, 600);
 // A split bundle fetches the model once the app reads it; a bundle left
 // whole (`build.sh --no-split`) has it in place.
@@ -396,9 +397,9 @@ if (existsSync(split) && JSON.parse(readFileSync(split, 'utf8')).modules.some(m 
     async () => (await evaluate("performance.getEntriesByType('resource').map(e => e.name)"))
       .some(name => name.endsWith('.workspace_activity.wasm')), true, 600);
 }
-await command({kind: 'workspace-activity', workspace: active, view: 'catch-up'});
+await command(verb.activity(active, 'catch-up'));
 await settles('asked again, its window comes forward rather than a second', activityWindows, 1);
-await command({kind: 'close-workspace-activity', workspace: active});
+await command(verb.closeActivity(active));
 await settles('and closes', activityWindows, 0);
 console.log(JSON.stringify({step: 'workspace activity', ok: true}));
 
@@ -509,13 +510,12 @@ const HIDPI_WINDOWS = [
 {
   const hidpi = await desktop(2, {context: await browser.context()});
   assert.equal(await hidpi.evaluate('devicePixelRatio'), 2, 'the second desktop draws at device scale 2');
-  const navigate = body => hidpi.evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();
-    await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});})()`);
+  const navigate = action => hidpi.evaluate(`tiloMount.navigation.dispatch(${JSON.stringify(action)})`);
   const entries = async () => (await hidpi.evaluate('tiloMount.navigation.getSnapshot()')).entries;
   for (const [app, minimum, named] of HIDPI_WINDOWS) {
-    for (const entry of await entries()) await navigate({kind: 'close', route: entry.route});
+    for (const entry of await entries()) await navigate(verb.closeTab(entry.route));
     await polls(`no window is open before ${app} at device scale 2`, async () => (await entries()).length, 0);
-    await navigate({kind: 'launch', app});
+    await navigate(verb.openApp(app));
     await polls(`${app} opens at device scale 2`, async () => (await entries()).length, 1);
     const controls = await mirrorLiesOverEveryControl(hidpi, `${app}'s controls are mirrored where they are drawn at device scale 2`, minimum);
     for (const [role, name] of named)

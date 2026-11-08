@@ -102,6 +102,12 @@ def default_builds(packages: list[str]) -> list[str]:
     return sorted(set(packages) & set(DEFAULT_BUILDS_ALSO_CHECKED))
 
 
+def package_name(spec: str) -> str:
+    """A package's name from what names it: its name, or t's package id spec for a run that asks
+    for a few packages (`path+file:///src/crates/system/settings-store#settings-store@0.1.0`)."""
+    return spec.rpartition("#")[2].partition("@")[0]
+
+
 def main(argv: list[str]) -> None:
     if argv == ["--default-builds", "--all"]:
         # Every such package, to build their tests as they ship.
@@ -114,7 +120,7 @@ def main(argv: list[str]) -> None:
     excluded = set()
     for index, arg in enumerate(argv):
         if arg in ("-p", "--package"):
-            packages.append(argv[index + 1])
+            packages.append(package_name(argv[index + 1]))
         elif arg == "--workspace" and not defaults:
             packages.extend(NATIVE_TEST_FEATURES)
         elif arg == "--exclude":

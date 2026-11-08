@@ -20,8 +20,6 @@ pub struct CaptureOutputAdmission {
 impl CaptureOutputAdmission {
     /// Reverse-authenticate the exact root helper and read its bounded operation-bound proof.
     /// The broker issues this only after checking output against both original home and snapshot.
-    /// # Errors
-    /// Refuses foreign/dead peers, swapped descriptors, operations or original credentials.
     pub fn receive_from_broker(
         stream: &mut UnixStream,
         source: &File,

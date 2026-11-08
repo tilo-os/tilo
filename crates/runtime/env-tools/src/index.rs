@@ -76,10 +76,6 @@ impl LocalIndex {
     }
 
     /// Record `entry` under its key, atomically.
-    ///
-    /// # Errors
-    ///
-    /// Creating the directory or writing/renaming the file.
     pub fn put(&self, entry: &Entry) -> std::io::Result<()> {
         tilo_files::native::atomic::write_creating_parent(
             &self.path(&entry.key.digest()),
@@ -120,10 +116,6 @@ pub struct Catalog {
 impl Catalog {
     /// Read a catalog document. Entries whose key doesn't hash to their name
     /// are dropped.
-    ///
-    /// # Errors
-    ///
-    /// Reading or parsing the file.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path)?;
         let mut catalog: Self = serde_json::from_slice(&bytes)?;
@@ -143,10 +135,6 @@ impl Catalog {
     }
 
     /// Write the document, sorted by digest.
-    ///
-    /// # Errors
-    ///
-    /// Serialising or writing.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         std::fs::write(path, serde_json::to_vec_pretty(self)?)?;
         Ok(())

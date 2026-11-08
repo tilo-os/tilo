@@ -3,8 +3,6 @@ use super::CaptureAdmission;
 use std::{fmt::Write as _, io};
 impl CaptureAdmission {
     /// Bind the fixed native exporter to independently configured publisher trust.
-    /// # Errors
-    /// Refuses changed signed evidence, payload, service identity or runtime.
     pub fn with_installation(
         mut self,
         installed: package_store::InstalledPackage,

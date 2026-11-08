@@ -71,9 +71,6 @@ pub fn install(bundle: Bundle) -> Result<(), InstallError> {
 
 /// Install the package the launcher started this process for: the payload `TILO_APP_MODULE`
 /// names, under the id `TILO_PACKAGE_ID` names.
-///
-/// # Errors
-/// The payload is missing or broken, or its module declares another app than it was signed as.
 pub fn install_from_env() -> Result<(), InstallError> {
     let bundle = Bundle::from_env()?;
     if let Some(signed) = std::env::var_os(PACKAGE_ID_ENV).filter(|id| !id.is_empty()) {

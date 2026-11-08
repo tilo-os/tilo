@@ -2,6 +2,10 @@
 Description=Update your apps to their newest builds
 
 [Service]
+# Nothing here is a person waiting: the work yields to the desktop while it
+# runs, and is what systemd-oomd takes memory back from first
+# (os/etc/systemd/user/background.slice.d/50-tilo-batch.conf).
+Slice=background.slice
 Type=oneshot
 # Same rule as the system update: nothing is fetched over a connection the
 # owner asked to spare (os/usr/libexec/tilo-update-policy-check).

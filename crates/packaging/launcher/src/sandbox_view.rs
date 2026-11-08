@@ -547,9 +547,6 @@ fn discard(path: &Path) {
 
 /// Unmount and remove a superseded generation once no launch holds it,
 /// waiting for the last one.
-///
-/// # Errors
-/// A malformed name, the current generation, or an unmount failing.
 pub fn retire(root: &Path, generation: &str) -> io::Result<()> {
     retire_generation(root, generation, true).map(drop)
 }
@@ -601,9 +598,6 @@ impl SystemView {
     /// The current generation under `root`, if there is a trustworthy one.
     /// Directories must belong to `owner` (root) and be writable by nobody
     /// else.
-    ///
-    /// # Errors
-    /// I/O failures other than an absent view.
     pub fn open(root: &Path, owner: u32) -> io::Result<Option<Self>> {
         let meta = match std::fs::symlink_metadata(root) {
             Ok(meta) => meta,

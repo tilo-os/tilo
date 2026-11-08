@@ -5,12 +5,11 @@
 //! ([`Workspaces::authorize`]): the
 //! session's device is one of the relay's own user, or a member's the
 //! workspace's governance lets do what it asks. `/join` redeems an invitation for
-//! a device with no session yet. Unlike the workspace-join protocol, a
-//! page's verified redemption is not admitted at once: it waits, in memory,
-//! until someone the workspace lets invite admits or declines it. A relay restart forgets waiting
-//! requests; the person asks again. The addresses left at the door of a workspace
-//! that takes people by invitation are no such requests: they are kept with
-//! the workspace ([`super::wait_list`]) and listed on their own
+//! a device with no session yet: the invitation is the approval of whoever
+//! made it, so the page's verified redemption is admitted at once, as at every
+//! other door, or through the queue under the owner's pre-admission token. The
+//! addresses left at the door of a workspace that takes people by invitation
+//! are kept with the workspace ([`super::wait_list`]) and listed on their own
 //! ([`WorkspacesRequest::WaitList`]).
 
 use tilo_action_policy::roles::governance;
@@ -20,9 +19,8 @@ use tilo_peer_state::join::{
 };
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_relay_protocol::workspaces::{
-    Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_REQUESTS, PendingInvite, PreAdmission,
-    WaitListEntry, Workspace, WorkspaceMember, WorkspaceNotice, WorkspaceRole, WorkspacesReply,
-    WorkspacesRequest,
+    Inviter, JoinReply, JoinStep, PendingInvite, PreAdmission, WaitListEntry, Workspace,
+    WorkspaceMember, WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -33,9 +31,6 @@ use super::{
 };
 use crate::host_authority::HostOperation;
 use tilo_lock::MutexRecover as _;
-
-/// How long a declined request still answers its device's status.
-const DECIDED_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
 
 /// One pre-admission to record: the owner's signed grant and, when the
 /// invitation is for one person only, that person.
@@ -59,35 +54,6 @@ pub(super) struct QueuedAdmission {
     name: String,
     token: Vec<u8>,
     answer: tokio::sync::oneshot::Sender<Result<JoinReply, CollaborationError>>,
-}
-
-/// A verified redemption waiting for the workspace's owner.
-#[derive(Debug)]
-pub(super) struct PageJoin {
-    workspace: String,
-    request: JoinRequest,
-    proof_digest: [u8; 32],
-    redemption: VerifiedRedemption,
-    declined_at_ns: Option<u64>,
-}
-
-/// The page joins of every workspace, waiting or recently declined.
-#[derive(Debug, Default)]
-pub(super) struct PageJoins(Vec<PageJoin>);
-
-impl PageJoins {
-    fn prune(&mut self, now: u64) {
-        self.0.retain(|join| {
-            join.declined_at_ns
-                .is_none_or(|at| now.saturating_sub(at) < DECIDED_LIFETIME_NS)
-        });
-    }
-
-    fn find(&self, workspace: &str, request_id: [u8; 32]) -> Option<&PageJoin> {
-        self.0
-            .iter()
-            .find(|join| join.workspace == workspace && join.request.request_id == request_id)
-    }
 }
 
 pub(super) const fn member_role(role: WorkspaceRole) -> MemberRole {
@@ -177,9 +143,6 @@ impl Workspaces {
             request @ (WorkspacesRequest::Invite { .. }
             | WorkspacesRequest::Cancel { .. }
             | WorkspacesRequest::Pending { .. }
-            | WorkspacesRequest::Requests { .. }
-            | WorkspacesRequest::Admit { .. }
-            | WorkspacesRequest::Decline { .. }
             | WorkspacesRequest::WaitList { .. }
             | WorkspacesRequest::Unlist { .. }
             | WorkspacesRequest::MailInvite { .. }) => {
@@ -214,11 +177,18 @@ impl Workspaces {
             WorkspacesRequest::RetiredPair {} => {
                 WorkspacesReply::Refused("a conversation is a record of the workspace".into())
             }
+            // Retired: an invitation admits by itself, so nobody waits for
+            // the owner to let them in.
+            WorkspacesRequest::RetiredJoinRequests {}
+            | WorkspacesRequest::RetiredAdmit {}
+            | WorkspacesRequest::RetiredDecline {} => {
+                WorkspacesReply::Refused("an invitation admits by itself".into())
+            }
         })
     }
 
-    /// A page's invitations to a workspace, its wait list and the requests to join it, and what
-    /// it does with them.
+    /// A page's invitations to a workspace, its wait list, and what it does
+    /// with them.
     async fn page_invitations(
         &self,
         device: &DeviceCert,
@@ -264,24 +234,6 @@ impl Workspaces {
             }
             WorkspacesRequest::Pending { workspace } => {
                 self.page_pending(&workspace, device).await?
-            }
-            WorkspacesRequest::Requests { workspace } => {
-                WorkspacesReply::Requests(self.join_requests(&workspace, device, now).await?)
-            }
-            WorkspacesRequest::Admit {
-                workspace,
-                request_id,
-            } => {
-                self.admit_page(&workspace, device, request_id, now).await?;
-                self.page_room(&workspace).await?
-            }
-            WorkspacesRequest::Decline {
-                workspace,
-                request_id,
-            } => {
-                self.decline_page(&workspace, device, request_id, now)
-                    .await?;
-                WorkspacesReply::Requests(self.waiting(&workspace, now))
             }
             WorkspacesRequest::WaitList { workspace } => {
                 WorkspacesReply::WaitList(self.wait_list(&workspace, device, now).await?)
@@ -746,35 +698,6 @@ impl Workspaces {
         ))
     }
 
-    fn page_joins(&self) -> std::sync::MutexGuard<'_, PageJoins> {
-        self.inner.page_joins.lock_recover()
-    }
-
-    /// The join requests waiting in `workspace`, for `device`: someone the workspace
-    /// lets invite.
-    ///
-    /// # Errors
-    ///
-    /// Why the device may not see them.
-    pub(super) async fn join_requests(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        now: u64,
-    ) -> Result<Vec<JoinRequest>, CollaborationError> {
-        {
-            let governed = self.workspace(workspace).await?;
-            let governed = governed.lock().await;
-            self.authorize(
-                device,
-                Some(&governed),
-                WorkspaceOp::Govern(governance::INVITE),
-                now,
-            )?;
-        }
-        Ok(self.waiting(workspace, now))
-    }
-
     /// The addresses left at `workspace`'s door, oldest first, for someone the
     /// workspace lets invite.
     async fn wait_list(
@@ -1043,119 +966,6 @@ impl Workspaces {
         Ok((told, contact))
     }
 
-    fn waiting(&self, workspace: &str, now: u64) -> Vec<JoinRequest> {
-        let mut joins = self.page_joins();
-        joins.prune(now);
-        joins
-            .0
-            .iter()
-            .filter(|join| join.workspace == workspace && join.declined_at_ns.is_none())
-            .map(|join| join.request.clone())
-            .collect()
-    }
-
-    pub(super) async fn decline_page(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        request_id: [u8; 32],
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        // Serialize with admission, which holds this lock until governance
-        // publication completes and removes the waiting request.
-        let decision = governed.lock().await;
-        self.authorize(
-            device,
-            Some(&decision),
-            WorkspaceOp::Govern(governance::INVITE),
-            now,
-        )?;
-        let mut joins = self.page_joins();
-        let join = joins
-            .0
-            .iter_mut()
-            .find(|join| join.workspace == workspace && join.request.request_id == request_id)
-            .ok_or_else(|| CollaborationError::new("no such join request"))?;
-        join.declined_at_ns.get_or_insert(now);
-        let person = join.request.user_public_key;
-        drop(joins);
-        drop(decision);
-        tracing::info!(
-            %workspace,
-            person = %hex::encode(person),
-            outcome = "declined",
-            "workspace join request declined"
-        );
-        Ok(())
-    }
-
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until its decision is committed, published and answered"
-    )]
-    pub(super) async fn admit_page(
-        &self,
-        identity: &str,
-        administrator: &DeviceCert,
-        request_id: [u8; 32],
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        let workspace = self.workspace(identity).await?;
-        let mut workspace = workspace.lock().await;
-        // A retry after a lost HTTPS reply observes the committed receipt.
-        // Never re-admit a member who has since lost governed access.
-        if let Some(device) = workspace.admitted_device(request_id) {
-            self.authorize(
-                administrator,
-                Some(&workspace),
-                WorkspaceOp::Govern(governance::INVITE),
-                now,
-            )?;
-            workspace
-                .peer()
-                .permissions(device, system_time(now))
-                .map_err(|error| error.to_string())?;
-            return Ok(());
-        }
-        let (device, proof_digest, redemption, name) = {
-            let joins = self.page_joins();
-            let join = joins
-                .find(identity, request_id)
-                .filter(|join| join.declined_at_ns.is_none())
-                .ok_or_else(|| CollaborationError::new("no such join request"))?;
-            (
-                join.request.device_public_key,
-                join.proof_digest,
-                join.redemption.clone(),
-                join.request.name.clone(),
-            )
-        };
-        // Admitting someone hands out the role their invitation carries:
-        // the invite action, and never a role above the admitter's own.
-        self.authorize(
-            administrator,
-            Some(&workspace),
-            WorkspaceOp::Invite(redemption.join().grant().role.into()),
-            now,
-        )?;
-        let join = super::collaboration::Redeeming {
-            remote_endpoint: device,
-            request_id,
-            proof_digest,
-            redemption: &redemption,
-            name: Some(&name),
-        };
-        self.admit_redemptions(&mut workspace, &[join], now)
-            .await?
-            .pop()
-            .unwrap_or_else(|| Err(CollaborationError::new("join bootstrap was not built")))?;
-        self.page_joins()
-            .0
-            .retain(|join| !(join.workspace == identity && join.request.request_id == request_id));
-        Ok(())
-    }
-
     /// Answer one `/join` step of a device with no session.
     pub async fn page_join(&self, step: JoinStep) -> JoinReply {
         self.page_join_inner(step)
@@ -1262,7 +1072,7 @@ impl Workspaces {
 
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the workspace stays locked while the request is recorded and admitted"
+        reason = "the workspace stays locked while the request is admitted"
     )]
     async fn prove(
         &self,
@@ -1278,82 +1088,39 @@ impl Workspaces {
         let request_id = proof.challenge.request_id;
         let device = proof.challenge.device_public_key;
         let proof_digest = super::collaboration::request_digest(&proof)?;
-        let (issuer, invite_id) = {
-            let workspace = self.workspace(&identity).await?;
-            let workspace = workspace.lock().await;
-            if let Some(prior) = self.page_joins().find(&identity, request_id) {
-                if prior.proof_digest != proof_digest {
-                    return Err(CollaborationError::new(
-                        "join request ID already names a different proof",
-                    ));
-                }
-                return Ok(match prior.declined_at_ns {
-                    Some(_) => JoinReply::Declined,
-                    None => JoinReply::Waiting,
-                });
-            }
-            // A page that asked again under the same request — a reload, a
-            // lost answer — hears what became of it, not that its invitation
-            // is spent.
-            if workspace.admitted_device(request_id) == Some(device) {
-                return Self::admitted(&workspace, device, now);
-            }
-            let redemption = Self::redeem(&workspace, device, &proof, now)?;
-            let invite_id = redemption.join().invite_id();
-            if workspace.redeemed(invite_id) {
-                return Err(CollaborationError::new("invitation was already redeemed"));
-            }
-            let mut joins = self.page_joins();
-            joins.prune(now);
-            if joins.0.iter().any(|join| {
-                join.declined_at_ns.is_none() && join.redemption.join().invite_id() == invite_id
-            }) {
-                return Err(CollaborationError::new(
-                    "someone else is already waiting with this invitation",
-                ));
-            }
-            if joins
-                .0
-                .iter()
-                .filter(|join| join.workspace == identity)
-                .count()
-                >= MAX_JOIN_REQUESTS
-            {
-                return Err(CollaborationError::new(
-                    "too many people are waiting to join",
-                ));
-            }
-            let certificate = redemption.certificate();
-            let request = JoinRequest {
-                request_id,
-                user_public_key: certificate.user_public_key,
-                device_public_key: certificate.device_public_key,
-                name: name.to_owned(),
-                role: room_role(redemption.join().grant().role),
-                requested_at_ns: now,
-            };
-            let issuer = redemption.join().grant().issuer.clone();
-            joins.0.push(PageJoin {
-                workspace: identity.clone(),
-                request,
-                proof_digest,
-                redemption,
-                declined_at_ns: None,
-            });
-            (issuer, invite_id)
-        };
+        let governed = self.workspace(&identity).await?;
+        let mut workspace = governed.lock().await;
+        // A page that asked again under the same request — a reload, a lost
+        // answer — hears what became of it, not that its invitation is spent.
+        if workspace.admitted_device(request_id) == Some(device) {
+            return Self::admitted(&workspace, device, now);
+        }
+        let redemption = Self::redeem(&workspace, device, &proof, now)?;
+        let invite_id = redemption.join().invite_id();
+        if workspace.redeemed(invite_id) {
+            return Err(CollaborationError::new("invitation was already redeemed"));
+        }
         // An invitation is the approval of whoever made it: a page that holds
         // one is let in by its issuer's own grant, as at every other door, and
-        // never waits for someone in the workspace to answer for it. A request
-        // that cannot be admitted does not sit on the list either.
-        if let Err(error) = self.admit_page(&identity, &issuer, request_id, now).await {
-            self.page_joins().0.retain(|join| {
-                !(join.workspace == identity && join.request.request_id == request_id)
-            });
-            return Err(error);
-        }
-        let governed = self.workspace(&identity).await?;
-        let workspace = governed.lock().await;
+        // never waits for someone in the workspace to answer for it.
+        let issuer = redemption.join().grant().issuer.clone();
+        self.authorize(
+            &issuer,
+            Some(&workspace),
+            WorkspaceOp::Invite(redemption.join().grant().role.into()),
+            now,
+        )?;
+        let join = super::collaboration::Redeeming {
+            remote_endpoint: device,
+            request_id,
+            proof_digest,
+            redemption: &redemption,
+            name: Some(name),
+        };
+        self.admit_redemptions(&mut workspace, &[join], now)
+            .await?
+            .pop()
+            .unwrap_or_else(|| Err(CollaborationError::new("join bootstrap was not built")))?;
         tracing::info!(
             workspace = %identity,
             invite_id = %hex::encode(invite_id),
@@ -1584,18 +1351,6 @@ impl Workspaces {
         (VerifiedRedemption, String, WorkspaceRole),
         Box<Result<JoinReply, CollaborationError>>,
     > {
-        let request_id = join.proof.challenge.request_id;
-        if let Some(prior) = self.page_joins().find(workspace.workspace(), request_id) {
-            if prior.proof_digest != join.proof_digest {
-                return Err(Box::new(Err(CollaborationError::new(
-                    "join request ID already names a different proof",
-                ))));
-            }
-            return Err(Box::new(Ok(match prior.declined_at_ns {
-                Some(_) => JoinReply::Declined,
-                None => JoinReply::Waiting,
-            })));
-        }
         let device = join.proof.challenge.device_public_key;
         let redemption = Self::redeem(workspace, device, &join.proof, now)
             .map_err(|error| Box::new(Err(error)))?;
@@ -1626,18 +1381,6 @@ impl Workspaces {
         device: [u8; 32],
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
-        {
-            let mut joins = self.page_joins();
-            joins.prune(now);
-            if let Some(join) = joins.0.iter().find(|join| {
-                join.request.request_id == request_id && join.request.device_public_key == device
-            }) {
-                return Ok(match join.declined_at_ns {
-                    Some(_) => JoinReply::Declined,
-                    None => JoinReply::Waiting,
-                });
-            }
-        }
         let workspaces = self
             .inner
             .workspaces

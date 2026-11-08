@@ -20,8 +20,6 @@ pub struct ConsumerCapability {
 }
 impl ConsumerCapability {
     /// Check bounded proof syntax; authentication belongs to the image selection.
-    /// # Errors
-    /// Refuses unsupported protocols and malformed consumer digests.
     pub fn validate(&self) -> io::Result<()> {
         let digest = |value: &str| {
             value.len() == 64
@@ -48,8 +46,6 @@ impl ConsumerCapability {
 
 /// Refuse Home handoff without the selected image's authenticated consumer proof.
 /// No Home declaration preserves the ordinary fresh-install path.
-/// # Errors
-/// Rejects absent, malformed, or incompatible target proofs.
 pub fn require(capability: Option<&ConsumerCapability>, required: Option<u32>) -> io::Result<()> {
     if let Some(protocol) = required {
         let proof = capability.ok_or_else(|| {
@@ -71,8 +67,6 @@ pub fn require(capability: Option<&ConsumerCapability>, required: Option<u32>) -
 
 /// Authenticate the actual installed consumer proof before target custody writes.
 /// The check re-executes the installed probes and compares the image receipt.
-/// # Errors
-/// Refuses old/missing consumers, untrusted artifacts, or failed native checks.
 #[cfg(target_os = "linux")]
 pub fn installed() -> io::Result<ConsumerCapability> {
     use crate::installed_consumers::data;

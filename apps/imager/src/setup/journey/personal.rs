@@ -397,7 +397,8 @@ impl Personal {
             )
             .map_err(|_| ())?;
             parent.validate_destination().map_err(|_| ())?;
-            imager_backend::destination_security::check_private_file(&parent.file).map_err(|_| ())?;
+            imager_backend::destination_security::check_private_file(&parent.file)
+                .map_err(|_| ())?;
             if let Some(source) = source_home {
                 let source = imager_backend::migration::PinnedDirectory::open_absolute(&source)
                     .map_err(|_| ())?;
@@ -434,7 +435,7 @@ impl Personal {
                     .map_err(|_| ())?;
             }
             if !manifest.account_ids.is_empty() {
-                if imager_backend::account_transfer::PasswordSealedAccounts::inspect_prepared_consumer(
+                if imager_backend::account_transfer::inspect_prepared_consumer(
                     &root.join(prepared_setup::ACCOUNTS_FILE),
                     password.as_bytes(),
                     binding.as_bytes(),

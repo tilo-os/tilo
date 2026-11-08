@@ -1,10 +1,8 @@
 //! This device's keyboard shortcuts on the app door.
-//!
-//! The catalogue is the shortcut guide's own ([`tilo_sheets::keyboard_shortcuts`]):
-//! apps asking for the keymap read the same names and the same live chords the
-//! guide and Settings show, and changing a shortcut stays the person's
-//! `shortcuts` settings section's action. The broker loads the keymap and
-//! decides who may read it; this only answers from the table it hands over.
+//! The catalogue is the shortcut guide's own ([`tilo_sheets::keyboard_shortcuts`]): apps asking for
+//! the keymap read the same names and the same live chords the guide and Settings show, and
+//! changing a shortcut stays the person's `shortcuts` settings section's action. The broker loads
+//! the keymap and decides who may read it; this only answers from the table it hands over.
 
 use std::sync::Arc;
 
@@ -53,8 +51,8 @@ impl KeyboardShortcutServices for Door {
     }
 }
 
-/// The seam this session hands the broker: the shortcut catalogue, read from
-/// the keymap the broker loads.
+/// The seam this session hands the broker: the shortcut catalogue, read from the keymap the broker
+/// loads.
 pub(crate) fn servable() -> Arc<dyn KeyboardShortcutServices> {
     Arc::new(Door)
 }
@@ -64,9 +62,9 @@ mod tests {
     use super::*;
     use settings_store::hardware::ShortcutConfig;
 
-    /// An app asking for one shortcut reads the catalogue the guide shows:
-    /// the row names its live chords, canonically and as the layout spells
-    /// them, and refuses everything that is not the one action published.
+    /// An app asking for one shortcut reads the catalogue the guide shows: the row names its live
+    /// chords, canonically and as the layout spells them, and refuses everything that is not the
+    /// one action published.
     #[test]
     fn an_app_reads_the_shortcut_catalogue_through_the_door() {
         let door = servable();
@@ -129,8 +127,8 @@ mod tests {
         );
     }
 
-    /// The catalogue's contract is a read of this device's own settings:
-    /// asking for it grants nothing and writes nothing.
+    /// The catalogue's contract is a read of this device's own settings: asking for it grants
+    /// nothing and writes nothing.
     #[test]
     fn the_catalogue_is_a_read_of_this_devices_settings() {
         let descriptor = catalogue::descriptor();

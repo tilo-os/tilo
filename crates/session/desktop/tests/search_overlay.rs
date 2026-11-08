@@ -1,7 +1,6 @@
-//! The search palette over the windows: the chrome draws it, above whatever
-//! windows stand in front, takes the keys while it is up and stands where the
-//! search says it does — over the whole display, or over the window it was
-//! opened from.
+//! The search palette over the windows: the chrome draws it, above whatever windows stand in front,
+//! takes the keys while it is up and stands where the search says it does — over the whole display,
+//! or over the window it was opened from.
 
 #![allow(
     clippy::unwrap_used,
@@ -109,14 +108,14 @@ struct Session {
     handle: DesktopHandle,
 }
 
-/// The desk and the chrome over it, with `host` answering for what lies
-/// beyond the desk, as the session's own search host does.
+/// The desk and the chrome over it, with `host` answering for what lies beyond the desk, as the
+/// session's own search host does.
 fn session(tree: &DesktopTree, size: (u32, u32), host: Option<Rc<dyn SearchHost>>) -> Session {
     session_parts(tree, size, host, false)
 }
 
-/// [`session`], with the chrome recording the damage parts a host that keeps
-/// its frame compares (the web page's shell tracks them).
+/// [`session`], with the chrome recording the damage parts a host that keeps its frame compares
+/// (the web page's shell tracks them).
 fn session_parts(
     tree: &DesktopTree,
     size: (u32, u32),
@@ -143,8 +142,8 @@ fn session_parts(
         FrameHarness::for_root(ui::state::State::new(), chrome, size, ui::Theme::dark());
     chrome.track_scene_parts(track_parts);
     if track_parts {
-        // The frame the target starts from is drawn here, so the first frame
-        // a test presents is compared with it.
+        // The frame the target starts from is drawn here, so the first frame a test presents is
+        // compared with it.
         chrome.relayout();
     }
     Session {
@@ -155,8 +154,8 @@ fn session_parts(
 }
 
 impl Session {
-    /// One frame of both surfaces, in the order the compositor draws them:
-    /// the desk takes up what happened, then the chrome draws over it.
+    /// One frame of both surfaces, in the order the compositor draws them: the desk takes up what
+    /// happened, then the chrome draws over it.
     fn frame(&mut self) {
         self.desk.relayout();
         self.chrome.relayout();
@@ -176,9 +175,9 @@ impl Session {
             )));
     }
 
-    /// Frames until every source of the open search has answered: a source
-    /// answers on a worker, and its answer wakes the desk, so a test pumps
-    /// what the wake asks for and draws the frame it brings.
+    /// Frames until every source of the open search has answered: a source answers on a worker, and
+    /// its answer wakes the desk, so a test pumps what the wake asks for and draws the frame it
+    /// brings.
     fn settle_search(&mut self) {
         let background = ui::background::Background::current();
         let now = ui::time::now();
@@ -205,8 +204,7 @@ impl Session {
         self.chrome.send_host_event(&named_key(key));
     }
 
-    /// The card the palette stands in, as the chrome drew it, when the
-    /// palette is up.
+    /// The card the palette stands in, as the chrome drew it, when the palette is up.
     fn card(&self) -> Option<ui::kurbo::Rect> {
         let search = self.handle.search_palette();
         let search = search.borrow();
@@ -214,8 +212,8 @@ impl Session {
     }
 }
 
-/// What the person types goes to the open palette, not to the window behind
-/// it, and Enter is the palette's too: it takes the row and leaves search.
+/// What the person types goes to the open palette, not to the window behind it, and Enter is the
+/// palette's too: it takes the row and leaves search.
 #[test]
 fn typing_and_enter_reach_the_palette_not_the_window() {
     let tree = desk_tree();
@@ -231,8 +229,8 @@ fn typing_and_enter_reach_the_palette_not_the_window() {
     for _ in 0..3 {
         session.frame();
     }
-    // The window in front was never asked: it holds no field that would take
-    // these keys, and search holds the keyboard instead.
+    // The window in front was never asked: it holds no field that would take these keys, and search
+    // holds the keyboard instead.
     session.type_text("notes");
     session.settle_search();
     let (query, rows) = session.handle.search_rows();
@@ -247,8 +245,8 @@ fn typing_and_enter_reach_the_palette_not_the_window() {
     );
 }
 
-/// A row a reader hears is a row the person can take: activating it by name
-/// reaches the card as the click on it does, and search closes.
+/// A row a reader hears is a row the person can take: activating it by name reaches the card as the
+/// click on it does, and search closes.
 #[test]
 fn an_assistive_activation_takes_the_row_it_names() {
     let tree = desk_tree();
@@ -280,9 +278,8 @@ fn an_assistive_activation_takes_the_row_it_names() {
     );
 }
 
-/// The card stands where the shell's own stood: three fifths of the display's
-/// width, a little below its top, and as many rows tall as the display gives
-/// it.
+/// The card stands where the shell's own stood: three fifths of the display's width, a little below
+/// its top, and as many rows tall as the display gives it.
 #[test]
 fn the_card_follows_the_display() {
     let mut heights = Vec::new();
@@ -293,8 +290,8 @@ fn the_card_follows_the_display() {
         session
             .handle
             .open_search(ui::search::Scope::Workspace, None);
-        // The desk opens it, then the chrome lays the card out on the pace
-        // it has: the frame after that draws it.
+        // The desk opens it, then the chrome lays the card out on the pace it has: the frame after
+        // that draws it.
         session.frame();
         session.frame();
         let card = session.card().expect("the palette is up");
@@ -318,8 +315,8 @@ fn the_card_follows_the_display() {
         );
         heights.push(card.height());
     }
-    // A taller display gives the card a longer list: the card takes the room
-    // it has rather than a fixed number of rows.
+    // A taller display gives the card a longer list: the card takes the room it has rather than a
+    // fixed number of rows.
     assert!(
         heights[2] > heights[0],
         "the card grows with the display: {heights:?}"
@@ -330,8 +327,8 @@ fn the_card_follows_the_display() {
     );
 }
 
-/// A host whose search answers with more rows than any card holds, so the
-/// card's own room decides how many it shows.
+/// A host whose search answers with more rows than any card holds, so the card's own room decides
+/// how many it shows.
 struct Many;
 
 /// The rows [`Many`] answers with: more than fit on any display.
@@ -380,16 +377,16 @@ impl SearchHost for Many {
     }
 }
 
-/// A host whose search has a place of its own in every workspace: one in
-/// the workspace in front, and one another workspace names.
+/// A host whose search has a place of its own in every workspace: one in the workspace in front,
+/// and one another workspace names.
 #[derive(Default)]
 struct Everywhere {
     /// The scope search asked it to cover, in order.
     scopes: std::cell::RefCell<Vec<Scope>>,
 }
 
-/// The place another workspace names, offered only when search covers every
-/// workspace, and saying which one it is in.
+/// The place another workspace names, offered only when search covers every workspace, and saying
+/// which one it is in.
 struct Elsewhere {
     every_workspace: bool,
 }
@@ -441,10 +438,9 @@ impl SearchHost for Everywhere {
     }
 }
 
-/// What a person searches is the workspace in front; the field says so and
-/// takes it away from the start of the line, and the search then offers what
-/// every workspace holds, saying which workspace a row is in. The key is the
-/// palette's, routed there by the chrome over the window.
+/// What a person searches is the workspace in front; the field says so and takes it away from the
+/// start of the line, and the search then offers what every workspace holds, saying which workspace
+/// a row is in. The key is the palette's, routed there by the chrome over the window.
 #[test]
 fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
     let tree = desk_tree();
@@ -484,8 +480,8 @@ fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
     );
 }
 
-/// The chrome draws what a retained target keeps, in the parts a host
-/// compares it by, and says what of it the next frame repaints.
+/// The chrome draws what a retained target keeps, in the parts a host compares it by, and says what
+/// of it the next frame repaints.
 struct Presented {
     frames: ui::retained_raster::RetainedFrames,
     key: ui::retained_raster::TargetKey,
@@ -515,9 +511,9 @@ impl Presented {
     }
 }
 
-/// The scrim search dims the desktop with covers every window, so a host
-/// that keeps its frame must repaint it when search closes as it did when
-/// search opened: a close that repaints nothing leaves the dim on screen.
+/// The scrim search dims the desktop with covers every window, so a host that keeps its frame must
+/// repaint it when search closes as it did when search opened: a close that repaints nothing leaves
+/// the dim on screen.
 #[test]
 fn closing_search_repaints_the_whole_scrim() {
     use ui::retained_raster::Repaint;
@@ -536,8 +532,7 @@ fn closing_search_repaints_the_whole_scrim() {
     for _ in 0..3 {
         shown.next(&mut session);
     }
-    // The chrome draws search over the whole area it stands on, so the dim
-    // covers the desktop.
+    // The chrome draws search over the whole area it stands on, so the dim covers the desktop.
     let scrim = ui::kurbo::Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
 
     session.handle.toggle_search();

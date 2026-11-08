@@ -33,20 +33,6 @@ impl NativeAuthorityStorage {
     pub fn workspaces(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
         self.workspaces.keys().chain(self.pending.keys()).copied()
     }
-    /// Whether `workspace`'s host runs on the device `device`: this device entered
-    /// it at a host there, or an enrollment into it there is in flight.
-    #[must_use]
-    pub fn hosted_on(&self, workspace: WorkspaceId, device: &[u8; 32]) -> bool {
-        if let Some(stored) = self.workspaces.get(&workspace) {
-            return stored.enrollment.as_ref().is_some_and(|enrollment| {
-                crate::owner::hosted_by(&enrollment.transport_hint, device)
-            });
-        }
-        self.pending.get(&workspace).is_some_and(|pending| {
-            crate::owner::VerifiedNativeEnrollmentIntent::restore(&pending.intent)
-                .is_ok_and(|intent| crate::owner::hosted_by(intent.transport_hint(), device))
-        })
-    }
     /// Whether this device holds `workspace`: its replica is installed, not
     /// merely an enrollment into it in flight.
     #[must_use]
@@ -66,13 +52,6 @@ impl NativeAuthorityStorage {
         self.pending
             .iter()
             .map(|(workspace, pending)| (*workspace, pending.target_workspace()))
-    }
-    /// Whether every pending enrollment names the local slot it binds.
-    #[must_use]
-    pub fn every_pending_has_slot(&self) -> bool {
-        self.pending
-            .values()
-            .all(|pending| pending.target.is_some())
     }
 }
 
@@ -104,6 +83,13 @@ pub(crate) struct StoredWorkspace {
     /// this or an enrollment, never both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vouched: Option<StoredVouch>,
+    /// Where this device's own host of the workspace is reached, for a
+    /// workspace founded here: the signed address its host keeps the
+    /// workspace's records at ([`crate::NativeWorkspaceOwner`] founded it, so
+    /// no other device admitted this one and its record holds neither an
+    /// enrollment nor a vouch to say where the host is).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_hint: Option<TransportHint>,
     /// `StatePeer::durable()`: the largest field by far.
     #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,
@@ -136,6 +122,20 @@ pub(crate) struct StoredWorkspace {
     /// the workspace delta that carried each one is published under its receipt.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub join_admissions: BTreeMap<String, StoredJoinReceipt>,
+}
+
+impl StoredWorkspace {
+    /// Whether the record says where the workspace's host is reached: the
+    /// hint its enrollment carries, the one the host's answer named, or the
+    /// one its own host recorded as it founded the workspace.
+    pub(crate) fn names_host(&self) -> bool {
+        self.enrollment.is_some()
+            || self
+                .vouched
+                .as_ref()
+                .is_some_and(|vouched| vouched.hint.is_some())
+            || self.host_hint.is_some()
+    }
 }
 
 /// The receipt of one join admission this device committed, by the digest of

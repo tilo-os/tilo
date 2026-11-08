@@ -173,8 +173,8 @@ const ACTIVE_BAND_FILL_ALPHA: u8 = 0x14;
 /// edited, so the body visibly recedes (like Word dimming the body in that mode).
 const BODY_DIM_VEIL_ALPHA: u8 = 0x66;
 
-/// The colours the page draws with, resolved once per frame from the
-/// [`Theme`]: the sheet itself and the theme's intents made legible on it.
+/// The colours the page draws with, resolved once per frame from
+/// the [`Theme`]: the sheet itself and the theme's intents made legible on it.
 /// Window chrome reads the theme directly; only the document surface needs
 /// colours measured against the paper.
 #[derive(Clone, Copy)]

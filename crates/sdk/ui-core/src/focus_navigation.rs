@@ -209,6 +209,9 @@ pub(crate) fn mapped_order(
     (order, trapped.is_some())
 }
 /// None means keep focus; Some(None) means blur all controls.
+///
+/// `entry` is the control of the trap the person types into, where it has one: what a dialog
+/// opens on, over its first control, so the words they type reach the form it asks.
 #[expect(
     clippy::option_option,
     reason = "the outer Option is whether focus changes; the inner one is the new, possibly empty, focus"
@@ -219,11 +222,13 @@ pub(crate) fn reconcile_trap(
     focused: Option<NodeId>,
     order: &[NodeId],
     trapped: bool,
+    entry: Option<NodeId>,
 ) -> Option<Option<NodeId>> {
+    let opening = || entry.or_else(|| order.first().copied());
     let change = match (*active, trapped) {
         (false, true) => {
             *before = focused;
-            Some(order.first().copied())
+            Some(opening())
         }
         // Focus goes back to where it was before the trap, unless what the
         // trap chose moved it somewhere that outlives the trap (a menu's
@@ -236,9 +241,7 @@ pub(crate) fn reconcile_trap(
                 Some(before.filter(|id| order.contains(id)))
             }
         }
-        (true, true) if !focused.is_some_and(|id| order.contains(&id)) => {
-            Some(order.first().copied())
-        }
+        (true, true) if !focused.is_some_and(|id| order.contains(&id)) => Some(opening()),
         _ => None,
     };
     *active = trapped;
@@ -426,19 +429,19 @@ mod trap_tests {
         let page = [canvas, label, other];
         let (mut active, mut before) = (false, None);
         assert_eq!(
-            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
+            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true, None),
             Some(Some(menu))
         );
         assert_eq!(
-            reconcile_trap(&mut active, &mut before, Some(menu), &page, false),
+            reconcile_trap(&mut active, &mut before, Some(menu), &page, false, None),
             Some(Some(canvas))
         );
         assert_eq!(
-            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
+            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true, None),
             Some(Some(menu))
         );
         assert_eq!(
-            reconcile_trap(&mut active, &mut before, Some(label), &page, false),
+            reconcile_trap(&mut active, &mut before, Some(label), &page, false, None),
             None
         );
         assert_eq!(before, None);

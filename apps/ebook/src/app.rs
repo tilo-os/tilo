@@ -5412,10 +5412,6 @@ impl BooksApp {
     /// `entries`. Showing something answers at once; sharing or fetching a
     /// book answers once its bytes are in place, through
     /// [`Self::take_effect_result`].
-    ///
-    /// # Errors
-    /// Why the effect does not apply to what this reader holds now: a book,
-    /// chapter or block that is gone, another share or fetch in progress.
     pub(crate) fn begin_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,

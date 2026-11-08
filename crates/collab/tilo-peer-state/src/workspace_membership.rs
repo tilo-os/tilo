@@ -81,9 +81,6 @@ const MAX_BOT_INPUT_VALUE: usize = 256;
 
 impl BotRequest {
     /// Validate the entry and version the request names.
-    ///
-    /// # Errors
-    /// Refuses an empty, unbounded or non-canonical entry or version.
     pub fn validate(&self) -> Result<(), String> {
         validate_bot_entry(&self.entry)?;
         if self.version.is_empty()
@@ -156,9 +153,6 @@ const MAX_APP_VERSION: usize = 64;
 
 impl AppRelease {
     /// Validate what the release names.
-    ///
-    /// # Errors
-    /// An app id, version or hash that is not canonical.
     pub fn validate(&self) -> Result<(), String> {
         validate_app_id(&self.app)?;
         if self.version.is_empty()
@@ -209,9 +203,6 @@ impl AppRelease {
 
     /// Check `bytes` fetched from the workspace are this release's package file.
     /// The install that follows binds them to `package` and `publisher`.
-    ///
-    /// # Errors
-    /// The release names no file, or the bytes hash to another.
     pub fn check_file(&self, bytes: &[u8]) -> Result<(), String> {
         let file = self
             .file
@@ -399,9 +390,6 @@ pub struct AppAction {
 
 impl AppAction {
     /// The action named, each part trimmed.
-    ///
-    /// # Errors
-    /// A part is empty.
     pub fn new(app: &str, target_app: &str, resource: &str, action: &str) -> Result<Self, String> {
         let named = Self {
             app: app.trim().to_owned(),
@@ -435,26 +423,8 @@ impl AppAction {
     }
 }
 
-/// How long an app-action grant lasts, from the word a person picked.
-///
-/// # Errors
-/// A `session` grant, which a workspace has no session to end with, and any
-/// other word but `always`.
-pub fn app_action_lifetime(lifetime: &str) -> Result<tilo_action_policy::Lifetime, String> {
-    match lifetime.trim().to_ascii_lowercase().as_str() {
-        "always" => Ok(tilo_action_policy::Lifetime::UntilRevoked),
-        "session" => {
-            Err("a workspace has no session to end a session grant with: grant it always".into())
-        }
-        _ => Err("lifetime must be always".into()),
-    }
-}
-
 /// The workspace's name, trimmed, when it is 1 to 80 characters and no control
 /// characters.
-///
-/// # Errors
-/// It is not.
 pub fn valid_workspace_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if !(1..=80).contains(&name.chars().count()) || name.chars().any(char::is_control) {
@@ -493,9 +463,6 @@ impl WorkspaceMembershipCommand {
     }
 
     /// Validate the canonical identifier before entering the owner turn.
-    ///
-    /// # Errors
-    /// Refuses empty, unbounded, unnormalised or control-containing identifiers.
     pub fn validate(&self) -> Result<(), String> {
         if matches!(
             self,
@@ -584,9 +551,6 @@ impl WorkspaceMembershipCommand {
 
 /// Whether `agent` is an id a workspace names an agent by: lowercase, trimmed,
 /// bounded, with no control characters.
-///
-/// # Errors
-/// It is not.
 pub fn valid_agent_id(agent: &str) -> Result<(), String> {
     if agent.is_empty()
         || agent.len() > 128

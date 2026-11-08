@@ -96,8 +96,6 @@ impl SetupClient {
         self.host.wake_after()
     }
     /// The app invokes this only through its sensitive setup action.
-    /// # Errors
-    /// Refuses invalid generation or another account's private presentation.
     pub async fn begin(&self) -> Result<Pairing, SendError> {
         if self.generation == 0 {
             return Err(SendError::InvalidRequest);

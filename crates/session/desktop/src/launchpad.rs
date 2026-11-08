@@ -30,8 +30,8 @@ use crate::i18n::t;
 use tilo_desktop_surface::HostAction;
 use ui::TextRole;
 
-/// The "Open an app" button in the desk's targets and the accessibility
-/// tree; a card is [`LaunchpadAction::target`].
+/// The "Open an app" button in the desk's targets and the accessibility tree; a card is
+/// [`LaunchpadAction::target`].
 pub const LAUNCHPAD_OPEN_APP: &str = "launchpad:open-app";
 
 /// An action an app publishes, as the desktop's chrome asks for it.
@@ -44,11 +44,10 @@ pub struct LaunchpadAppAction {
 }
 
 impl LaunchpadAppAction {
-    /// The app action that opens (or starts) this person's conversation with
-    /// `root` (hex): Chat's own `open-direct-conversation` on the workspace's
-    /// conversation with them, its composer ready. Chat publishes the action
-    /// on a row named for the person it is with, so the desktop asks for that
-    /// row's resource.
+    /// The app action that opens (or starts) this person's conversation with `root` (hex): Chat's
+    /// own `open-direct-conversation` on the workspace's conversation with them, its composer
+    /// ready. Chat publishes the action on a row named for the person it is with, so the desktop
+    /// asks for that row's resource.
     #[must_use]
     pub fn message_person(root: &str) -> Self {
         Self {
@@ -95,16 +94,15 @@ impl LaunchpadAction {
         }
     }
 
-    /// The verb's stable name among the desk's targets and in the
-    /// accessibility tree (`launchpad:notes`), so a driver presses the card a
-    /// person sees.
+    /// The verb's stable name among the desk's targets and in the accessibility tree
+    /// (`launchpad:notes`), so a driver presses the card a person sees.
     #[must_use]
     pub fn target(self) -> String {
         format!("launchpad:{}", self.slug())
     }
 
-    /// The host action that runs this verb (`launchpad-notes`): what the
-    /// session publishes, search lists and an agent invokes.
+    /// The host action that runs this verb (`launchpad-notes`): what the session publishes, search
+    /// lists and an agent invokes.
     #[must_use]
     pub fn host_id(self) -> String {
         format!("launchpad-{}", self.slug())
@@ -117,9 +115,8 @@ impl LaunchpadAction {
         Self::ALL.into_iter().find(|verb| verb.slug() == slug)
     }
 
-    /// The app the verb happens in, with the name a person reads for it: the
-    /// launchpad's Chat room, its Notes and Calendar. Inviting and catching up
-    /// happen on the desk itself.
+    /// The app the verb happens in, with the name a person reads for it: the launchpad's Chat room,
+    /// its Notes and Calendar. Inviting and catching up happen on the desk itself.
     pub const fn app_target(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Chat | Self::Meet => Some(("so.tilo.chat", "Chat")),
@@ -129,10 +126,9 @@ impl LaunchpadAction {
         }
     }
 
-    /// The typed action the verb invokes in its app: the app, the resource it
-    /// publishes the action on, and the action. The host delivers it to the
-    /// app in the workspace, launching the app first when it is closed, so
-    /// the verb does what it names in one step.
+    /// The typed action the verb invokes in its app: the app, the resource it publishes the action
+    /// on, and the action. The host delivers it to the app in the workspace, launching the app
+    /// first when it is closed, so the verb does what it names in one step.
     pub fn app_action(self) -> Option<LaunchpadAppAction> {
         match self {
             Self::Tasks => Some(LaunchpadAppAction {
@@ -163,8 +159,8 @@ impl LaunchpadAction {
         }
     }
 
-    /// What the verb does, in the words the workspace's scope makes true:
-    /// a private workspace has nobody to write or talk with yet.
+    /// What the verb does, in the words the workspace's scope makes true: a private workspace has
+    /// nobody to write or talk with yet.
     fn detail(self, scope: WorkspaceScope) -> String {
         let private = scope == WorkspaceScope::Private;
         match self {
@@ -200,10 +196,9 @@ impl LaunchpadAction {
         matches!(self, Self::Meet | Self::Invite | Self::Activity)
     }
 
-    /// The action the host publishes for this verb: its name, the sentence
-    /// describing it, its own picture and whether search may offer it before
-    /// anything is typed ([`HostAction`]). The desktops' cards, the palette
-    /// and the catalogue agents read all read this.
+    /// The action the host publishes for this verb: its name, the sentence describing it, its own
+    /// picture and whether search may offer it before anything is typed ([`HostAction`]). The
+    /// desktops' cards, the palette and the catalogue agents read all read this.
     #[must_use]
     pub fn host_action(self, scope: WorkspaceScope) -> HostAction {
         HostAction {
@@ -227,18 +222,17 @@ impl LaunchpadAction {
     }
 }
 
-/// What a person chose on the launchpad, waiting for the desk to take it: a
-/// card's verb, or the app opener. The launchpad decides nothing itself — the
-/// desk carries the choice out through the door every other host action uses.
+/// What a person chose on the launchpad, waiting for the desk to take it: a card's verb, or the app
+/// opener. The launchpad decides nothing itself — the desk carries the choice out through the door
+/// every other host action uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaunchpadPress {
     Card(LaunchpadAction),
     OpenApp,
 }
 
-/// A tile's icon ink: neutral, secondary at rest and primary while the tile
-/// is pointed at or chosen. The accent is never an icon at rest
-/// (`docs/design-language.md`, "Colour roles").
+/// A tile's icon ink: neutral, secondary at rest and primary while the tile is pointed at or
+/// chosen. The accent is never an icon at rest (`docs/design-language.md`, "Colour roles").
 fn icon_ink(theme: &Theme, active: bool) -> vello::peniko::Color {
     if active {
         theme.text_primary
@@ -256,10 +250,9 @@ pub struct CollaborationLaunchpad {
     focused: bool,
     selected: usize,
     app_button_size: (f64, f64),
-    /// Measured line height of the keyboard hint under the grid. The
-    /// "Open an app" button is centred on the hint's line, so the two read
-    /// as one footer row; measured during `draw`, defaulting to the
-    /// toolkit's line metrics for the caption size before the first frame.
+    /// Measured line height of the keyboard hint under the grid. The "Open an app" button is
+    /// centred on the hint's line, so the two read as one footer row; measured during `draw` ,
+    /// defaulting to the toolkit's line metrics for the caption size before the first frame.
     hint_line_h: f64,
     /// What this widget painted last differs from what it would paint now.
     dirty: bool,
@@ -271,8 +264,8 @@ pub struct CollaborationLaunchpad {
     target_geometry: Option<([Rect; 6], Rect)>,
 }
 
-/// Who sees what is made in the workspace the launchpad is shown in, which
-/// is what its words about sharing must say.
+/// Who sees what is made in the workspace the launchpad is shown in, which is what its words about
+/// sharing must say.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WorkspaceScope {
     /// Only the person themselves.
@@ -284,8 +277,8 @@ pub enum WorkspaceScope {
     Public,
 }
 
-/// Words a host puts in place of the launchpad's own: a desktop in the
-/// browser welcomes a new member and names its own keyboard chords.
+/// Words a host puts in place of the launchpad's own: a desktop in the browser welcomes a new
+/// member and names its own keyboard chords.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LaunchpadCopy {
     pub title: Option<String>,
@@ -295,8 +288,8 @@ pub struct LaunchpadCopy {
 
 /// Top of the keyboard hint, from the bottom of the last card.
 const HINT_TOP: f64 = 22.0;
-/// Top of the footer band, from the bottom of the last card, and the band's
-/// minimum height (the "Open an app" button's minimum height).
+/// Top of the footer band, from the bottom of the last card, and the band's minimum height (the
+/// "Open an app" button's minimum height).
 const FOOTER_TOP: f64 = 14.0;
 const FOOTER_MIN_H: f64 = 36.0;
 /// Height of the heading band (title + subtitle) above the first card row.
@@ -341,9 +334,8 @@ impl CollaborationLaunchpad {
         self
     }
 
-    /// Another launchpad saying the same words, for a second display's empty
-    /// desk: every empty display shows the start cards, and each takes its
-    /// own pointer and keyboard.
+    /// Another launchpad saying the same words, for a second display's empty desk: every empty
+    /// display shows the start cards, and each takes its own pointer and keyboard.
     #[must_use]
     pub fn for_another_display(&self) -> Self {
         let mut pad = Self::new();
@@ -386,8 +378,8 @@ impl CollaborationLaunchpad {
             .unwrap_or_else(|| t("launchpad-keyboard-hint"))
     }
 
-    /// Centre on `display` instead of the whole canvas, as on a desktop
-    /// spanning several displays. `None` returns to the whole canvas.
+    /// Centre on `display` instead of the whole canvas, as on a desktop spanning several displays.
+    /// `None` returns to the whole canvas.
     pub fn set_presentation_area(&mut self, display: Option<Rect>) {
         let presentation = display;
         if presentation != self.presentation {
@@ -421,7 +413,7 @@ impl CollaborationLaunchpad {
         Self::card_geometry(self.presentation_rect())
     }
 
-    /// The card drawn at `p`.
+    /// The card drawn at `p` .
     pub fn action_at(&self, p: Point) -> Option<LaunchpadAction> {
         LaunchpadAction::ALL
             .iter()
@@ -430,9 +422,9 @@ impl CollaborationLaunchpad {
             .map(|(action, _)| *action)
     }
 
-    /// The cards and the "Open an app" button by stable name
-    /// (`launchpad:notes`, `launchpad:open-app`, ...), as laid out in the
-    /// last frame, so a driver can press them like a person would.
+    /// The cards and the "Open an app" button by stable name (`launchpad:notes`,
+    /// `launchpad:open-app` , ...), as laid out in the last frame, so a driver can press them like
+    /// a person would.
     pub fn targets(&self) -> Vec<(String, Rect)> {
         LaunchpadAction::ALL
             .iter()
@@ -459,10 +451,9 @@ impl CollaborationLaunchpad {
         self.press.take()
     }
 
-    /// The footer reservation under the grid: `FOOTER_TOP` below the last
-    /// card, at least the button's minimum height tall. Card overflow is
-    /// measured against this band, so the grid does not move when the
-    /// button is repositioned inside it.
+    /// The footer reservation under the grid: `FOOTER_TOP` below the last card, at least the
+    /// button's minimum height tall. Card overflow is measured against this band, so the grid does
+    /// not move when the button is repositioned inside it.
     fn footer_band(&self) -> Rect {
         let last = self.card_rects[5];
         Rect::new(
@@ -473,11 +464,10 @@ impl CollaborationLaunchpad {
         )
     }
 
-    /// What the launchpad presents — heading band, cards and footer — as
-    /// opposed to its layout rect, which spans the whole canvas. The access
-    /// tree reports this, so a geometry probe does not read chrome floating
-    /// over the canvas as overlapping the launchpad.
-    /// The layout rect until the first frame has placed the cards.
+    /// What the launchpad presents — heading band, cards and footer — as opposed to its layout
+    /// rect, which spans the whole canvas. The access tree reports this, so a geometry probe does
+    /// not read chrome floating over the canvas as overlapping the launchpad. The layout rect until
+    /// the first frame has placed the cards.
     fn content_bounds(&self) -> Rect {
         let Some(first) = self.card_rects.first().copied() else {
             return self.rect;
@@ -495,9 +485,9 @@ impl CollaborationLaunchpad {
 
     fn app_button_rect(&self) -> Rect {
         let last = self.card_rects[5];
-        // Centred on the keyboard hint's line: it used to start 14 px below
-        // the grid while the hint started 22 px below it, leaving their
-        // centres ~4 px apart (HIG §7: controls in one row share a line).
+        // Centred on the keyboard hint's line: it used to start 14 px below the grid while the hint
+        // started 22 px below it, leaving their centres ~4 px apart (HIG §7: controls in one row
+        // share a line).
         let centre = last.y1 + HINT_TOP + self.hint_line_h / 2.0;
         let top = centre - self.app_button_size.1 / 2.0;
         Rect::new(
@@ -670,8 +660,8 @@ impl Widget for CollaborationLaunchpad {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Theme tokens already include accessibility scaling; TextRenderer
-        // also applies its configured scale to authored font sizes.
+        // Theme tokens already include accessibility scaling; TextRenderer also applies its
+        // configured scale to authored font sizes.
         let scale = text.text_scale();
         let base = theme.tokens.typography.size(TextRole::Body) / scale;
         let small = theme.tokens.typography.size(TextRole::Caption) / scale;
@@ -716,8 +706,8 @@ impl Widget for CollaborationLaunchpad {
         let subtitle = text.elide_to_width(&self.subtitle(), small, panel_width as f32);
         let (_, subtitle_h) = text.measure(&subtitle, small, None);
         if f64::from(title_h + subtitle_h) + 9.0 <= HEADING_BAND {
-            // On the bare wallpaper, like the hint under the cards: the dim
-            // tier's contrast holds only on the theme's own surfaces.
+            // On the bare wallpaper, like the hint under the cards: the dim tier's contrast holds
+            // only on the theme's own surfaces.
             text.draw_text(
                 scene,
                 &subtitle,
@@ -728,12 +718,11 @@ impl Widget for CollaborationLaunchpad {
             );
         }
 
-        // The tiles are actions, so each is a secondary action's face: the
-        // raised level with no edge, a neutral lift under the pointer and
-        // the press, and the keyboard focus ring outside it
-        // (`docs/design-language.md`, "Buttons" and "Lifts"). The icon is
-        // neutral ink: secondary at rest, primary while the tile is the one
-        // being pointed at or chosen; the accent is never an icon at rest.
+        // The tiles are actions, so each is a secondary action's face: the raised level with no
+        // edge, a neutral lift under the pointer and the press, and the keyboard focus ring outside
+        // it (`docs/design-language.md`, "Buttons" and "Lifts"). The icon is neutral ink: secondary
+        // at rest, primary while the tile is the one being pointed at or chosen; the accent is
+        // never an icon at rest.
         for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
             let interaction = self.targets.interaction(&action.target());
             let focused = self.focused && self.selected == index;
@@ -741,7 +730,7 @@ impl Widget for CollaborationLaunchpad {
             let (fill, _, _) = ui::widget::face_colors(
                 theme,
                 ui::widget::ButtonRole::Secondary,
-                ui::widget::ButtonInteract {
+                ui::widget::Interaction {
                     hovered: hovered_here,
                     pressed: interaction.pressed,
                     focused,
@@ -802,11 +791,10 @@ impl Widget for CollaborationLaunchpad {
         }
 
         let button = self.app_button_rect();
-        // The shared `Button` face (HIG §9.9) at the Control radius (§9.1):
-        // fill, border, hover, focus ring and measured label centring come
-        // from the toolkit rather than a local copy of them. `base` is
-        // renderer-relative here (divided above), which is what the face
-        // expects from a widget painted at the tree's scale.
+        // The shared `Button` face (HIG §9.9) at the Control radius (§9.1): fill, border, hover,
+        // focus ring and measured label centring come from the toolkit rather than a local copy of
+        // them. `base` is renderer-relative here (divided above), which is what the face expects
+        // from a widget painted at the tree's scale.
         Button::paint(
             scene,
             transform,
@@ -821,8 +809,8 @@ impl Widget for CollaborationLaunchpad {
         if let Some(last) = cards.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
             let hint = text.elide_to_width(&keyboard_hint, caption, hint_width);
-            // The button is centred on this line (`app_button_rect`), so the
-            // hint stays where it was and the pair share one centre.
+            // The button is centred on this line (`app_button_rect`), so the hint stays where it
+            // was and the pair share one centre.
             text.draw_text(
                 scene,
                 &hint,
@@ -1182,9 +1170,8 @@ mod tests {
 
     use ui::synthetic_input::named_key;
 
-    /// The tiles are actions: a secondary action's face, the raised
-    /// level with no edge that lifts under the pointer, with neutral
-    /// icons, never the accent at rest.
+    /// The tiles are actions: a secondary action's face, the raised level with no edge that lifts
+    /// under the pointer, with neutral icons, never the accent at rest.
     #[test]
     fn launchpad_tiles_are_raised_actions_with_neutral_icons() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
@@ -1192,9 +1179,9 @@ mod tests {
                 ui::widget::face_colors(
                     &theme,
                     ui::widget::ButtonRole::Secondary,
-                    ui::widget::ButtonInteract {
+                    ui::widget::Interaction {
                         hovered,
-                        ..ui::widget::ButtonInteract::default()
+                        ..ui::widget::Interaction::default()
                     },
                 )
             };
@@ -1202,9 +1189,9 @@ mod tests {
             assert_eq!(rest, theme.tokens.colors.surfaces.raised, "{}", theme.name);
             assert!(edge.is_none(), "{}: a raised tile has no edge", theme.name);
             assert_ne!(face(true).0, rest, "{}: a hovered tile lifts", theme.name);
-            // Icons are the text inks, never the accent. High contrast's
-            // accent is inverted, its primary ink itself, so there the
-            // colours cannot tell the two apart; elsewhere they must differ.
+            // Icons are the text inks, never the accent. High contrast's accent is inverted, its
+            // primary ink itself, so there the colours cannot tell the two apart; elsewhere they
+            // must differ.
             let intent = &theme.tokens.colors.intent;
             let neutral = [theme.text_dim, theme.text_primary];
             for active in [false, true] {

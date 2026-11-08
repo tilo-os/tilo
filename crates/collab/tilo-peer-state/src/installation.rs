@@ -26,9 +26,6 @@ pub struct InstallationId(String);
 
 impl InstallationId {
     /// Read an installation id.
-    ///
-    /// # Errors
-    /// Anything but a lowercase hyphenated UUID.
     pub fn parse(value: &str) -> Result<Self, String> {
         match uuid::Uuid::parse_str(value) {
             Ok(id) if id.hyphenated().to_string() == value => Ok(Self(value.to_owned())),
@@ -135,8 +132,6 @@ fn is_hex_hash(value: &str) -> bool {
 }
 
 impl Installation {
-    /// # Errors
-    /// The first field out of bounds.
     pub fn validate(&self) -> Result<(), String> {
         if !is_hex_hash(&self.program) {
             return Err("the program is named by its BLAKE3 hash".into());

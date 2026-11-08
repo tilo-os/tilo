@@ -90,9 +90,6 @@ impl CreationChunk {
         }
     }
     /// Extract only the first bounded capture chunk.
-    ///
-    /// # Errors
-    /// Refuses every other reply or a continuation offset.
     pub fn from_reply(reply: Reply) -> Result<Self, &'static str> {
         let Reply::Chunk {
             capture,
@@ -232,10 +229,6 @@ pub enum Reply {
 }
 impl Request {
     /// Encode a valid request for the wire.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an invalid request or a postcard encoding failure.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         if !self.valid() {
             return Err("invalid committed read request");
@@ -243,10 +236,6 @@ impl Request {
         postcard::to_stdvec(self).map_err(|_| "committed read encoding")
     }
     /// Decode exactly one bounded, valid request.
-    ///
-    /// # Errors
-    ///
-    /// Refuses oversized, trailing, malformed or invalid input.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() > MAX_INITIALIZATION_BYTES + 512 {
             return Err("committed read request too large");
@@ -291,10 +280,6 @@ impl Request {
 }
 impl Reply {
     /// Encode a valid reply for the wire.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an invalid reply or a postcard encoding failure.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         if !self.valid() {
             return Err("invalid committed read reply");
@@ -302,10 +287,6 @@ impl Reply {
         postcard::to_stdvec(self).map_err(|_| "committed read encoding")
     }
     /// Decode exactly one bounded, valid reply.
-    ///
-    /// # Errors
-    ///
-    /// Refuses oversized, trailing, malformed or invalid input.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() > MAX_WIRE_BYTES + 512 {
             return Err("committed read reply too large");

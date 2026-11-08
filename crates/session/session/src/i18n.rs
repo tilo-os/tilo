@@ -1,11 +1,9 @@
 //! The session's Fluent catalogue: what its notices say.
-//!
-//! Every notice the session shows the person is a catalogue key resolved
-//! through the toolkit's [`mod@ui::i18n`] manager, never a literal. The
-//! catalogues are embedded with `include_str!`, so a release session and a
-//! unit test resolve the same copy; on a thread with no manager yet the
-//! user's locale comes from the environment, and a message a translation
-//! lacks falls back to `en-US`.
+//! Every notice the session shows the person is a catalogue key resolved through the toolkit's
+//! [`mod@ui::i18n`] manager, never a literal. The catalogues are embedded with `include_str!` , so
+//! a release session and a unit test resolve the same copy; on a thread with no manager yet the
+//! user's locale comes from the environment, and a message a translation lacks falls back to
+//! `en-US` .
 
 #[cfg(test)]
 const CATALOGUES: &[(&str, &str)] = &[
@@ -26,20 +24,30 @@ pub(crate) fn ensure() {
     tilo_desktop_search::i18n::ensure();
 }
 
-/// The words of the tilolang packages a development session seeds, in the person's language:
-/// their catalogues ride along with the session's — a declaration's label, description and noun
-/// read through them (`docs/designs/app-language/i18n.md`) — without saying which language the
-/// session itself draws in. A seeded package that ships German leaves the session's own words
-/// (the toolkit's, the desktop's) English on a German device; a session that has its own German
-/// reads them German still.
+/// The words of the tilolang packages a development session seeds, in the person's language: their
+/// catalogues ride along with the session's — a declaration's label, description and noun read
+/// through them (`docs/designs/app-language/i18n.md`) — without saying which language the session
+/// itself draws in. A seeded package that ships German leaves the session's own words (the
+/// toolkit's, the desktop's) English on a German device; a session that has its own German reads
+/// them German still.
 pub(crate) struct SeededWords;
+
+/// Let the session read `catalogues` beside its own words: shared, so a package's language never
+/// becomes the one the session draws in.
+fn share(catalogues: &[(String, String)]) {
+    ensure();
+    for (locale, text) in catalogues {
+        ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
+    }
+}
 
 impl tilolang_tilo::runtime::Words for SeededWords {
     fn add(&self, catalogues: &[(String, String)]) {
-        ensure();
-        for (locale, text) in catalogues {
-            ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
-        }
+        share(catalogues);
+    }
+
+    fn add_used(&self, catalogues: &[(String, String)]) {
+        share(catalogues);
     }
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {

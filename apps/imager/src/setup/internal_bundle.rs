@@ -319,8 +319,6 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
 }
 
 /// Parse the exact schema-2 exporter contract, without authenticating its origin.
-/// # Errors
-/// Rejects ambiguous JSON, unsupported profiles and inconsistent or unbounded facts.
 pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, String> {
     require(
         !manifest.is_empty() && manifest.len() <= MAX_MANIFEST_BYTES,

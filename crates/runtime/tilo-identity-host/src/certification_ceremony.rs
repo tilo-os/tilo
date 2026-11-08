@@ -122,10 +122,6 @@ impl Ask {
     }
 
     /// The digest the identity's key signs.
-    ///
-    /// # Errors
-    ///
-    /// When the certificate cannot be encoded.
     pub fn digest(&self) -> Result<[u8; 32], String> {
         device_cert_signing_digest(&self.cert).map_err(|error| error.to_string())
     }
@@ -134,10 +130,6 @@ impl Ask {
 /// Check what `ask` proposes before anyone is asked about it: a certificate
 /// of `person` for a personal device that is not revoked, unsigned, named,
 /// starting about now and not expiring.
-///
-/// # Errors
-///
-/// Why the proposal is refused.
 pub fn check_proposal(
     ask: &Ask,
     person: [u8; 32],
@@ -197,10 +189,6 @@ fn renewal_expiry_shape(held: Option<u64>, renewed: Option<u64>) -> Result<(), (
 /// A renewal adds no device and grants nothing new, so unlike
 /// [`check_proposal`] it is not the person's to approve: the device is
 /// already theirs, and the person already trusts what it may do.
-///
-/// # Errors
-///
-/// Why the renewal is refused.
 pub fn check_renewal(
     ask: &Ask,
     held: &DeviceCert,
@@ -258,18 +246,10 @@ pub trait IdentityKey {
     /// Whether this device holds the whole key or a share of it.
     fn holds_key(&self) -> bool;
     /// `Some` signature when this device holds the whole key.
-    ///
-    /// # Errors
-    ///
-    /// When holding the whole key, signing failed.
     fn sign_whole(&self, digest: &[u8; 32]) -> Result<Option<[u8; 64]>, String>;
     /// `Some` commitment when this device holds a share.
     fn commit(&self) -> Option<(SigningRound1Commitment, SigningSessionNonces)>;
     /// This share's partial signature over `digest`.
-    ///
-    /// # Errors
-    ///
-    /// When the commitments do not include this share's or signing fails.
     fn partial(
         &self,
         nonces: SigningSessionNonces,
@@ -421,13 +401,6 @@ impl Signer {
             Ok(partial) => Reply::Partial(partial),
             Err(error) => Reply::Refused(error),
         }
-    }
-
-    /// Whether the person approved `session` here and its signing round is
-    /// still to come.
-    #[must_use]
-    pub fn awaits_signing(&self, session: &[u8; 16]) -> bool {
-        self.approved.contains_key(session)
     }
 }
 

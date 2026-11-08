@@ -495,12 +495,6 @@ pub(crate) fn serve_lines<'a>(
 /// serving layer. This function never mutates process-global environment.
 ///
 /// Returns `Ok(())` when the input reaches end of file.
-///
-/// # Errors
-///
-/// Returns an error when the runtime, session or action broker cannot start,
-/// an app cannot be launched or exits, the input stream fails, or a reply
-/// cannot be written.
 pub fn serve<S, R, W>(
     profile: &Path,
     manifest: ValidatedManifest,

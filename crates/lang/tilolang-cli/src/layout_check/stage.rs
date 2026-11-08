@@ -77,9 +77,14 @@ impl Platform for Packages {
     }
 
     /// The package's words, and the one language its window is laid out in: the person's when
-    /// the package ships it, the package's source language otherwise.
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        ui::i18n::speak_window_language(catalogues);
+    /// the package ships it, the package's source language otherwise. A package the window uses
+    /// (another app's view it calls) only rides along in that language.
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        if window {
+            ui::i18n::speak_window_language(catalogues);
+        } else {
+            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        }
     }
 
     /// A fixed instant, so every run lays out the same dates: the clock the capture pins
@@ -185,6 +190,11 @@ impl Staged {
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
         let me = "ada".to_owned();
+        let names = Rc::new(tilolang_tilo::names::Told::new(
+            &me,
+            Rc::new(tilolang_tilo::names::Unnamed),
+        ));
+        names.tell("Ada".to_owned(), Vec::new());
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
@@ -200,9 +210,10 @@ impl Staged {
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,
-            // People are called as a window calls them when nobody told it their names: a
-            // scenario's sample person (`person("Leo")`) by that name, never by their id.
-            Rc::new(tilolang_tilo::names::Unnamed),
+            // The person the layout opens as is called as a person is, `Ada`, and everyone else
+            // as a window calls them when nobody told it their names: a scenario's sample person
+            // (`person("Leo")`) by that name, never by their id.
+            names,
             Box::new(app_end),
         );
         let mut record = staging.record.unwrap_or_default();
@@ -371,14 +382,16 @@ impl Staged {
                 continue;
             };
             for field in &schema.fields {
-                if let (Some(item_ty), Some(tilolang_tilo::DynValue::Collection(items))) =
-                    (&field.record, record.get(&field.id))
-                {
-                    out.extend(items.ids().map(|id| ResourceRef {
-                        id: format!("{doc}/{}", id.as_str()),
-                        ty: item_ty.clone(),
-                    }));
-                }
+                // Each item's type is its own: a collection of a union of record types (a
+                // category, a channel or a direct message) declares none for the field, so the
+                // item's record is the only thing that says which type it is.
+                let Some(tilolang_tilo::DynValue::Collection(items)) = record.get(&field.id) else {
+                    continue;
+                };
+                out.extend(items.iter().map(|(id, item)| ResourceRef {
+                    id: format!("{doc}/{}", id.as_str()),
+                    ty: item.schema().id.clone(),
+                }));
             }
         }
         out
@@ -423,6 +436,33 @@ impl Staged {
             }
         }
         out
+    }
+
+    /// Tap the window at `at`, as a finger does, and let it answer: a row of a list is painted
+    /// by the list, one widget without a place of its own to tap by name, so a person's hand
+    /// lands on where the row is drawn.
+    pub fn tap_at(&mut self, at: (f64, f64)) -> Result<(), String> {
+        self.harness.tap_at(at.0, at.1);
+        self.exchange();
+        self.settle()
+    }
+
+    /// The resource the window shows where a person holding it is looking: nothing while the
+    /// sidebar stands in front, and the page the window pushed in front of its list (or opened
+    /// over it) once that does.
+    pub fn front_target(&mut self) -> Option<ResourceRef> {
+        let window = self.window()?;
+        let sidebar = matches!(
+            window.shell_ref().map(ui::widget::NavShell::front_pane),
+            Some(ui::widget::NavPane::Sidebar | ui::widget::NavPane::Overview)
+        );
+        if sidebar {
+            return None;
+        }
+        window
+            .detail_target()
+            .or_else(|| window.root_target())
+            .cloned()
     }
 
     /// The tree the window composed from what the app sent, as sent: every view that ran is in
@@ -493,6 +533,29 @@ impl Staged {
         self.settle()
     }
 
+    /// Press `x`, `y` as a person presses them, and let the window and its instance answer: what
+    /// reaches a row a menu paints, which has no node of its own to name.
+    pub fn press_at(&mut self, x: f64, y: f64) -> Result<(), String> {
+        // A row is pressed the way the window expects its person to: a finger taps it, where a
+        // mouse press on a menu a finger opened only dismisses the menu.
+        if self.harness.interaction_environment().modality == ui::interaction::InputModality::Touch
+        {
+            self.harness.tap_at(x, y);
+        } else {
+            self.harness.click_at(x, y);
+        }
+        self.exchange();
+        self.settle()
+    }
+
+    /// Lay the window out as it stands now, so that what a press opened over it — a menu, a
+    /// popover, a sheet — is there to be read and pressed in turn.
+    pub fn freshen(&mut self) -> Result<(), String> {
+        self.exchange();
+        self.harness.relayout();
+        self.settle()
+    }
+
     /// Press the action the control `id` publishes as a semantic child, as assistive technology
     /// activates it: a control a widget paints itself (an empty state's action) has no node of
     /// its own to tap, and the widget's own node is not where the action is.
@@ -505,6 +568,11 @@ impl Staged {
     }
 
     /// Run the toolkit's clock until nothing in the window moves.
+    ///
+    /// The wall clock is the capture's (pinned by [`ui::clock::freeze_for_capture`]), and a
+    /// widget that paints by it — an indeterminate progress bar, a spinner — holds still and
+    /// asks for no frame, so a looping indicator settles here. Anything else still asking for a
+    /// frame after two seconds is an animation that never ends, which no screen should have.
     fn settle(&mut self) -> Result<(), String> {
         // A widget that took a layout switch after its parts were placed asks for the frame
         // that lays them out again, as a live window draws it.
@@ -1080,12 +1148,229 @@ mod tests {
         );
     }
 
+    /// The window says it stands on `label`, a form the press opened.
+    fn shows_dialog(node: &ui::headless::InspectionNode, label: &str) -> bool {
+        fn within(access: &ui::a11y::AccessNode, label: &str) -> bool {
+            if access.role == ui::a11y::Role::Dialog && access.name.as_deref() == Some(label) {
+                return true;
+            }
+            access.children.iter().any(|child| within(child, label))
+        }
+        node.semantics
+            .as_ref()
+            .is_some_and(|access| within(access, label))
+            || node.children.iter().any(|child| shows_dialog(child, label))
+    }
+
+    /// How many of the tasks of `app` the window's workspace reminds anyone of.
+    fn reminded(staged: &Staged, app: &str) -> usize {
+        let host = staged.instance.host().expect("a host");
+        let root = host.root_of(app).expect("the tasks root");
+        let tilolang_tilo::runtime::Value::List(items) =
+            host.runtime().read(&root, "items").expect("the items")
+        else {
+            panic!("the tasks are a list");
+        };
+        items
+            .into_iter()
+            .filter(|item| {
+                let tilolang_tilo::runtime::Value::Ref(task) = item else {
+                    return false;
+                };
+                matches!(
+                    host.runtime().read(&task.target, "remind"),
+                    Ok(tilolang_tilo::runtime::Value::Opt(Some(_)))
+                )
+            })
+            .count()
+    }
+
+    /// The reminder's form, opened from a task's row menu as a finger opens it: the menu's
+    /// "Remind me…" row asks when.
+    fn open_reminder_form(staged: &mut Staged) {
+        let reminder = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::button_named(root, "Remind").expect("the task offers its reminder")
+        };
+        staged.press(&reminder, true).expect("its menu opens");
+        staged.freshen().expect("the menu comes to rest");
+        let row = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::painted_row_named(root, "Remind me…")
+                .expect("the menu offers its row")
+        };
+        press_at(staged, row);
+        assert!(
+            shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "the row opens the reminder's form"
+        );
+    }
+
+    /// The control of the window announcing `label`, as a reader meets it.
+    fn announced<'a>(
+        node: &'a ui::headless::InspectionNode,
+        label: &str,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        if node
+            .semantics
+            .as_ref()
+            .is_some_and(|access| access.name.as_deref() == Some(label))
+        {
+            return node.semantics.as_ref();
+        }
+        node.children
+            .iter()
+            .find_map(|child| announced(child, label))
+    }
+
+    /// A form of one question is answered by the choice a person picks: the pick submits it, so
+    /// it closes with the task reminded, with nothing else to press.
+    #[test]
+    fn a_quick_choice_answers_a_one_question_form_in_one_press() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390, 844);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the window lies out for a finger");
+        let before = reminded(&staged, &app);
+        open_reminder_form(&mut staged);
+        let choice = {
+            let root = &staged.harness().inspection().root;
+            let moment = announced(root, "Tomorrow morning")
+                .expect("the form offers the moments a person names");
+            let when = moment.description.clone().unwrap_or_default();
+            assert!(
+                when.contains(':') && when.len() > 4,
+                "each moment says when it is, in the person's own format: {when:?}"
+            );
+            assert!(
+                crate::layout_check::button_named(root, "Remind me").is_none(),
+                "one pick answers the form: its footer needs no confirm button"
+            );
+            assert!(
+                crate::layout_check::button_named(root, "Cancel").is_some(),
+                "Cancel stands there with nothing left to confirm"
+            );
+            crate::layout_check::button_named(root, "Tomorrow morning")
+                .expect("the form offers the moments a person names")
+        };
+        staged.press(&choice, true).expect("the choice presses");
+        staged.freshen().expect("the window comes to rest");
+        assert!(
+            !shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "picking when answers the form: it closes"
+        );
+        assert_eq!(
+            reminded(&staged, &app),
+            before + 1,
+            "and the task is reminded"
+        );
+    }
+
+    /// The person types the moment instead: the entry the form opens on takes what they type,
+    /// the confirm button stands beside Cancel for the moment typed, and pressing it reminds.
+    #[test]
+    fn a_moment_typed_into_the_form_is_confirmed_by_its_button() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390, 844);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the window lies out for a finger");
+        let before = reminded(&staged, &app);
+        open_reminder_form(&mut staged);
+        staged.harness_mut().type_text("tomorrow 9:30");
+        staged.freshen().expect("the window comes to rest");
+        let confirm = {
+            let root = &staged.harness().inspection().root;
+            assert!(
+                shows_dialog(root, "Remind me…"),
+                "typing leaves the form open to confirm"
+            );
+            crate::layout_check::button_named(root, "Remind me")
+                .expect("a moment typed by hand is confirmed by the form's button")
+        };
+        staged.press(&confirm, true).expect("the button presses");
+        staged.freshen().expect("the window comes to rest");
+        assert!(
+            !shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "the form closes once the moment typed is confirmed"
+        );
+        assert_eq!(
+            reminded(&staged, &app),
+            before + 1,
+            "the task is reminded at the moment the person typed"
+        );
+    }
+
+    /// A menu row on a touchscreen is pressed where it stands, by a finger: a mouse press there
+    /// only dismisses the menu the finger opened, and the row runs nothing.
+    #[test]
+    fn a_menu_row_of_a_touchscreen_window_is_pressed_by_a_tap() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390, 844);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the window lies out for a finger");
+        open_reminder_form(&mut staged);
+    }
+
     /// Press `bounds` as a person presses them, and let the window and its app answer.
     fn press_at(staged: &mut Staged, bounds: ui::kurbo::Rect) {
         let center = bounds.center();
-        staged.harness.click_at(center.x, center.y);
-        staged.exchange();
-        staged.settle().expect("the window comes to rest");
+        staged
+            .press_at(center.x, center.y)
+            .expect("the window comes to rest");
     }
 
     /// The first menu button of the window's composed tree whose rows `wanted` picks, with its
@@ -1329,5 +1614,103 @@ mod tests {
             staged.instance.take_chosen().is_none(),
             "the press runs one action, not two"
         );
+    }
+
+    #[test]
+    fn a_press_on_a_tasks_row_opens_it_where_it_stands() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let label = "Call the landlord about the boiler";
+        for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                "today",
+                (width, height),
+                ui::Theme::light(),
+                None,
+                &["place=Task.today".to_owned()],
+            )
+            .expect("the scenario stages");
+            staged.harness.relayout();
+            let id = super::super::button_named(&staged.harness().inspection().root, label)
+                .expect("the task's row is a row of the list");
+            {
+                let root = &staged.harness().inspection().root;
+                row_named(root, label).expect("the row shows before it opens");
+                assert!(
+                    !shows_open(root, label),
+                    "the row stands closed before anyone presses it"
+                );
+                assert!(
+                    !shown_named(root, "Subtasks"),
+                    "the row shows none of its document before anyone presses it"
+                );
+            }
+
+            staged.press(&id, false).expect("the row presses");
+
+            let root = &staged.harness().inspection().root;
+            assert!(
+                shows_open(root, label),
+                "the row opened where it stands at {width}×{height}"
+            );
+            assert!(
+                shown_named(root, "Subtasks"),
+                "the row holds the task's document where it stands at {width}×{height}"
+            );
+
+            staged.key("Escape");
+            let root = &staged.harness().inspection().root;
+            assert!(!shows_open(root, label), "Escape closes the document again");
+            assert!(
+                !shown_named(root, "Subtasks"),
+                "Escape puts the document away again"
+            );
+        }
+    }
+
+    /// Whether the window shows anything named `label` — a heading, a section or a control.
+    fn shown_named(node: &ui::headless::InspectionNode, label: &str) -> bool {
+        node.semantics
+            .as_ref()
+            .is_some_and(|access| access.name.as_deref() == Some(label))
+            || node.children.iter().any(|child| shown_named(child, label))
+    }
+
+    /// The list row named `label`, as the window shows it.
+    fn row_named<'a>(
+        node: &'a ui::headless::InspectionNode,
+        label: &str,
+    ) -> Option<&'a ui::headless::InspectionNode> {
+        let is_row = node.semantics.as_ref().is_some_and(|access| {
+            matches!(
+                access.role,
+                ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
+            ) && access.name.as_deref() == Some(label)
+        });
+        if is_row {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| row_named(child, label))
+    }
+
+    /// Whether a list shows `label` as a row standing open into its item: the node the list
+    /// publishes for that row, which is where a screen reader reads it.
+    fn shows_open(node: &ui::headless::InspectionNode, label: &str) -> bool {
+        let published = node.semantics.as_ref().is_some_and(|semantics| {
+            semantics.children.iter().any(|item| {
+                item.name.as_deref() == Some(label)
+                    && matches!(
+                        item.role,
+                        ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
+                    )
+                    && item.state.expanded == Some(true)
+            })
+        });
+        published || node.children.iter().any(|child| shows_open(child, label))
     }
 }

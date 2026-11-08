@@ -2,8 +2,8 @@
 //!
 //! The capability list a mount enforces is re-read while the mount runs, so
 //! a revocation takes effect without a remount. [`FileChanges`] waits for the
-//! host's file events (`inotify` on Linux, `FSEvents` on macOS) through
-//! [`tilo_files::native::watch_changes`]: a change is seen in milliseconds,
+//! host's file events (`inotify` on Linux, `FSEvents` on macOS)
+//! through [`tilo_files::native::watch_changes`]: a change is seen in milliseconds,
 //! and an unchanged file costs nothing.
 //!
 //! The parent directory is watched, not the file: a producer that renames

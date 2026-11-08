@@ -673,11 +673,6 @@ pub fn parse_umu_csv(input: &str) -> Result<Vec<UmuCsvRow>, CatalogueError> {
 /// Turn UMU rows into Proton records using the Tilo runner/security references
 /// supplied by the caller. The records are marked vendor provenance and remain
 /// unsigned until a trusted catalogue loader authenticates the source.
-///
-/// # Errors
-///
-/// Returns a CSV or catalogue validation error when a row, identity, runner,
-/// or security-profile reference is malformed.
 pub fn proton_records_from_umu_csv(
     input: &str,
     runner: &Runner,
@@ -912,11 +907,6 @@ pub fn parse_bottles_recipe(input: &str) -> Result<Vec<BottlesProgram>, Catalogu
 /// Convert safe Bottles metadata into Wine records. Imported records are
 /// community provenance and unsigned until a trusted catalogue loader verifies
 /// the source.
-///
-/// # Errors
-///
-/// Returns an error if the recipe has no safe executable, contains malformed
-/// metadata, or the supplied runner/security profile fails validation.
 pub fn wine_records_from_bottles_recipe(
     input: &str,
     runner: &Runner,

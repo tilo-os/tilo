@@ -626,7 +626,7 @@ kind = "userspace"
 scope = "vm"
 packages = ["tilo-user-identity", "tilo-board-successor"]
 bins = ["tilo-image-trust", "tilo-device-key-init", "tilo-board-successor"]
-units = ["tilo-device-key-init.service"]
+units = ["tilo-device-key-init.service", "tilo-device-branch.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-image-trust", to = "/usr/libexec/tilo/tilo-image-trust", mode = "0755" },

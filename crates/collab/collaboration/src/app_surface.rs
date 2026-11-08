@@ -242,10 +242,6 @@ pub fn with_footprints(
 /// ([`collab_types::FrameworkChange::Genesis`]), as a store now names it when
 /// it writes it: a record whose first change is such a stamp is handed to a
 /// sealed workspace whole, with no change rewritten and no id changed.
-///
-/// # Errors
-/// A change that names nothing and is no such stamp, or bytes that are no
-/// changes.
 pub fn claims_of(
     app_id: &str,
     mutation: &collab_types::DocumentMutation,

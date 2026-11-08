@@ -1,12 +1,11 @@
-//! What windows ask of the window manager: to be moved or resized with the
-//! pointer, maximized, made fullscreen or minimized. Wayland toplevels and
-//! X11 windows ask the same things the same way here.
-//!
+//! What windows ask of the window manager: to be moved or resized with the pointer, maximized, made
+//! fullscreen or minimized. Wayland toplevels and X11 windows ask the same things the same way
+//! here.
 //! The [`WindowPolicy`](crate::WindowPolicy) is asked first
-//! ([`WindowPolicy::request`](crate::WindowPolicy::request)): a desktop of
-//! strips and tabs answers them itself; granted, the compositor does what a
-//! floating window manager does: a pointer grab that moves or resizes the
-//! window, or the window covering its output until it asks to be restored.
+//! ([`WindowPolicy::request`](crate::WindowPolicy::request)): a desktop of strips and tabs answers
+//! them itself; granted, the compositor does what a floating window manager does: a pointer grab
+//! that moves or resizes the window, or the window covering its output until it asks to be
+//! restored.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -73,12 +72,10 @@ enum Cover {
 struct Restore(std::cell::Cell<Option<Rectangle<i32, Logical>>>);
 
 /// The compositor gave the window its display to fill.
-///
-/// The policy answers a fullscreen ask by filling the display's strip, so
-/// the window never covers the output's whole rectangle and the state the
-/// client acknowledges cannot tell whether the compositor granted it. What
-/// the compositor itself answered is what its layout, its refresh rate and
-/// the bars read.
+/// The policy answers a fullscreen ask by filling the display's strip, so the window never covers
+/// the output's whole rectangle and the state the client acknowledges cannot tell whether the
+/// compositor granted it. What the compositor itself answered is what its layout, its refresh rate
+/// and the bars read.
 #[derive(Default)]
 struct Fullscreen(std::cell::Cell<bool>);
 
@@ -91,8 +88,8 @@ fn fullscreen_granted(window: &Window) -> bool {
 }
 
 impl State {
-    /// The display `window` fills: the compositor gave it one to fill, and
-    /// its content covers the whole of it.
+    /// The display `window` fills: the compositor gave it one to fill, and its content covers the
+    /// whole of it.
     pub(crate) fn filled_display(&self, window: &Window) -> Option<&smithay::output::Output> {
         if !fullscreen_granted(window) {
             return None;
@@ -105,16 +102,16 @@ impl State {
         })
     }
 
-    /// Whether a fullscreen window covers `output`: its content fills the
-    /// display, which may then run at a variable refresh rate.
+    /// Whether a fullscreen window covers `output` : its content fills the display, which may then
+    /// run at a variable refresh rate.
     pub(crate) fn fullscreen_on(&self, output: &smithay::output::Output) -> bool {
         self.space
             .elements()
             .any(|window| self.filled_display(window) == Some(output))
     }
 
-    /// The displays a fullscreen window owns: the display holding its
-    /// middle, or its corner for a window taken off them. Each once.
+    /// The displays a fullscreen window owns: the display holding its middle, or its corner for a
+    /// window taken off them. Each once.
     fn fullscreen_owned(&self) -> Vec<&smithay::output::Output> {
         let mut owned: Vec<&smithay::output::Output> = Vec::new();
         for window in self.space.elements() {
@@ -141,8 +138,7 @@ impl State {
         owned
     }
 
-    /// The monitors of the displays a fullscreen window owns
-    /// ([`Self::fullscreen_owned`]).
+    /// The monitors of the displays a fullscreen window owns ([`Self::fullscreen_owned`]).
     pub(crate) fn fullscreen_monitors(&self) -> Vec<String> {
         let mut monitors: Vec<String> = Vec::new();
         for (monitor, _) in self.fullscreen_owned().into_iter().map(monitor_of) {
@@ -153,9 +149,8 @@ impl State {
         monitors
     }
 
-    /// The outputs a fullscreen window owns ([`Self::fullscreen_owned`]), by
-    /// connector name: the shell's bar there steps aside, as the desktop's
-    /// own bar does on the same displays.
+    /// The outputs a fullscreen window owns ([`Self::fullscreen_owned`]), by connector name: the
+    /// shell's bar there steps aside, as the desktop's own bar does on the same displays.
     pub(crate) fn fullscreen_outputs(&self) -> Vec<String> {
         self.fullscreen_owned()
             .into_iter()
@@ -181,10 +176,9 @@ impl State {
             return;
         };
         if !self.policy.request(&info, request) {
-            // The policy answers it itself, arranging the window where it
-            // belongs: a maximize or a fullscreen it takes is still said
-            // back to the client, so its own toolkit stops asking and draws
-            // no floating frame of its own.
+            // The policy answers it itself, arranging the window where it belongs: a maximize or a
+            // fullscreen it takes is still said back to the client, so its own toolkit stops asking
+            // and draws no floating frame of its own.
             let stated = match request {
                 WindowRequest::Maximize(on) => Some((xdg_toplevel::State::Maximized, *on)),
                 WindowRequest::Fullscreen { on, .. } => {
@@ -278,8 +272,8 @@ impl State {
         );
     }
 
-    /// Make `window` cover its output (`fullscreen`: the named one, else the
-    /// one it is on) or put it back where it was.
+    /// Make `window` cover its output (`fullscreen`: the named one, else the one it is on) or put
+    /// it back where it was.
     fn cover(&mut self, window: &Window, on: bool, how: &Cover) {
         window
             .user_data()
@@ -348,7 +342,7 @@ impl State {
     }
 }
 
-/// A pointer grab that moves (`edges` `None`) or resizes a window.
+/// A pointer grab that moves (`edges` `None` ) or resizes a window.
 struct WindowGrab {
     start: GrabStartData<State>,
     window: Window,

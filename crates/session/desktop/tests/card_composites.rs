@@ -1,6 +1,5 @@
-//! A floating card drawn over the windows reaches the composited output: the
-//! pixels the card was drawn with show where the card stands, in the software
-//! path a headless session composes with.
+//! A floating card drawn over the windows reaches the composited output: the pixels the card was
+//! drawn with show where the card stands, in the software path a headless session composes with.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -95,11 +94,10 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-/// The chrome over the desk at `scale`: built after `_compositor` opened its
-/// backend, as the session builds its surfaces after its compositor. A host
-/// built before the backend is open draws its frames for a compositor that
-/// samples textures rather than one that reads pixels, which is not the path
-/// a headless session takes.
+/// The chrome over the desk at `scale` : built after `_compositor` opened its backend, as the
+/// session builds its surfaces after its compositor. A host built before the backend is open draws
+/// its frames for a compositor that samples textures rather than one that reads pixels, which is
+/// not the path a headless session takes.
 fn chrome_host(
     _compositor: &mut Compositor,
     scale: f64,
@@ -156,7 +154,7 @@ fn send_chord(host: &mut WidgetHost) {
 /// How far apart, in card pixels, the card's samples stand.
 const SAMPLE_STEP: f64 = 8.0;
 
-/// The card the palette stands in, drawn over the output at `scale`.
+/// The card the palette stands in, drawn over the output at `scale` .
 fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
     compositor
@@ -189,8 +187,8 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
         shot = Some(compositor.screenshot("HEADLESS-1").unwrap());
     }
     let shot = shot.unwrap();
-    // The card's own ground is opaque, so somewhere inside it the output
-    // differs from the scrim at the edge of the display.
+    // The card's own ground is opaque, so somewhere inside it the output differs from the scrim at
+    // the edge of the display.
     let corner = shot.pixel(4, 4).unwrap();
     let mut differing = 0u32;
     let mut samples = 0u32;

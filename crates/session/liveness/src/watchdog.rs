@@ -1,76 +1,11 @@
 //! Notice a main loop that has stopped for good, record it, and end the
 //! process so the session recovers.
-//!
-//! A deadlocked main loop keeps DRM master and the VT. The screen freezes on
-//! its last frame, Ctrl+Alt+Fn goes unread (the main thread reads the
-//! keyboard), and nothing else on the machine can take the display back: the
-//! only way out was the power button. The machine itself is fine, so this is
-//! the process's own job, done on a thread of its own that the stuck one
-//! cannot block. Every build runs it, release included; no client is needed
-//! (the socket's [`super::Answer::Stalled`] asks the same question from
-//! outside).
-//!
-//! # What counts as hung
-//!
-//! The loop marks every turn: [`Watchdog::parking`] before it waits for
-//! events, [`Watchdog::unparked`] when the wait returns. A loop parked in its
-//! wait is idle, however long, and is never judged. A turn that has not ended
-//! is judged by what the kernel says the thread is doing, sampled every
-//! [`SAMPLE_PERIOD`] from `/proc/self/task/<tid>`:
-//!
-//! * running or runnable (`R`): working, or waiting for a core on a loaded
-//!   machine. Slow is not stopped; it is never ended for it.
-//! * stopped or traced (`T`, `t`), or any thread of the process under a
-//!   tracer: someone is looking at it in a debugger.
-//! * in uninterruptible sleep (`D`): inside the kernel, in I/O, reclaim or a
-//!   driver. Ending the process could not finish before that returns (exit
-//!   waits for every thread to leave the kernel), so it would hand nothing
-//!   back; and a machine thrashing its memory puts a thread there for long
-//!   stretches without anything being stuck. Never judged.
-//! * asleep (`S`): blocked. Its context-switch count says whether it ran at
-//!   all since the last sample. A wait with a deadline wakes the thread when
-//!   the deadline passes, so a thread that has not run once in longer than the
-//!   longest deadline any of its waits has is waiting for something that will
-//!   not come: a lock it or a thread waiting on it holds, a reply that is
-//!   never sent.
-//!
-//! That longest deadline is [`LONGEST_BOUNDED_WAIT`], the longest of the
-//! waits the main loop makes with a bound:
-//!
-//! * [`SESSION_END_SAVE_FLUSH`], its own wait for queued saves at session
-//!   end;
-//! * [`GPU_JOB_TIMEOUT`], the GPU fences it may wait on, which the kernel's
-//!   GPU scheduler signals, with an error, by its job timeout after a GPU
-//!   hang and reset (ten seconds on amdgpu, shorter on the others);
-//! * [`SEAT_CALL_TIMEOUT`], the calls libseat's logind backend makes to
-//!   logind on this thread (taking a device on hotplug, completing a pause on
-//!   a VT switch), bounded by sd-bus's default method-call timeout.
-//!
-//! A new bounded wait on the loop joins this list.
-//!
-//! [`HUNG_AFTER`] is one sample past it, so a wait that ends on time is
-//! always seen to end.
-//!
-//! Evidence of a stall is only taken from samples the watchdog made on
-//! time. When its own wait overran a sample period by another (the machine
-//! was suspended, the whole process was stopped, or the watchdog thread
-//! starved for a core) it starts over: what the thread did in the gap is
-//! unknown. A session switched away to another VT parks its loop like any
-//! idle one.
-//!
-//! # Cost
-//!
-//! The loop pays two atomic increments a turn and never a wake. The watchdog
-//! samples once a [`SAMPLE_PERIOD`] while the loop turns, and sleeps without
-//! a timer from the first sample that finds the loop parked until the loop
-//! next wakes, so an idle loop wakes it not at all.
-//!
-//! # What is not covered
-//!
-//! A source callback that blocks inside the event loop's dispatch is
-//! dispatched while the loop counts as parked. The loop's callbacks only
-//! raise flags for the turn's body by convention, so the work, and so the
-//! hangs, are in the body.
+//! A deadlocked loop keeps DRM master and the VT, so recovering is the process's
+//! own job, on a thread the stuck one cannot block. Every build runs it.
+//! A loop parked in its wait is idle and never judged; a turn that has not ended
+//! is judged hung only when it has not run in longer than the longest bounded wait
+//! the loop makes ([`LONGEST_BOUNDED_WAIT`], which a new bounded wait joins).
+//! Running, stopped and uninterruptible threads are never ended for it.
 
 use std::io;
 use std::sync::Arc;

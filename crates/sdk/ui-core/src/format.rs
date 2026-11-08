@@ -1,13 +1,11 @@
 //! The one way Tilo shows dates, times, numbers, sizes and durations.
 //!
-//! Every app and the shell format what a person reads through this module.
-//! It follows their Region & Formats settings (date style, 12/24-hour clock,
-//! number style, first day of the week; [`region`]) and the desktop's
-//! language (month and weekday names, word order, plurals), and it follows
-//! them live: a change re-renders every view without a restart (see
-//! [`region::refresh`]). A policy check (`tools/policy/check_formats.py`)
-//! keeps hand-built formatting (`strftime` patterns, `{:02}:{:02}` clocks,
-//! ad-hoc size units) out of everything else.
+//! Every app and the shell format what a person reads through this module. It follows the person's
+//! Region & Formats settings (date style, 12/24-hour clock, number style, first day of the week;
+//! [`region`]) and the desktop's language (month and weekday names, word order, plurals), and it
+//! follows them live: a change re-renders every view without a restart ([`region::refresh`]). A
+//! policy check (`tools/policy/check_formats.py`) keeps hand-built formatting (`strftime` patterns,
+//! `{:02}:{:02}` clocks, ad-hoc size units) out of everything else.
 //!
 //! The named styles:
 //!
@@ -15,6 +13,7 @@
 //! |---|---|---|---|
 //! | list | [`list_date`] | `16:02`, `Yesterday`, `Sun`, `Jun 30`, `Jun 30, 2025` | `16:02`, `Gestern`, `So.`, `30. Juni`, `30. Juni 2025` |
 //! | day fact | [`day_fact`], [`Formats::day_fact`] | `Overdue`, `Today`, `Tomorrow`, `Thursday`, `Jun 29`; `Today 09:00`, `Thu 14:30` | `Überfällig`, `Heute`, `Morgen`, `Donnerstag`, `29. Juni`; `Heute 09:00`, `Do. 14:30` |
+//! | moment fact | [`moment_fact`], [`Formats::moment_fact`] | `15:00`, `Sat 09:00`, `Jun 29 09:00` | `15:00`, `Sa. 09:00`, `29. Juni 09:00` |
 //! | timestamp | [`timestamp`] | `Jun 30, 2026, 13:42` (or ISO `2026-06-30 13:42`, …) | `30.06.2026, 13:42` |
 //! | date | [`date`] | `Jun 30, 2026` (or ISO, US, EU, `30 Jun 2026`) | `30.06.2026` (or `30. Juni 2026`, Long) |
 //! | time | [`time`] | `13:42` or `1:42 PM` | `13:42` |
@@ -30,17 +29,15 @@
 //! | money | [`money`] | `$5`, `$0.42`, `$1,250` | `$5`, `$0,42`, `$1.250` |
 //! | decimal | [`decimal`] | `3.14` | `3,14` |
 //!
-//! [`size`] uses SI decimal units and [`memory`] IEC binary units. The
-//! platform's rule, shared with Files, Disks and the Storage pane: anything
-//! stored or transferred (files, downloads, caches, packages, drives and
-//! partitions) is a [`size`], the way drives are sold and file managers count;
-//! memory is a [`memory`]. A flow whose requirements are themselves stated in
-//! binary units (the installer's GiB partition minimums) stays binary
-//! throughout so its numbers compare.
+//! [`size`] uses SI decimal units and [`memory`] IEC binary ones, the platform's rule shared with
+//! Files, Disks and the Storage pane: anything stored or transferred (files, downloads, caches,
+//! packages, drives, partitions) is a [`size`] and memory a [`memory`], while a flow whose
+//! requirements are themselves stated in binary units (the installer's GiB partition minimums)
+//! stays binary throughout so its numbers compare.
 //!
-//! The free functions use the person's current formats ([`Formats::current`]);
-//! the same styles on [`Formats`] take explicit formats and a explicit `now`,
-//! for tests and for callers that format many values at once.
+//! The free functions use the person's current formats ([`Formats::current`]); the same styles on
+//! [`Formats`] take explicit formats and an explicit `now`, for tests and for callers formatting
+//! many values at once.
 
 mod dates;
 pub mod region;
@@ -797,6 +794,15 @@ pub fn day_fact(day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> Da
 #[must_use]
 pub fn day_fact_today(day: NaiveDate, time: Option<NaiveTime>) -> DayFact {
     day_fact(day, time, crate::clock::today())
+}
+
+/// The **moment fact** style for a moment: a time of day, with the short weekday before it when
+/// it is not today. See [`Formats::moment_fact`].
+#[must_use]
+pub fn moment_fact(at: &impl Moment) -> String {
+    at.local().map_or_else(String::new, |at| {
+        Formats::current().moment_fact(at, crate::clock::today())
+    })
 }
 
 /// [`Formats::day_done`] against `today`: the heading over what was done on `day`, in the

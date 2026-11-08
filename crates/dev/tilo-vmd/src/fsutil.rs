@@ -9,9 +9,6 @@ use crate::error::DaemonError;
 
 /// Replace `path` durably, creating its parent when missing, so readers see
 /// the old or the new content and never a torn file.
-///
-/// # Errors
-/// I/O failures.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     tilo_files::native::atomic::write_creating_parent(path, bytes)
         .map_err(DaemonError::io(format!("write {}", path.display())))
@@ -19,9 +16,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
 
 /// Recursively copy `source` into the existing directory `dest`, keeping
 /// symlinks as symlinks and preserving permission bits.
-///
-/// # Errors
-/// I/O failures and special files.
 pub fn copy_tree(source: &Path, dest: &Path) -> std::io::Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;

@@ -130,10 +130,6 @@ pub struct OwnerCommitReceipt {
 }
 impl OwnerCommitRequest {
     /// The commit binding this request must be receipted against.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request's state cannot be encoded.
     pub fn binding(&self) -> Result<CommitBinding, String> {
         if uuid::Uuid::parse_str(&self.workspace)
             .map_err(|e| e.to_string())?

@@ -171,9 +171,6 @@ impl Notices {
     /// The person at this device saw the notice `id`, by opening or dismissing it: it is marked
     /// seen in the record, so every device of theirs takes it back. What is written waits for
     /// the host to commit it (`Host::take_committed`).
-    ///
-    /// # Errors
-    /// The record cannot be had, or holds no notice `id`.
     pub fn seen(&mut self, host: &Host, id: &str) -> Result<(), String> {
         host.store()
             .see(id, &self.person)

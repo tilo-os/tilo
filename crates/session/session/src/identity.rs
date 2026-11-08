@@ -30,9 +30,9 @@ use ui::local_identity::{LocalIdentity, LocalIdentitySource, RuntimeIdentity};
 struct Present {
     /// Their public identity.
     identity: Option<LocalIdentity>,
-    /// The public avatar bound to their root key, as [`RuntimeIdentity`]
-    /// reads it: the file it lives in is read with the identity, on the
-    /// worker, and an avatar a frame paints only clones pixels.
+    /// The public avatar bound to their root key, as [`RuntimeIdentity`] reads it: the file it
+    /// lives in is read with the identity, on the worker, and an avatar a frame paints only clones
+    /// pixels.
     photo: Option<([u8; 32], runtime_identity::ProfilePhoto)>,
 }
 
@@ -49,8 +49,8 @@ impl LocalIdentitySource for WatchedLocalIdentity {
     }
 }
 
-/// The directories the person's identity record can live in: the identity
-/// directory, and the directory of the record the launcher bound.
+/// The directories the person's identity record can live in: the identity directory, and the
+/// directory of the record the launcher bound.
 fn identity_directories() -> Vec<PathBuf> {
     runtime_identity::identity_dir_from_env()
         .ok()
@@ -63,22 +63,19 @@ fn identity_directories() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Who sits at this device, as the one id the session acts as, and the ids
-/// they went by before.
+/// Who sits at this device, as the one id the session acts as, and the ids they went by before.
 pub(crate) struct Seat {
-    /// The person, by the id the workspaces' governance names them by: their
-    /// root key in hex, which this device's certificate carries — never the
-    /// device's own key. A computer that has no identity yet goes by the
-    /// login account at it, whom its desk is theirs as until the person sets
-    /// one up.
+    /// The person, by the id the workspaces' governance names them by: their root key in hex, which
+    /// this device's certificate carries — never the device's own key. A computer that has no
+    /// identity yet goes by the login account at it, whom its desk is theirs as until the person
+    /// sets one up.
     pub(crate) person: String,
-    /// The ids they went by before this device had an identity — the login
-    /// account at it, and what the caller named — under which a desk kept
-    /// from then is still theirs.
+    /// The ids they went by before this device had an identity — the login account at it, and what
+    /// the caller named — under which a desk kept from then is still theirs.
     pub(crate) earlier: Vec<String>,
-    /// The salt this device's ids are minted under, from its own key: what
-    /// the workspace's governance derives to tell which device a window of
-    /// the workspace runs on. `None` on a computer that has no identity yet.
+    /// The salt this device's ids are minted under, from its own key: what the workspace's
+    /// governance derives to tell which device a window of the workspace runs on. `None` on a
+    /// computer that has no identity yet.
     pub(crate) salt: Option<u16>,
 }
 
@@ -105,19 +102,18 @@ pub(crate) fn seat(options: &crate::Options) -> Seat {
     }
 }
 
-/// The person a session started with `options` sits as: what [`seat`]
-/// reads, for what is made for them before the session starts.
+/// The person a session started with `options` sits as: what [`seat`] reads, for what is made for
+/// them before the session starts.
 #[must_use]
 pub fn seated_person(options: &crate::Options) -> String {
     seat(options).person
 }
 
-/// Read who sits here at startup, and keep it current from then on. A value
-/// that cannot be watched is read where it is asked for, as before.
-///
-/// Called before the session builds what reads identity, so nothing is
-/// served the directory's state from before the workers' first read: the
-/// first read is this one, on this thread, with the watches already armed.
+/// Read who sits here at startup, and keep it current from then on. A value that cannot be watched
+/// is read where it is asked for, as before.
+/// Called before the session builds what reads identity, so nothing is served the directory's state
+/// from before the workers' first read: the first read is this one, on this thread, with the
+/// watches already armed.
 pub fn install() {
     match tilo_identity_host::registry::IdentityRegistryStore::from_env() {
         Ok(store) => {
@@ -138,8 +134,8 @@ pub fn install() {
     }
 }
 
-/// Who this device acts for in `workspace`: the identity its registry presents
-/// there, else the person sitting at it.
+/// Who this device acts for in `workspace` : the identity its registry presents there, else the
+/// person sitting at it.
 pub(crate) fn person_in(workspace: &str, person: &str) -> String {
     tilo_identity_host::registry::selected_principal_id_prompt(workspace)
         .ok()
@@ -147,9 +143,8 @@ pub(crate) fn person_in(workspace: &str, person: &str) -> String {
         .unwrap_or_else(|| person.to_owned())
 }
 
-/// Name this person's identity `name`: their active identity record takes
-/// it, so their own desktop and the people they work with see it from now
-/// on. Says what stopped it when it could not.
+/// Name this person's identity `name` : their active identity record takes it, so their own desktop
+/// and the people they work with see it from now on. Says what stopped it when it could not.
 pub(crate) fn rename_to(name: &str) -> Result<(), String> {
     let dir = runtime_identity::identity_dir_from_env().map_err(|error| error.to_string())?;
     let record = runtime_identity::resolve_active_identity(&dir)
@@ -167,18 +162,13 @@ pub(crate) fn rename_to(name: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Put a host offer to the person: one about who they are
-/// ([`HostAction::is_personal`], their name and key here or another of
-/// their devices) is asked from their own avatar in the top bar, where it
-/// waits until they answer it or put it off; every other offer is a banner
-/// over the windows.
-///
-/// This is the session's one door for such an offer, as a page's is
-/// `desktop_offer_host_action` in a browser. The session has no question of
-/// its own about the person to ask through it yet: what it knows of them is
-/// settled by setup before the desk opens ([`crate::setup`]), so an ask
-/// about them arrives from what the session hosts rather than from the
-/// session itself.
+/// Put a host offer to the person: one about who they are ([`HostAction::is_personal`], their name
+/// and key here or another of their devices) is asked from their own avatar in the top bar, where
+/// it waits until they answer it or put it off; every other offer is a banner over the windows.
+/// This is the session's one door for such an offer, as a page's is `desktop_offer_host_action` in
+/// a browser. The session has no question of its own about the person to ask through it yet: what
+/// it knows of them is settled by setup before the desk opens ([`crate::setup`]), so an ask about
+/// them arrives from what the session hosts rather than from the session itself.
 pub fn offer(
     handle: &DesktopHandle,
     notices: &DesktopNotifications,

@@ -44,12 +44,6 @@ fn active(
 /// Returns closed response evidence only. The owner still rechecks the
 /// target slot and crosses its single installation barrier
 /// ([`NativeWorkspaceOwner::install`]) before any Joined result.
-///
-/// # Errors
-/// The invitation does not verify for this device, the pinned host refuses
-/// or answers out of scope, custody changes during the exchange, or the
-/// Complete is not acknowledged (its proof is then retained for an exact
-/// retry).
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered exchange: prepare, persist, send, verify and hand back closed evidence"
@@ -367,10 +361,6 @@ async fn prove_membership(
 /// admits a device certified by a member's root as that member's device, so
 /// this device proves its membership at the host `hint` names, without an
 /// invitation, and holds what the host answers.
-///
-/// # Errors
-/// Custody changes during the exchange, the host refuses, or the answer does
-/// not install.
 pub async fn admit_as_member(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
@@ -400,10 +390,6 @@ pub async fn admit_as_member(
 /// renewal of the certificate the workspace's record holds, when its custody
 /// holds one, and take the governor's answer in
 /// ([`NativeWorkspaceOwner::renew_membership`]). Answers whether it renewed.
-///
-/// # Errors
-/// The workspace is not joined here, custody is unreadable or changes during
-/// the exchange, or the host refuses.
 pub async fn renew_membership(
     client: WorkspaceJoinClient,
     identity: HostIdentity,

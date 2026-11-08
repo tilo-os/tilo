@@ -1,5 +1,5 @@
-//! A window's own artwork: a program that draws no icons of its own in the
-//! shell can hand one over, and that is what its window shows.
+//! A window's own artwork: a program that draws no icons of its own in the shell can hand one over,
+//! and that is what its window shows.
 
 use super::*;
 
@@ -12,7 +12,7 @@ fn window_icon(compositor: &Compositor, id: u64) -> Option<std::sync::Arc<Window
         .and_then(|(info, _)| info.icon)
 }
 
-/// The id of the window whose program is `app_id`.
+/// The id of the window whose program is `app_id` .
 fn window_id(compositor: &Compositor, app_id: &str) -> u64 {
     compositor
         .windows()
@@ -22,8 +22,8 @@ fn window_id(compositor: &Compositor, app_id: &str) -> u64 {
         .expect("the window is mapped")
 }
 
-/// Let both sides exchange what they queued, without waiting for anything:
-/// what the compositor made of the requests is known afterwards.
+/// Let both sides exchange what they queued, without waiting for anything: what the compositor made
+/// of the requests is known afterwards.
 fn quiet(compositor: &mut Compositor, client: &mut TestClient) {
     for _ in 0..4 {
         client.exchange();
@@ -195,8 +195,7 @@ fn an_icon_with_nothing_in_it_clears_the_one_a_window_had() {
         window_icon(compositor, id).is_some()
     });
 
-    // An icon with neither a name nor pixels resets the window's icon, as a
-    // null icon does.
+    // An icon with neither a name nor pixels resets the window's icon, as a null icon does.
     let empty = manager.create_icon(&qh, ());
     manager.set_icon(client.toplevel.as_ref().expect("toplevel"), Some(&empty));
     client.surface.as_ref().expect("surface").commit();

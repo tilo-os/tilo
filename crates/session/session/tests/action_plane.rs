@@ -1,7 +1,6 @@
-//! An app process reads, watches and invokes what the session's services
-//! publish, over the one wire it already speaks to the session: the socket
-//! the launcher names the app on, for the sound service's `sound` resource
-//! and the crash records Settings lists.
+//! An app process reads, watches and invokes what the session's services publish, over the one wire
+//! it already speaks to the session: the socket the launcher names the app on, for the sound
+//! service's `sound` resource and the crash records Settings lists.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -16,86 +15,30 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use common::audio::Card;
+use std::sync::Arc;
 
-use media::audio::{AudioDevice, AudioGraph, GraphControl};
+use media::audio::{AudioDevice, AudioGraph};
 use runtime_collab::CollabClient;
 use runtime_collab::wire::Receipt;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::crash_records::{self as wire, CrashKind, CrashRecord, CrashRecordText};
-use tilo_audio_service::sound::{Graph, Read, SoundService};
+use tilo_audio_service::sound::{Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_crash_records::CrashRecords;
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Options, Service, Session};
 
-/// A sound card in memory: one output at 40%, in use.
-struct Card {
-    graph: Mutex<AudioGraph>,
-}
-
-impl Graph for Card {
-    fn read(&self) -> Read {
-        Read {
-            graph: self.graph.lock().unwrap().clone(),
-            uses: Vec::new(),
-        }
-    }
-
-    fn control(&self) -> &dyn GraphControl {
-        self
-    }
-}
-
-impl GraphControl for Card {
-    fn set_default_sink(&self, node_id: u32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            sink.is_default = sink.id == node_id;
-        }
-        Ok(())
-    }
-
-    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            if sink.id == node_id {
-                sink.volume = Some(perceptual);
-            }
-        }
-        Ok(())
-    }
-
-    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-/// The session the app talks to: headless, hosting the services `services`
-/// makes for its loop, and the plane on a socket of its own.
+/// The session the app talks to: headless, hosting the services `services` makes for its loop, and
+/// the plane on a socket of its own.
 fn session_hosting(
     socket: &std::path::Path,
     services: impl FnOnce(&LoopWake) -> Vec<Box<dyn Service>>,
 ) -> Session {
     let wake = LoopWake::default();
     let services = services(&wake);
-    // The app speaks from this test's own process, so the launch the session
-    // would have recorded for it names that process: what the broker admits
-    // the connection by.
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process: what the broker admits the connection by.
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     launches.started(
         std::process::id(),
@@ -103,9 +46,9 @@ fn session_hosting(
         "the-workspace",
         true,
     );
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
@@ -113,31 +56,26 @@ fn session_hosting(
             action_plane: ActionPlane::At(socket.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
-/// The session the app talks to: hosting the sound service, over a card in
-/// memory.
+/// The session the app talks to: hosting the sound service, over a card in memory.
 fn session(socket: &std::path::Path) -> Session {
     session_hosting(socket, |wake| {
-        let card: Arc<dyn Graph> = Arc::new(Card {
-            graph: Mutex::new(AudioGraph {
-                sinks: vec![AudioDevice {
-                    id: 40,
-                    serial: 40,
-                    name: "node-40".into(),
-                    description: "Speakers".into(),
-                    is_default: true,
-                    volume: Some(0.4),
-                    muted: Some(false),
-                    channels: 2,
-                    codec: None,
-                }],
-                ..AudioGraph::default()
-            }),
-        });
+        let card: Arc<dyn Graph> = Arc::new(Card::new(AudioGraph {
+            sinks: vec![AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".into(),
+                description: "Speakers".into(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            ..AudioGraph::default()
+        }));
         let sound = SoundService::new(card, Some(wake.handle())).expect("a sound service");
         vec![Box::new(sound)]
     })
@@ -151,8 +89,8 @@ struct Seen {
     changed: String,
 }
 
-/// The app's side of the wire: the launcher's handoff on a connection to
-/// `socket`, then what it reads, watches and invokes of the session's sound.
+/// The app's side of the wire: the launcher's handoff on a connection to `socket` , then what it
+/// reads, watches and invokes of the session's sound.
 fn app(socket: &std::path::Path, seen: &std::sync::mpsc::Sender<Seen>) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -192,8 +130,8 @@ fn app(socket: &std::path::Path, seen: &std::sync::mpsc::Sender<Seen>) {
             .invoke("sound", "set-volume", &arguments)
             .await
             .expect("the session invokes the action");
-        // The reading moves when the action is taken and again when the
-        // device has landed it: the app reads until the card is at 70%.
+        // The reading moves when the action is taken and again when the device has landed it: the
+        // app reads until the card is at 70%.
         let mut changed = None;
         for _ in 0..500 {
             let reading = readings
@@ -231,19 +169,9 @@ fn reading_of(reading: &str) -> Value {
     serde_json::from_str(reading).expect("a reading is JSON")
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
-}
-
 #[test]
 fn an_app_reads_watches_and_invokes_the_sound_the_session_publishes() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -281,7 +209,7 @@ fn an_app_reads_watches_and_invokes_the_sound_the_session_publishes() {
 
 #[test]
 fn an_app_reads_what_the_session_does_not_publish_as_nothing() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -332,7 +260,7 @@ fn an_app_reads_what_the_session_does_not_publish_as_nothing() {
 
 #[test]
 fn an_app_that_invokes_what_the_session_cannot_do_is_told_why() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -385,8 +313,7 @@ fn an_app_that_invokes_what_the_session_cannot_do_is_told_why() {
     }
 }
 
-/// The record of a desktop that stopped responding, as the crash log
-/// writes it.
+/// The record of a desktop that stopped responding, as the crash log writes it.
 const FREEZE: &str = "2026-10-24-225201-412-freeze.log";
 const FREEZE_STACK: &str = "Mutex::lock_contended";
 const FREEZE_RECORD: &str = "tilo session freeze\n===================\n\
@@ -402,12 +329,11 @@ fn crash_dir() -> tempfile::TempDir {
     dir
 }
 
-/// Settings lists the records the session publishes and reads one, over the
-/// session's own broker: what each is without its stack, and the stack of
-/// the record it names.
+/// Settings lists the records the session publishes and reads one, over the session's own broker:
+/// what each is without its stack, and the stack of the record it names.
 #[test]
 fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let records = crash_dir();
     let dir = records.path().to_path_buf();

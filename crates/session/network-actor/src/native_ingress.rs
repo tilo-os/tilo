@@ -64,10 +64,6 @@ impl Routes {
             route.link.retry();
         }
     }
-    /// Whether the room on topic `ws` is hosted on this device.
-    pub(super) fn is_local(&self, ws: u64) -> bool {
-        self.entries.get(&ws).is_some_and(|route| route.local)
-    }
     /// Every room this device hosts itself, as its routes now stand: their
     /// sessions join in process, and a join that has not happened yet is
     /// work this device's loop keeps, not nothing.
@@ -84,7 +80,6 @@ impl Routes {
 struct NativeHolder {
     ws: u64,
     endpoint: iroh::Endpoint,
-    https: Option<super::HttpsRoute>,
     local_host: Option<LocalHost>,
     tx: tokio::sync::mpsc::Sender<InternalEvent>,
 }
@@ -93,10 +88,6 @@ impl Holder for NativeHolder {
     fn reach(&self) -> Reach {
         Reach {
             endpoint: self.endpoint.clone(),
-            https: self
-                .https
-                .as_ref()
-                .map(|super::HttpsRoute(http)| Arc::clone(http)),
             own_host: self
                 .local_host
                 .as_ref()
@@ -204,9 +195,6 @@ impl ActorState {
                 });
                 if changed {
                     self.drive_native_publication(ws);
-                    if let Some(wake) = &self.wake {
-                        wake();
-                    }
                 }
             }
             Ok(Err(error)) => {
@@ -332,11 +320,7 @@ impl ActorState {
                 .unadmitted_writes(route.connect.workspace())
                 .unwrap_or(0)
         };
-        if crate::workspace_sync::unsynced(ws, sealed.saturating_add(committed))
-            && let Some(wake) = &self.wake
-        {
-            wake();
-        }
+        crate::workspace_sync::unsynced(ws, sealed.saturating_add(committed));
     }
 
     pub(super) fn drive_native_publication(&self, ws: u64) {
@@ -347,7 +331,7 @@ impl ActorState {
         }
         self.tell_unsynced(ws);
     }
-    pub(super) fn native_connect(&mut self, connect: Connect, https: Option<super::HttpsRoute>) {
+    pub(super) fn native_connect(&mut self, connect: Connect) {
         let ws = crate::workspace_topic_id(connect.workspace());
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
@@ -402,7 +386,6 @@ impl ActorState {
         let holder = NativeHolder {
             ws,
             endpoint: self.endpoint.clone(),
-            https,
             local_host: self.local_host.clone(),
             tx: self.internal_tx.clone(),
         };
@@ -481,7 +464,7 @@ impl ActorState {
         let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(via) else {
             return;
         };
-        dial_refused(&self.subscribers, ws, payload.endpoint_addr.id, error);
+        dial_refused(ws, payload.endpoint_addr.id, error);
     }
 
     /// The workspace on topic `ws`'s hold reached a host: its session runs here
@@ -634,12 +617,7 @@ fn drop_unpinned_sessions(
 
 /// What a failed dial of the joined workspace on topic `ws`, whose host is
 /// `host`, tells the person and the shell.
-fn dial_refused(
-    subscribers: &HashMap<u64, tokio::sync::mpsc::Sender<super::NetEvent>>,
-    ws: u64,
-    host: iroh::EndpointId,
-    error: DialError,
-) {
+fn dial_refused(ws: u64, host: iroh::EndpointId, error: DialError) {
     match error {
         // The workspace's host speaks another peer protocol version: the workspace
         // cannot sync until one side updates, which the person is told,
@@ -654,18 +632,6 @@ fn dial_refused(
             crate::services::peer_version(host.to_string(), theirs);
             crate::workspace_sync::other_version(ws, theirs);
         }
-        // The workspace removed this device's person: dialing again changes
-        // nothing until they join again, which the shell does through the
-        // workspace's door where it has one.
-        DialError::NotAdmitted => {
-            tracing::warn!(
-                ws,
-                "the workspace's host admits this device's person no longer"
-            );
-            if let Some(subscriber) = subscribers.get(&ws) {
-                let _ = subscriber.try_send(super::NetEvent::NotAdmitted { ws });
-            }
-        }
         // Anything else did not reach the workspace's host: until a sync with
         // it completes, its apps say it cannot be reached and work on what
         // this device has. The route dials again on the next heartbeat.
@@ -673,56 +639,5 @@ fn dial_refused(
             tracing::debug!(%error, ws, "native host dial failed; retrying");
             crate::workspace_sync::unreachable(ws);
         }
-    }
-}
-
-/// What a workspace host's session carries for the collaboration broker and no
-/// owner admits, taken by this actor straight to the broker's drain in the
-/// order the host said it. It reaches the broker without the frame loop,
-/// which an app opening a record may be holding while it waits for it.
-pub enum ChannelTraffic {
-    /// A member's sealed write to a record of a workspace whose records are
-    /// sealed channels.
-    Sealed(Input),
-    /// The workspace's host on topic `ws` finished replaying what it retains:
-    /// every sealed write it replayed is queued ahead of this.
-    Replayed(super::WorkspaceId),
-}
-
-/// The queue [`ChannelTraffic`] waits in for the broker's drain.
-pub struct ChannelQueue {
-    traffic: std::sync::Mutex<std::collections::VecDeque<ChannelTraffic>>,
-    wake: crate::Wake,
-}
-
-impl ChannelQueue {
-    /// A queue whose drain `wake` rouses.
-    pub fn new(wake: crate::Wake) -> Arc<Self> {
-        Arc::new(Self {
-            traffic: std::sync::Mutex::default(),
-            wake,
-        })
-    }
-
-    /// Queue `traffic` and wake the drain.
-    pub fn push(&self, traffic: ChannelTraffic) {
-        if let Ok(mut queued) = self.traffic.lock() {
-            queued.push_back(traffic);
-        }
-        (self.wake)();
-    }
-
-    /// Everything queued, oldest first.
-    pub fn take(&self) -> std::collections::VecDeque<ChannelTraffic> {
-        self.traffic
-            .lock()
-            .map(|mut queued| std::mem::take(&mut *queued))
-            .unwrap_or_default()
-    }
-}
-
-impl std::fmt::Debug for ChannelQueue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelQueue").finish_non_exhaustive()
     }
 }

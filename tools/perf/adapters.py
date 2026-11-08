@@ -76,10 +76,12 @@ Each adapter reads what a benchmark already prints and emits records through
 - `browser-qualification REPORT_JSON`: the browser runtime qualification's
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
-  frame interval and frame's runtime CPU is a sample, each round's idle
+  frame interval and frame's runtime CPU is a sample, each typed key's time
+  to the presented frame and its frame's runtime CPU one, each round's idle
   frame rate one, and each round's first load one transfer-bytes and one
   request-count sample (every resource that started before the desktop's
-  first presented frame); the demo's two only when the run had the demo. The
+  first presented frame); the demo's two only when the run had the demo, and
+  typing's two only when it typed. The
   report must name the env's renderer, commit and profile,
   and an unthrottled page.
 Usage:
@@ -466,6 +468,28 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     return records
 
 
+# What one browser qualification report becomes: its sample lists, as KPI and
+# unit. The sample fields are the harness's `samples` keys.
+BROWSER_KPIS = {
+    "load_ms": ("browser.load.desktop_presented", "ms"),
+    "transfer_bytes": ("browser.load.transfer_bytes", "bytes"),
+    "request_count": ("browser.load.request_count", "count"),
+    "start_module_bytes": ("browser.load.start_module_bytes", "bytes"),
+    "open_ms": ("browser.open.first_frame", "ms"),
+    "open_ready_ms": ("browser.open.ready", "ms"),
+    "activate_ms": ("browser.activate.first_frame", "ms"),
+    "demo_interval_ms": ("browser.demo.frame_interval", "ms"),
+    "demo_work_ms": ("browser.demo.frame_work", "ms"),
+    "typing_ms": ("browser.typing.key_to_frame", "ms"),
+    "typing_work_ms": ("browser.typing.frame_work", "ms"),
+    "idle_per_s": ("browser.idle.presented_per_s", "per_s"),
+}
+# Reported only by a run with the demo workload (`--demo-seconds` above 0).
+BROWSER_DEMO_FIELDS = frozenset({"demo_interval_ms", "demo_work_ms"})
+# Reported only by a run with the typing workload (`--typing-keys` above 0).
+BROWSER_TYPING_FIELDS = frozenset({"typing_ms", "typing_work_ms"})
+
+
 def browser_qualification(report: dict[str, Any], env: dict[str, Any],
                           require_clean: bool = True) -> list[record.Record]:
     """Records for one browser runtime qualification report.
@@ -475,8 +499,8 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     commit in the env's profile, clean unless `require_clean=False` (the A/B
     lane, whose output directory sits untracked in the checkout it builds),
     and its page CPU unthrottled: a throttled run stands in for older
-    hardware and is never this series. The demo's KPIs come from a run with
-    the demo and only from one.
+    hardware and is never this series. The demo's and the typing workload's
+    KPIs come from a run with that workload and only from one.
     """
     if report.get("schema") != 1:
         raise ValueError(f"browser qualification report schema {report.get('schema')!r}, not 1")
@@ -490,14 +514,21 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
                          f"{' (dirty)' if bundle['dirty'] else ''}, not {env['commit']}")
     if workload.get("cpuThrottle", 1) != 1:
         raise ValueError(f"the page's CPU was throttled {workload['cpuThrottle']}x")
+    if workload.get("network"):
+        raise ValueError(f"the page's network was emulated at {workload['network']}")
     samples = report["samples"]
     demo = float(workload.get("demoSeconds", 0)) > 0
-    fields = [field for field in BROWSER_KPIS if demo or field not in BROWSER_DEMO_FIELDS]
+    typing = int(workload.get("typingKeys", 0)) > 0
+    absent = set() if demo else set(BROWSER_DEMO_FIELDS)
+    absent |= set() if typing else set(BROWSER_TYPING_FIELDS)
+    fields = [field for field in BROWSER_KPIS if field not in absent]
     missing = [field for field in fields if not samples.get(field)]
     if missing:
         raise ValueError(f"the report has no samples for {missing}")
     if not demo and any(samples.get(field) for field in BROWSER_DEMO_FIELDS):
         raise ValueError("the report has demo samples from a run without the demo")
+    if not typing and any(samples.get(field) for field in BROWSER_TYPING_FIELDS):
+        raise ValueError("the report has typing samples from a run without the typing workload")
     adapter = report.get("adapter") or {}
     meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "runtime_sha256": bundle["runtimeSha256"],
             "browser": report["browser"]["product"],

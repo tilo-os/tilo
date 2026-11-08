@@ -141,10 +141,10 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
         );
         assert_eq!(caller.workspace(), Some("workspace"));
         assert!(caller.execution_is_live());
-        // It acts for the person who admitted it, as a member: the agent stays
-        // the principal and carries no device delegation of the person's.
+        // The person's own device handed the session to it: the agent stays
+        // the principal, acts for them, and carries that delegation.
         assert_eq!(caller.acting_for_person(), Some("ada"));
-        assert!(!caller.is_session_delegated());
+        assert!(caller.is_session_delegated());
     }
     assert_ne!(
         callers.first().map(Caller::execution_id),

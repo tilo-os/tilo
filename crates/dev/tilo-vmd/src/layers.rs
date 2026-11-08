@@ -88,9 +88,6 @@ impl LayerStore {
     }
 
     /// Import an uncompressed tar stream.
-    ///
-    /// # Errors
-    /// Malformed archives, disallowed entries and I/O failures.
     pub fn import_tar(
         &self,
         reader: impl Read,
@@ -159,9 +156,6 @@ impl LayerStore {
     }
 
     /// Recompute the canonical identity; directory names alone are not cache proof.
-    ///
-    /// # Errors
-    /// Missing, damaged or unreadable layers, including missing provenance.
     pub fn verify(&self, hash: &str) -> Result<LayerInfo, DaemonError> {
         let path = self.require(hash)?;
         if !path.join("usr").is_dir() || tree_hash(&path)? != hash {
@@ -190,9 +184,6 @@ impl LayerStore {
 
     /// Delete unreferenced layers older than `min_age` (younger ones may be
     /// an import whose swap has not happened yet). Returns hashes and bytes.
-    ///
-    /// # Errors
-    /// I/O failures.
     pub fn collect(
         &self,
         referenced: &std::collections::BTreeSet<String>,
@@ -238,9 +229,6 @@ impl LayerStore {
 
     /// Every file and symlink the layer adds, sorted by path, with the
     /// SHA-256 of each regular file; the importer's own metadata is left out.
-    ///
-    /// # Errors
-    /// Unknown layers and I/O failures.
     pub fn files(&self, hash: &str) -> Result<Vec<LayerFile>, DaemonError> {
         let root = self.require(hash)?;
         let entries = layer_hash::entries(&root).map_err(layer_error("list layer"))?;
@@ -360,9 +348,6 @@ fn validate_top(stage: &Path) -> Result<(), DaemonError> {
 /// timestamps are ignored; the executable bit is not. The importer's own
 /// outputs (extension-release, provenance) are excluded, so a published
 /// layer hashes to its directory name.
-///
-/// # Errors
-/// Special files and I/O failures.
 pub fn tree_hash(root: &Path) -> Result<String, DaemonError> {
     layer_hash::tree_hash(root).map_err(layer_error("hash layer"))
 }

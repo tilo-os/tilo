@@ -1,11 +1,8 @@
-//! The session's records' content: what an app kept outlives the session that
-//! kept it, and a device that joins the workspace later reads it from the
-//! device that kept it.
-//!
-//! The two planes here have no transport between them, so the test carries
-//! what one plane says to the other as the workspace's hosts carry it: a want
-//! where the workspace's members hear it, and an answer to the one device
-//! that asked, with the answering device as the host stamps it.
+//! The session's records' content: what an app kept outlives the session that kept it, and a device
+//! that joins the workspace later reads it from the device that kept it.
+//! The two planes here have no transport between them, so the test carries what one plane says to
+//! the other as the workspace's hosts carry it: a want where the workspace's members hear it, and
+//! an answer to the one device that asked, with the answering device as the host stamps it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -52,8 +49,8 @@ fn topic() -> WorkspaceId {
     workspace_topic_id(workspace)
 }
 
-/// One of the workspace's devices: its plane, its address on the network, and
-/// what it said, waiting to be carried.
+/// One of the workspace's devices: its plane, its address on the network, and what it said, waiting
+/// to be carried.
 struct Device {
     plane: Arc<Plane>,
     address: EndpointId,
@@ -61,8 +58,7 @@ struct Device {
 }
 
 impl Device {
-    /// The plane of a session whose state is `state`, reached on the network
-    /// as device `seed`.
+    /// The plane of a session whose state is `state` , reached on the network as device `seed` .
     fn open(state: Option<&Path>, seed: u8) -> Self {
         let address = iroh::SecretKey::from_bytes(&[seed; 32]).public();
         let plane = Plane::open(state);
@@ -75,8 +71,7 @@ impl Device {
         }
     }
 
-    /// This device hears that `other` could hand the workspace's content
-    /// over.
+    /// This device hears that `other` could hand the workspace's content over.
     fn sees(&self, other: &Self) {
         let peer = neighbour_wire::peer_handle(other.address.as_bytes());
         self.plane.sources_changed(
@@ -88,10 +83,9 @@ impl Device {
         );
     }
 
-    /// Hand what this device said to `other`, as the workspace's hosts do:
-    /// a message on the workspace's topic reaches the member, and one for the
-    /// device that asked reaches it alone, stamped with the device that sent
-    /// it.
+    /// Hand what this device said to `other` , as the workspace's hosts do: a message on the
+    /// workspace's topic reaches the member, and one for the device that asked reaches it alone,
+    /// stamped with the device that sent it.
     fn carry(&mut self, other: &Self) {
         while let Ok(outgoing) = self.said.try_recv() {
             match outgoing {
@@ -122,8 +116,7 @@ impl Device {
     }
 }
 
-/// Run the planes' passes until `done` holds, or the deadline passes:
-/// whether `done` held.
+/// Run the planes' passes until `done` holds, or the deadline passes: whether `done` held.
 fn until(mut done: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + DEADLINE;
     loop {
@@ -156,8 +149,8 @@ fn content_an_app_kept_is_read_back_after_the_session_restarted() {
             .offer(&route(), &hash, &bytes)
             .expect("the app's content is kept");
     }
-    // The session restarted: nothing of the plane that kept it is left, and
-    // the app opens its record again and asks for the content it references.
+    // The session restarted: nothing of the plane that kept it is left, and the app opens its
+    // record again and asks for the content it references.
     let plane = Plane::open(Some(state.path()));
     let content = plane.route();
     let mut news = content.subscribe(&route());
@@ -214,8 +207,8 @@ fn a_device_that_joins_later_reads_content_another_device_kept() {
     assert_eq!(arrived.hash, hash);
     assert_eq!(arrived.bytes, bytes);
 
-    // And the device that asked now keeps it: its next session reads it
-    // without anybody else on the workspace.
+    // And the device that asked now keeps it: its next session reads it without anybody else on the
+    // workspace.
     drop(joining);
     let plane = Plane::open(Some(joined.path()));
     let content = plane.route();
@@ -268,8 +261,7 @@ fn a_workspace_or_app_name_that_leaves_the_store_keeps_no_content() {
             "{escaping:?} names no store of this device's"
         );
     }
-    // And the put door refuses the same names rather than opening an upload
-    // it could never finish.
+    // And the put door refuses the same names rather than opening an upload it could never finish.
     assert!(plane.puts().begin("../outside").is_err());
     assert!(!Path::new(&state.path().join("tilo").join("record-content")).exists());
 }

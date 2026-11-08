@@ -100,9 +100,6 @@ impl Source {
 
     /// The URI to hand a `GStreamer` `playbin`. File variants become `file://`
     /// URIs on their resolved absolute path; a remote source passes through.
-    ///
-    /// # Errors
-    /// Returns an error if a local path cannot be resolved or represented as a file URL.
     pub fn to_uri(&self) -> std::io::Result<String> {
         if let Source::Remote { url } = self {
             Ok(url.clone())
@@ -152,10 +149,6 @@ impl Source {
     /// On the web this is a page-local `blob:` URL. On Linux and macOS the
     /// bytes are written once to the temporary directory, named by their
     /// hash, and played from there.
-    ///
-    /// # Errors
-    ///
-    /// Writing the temporary file.
     pub fn from_contents(name: &str, bytes: &[u8]) -> std::io::Result<Source> {
         let extension = Path::new(name)
             .extension()
@@ -213,10 +206,6 @@ fn contents_source(extension: &str, bytes: &[u8]) -> std::io::Result<Source> {
 
 /// Turn a native filesystem path into a percent-encoded file URL.
 /// Resolving lexically avoids requiring the file to be hydrated or even exist.
-///
-/// # Errors
-/// Returns an error when the current directory cannot be resolved or the path
-/// names a host device that cannot be represented as a file URL.
 #[cfg(any(unix, windows))]
 pub fn path_to_file_uri(path: &Path) -> std::io::Result<String> {
     let absolute = std::path::absolute(path)?;

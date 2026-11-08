@@ -1,8 +1,7 @@
 //! Where someone's windows are on their screen, as their live presence says
-//! (`tilo_relay_protocol::live::LiveLayout`): what a mini view of their
-//! screen is drawn from. Each window is named by its app and a short digest
-//! of its record only, which a viewer matches against the records it holds
-//! itself; nothing of the window's content travels.
+//! (`tilo_relay_protocol::live::LiveLayout`): what a mini view of their screen is drawn from. Each
+//! window is named by its app and a short digest of its record only, which a viewer matches against
+//! the records it holds itself; nothing of the window's content travels.
 
 use vello::kurbo::Rect;
 
@@ -57,8 +56,8 @@ pub struct ScreenWindow {
 }
 
 impl Screen {
-    /// The screen `layout` describes; malformed windows are left out, and
-    /// a layout of no size is none.
+    /// The screen `layout` describes; malformed windows are left out, and a layout of no size is
+    /// none.
     #[must_use]
     pub fn from_layout(layout: &MemberLayout) -> Option<Self> {
         let [width, height] = layout.size;

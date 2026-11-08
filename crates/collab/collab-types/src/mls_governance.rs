@@ -211,8 +211,8 @@ impl MlsGovernanceFrame {
         Ok(frame)
     }
 
-    /// A frame whose signature is still to be made by `signed_by`, see
-    /// [`MlsAccessRequestV1::unsigned`]: sign [`Self::signing_bytes`] and
+    /// A frame whose signature is still to be made by `signed_by`,
+    /// see [`MlsAccessRequestV1::unsigned`]: sign [`Self::signing_bytes`] and
     /// store it in `signature`.
     pub fn unsigned(
         channel: ChannelId,

@@ -1,7 +1,7 @@
 use super::*;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Button, Column, Container, Widget};
+use crate::widget::{Button, Column, Container, ContextMenuArea, MenuEntry, Widget};
 use std::{cell::Cell, rc::Rc};
 use winit::event::MouseButton;
 
@@ -1175,7 +1175,7 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
         label = presence.interaction_status_label(&event);
         applied
     });
-    assert_eq!(label, "Ada · writing");
+    assert_eq!(label, "Ada: writing");
     assert!(
         agent_frame.semantic_locus(&event).is_none(),
         "a text anchor is drawn in the document, not on a control"
@@ -1202,5 +1202,90 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
     assert!(
         glow.2 >= typed.2 && glow.2 <= typed.2 + 4,
         "the glow ends on the written characters, with its caret: {glow:?} vs typing {typed:?}"
+    );
+}
+
+/// A leaf a test drives by hand: what it paints changed, an animation it
+/// owes, and a deadline it looks at.
+struct Changed {
+    dirty: Rc<Cell<bool>>,
+    animate: Rc<Cell<bool>>,
+    deadline: Rc<Cell<Option<Instant>>>,
+}
+impl Widget for Changed {
+    crate::testing::inert_widget_methods!(leaf_layout, name = "changed");
+    fn needs_redraw(&self) -> bool {
+        self.dirty.get()
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty.set(false);
+    }
+    fn needs_animation_frame(&self) -> bool {
+        self.animate.get()
+    }
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.deadline.get()
+    }
+}
+
+#[test]
+fn a_window_that_drew_a_frame_asks_for_none_until_something_changes() {
+    let dirty = Rc::new(Cell::new(false));
+    let animate = Rc::new(Cell::new(false));
+    let deadline = Rc::new(Cell::new(None));
+    // The list a described list is: content under a menu that stands closed,
+    // which every such list carries.
+    let mut frame = frame(Box::new(ContextMenuArea::new(
+        Box::new(Changed {
+            dirty: Rc::clone(&dirty),
+            animate: Rc::clone(&animate),
+            deadline: Rc::clone(&deadline),
+        }),
+        |_| vec![MenuEntry::new("Action", || {})],
+    )));
+    frame.relayout();
+    let schedule = frame.frame_schedule();
+    assert!(
+        !schedule.needs_redraw && !schedule.queued_work && !schedule.needs_animation_frame,
+        "a window at rest asks for no frame: {schedule:?} {:?}",
+        frame.redraw_sources()
+    );
+    assert_eq!(schedule.next_wake_deadline, None);
+
+    dirty.set(true);
+    assert!(
+        frame.frame_schedule().needs_redraw,
+        "a widget whose paint changed asks for the frame that shows it"
+    );
+    frame.relayout();
+    assert!(
+        !frame.frame_schedule().needs_redraw,
+        "the frame drew it: {:?}",
+        frame.redraw_sources()
+    );
+
+    animate.set(true);
+    assert!(
+        frame.frame_schedule().needs_redraw && frame.frame_schedule().needs_animation_frame,
+        "an animation asks for every frame"
+    );
+    animate.set(false);
+    frame.relayout();
+
+    let now = Instant::now();
+    deadline.set(Some(now + Duration::from_secs(60)));
+    assert!(
+        !frame.frame_schedule().needs_redraw,
+        "a deadline ahead is not a frame due now"
+    );
+    assert_eq!(
+        frame.frame_schedule().next_wake_deadline,
+        deadline.get(),
+        "the host waits for the deadline"
+    );
+    deadline.set(Some(now - Duration::from_millis(1)));
+    assert!(
+        frame.frame_schedule().needs_redraw,
+        "a due deadline asks for the frame that takes it"
     );
 }

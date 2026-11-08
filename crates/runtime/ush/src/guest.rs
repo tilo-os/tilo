@@ -190,10 +190,6 @@ impl GuestPlan {
     /// state, and the session's own `/etc` entries — `passwd` and `group`
     /// naming the real user (the images know only their system accounts) and
     /// the resolver ([`Self::resolver`], else the machine's).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a directory or file can't be created.
     pub fn prepare(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.session_dir)?;
         if let Some(helper) = &self.helper_runtime {
@@ -673,11 +669,6 @@ pub fn remove_dir_all_forced(path: &Path) {
 /// Open the compiled filter and hand back a descriptor `bwrap` will inherit.
 /// `O_CLOEXEC` must come off so the number in the argv still names this file
 /// after `exec`; the `File` is returned too so the caller keeps it alive.
-///
-/// # Errors
-///
-/// Returns an error if `blob` can't be opened, or its close-on-exec flag
-/// can't be read or cleared.
 pub fn open_seccomp_fd(blob: &Path) -> std::io::Result<(std::fs::File, std::os::fd::RawFd)> {
     use std::os::fd::AsRawFd;
     let file = std::fs::File::open(blob)?;
@@ -696,11 +687,6 @@ pub fn open_seccomp_fd(blob: &Path) -> std::io::Result<(std::fs::File, std::os::
 
 /// Spawn the guest as a child, inside `netns` when given (`bwrap` then
 /// nests its user namespace in the one that owns it).
-///
-/// # Errors
-///
-/// Returns an error if the seccomp filter can't be opened, or the child
-/// process can't be spawned.
 pub fn spawn(
     plan: &GuestPlan,
     netns: Option<&tilo_egress::Netns>,

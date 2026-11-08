@@ -269,16 +269,6 @@ impl Drop for FloatingRuntime {
 }
 
 impl App {
-    /// Pump the real native host channel in compositor-free acceptance fixtures.
-    /// Returns whether this launch's inherited connection is still present.
-    /// This exposes no connection injection or permission bypass.
-    #[cfg(all(feature = "native", feature = "test-support"))]
-    pub fn pump_native_host_for_test(&mut self) -> bool {
-        let _entry = self.enter_wake_scope();
-        self.pump_floating_surface_service();
-        self.floating.client.is_some()
-    }
-
     #[cfg(feature = "native")]
     fn pending_floating_ime_source(&self) -> Option<&str> {
         self.floating.client.as_ref()?;
@@ -1246,11 +1236,18 @@ impl App {
                         );
                     }
                 }
-                FloatingSurfaceHostMessage::ShareSelection => {
+                FloatingSurfaceHostMessage::ShareSelection { to } => {
                     // The shell asks this window to send from its keyboard,
-                    // with no menu to carry a box: it opens alone, with no
-                    // subject, and the person names whom it goes to.
-                    crate::shared_selection::open_send_box(None, None, None);
+                    // with no menu to carry a box: it opens alone, about what
+                    // the window has picked, and either to the place the shell
+                    // named — a report goes to the one it was opened with — or
+                    // with the person naming whom it goes to.
+                    let about =
+                        crate::shared_selection::subtree_selection(self.root_widget.as_ref());
+                    let bounds = about
+                        .as_ref()
+                        .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
+                    crate::shared_selection::open_send_box(about, bounds, None, to);
                 }
                 FloatingSurfaceHostMessage::Recipients { request, rows } => {
                     crate::shared_selection::answer_recipients(*request, rows.clone());

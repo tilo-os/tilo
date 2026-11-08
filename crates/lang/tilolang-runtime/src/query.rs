@@ -115,9 +115,6 @@ fn is_type_name(word: &str) -> bool {
 }
 
 /// The query a typed search writes.
-///
-/// # Errors
-/// A message saying what is wrong with it: a quote not closed, a token with no value.
 pub fn find(input: &str) -> Result<Query, String> {
     let mut query = Query::default();
     for (at, word) in words(input)?.into_iter().enumerate() {
@@ -279,9 +276,6 @@ pub struct Clock {
 
 impl Clock {
     /// The clock at the ISO-8601 UTC instant `now`, read in UTC.
-    ///
-    /// # Errors
-    /// `now` is not such an instant.
     pub fn at(now: &str) -> Result<Self, String> {
         Ok(Self {
             now: instant(now).ok_or_else(|| format!("`{now}` is not a time"))?,
@@ -375,10 +369,6 @@ impl Clock {
 
 /// `query` read against the filters of `ty` (`enums` naming the enums its filters compare)
 /// at the time `clock`.
-///
-/// # Errors
-/// A message saying which token does not fit: a filter the type lacks, a value its filter does
-/// not take.
 pub fn resolve(
     query: &Query,
     ty: &TypeMeta,

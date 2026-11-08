@@ -1,20 +1,15 @@
-//! The desktop as a widget: the active workspace's active strip presented
-//! as the toolkit's [`GroupRow`] of [`WindowGroup`]s, with the model as the
-//! source of truth.
-//!
-//! Local changes flow both ways without diffing. Gestures inside the row
-//! (tab drags, splits, closes, activation, resize, maximize, the new-tab
-//! control) are harvested into the tree on the next update pass, exactly as
-//! the shell's overlay host harvests them. Navigation commands are admitted
-//! against the tree when dispatched, then applied to the tree and to the
-//! live widgets in the same update pass. Rows are built from the tree the
-//! first time their strip is shown and kept alive afterwards, so a tab's
-//! application survives switching strips or workspaces.
-//!
-//! A tree changed elsewhere (a peer, a restored copy) replaces the model
-//! through [`DesktopHandle::replace_tree`]; the next update pass rebuilds the
-//! rows from it by tab id, moving each surviving tab's live content into its
-//! new place and closing the applications of tabs that are gone.
+//! The desktop as a widget: the active workspace's active strip presented as the toolkit's
+//! [`GroupRow`] of [`WindowGroup`]s, with the model as the source of truth.
+//! Local changes flow both ways without diffing. Gestures inside the row (tab drags, splits,
+//! closes, activation, resize, maximize, the new-tab control) are harvested into the tree on the
+//! next update pass, exactly as the shell's overlay host harvests them. Navigation commands are
+//! admitted against the tree when dispatched, then applied to the tree and to the live widgets in
+//! the same update pass. Rows are built from the tree the first time their strip is shown and kept
+//! alive afterwards, so a tab's application survives switching strips or workspaces.
+//! A tree changed elsewhere (a peer, a restored copy) replaces the model through
+//! [`DesktopHandle::replace_tree`]; the next update pass rebuilds the rows from it by tab id,
+//! moving each surviving tab's live content into its new place and closing the applications of tabs
+//! that are gone.
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -55,6 +50,7 @@ mod close_button_tests;
 #[cfg(test)]
 mod close_motion_tests;
 mod displays;
+mod floats;
 mod history;
 mod hung;
 mod launch;
@@ -98,11 +94,10 @@ pub use tile_content::tile_app_kind;
 use tile_content::{build_tile, descriptor, placeholder};
 pub use window_menu::Row as WindowMenuRow;
 
-/// The caret or selection a surface publishes as its presence: the
-/// keyboard-focused widget's when it is one of the focused window's (or
-/// application's) editors `window`, else that window's first editor caret.
-/// Keyboard focus can stay behind in another window, an action can move a
-/// caret without focus, and a hidden mount never holds keyboard focus.
+/// The caret or selection a surface publishes as its presence: the keyboard-focused widget's when
+/// it is one of the focused window's (or application's) editors `window` , else that window's first
+/// editor caret. Keyboard focus can stay behind in another window, an action can move a caret
+/// without focus, and a hidden mount never holds keyboard focus.
 pub fn published_selection(
     keyboard: Option<(PresenceKey, PresencePayload)>,
     window: &[(PresenceKey, PresencePayload)],
@@ -120,31 +115,29 @@ const ACTIVITY_APP: &str = tilo_actions::remote::workspace_activity::APP_ID;
 
 /// Where a host's tab contents come from.
 pub trait TileSource {
-    /// The content for `tab` in `workspace`, built the first time the tab's
-    /// strip is shown.
+    /// The content for `tab` in `workspace` , built the first time the tab's strip is shown.
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost;
 
-    /// A launch command named `app`: the tab to open under `id`. `None`
-    /// opens nothing.
+    /// A launch command named `app` : the tab to open under `id` . `None` opens nothing.
     fn launch(&mut self, _workspace: &Workspace, _id: TabId, _app: &str) -> Option<Tab> {
         None
     }
 
-    /// The person reopened `tab` where they closed it, and its window is
-    /// gone: the tab holds the app that opens it again, and waits for that
-    /// app's window to take it. What the source needs to ask for the app.
+    /// The person reopened `tab` where they closed it, and its window is gone: the tab holds the
+    /// app that opens it again, and waits for that app's window to take it. What the source needs
+    /// to ask for the app.
     fn reopened(&mut self, _workspace: &Workspace, _tab: &Tab) {}
 
-    /// The applications desktop search offers to open, each an id
-    /// [`Self::launch`] accepts, followed by those this desktop cannot run
-    /// (`unavailable` set), which search lists with their reason.
+    /// The applications desktop search offers to open, each an id [`Self::launch`] accepts,
+    /// followed by those this desktop cannot run (`unavailable` set), which search lists with their
+    /// reason.
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
         Vec::new()
     }
 
-    /// The tab already showing what the launch `app` opens (a record
-    /// launch's record, [`crate::session::record_launch`]): it comes
-    /// forward in place of a second window on the same record.
+    /// The tab already showing what the launch `app` opens (a record launch's record,
+    /// [`crate::session::record_launch`]): it comes forward in place of a second window on the same
+    /// record.
     fn showing(&self, _app: &str) -> Option<TabId> {
         None
     }
@@ -155,34 +148,31 @@ pub trait TileSource {
         None
     }
 
-    /// The workspace the windows are in, which each window's app is told:
-    /// apps sharing one process have none of their own.
+    /// The workspace the windows are in, which each window's app is told: apps sharing one process
+    /// have none of their own.
     fn workspace_id(&self) -> Option<String> {
         None
     }
 
-    /// The person carried `tab` to the workspace at `to`, and a window of an
-    /// app this device started fills it. Such a tab does not cross by itself:
-    /// the app runs in the workspace that started it, with that workspace's
-    /// grants and records, so the session starts it again where the person put
-    /// it. Recording the move is what hands it over
+    /// The person carried `tab` to the workspace at `to` , and a window of an app this device
+    /// started fills it. Such a tab does not cross by itself: the app runs in the workspace that
+    /// started it, with that workspace's grants and records, so the session starts it again where
+    /// the person put it. Recording the move is what hands it over
     /// ([`tilo_desktop_policy::DesktopPolicy::take_carried`]).
-    ///
-    /// Whether the session took it: false keeps the move the desk's own, and
-    /// nothing else about it changes.
+    /// Whether the session took it: false keeps the move the desk's own, and nothing else about it
+    /// changes.
     fn carry(&self, _tab: TabId, _to: WorkspaceSlot) -> bool {
         false
     }
 
-    /// Whether this desktop draws the views windows embed of other apps'
-    /// resources ([`Self::embed`]).
+    /// Whether this desktop draws the views windows embed of other apps' resources
+    /// ([`Self::embed`]).
     fn draws_embeds(&self) -> bool {
         false
     }
 
-    /// `view`'s own app on this desktop's copy of its record, to be drawn
-    /// scaled into the window that embeds it: the app, or why it cannot
-    /// show. Never creates the record.
+    /// `view` 's own app on this desktop's copy of its record, to be drawn scaled into the window
+    /// that embeds it: the app, or why it cannot show. Never creates the record.
     fn embed(&mut self, _view: &ui::window_share::ResourceView) -> Result<TileHost, String> {
         Err("This desktop can't show it here".into())
     }
@@ -190,83 +180,74 @@ pub trait TileSource {
 
 struct Shared {
     tree: DesktopTree,
-    /// Whoever holds each window someone else opened, by tab
-    /// ([`DesktopHandle::set_holders`]).
+    /// Whoever holds each window someone else opened, by tab ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
     /// The windows the sharing app lists for its picker, as last published
-    /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the
-    /// share row exactly for these.
+    /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the share row exactly for
+    /// these.
     window_offers: Vec<ui::window_share::OpenWindow>,
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,
-    /// The bars the person asked a menu of (a secondary press), and where
-    /// they pressed, waiting for the host.
+    /// The bars the person asked a menu of (a secondary press), and where they pressed, waiting for
+    /// the host.
     menus: Vec<(TabId, Point)>,
-    /// Its person opens windows and tabs here ([`DesktopHandle::set_opens`]):
-    /// the windows offer a new tab.
+    /// Its person opens windows and tabs here ([`DesktopHandle::set_opens`]): the windows offer a
+    /// new tab.
     opens: bool,
-    /// Bumped on every tree change, so a host republishes navigation only
-    /// when something moved.
+    /// Bumped on every tree change, so a host republishes navigation only when something moved.
     revision: u64,
     queue: Vec<Admitted>,
-    /// What the Activity app was last asked to show (a view, and whose
-    /// doings when one person's), until the activity model is up to offer
-    /// it.
+    /// What the Activity app was last asked to show (a view, and whose doings when one person's),
+    /// until the activity model is up to offer it.
     activity_focus: Option<(ActivityView, Option<String>)>,
     minter: IdMinter,
     /// Logical width the strip lays out against.
     viewport_width: f64,
     /// The tree was replaced from outside; rows must be reconciled.
     replaced: bool,
-    /// Where each shown window stands and the bounds of the tab it shows, as
-    /// last laid out.
+    /// Where each shown window stands and the bounds of the tab it shows, as last laid out.
     shown_tabs: ShownTabs,
-    /// The shown strip, the area it is drawn in and how far it is
-    /// panned, as last laid out.
+    /// The shown strip, the area it is drawn in and how far it is panned, as last laid out.
     shown_strip: Option<(StripId, Rect, f64)>,
-    /// Where the shown strip's controls are for control hints, as last
-    /// drawn.
+    /// Where the shown strip's controls are for control hints, as last drawn.
     hint_places: ui::widget::HintPlaces,
-    /// Carets and selections of the focused window's editors, as last laid
-    /// out ([`ui::presence::capability::subtree_presence`]).
+    /// Carets and selections of the focused window's editors, as last laid out
+    /// ([`ui::presence::capability::subtree_presence`]).
     focused_presence: Vec<(PresenceKey, PresencePayload)>,
     /// Tabs whose content the host asked to build again.
     rebuild: Vec<TabId>,
     search_request: Option<search::SearchRequest>,
     search_open: bool,
-    /// The search palette itself, shared with the host that draws it over
-    /// the windows (`DesktopHandle::search_palette`): the desk feeds it what
-    /// its windows hold and carries out what is chosen there, while the
-    /// host above the windows draws it and routes the person's input to it.
+    /// The search palette itself, shared with the host that draws it over the windows
+    /// (`DesktopHandle::search_palette`): the desk feeds it what its windows hold and carries out
+    /// what is chosen there, while the host above the windows draws it and routes the person's
+    /// input to it.
     search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
-    /// Bumped whenever what the palette shows or what opening it asks of the
-    /// desk changes, so the desk takes up what the host above it did and the
-    /// host above it draws what the desk published.
+    /// Bumped whenever what the palette shows or what opening it asks of the desk changes, so the
+    /// desk takes up what the host above it did and the host above it draws what the desk
+    /// published.
     search_revision: u64,
-    /// Where search stands when it was opened for one window: under that
-    /// window's bar, over the rest of it, as the desk last laid it out.
+    /// Where search stands when it was opened for one window: under that window's bar, over the
+    /// rest of it, as the desk last laid it out.
     search_area: Option<Rect>,
     /// What the host offers to do for the person, and what they chose.
     host_actions: Vec<search::HostAction>,
     host_choices: Vec<String>,
-    /// What the host adds to search and carries out of it
-    /// ([`DesktopHandle::set_search_host`]).
+    /// What the host adds to search and carries out of it ([`DesktopHandle::set_search_host`]).
     search_host: Option<std::rc::Rc<dyn search::SearchHost>>,
     /// Rows chosen in search that the host carries out, in order.
     search_choices: Vec<tilo_desktop_search::Target>,
-    /// The search the host last carried a row out of: where it stood and
-    /// what was typed, so a row it could not carry out is asked again with
-    /// the answer on that row.
+    /// The search the host last carried a row out of: where it stood and what was typed, so a row
+    /// it could not carry out is asked again with the answer on that row.
     search_choice_context: Option<(ui::search::Scope, String, tilo_desktop_search::Target)>,
-    /// The reason a row the host carried out did not happen, for the search
-    /// opened again over it to say on that row.
+    /// The reason a row the host carried out did not happen, for the search opened again over it to
+    /// say on that row.
     search_refusal: Option<(tilo_desktop_search::Target, String)>,
-    /// What a caller of the published search asked of it, taken on the
-    /// next update pass.
-    search_asks: Vec<search::SearchAsk>,
-    /// The open search, as last shown: its query and rows, and whether it
-    /// is still filling in.
+    /// The rows a caller of the published search chose, with the argument each one's action asks
+    /// for, taken on the next update pass.
+    search_asks: Vec<(usize, Option<String>)>,
+    /// The open search, as last shown: its query and rows, and whether it is still filling in.
     shown_search: search::ShownSearch,
     /// The field the person types into in the desktop itself, as last
     /// shown, and the text committed into it from outside the keyboard,
@@ -280,34 +261,31 @@ struct Shared {
     arrivals: Vec<arrivals::Arrival>,
     /// Pan, scroll, history and activity state, as last presented.
     presentation: Presentation,
-    /// Bumped whenever `presentation` changes. Unlike `revision` it never
-    /// asks a host to save or share the tree.
+    /// Bumped whenever `presentation` changes. Unlike `revision` it never asks a host to save or
+    /// share the tree.
     presented: u64,
-    /// The artwork each window brought of its own, by the compositor's id
-    /// for it ([`DesktopHandle::set_window_artwork`]).
+    /// The artwork each window brought of its own, by the compositor's id for it
+    /// ([`DesktopHandle::set_window_artwork`]).
     artwork: std::collections::BTreeMap<u64, ui::icons::AppImage>,
     /// The apps whose windows keep what they show to themselves
     /// ([`DesktopHandle::set_withheld_apps`]).
     withheld: std::collections::BTreeSet<String>,
-    /// The windows whose app stopped answering
-    /// ([`DesktopHandle::set_unresponsive_windows`]), by the compositor's id
-    /// for them.
+    /// The windows whose app stopped answering ([`DesktopHandle::set_unresponsive_windows`]), by
+    /// the compositor's id for them.
     unresponsive: std::collections::BTreeSet<u64>,
-    /// Bumped whenever `unresponsive` changes, so a reading made from it is
-    /// published again.
+    /// Bumped whenever `unresponsive` changes, so a reading made from it is published again.
     unresponsive_revision: u64,
-    /// What the person chose on a window that stopped answering, for the
-    /// host to carry out ([`DesktopHandle::take_liveness_choices`]).
+    /// What the person chose on a window that stopped answering, for the host to carry out
+    /// ([`DesktopHandle::take_liveness_choices`]).
     liveness: Vec<(TabId, LivenessChoice)>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
-    /// The windows other devices share with this one, each decoded into its
-    /// tile as it arrives.
+    /// The windows other devices share with this one, each decoded into its tile as it arrives.
     #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
     peers: Rc<RefCell<peer_view::PeerSurfaces>>,
-    /// What the session's apps asked of their windows' bars since the last
-    /// pass, and what the person did there, for the apps' connections
-    /// ([`DesktopHandle::declare_bar`] and its siblings).
+    /// What the session's apps asked of their windows' bars since the last pass, and what the
+    /// person did there, for the apps' connections ([`DesktopHandle::declare_bar`] and its
+    /// siblings).
     bars: window_bars::Bars,
     /// Sideways wheel travel the apps of these windows left to the desk,
     /// by tab, taken on the next pass ([`DesktopHandle::sideways_wheel`]).
@@ -317,8 +295,8 @@ struct Shared {
     wake: crate::wake::Waker,
 }
 
-/// The host's side of a mounted [`DesktopSurface`]: read the tree, publish
-/// navigation, queue commands. Cheap to clone; single-threaded.
+/// The host's side of a mounted [`DesktopSurface`]: read the tree, publish navigation, queue
+/// commands. Cheap to clone; single-threaded.
 #[derive(Clone)]
 pub struct DesktopHandle {
     shared: Rc<RefCell<Shared>>,
@@ -338,8 +316,8 @@ impl DesktopHandle {
         self.shared.borrow().revision
     }
 
-    /// Changes whenever the navigation snapshot may: the tree or what the
-    /// surface presents beside it (pan, scroll, history, activity).
+    /// Changes whenever the navigation snapshot may: the tree or what the surface presents beside
+    /// it (pan, scroll, history, activity).
     pub fn navigation_revision(&self) -> u64 {
         let shared = self.shared.borrow();
         shared.revision.wrapping_add(shared.presented)
@@ -349,33 +327,29 @@ impl DesktopHandle {
         read(&self.shared.borrow().tree)
     }
 
-    /// Have `wake` run whenever what this handle commands or changes is
-    /// waiting for the desk's next pass: the host holding the desk asks for
-    /// that frame, however little of the desk shows.
+    /// Have `wake` run whenever what this handle commands or changes is waiting for the desk's next
+    /// pass: the host holding the desk asks for that frame, however little of the desk shows.
     pub fn set_wake(&self, wake: Rc<dyn Fn()>) {
         self.shared.borrow_mut().wake.set(wake);
     }
 
-    /// The apps whose windows keep what they show to themselves: a password
-    /// manager's, an app that asked for the same while it shows a secret.
-    /// The host names them — it is the one that knows what a window may not
-    /// be shown to — and from then on nothing makes a picture of their
+    /// The apps whose windows keep what they show to themselves: a password manager's, an app that
+    /// asked for the same while it shows a secret. The host names them — it is the one that knows
+    /// what a window may not be shown to — and from then on nothing makes a picture of their
     /// windows; a window is named by the app it belongs to.
     pub fn set_withheld_apps(&self, apps: Vec<String>) {
         self.shared.borrow_mut().withheld = apps.into_iter().collect();
     }
 
-    /// Whether windows of `app_id` keep what they show to themselves, as the
-    /// host last named them.
+    /// Whether windows of `app_id` keep what they show to themselves, as the host last named them.
     #[must_use]
     pub fn withholds(&self, app_id: &str) -> bool {
         self.shared.borrow().withheld.contains(app_id)
     }
 
-    /// The shown strip, the area it is drawn in (surface coordinates) and
-    /// how far its content is panned past that area's left edge, as of the
-    /// last layout: a point `x` over it is `x - area.x0 + pan` along the
-    /// strip, however wide the surface or wherever it is panned to.
+    /// The shown strip, the area it is drawn in (surface coordinates) and how far its content is
+    /// panned past that area's left edge, as of the last layout: a point `x` over it is
+    /// `x - area.x0 + pan` along the strip, however wide the surface or wherever it is panned to.
     pub fn shown_strip(&self) -> Option<(StripId, Rect, f64)> {
         self.shared.borrow().shown_strip
     }
@@ -386,10 +360,9 @@ impl DesktopHandle {
         self.shared.borrow().hint_places.clone()
     }
 
-    /// The caret or selection this desktop publishes as its presence, given
-    /// the keyboard-focused widget's (`keyboard`): see
-    /// [`published_selection`], with the focused window's editors as of the
-    /// last layout.
+    /// The caret or selection this desktop publishes as its presence, given the keyboard-focused
+    /// widget's (`keyboard`): see [`published_selection`], with the focused window's editors as of
+    /// the last layout.
     pub fn published_selection(
         &self,
         keyboard: Option<(PresenceKey, PresencePayload)>,
@@ -450,8 +423,8 @@ impl DesktopHandle {
                 }
                 .into());
             }
-            // A window someone else holds is theirs (or a moderator's) to
-            // close: refused here, said at once, and nothing moves.
+            // A window someone else holds is theirs (or a moderator's) to close: refused here, said
+            // at once, and nothing moves.
             (Admitted::Close(ids), _) if shared.holders.contains_key(&ids.tab) => {
                 let refusal = holder_refusal(&shared.holders, ids.tab);
                 shared.acknowledger.say(refusal.clone());
@@ -464,21 +437,18 @@ impl DesktopHandle {
         Ok(())
     }
 
-    /// The logical width of the surface, which window widths are fractions
-    /// of. Hosts call this on every resize.
+    /// The logical width of the surface, which window widths are fractions of. Hosts call this on
+    /// every resize.
     pub fn set_viewport_width(&self, width: f64) {
         self.shared.borrow_mut().viewport_width = width.max(1.0);
     }
 
-    /// On a desktop several people share: who holds each window this
-    /// desktop's person may not close or move, by tab. Those windows offer
-    /// no close, resist a drag and name their holder on hover; every other
-    /// window behaves as it always does. Applied to the windows on screen
-    /// in the next update pass, and to every window built after. Whether
-    /// that changed anything.
-    /// Whether this desktop's person opens windows and tabs here: someone
-    /// the workspace lets only look (a viewer) is offered no new tab. Whether
-    /// that changed anything.
+    /// On a desktop several people share: who holds each window this desktop's person may not close
+    /// or move, by tab. Those windows offer no close, resist a drag and name their holder on hover;
+    /// every other window behaves as it always does. Applied to the windows on screen in the next
+    /// update pass, and to every window built after. Whether that changed anything. Whether this
+    /// desktop's person opens windows and tabs here: someone the workspace lets only look (a
+    /// viewer) is offered no new tab. Whether that changed anything.
     pub fn set_opens(&self, opens: bool) -> bool {
         let mut shared = self.shared.borrow_mut();
         let changed = shared.opens != opens;
@@ -499,7 +469,7 @@ impl DesktopHandle {
         shared.asking.insert(tab)
     }
 
-    /// Whether tab `tab`'s window is waiting for the person.
+    /// Whether tab `tab` 's window is waiting for the person.
     #[must_use]
     pub fn asks_attention(&self, tab: TabId) -> bool {
         self.shared.borrow().asking.contains(&tab)
@@ -514,24 +484,23 @@ impl DesktopHandle {
         true
     }
 
-    /// Replace the tree with one changed elsewhere. The next update pass
-    /// reconciles the live rows with it: tabs still present keep their
-    /// running content, new tabs get content from the host's
-    /// [`TileSource`], and removed tabs' applications close. Queued commands
-    /// stay queued and are re-checked against the new tree when applied.
+    /// Replace the tree with one changed elsewhere. The next update pass reconciles the live rows
+    /// with it: tabs still present keep their running content, new tabs get content from the host's
+    /// [`TileSource`], and removed tabs' applications close. Queued commands stay queued and are
+    /// re-checked against the new tree when applied.
     pub fn replace_tree(&self, mut tree: DesktopTree) {
         let mut shared = self.shared.borrow_mut();
         observe_ids(&mut shared.minter, &tree);
-        // A tree kept beside the state file carries no range of its own: it
-        // writes where this desk's ids were minted.
+        // A tree kept beside the state file carries no range of its own: it writes where this
+        // desk's ids were minted.
         tree.salt = shared.minter.salt();
         shared.tree = tree;
         shared.replaced = true;
         shared.changed();
     }
 
-    /// The workspace snapshot, excluding process-local stream proxies and
-    /// device presentation. Durable profile saves still use the full tree.
+    /// The workspace snapshot, excluding process-local stream proxies and device presentation.
+    /// Durable profile saves still use the full tree.
     pub fn shared_tree(&self) -> DesktopTree {
         self.read(|tree| crate::shared_tree::projection(tree.clone()))
     }
@@ -549,9 +518,9 @@ impl DesktopHandle {
         self.note_arrivals(opened, ui::time::now());
     }
 
-    /// Ask the [`TileSource`] for `tab`'s content again on a coming update
-    /// pass, as when the tab was first shown: for a host whose first answer
-    /// was a notice (its record had not arrived). The host schedules a frame.
+    /// Ask the [`TileSource`] for `tab` 's content again on a coming update pass, as when the tab
+    /// was first shown: for a host whose first answer was a notice (its record had not arrived).
+    /// The host schedules a frame.
     pub fn rebuild(&self, tab: TabId) {
         let mut shared = self.shared.borrow_mut();
         if !shared.rebuild.contains(&tab) {
@@ -559,10 +528,9 @@ impl DesktopHandle {
         }
     }
 
-    /// `tab` stands in for the app whose window did not come, saying why:
-    /// what the person sees where the window would be, and closes when they
-    /// are done with it. False when the tab is gone, or holds a live window
-    /// rather than an app this desk opened.
+    /// `tab` stands in for the app whose window did not come, saying why: what the person sees
+    /// where the window would be, and closes when they are done with it. False when the tab is
+    /// gone, or holds a live window rather than an app this desk opened.
     pub fn note_in_tab(&self, tab: TabId, note: &str) -> bool {
         let mut tree = self.read(Clone::clone);
         let Some(found) = tree
@@ -654,8 +622,7 @@ impl DesktopHandle {
         Ok(made)
     }
 
-    /// Focus the window showing `tab`, on the next update pass. False when
-    /// no window shows it.
+    /// Focus the window showing `tab` , on the next update pass. False when no window shows it.
     pub fn focus_tab(&self, tab: TabId) -> bool {
         let mut shared = self.shared.borrow_mut();
         let Some(ids) = route_of(&shared.tree, tab) else {
@@ -666,9 +633,8 @@ impl DesktopHandle {
         true
     }
 
-    /// Focus a window of application `app_id` in the active workspace (the
-    /// focused one when it is that application's), on the next update pass.
-    /// False when the workspace has none.
+    /// Focus a window of application `app_id` in the active workspace (the focused one when it is
+    /// that application's), on the next update pass. False when the workspace has none.
     pub fn focus_app(&self, app_id: &str) -> bool {
         let tab = self.read(|tree| {
             let shows = |tab: &Tab| {
@@ -704,10 +670,9 @@ fn holder_refusal(holders: &HashMap<TabId, ui::widget::TabHolder>, tab: TabId) -
     )
 }
 
-/// Answer what the windows asked of the activity with a host that keeps no
-/// history for the workspace: each write that it isn't kept, each read
-/// that it is still to come, as a native session reads a workspace it is
-/// not showing.
+/// Answer what the windows asked of the activity with a host that keeps no history for the
+/// workspace: each write that it isn't kept, each read that it is still to come, as a native
+/// session reads a workspace it is not showing.
 fn unavailable(requests: &ActivityRequests) {
     struct Unkept;
     impl ActivityReads for Unkept {
@@ -750,14 +715,13 @@ mod row_op;
 /// What one app may ask of its host in one frame; more waits for the next.
 const MAX_HOST_INTENTS: usize = 8;
 
-/// Time the update pass may spend building deferred tabs in one frame. At
-/// least one tab is built per frame, however long it takes.
+/// Time the update pass may spend building deferred tabs in one frame. At least one tab is built
+/// per frame, however long it takes.
 const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
 
-/// A pause in wheel input this long ends a swipe. A trackpad keeps
-/// reporting while the fingers move and through the momentum after they
-/// lift, and a spun mouse wheel's notches come 0 to 50 ms apart, all well
-/// inside this; the pauses between spins are mostly longer.
+/// A pause in wheel input this long ends a swipe. A trackpad keeps reporting while the fingers move
+/// and through the momentum after they lift, and a spun mouse wheel's notches come 0 to 50 ms
+/// apart, all well inside this; the pauses between spins are mostly longer.
 const SWIPE_GAP: Duration = Duration::from_millis(200);
 /// How soon search looks again for an app's answer that is still coming.
 const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
@@ -787,94 +751,86 @@ pub struct DesktopSurface {
     /// The slots the apps put in their windows' bars ([`window_bars`]).
     window_slots: ui::window_slots::WindowSlots,
     shown: Option<StripId>,
-    /// The strips the other displays show, laid out behind the shown one:
-    /// each display keeps a strip of its own.
+    /// The strips the other displays show, laid out behind the shown one: each display keeps a
+    /// strip of its own.
     behind: Vec<StripId>,
     rect: Rect,
     structure_dirty: bool,
-    /// The shown strip moved (a pan, a window brought into view): the next
-    /// frame lays it out again in the nodes it keeps.
+    /// The shown strip moved (a pan, a window brought into view): the next frame lays it out again
+    /// in the nodes it keeps.
     relayout: bool,
     close_reports: Vec<ui::application::ComponentCloseReport>,
     /// A launched window to pan into view once it has been laid out.
     reveal: Option<(StripId, GroupId)>,
-    /// Tabs of a shown strip whose content is not built yet, in build
-    /// order. Only the focused window is built before the strip's first
-    /// frame; the rest follow within a per-frame budget.
+    /// Tabs of a shown strip whose content is not built yet, in build order. Only the focused
+    /// window is built before the strip's first frame; the rest follow within a per-frame budget.
     unbuilt: Vec<(StripId, TabId)>,
     /// The sideways swipe in progress, if any.
     swipe: Option<Swipe>,
-    /// The strip a pan ended on, whose focus is to follow it once the strip
-    /// rests where the pan left it: a thrown strip coasts past the window
-    /// the fingers let go of, so focus lands on what the person is left
-    /// looking at.
+    /// The strip a pan ended on, whose focus is to follow it once the strip rests where the pan
+    /// left it: a thrown strip coasts past the window the fingers let go of, so focus lands on what
+    /// the person is left looking at.
     pan_follow: Option<StripId>,
     /// The window a pan ended on. Focus goes to it where the strip is,
     /// without panning it into view: the strip stays where the person left
     /// it, however little a lone wheel notch moved it.
     settle: Option<GroupId>,
     search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
-    /// The `Shared::search_revision` this surface last took up: what the
-    /// host above the windows changed since then is work for the next pass.
+    /// The `Shared::search_revision` this surface last took up: what the host above the windows
+    /// changed since then is work for the next pass.
     seen_search: u64,
-    /// The window a group's new-tab control opened search for: the
-    /// application chosen there opens as its tab, as in the native shell.
+    /// The window a group's new-tab control opened search for: the application chosen there opens
+    /// as its tab, as in the native shell.
     new_tab_into: Option<(StripId, GroupId)>,
-    /// The window search was opened over (its in-app search): an action
-    /// chosen there runs inside that window's app.
+    /// The window search was opened over (its in-app search): an action chosen there runs inside
+    /// that window's app.
     search_window: Option<(StripId, GroupId)>,
-    /// For search over everything, the window publishing each resource it
-    /// lists, by resource id: an app's action chosen there runs inside the
-    /// app's window, which comes forward.
+    /// For search over everything, the window publishing each resource it lists, by resource id: an
+    /// app's action chosen there runs inside the app's window, which comes forward.
     search_owners: HashMap<String, (StripId, GroupId)>,
-    /// An action chosen over a window that hosts no app to run it, left for
-    /// the host's own door, which says why it did not run.
+    /// An action chosen over a window that hosts no app to run it, left for the host's own door,
+    /// which says why it did not run.
     unrouted_control: Option<ui::tilo_actions::ControlInvocation>,
-    /// The pointer in logical coordinates, as it last moved over the
-    /// surface.
+    /// The pointer in logical coordinates, as it last moved over the surface.
     pointer: Point,
     platform: ui::platform::PlatformConventions,
     /// The host's retained workspace history, when it keeps one.
     history: Option<Box<dyn HistorySource>>,
-    /// What the windows ask of the workspace's activity, when the host
-    /// serves it to them.
+    /// What the windows ask of the workspace's activity, when the host serves it to them.
     activity_requests: Option<ActivityRequests>,
     /// The activity model, while a window follows it or asks of it.
     activity: Option<Box<dyn history::Served>>,
-    /// The model was asked for while the host still loads its code: frames
-    /// keep coming, each asking again, until it can open.
+    /// The model was asked for while the host still loads its code: frames keep coming, each asking
+    /// again, until it can open.
     activity_loading: bool,
     /// The banners and centre, when the host installed notifications.
     notices: Option<notices::NotificationLayer>,
-    /// What an action that leaves nothing to see confirms in passing
-    /// ("Link copied"), over everything else.
+    /// What an action that leaves nothing to see confirms in passing ("Link copied"), over
+    /// everything else.
     acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
     /// "Kim opened Notes": windows others opened out of sight.
     arrival_hints: arrivals::ArrivalHints,
-    /// "Not responding": the windows whose app stopped answering, each with
-    /// its Wait and its Force quit.
+    /// "Not responding": the windows whose app stopped answering, each with its Wait and its Force
+    /// quit.
     hung_apps: hung::HungApps,
-    /// Where the host collects what controls emit, once it has bound this
-    /// surface. A tab built after that (a launch, a record that arrived, a
-    /// rebuilt row) is bound to it as it is built, or its registered
-    /// buttons would emit into a queue nobody drains.
+    /// Where the host collects what controls emit, once it has bound this surface. A tab built
+    /// after that (a launch, a record that arrived, a rebuilt row) is bound to it as it is built,
+    /// or its registered buttons would emit into a queue nobody drains.
     controls: Option<ui::ControlDomain>,
-    /// The tab the keyboard was last aimed at: the focused window's shown
-    /// tab, as of the last presentation.
+    /// The tab the keyboard was last aimed at: the focused window's shown tab, as of the last
+    /// presentation.
     keyboard_tab: Option<TabId>,
     /// A tab brought forward whose app the host has not activated yet
-    /// ([`Widget::take_app_activation`]): it waits while the tab's app is
-    /// still loading, so a window opened before its app arrived still
-    /// takes the keyboard once it does.
+    /// ([`Widget::take_app_activation`]): it waits while the tab's app is still loading, so a
+    /// window opened before its app arrived still takes the keyboard once it does.
     activation: Option<(StripId, TabId)>,
-    /// The window a press landed in. When the press ends the strip pans
-    /// it wholly into view: never during the press, which would move what
-    /// was pressed from under the pointer.
+    /// The window a press landed in. When the press ends the strip pans it wholly into view: never
+    /// during the press, which would move what was pressed from under the pointer.
     reveal_on_release: Option<(StripId, GroupId)>,
     /// The windows shared live, and the views windows embed of them.
     live_shares: live_shares::LiveShares,
-    /// The strip or workspace change the frame draws as a slide, and where
-    /// each strip stood when it was last drawn.
+    /// The strip or workspace change the frame draws as a slide, and where each strip stood when it
+    /// was last drawn.
     pub(crate) slides: std::cell::RefCell<slide::Slides>,
     /// The theme's motion tokens, as the last frame laid out with them.
     motion: ui::tokens::EffectiveMotion,
@@ -882,34 +838,33 @@ pub struct DesktopSurface {
     navigation_source: Option<ui::tokens::MotionSource>,
 }
 
-/// One horizontally dominant gesture, from its first event until it ends:
-/// a trackpad swipe and its momentum, a spin of a mouse's sideways wheel, or
-/// three fingers carrying the strip.
+/// One horizontally dominant gesture, from its first event until it ends: a trackpad swipe and its
+/// momentum, a spin of a mouse's sideways wheel, or three fingers carrying the strip.
 #[derive(Clone, Copy)]
 struct Swipe {
-    /// Who took the gesture's first sideways event: the content under the
-    /// pointer, or the strip, and so the rest of it, ends included.
+    /// Who took the gesture's first sideways event: the content under the pointer, or the strip,
+    /// and so the rest of it, ends included.
     owner: Sideways,
     /// Which hand moves it, and so what its release coasts with.
     hand: paging::Hand,
-    /// Travel since the last step, toward the next one, while the strip
-    /// cannot pan the way the gesture goes.
+    /// Travel since the last step, toward the next one, while the strip cannot pan the way the
+    /// gesture goes.
     travel: f64,
-    /// The gesture panned the strip, so its end leaves focus to follow it
-    /// once the strip rests where they let go of it.
+    /// The gesture panned the strip, so its end leaves focus to follow it once the strip rests
+    /// where they let go of it.
     panned: bool,
     /// How far the gesture has carried the strip since it took hold of it,
     /// past either end included, so there it pulls against the rubber band
     /// and its end lets the strip settle.
     pan: Option<f64>,
-    /// How far three fingers have carried the strip since they landed: each
-    /// report is their total, and the strip takes what is new of it.
+    /// How far three fingers have carried the strip since they landed: each report is their total,
+    /// and the strip takes what is new of it.
     carried: f64,
     last: Instant,
 }
 
 impl DesktopSurface {
-    /// Present `tree`. `salt` is this device's peer salt for new ids.
+    /// Present `tree` . `salt` is this device's peer salt for new ids.
     pub fn new(tree: DesktopTree, salt: u16, tiles: Box<dyn TileSource>) -> (Self, DesktopHandle) {
         let mut minter = IdMinter::new(salt);
         observe_ids(&mut minter, &tree);
@@ -927,8 +882,8 @@ impl DesktopSurface {
         (surface, DesktopHandle { shared })
     }
 
-    /// The surface's own state, standing on the `shared` desk `new` made and
-    /// drawing with `tiles`, after its search `search`.
+    /// The surface's own state, standing on the `shared` desk `new` made and drawing with `tiles` ,
+    /// after its search `search` .
     fn standing(
         shared: Rc<RefCell<Shared>>,
         tiles: Box<dyn TileSource>,
@@ -978,13 +933,12 @@ impl DesktopSurface {
         }
     }
 
-    /// Give every live window the holders the host named
-    /// ([`DesktopHandle::set_holders`]). Whether that changed what one
-    /// offers.
+    /// Give every live window the holders the host named ([`DesktopHandle::set_holders`]). Whether
+    /// that changed what one offers.
     fn apply_holders(&mut self) -> bool {
         {
-            // The person is looking at the focused window, however they got
-            // there; a closed window waits for no one.
+            // The person is looking at the focused window, however they got there; a closed window
+            // waits for no one.
             let mut shared = self.shared.borrow_mut();
             let looking = navigation::active_route(&shared.tree).map(|route| route.tab);
             let Shared { asking, tree, .. } = &mut *shared;
@@ -1005,9 +959,8 @@ impl DesktopSurface {
         changed
     }
 
-    /// Read workspace history from `source`: the Activity app then shows
-    /// it, once the host serves the windows what they ask of it
-    /// ([`Self::serve_activity`]).
+    /// Read workspace history from `source` : the Activity app then shows it, once the host serves
+    /// the windows what they ask of it ([`Self::serve_activity`]).
     pub fn set_history_source(&mut self, source: Box<dyn HistorySource>) {
         self.history = Some(source);
         let mut shared = self.shared.borrow_mut();
@@ -1016,33 +969,30 @@ impl DesktopSurface {
         shared.present(next);
     }
 
-    /// Answer what the windows ask of the workspace's activity through
-    /// `requests` (the desktop's end of its session) from the history
-    /// source.
+    /// Answer what the windows ask of the workspace's activity through `requests` (the desktop's
+    /// end of its session) from the history source.
     pub fn serve_activity(&mut self, requests: ActivityRequests) {
         self.activity_requests = Some(requests);
     }
 
-    /// Show `notifications`' banners over the strip, and its centre when a
-    /// `notification-center` command opens it.
+    /// Show `notifications` ' banners over the strip, and its centre when a `notification-center`
+    /// command opens it.
     pub fn set_notifications(&mut self, notifications: DesktopNotifications) {
         self.notices = Some(notices::NotificationLayer::new(notifications));
         self.structure_dirty = true;
         self.refresh_notifications();
     }
 
-    /// Show applications' notifications from `inbox` (the other half of
-    /// the [`AppNotifier`] the host's services hand them), attributed to the
-    /// window that posted each. Choosing one focuses that application's
-    /// window and hands the application its activation.
+    /// Show applications' notifications from `inbox` (the other half of the [`AppNotifier`] the
+    /// host's services hand them), attributed to the window that posted each. Choosing one focuses
+    /// that application's window and hands the application its activation.
     pub fn set_app_notifications(&mut self, inbox: AppInbox) {
         if let Some(layer) = self.notices.as_mut() {
             layer.inbox = Some(inbox);
         }
     }
 
-    /// Open or close the notification centre, as the host's own control
-    /// does.
+    /// Open or close the notification centre, as the host's own control does.
     pub fn set_notification_center(&mut self, open: bool) {
         if let Some(layer) = self.notices.as_mut() {
             layer.set_center_open(open);
@@ -1050,8 +1000,8 @@ impl DesktopSurface {
         }
     }
 
-    /// Retire banners that ran out, open what the centre asked to, and
-    /// record what the notifications show.
+    /// Retire banners that ran out, open what the centre asked to, and record what the
+    /// notifications show.
     fn refresh_notifications(&mut self) {
         let Some(layer) = self.notices.as_mut() else {
             return;
@@ -1119,10 +1069,9 @@ impl DesktopSurface {
         shared.present(next);
     }
 
-    /// Serve the windows what they asked of the workspace's activity: the
-    /// activity model is open while one follows it or asks of it, for the
-    /// active workspace, and each read it follows is read again whenever
-    /// the model moved.
+    /// Serve the windows what they asked of the workspace's activity: the activity model is open
+    /// while one follows it or asks of it, for the active workspace, and each read it follows is
+    /// read again whenever the model moved.
     fn sync_activity(&mut self) {
         let Some(requests) = self.activity_requests.clone() else {
             return;
@@ -1211,6 +1160,43 @@ impl DesktopSurface {
         self.rows.get_mut(&strip)
     }
 
+    /// Hand each row the windows the workspace holds floating above its strip, of the strip the
+    /// person works in: the others show their windows where they are.
+    fn sync_floats(&mut self) {
+        let shown = self.shown;
+        let mut returning = None;
+        for (strip, row) in &mut self.rows {
+            let floats = if Some(*strip) == shown {
+                floats::floats_of(
+                    &self.shared.borrow().tree,
+                    *strip,
+                    floats::area_of(row.get_rect()),
+                )
+            } else {
+                HashMap::new()
+            };
+            // A window the record put back in its strip after floating is the one the person just
+            // snapped back: its strip brings it into view as it does a window that opens or takes
+            // the focus, or the window lands where the pan left the strip rather than where it
+            // stood when it was lifted.
+            let back = row
+                .floats()
+                .keys()
+                .find(|group| !floats.contains_key(group))
+                .copied();
+            row.set_floats(floats);
+            if Some(*strip) == shown
+                && let Some(group) = back
+                && !row.is_floating(group)
+            {
+                returning = Some((*strip, group));
+            }
+        }
+        if self.reveal.is_none() {
+            self.reveal = returning;
+        }
+    }
+
     /// Build (once) and show the active workspace's active strip.
     fn show_active_strip(&mut self) {
         let shown_before = self.shown;
@@ -1235,8 +1221,8 @@ impl DesktopSurface {
                 strip,
                 focused,
             );
-            // A row comes back with the window covering this display, so a
-            // rebuild while it covers does not take it back.
+            // A row comes back with the window covering this display, so a rebuild while it covers
+            // does not take it back.
             row.set_fullscreen(tree.fullscreen_group(), false);
             // The focused window, built first, is also the one in view.
             if self.reveal.is_none() {
@@ -1259,8 +1245,8 @@ impl DesktopSurface {
         self.show_display_strips();
     }
 
-    /// Build deferred tabs of the shown strip until the frame's budget is
-    /// spent. Tabs of strips not shown wait until theirs is.
+    /// Build deferred tabs of the shown strip until the frame's budget is spent. Tabs of strips not
+    /// shown wait until theirs is.
     fn build_deferred(&mut self) {
         for tab in std::mem::take(&mut self.shared.borrow_mut().rebuild) {
             let strip = self.rows.iter_mut().find_map(|(strip, row)| {
@@ -1303,10 +1289,9 @@ impl DesktopSurface {
                 workspace,
                 model,
             );
-            // A window that held an app's place (its code or record still
-            // coming) hands its arrival, and its place in the layout, to
-            // what is built there now: the window says how its layout
-            // changes, so the rest of the desktop's is kept.
+            // A window that held an app's place (its code or record still coming) hands its
+            // arrival, and its place in the layout, to what is built there now: the window says how
+            // its layout changes, so the rest of the desktop's is kept.
             host.take_place_of(rebuilt);
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
                 break;
@@ -1317,13 +1302,12 @@ impl DesktopSurface {
         self.unbuilt = waiting;
     }
 
-    /// Bring the rows to a replaced tree, keeping live content by tab id.
-    /// A strip already shown keeps its row and changes in place
-    /// ([`splice::splice_row`]): its pan stays where the person left it, and
-    /// windows removed, added or moved elsewhere slide as they do when the
-    /// person closes, opens or moves one here. Rebuilding the row instead
-    /// threw its pan away, so each peer's edit, or the workspace's echo of a
-    /// close, flew the strip home and cut every window to its new place.
+    /// Bring the rows to a replaced tree, keeping live content by tab id. A strip already shown
+    /// keeps its row and changes in place ([`splice::splice_row`]): its pan stays where the person
+    /// left it, and windows removed, added or moved elsewhere slide as they do when the person
+    /// closes, opens or moves one here. Rebuilding the row instead threw its pan away, so each
+    /// peer's edit, or the workspace's echo of a close, flew the strip home and cut every window to
+    /// its new place.
     fn reconcile(&mut self) {
         if !std::mem::take(&mut self.shared.borrow_mut().replaced) {
             return;
@@ -1343,8 +1327,8 @@ impl DesktopSurface {
             .collect();
         let unbuilt: std::collections::HashSet<TabId> =
             self.unbuilt.iter().map(|&(_, tab)| tab).collect();
-        // Tabs leaving their window, or the desktop, give up their content
-        // first, so a window they move to can take it over.
+        // Tabs leaving their window, or the desktop, give up their content first, so a window they
+        // move to can take it over.
         let mut live: HashMap<TabId, TileHost> = HashMap::new();
         let mut rows = std::mem::take(&mut self.rows);
         for (&strip, row) in &mut rows {
@@ -1380,9 +1364,8 @@ impl DesktopSurface {
                     self.rows.insert(strip.id, row);
                     continue;
                 }
-                // Strips with surviving content are built now so that
-                // content is not dropped; the rest are built when first
-                // shown.
+                // Strips with surviving content are built now so that content is not dropped; the
+                // rest are built when first shown.
                 let survives = strip
                     .window_groups
                     .iter()
@@ -1414,8 +1397,8 @@ impl DesktopSurface {
             self.close_reports
                 .extend(ui::component_lifecycle::close_components(&mut host));
         }
-        // A tab still waiting for its content waits where it stayed; one
-        // that moved was built with its new window.
+        // A tab still waiting for its content waits where it stayed; one that moved was built with
+        // its new window.
         let rows = &self.rows;
         self.unbuilt.retain(|&(strip, tab)| {
             !built.contains(&tab)
@@ -1430,10 +1413,9 @@ impl DesktopSurface {
         self.structure_dirty = true;
     }
 
-    /// A press anywhere in a window, its body included and not only its tab
-    /// bar, makes that window the active one. It stays where it is while
-    /// pressed, since panning would move it from under the pointer; the
-    /// press's release brings it wholly into view.
+    /// A press anywhere in a window, its body included and not only its tab bar, makes that window
+    /// the active one. It stays where it is while pressed, since panning would move it from under
+    /// the pointer; the press's release brings it wholly into view.
     fn focus_clicked_group(&self) {
         let Some(strip_id) = self.shown else {
             return;
@@ -1476,17 +1458,21 @@ impl DesktopSurface {
                 .reorder_group_within_strip(strip_id, group, index)
                 .is_some();
         }
+        // A window lifted over the desk, or let go back into its strip.
+        if let Some(ask) = row.take_pending_float() {
+            let area = floats::area_of(row.get_rect());
+            changed |= floats::carry_out(&mut shared, strip_id, ask, area);
+        }
         let mut new_tab = None;
         let mut search_in = None;
         for group in &mut row.groups {
             if group.take_pending_search_open().is_some() {
                 search_in = Some((group.id, ui::search::SearchRequest::this_app()));
             }
-            // An app asks its host for what only the host can do. Here that
-            // is search: the app's own search button opens the window's
-            // search, as the window bar's does. What else an app may ask
-            // (moving a device's display, a host shell, opening a local
-            // document) a browser page cannot do, so it is let go.
+            // An app asks its host for what only the host can do. Here that is search: the app's
+            // own search button opens the window's search, as the window bar's does. What else an
+            // app may ask (moving a device's display, a host shell, opening a local document) a
+            // browser page cannot do, so it is let go.
             let group_id = group.id;
             if let Some(host) = group.active_host_mut() {
                 for _ in 0..MAX_HOST_INTENTS {
@@ -1528,9 +1514,8 @@ impl DesktopSurface {
                 model.maximized = maximized;
                 changed = true;
                 if !maximized {
-                    // Restored to its width, the window comes back into
-                    // view where the strip stood before it filled the
-                    // display, which may leave its controls off screen.
+                    // Restored to its width, the window comes back into view where the strip stood
+                    // before it filled the display, which may leave its controls off screen.
                     self.reveal = Some((strip_id, group.id));
                 }
             }
@@ -1589,16 +1574,16 @@ impl DesktopSurface {
                         Some(ids) => Admitted::Select(ids),
                         None => Admitted::Launch(app),
                     },
-                    // The workspace's history is the Activity app's to show:
-                    // it opens, or comes forward, and is offered the view.
+                    // The workspace's history is the Activity app's to show: it opens, or comes
+                    // forward, and is offered the view.
                     Admitted::Activity(_, view, author) => {
                         shared.activity_focus = Some((view, author));
                         navigation::resolve_open(&shared.tree, ACTIVITY_APP)
                     }
                     other => other,
                 };
-                // Admission ran at dispatch; an earlier command in this batch
-                // may since have removed the target.
+                // Admission ran at dispatch; an earlier command in this batch may since have
+                // removed the target.
                 let live =
                     |tree: &DesktopTree, ids: RouteIds| navigation::locate(tree, ids).is_some();
                 match command {
@@ -1627,18 +1612,35 @@ impl DesktopSurface {
                         }
                     }
                     Admitted::Fullscreen(ids, fullscreen) if live(&shared.tree, ids) => {
-                        // The row reads this in `present`; the window taken
-                        // across the display takes the whole strip with it.
+                        // The row reads this in `present` ; the window taken across the display
+                        // takes the whole strip with it.
                         shared.tree.set_fullscreen(ids.strip, ids.group, fullscreen);
+                    }
+                    Admitted::Float(ids, on) if live(&shared.tree, ids) => {
+                        // A chord or a menu row lifts the window over the place it stands, or puts
+                        // it back in its strip; the row reads it in `present` .
+                        let lifted = match self.rows.get(&ids.strip) {
+                            Some(row) => {
+                                let area = floats::area_of(row.get_rect());
+                                if on {
+                                    floats::lift(&mut shared, ids.strip, row, ids.group, area)
+                                } else {
+                                    floats::set(&mut shared, ids.strip, ids.group, None)
+                                }
+                            }
+                            None => false,
+                        };
+                        if lifted {
+                            shared.tree.set_active_group(ids.strip, ids.group);
+                        }
                     }
                     Admitted::Rename(ids, name) if live(&shared.tree, ids) => {
                         if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
                             && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
                             && tab.rename(&name)
                         {
-                            // A name is what the window shows, not a window
-                            // the desk gained or lost: the row renames its
-                            // pill where it stands.
+                            // A name is what the window shows, not a window the desk gained or
+                            // lost: the row renames its pill where it stands.
                             ops.push(RowOp::Rename {
                                 strip: ids.strip,
                                 group: ids.group,
@@ -1656,19 +1658,18 @@ impl DesktopSurface {
                             });
                         }
                     }
-                    // The window comes back where it was, its app launched
-                    // again if that is what it takes: the row takes it in as
-                    // it takes a window a peer added, and the strip comes to
-                    // it as it does to a launched one.
+                    // The window comes back where it was, its app launched again if that is what it
+                    // takes: the row takes it in as it takes a window a peer added, and the strip
+                    // comes to it as it does to a launched one.
                     Admitted::Reopen(workspace) => {
                         let Some(reopened) = shared.tree.reopen_closed(workspace) else {
                             continue;
                         };
                         self.reveal = Some((reopened.strip, reopened.group));
                         shared.replaced = true;
-                        // The window that closed is gone for good, so the tab
-                        // comes back as the app that opens it again: the app is
-                        // asked for, and the window that comes takes this tab.
+                        // The window that closed is gone for good, so the tab comes back as the app
+                        // that opens it again: the app is asked for, and the window that comes
+                        // takes this tab.
                         if let Some((workspace, tab)) =
                             find_tab(&shared.tree, reopened.strip, reopened.tab)
                         {
@@ -1686,8 +1687,8 @@ impl DesktopSurface {
                             None => continue,
                         }
                     }
-                    // The tab lands right after the one it was asked to open
-                    // beside, inside its window group.
+                    // The tab lands right after the one it was asked to open beside, inside its
+                    // window group.
                     Admitted::TabOpenBeside(ids, app, background) if live(&shared.tree, ids) => {
                         match tab_beside::open_tab_beside(
                             self.tiles.as_mut(),
@@ -1742,13 +1743,11 @@ impl DesktopSurface {
                         }
                         continue;
                     }
-                    // A window of an app this device started runs in the
-                    // workspace that started it, with its grants and its
-                    // records: the tab does not cross by itself. The session
-                    // carries it instead — asking first when the move crosses
-                    // to or from a workspace other people are in — and this
-                    // tab takes the window the app opens where the person put
-                    // it.
+                    // A window of an app this device started runs in the workspace that started it,
+                    // with its grants and its records: the tab does not cross by itself. The
+                    // session carries it instead — asking first when the move crosses to or from a
+                    // workspace other people are in — and this tab takes the window the app opens
+                    // where the person put it.
                     Admitted::MoveToWorkspace(ids, to)
                         if live(&shared.tree, ids)
                             && shared.window_of_tab(ids.tab).is_some()
@@ -1756,8 +1755,8 @@ impl DesktopSurface {
                     {
                         continue;
                     }
-                    // Everything else is a window menu's row: the desktop's
-                    // own moves, widths and closes of one window.
+                    // Everything else is a window menu's row: the desktop's own moves, widths and
+                    // closes of one window.
                     other => {
                         if !window_menu::apply(&mut shared, &other, &mut ops) {
                             continue;
@@ -1774,10 +1773,9 @@ impl DesktopSurface {
                     if let Some(row) = self.rows.get_mut(&strip) {
                         row.set_group_active_tab(group, tab);
                         if self.settle.take() != Some(group) {
-                            // A window focused off screen slides into frame:
-                            // a key's move says where it went and is over at
-                            // once within `fast`, a click glides, so focus
-                            // never cuts the view.
+                            // A window focused off screen slides into frame: a key's move says
+                            // where it went and is over at once within `fast` , a click glides, so
+                            // focus never cuts the view.
                             let source = reveal_source();
                             row.scroll_group_into_view_animated(
                                 group,
@@ -1866,8 +1864,8 @@ impl DesktopSurface {
         }
     }
 
-    /// Record what the shown strip and focused window present beside the
-    /// tree, for the navigation snapshot.
+    /// Record what the shown strip and focused window present beside the tree, for the navigation
+    /// snapshot.
     fn refresh_presentation(&self) {
         let (active, tree_active) = {
             let shared = self.shared.borrow();
@@ -1928,8 +1926,8 @@ impl DesktopSurface {
         self.rows.get(&self.shown?)
     }
 
-    /// Where window `group`'s new-tab control is drawn, while its strip is
-    /// shown, so a test presses it as a person does.
+    /// Where window `group` 's new-tab control is drawn, while its strip is shown, so a test
+    /// presses it as a person does.
     #[cfg(any(test, debug_assertions))]
     #[must_use]
     pub fn new_tab_rect(&self, group: GroupId) -> Option<Rect> {
@@ -1941,8 +1939,8 @@ impl DesktopSurface {
             .filter(|rect| rect.area() > 0.0)
     }
 
-    /// Present a launched window. A row first built after the launch
-    /// already holds it, with its content, from the tree.
+    /// Present a launched window. A row first built after the launch already holds it, with its
+    /// content, from the tree.
     fn open_group(&mut self, strip: StripId, group: GroupId, index: usize, tab: &Tab) {
         let Some(row) = self.rows.get_mut(&strip) else {
             return;
@@ -1985,19 +1983,20 @@ impl DesktopSurface {
             .find(|g| g.id == group)
     }
 
-    /// Accent the active group of the shown strip and lay out against the
-    /// host's viewport.
+    /// Accent the active group of the shown strip and lay out against the host's viewport.
     fn present(&mut self) {
         self.lay_out_displays();
-        // The window the person took across the display takes the whole
-        // strip with it: its row drops the gutters and the other windows
-        // step aside, wherever the person last panned them. A row is built
-        // with this too; here it follows the window menu or the chord
-        // between rebuilds.
+        // The window the person took across the display takes the whole strip with it: its row
+        // drops the gutters and the other windows step aside, wherever the person last panned them.
+        // A row is built with this too; here it follows the window menu or the chord between
+        // rebuilds.
         let fullscreen = self.shared.borrow().tree.fullscreen_group();
         if let Some(row) = self.shown_row() {
             row.set_fullscreen(fullscreen, false);
         }
+        // A window the workspace holds floating stands over the desk, at the place its record keeps
+        // for this device's display; every other strip shows its windows in their strip.
+        self.sync_floats();
         let (route, width) = {
             let shared = self.shared.borrow();
             (
@@ -2006,8 +2005,8 @@ impl DesktopSurface {
             )
         };
         let active = route.map(|ids| ids.group);
-        // Whatever brought a window forward (a click, a launch, a switch, a
-        // closed neighbour), its app takes the keyboard.
+        // Whatever brought a window forward (a click, a launch, a switch, a closed neighbour), its
+        // app takes the keyboard.
         let tab = route.map(|ids| ids.tab);
         if tab != self.keyboard_tab {
             self.keyboard_tab = tab;
@@ -2022,9 +2021,8 @@ impl DesktopSurface {
                 .first()
                 .is_none_or(|span| span.width.to_bits() != width.to_bits())
             {
-                // Windows size against the width between the strip's two
-                // gutters, so one as wide as the display still shows its
-                // border at both ends.
+                // Windows size against the width between the strip's two gutters, so one as wide as
+                // the display still shows its border at both ends.
                 row.set_output_spans(&[OutputSpan {
                     x: 0.0,
                     width,
@@ -2034,15 +2032,14 @@ impl DesktopSurface {
         }
     }
 
-    /// The strip travel of a wheel event: its sideways travel, or over
-    /// empty canvas, where nothing scrolls, its vertical travel too, so a
-    /// plain mouse wheel moves the strip there (down toward later windows).
+    /// The strip travel of a wheel event: its sideways travel, or over empty canvas, where nothing
+    /// scrolls, its vertical travel too, so a plain mouse wheel moves the strip there (down toward
+    /// later windows).
     fn strip_travel(&self, delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
-        // Sideways is the strip's everywhere. A plain wheel belongs to the app
-        // under it, so a mouse that has only that one pans the strip where no
-        // app can scroll: over the strip's own canvas and window bars. The
-        // bar is the shell's, as on the native desktop, where the wheel over
-        // the tab strip is not a client's.
+        // Sideways is the strip's everywhere. A plain wheel belongs to the app under it, so a mouse
+        // that has only that one pans the strip where no app can scroll: over the strip's own
+        // canvas and window bars. The bar is the shell's, as on the native desktop, where the wheel
+        // over the tab strip is not a client's.
         sideways(delta, scale_factor).or_else(|| {
             self.shown_row_ref()
                 .is_some_and(GroupRow::pointer_over_chrome)
@@ -2051,12 +2048,11 @@ impl DesktopSurface {
         })
     }
 
-    /// Whether this event is in a sideways gesture the strip owns and pans
-    /// with it, answered without routing it. A pan moves where the windows are
-    /// and nothing else. Stepping focus on a strip that fits, a swipe at the
-    /// strip's end and the end of an earlier pan, which moves focus to the
-    /// window panned to, all do more. A gesture's first event is the content's
-    /// to take, so only a gesture already the strip's counts.
+    /// Whether this event is in a sideways gesture the strip owns and pans with it, answered
+    /// without routing it. A pan moves where the windows are and nothing else. Stepping focus on a
+    /// strip that fits, a swipe at the strip's end and the end of an earlier pan, which moves focus
+    /// to the window panned to, all do more. A gesture's first event is the content's to take, so
+    /// only a gesture already the strip's counts.
     fn pans_strip(&self, delta: MouseScrollDelta, now: Instant) -> bool {
         // Only the direction matters here, which no scale factor changes.
         let Some(travel) = self.strip_travel(delta, 1.0) else {
@@ -2072,8 +2068,8 @@ impl DesktopSurface {
         }
     }
 
-    /// End the swipe once wheel input has paused for [`SWIPE_GAP`]. Fingers
-    /// the desk claims report their own end, so this only ends a wheel's.
+    /// End the swipe once wheel input has paused for [`SWIPE_GAP`]. Fingers the desk claims report
+    /// their own end, so this only ends a wheel's.
     fn end_idle_swipe(&mut self, now: Instant) {
         let Some(swipe) = self.swipe else {
             return;
@@ -2087,21 +2083,18 @@ impl DesktopSurface {
         self.finish_swipe(swipe, now, false);
     }
 
-    /// The gesture `swipe` is over `cancelled` at `now`: a strip it panned
-    /// settles, the hand's velocity carried on where the hand throws it, and
-    /// focus follows the pan to the window the person is left looking at, so
-    /// the keyboard and Super+Left/Right carry on from it.
+    /// The gesture `swipe` is over `cancelled` at `now` : a strip it panned settles, the hand's
+    /// velocity carried on where the hand throws it, and focus follows the pan to the window the
+    /// person is left looking at, so the keyboard and Super+Left/Right carry on from it.
     fn finish_swipe(&mut self, swipe: Swipe, now: Instant, cancelled: bool) {
         if swipe.pan.is_some()
             && let Some(row) = self.shown_row()
         {
-            // A trackpad and a wheel already coasted the gesture (their
-            // momentum, a spun wheel's notches), so the strip is thrown
-            // nowhere: a pull past an end springs back, and a strip left
-            // within its range stays there through later geometry changes.
-            // Three fingers carry no momentum of their own, so the strip
-            // coasts with the velocity they let go at, unless the hand was
-            // taken back.
+            // A trackpad and a wheel already coasted the gesture (their momentum, a spun wheel's
+            // notches), so the strip is thrown nowhere: a pull past an end springs back, and a
+            // strip left within its range stays there through later geometry changes. Three fingers
+            // carry no momentum of their own, so the strip coasts with the velocity they let go at,
+            // unless the hand was taken back.
             let settling = match (swipe.hand, cancelled) {
                 (paging::Hand::Wheel, _) | (paging::Hand::Fingers, true) => {
                     row.cancel_strip_pan(now)
@@ -2117,10 +2110,9 @@ impl DesktopSurface {
         }
     }
 
-    /// Focus the window the strip has come to rest on, once the pan that
-    /// moved it is over: a thrown strip coasts past the window the fingers
-    /// let go of, and a pull past an end springs back, so focus waits for
-    /// where the strip ends. The strip itself stays where the person left it
+    /// Focus the window the strip has come to rest on, once the pan that moved it is over: a thrown
+    /// strip coasts past the window the fingers let go of, and a pull past an end springs back, so
+    /// focus waits for where the strip ends. The strip itself stays where the person left it
     /// ([`Self::settle`]).
     fn settle_pan_focus(&mut self) {
         let Some(panned) = self.pan_follow else {
@@ -2170,9 +2162,9 @@ impl DesktopSurface {
         self.settle = Some(group);
     }
 
-    /// Focus the window `steps` along the shown strip, walking every tab of
-    /// every group in order and stopping at either end, as Super+Left/Right
-    /// does in the shell. False when there is nowhere to go.
+    /// Focus the window `steps` along the shown strip, walking every tab of every group in order
+    /// and stopping at either end, as Super+Left/Right does in the shell. False when there is
+    /// nowhere to go.
     fn step_focus(&self, steps: i32) -> bool {
         let Some(target) = self.neighbour(steps) else {
             return false;
@@ -2184,9 +2176,8 @@ impl DesktopSurface {
         true
     }
 
-    /// The window `steps` along the shown strip from the focused one (or the
-    /// one a queued select is about to focus), as
-    /// [`Self::step_focus`] walks it.
+    /// The window `steps` along the shown strip from the focused one (or the one a queued select is
+    /// about to focus), as [`Self::step_focus`] walks it.
     fn neighbour(&self, steps: i32) -> Option<RouteIds> {
         let shared = self.shared.borrow();
         // A step queued since the last update has moved focus already.
@@ -2225,8 +2216,7 @@ impl DesktopSurface {
 }
 
 impl DesktopSurface {
-    /// Open `app` as a tab of window `group` in strip `strip`, focused.
-    /// Returns whether it opened.
+    /// Open `app` as a tab of window `group` in strip `strip` , focused. Returns whether it opened.
     fn open_tab_in_group(&mut self, strip: StripId, group: GroupId, app: &str) -> bool {
         let mut shared = self.shared.borrow_mut();
         let id = shared.minter.mint();
@@ -2316,27 +2306,26 @@ impl Widget for DesktopSurface {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        // Which apps stopped answering is the host's to report; a new report
-        // is a layout of its own, so their cards are placed this frame.
+        // Which apps stopped answering is the host's to report; a new report is a layout of its
+        // own, so their cards are placed this frame.
         let unresponsive = self.shared.borrow().unresponsive_revision;
         self.hung_apps.follow(unresponsive);
         let before = self.shared.borrow().revision;
         let search_was_open = self.search.borrow().is_open();
         self.end_idle_swipe(ui::time::now());
-        // What the apps of its windows left of their sideways wheels moves
-        // the strip before this pass draws it.
+        // What the apps of its windows left of their sideways wheels moves the strip before this
+        // pass draws it.
         let panned = self.take_app_sideways(ui::time::now());
         self.reconcile();
         self.harvest();
-        // A window the pass just moved or renamed is a tree the rows follow
-        // now: what it was running goes to the window it moved to in this
-        // pass, rather than being built there again.
+        // A window the pass just moved or renamed is a tree the rows follow now: what it was
+        // running goes to the window it moved to in this pass, rather than being built there again.
         self.reconcile();
         {
             let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
-            // Search opens over the tree as these commands left it, and what
-            // it chose applies in this same pass.
+            // Search opens over the tree as these commands left it, and what it chose applies in
+            // this same pass.
             self.step_search(doc);
             self.apply_commands(doc, root);
         }
@@ -2367,8 +2356,8 @@ impl Widget for DesktopSurface {
             self.present();
             self.refresh_presentation();
         }
-        // Last, so a row this pass rebuilt shows its windows' own artwork in
-        // the same frame it appeared in.
+        // Last, so a row this pass rebuilt shows its windows' own artwork in the same frame it
+        // appeared in.
         let artwork = self.sync_window_artwork();
         self.seen_search = self.shared.borrow().search_revision;
         changed
@@ -2465,8 +2454,8 @@ impl Widget for DesktopSurface {
                 continue;
             };
             row.apply_layout(taffy, child, inner);
-            // The launch frame itself shows the new window: move the strip
-            // to it, then place the groups again where the move has them.
+            // The launch frame itself shows the new window: move the strip to it, then place the
+            // groups again where the move has them.
             if Some(*strip) != shown {
                 continue;
             }
@@ -2487,8 +2476,8 @@ impl Widget for DesktopSurface {
         self.note_laid_strip();
         self.settle_pan_focus();
         if self.slides.borrow().is_moving(ui::motion::frame_now()) {
-            // A slide moves drawings, not places: the next frame lays out
-            // again to draw what it left behind at its pose.
+            // A slide moves drawings, not places: the next frame lays out again to draw what it
+            // left behind at its pose.
             ui::widget::note_layout_moved();
         }
         let search_area = self
@@ -2557,8 +2546,8 @@ impl Widget for DesktopSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // Where the pointer is, read before anything answers the event: the
-        // strip asks it which window a press landed in.
+        // Where the pointer is, read before anything answers the event: the strip asks it which
+        // window a press landed in.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
@@ -2571,10 +2560,9 @@ impl Widget for DesktopSurface {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let now = ui::time::now();
             self.end_idle_swipe(now);
-            // A wheel held with the zoom modifier zooms the window under the
-            // pointer: a browser sends a trackpad's pinch as one, and a mouse
-            // wheel with the command modifier natively. It never moves the
-            // strip, however much sideways motion the pinch carries.
+            // A wheel held with the zoom modifier zooms the window under the pointer: a browser
+            // sends a trackpad's pinch as one, and a mouse wheel with the command modifier
+            // natively. It never moves the strip, however much sideways motion the pinch carries.
             if !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers)
                 && let Some(travel) = self.strip_travel(*delta, ctx.scale_factor)
                 && self.route_strip_swipe(travel, now)
@@ -2627,16 +2615,16 @@ impl Widget for DesktopSurface {
                 .shown_row_ref()
                 .is_some_and(|row| !row.groups.iter().any(|g| g.maximized))
         {
-            // A window clicked while partly off screen comes into view, as
-            // focusing it from the keyboard brings it.
+            // A window clicked while partly off screen comes into view, as focusing it from the
+            // keyboard brings it.
             self.reveal = Some((strip, group));
             self.relayout = true;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers)
         {
-            // The window under the pointer and its app had the event; a
-            // node above the strip that took it is no strip pan either.
+            // The window under the pointer and its app had the event; a node above the strip that
+            // took it is no strip pan either.
             let travel = self.strip_travel(*delta, ctx.scale_factor);
             if let Some(travel) = travel
                 && self.take_sideways(travel, *ctx.handled, ui::time::now())
@@ -2660,8 +2648,8 @@ impl Widget for DesktopSurface {
             && self.pans_strip(*delta, ui::time::now())
     }
 
-    /// The app of the window brought forward, once its tab is built as an
-    /// app: the host then gives it keyboard focus.
+    /// The app of the window brought forward, once its tab is built as an app: the host then gives
+    /// it keyboard focus.
     fn take_app_activation(&mut self) -> Option<ui::application::InstanceId> {
         let (strip, tab) = self.activation?;
         if self.keyboard_tab != Some(tab) {
@@ -2753,8 +2741,7 @@ impl Widget for DesktopSurface {
                 .any(Widget::needs_animation_frame)
     }
 
-    /// A pan's end, when the strip settles and focus goes to the window
-    /// panned to.
+    /// A pan's end, when the strip settles and focus goes to the window panned to.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let ends = self
             .swipe
@@ -2762,8 +2749,8 @@ impl Widget for DesktopSurface {
                 swipe.hand == paging::Hand::Wheel && (swipe.panned || swipe.pan.is_some())
             })
             .and_then(|swipe| swipe.last.checked_add(SWIPE_GAP));
-        // An app's answer to the search query is still coming: look again
-        // shortly, as its rows show once it is in.
+        // An app's answer to the search query is still coming: look again shortly, as its rows show
+        // once it is in.
         let answer = self
             .search
             .borrow()
@@ -2779,14 +2766,13 @@ impl Widget for DesktopSurface {
             .min()
     }
 
-    /// A queued command or a request the host made is work to draw: it asks
-    /// for the frame that applies it rather than waiting for an unrelated
-    /// one, so a host that only draws what asks needs no separate schedule.
-    /// What the host above the windows did with the search palette since the
-    /// last pass is work for this one: a row it chose, a scope it widened, a
-    /// query field it typed into. So is a tree replaced from outside — a
-    /// workspace's desktop its members changed: the desk's rows are only
-    /// brought to it by a pass, and none would come for it otherwise.
+    /// A queued command or a request the host made is work to draw: it asks for the frame that
+    /// applies it rather than waiting for an unrelated one, so a host that only draws what asks
+    /// needs no separate schedule. What the host above the windows did with the search palette
+    /// since the last pass is work for this one: a row it chose, a scope it widened, a query field
+    /// it typed into. So is a tree replaced from outside — a workspace's desktop its members
+    /// changed: the desk's rows are only brought to it by a pass, and none would come for it
+    /// otherwise.
     fn needs_redraw(&self) -> bool {
         let work = {
             let shared = self.shared.borrow();
@@ -2794,16 +2780,13 @@ impl Widget for DesktopSurface {
                 || !shared.queue.is_empty()
                 || shared.search_revision != self.seen_search
                 || shared.replaced
-                // An app that arrived is built by a pass
-                // (`Self::build_deferred`), so it asks for the frame that
-                // takes its component rather than waiting for an unrelated
-                // one.
+                // An app that arrived is built by a pass (`Self::build_deferred`), so it asks for
+                // the frame that takes its component rather than waiting for an unrelated one.
                 || !shared.rebuild.is_empty()
         };
-        // The desk asks its search sources a frame at a time, and cuts its
-        // rows to the card once the card gives its room: a search with such
-        // work left draws the frames that do it, so it ends with every
-        // source's rows rather than stalling part-way.
+        // The desk asks its search sources a frame at a time, and cuts its rows to the card once
+        // the card gives its room: a search with such work left draws the frames that do it, so it
+        // ends with every source's rows rather than stalling part-way.
         work || self.search.borrow().filling_in()
             || self.slides.borrow().is_moving(ui::motion::frame_now())
             || self.children().into_iter().any(Widget::needs_redraw)
@@ -2826,8 +2809,8 @@ impl Widget for DesktopSurface {
         self.take_structure_change().rebuilds()
     }
 
-    /// A change the shown strip's windows carry out in place stays in
-    /// place; the surface's own changes rebuild.
+    /// A change the shown strip's windows carry out in place stays in place; the surface's own
+    /// changes rebuild.
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         use ui::widget::StructureChange;
         let own = StructureChange::of(std::mem::take(&mut self.structure_dirty));
@@ -2842,8 +2825,8 @@ impl Widget for DesktopSurface {
         own.join(relayout).join(row)
     }
 
-    /// The shown strip lays out again in the nodes it keeps, under the gutter
-    /// the surface leaves below it.
+    /// The shown strip lays out again in the nodes it keeps, under the gutter the surface leaves
+    /// below it.
     fn remount_children(&mut self, remount: &mut ui::widget::Remount<'_>) -> bool {
         if !self
             .children_mut()
@@ -2868,8 +2851,8 @@ impl Widget for DesktopSurface {
 }
 
 impl DesktopSurface {
-    /// The arrival hints, the cards of apps that stopped answering, the
-    /// banners and the centre over everything the desk draws.
+    /// The arrival hints, the cards of apps that stopped answering, the banners and the centre over
+    /// everything the desk draws.
     fn draw_overlays(
         &mut self,
         scene: &mut Scene,

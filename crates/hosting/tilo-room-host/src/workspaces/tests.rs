@@ -2923,3 +2923,51 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
         "{refused}"
     );
 }
+
+/// A room names its own host among its hosts, as its governor, so a member
+/// reads where the room is served off the replica it already holds, and reads
+/// it once.
+#[tokio::test]
+async fn a_room_names_its_own_host_to_every_member() {
+    use std::time::Duration;
+    use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = tokio::time::timeout(Duration::from_secs(120), test_host(dir.path(), &key, &cert))
+        .await
+        .expect("the host opens");
+    let addr = relay.node_addr();
+    let workspaces = relay.workspaces();
+    let created = tokio::time::timeout(Duration::from_secs(120), workspaces.create("Demo"))
+        .await
+        .expect("the room is created")
+        .unwrap();
+    let governed = tokio::time::timeout(
+        Duration::from_secs(120),
+        workspaces.workspace(&created.workspace),
+    )
+    .await
+    .expect("the room opens")
+    .unwrap();
+    let hosts = {
+        let governed = governed.lock().await;
+        governed.peer().governance().workspace_hosts()
+    };
+    assert_eq!(hosts.len(), 1, "{hosts:?}");
+    assert_eq!(hosts[0].host.device_public_key, cert.device_public_key);
+    assert_eq!(
+        IrohWorkspaceHostHintV1::from_transport_hint(&hosts[0])
+            .unwrap()
+            .endpoint_addr,
+        addr
+    );
+    let served = tokio::time::timeout(
+        Duration::from_secs(120),
+        workspaces.hosts(&created.workspace),
+    )
+    .await
+    .expect("the room names its hosts")
+    .unwrap();
+    assert_eq!(served.len(), 1, "the governor is named once");
+    relay.shutdown().await;
+}

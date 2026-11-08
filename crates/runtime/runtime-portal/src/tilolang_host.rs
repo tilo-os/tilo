@@ -173,7 +173,7 @@ pub enum App {
     /// (`app.wasm`, `app.ids`, `imports/*.wasm`; [`Module`]).
     Module(Module),
     /// A native app: its package id, the name people call it, and the bytes of its signed
-    /// `surface.toml` (the session reads them with `tilo_installed_apps::signed_surfaces`).
+    /// `surface.toml` (the session reads them with `app_catalogue::apps::signed_surfaces`).
     Surface {
         app: String,
         title: String,
@@ -194,9 +194,6 @@ pub fn encode_apps(apps: &[App]) -> Vec<u8> {
 }
 
 /// The apps `bytes` hold.
-///
-/// # Errors
-/// The bytes are no list of apps.
 pub fn decode_apps(bytes: &[u8]) -> io::Result<Vec<App>> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "not a list of tilolang apps");
     let mut rest = bytes.strip_prefix(APPS_MAGIC).ok_or_else(invalid)?;
@@ -226,9 +223,6 @@ const MODULE_MAGIC: &[u8; 8] = b"tlmodul1";
 
 impl Module {
     /// The module of the package whose payload is `payload`.
-    ///
-    /// # Errors
-    /// The module is missing or a file cannot be read.
     pub fn read(payload: &std::path::Path) -> io::Result<Self> {
         let wasm = std::fs::read(payload.join("app.wasm"))?;
         let ids = match std::fs::read_to_string(payload.join("app.ids")) {
@@ -276,9 +270,6 @@ impl Module {
     }
 
     /// The module `bytes` hold.
-    ///
-    /// # Errors
-    /// The bytes are no module.
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         let invalid = || io::Error::new(io::ErrorKind::InvalidData, "not a tilolang module");
         let mut rest = bytes.strip_prefix(MODULE_MAGIC).ok_or_else(invalid)?;
@@ -332,9 +323,6 @@ impl App {
     }
 
     /// The app `bytes` hold.
-    ///
-    /// # Errors
-    /// The bytes are no app.
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         let invalid = || io::Error::new(io::ErrorKind::InvalidData, "not a tilolang app");
         let (tag, mut rest) = bytes.split_first().ok_or_else(invalid)?;
@@ -627,9 +615,6 @@ pub fn send_exiting(door: &Descriptor, reason: &str) -> io::Result<()> {
 
 /// The next thing the host behind the session's `door` says; `None` at end of file, when the
 /// host is gone.
-///
-/// # Errors
-/// The socket's error, or a message that is neither an ended instance nor an exit.
 pub fn receive_from_host(door: &Descriptor) -> io::Result<Option<FromHost>> {
     #[cfg(target_os = "linux")]
     {

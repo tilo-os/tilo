@@ -103,9 +103,6 @@ impl HubBrowser {
     /// entered on Hugging Face's page from any device. A worker waits for
     /// the person, asks `userinfo` who signed in and stores the sign-in
     /// through `control` where a pasted token goes.
-    ///
-    /// # Errors
-    /// Why it could not start, for the person.
     pub(crate) fn sign_in(
         &mut self,
         by_code: bool,

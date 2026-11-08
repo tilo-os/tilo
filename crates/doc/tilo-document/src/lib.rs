@@ -1162,9 +1162,6 @@ impl RichText {
     /// Start rich text under `root`: the shared schema and one empty
     /// paragraph to type in. The paragraph's id depends on nothing, so the
     /// genesis is the same on every device.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     pub fn initialize_under(doc: &mut Doc, root: &ObjId) -> Result<(), ModelError> {
         let c = model::init(doc, root);
         if model::blocks_in_order(doc, &c).is_empty() {

@@ -224,7 +224,8 @@ pub fn may_command(
         }
         DesktopCommand::ReorderGroup { group, .. }
         | DesktopCommand::MoveGroup { group, .. }
-        | DesktopCommand::PlaceGroup { group, .. } => workspace
+        | DesktopCommand::PlaceGroup { group, .. }
+        | DesktopCommand::FloatGroup { group, .. } => workspace
             .strips
             .iter()
             .flat_map(|strip| &strip.window_groups)

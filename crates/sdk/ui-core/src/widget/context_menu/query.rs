@@ -237,7 +237,7 @@ impl ContextMenu {
             return;
         }
         self.send_to.set_about(self.about.clone());
-        self.send_to.open(Some(&text));
+        self.send_to.open(Some(&text), &[]);
         self.send_to.place(self.rect, self.viewport);
         self.dirty = true;
     }

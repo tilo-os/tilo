@@ -17,7 +17,9 @@ tilo-innertube = { path = "../tilo-innertube", optional = true }
 rustypipe = { workspace = true, features = ["rustls-no-provider"], optional = true }
 # The app runtime rustypipe's connections live on, and its TLS provider.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
-tilo-net = { path = "../tilo-net", optional = true }
+# The device's network: YouTube's queries, and the pictures an answer names, fetched here
+# because the app's window never has one.
+tilo-net = { path = "../tilo-net", default-features = false, features = ["blocking"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true

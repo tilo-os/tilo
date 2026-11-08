@@ -1,4 +1,4 @@
-//! [`SegChoice`]: one choice of a few, over published actions.
+//! [`SegChoice`] — one choice of a few, over published actions.
 //!
 //! The toolkit's segmented control (`ui::ToggleGroup`) draws the choice,
 //! moves its focus and answers the arrow keys. The installer owns what is

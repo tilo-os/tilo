@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createDesktopNavigation} from './desktop-navigation.mjs';
+import {createDesktopNavigation,verb} from './desktop-navigation.mjs';
 
 test('exact identities, bounded publication and disposed verbs',async()=>{
  let raw={version:1,generation:'mount-1',active:{workspace:'18446744073709551615',strip:'2',group:'3',tab:'9007199254740993'},entries:[]},revision=1,calls=0;
@@ -104,6 +104,22 @@ test('retained activity and notification verbs preserve the runtime contract', a
  assert.deepEqual(sent.slice(0,3).map(verb=>verb.args.view),['catch-up','explore','replay']);
  assert.equal(sent[3].args.open,true);
  nav.close();
+});
+
+test('the verbs a script builds are the ones the runtime takes',async()=>{
+ const route={workspace:'1',strip:'2',group:'3',tab:'4'};
+ const raw={version:1,generation:'g',active:route,entries:[{route}]};
+ const sent=[];
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>1,dispatch:command=>sent.push(JSON.parse(command)),active:()=>true});
+ await nav.controller.dispatch(verb.openApp('so.tilo.notes'));
+ await nav.controller.dispatch(verb.focus(route));
+ await nav.controller.dispatch(verb.activity('1','explore'));
+ await nav.controller.dispatch(verb.closeActivity('1'));
+ const closing=nav.controller.dispatch(verb.closeTab(route));
+ assert.deepEqual(sent,[{effect:'open-app',args:{app:'so.tilo.notes'}},{effect:'focus',args:{tab:'4'}},
+  {effect:'activity',args:{workspace:'1',view:'explore'}},{effect:'close-activity',args:{workspace:'1'}},
+  {effect:'close-tab',args:{tab:'4'}}]);
+ nav.close();await assert.rejects(closing,/disposed/);
 });
 
 test('a snapshot read sees a move the surface made between reports',()=>{

@@ -112,17 +112,63 @@ pub fn apply(dir: &Path, props: &[Property]) -> Result<(), String> {
     Ok(())
 }
 
-/// The tier the app cgroup at `dir` is in, from its CPU weight.
+/// The tier the cgroup at `dir` is in, from its CPU weight.
 #[must_use]
 pub fn tier_of(dir: &Path) -> Option<Tier> {
     match read_u64(dir, "cpu.weight")? {
+        crate::priority::STARTUP_WEIGHT => Some(Tier::Startup),
+        crate::priority::SESSION_WEIGHT => Some(Tier::Session),
         crate::priority::FOREGROUND_WEIGHT => Some(Tier::Foreground),
         crate::priority::BACKGROUND_WEIGHT => Some(Tier::Background),
         _ => None,
     }
 }
 
-/// Put the app cgroup at `dir` in `tier`, writing the files a launch is born
+/// The cgroup directory the process `pid` runs in, whatever unit or scope
+/// made it: where a launch's own writes go when the host gave it no app scope
+/// (a session without a user manager runs the app in its own cgroup).
+#[must_use]
+pub fn cgroup_of_pid(pid: u32) -> Option<PathBuf> {
+    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    Some(fs_path(unified_path(&cgroup)?))
+}
+
+/// The cgroup directory this process runs in.
+#[must_use]
+pub fn own_cgroup() -> Option<PathBuf> {
+    cgroup_of_pid(std::process::id())
+}
+
+/// Put the cgroup this process runs in at [`Tier::Session`]: the compositor
+/// and the desk placing, drawing and answering a window are what a person
+/// waits on when they open something, so they answer before every app.
+///
+/// The image sets that weight on the compositor's logind scope before the
+/// session starts (`os/etc/systemd/system/session-.scope.d`); this is the same
+/// tier carried by the session itself, so a session a host started without
+/// those units, or one started from a terminal, is served the same way. A
+/// cgroup already weighted at or above the session tier is left as it is, so
+/// this never lowers what systemd set, nor a launch's own boost.
+///
+/// # Errors
+///
+/// The first failed write, as [`apply`].
+pub fn claim_session_weight() -> Result<(), String> {
+    match own_cgroup() {
+        Some(dir) => raise_session_weight(&dir),
+        None => Ok(()),
+    }
+}
+
+/// [`claim_session_weight`] for the cgroup at `dir`.
+fn raise_session_weight(dir: &Path) -> Result<(), String> {
+    if read_u64(dir, "cpu.weight").is_some_and(|weight| weight >= crate::priority::SESSION_WEIGHT) {
+        return Ok(());
+    }
+    set_tier(dir, Tier::Session, None)
+}
+
+/// Put the cgroup at `dir` in `tier`, writing the files a launch is born
 /// with ([`crate::priority::tier_properties`] through [`apply`]).
 ///
 /// # Errors
@@ -136,10 +182,6 @@ pub fn set_tier(dir: &Path, tier: Tier, total: Option<u64>) -> Result<(), String
 /// the kernel then ends everything in it together when it picks any of it.
 /// A cgroup without the memory controller has no such file and nothing to
 /// set.
-///
-/// # Errors
-///
-/// The kernel's refusal.
 pub fn set_oom_group(dir: &Path, on: bool) -> io::Result<()> {
     let path = dir.join("memory.oom.group");
     if !path.exists() {
@@ -196,10 +238,6 @@ pub fn footprint(dir: &Path) -> Option<u64> {
 
 /// Ask the kernel to reclaim `bytes` from the cgroup at `dir` now. It may
 /// reclaim less (`EAGAIN`); what it got is still freed.
-///
-/// # Errors
-///
-/// The kernel's refusal other than falling short.
 pub fn reclaim(dir: &Path, bytes: u64) -> io::Result<()> {
     match std::fs::write(dir.join("memory.reclaim"), bytes.to_string()) {
         Err(error) if error.raw_os_error() == Some(libc::EAGAIN) => Ok(()),
@@ -295,10 +333,6 @@ pub fn processes(dir: &Path) -> Vec<u32> {
 
 /// End every process in the app cgroup at `dir` at once, those that left
 /// its process tree (`setsid`, a double fork) included.
-///
-/// # Errors
-///
-/// The kernel's refusal.
 pub fn kill(dir: &Path) -> io::Result<()> {
     std::fs::write(dir.join("cgroup.kill"), "1")
 }
@@ -315,7 +349,8 @@ pub struct Stats {
     pub memory_low: Option<u64>,
     /// CPU time used, in microseconds.
     pub cpu_usec: Option<u64>,
-    /// Its CPU weight: 800 in the foreground tier, 50 in the background.
+    /// Its CPU weight: 10 000 while it opens, 1 000 for the session, 800 in
+    /// the foreground tier, 50 in the background.
     pub cpu_weight: Option<u64>,
     /// Processes in it the kernel killed for memory.
     pub oom_kills: Option<u64>,
@@ -596,6 +631,32 @@ mod tests {
         assert_eq!(memory_events(app.path()).oom_kill, 0);
         std::fs::write(app.path().join("cgroup.procs"), "10\n11\n").unwrap();
         assert_eq!(processes(app.path()), [10, 11]);
+    }
+
+    #[test]
+    fn the_session_raises_its_cgroups_weight_and_never_lowers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["cpu.weight", "io.weight", "io.bfq.weight"] {
+            std::fs::write(dir.path().join(file), "").unwrap();
+        }
+        std::fs::write(dir.path().join("cpu.weight"), "100").unwrap();
+        raise_session_weight(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("cpu.weight")).unwrap(),
+            "1000",
+            "a cgroup nothing weighted carries the session's own weight"
+        );
+        assert_eq!(tier_of(dir.path()), Some(Tier::Session));
+        // What the image's units already set is left as it is, and a launch
+        // that boosted its cgroup is never lowered by the session.
+        for weight in ["1000", "10000"] {
+            std::fs::write(dir.path().join("cpu.weight"), weight).unwrap();
+            raise_session_weight(dir.path()).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("cpu.weight")).unwrap(),
+                weight
+            );
+        }
     }
 
     #[test]

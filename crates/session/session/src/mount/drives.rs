@@ -1,20 +1,15 @@
-//! The drives a person plugs in: removable media are announced with what they
-//! hold, and the notice opens or ejects them.
-//!
-//! udisks2 owns the machine's block devices. Its object manager says when one
-//! appears or goes, and its properties say which are media a person carries:
-//! a block device on a drive that reports itself removable, holding a
-//! filesystem. The machine's own disks are not announced, and neither is a
-//! medium udisks could not mount.
-//!
-//! An announcement is an ordinary notice ([`crate::notices`]) naming the
-//! medium and how much it holds, offering to open it in Files on its mount
-//! point and to eject it. Both run here, on the session's pass, when the
-//! person acts on the notification: Files is a launch like any other, and an
-//! eject is the unmount and power-off udisks is asked for.
-//!
-//! Nothing polls: one `GetManagedObjects` reads what is attached when the
-//! session starts, and the object manager's signals carry what changes after.
+//! The drives a person plugs in: removable media are announced with what they hold, and the notice
+//! opens or ejects them.
+//! udisks2 owns the machine's block devices. Its object manager says when one appears or goes, and
+//! its properties say which are media a person carries: a block device on a drive that reports
+//! itself removable, holding a filesystem. The machine's own disks are not announced, and neither
+//! is a medium udisks could not mount.
+//! An announcement is an ordinary notice ([`crate::notices`]) naming the medium and how much it
+//! holds, offering to open it in Files on its mount point and to eject it. Both run here, on the
+//! session's pass, when the person acts on the notification: Files is a launch like any other, and
+//! an eject is the unmount and power-off udisks is asked for.
+//! Nothing polls: one `GetManagedObjects` reads what is attached when the session starts, and the
+//! object manager's signals carry what changes after.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -46,31 +41,31 @@ pub trait Media {
     /// The media that appeared since the last call, oldest first.
     fn appeared(&self) -> Vec<Medium>;
 
-    /// Eject `medium`: take it off the machine's filesystem tree and power
-    /// its drive down, so it can be pulled out.
+    /// Eject `medium` : take it off the machine's filesystem tree and power its drive down, so it
+    /// can be pulled out.
     fn eject(&self, medium: &Medium);
 }
 
-/// The removable media this session announces, and what the person asked of
-/// their notices: called once per pass of the session's loop.
+/// The removable media this session announces, and what the person asked of their notices: called
+/// once per pass of the session's loop.
 pub struct Drives {
     media: std::rc::Rc<dyn Media>,
     notifications: Notifications,
     /// The medium each live notice is about, by notification id.
     told: RefCell<BTreeMap<u32, Medium>>,
-    /// The media attached, as they appeared: what an app's drive list is
-    /// served from, whether or not the person kept its notice.
+    /// The media attached, as they appeared: what an app's drive list is served from, whether or
+    /// not the person kept its notice.
     attached: RefCell<Vec<Medium>>,
-    /// The notification the person acted on and how, from the service's
-    /// taps, which run wherever it publishes.
+    /// The notification the person acted on and how, from the service's taps, which run wherever it
+    /// publishes.
     asked: Receiver<(u32, String)>,
     /// The media the person asked to open, which Files starts on this pass.
     opening: RefCell<Vec<Medium>>,
 }
 
 impl Drives {
-    /// Announce what `media` reports, through `notifications`, which the
-    /// person's answers come back through.
+    /// Announce what `media` reports, through `notifications` , which the person's answers come
+    /// back through.
     #[must_use]
     pub fn new(media: std::rc::Rc<dyn Media>, notifications: Notifications) -> Self {
         let (asked, actions) = mpsc::channel();
@@ -89,9 +84,9 @@ impl Drives {
         }
     }
 
-    /// Announce the media that appeared since the last pass, and carry out
-    /// what the person asked of a notice: open it in `apps`' Files, or eject
-    /// it. Called once per pass of the session's loop.
+    /// Announce the media that appeared since the last pass, and carry out what the person asked of
+    /// a notice: open it in `apps` ' Files, or eject it. Called once per pass of the session's
+    /// loop.
     pub fn follow(&self, apps: Option<&Apps>) {
         for medium in self.media.appeared() {
             let id = notices::announce_medium(&self.notifications, &medium);
@@ -102,8 +97,8 @@ impl Drives {
         self.forget_closed_notices();
     }
 
-    /// The media attached now: the ones that appeared, less those whose
-    /// mount is gone, which is a medium the person pulled out.
+    /// The media attached now: the ones that appeared, less those whose mount is gone, which is a
+    /// medium the person pulled out.
     #[must_use]
     pub fn live(&self) -> Vec<Medium> {
         let mut attached = self.attached.borrow_mut();
@@ -111,8 +106,8 @@ impl Drives {
         attached.clone()
     }
 
-    /// What the person asked of a notice: the eject goes to the media, and
-    /// the open waits for the pass that starts Files.
+    /// What the person asked of a notice: the eject goes to the media, and the open waits for the
+    /// pass that starts Files.
     fn act_on_notices(&self, apps: Option<&Apps>) {
         let asked: Vec<(u32, String)> = self.asked.try_iter().collect();
         for (id, key) in asked {
@@ -161,9 +156,8 @@ impl Drives {
     }
 }
 
-/// Files opening `mount`, which is where a medium the person plugged in is:
-/// the folder is what they want to see, so it is opened by the app that
-/// shows folders rather than routed by its type.
+/// Files opening `mount` , which is where a medium the person plugged in is: the folder is what
+/// they want to see, so it is opened by the app that shows folders rather than routed by its type.
 pub(crate) fn files_on(mount: &std::path::Path) -> Launch {
     Launch::Package {
         app: tilo_desktop_model::app::AppKind::FileExplorer.app_id(),
@@ -171,11 +165,9 @@ pub(crate) fn files_on(mount: &std::path::Path) -> Launch {
     }
 }
 
-/// The media udisks reports on `connection`: the session's own system bus
-/// connection, which the desktop services already hold.
-///
-/// The follower runs on a thread of its own, so the session's loop never
-/// waits on the bus.
+/// The media udisks reports on `connection` : the session's own system bus connection, which the
+/// desktop services already hold.
+/// The follower runs on a thread of its own, so the session's loop never waits on the bus.
 #[must_use]
 pub fn udisks(connection: zbus::Connection, wake: tilo_service::Wake) -> std::rc::Rc<dyn Media> {
     let (appearing, fresh) = mpsc::channel();
@@ -201,8 +193,7 @@ pub fn udisks(connection: zbus::Connection, wake: tilo_service::Wake) -> std::rc
     std::rc::Rc::new(Udisks { fresh, ejections })
 }
 
-/// The udisks side of [`Media`]: what its follower thread reported, and what
-/// it is asked to eject.
+/// The udisks side of [`Media`]: what its follower thread reported, and what it is asked to eject.
 struct Udisks {
     fresh: Receiver<Medium>,
     ejections: tokio::sync::mpsc::UnboundedSender<Medium>,
@@ -224,23 +215,23 @@ impl Media for Udisks {
     }
 }
 
-/// The object manager at `UDisks2`'s root, which knows every block device.
+/// The object manager at `UDisks2` 's root, which knows every block device.
 const OBJECT_MANAGER: &str = "/org/freedesktop/UDisks2";
 /// The object manager interface, whose signals are what changes.
 const MANAGER_IFACE: &str = "org.freedesktop.DBus.ObjectManager";
-/// Signals buffered per stream before the oldest is dropped: a dropped
-/// `InterfacesAdded` loses a drive's notice, so the buffer is wide.
+/// Signals buffered per stream before the oldest is dropped: a dropped `InterfacesAdded` loses a
+/// drive's notice, so the buffer is wide.
 const SIGNAL_QUEUE: usize = 64;
 
 /// An interface's properties.
 type Properties = HashMap<String, zbus::zvariant::OwnedValue>;
 
-/// What udisks knows of the block devices, `a{oa{sa{sv}}}`: an object's
-/// interfaces, each with its properties.
+/// What udisks knows of the block devices, `a{oa{sa{sv}}}` : an object's interfaces, each with its
+/// properties.
 type ManagedObjects = HashMap<zbus::zvariant::OwnedObjectPath, HashMap<String, Properties>>;
 
-/// Announce the media udisks reports on `connection` as they appear, until
-/// the bus or the loop goes away; eject what the session asks it to.
+/// Announce the media udisks reports on `connection` as they appear, until the bus or the loop goes
+/// away; eject what the session asks it to.
 async fn follow(
     connection: zbus::Connection,
     appearing: Sender<Medium>,
@@ -255,10 +246,9 @@ async fn follow(
         tracing::warn!("removable drives are not watched");
         return;
     };
-    // What is attached now, read once: a medium plugged in while the session
-    // started is announced like one plugged in after. Subscribed first, so a
-    // medium that arrives during the read is seen either way; `seen` keeps
-    // the sweep and the signal from telling twice.
+    // What is attached now, read once: a medium plugged in while the session started is announced
+    // like one plugged in after. Subscribed first, so a medium that arrives during the read is seen
+    // either way; `seen` keeps the sweep and the signal from telling twice.
     let mut seen = BTreeMap::new();
     for device in attached(&connection).await {
         announce(&connection, &device, &mut seen, &appearing, &wake).await;
@@ -268,9 +258,8 @@ async fn follow(
             signal = added.next() => match signal {
                 Some(Ok(message)) => {
                     if let Some((device, interfaces)) = added_at(&message) {
-                        // A filesystem or a drive appearing changes what a
-                        // block device is; its `Block` alone is a partition
-                        // the kernel read, which is nothing to carry.
+                        // A filesystem or a drive appearing changes what a block device is; its
+                        // `Block` alone is a partition the kernel read, which is nothing to carry.
                         if interfaces.iter().any(|name| {
                             name == block_devices::udisks::IFACE_FILESYSTEM
                                 || name == block_devices::udisks::IFACE_DRIVE
@@ -297,7 +286,7 @@ async fn follow(
     }
 }
 
-/// A stream of `member`'s signals from udisks.
+/// A stream of `member` 's signals from udisks.
 async fn signal(connection: &zbus::Connection, member: &str) -> zbus::Result<zbus::MessageStream> {
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
@@ -365,8 +354,8 @@ fn removed_at(message: &zbus::Message) -> Option<String> {
     Some(device.to_string())
 }
 
-/// Announce the medium on `device` when it is one a person plugged in and it
-/// has not been announced before; `seen` is what has.
+/// Announce the medium on `device` when it is one a person plugged in and it has not been announced
+/// before; `seen` is what has.
 async fn announce(
     connection: &zbus::Connection,
     device: &str,
@@ -387,8 +376,8 @@ async fn announce(
     seen.insert(device.to_owned(), medium);
 }
 
-/// The medium on `device`, when it is removable and mounted, mounting it
-/// first when udisks holds a filesystem nobody mounted yet.
+/// The medium on `device` , when it is removable and mounted, mounting it first when udisks holds a
+/// filesystem nobody mounted yet.
 async fn medium_of(connection: &zbus::Connection, device: &str) -> Option<Medium> {
     use block_devices::udisks::{IFACE_BLOCK, IFACE_DRIVE, IFACE_FILESYSTEM, SERVICE};
 
@@ -448,8 +437,7 @@ async fn mount_now(filesystem: &zbus::Proxy<'_>) -> Option<PathBuf> {
     Some(PathBuf::from(mounted))
 }
 
-/// Take `medium` off the filesystem tree and power its drive down, so it can
-/// be pulled out.
+/// Take `medium` off the filesystem tree and power its drive down, so it can be pulled out.
 async fn eject(connection: &zbus::Connection, medium: &Medium) {
     use block_devices::udisks::{IFACE_BLOCK, IFACE_DRIVE, IFACE_FILESYSTEM, SERVICE};
 

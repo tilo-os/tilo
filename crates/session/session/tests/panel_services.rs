@@ -1,12 +1,9 @@
-//! A panel the session starts is an ordinary app: it reaches what the
-//! session's services publish the way Settings does, as the launch the session
-//! recorded for it.
-//!
-//! These start a surface app through the session's own surface machinery — the
-//! same call that starts Quick Settings and the top bar — and let it read and
-//! change the sound service's `sound` resource. It is admitted only because the
-//! session started it: a process of the same app that the session did not start
-//! reaches nothing.
+//! A panel the session starts is an ordinary app: it reaches what the session's services publish
+//! the way Settings does, as the launch the session recorded for it.
+//! These start a surface app through the session's own surface machinery — the same call that
+//! starts Quick Settings and the top bar — and let it read and change the sound service's `sound`
+//! resource. It is admitted only because the session started it: a process of the same app that the
+//! session did not start reaches nothing.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -20,98 +17,42 @@
               lives until the app it starts is done"
 )]
 
+mod common;
+
+use common::audio::Card;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use media::audio::{AudioDevice, AudioGraph, GraphControl};
+use media::audio::{AudioDevice, AudioGraph};
 use serde_json::{Value, json};
-use tilo_audio_service::sound::{Graph, Read, SoundService};
+use tilo_audio_service::sound::{Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_service::LoopWake;
 use tilo_session::surfaces::Surface;
 use tilo_session::{ActionPlane, Options, Service, Session};
 use tilo_test_env::ScopedEnv;
 
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
-
-/// A sound card in memory: one output at 40%.
-struct Card {
-    graph: Mutex<AudioGraph>,
-}
-
-impl Graph for Card {
-    fn read(&self) -> Read {
-        Read {
-            graph: self.graph.lock().unwrap().clone(),
-            uses: Vec::new(),
-        }
-    }
-
-    fn control(&self) -> &dyn GraphControl {
-        self
-    }
-}
-
-impl GraphControl for Card {
-    fn set_default_sink(&self, node_id: u32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            sink.is_default = sink.id == node_id;
-        }
-        Ok(())
-    }
-
-    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            if sink.id == node_id {
-                sink.volume = Some(perceptual);
-            }
-        }
-        Ok(())
-    }
-
-    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 /// The sound service over the card in memory, as the session hosts it.
 fn sound(wake: &LoopWake) -> Vec<Box<dyn Service>> {
-    let card: Arc<dyn Graph> = Arc::new(Card {
-        graph: Mutex::new(AudioGraph {
-            sinks: vec![AudioDevice {
-                id: 40,
-                serial: 40,
-                name: "node-40".into(),
-                description: "Speakers".into(),
-                is_default: true,
-                volume: Some(0.4),
-                muted: Some(false),
-                channels: 2,
-                codec: None,
-            }],
-            ..AudioGraph::default()
-        }),
-    });
+    let card: Arc<dyn Graph> = Arc::new(Card::new(AudioGraph {
+        sinks: vec![AudioDevice {
+            id: 40,
+            serial: 40,
+            name: "node-40".into(),
+            description: "Speakers".into(),
+            is_default: true,
+            volume: Some(0.4),
+            muted: Some(false),
+            channels: 2,
+            codec: None,
+        }],
+        ..AudioGraph::default()
+    }));
     let sound = SoundService::new(card, Some(wake.handle())).expect("a sound service");
     vec![Box::new(sound)]
 }
@@ -121,25 +62,14 @@ fn panel_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
-}
-
-/// The session the panel talks to: headless, hosting the sound service, with
-/// its plane on `socket` and the panel started the way it starts Quick
-/// Settings.
+/// The session the panel talks to: headless, hosting the sound service, with its plane on `socket`
+/// and the panel started the way it starts Quick Settings.
 fn session_with_panel(socket: &Path) -> Session {
     let wake = LoopWake::default();
     let services: Vec<Box<dyn Service>> = sound(&wake);
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
@@ -147,31 +77,26 @@ fn session_with_panel(socket: &Path) -> Session {
             surfaces: vec![Surface::new("probe", panel_binary())],
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
 /// A session with the sound service and its plane, starting no panel.
 fn session_alone(socket: &Path) -> Session {
     let wake = LoopWake::default();
     let services: Vec<Box<dyn Service>> = sound(&wake);
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
             action_plane: ActionPlane::At(socket.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
-/// The session's turns until the panel has reported, as the session runs its
-/// loop.
+/// The session's turns until the panel has reported, as the session runs its loop.
 fn until_reported(session: &mut Session, report: &Path) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -188,7 +113,7 @@ fn until_reported(session: &mut Session, report: &Path) -> String {
     }
 }
 
-/// The reading named on the line that starts with `prefix`.
+/// The reading named on the line that starts with `prefix` .
 fn reading(report: &str, prefix: &str) -> Value {
     let line = report
         .lines()
@@ -199,12 +124,12 @@ fn reading(report: &str, prefix: &str) -> Value {
 
 #[test]
 fn a_panel_the_session_starts_reads_and_changes_what_its_services_publish() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();
-    // What the panel is to read and change, beside what the session writes on
-    // its environment when it starts it.
+    // What the panel is to read and change, beside what the session writes on its environment when
+    // it starts it.
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", "sound");
     environment.set("SURFACE_PROBE_ACTION", "set-volume");
@@ -236,14 +161,13 @@ fn a_panel_the_session_starts_reads_and_changes_what_its_services_publish() {
 
 #[test]
 fn a_process_the_session_did_not_start_reaches_no_service() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut session = session_alone(&socket);
 
-    // The same panel binary, by the same app id, in the same workspace, on the
-    // same socket — started by anyone but the session, so no launch of the
-    // session's names its process.
+    // The same panel binary, by the same app id, in the same workspace, on the same socket —
+    // started by anyone but the session, so no launch of the session's names its process.
     let launched_in = session
         .handle()
         .read(|tree| {

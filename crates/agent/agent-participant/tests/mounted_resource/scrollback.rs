@@ -11,6 +11,7 @@
 
 use super::super::{Browser, CatalogueQuery, DeviceCapabilities, Duration, Path, Replica, Seed};
 use super::super::{common, enrol, record_provider, start_browser};
+use tilo_agent_participant::ReplicaActor;
 use tilo_peer_state::join::MemberRole;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -95,12 +96,11 @@ pub async fn run(bundle: &str) {
     let mut native = Browser::open_workspace(&hosted, &writer, &host, &workspace.workspace).await;
 
     let author = "Fixture owner".to_string();
-    let mut source = Replica::open(
-        &common::catalogue(),
-        "so.tilo.chat",
+    let mut source = common::open_in(
         &workspace.workspace,
+        "so.tilo.chat",
         &author,
-        tilo_agent_participant::ReplicaActor::Owner,
+        ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();

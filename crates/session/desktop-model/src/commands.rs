@@ -30,8 +30,6 @@ pub use policy::{Refusal, Standing, may_command, may_create_workspace};
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
 pub const ACTION: &str = "command";
-/// Resource prefix of the per-application open action (`desktop:app:<app>`).
-pub const OPEN_APP_RESOURCE_PREFIX: &str = "desktop:app:";
 /// Action id of the per-application open action.
 pub const OPEN_APP_ACTION: &str = "open";
 
@@ -42,11 +40,7 @@ pub mod layout {
     pub const PROVIDER: &str = "tilo.desktop";
     /// Open a resource, content or web address in a new window.
     pub const OPEN: &str = "open";
-    pub const CREATE_STRIP: &str = "create-strip";
-    pub const RENAME_STRIP: &str = "rename-strip";
-    pub const MOVE_GROUP: &str = "move-group";
     pub const ARRANGE: &str = "arrange";
-    pub const LIST_WINDOWS: &str = "list-windows";
     /// Take a run of layout changes back (`{"run": …}`), as every
     /// history's `undo` does.
     pub const UNDO: &str = "undo";
@@ -252,6 +246,14 @@ pub enum DesktopCommand {
     /// Appended last: existing encodings are unchanged.
     ReopenClosed {
         strip: Option<u64>,
+    },
+    /// Float window group `group` above the workspace's windows at `float`,
+    /// or with `None` snap it back among them. Everyone in the workspace
+    /// sees it there; the group stays in its strip, so snapping back puts it
+    /// where it was. Appended last: existing encodings are unchanged.
+    FloatGroup {
+        group: u64,
+        float: Option<crate::arrangement::FloatPlace>,
     },
 }
 
@@ -931,11 +933,17 @@ pub fn apply_command(
             };
         }
         DesktopCommand::PlaceGroup { group, place } => place_group(workspace, *group, *place)?,
+        DesktopCommand::FloatGroup { group, float } => float_group(workspace, *group, *float)?,
     }
     free_closed_places(workspace);
+    let Workspace {
+        strips,
+        arrangement,
+        ..
+    } = workspace;
+    arrangement.place_missing(strips);
     Ok(())
 }
-
 /// Open `app` into the workspace as `placement` says, under ids `mint` gives
 /// and a title `create` makes the window with.
 fn open_tab(
@@ -964,7 +972,7 @@ fn open_tab(
 }
 
 /// A window closed or moved out of the workspace leaves its canvas place
-/// free.
+/// free, and is no longer floating.
 fn free_closed_places(workspace: &mut Workspace) {
     let live: std::collections::HashSet<u64> = workspace
         .strips
@@ -1003,6 +1011,34 @@ fn place_group(
         return Err("a window on the canvas needs a size it can be shown at".into());
     }
     workspace.arrangement.places.insert(group, place);
+    Ok(())
+}
+
+/// Float `group` at `float`, or snap it back among its strip's windows.
+fn float_group(
+    workspace: &mut Workspace,
+    group: u64,
+    float: Option<crate::arrangement::FloatPlace>,
+) -> Result<(), String> {
+    if !workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .any(|candidate| candidate.id == group)
+    {
+        return Err("that window is not in this workspace".into());
+    }
+    if let Some(float) = float
+        && (float.width == 0
+            || float.height == 0
+            || float.width > MAX_CANVAS_SIDE
+            || float.height > MAX_CANVAS_SIDE
+            || float.dx < 0
+            || float.dy < 0)
+    {
+        return Err("a floating window needs a size and an offset it can be shown at".into());
+    }
+    workspace.arrangement.set_float(group, float);
     Ok(())
 }
 
@@ -1136,6 +1172,16 @@ pub fn move_tab_to_workspace(
     .ok_or("the window could not be moved")?;
     tree.active_strip.insert(to, strip);
     tree.set_active_group(strip, group);
+    // The window's canvas place went with the strip it left, and the workspace it lands in
+    // draws its windows by their places: it takes one there as any other window does.
+    if let Some(destination) = tree.workspaces.iter_mut().find(|held| held.slot == to) {
+        let Workspace {
+            strips,
+            arrangement,
+            ..
+        } = destination;
+        arrangement.place_missing(strips);
+    }
     Ok(())
 }
 

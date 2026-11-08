@@ -8,6 +8,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 
 use super::*;
+use std::sync::atomic::Ordering;
 
 fn row(id: &str) -> CatalogueRow {
     CatalogueRow {
@@ -82,10 +83,7 @@ impl ActionHost for FakeHost {
     }
 
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let running = self
-            .observed
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            < RUNNING_LOOKS;
+        let running = self.observed.fetch_add(1, Ordering::SeqCst) < RUNNING_LOOKS;
         Some(InvocationState::new(
             *id,
             if running {
@@ -111,6 +109,34 @@ impl ActionHost for FakeHost {
 /// How often `slow` is seen still running: once by the host's own look when
 /// the invoke asks to wait, once by the client's first waiting observe.
 const RUNNING_LOOKS: usize = 2;
+
+/// The one catalogue request `actions` has sent since its last take: the page it asks for.
+fn catalogue_query(actions: &mut RemoteActions, what: &str) -> CatalogueQuery {
+    let requests = actions.take_collab_requests();
+    let [
+        CollabRequest::RemoteAction {
+            message: RemoteActionMessage::CatalogueRequest { query, .. },
+        },
+    ] = requests.as_slice()
+    else {
+        panic!("{what}: {requests:?}")
+    };
+    query.clone()
+}
+
+/// The correlation the one catalogue request `actions` has sent answers by.
+fn catalogue_correlation(actions: &mut RemoteActions, what: &str) -> u64 {
+    let requests = actions.take_collab_requests();
+    let [
+        CollabRequest::RemoteAction {
+            message: RemoteActionMessage::CatalogueRequest { correlation, .. },
+        },
+    ] = requests.as_slice()
+    else {
+        panic!("{what}: {requests:?}")
+    };
+    *correlation
+}
 
 fn client() -> (Arc<FakeHost>, RemoteActions) {
     let host = Arc::new(FakeHost::default());
@@ -156,18 +182,10 @@ fn incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers() {
     for (exhausted, next_cursor) in [(false, Vec::new()), (true, vec![1])] {
         let mut actions = RemoteActions::session();
         let answer = actions.catalogue(CatalogueQuery::default());
-        let requests = actions.take_collab_requests();
-        let [
-            CollabRequest::RemoteAction {
-                message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-            },
-        ] = requests.as_slice()
-        else {
-            panic!("first catalogue request");
-        };
+        let correlation = catalogue_correlation(&mut actions, "first catalogue request");
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::CatalogueResponse {
-                correlation: *correlation,
+                correlation,
                 result: Ok(CataloguePage {
                     revision: "r1".into(),
                     rows: vec![row("partial-offer")],
@@ -213,15 +231,7 @@ fn a_provider_only_catalogue_request_keeps_the_wire_zero() {
         max_results: 0,
         ..CatalogueQuery::default()
     });
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::CatalogueRequest { query, .. },
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("one provider-only catalogue request")
-    };
+    let query = catalogue_query(&mut actions, "one provider-only catalogue request");
     assert_eq!(query.max_results, 0);
     assert!(query.provider.is_none());
 }
@@ -230,18 +240,10 @@ fn a_provider_only_catalogue_request_keeps_the_wire_zero() {
 fn a_repeated_catalogue_cursor_is_refused_without_another_request() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("first catalogue request")
-    };
+    let correlation = catalogue_correlation(&mut actions, "first catalogue request");
     actions.handle_collab_event(&CollabEvent::RemoteAction {
         message: RemoteActionMessage::CatalogueResponse {
-            correlation: *correlation,
+            correlation,
             result: Ok(CataloguePage {
                 revision: "r1".into(),
                 rows: vec![row("a")],
@@ -250,18 +252,10 @@ fn a_repeated_catalogue_cursor_is_refused_without_another_request() {
             }),
         },
     });
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("second catalogue request")
-    };
+    let correlation = catalogue_correlation(&mut actions, "second catalogue request");
     actions.handle_collab_event(&CollabEvent::RemoteAction {
         message: RemoteActionMessage::CatalogueResponse {
-            correlation: *correlation,
+            correlation,
             result: Ok(CataloguePage {
                 revision: "r1".into(),
                 rows: vec![row("b")],
@@ -283,18 +277,10 @@ fn a_catalogue_walk_has_a_total_page_bound() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());
     for page in 0..MAX_CATALOGUE_PAGES {
-        let requests = actions.take_collab_requests();
-        let [
-            CollabRequest::RemoteAction {
-                message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-            },
-        ] = requests.as_slice()
-        else {
-            panic!("catalogue request for page {page}")
-        };
+        let correlation = catalogue_correlation(&mut actions, "catalogue request for a page");
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::CatalogueResponse {
-                correlation: *correlation,
+                correlation,
                 result: Ok(CataloguePage {
                     revision: "r1".into(),
                     rows: vec![row(&format!("row-{page}"))],
@@ -317,18 +303,10 @@ fn stale_catalogue_restarts_share_the_global_page_bound() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());
     for page in 0..MAX_CATALOGUE_PAGES {
-        let requests = actions.take_collab_requests();
-        let [
-            CollabRequest::RemoteAction {
-                message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-            },
-        ] = requests.as_slice()
-        else {
-            panic!("catalogue request for stale page {page}")
-        };
+        let correlation = catalogue_correlation(&mut actions, "catalogue request for a stale page");
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::CatalogueResponse {
-                correlation: *correlation,
+                correlation,
                 result: Ok(CataloguePage {
                     revision: format!("r{page}"),
                     stale_cursor: true,
@@ -349,18 +327,10 @@ fn stale_catalogue_restarts_share_the_global_page_bound() {
 fn an_unannounced_catalogue_revision_change_is_refused() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("first catalogue request")
-    };
+    let correlation = catalogue_correlation(&mut actions, "first catalogue request");
     actions.handle_collab_event(&CollabEvent::RemoteAction {
         message: RemoteActionMessage::CatalogueResponse {
-            correlation: *correlation,
+            correlation,
             result: Ok(CataloguePage {
                 revision: "r1".into(),
                 next_cursor: vec![1],
@@ -368,18 +338,10 @@ fn an_unannounced_catalogue_revision_change_is_refused() {
             }),
         },
     });
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("second catalogue request")
-    };
+    let correlation = catalogue_correlation(&mut actions, "second catalogue request");
     actions.handle_collab_event(&CollabEvent::RemoteAction {
         message: RemoteActionMessage::CatalogueResponse {
-            correlation: *correlation,
+            correlation,
             result: Ok(CataloguePage {
                 revision: "r2".into(),
                 exhausted: true,
@@ -398,18 +360,10 @@ fn an_unannounced_catalogue_revision_change_is_refused() {
 fn an_incomplete_catalogue_budget_response_is_never_reported_as_complete() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("catalogue request")
-    };
+    let correlation = catalogue_correlation(&mut actions, "catalogue request");
     actions.handle_collab_event(&CollabEvent::RemoteAction {
         message: RemoteActionMessage::CatalogueResponse {
-            correlation: *correlation,
+            correlation,
             result: Ok(CataloguePage {
                 revision: "r1".into(),
                 rows: vec![row("partial")],
@@ -519,15 +473,7 @@ fn an_unanswered_catalogue_read_is_refused_after_its_wait() {
 fn the_session_transport_carries_requests_out_and_answers_back() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());
-    let requests = actions.take_collab_requests();
-    let [
-        CollabRequest::RemoteAction {
-            message: RemoteActionMessage::CatalogueRequest { correlation, .. },
-        },
-    ] = requests.as_slice()
-    else {
-        panic!("one catalogue request: {requests:?}");
-    };
+    let correlation = catalogue_correlation(&mut actions, "one catalogue request");
     assert!(actions.take_collab_requests().is_empty(), "sent once");
     // An answer for someone else's request is not ours.
     actions.handle_collab_event(&CollabEvent::RemoteAction {
@@ -539,7 +485,7 @@ fn the_session_transport_carries_requests_out_and_answers_back() {
     assert!(answer.get().is_pending());
     actions.handle_collab_event(&CollabEvent::RemoteAction {
         message: RemoteActionMessage::CatalogueResponse {
-            correlation: *correlation,
+            correlation,
             result: Err(ActionHostError::NotPermitted),
         },
     });

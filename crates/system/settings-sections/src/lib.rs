@@ -7,6 +7,7 @@
 //! of them.
 
 pub mod accessibility;
+pub mod agent_door;
 pub mod continuity;
 pub mod desktop;
 pub mod device_vpn;
@@ -99,6 +100,7 @@ sections!(
     device_vpn::DeviceVpnPrefs,
     identity::IdentityPrefs,
     network_usage::NetworkUsage,
+    agent_door::AgentDoorDevice,
 );
 
 #[cfg(test)]

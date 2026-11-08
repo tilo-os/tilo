@@ -37,10 +37,6 @@ mod without_runner {
     use ui_core::launch::{LaunchError, LaunchSpec};
 
     /// Built without the `native` feature: there is no runner to start.
-    ///
-    /// # Errors
-    ///
-    /// Always.
     pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
         Err(LaunchError::Operation(format!(
             "{} was built without a runner (enable `tilo-app/native`)",

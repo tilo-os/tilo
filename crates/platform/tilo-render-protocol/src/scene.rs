@@ -43,17 +43,9 @@ use crate::{FontId, ImageId, WireError};
 /// image goes by on this connection, registering it on first sight.
 pub trait ResourceIds {
     /// The id `font` is registered under.
-    ///
-    /// # Errors
-    ///
-    /// When the font cannot be registered (a limit, a failed upload).
     fn font(&mut self, font: &FontData) -> Result<FontId, WireError>;
 
     /// The id `image` is registered under.
-    ///
-    /// # Errors
-    ///
-    /// When the image cannot be registered.
     fn image(&mut self, image: &ImageData) -> Result<ImageId, WireError>;
 }
 

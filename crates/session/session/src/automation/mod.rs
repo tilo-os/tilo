@@ -1,31 +1,14 @@
-//! The shortcuts a person saved, started without anyone invoking them.
-//!
-//! A shortcut is saved in a workspace ([`tilo_automation::Shortcut`]) with
-//! the triggers that start it. This module follows those triggers on the
-//! device and starts a run for each firing through the action broker
-//! ([`tilo_action_broker::collab_broker::AppActionBroker::start_triggered_shortcut_run`]),
-//! which checks again that the shortcut still exists and that its saver may
-//! still run it. A run started here is the same run a person's press or an
-//! agent's invocation starts, with the same checks.
-//!
-//! What it follows, each from where the session already reads it:
-//!
-//! - a record change, from the record documents of this device's workspaces,
-//!   read on a worker that a tree watch wakes ([`records`]);
-//! - the passing of time, a workspace being joined and an application
-//!   starting, from the desk the session shows and the launches it made;
-//! - the focus modes a shortcut can answer, from the person's notification
-//!   policy, which the settings watch keeps current;
-//! - a file changing in a folder a shortcut's capability shares, from the
-//!   same file watch the session's folders use ([`folders`]);
-//! - a keyboard chord, once a press reaches the automation host rather than
-//!   a chord of the desktop's own table ([`Automation::press`]);
-//! - the revoked devices of a workspace a shortcut is saved in, from its
-//!   governance as this device holds it.
-//!
-//! Only shortcuts saved by the person this device acts for in their
-//! workspace are armed ([`triggers::armed`]), so a collaborator's shortcut never fires
-//! on someone else's behalf.
+//! The shortcuts a person saved, started without anyone invoking them. A shortcut is saved in a
+//! workspace ([`tilo_automation::Shortcut`]) with the triggers that start it. This module follows
+//! those triggers on the device and starts a run for each firing through the action broker, which
+//! checks again that the shortcut still exists and that its saver may still run it, so a run
+//! started here is the same run a person's press starts. Its triggers come from where the session
+//! already reads them: a record change from the record documents of its workspaces, read on a
+//! worker a tree watch wakes; time, a workspace joined and an application started from the desk and
+//! the launches it made; focus modes from the notification policy; a shared folder's change from
+//! the session's file watch; a chord from the automation host; and revoked devices from the
+//! workspace's governance. Only the person this device acts for has armed shortcuts
+//! ([`triggers::armed`]).
 
 pub(crate) mod folders;
 pub(crate) mod records;
@@ -54,8 +37,8 @@ pub(crate) use triggers::{
     Armed, Firing, FocusState, PersonalDevices, TriggerEvent, TriggerHost, armed, unix_ns,
 };
 
-/// The person's certified devices as this session's fabric sees them: which
-/// of them this one is, and which are online to run a schedule's fire time.
+/// The person's certified devices as this session's fabric sees them: which of them this one is,
+/// and which are online to run a schedule's fire time.
 fn devices_of(fabric: Option<&tilo_device_fabric::link::SharedLink>) -> PersonalDevices {
     let Some(fabric) = fabric else {
         return PersonalDevices::default();
@@ -87,54 +70,49 @@ pub struct Automation {
     feed: records::RecordFeed,
     /// What a person saves through the action door, applied on the loop.
     saved: tokio::sync::mpsc::UnboundedReceiver<crate::plane::StoreRequest>,
-    /// The workspaces whose records are followed now, so the worker is told
-    /// only when that changed.
+    /// The workspaces whose records are followed now, so the worker is told only when that changed.
     followed: BTreeSet<String>,
-    /// The apps' broker, while the session serves one: every firing starts
-    /// through it.
+    /// The apps' broker, while the session serves one: every firing starts through it.
     broker: Option<Arc<AppActionBroker>>,
-    /// The person's devices, refreshed each tick from `fabric`: a schedule
-    /// fires on one of them, and each waits its turn for the others.
+    /// The person's devices, refreshed each tick from `fabric` : a schedule fires on one of them,
+    /// and each waits its turn for the others.
     devices: Arc<triggers::FixedDevices>,
     /// This session's device fabric, while the person certified its device.
     fabric: Option<tilo_device_fabric::link::SharedLink>,
-    /// The apps this session started, which an application-opened trigger
-    /// follows.
+    /// The apps this session started, which an application-opened trigger follows.
     launches: Arc<crate::launches::Launches>,
     /// The folders file-changed triggers watch, and what changed in them.
     folders: folders::FolderWatch,
-    /// The person's notification policy, as the session keeps it current:
-    /// the focus modes a shortcut can answer.
+    /// The person's notification policy, as the session keeps it current: the focus modes a
+    /// shortcut can answer.
     policy: Arc<std::sync::Mutex<NotificationPolicy>>,
-    /// What each of this device's workspaces revokes, as its governance
-    /// records it.
+    /// What each of this device's workspaces revokes, as its governance records it.
     revocations: crate::engine::Revocations,
     handle: DesktopHandle,
-    /// The person at this device, as the session's own identity names them:
-    /// a shortcut saved by anyone else is never armed.
+    /// The person at this device, as the session's own identity names them: a shortcut saved by
+    /// anyone else is never armed.
     person: String,
-    /// The shortcuts armed now, as the last look at the desk found them: the
-    /// chords the keys answer are theirs.
+    /// The shortcuts armed now, as the last look at the desk found them: the chords the keys answer
+    /// are theirs.
     armed_now: Vec<Armed>,
     /// The desk revision the broker's copy was last brought level with.
     published: Option<u64>,
-    /// The desk revision whose shortcuts were last armed: a desk that moved
-    /// arms again on the next pass, so a shortcut a person just saved
-    /// follows its workspace's records from the moment it is shown rather than
-    /// from the next tick.
+    /// The desk revision whose shortcuts were last armed: a desk that moved arms again on the next
+    /// pass, so a shortcut a person just saved follows its workspace's records from the moment it
+    /// is shown rather than from the next tick.
     armed_at: Option<u64>,
     /// When the passing of time was last shown to the schedules.
     last_tick: RefCell<Option<Instant>>,
     /// Runs that finished and no history recorder took yet.
     finished: RefCell<Vec<FinishedShortcutRun>>,
-    /// Firings that came while the apps' broker was still starting: they
-    /// start once it serves, rather than being lost.
+    /// Firings that came while the apps' broker was still starting: they start once it serves,
+    /// rather than being lost.
     waiting: RefCell<Vec<Firing>>,
 }
 
-/// What the session shows the trigger host besides its desk: the apps it
-/// starts, the person's notification policy, what each of its workspaces
-/// revokes, and which of the person's devices are online to run a schedule.
+/// What the session shows the trigger host besides its desk: the apps it starts, the person's
+/// notification policy, what each of its workspaces revokes, and which of the person's devices are
+/// online to run a schedule.
 pub struct Feeds {
     pub fabric: Option<tilo_device_fabric::link::SharedLink>,
     pub launches: Arc<crate::launches::Launches>,
@@ -143,8 +121,8 @@ pub struct Feeds {
 }
 
 impl Automation {
-    /// The trigger host of a session whose desk is `handle`, keeping its
-    /// schedule ledger under `state` in the file the shell kept it in.
+    /// The trigger host of a session whose desk is `handle` , keeping its schedule ledger under
+    /// `state` in the file the shell kept it in.
     #[must_use]
     pub fn new(
         state: Option<&Path>,
@@ -187,7 +165,7 @@ impl Automation {
         }
     }
 
-    /// Start every firing through `broker`.
+    /// Start every firing through `broker` .
     pub fn attach(&mut self, broker: Arc<AppActionBroker>) {
         self.broker = Some(broker);
     }
@@ -198,14 +176,11 @@ impl Automation {
         self.broker.is_none()
     }
 
-    /// The broker's copy of the desk has to follow the desk the loop shows:
-    /// the workspace an app's connection joins is one the broker finds on
-    /// it, and a firing starts on the broker's thread, which cannot read
-    /// this one.
-    ///
-    /// The desk belongs to the loop ([`DesktopHandle`] hands it out here
-    /// only) and `desk` reads it on the broker's thread, so the loop hands
-    /// over a copy when the desk moved.
+    /// The broker's copy of the desk has to follow the desk the loop shows: the workspace an app's
+    /// connection joins is one the broker finds on it, and a firing starts on the broker's thread,
+    /// which cannot read this one.
+    /// The desk belongs to the loop ([`DesktopHandle`] hands it out here only) and `desk` reads it
+    /// on the broker's thread, so the loop hands over a copy when the desk moved.
     fn publish_desk(&mut self, desk: Option<&crate::plane::DeskAuthority>) {
         let Some(desk) = desk else {
             return;
@@ -218,21 +193,20 @@ impl Automation {
         self.published = Some(revision);
     }
 
-    /// Take what the broker finished, show the schedules the passing of
-    /// time, and start whatever fired. Once per pass.
+    /// Take what the broker finished, show the schedules the passing of time, and start whatever
+    /// fired. Once per pass.
     pub fn settle(&mut self, desk: Option<&crate::plane::DeskAuthority>) {
         self.keep_finished();
         self.apply_saved();
-        // What fired while the broker was starting starts now that it serves.
-        // What it fired was decided against a desk this loop had already
-        // published, so the broker knows the workspace the run belongs to.
+        // What fired while the broker was starting starts now that it serves. What it fired was
+        // decided against a desk this loop had already published, so the broker knows the workspace
+        // the run belongs to.
         if self.broker.is_some() {
             let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
             self.start(waiting);
         }
-        // A schedule firing waits for the ledger that records it: the write
-        // wakes the loop, and its firings start then rather than a tick
-        // later.
+        // A schedule firing waits for the ledger that records it: the write wakes the loop, and its
+        // firings start then rather than a tick later.
         let settled = self.triggers.take_settled_firings();
         if !settled.is_empty() {
             self.start(settled);
@@ -242,12 +216,10 @@ impl Automation {
             .last_tick
             .borrow()
             .is_none_or(|last| now.duration_since(last) >= TICK_INTERVAL);
-        // The desk can change on any pass: a shortcut shown now follows its
-        // records from this pass on, so a change made right after it appears
-        // is one it fires on.
+        // The desk can change on any pass: a shortcut shown now follows its records from this pass
+        // on, so a change made right after it appears is one it fires on.
         if !tick && self.armed_at == Some(self.handle.revision()) {
-            // The broker reads the desk only when a shortcut is armed, and
-            // then only when it moved.
+            // The broker reads the desk only when a shortcut is armed, and then only when it moved.
             self.publish_desk(desk);
             return;
         }
@@ -257,10 +229,9 @@ impl Automation {
         self.observe(tick, desk);
     }
 
-    /// When this session next has time to show the schedules or report a
-    /// file that settled: the next fire time of an armed schedule, the next
-    /// look at the passing of time a shortcut's other triggers take, or the
-    /// settle of the last change a watched folder saw.
+    /// When this session next has time to show the schedules or report a file that settled: the
+    /// next fire time of an armed schedule, the next look at the passing of time a shortcut's other
+    /// triggers take, or the settle of the last change a watched folder saw.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         let clock = self.triggers.clock();
         let now = clock.now();
@@ -277,9 +248,9 @@ impl Automation {
             .min()
             .and_then(|due| due.signed_duration_since(now).to_std().ok())
             .and_then(|wait| Instant::now().checked_add(wait));
-        // A shortcut armed with a trigger other than a schedule (an app
-        // running, a folder changing, a workspace focused) fires on the tick:
-        // with nothing armed, the passing of time is nobody's to see.
+        // A shortcut armed with a trigger other than a schedule (an app running, a folder changing,
+        // a workspace focused) fires on the tick: with nothing armed, the passing of time is
+        // nobody's to see.
         let tick = if self.armed_now.is_empty() {
             None
         } else {
@@ -293,8 +264,8 @@ impl Automation {
             .min()
     }
 
-    /// A chord was pressed that nothing else of the desktop's answers: it
-    /// starts every shortcut whose keyboard trigger names it, once.
+    /// A chord was pressed that nothing else of the desktop's answers: it starts every shortcut
+    /// whose keyboard trigger names it, once.
     pub fn press(&mut self, chord: &KeyChord) {
         let now_ns = unix_ns(self.triggers.clock().now());
         let armed = self.armed(now_ns);
@@ -324,9 +295,8 @@ impl Automation {
             .collect()
     }
 
-    /// Arm the shortcuts the desk shows, show every source what this device
-    /// sees now, and start what fired. `tick` says the passing of time came
-    /// round, which the schedules alone are shown.
+    /// Arm the shortcuts the desk shows, show every source what this device sees now, and start
+    /// what fired. `tick` says the passing of time came round, which the schedules alone are shown.
     fn observe(&mut self, tick: bool, desk: Option<&crate::plane::DeskAuthority>) {
         self.devices.set(devices_of(self.fabric.as_ref()));
         let now_ns = unix_ns(self.triggers.clock().now());
@@ -362,8 +332,8 @@ impl Automation {
         };
         let events = self.feed.take();
         if !events.is_empty() {
-            // A run's own first change is its claim: a firing another device
-            // already started is not held for this one.
+            // A run's own first change is its claim: a firing another device already started is not
+            // held for this one.
             let started: BTreeSet<RunId> =
                 events.iter().filter_map(RecordEvent::started_run).collect();
             self.triggers.forget_started(&started);
@@ -382,8 +352,8 @@ impl Automation {
         self.start(firings);
     }
 
-    /// Watch exactly the folders the armed shortcuts' file-changed triggers
-    /// name, for the changes the next look reports.
+    /// Watch exactly the folders the armed shortcuts' file-changed triggers name, for the changes
+    /// the next look reports.
     fn follow_folders(&mut self, armed: &[Armed]) {
         let folders = self
             .handle
@@ -391,9 +361,8 @@ impl Automation {
         self.folders.watch(folders);
     }
 
-    /// Which focus modes are on now, as the person's notification policy
-    /// keeps them: their switch, and the schedule at this device's local
-    /// time.
+    /// Which focus modes are on now, as the person's notification policy keeps them: their switch,
+    /// and the schedule at this device's local time.
     fn focus_state(&self) -> FocusState {
         let now = self.triggers.clock().now();
         let local = now.with_timezone(&self.triggers.clock().offset_at(now));
@@ -411,28 +380,26 @@ impl Automation {
         }
     }
 
-    /// The shortcuts this device may start: those the person it acts for in
-    /// their workspace saved with a device of theirs, with the fire times of
-    /// that workspace's schedules already claimed.
+    /// The shortcuts this device may start: those the person it acts for in their workspace saved
+    /// with a device of theirs, with the fire times of that workspace's schedules already claimed.
     fn armed(&self, now_ns: u64) -> Vec<Armed> {
         let revocations = &self.revocations;
         self.handle.read(|tree| {
             armed(
                 &tree.workspaces,
                 |workspace| self.person_in(&workspace.id().to_string()),
-                // A workspace this device holds arms against what its
-                // governance revokes. One it does not hold is a workspace on
-                // the desk whose records live elsewhere: nothing of it is
-                // known here, and the run it starts is refused by the broker
-                // unless the workspace it holds says otherwise.
+                // A workspace this device holds arms against what its governance revokes. One it
+                // does not hold is a workspace on the desk whose records live elsewhere: nothing of
+                // it is known here, and the run it starts is refused by the broker unless the
+                // workspace it holds says otherwise.
                 |workspace| Some(revocations(&workspace.id().to_string()).unwrap_or_default()),
                 now_ns,
             )
         })
     }
 
-    /// The workspaces where an armed shortcut watches record changes or
-    /// incoming messages: only their records are read.
+    /// The workspaces where an armed shortcut watches record changes or incoming messages: only
+    /// their records are read.
     fn follow_records(&mut self, armed: &[Armed]) {
         let workspaces: BTreeSet<String> = armed
             .iter()
@@ -452,19 +419,18 @@ impl Automation {
         }
     }
 
-    /// Who this device acts for in `workspace`: the identity the registry
-    /// presents there, else the session's own person.
+    /// Who this device acts for in `workspace` : the identity the registry presents there, else the
+    /// session's own person.
     fn person_in(&self, workspace: &str) -> String {
         crate::identity::person_in(workspace, &self.person)
     }
 
-    /// Start every firing as the person this device acts for in its
-    /// workspace, claiming a schedule's fire time first so the person's other
-    /// devices leave it alone.
+    /// Start every firing as the person this device acts for in its workspace, claiming a
+    /// schedule's fire time first so the person's other devices leave it alone.
     fn start(&self, firings: Vec<Firing>) {
         let Some(broker) = self.broker.clone() else {
-            // The broker may still be starting: what fired waits for it, and
-            // starts from the pass that finds it.
+            // The broker may still be starting: what fired waits for it, and starts from the pass
+            // that finds it.
             self.waiting.borrow_mut().extend(firings);
             return;
         };
@@ -482,9 +448,8 @@ impl Automation {
                 firing.run,
                 firing.inputs.clone(),
             ) {
-                // A shortcut deleted or changed elsewhere, or one whose saver
-                // may not run it here: nothing started, and the next arming
-                // drops it.
+                // A shortcut deleted or changed elsewhere, or one whose saver may not run it here:
+                // nothing started, and the next arming drops it.
                 tracing::info!(
                     shortcut = %firing.shortcut,
                     trigger = firing.trigger.kind(),
@@ -516,9 +481,8 @@ impl Automation {
         }
     }
 
-    /// `change` stored in `workspace`, as `actor` asked: a saved shortcut
-    /// carries this device's proof of who saved it, which is what arms its
-    /// triggers on the saver's devices.
+    /// `change` stored in `workspace` , as `actor` asked: a saved shortcut carries this device's
+    /// proof of who saved it, which is what arms its triggers on the saver's devices.
     fn save(
         &self,
         workspace: &str,
@@ -533,8 +497,8 @@ impl Automation {
         let change = match change {
             tilo_automation::ShortcutChange::Save(shortcut) => {
                 let mut shortcut = shortcut.as_ref().clone();
-                // A trigger this device cannot watch would be saved into a
-                // shortcut that never runs: the person is told now.
+                // A trigger this device cannot watch would be saved into a shortcut that never
+                // runs: the person is told now.
                 for trigger in &shortcut.triggers {
                     triggers::validate_trigger(trigger)?;
                 }
@@ -581,8 +545,8 @@ impl Automation {
         Ok(())
     }
 
-    /// Record `claim` in `workspace`: the fire time this device took, which
-    /// its other devices read back and leave alone.
+    /// Record `claim` in `workspace` : the fire time this device took, which its other devices read
+    /// back and leave alone.
     fn claim(&self, workspace: &str, claim: &ScheduleClaim) {
         let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return;
@@ -595,8 +559,8 @@ impl Automation {
         else {
             return;
         };
-        // A fire time of a shortcut no longer saved is no claim: it would
-        // keep the person's other devices off a shortcut that is gone.
+        // A fire time of a shortcut no longer saved is no claim: it would keep the person's other
+        // devices off a shortcut that is gone.
         if !workspace
             .shortcuts
             .iter()
@@ -621,8 +585,7 @@ impl Automation {
         self.handle.replace_tree(tree);
     }
 
-    /// Keep the runs the broker finished until the history recorder takes
-    /// them.
+    /// Keep the runs the broker finished until the history recorder takes them.
     fn keep_finished(&self) {
         let Some(broker) = &self.broker else {
             return;

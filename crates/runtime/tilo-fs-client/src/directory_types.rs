@@ -27,7 +27,7 @@ pub enum ItemState {
 }
 
 /// Observational inode identity, never an authority or grant constructor.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectoryStat {
     pub metadata: Metadata,
     pub identity: [u64; 2],
@@ -36,27 +36,31 @@ pub struct DirectoryStat {
     /// Original observed execute mode bits only (0111), never Execute authority.
     pub execute_bits: u16,
 }
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DirectoryRow {
     pub name: EntryName,
     pub metadata: Metadata,
 }
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DirectoryRows {
     pub entries: Vec<DirectoryRow>,
     pub next: u64,
 }
 /// Bounded journal observation; IDs and cursor bytes do not confer rights.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RecoveryRow {
     pub recovery: [u8; 16],
     pub operation: [u8; 16],
     pub original_name: EntryName,
     pub kind: RecoveryKind,
 }
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RecoveryPage {
     pub entries: Vec<RecoveryRow>,
     pub next: Vec<u8>,
     pub done: bool,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum JobUpdate {
     Progress {
         sequence: u64,
@@ -77,13 +81,13 @@ pub enum JobUpdate {
         cancelled: usize,
     },
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobPoll {
     pub operation_id: [u8; 16],
     pub updates: Vec<JobUpdate>,
 }
 /// Held source filesystem metadata. Counts use `fragment_size` units; no rights.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryFilesystemStats {
     pub blocks: u64,
     pub blocks_free: u64,
@@ -130,8 +134,6 @@ pub struct HistoryReadObservation {
 }
 impl HistoryReadObservation {
     /// Validate only the finite descriptive vocabulary, never mint authority.
-    /// # Errors
-    /// Refuses malformed native identities or raw component bounds.
     pub fn validate(&self) -> Result<(), String> {
         if self.source_owner == [0; 32]
             || self.root[1] == 0
@@ -190,7 +192,7 @@ pub fn validate_history_response(query: &[u8], bytes: &[u8]) -> Result<(), Strin
     Ok(())
 }
 /// Observed native namespace custody only, never a signed history receipt.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplacementObservation {
     pub operation: [u8; 16],
     pub source_owner: [u8; 32],
@@ -200,26 +202,26 @@ pub struct ReplacementObservation {
     pub destination: [u64; 2],
 }
 /// One bounded live enumeration page, not a stable or sorted snapshot.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DirectoryStreamRow {
     pub name: EntryName,
     /// None records a native per-entry metadata refusal under still-live scope.
     pub stat: Option<DirectoryStat>,
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DirectoryStreamPage {
     pub entries: Vec<DirectoryStreamRow>,
     pub next_sequence: u64,
     pub done: bool,
 }
 /// Observational binding of actual zero-effect native prepared work. No grant.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReplacementPurpose {
     ReplacementRename,
     AtomicSave,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingReplacementObservation {
     pub purpose: ReplacementPurpose,
     pub operation: [u8; 16],

@@ -73,9 +73,6 @@ impl std::fmt::Display for MembershipRefusal {
 
 /// The workspace document after each of `changes`, in the order the batch applies
 /// them: a batch is judged change by change, where its writer made each.
-///
-/// # Errors
-/// A change does not decode, or does not apply on the one before it.
 fn stages(at: &AutoCommit, changes: &[Vec<u8>]) -> Result<Vec<AutoCommit>, MembershipRefusal> {
     use automerge::ReadDoc as _;
     let mut stages = Vec::with_capacity(changes.len());
@@ -131,9 +128,6 @@ pub fn position(
 /// Whether `person`, from their device `device` (hex; `foreign` when it is
 /// not one of theirs), may make the governance change from `at` to `after`
 /// in `workspace`.
-///
-/// # Errors
-/// The first refusal that applies.
 pub fn authorize(
     workspace: &str,
     (person, device, foreign): (&[u8; 32], &str, bool),
@@ -230,9 +224,6 @@ pub fn authorize(
 /// them to `workspace` as `policy` stands: it verifies and has not expired then,
 /// names this workspace and, when narrowed, the joiner, and its issuer is a member
 /// who may invite with its role.
-///
-/// # Errors
-/// The first of those that does not hold.
 pub fn invitation_admits(
     policy: &tilo_action_policy::WorkspacePolicy,
     workspace: &str,
@@ -275,8 +266,9 @@ pub fn invitation_admits(
 /// the batch adds to the workspace's ledger must be one: the invitation it
 /// carries admits its joiner at the time the workspace records them joining
 /// ([`invitation_admits`]), the joiner's device row holds the receipt, and
-/// the workspace gives them its role. A receipt the workspace holds stays as it is,
-/// so a spent invitation stays spent.
+/// the workspace gives them its role. That an invitation is redeemed once is
+/// every writer's rule, checked for the whole candidate
+/// ([`super::redemptions_kept`]).
 fn redemptions(
     workspace: &str,
     held: &WorkspacePolicy,
@@ -357,19 +349,6 @@ fn redemptions(
                 )));
             }
             invited.insert(person, (role, device));
-        }
-    }
-    // A receipt the workspace held stays as it is, so a spent invitation stays
-    // spent, whichever change of the batch would take it back.
-    for (invite, values) in &before.invitation_receipts {
-        let kept = written.invitation_receipts.get(invite);
-        if values
-            .iter()
-            .any(|value| !kept.is_some_and(|kept| kept.contains(value)))
-        {
-            return Err(MembershipRefusal::Refused(format!(
-                "the redemption of invitation {invite} is the workspace's record"
-            )));
         }
     }
     Ok(invited)

@@ -3,7 +3,6 @@ use tilo_ui::widget::{AppWidget, Button, Widget};
 
 #[test]
 fn widget_trait_defaults_presence_draw_and_token_radius() {
-    // Case `widget_defaults_for_collab_methods`.
     {
         let b = Button::new("b", "label");
         assert!(tilo_ui::presence::capability::presence_key(&b).is_none());
@@ -11,7 +10,6 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
         assert!(!b.wants_pointer_capture());
     }
 
-    // Case `draw_takes_presence_ctx`.
     {
         fn _assert_draw_sig() {
             fn _call<W: Widget>(
@@ -28,7 +26,6 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
         fn _is_appwidget<W: AppWidget>() {}
     }
 
-    // Case `button_uses_token_radius`.
     {
         use tilo_ui::tokens::Tokens;
         let mut t = Tokens::dark();

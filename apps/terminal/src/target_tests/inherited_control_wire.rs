@@ -202,6 +202,7 @@ fn an_old_supervisor_is_refused_before_any_session_open_or_local_fallback() {
         &SessionTarget::default(),
         Requester::Person,
         None,
+        None,
     );
     assert!(matches!(answer, Err(crate::OpenError::Unavailable(_))));
     drop(client);
@@ -244,6 +245,7 @@ fn an_invalid_session_reply_closes_both_received_rights() {
             &[],
             &SessionTarget::default(),
             Requester::Person,
+            None,
             None
         ),
         Err(crate::OpenError::Failed(_))

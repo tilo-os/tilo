@@ -118,12 +118,6 @@ pub fn verify_portable_backup(
 ///
 /// This is the only restoration API: callers can restore an
 /// identity but cannot ask this crate to hand them a raw signing share.
-///
-/// # Errors
-///
-/// Returns an error when the backup cannot be authenticated and decoded, the
-/// record is not a portable single-device identity, or the normal runtime
-/// identity import/provider lifecycle rejects the destination.
 pub fn import_portable_backup(
     backup_path: impl AsRef<Path>,
     passphrase: &[u8],

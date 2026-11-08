@@ -42,12 +42,10 @@ ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", defau
 # The browser is a channel member device, as native peers are.
 channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
 # The live plane's names, tracks and voice objects, and the carrier client the
-# page runs over its WebTransport session.
+# page runs over its iroh session.
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane"] }
 # `moq-lite` itself: the page's live session is a publisher and a subscriber.
 moq-net = { workspace = true }
-# The page's WebTransport session, pinned to the relay's certificate.
-tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["webtransport"] }
 bytes.workspace = true
 # Each joined workspace's replica: the workspace's governance as native devices
 # admit it, held in the engine's owner native devices hold theirs in
@@ -56,13 +54,15 @@ tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
 # Whether a joined workspace shares its members' layout, read off its replica's
 # workspace document.
 tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }
+# The signed hint a workspace's governance keeps of its host's address.
+tilo-delivery-protocol = { version = "0.1.0", path = "../../hosting/tilo-delivery-protocol", optional = true }
 serde_json.workspace = true
 
 [features]
 default = ["iroh"]
-# Reach the host over iroh as well as HTTPS (native peers). The page builds
-# without it, so the wasm bundle links no iroh.
-iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "tilo-relay-client/iroh", "tilo-live/native"]
+# Reach the host over iroh as well as HTTPS (native peers). The wasm build
+# links iroh too; it never links the listening half.
+iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "dep:tilo-delivery-protocol", "tilo-relay-client/iroh", "tilo-live/iroh"]
 toolkit = ["dep:ui"]
 
 [dev-dependencies]
@@ -72,8 +72,10 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 tilo-automerge-isolate.workspace = true
 test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "test-support"] }
+# The fetch proxy's host side, as the page's test of it drives it.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
 # A relay listener on loopback, as the live plane's acceptance test drives it.
-tilo-live = { path = "../../collab/tilo-live", features = ["plane", "relay"] }
+tilo-live = { path = "../../collab/tilo-live", features = ["plane", "relay", "iroh"] }
 # The call's native side sends and hears a real tone, as a call does.
 opus = "0.4"
 automerge.workspace = true

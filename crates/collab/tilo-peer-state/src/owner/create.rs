@@ -4,6 +4,7 @@
 //! other change this device makes, so whoever holds a copy of it — a store
 //! device that keeps only its ciphertext, another member's device — has it
 //! from the moment it exists.
+use crate::join::TransportHint;
 use crate::owner::record::StoredWorkspace;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
 use crate::workspace_membership::valid_workspace_name;
@@ -18,19 +19,26 @@ impl NativeWorkspaceOwner {
     /// anything of it was held here — named `name`, on `device`, the device
     /// whose signing key is `key`. The workspace is new, its host is this
     /// device, and its governance admits any other device the owner invites.
+    /// `host_hint` is where this device's host keeps the workspace's records,
+    /// signed by `device` itself: a workspace founded here is reached at its
+    /// own host, and the device that can act as its own host says where. A
+    /// device with no address of its own founds the workspace without one,
+    /// and names it in the record once it has one ([`Self::name_host`]).
     /// Nothing of it is its founder's private state: it is the workspace's,
     /// published like every other change this device makes.
     ///
     /// # Errors
     /// The workspace has no identity, the name is not 1–80 characters, `key`
-    /// is not `device`'s, `device` may not own workspaces, or the record
-    /// cannot be published.
+    /// is not `device`'s, `device` may not own workspaces, `host_hint` is not
+    /// this workspace's address signed by `device`, or the record cannot be
+    /// published.
     pub fn create_workspace(
         &self,
         workspace: WorkspaceId,
         name: &str,
         device: &DeviceCert,
         key: &SigningKey,
+        host_hint: Option<TransportHint>,
         now: SystemTime,
     ) -> Result<WorkspaceId, String> {
         let name = valid_workspace_name(name)?;
@@ -51,6 +59,9 @@ impl NativeWorkspaceOwner {
         let workspace = id.to_string();
         let workspace_id =
             crate::join::room_workspace_id(&workspace).map_err(|error| error.to_string())?;
+        if let Some(host_hint) = &host_hint {
+            crate::owner::validate_host_hint(host_hint, &workspace, workspace_id, device)?;
+        }
         let roster = vec![device.clone()];
         let mut peer = StatePeer::new(
             &workspace,
@@ -88,9 +99,11 @@ impl NativeWorkspaceOwner {
                 workspace_host: device.clone(),
                 device: device.clone(),
                 // No other device admitted this one into its own workspace, so
-                // there is neither an enrollment nor a vouch to hold.
+                // there is neither an enrollment nor a vouch to hold; where its
+                // own host is reached is what `host_hint` says.
                 enrollment: None,
                 vouched: None,
+                host_hint,
                 peer: peer.durable()?,
                 generation: 1,
                 continuity: 0,
@@ -116,5 +129,54 @@ impl NativeWorkspaceOwner {
         }
         self.publish_workspace(id, view, None)?;
         Ok(id)
+    }
+
+    /// Record where this device's own host of `workspace` is reached: the
+    /// hint [`Self::create_workspace`] writes as it founds one, for a
+    /// workspace founded before its record said. A workspace this device does
+    /// not host, or one whose record reaches its host through an enrollment
+    /// or a vouch, keeps what it has. Answers whether it wrote.
+    ///
+    /// # Errors
+    /// The workspace is not held here, `hint` is not this workspace's address
+    /// signed by this device, or the record cannot be published.
+    pub fn name_host(&self, workspace: WorkspaceId, hint: TransportHint) -> Result<bool, String> {
+        let _turn = self.0.mutation.lock();
+        if self.host_already_named(workspace)? {
+            return Ok(false);
+        }
+        // Only a record this device hosts and that says nothing yet is
+        // written here ([`Self::host_already_named`]), so what it names is its
+        // own host: the hint must be this workspace's, signed by this device.
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
+        crate::owner::validate_host_hint(
+            &hint,
+            &workspace.to_string(),
+            candidate.record.workspace_id,
+            &candidate.record.device,
+        )?;
+        candidate.record.host_hint = Some(hint);
+        self.publish_workspace(workspace, candidate, None)?;
+        Ok(true)
+    }
+
+    /// Whether `workspace`'s record is left as it is by [`Self::name_host`]:
+    /// this device does not host it, or the record already says where its
+    /// host is reached. What decides is read first: most workspaces this
+    /// device holds are another device's to host, and their records are not
+    /// copied to find that out.
+    fn host_already_named(&self, workspace: WorkspaceId) -> Result<bool, String> {
+        let current = self.0.current.read();
+        if self.0.fenced(&current, workspace) {
+            return Err("native owner continuity is fenced".into());
+        }
+        let record = &current
+            .workspaces
+            .get(&workspace)
+            .ok_or("workspace has no committed native enrollment")?
+            .record;
+        let named = record.device != record.workspace_host || record.names_host();
+        drop(current);
+        Ok(named)
     }
 }

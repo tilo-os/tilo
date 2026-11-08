@@ -722,9 +722,6 @@ impl ContainersApp {
     }
 
     /// Do what `effect` asks, as the view's effect handler does.
-    ///
-    /// # Errors
-    /// Returns why it could not be done.
     pub fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
         self.state().perform_effect(effect)
     }

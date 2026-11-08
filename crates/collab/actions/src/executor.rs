@@ -150,9 +150,6 @@ pub fn await_settlement(doc: &mut Doc, hash: &str, redo: bool) -> Result<(), Act
 
 /// Mark the undo (or redo) of the step `hash` complete: its outside
 /// consequence settled.
-///
-/// # Errors
-/// Refuses a step whose undo or redo waits for nothing.
 pub fn settle_compensation(doc: &mut Doc, hash: &str) -> Result<(), ActionError> {
     use automerge::ReadDoc as _;
     let key = format!("{UNDONE_KEY}{hash}");
@@ -605,9 +602,6 @@ fn recorded_action(context: &ActionContext) -> Option<&EncodedAction> {
 /// budget, else with its large parts kept as content
 /// ([`EncodedAction::with_content_parts`]). An action too large even then
 /// is refused: a change never commits without the action it ran.
-///
-/// # Errors
-/// An action whose recorded form does not fit the budget.
 pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionError> {
     if recorded_size(action)? <= crate::context::HISTORY_BUDGET {
         return Ok(action.clone());
@@ -677,10 +671,6 @@ pub fn verify_change(
 
 /// Decode a recorded inverse only after reproducing its original change.
 /// Descriptive CRDT metadata alone cannot install executable history.
-///
-/// # Errors
-/// Refuses missing changes, forged inverses, and changes that their recorded
-/// action cannot reproduce at the original dependency heads.
 pub fn verified_compensation(
     doc: &mut Doc,
     hash: automerge::ChangeHash,
@@ -774,8 +764,8 @@ impl Dispatched {
     }
 }
 
-/// The locus-aware front door, routing `action` per its
-/// [`ExecutionLocus`]: `ClientLocal` →
+/// The locus-aware front door, routing `action` per
+/// its [`ExecutionLocus`]: `ClientLocal` →
 /// [`apply_local`] then `transport.replicate`; `ServerPreferred` →
 /// `transport.submit_to_host`, refusing when no authoritative host is
 /// reachable. The envelope's id/timestamp are fixed before submission.

@@ -1,6 +1,5 @@
-//! The bar's centre lane and the clock: the time it reads at the grain the
-//! visible activity needs, the pill an activity shows there, the width the
-//! band takes and when its frame is stale.
+//! The bar's centre lane and the clock: the time it reads at the grain the visible activity needs,
+//! the pill an activity shows there, the width the band takes and when its frame is stale.
 
 use super::{
     Affine, BAR_CONTROL_PX, CENTER_INSET_PX, ClockSnapshot, Duration, Instant, NARROW_MENU_BAR_PX,
@@ -8,8 +7,8 @@ use super::{
     TopBarPresence,
 };
 
-/// How far apart the dots after an activity's reading stand: one dot per
-/// activity waiting behind the pill's own, measured into the pill's width.
+/// How far apart the dots after an activity's reading stand: one dot per activity waiting behind
+/// the pill's own, measured into the pill's width.
 const DOT_PITCH: f64 = 5.0;
 /// The thumbnail a song's pill heads its title with, square.
 const PILL_ART: f64 = 14.0;
@@ -17,20 +16,18 @@ const PILL_ART: f64 = 14.0;
 const PILL_ART_GAP: f64 = 6.0;
 
 impl TopBarChrome {
-    /// The centre selector is visually anchored at the viewport centre, but
-    /// its wide-state width must not consume the entire narrow bar. Keep the
-    /// established 360 px treatment on laptop-sized and larger viewports and
-    /// release the reclaimed lane to the workspace identity below that
-    /// point. The lower bound still leaves enough room for the clock and its
-    /// three position dots at the large-text setting.
+    /// The centre selector is visually anchored at the viewport centre, but its wide-state width
+    /// must not consume the entire narrow bar. Keep the established 360 px treatment on
+    /// laptop-sized and larger viewports and release the reclaimed lane to the workspace identity
+    /// below that point. The lower bound still leaves enough room for the clock and its three
+    /// position dots at the large-text setting.
     pub(super) fn center_band_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let text_headroom = (f64::from(theme.text_scale) - 1.0).max(0.0) * 16.0;
         if self.rect.width() < NARROW_MENU_BAR_PX {
-            // A phone-wide bar keeps the time and gives the rest of the
-            // lane to the workspace name and the people beside it. A live
-            // activity's pill stands on its own reading, so the lane grows
-            // around it and the name beside it yields: the selector's lift
-            // stays behind the text it belongs to.
+            // A phone-wide bar keeps the time and gives the rest of the lane to the workspace name
+            // and the people beside it. A live activity's pill stands on its own reading, so the
+            // lane grows around it and the name beside it yields: the selector's lift stays behind
+            // the text it belongs to.
             let clock = 64.0 + text_headroom;
             if self.center_pill().is_empty() {
                 return clock;
@@ -48,8 +45,8 @@ impl TopBarChrome {
             .map_or_else(|| self.clock.clone(), |c| c.snapshot().clock)
     }
 
-    /// The host's clock reading, already formatted — and pinned by the host
-    /// when a screenshot harness needs every frame to hold still.
+    /// The host's clock reading, already formatted — and pinned by the host when a screenshot
+    /// harness needs every frame to hold still.
     pub(super) fn current_clock_string(&self) -> String {
         self.live_clock().clock
     }
@@ -75,8 +72,8 @@ impl TopBarChrome {
         let target_w = self.center_pill_width(theme, text_renderer, lane_w);
         let now = ui::time::now();
         if (self.center_lane.width() - lane_w).abs() > 0.5 {
-            // A new lane (the bar's first paint, a resized display): the
-            // selector takes its width as it is.
+            // A new lane (the bar's first paint, a resized display): the selector takes its width
+            // as it is.
             self.center_width.snap(target_w);
         } else if (self.center_width.target() - target_w).abs() > 0.25 {
             self.center_width.follow(
@@ -87,8 +84,8 @@ impl TopBarChrome {
             );
         }
         let band_w = self.center_width.get(now).clamp(0.0, lane_w);
-        // The same height as every other bar control, so the band's top
-        // and bottom edges line up with the pills either side of it.
+        // The same height as every other bar control, so the band's top and bottom edges line up
+        // with the pills either side of it.
         let band_h = BAR_CONTROL_PX;
         let band_cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let band = Rect::new(
@@ -104,8 +101,8 @@ impl TopBarChrome {
             band_cx + lane_w / 2.0,
             band.y1,
         );
-        // The quiet selector pill comes and goes with the activity: an
-        // activity's pill, or a glance's sentence, always stands on one.
+        // The quiet selector pill comes and goes with the activity: an activity's pill, or a
+        // glance's sentence, always stands on one.
         let fade = self.center_activity_opacity(now);
         let pill = if self.center_pill().is_empty() {
             fade
@@ -122,8 +119,8 @@ impl TopBarChrome {
                     &band.inflate(2.0, 2.0),
                 );
             }
-            // The live activity keeps a quiet selector pill: the bar
-            // control's own whole lift, from its face.
+            // The live activity keeps a quiet selector pill: the bar control's own whole lift, from
+            // its face.
             ui::widget::BarControlFace::new("").open(true).paint_lift(
                 scene,
                 transform,
@@ -145,8 +142,8 @@ impl TopBarChrome {
         !self.activity_is_visible() && self.center_pill().is_empty()
     }
 
-    /// How strongly the live activity (and its pill) shows at `now`, as it
-    /// cross-fades with the time.
+    /// How strongly the live activity (and its pill) shows at `now` , as it cross-fades with the
+    /// time.
     pub(super) fn center_activity_opacity(&self, now: Instant) -> f32 {
         if *self.center_fade.shown() {
             return self.center_fade.incoming(now);
@@ -157,10 +154,9 @@ impl TopBarChrome {
             .map_or(0.0, |(_, opacity)| opacity)
     }
 
-    /// The lane the active centre widget draws into: the same inset in from
-    /// either end of the band. One function so
-    /// [`Self::draw_center_band`] and [`Self::activity_content_width`]
-    /// cannot disagree about how much workspace the activity headline has.
+    /// The lane the active centre widget draws into: the same inset in from either end of the band.
+    /// One function so [`Self::draw_center_band`] and [`Self::activity_content_width`] cannot
+    /// disagree about how much workspace the activity headline has.
     pub(super) fn center_content_lane(band: Rect) -> (f64, f64) {
         // Symmetric, so the content's centre is the band's centre.
         (band.x0 + CENTER_INSET_PX, band.x1 - CENTER_INSET_PX)
@@ -183,8 +179,7 @@ impl TopBarChrome {
             .unwrap_or_default()
     }
 
-    /// What the clock widget reads: the time, or the pill of the activity
-    /// running over it.
+    /// What the clock widget reads: the time, or the pill of the activity running over it.
     pub(super) fn clock_widget_text(&self) -> String {
         let pill = self.center_pill();
         if pill.is_empty() {
@@ -194,10 +189,9 @@ impl TopBarChrome {
         }
     }
 
-    /// The width of the centre widget inside its `lane_w` lane. A glance's
-    /// sentence fills the lane; an activity's pill and the clock hug their
-    /// reading, so the band is a pill and not a second bar inside the bar.
-    /// The reading is measured with every digit set as the widest one, so the
+    /// The width of the centre widget inside its `lane_w` lane. A glance's sentence fills the lane;
+    /// an activity's pill and the clock hug their reading, so the band is a pill and not a second
+    /// bar inside the bar. The reading is measured with every digit set as the widest one, so the
     /// target does not change width second to second.
     pub(super) fn center_pill_width(
         &self,
@@ -211,10 +205,9 @@ impl TopBarChrome {
         self.pill_reading_width(theme, text).min(lane_w)
     }
 
-    /// The width a pill needs around its reading: the reading at the weight it
-    /// draws at, the dots of the activities waiting behind it, and the
-    /// selector's inset on either side. The reading is measured with every
-    /// digit set as the widest one, so the target does not change width second
+    /// The width a pill needs around its reading: the reading at the weight it draws at, the dots
+    /// of the activities waiting behind it, and the selector's inset on either side. The reading is
+    /// measured with every digit set as the widest one, so the target does not change width second
     /// to second.
     pub(super) fn pill_reading_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let style = theme
@@ -239,8 +232,8 @@ impl TopBarChrome {
             .map(|c| if c.is_ascii_digit() { widest_digit } else { c })
             .collect();
         let (width, _) = text.measure_style(&reading, None, &style);
-        // The dots behind the reading and a song's thumbnail in front of it
-        // are part of the pill too.
+        // The dots behind the reading and a song's thumbnail in front of it are part of the pill
+        // too.
         let pill = self.center_pill();
         let dots = ui::num::f64_of_usize(pill.more) * DOT_PITCH;
         let art = pill.artwork().map_or(0.0, |_| PILL_ART + PILL_ART_GAP);
@@ -262,22 +255,19 @@ impl TopBarChrome {
         let pill = self.center_pill();
         let s = self.clock_widget_text();
         let style = tokens.typography.style(TextRole::Body);
-        // Measured at the draw weight — Bold advances wider than Regular, so
-        // centring drifts otherwise. One centred line, through the shared
-        // text-line painter.
+        // Measured at the draw weight — Bold advances wider than Regular, so centring drifts
+        // otherwise. One centred line, through the shared text-line painter.
         let line =
             TextLineFace::styled(&s, &style, TextRole::Body).weight(self.clock_text_weight());
         let (tw, th) = line.measure(text_renderer);
-        // An activity's own ink marks the pill: its tone, or the reading's
-        // own colour.
+        // An activity's own ink marks the pill: its tone, or the reading's own colour.
         let ink = if pill.is_empty() {
             colors.text_primary
         } else {
             pill.ink(theme)
         };
-        // Extra activities stand behind the reading as dots, so a person
-        // reads at a glance that more than one is running, and a song shows
-        // its cover in front of its title.
+        // Extra activities stand behind the reading as dots, so a person reads at a glance that
+        // more than one is running, and a song shows its cover in front of its title.
         let dots = ui::num::f64_of_usize(pill.more) * DOT_PITCH;
         let art = pill.artwork().map_or(0.0, |_| PILL_ART + PILL_ART_GAP);
         let tx = content_cx - f64::midpoint(tw + art, dots);
@@ -306,8 +296,8 @@ impl TopBarChrome {
         }
     }
 
-    /// Sizes the center band, then draws the time, or a live activity over
-    /// it. Split out of [`Widget::draw`] to stay under clippy's line budget.
+    /// Sizes the center band, then draws the time, or a live activity over it. Split out of
+    /// [`Widget::draw`] to stay under clippy's line budget.
     pub(super) fn draw_center_widget(
         &mut self,
         scene: &mut Scene,
@@ -360,8 +350,8 @@ impl TopBarChrome {
         }
     }
 
-    /// The centre's cross-fade as the cache sees it: its progress in
-    /// thousandths while it runs, so each of its frames draws anew.
+    /// The centre's cross-fade as the cache sees it: its progress in thousandths while it runs, so
+    /// each of its frames draws anew.
     pub(super) fn center_fade_key(&self) -> Option<u16> {
         let now = ui::time::now();
         self.center_fade.is_moving(now).then(|| {
@@ -378,8 +368,8 @@ impl TopBarChrome {
         })
     }
 
-    /// The centre selector's width as the cache sees it while it morphs:
-    /// in quarter pixels, so each of its frames draws anew.
+    /// The centre selector's width as the cache sees it while it morphs: in quarter pixels, so each
+    /// of its frames draws anew.
     pub(super) fn center_width_key(&self) -> Option<u32> {
         let now = ui::time::now();
         self.center_width.is_moving(now).then(|| {
@@ -410,12 +400,10 @@ impl TopBarChrome {
             .max()
     }
 
-    /// Whether the centre on screen is not the centre as it is now: the
-    /// cached frame was painted part-way through a cross-fade that has
-    /// since settled, or the activity came or went since. Without this the
-    /// last frame painted while the fade moved stays up, the time and the
-    /// activity both at part opacity, because nothing else asks to paint
-    /// once the motion has settled.
+    /// Whether the centre on screen is not the centre as it is now: the cached frame was painted
+    /// part-way through a cross-fade that has since settled, or the activity came or went since.
+    /// Without this the last frame painted while the fade moved stays up, the time and the activity
+    /// both at part opacity, because nothing else asks to paint once the motion has settled.
     pub(super) fn center_frame_stale(&self) -> bool {
         // A bar that paints nothing has no centre on screen to go stale.
         if self.presence() == TopBarPresence::Hidden
@@ -450,12 +438,11 @@ impl TopBarChrome {
             return;
         };
         let style = theme.text(TextRole::Caption);
-        // Keep activity in one line. `measure(..., Some(width))` wraps at
-        // word boundaries, which made a large-text notification grow to two
-        // lines inside the fixed-height selector and clip into the bar edge.
-        // The dots reserve the first three pitches of the band; the trailing
-        // inset reserves the right breathing room. Elision preserves that
-        // geometry at every text scale and viewport width.
+        // Keep activity in one line. `measure(..., Some(width))` wraps at word boundaries, which
+        // made a large-text notification grow to two lines inside the fixed-height selector and
+        // clip into the bar edge. The dots reserve the first three pitches of the band; the
+        // trailing inset reserves the right breathing room. Elision preserves that geometry at
+        // every text scale and viewport width.
         let max_width = self.activity_content_width(theme);
         let label = self.activity_display_label(text_renderer, &style, max_width);
         let line =
@@ -474,9 +461,8 @@ impl TopBarChrome {
         );
     }
 
-    /// Width of the centre lane the activity headline may occupy — the
-    /// band minus its insets, exactly as
-    /// [`Self::draw_center_band`] lays it out.
+    /// Width of the centre lane the activity headline may occupy — the band minus its insets,
+    /// exactly as [`Self::draw_center_band`] lays it out.
     pub(super) fn activity_content_width(&self, theme: &Theme) -> f32 {
         let (x0, x1) = Self::center_content_lane(self.center_rect);
         ui::num::f32_of_f64((x1 - x0).max(f64::from(theme.tokens.spacing.s12)))
@@ -491,16 +477,15 @@ impl TopBarChrome {
         let Some(headline) = self.activity_headline.as_deref() else {
             return String::new();
         };
-        // The headline alone: the unread count is the badge's, never joined
-        // into the sentence, and clicking the pill opens the activity.
+        // The headline alone: the unread count is the badge's, never joined into the sentence, and
+        // clicking the pill opens the activity.
         let medium = style.clone().with_weight(TextWeight::Medium);
         let (full_width, _) = text_renderer.measure_style(headline, None, &medium);
         if full_width <= max_width {
             return headline.to_string();
         }
-        // Aggregate activity sometimes lists its examples after a colon
-        // (the workspaces just recorded). Keep the whole event clause rather
-        // than cutting part-way through the examples.
+        // Aggregate activity sometimes lists its examples after a colon (the workspaces just
+        // recorded). Keep the whole event clause rather than cutting part-way through the examples.
         if let Some((summary, _examples)) = headline.split_once(':') {
             let (compact_width, _) = text_renderer.measure_style(summary, None, &medium);
             if compact_width <= max_width {
@@ -511,10 +496,9 @@ impl TopBarChrome {
     }
 }
 
-/// The thumbnail a song's pill heads its title with: its cover, drawn by the
-/// image store's own tile so the bar's picture is cut and rounded as every
-/// other cover is. A cover the store has not read yet leaves the slot it
-/// keeps, so the title never jumps once it lands.
+/// The thumbnail a song's pill heads its title with: its cover, drawn by the image store's own tile
+/// so the bar's picture is cut and rounded as every other cover is. A cover the store has not read
+/// yet leaves the slot it keeps, so the title never jumps once it lands.
 fn paint_pill_art(
     scene: &mut Scene,
     transform: Affine,
@@ -534,14 +518,14 @@ fn paint_pill_art(
     );
 }
 
-/// Seconds the centre band's time reading stays the same for: the clock
-/// paints `HH:MM`, a live activity counts seconds.
+/// Seconds the centre band's time reading stays the same for: the clock paints `HH:MM` , a live
+/// activity counts seconds.
 pub(super) fn time_bucket_secs(activity_visible: bool) -> u64 {
     if activity_visible { 1 } else { 60 }
 }
 
-/// How long from `since_epoch` (wall time) until the next whole multiple of
-/// `bucket_secs` seconds, when a reading of that grain changes.
+/// How long from `since_epoch` (wall time) until the next whole multiple of `bucket_secs` seconds,
+/// when a reading of that grain changes.
 pub(super) fn until_next_time_bucket(since_epoch: Duration, bucket_secs: u64) -> Duration {
     let bucket = Duration::from_secs(bucket_secs.max(1));
     let into = Duration::from_nanos(

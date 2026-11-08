@@ -33,10 +33,6 @@ pub fn configure(root: Option<&str>) -> Result<(), String> {
 /// Route this process's browser data for the window it opens: a private
 /// window gets an isolated private root, removed when it is done; any other
 /// window the root `TILO_BROWSER_APP_ROOT` names, else the platform's.
-///
-/// # Errors
-/// Returns an error when the private root cannot be allocated or the data
-/// root is invalid.
 pub fn prepare_window(private: bool) -> Result<(), String> {
     static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
     PREPARED
@@ -74,9 +70,6 @@ pub fn cache_dir() -> Option<PathBuf> {
 }
 
 /// Create and mark an isolated private-storage directory.
-///
-/// # Errors
-/// Returns an error if a unique directory cannot be created or initialized securely.
 pub fn allocate_private_root() -> Result<PathBuf, String> {
     sweep_orphaned_private_roots();
     for _ in 0..16 {
@@ -237,9 +230,6 @@ pub use ui::storage::OpenWindow;
 
 /// Count a window among the profile's at `root`, which is made if it is not
 /// there yet: a first window opens before anything else writes to it.
-///
-/// # Errors
-/// Returns an error when the profile or its lock file cannot be made.
 pub fn open_window(root: &Path) -> std::io::Result<OpenWindow> {
     std::fs::create_dir_all(root)?;
     OpenWindow::open(root)

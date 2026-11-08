@@ -9,8 +9,8 @@
 //! card, a card closed, folded, dropped, or keyboard focus entering or
 //! leaving.
 //!
-//! What the layer shows for the session's own hit testing comes back as
-//! [`Shown`]: the cards it drew on the last frame and where.
+//! What the layer shows for the session's own hit testing comes back
+//! as [`Shown`]: the cards it drew on the last frame and where.
 
 use std::cell::RefCell;
 use std::rc::Rc;

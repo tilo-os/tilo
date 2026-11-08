@@ -23,8 +23,8 @@ use winit::keyboard::{Key, NamedKey};
 pub enum Edit {
     /// Not ours — let it fall through to whatever is behind the field.
     Ignored,
-    /// Consumed, nothing visible changed (a no-op `Ctrl+C`, say): swallow
-    /// the key, skip the repaint.
+    /// Consumed, nothing visible changed (a no-op `Ctrl+C` , say): swallow the key, skip the
+    /// repaint.
     ConsumedQuiet,
     /// Consumed and the buffer or selection changed — repaint.
     Changed,
@@ -38,8 +38,8 @@ pub enum Edit {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Mods {
     pub shift: bool,
-    /// Ctrl *or* Super — the chrome treats them alike so the same chords
-    /// work whichever the user's muscle memory reaches for.
+    /// Ctrl *or* Super — the chrome treats them alike so the same chords work whichever the user's
+    /// muscle memory reaches for.
     pub ctrl: bool,
 }
 
@@ -66,7 +66,7 @@ fn core(sel: Selection) -> EditCore {
     core
 }
 
-/// Apply `edit` to `buf` and hand the core's selection back to `sel`.
+/// Apply `edit` to `buf` and hand the core's selection back to `sel` .
 fn finish(edit: &ui::Edit, core: &EditCore, buf: &mut String, sel: &mut Selection) -> Edit {
     let changed = !edit.is_noop() && edit.apply(buf);
     let moved = core.selection() != *sel;
@@ -78,9 +78,8 @@ fn finish(edit: &ui::Edit, core: &EditCore, buf: &mut String, sel: &mut Selectio
     }
 }
 
-/// Apply one key press to the caller's own `buf` / `sel`; `sel`'s anchor
-/// and cursor are byte indices into `buf`, always left on a grapheme
-/// boundary.
+/// Apply one key press to the caller's own `buf` / `sel` ; `sel` 's anchor and cursor are byte
+/// indices into `buf` , always left on a grapheme boundary.
 pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Edit {
     let Mods { shift, ctrl } = mods;
     let mut edit_core = core(*sel);
@@ -123,9 +122,8 @@ pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Ed
     }
 }
 
-/// Text from an input method (or a typed character): it replaces the
-/// selection at the caret. Text that is only control characters is not
-/// ours.
+/// Text from an input method (or a typed character): it replaces the selection at the caret. Text
+/// that is only control characters is not ours.
 pub fn commit(text: &str, buf: &mut String, sel: &mut Selection) -> Edit {
     let mut edit_core = core(*sel);
     let edit = edit_core.commit(text);
@@ -135,8 +133,8 @@ pub fn commit(text: &str, buf: &mut String, sel: &mut Selection) -> Edit {
     finish(&edit, &edit_core, buf, sel)
 }
 
-/// `Key::Character` under Ctrl/Super: select-all, copy, cut, paste, or
-/// (any other character) ignored.
+/// `Key::Character` under Ctrl/Super: select-all, copy, cut, paste, or (any other character)
+/// ignored.
 fn apply_ctrl_char(
     s: &str,
     edit_core: &mut EditCore,

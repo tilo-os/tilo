@@ -522,10 +522,6 @@ impl SpeakerSetup {
     }
 
     /// Move from choosing outputs to telling them apart.
-    ///
-    /// # Errors
-    ///
-    /// The reason the chosen outputs cannot form this arrangement.
     pub fn confirm_outputs(&mut self) -> Result<(), String> {
         if let Some(problem) = self.outputs_problem() {
             return Err(problem);
@@ -786,10 +782,6 @@ impl SpeakerSetup {
 
     /// Start measuring `group` from where the person sits, with every extra
     /// microphone that is switched on.
-    ///
-    /// # Errors
-    ///
-    /// The reason calibration cannot start.
     pub fn calibrate_command(&self, group: &str) -> Result<SpeakerCommand, String> {
         if let Some(problem) = self.calibration_problem(group) {
             return Err(problem);
@@ -848,10 +840,6 @@ impl SpeakerSetup {
 /// the shell's broker lane; tests substitute a fake.
 pub trait SpeakerService: Send + Sync {
     /// Send one command and wait for the shell's answer.
-    ///
-    /// # Errors
-    ///
-    /// A message when the shell cannot be reached.
     fn call(&self, command: SpeakerCommand) -> Result<ui::collaboration::SpeakerReply, String>;
 }
 

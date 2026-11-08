@@ -105,11 +105,6 @@ pub fn invoke_independent(input: &Value) -> bool {
 /// Validate a whole plan-mode batch before any discovery or control dispatch.
 /// A terminal plan must be alone: accepting the first plan in a mixed batch
 /// would silently discard calls and change the model's declared order.
-///
-/// # Errors
-///
-/// Rejects malformed or duplicate calls, invalid discovery arguments, unknown
-/// planning tools, and batches mixing a terminal plan with other calls.
 pub fn validate_plan_calls(calls: &[ToolCall]) -> Result<(), String> {
     let mut ids = BTreeSet::new();
     for call in calls {
@@ -970,11 +965,6 @@ pub struct Invocation {
 }
 
 /// Read an [`INVOKE`] call.
-///
-/// # Errors
-///
-/// In words for the model: no operation, an operation no tool in this
-/// conversation showed, or arguments that are not an object.
 pub fn read_invoke(input: &Value, revealed: &Revealed) -> Result<Invocation, String> {
     let operation = input
         .get("operation")

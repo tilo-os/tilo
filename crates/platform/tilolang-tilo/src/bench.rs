@@ -226,9 +226,6 @@ fn now_utc() -> String {
 }
 
 /// The packages `dir` needs, compiled, the package itself last.
-///
-/// # Errors
-/// A package does not read or compile.
 pub fn compile(dir: &Path) -> Result<Vec<Compiled>, String> {
     let search: Vec<PathBuf> = dir.parent().map(Path::to_path_buf).into_iter().collect();
     let dirs = dependency_order(dir, &search)?;
@@ -480,14 +477,10 @@ fn texts_of(schema: &crate::schema::TypeSchema) -> Vec<String> {
 /// that has no default (a time, a date, a person), as the type's constructor would have
 /// written one. Every record the bench seeds starts here, so none holds a field a view reads
 /// as a trap.
-///
-/// # Errors
-///
-/// The type is not registered, or has a register the bench cannot seed.
-pub(crate) fn unwritten(ty: &str, meta: &Meta) -> Result<DynRecord, String> {
+pub(crate) fn unwritten(ty: &str) -> Result<DynRecord, String> {
     let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
     let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
-    fill_registers(&mut record, &register_fields(meta, ty)?)?;
+    fill_registers(&mut record, &register_fields(ty)?)?;
     Ok(record)
 }
 
@@ -537,22 +530,23 @@ fn fill_registers(record: &mut DynRecord, registers: &[(String, Ty)]) -> Result<
 /// The registers of the type `ty` that hold no value until one is written, with the type each
 /// holds.
 ///
-/// # Errors
-///
-/// A field's type that does not read.
-fn register_fields(meta: &Meta, ty: &str) -> Result<Vec<(String, Ty)>, String> {
-    let Some(declared) = crate::meta::MetaExt::type_named(meta, ty) else {
-        return Ok(Vec::new());
-    };
-    declared
-        .fields
-        .iter()
-        .filter(|f| f.merge == tilolang::types::MergeKind::Register && f.default.is_none())
-        .map(|f| {
-            let ty = tilolang_runtime::meta::parse_ty(f.ty.trim(), &meta.app)?;
-            Ok((f.id.clone(), ty))
-        })
-        .collect()
+/// Read from the type's own registered schema: a record the bench seeds is of the type it
+/// declares, and the package that seeds a workspace need not declare the roots of the apps it
+/// links.
+fn register_fields(ty: &str) -> Result<Vec<(String, Ty)>, String> {
+    let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
+    let mut registers = Vec::new();
+    for f in &schema.fields {
+        if f.kind != MergeKind::Register || !f.default.is_null() {
+            continue;
+        }
+        let held = f
+            .ty
+            .clone()
+            .ok_or_else(|| format!("the bench cannot seed `{}`: its type does not read", f.id))?;
+        registers.push((f.id.clone(), held));
+    }
+    Ok(registers)
 }
 
 /// The collection inside the root's collection `outer` that people use: the one whose items
@@ -608,16 +602,16 @@ fn item_id(i: usize) -> String {
 ///
 /// A list inside holders is filled from the bottom up: the holders hold one record each (the
 /// workspace's mail accounts; a workspace has a few), and what grows is the collection in it.
-fn seeded_collection(list: &List, n: usize, meta: &Meta) -> Result<Collection<DynRecord>, String> {
-    with_holders(list, seeded_items(list, n, meta)?, meta)
+fn seeded_collection(list: &List, n: usize) -> Result<Collection<DynRecord>, String> {
+    with_holders(list, seeded_items(list, n)?)
 }
 
 /// `n` items of [`List`], as its collection holds them, outside any holder.
-fn seeded_items(list: &List, n: usize, meta: &Meta) -> Result<Collection<DynRecord>, String> {
+fn seeded_items(list: &List, n: usize) -> Result<Collection<DynRecord>, String> {
     let n = if list.places { n.min(PLACES) } else { n };
     let mut items = Collection::default();
     for i in 0..n {
-        let mut item = unwritten(&list.item_ty, meta)?;
+        let mut item = unwritten(&list.item_ty)?;
         for (k, field) in list.texts.iter().enumerate() {
             if let Some(DynValue::Text(text)) = item.get_mut(field) {
                 *text = if k == 0 {
@@ -647,13 +641,12 @@ fn seeded_items(list: &List, n: usize, meta: &Meta) -> Result<Collection<DynReco
 pub(crate) fn with_holders(
     list: &List,
     items: Collection<DynRecord>,
-    meta: &Meta,
 ) -> Result<Collection<DynRecord>, String> {
     let mut items = items;
     // Each holder's own collection holds the one below it, its own id naming it: a mail
     // account's conversations.
     for (level, holder) in list.holders.iter().enumerate().rev() {
-        let mut record = unwritten(&holder.ty, meta)?;
+        let mut record = unwritten(&holder.ty)?;
         for (k, field) in holder.texts.iter().enumerate() {
             if let Some(DynValue::Text(text)) = record.get_mut(field) {
                 *text = if k == 0 {
@@ -714,10 +707,10 @@ fn holder_id(level: usize) -> String {
 
 /// The root record with `n` items in its collection (a sidebar of places, its [`PLACES`]),
 /// each with its number in every text field, and referring to the roots it links.
-fn seeded_root(shape: &Shape, n: usize, meta: &Meta) -> Result<DynRecord, String> {
-    let mut root = unwritten(&shape.root_ty, meta)?;
+fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
+    let mut root = unwritten(&shape.root_ty)?;
     if let Some(list) = &shape.list {
-        let items = seeded_collection(list, n, meta)?;
+        let items = seeded_collection(list, n)?;
         // The topmost collection is the root's own field: the holder chain's first field, or
         // the list's when it stands in the root.
         let field = top_field(list);
@@ -767,11 +760,11 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
 }
 
 /// Create the root of `shape`, seeded with `n` items, in `doc`: the roots it links first.
-fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta, who: &str) -> Result<(), String> {
+fn seed(doc: &mut Doc, shape: &Shape, n: usize, who: &str) -> Result<(), String> {
     for (_, linked) in &shape.links {
-        seed(doc, linked, n, meta, who)?;
+        seed(doc, linked, n, who)?;
     }
-    let root = seeded_root(shape, n, meta)?;
+    let root = seeded_root(shape, n)?;
     let action = DynAction {
         app: shape.app.clone(),
         kind: format!("tl.{}.seed", shape.app),
@@ -787,9 +780,9 @@ fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta, who: &str) -> Resul
 }
 
 /// A workspace seeded with `n` items, all made by `who`: the record, ready for a host.
-fn seeded_workspace(shape: &Shape, n: usize, meta: &Meta, who: &str) -> Result<Doc, String> {
+fn seeded_workspace(shape: &Shape, n: usize, who: &str) -> Result<Doc, String> {
     let mut doc = Doc::new();
-    seed(&mut doc, shape, n, meta, who)?;
+    seed(&mut doc, shape, n, who)?;
     // A window opens a workspace it loads, from storage or a peer: the seeded record, saved and
     // loaded again.
     Doc::load(&doc.save()).map_err(|e| e.to_string())
@@ -825,7 +818,7 @@ pub fn seeded_record_by(packages: &[Compiled], n: usize, who: &str) -> Result<Do
         .map(|p| &p.meta)
         .filter(|m| m.app != main.meta.app)
         .collect();
-    seeded_workspace(&shape_of(&main.meta, &others)?, n, &main.meta, who)
+    seeded_workspace(&shape_of(&main.meta, &others)?, n, who)
 }
 
 /// The workspace the last of `packages` seeds `n` items of, held as the chunks the store writes:
@@ -852,7 +845,7 @@ pub fn seeded_chunks(packages: &[Compiled], n: usize) -> Result<Chunks, String> 
     // The root and the roots it links, their collections empty: the items come as the action
     // that adds each does, one change an item in the chunk its run is in.
     let mut record = Doc::new();
-    seed(&mut record, &shape, 0, &main.meta, "seed")?;
+    seed(&mut record, &shape, 0, "seed")?;
     let mut chunks = Chunks::of(record);
     let Some(list) = &shape.list else {
         return Ok(chunks);
@@ -860,7 +853,7 @@ pub fn seeded_chunks(packages: &[Compiled], n: usize) -> Result<Chunks, String> 
     if !list.holders.is_empty() {
         return Err("the items of a collection inside holders are seeded as one document".into());
     }
-    let items = seeded_items(list, n, &main.meta)?;
+    let items = seeded_items(list, n)?;
     let root = root_id(&shape);
     let field = list.field.clone();
     let per = usize::try_from(chunk::ITEMS).map_err(|e| e.to_string())?;
@@ -993,6 +986,7 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
         let host = Host::open(
             Opening {
                 record: Some(doc),
+                chunks: None,
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
             },
@@ -1118,6 +1112,7 @@ impl Workspace {
         let host = Host::open(
             Opening {
                 record: Some(&doc),
+                chunks: None,
                 index_dir: index.as_ref().map(|dir| dir.path().to_owned()),
                 device: None,
             },
@@ -1696,9 +1691,6 @@ fn workspace_sizes(shape: &Shape, sizes: &[usize]) -> Vec<usize> {
 }
 
 /// Run every scenario at every size.
-///
-/// # Errors
-/// The package does not compile or a scenario fails.
 pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Record>, String> {
     let engine = tilolang_runtime::configure(config.engine)?;
     if engine != config.engine {
@@ -1752,7 +1744,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         })
     };
     for n in counts {
-        let sized = sized(n, seeded_workspace(&shape, n, &meta, "seed")?)?;
+        let sized = sized(n, seeded_workspace(&shape, n, "seed")?)?;
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
@@ -2045,6 +2037,7 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
         let host = Host::open(
             Opening {
                 record: None,
+                chunks: None,
                 index_dir: Some(index.path().to_owned()),
                 device: None,
             },
@@ -2457,7 +2450,6 @@ fn peer_post(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
             &format!("Peer post {sample}"),
             1,
             &principals,
-            sized.meta,
         )?;
         // The seeded items' own collections hold nothing: the post is their first.
         let at = tilolang_runtime::place::Placement::At {

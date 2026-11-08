@@ -401,6 +401,8 @@ secret-prompt-attempts-left = { $count ->
 secret-prompt-pins-differ = The new PINs don’t match
 secret-prompt-keypad-delete = Delete
 secret-prompt-keypad-enter = Done
+secret-prompt-keypad-shift = Shift
+secret-prompt-keypad-space = Space
 
 # Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
 screen-reader-turned-on = Screen reader on
@@ -787,6 +789,8 @@ menu-ask-typed = Send: { $text }
 # The box beside a context menu: whom a message goes to, what it is about,
 # and its words.
 send-to-name = Send to
+# The same box opened to the one place reports go.
+send-to-report-name = Report a problem
 send-to-to = To
 send-to-new-agent = New agent
 send-to-recipients-name = Recipients
@@ -797,6 +801,7 @@ send-to-subjects-name = Subjects
 send-to-add-subject = Add a subject
 send-to-message-name = Message
 send-to-message-placeholder = Write a message
+send-to-report-placeholder = What went wrong?
 send-to-send = Send
 send-to-remove = Remove
 send-to-recipient-set = Sent to { $name }
@@ -977,10 +982,10 @@ change-window = { $count ->
     [one] One change by { $who }
    *[other] { $count } changes by { $who }
 }
-# A window's mark when the type names what an item of it is ($noun, plural): everyone who
-# changed what the window shows, and how many items they changed.
+# A window's mark when the type names what an item of it is ($noun, plural, and $one, its
+# singular): everyone who changed what the window shows, and how many items they changed.
 change-window-changed = { $who } changed { $count ->
-    [one] one { $noun }
+    [one] one { $one }
    *[other] { $count } { $noun }
 }
 # The names a window's mark lists, as a sentence reads them; past three it names the first two
@@ -1000,9 +1005,9 @@ change-window-more = { $who } changed at least { $count ->
     [one] one change
    *[other] { $count } changes
 }
-# The same, when the type names what an item of it is ($noun, plural).
+# The same, when the type names what an item of it is ($noun, plural, and $one, singular).
 change-window-changed-more = { $who } changed at least { $count ->
-    [one] one { $noun }
+    [one] one { $one }
    *[other] { $count } { $noun }
 }
 

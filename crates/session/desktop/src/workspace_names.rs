@@ -2,10 +2,9 @@
 
 use tilo_desktop_model::Workspace;
 
-/// The name a workspace the desk is making gets: `name` as the person gave
-/// it, else the next number after those `held` here. A name already held is
-/// numbered, so two workspaces of one name never stand side by side in the
-/// bar, the menu and the overview, where a person picks one by its name.
+/// The name a workspace the desk is making gets: `name` as the person gave it, else the next number
+/// after those `held` here. A name already held is numbered, so two workspaces of one name never
+/// stand side by side in the bar, the menu and the overview, where a person picks one by its name.
 pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
     let wanted = name
         .map(str::trim)
@@ -15,8 +14,8 @@ pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
     if !taken(&wanted) {
         return wanted;
     }
-    // Each number names one more candidate, so fewer of them are held than
-    // there are numbers: the first free one is found.
+    // Each number names one more candidate, so fewer of them are held than there are numbers: the
+    // first free one is found.
     let mut number: usize = 2;
     loop {
         let candidate = format!("{wanted} {number}");
@@ -27,8 +26,7 @@ pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
     }
 }
 
-/// The name of a workspace the desk numbers itself: the next one after those
-/// `held` here.
+/// The name of a workspace the desk numbers itself: the next one after those `held` here.
 fn numbered(held: &[Workspace]) -> String {
     tilo_desktop_surface::i18n::t_args(
         "browser-new-workspace-name",

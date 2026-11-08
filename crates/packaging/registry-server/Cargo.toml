@@ -60,7 +60,6 @@ tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-registry-client = { path = "../registry-client" }
 # Compaction tests verify served snapshots with the native and browser clients.
 app-cli = { path = "../app-cli" }
 # The bot directory test plans an install from what it published.

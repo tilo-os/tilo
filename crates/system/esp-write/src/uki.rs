@@ -177,9 +177,6 @@ fn u32_at(data: &[u8], at: usize) -> Result<u32> {
 }
 
 /// The PE machine field (`0xaa64` for ARM64, `0x8664` for x86-64).
-///
-/// # Errors
-/// No PE signature where `e_lfanew` points.
 pub fn machine(data: &[u8]) -> Result<u16> {
     let pe = signature(data)?;
     u16_at(data, pe.saturating_add(4))
@@ -194,9 +191,6 @@ fn signature(data: &[u8]) -> Result<usize> {
 }
 
 /// Every section of the PE in `data`, in table order.
-///
-/// # Errors
-/// No PE signature, or headers cut short.
 pub fn section_table(data: &[u8]) -> Result<Vec<Section>> {
     let pe = signature(data)?;
     let count = u16_at(data, pe.saturating_add(6))?;
@@ -261,9 +255,6 @@ pub fn boot_digest(data: &[u8]) -> Result<String> {
 
 /// The `.cmdline` section's file offset and size (the smaller of its raw and
 /// virtual sizes).
-///
-/// # Errors
-/// Not a PE, or no `.cmdline` section.
 pub fn find_cmdline(data: &[u8]) -> Result<(usize, usize)> {
     section_table(data)?
         .into_iter()
@@ -317,9 +308,6 @@ fn find_room(data: &[u8], name: &str, missing: &str) -> Result<Room> {
 }
 
 /// The `.cmdline` section's geometry, without moving another PE section.
-///
-/// # Errors
-/// Not a PE, or no `.cmdline` section.
 pub fn find_cmdline_room(data: &[u8]) -> Result<Room> {
     find_room(
         data,
@@ -338,9 +326,6 @@ fn find_osrel(data: &[u8]) -> Result<Room> {
 
 /// Replaces a section's content with `new` padded with NULs to its raw size,
 /// and sets its virtual size to `new`'s length. Nothing else moves.
-///
-/// # Errors
-/// The raw section reaches past the end of the file.
 pub fn write_section(data: &mut [u8], room: &Room, new: &[u8]) -> Result<()> {
     let length =
         u32::try_from(new.len()).map_err(|_| Error::new("section content is too large"))?;
@@ -515,9 +500,6 @@ pub fn remove_cmdline(path: &Path, key: &[u8]) -> Result<(Vec<u8>, usize, usize)
 }
 
 /// The `.osrel` section's text.
-///
-/// # Errors
-/// Not a PE, or no `.osrel` section.
 pub fn read_osrel(data: &[u8]) -> Result<String> {
     let room = find_osrel(data)?;
     let content = clamp(data, room.raw_offset, room.raw_size.min(room.virtual_size));

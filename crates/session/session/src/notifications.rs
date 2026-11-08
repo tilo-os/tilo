@@ -49,13 +49,11 @@ use crate::i18n::{t, t_args};
 use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
 
-/// Mount the banners app on the desk: what it shows of the desktop's
-/// notifications, and its own link to them.
-///
-/// Under the shell nothing of it is mounted: the shell draws the banner a
-/// notice rises as from the desk it reads (`Desk.banner`), so a banner stack of
-/// its own would draw a second one over it and take the presses meant for what
-/// the shell shows there.
+/// Mount the banners app on the desk: what it shows of the desktop's notifications, and its own
+/// link to them.
+/// Under the shell nothing of it is mounted: the shell draws the banner a notice rises as from the
+/// desk it reads (`Desk.banner`), so a banner stack of its own would draw a second one over it and
+/// take the presses meant for what the shell shows there.
 pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
     doors: &mut tilo_surface_host::Doors,
@@ -92,16 +90,15 @@ pub(crate) fn mount_banners(
 /// The most unread notifications one app's icon counts to.
 const MAX_BADGE: u32 = 9_999;
 
-/// Where the centre's history is kept between sessions: this person's state
-/// directory, as the emoji's recents are.
+/// Where the centre's history is kept between sessions: this person's state directory, as the
+/// emoji's recents are.
 pub(crate) fn history_file() -> Option<std::path::PathBuf> {
     tilo_paths::state_dir().map(|root| root.join("tilo/notifications.json"))
 }
 
-/// Keep what the centre holds, so the next session opens the centre this one
-/// had: its titles, its bodies, its senders and how old each is. What a row
-/// could act on does not survive: the sender, its actions and the session's
-/// routes are gone with it.
+/// Keep what the centre holds, so the next session opens the centre this one had: its titles, its
+/// bodies, its senders and how old each is. What a row could act on does not survive: the sender,
+/// its actions and the session's routes are gone with it.
 pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Path) {
     let history = notices.log().history().to_vec();
     let encoded = match tilo_desktop_surface::notifications::encode_history(
@@ -121,8 +118,8 @@ pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Pat
         tracing::warn!(%error, "no place for the notification centre");
         return;
     }
-    // Written beside and moved over, so a session that ends mid-write never
-    // leaves half a file to be read back.
+    // Written beside and moved over, so a session that ends mid-write never leaves half a file to
+    // be read back.
     let beside = path.with_extension("json.new");
     if let Err(error) =
         std::fs::write(&beside, &encoded).and_then(|()| std::fs::rename(&beside, path))
@@ -131,15 +128,15 @@ pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Pat
     }
 }
 
-/// Open the centre the last session left, and hand back where it is kept
-/// so this session writes it back there.
+/// Open the centre the last session left, and hand back where it is kept so this session writes it
+/// back there.
 pub(crate) fn restore_history(notices: &DesktopNotifications) -> Option<std::path::PathBuf> {
     let path = history_file()?;
     restore_kept(notices, &path);
     Some(path)
 }
 
-/// Open the centre kept at `path`: what it kept, as old as it was.
+/// Open the centre kept at `path` : what it kept, as old as it was.
 fn restore_kept(notices: &DesktopNotifications, path: &std::path::Path) {
     let Ok(bytes) = std::fs::read(path) else {
         return;
@@ -198,14 +195,11 @@ pub(crate) fn shown(
         }
     };
     notification.sender_id = Some(sent.id);
-    // `app_name` is the sender's own word: an attributed app is named by
-    // what the device calls that app — a program with no app behind it by
-    // what it calls itself — and an unattributed sender's name is shown as
-    // its claim, never as who it is.
-    //
-    // The desktop's own notice is neither: the session raises it in its own
-    // name, so it keeps the name it carries and leads with the system's
-    // mark rather than being read as some app's claim.
+    // `app_name` is the sender's own word: an attributed app is named by what the device calls that
+    // app — a program with no app behind it by what it calls itself — and an unattributed sender's
+    // name is shown as its claim, never as who it is.
+    // The desktop's own notice is neither: the session raises it in its own name, so it keeps the
+    // name it carries and leads with the system's mark rather than being read as some app's claim.
     if sent.system {
         notification.app_name = Some(sent.app_name);
         notification.icon_kind = NotificationIconKind::System;
@@ -215,9 +209,8 @@ pub(crate) fn shown(
             None => notifications::sender_claim(&sent.app_name),
         };
     }
-    // Artwork from what proves the app first, then lower-trust hints that
-    // can only supply pixels, then the sender's own decoded image. Only
-    // ever pixels: it never names or groups the app.
+    // Artwork from what proves the app first, then lower-trust hints that can only supply pixels,
+    // then the sender's own decoded image. Only ever pixels: it never names or groups the app.
     notification.app_image = app_icons::notification(
         format!("notification:{}:{generation}", sent.id),
         app_id.as_deref(),
@@ -228,14 +221,13 @@ pub(crate) fn shown(
         notification.app_name.as_deref(),
     );
     notification.app_id = app_id;
-    // A person named by an attributed communications app leads the
-    // banner; the endpoint only picks their colour and is never shown.
+    // A person named by an attributed communications app leads the banner; the endpoint only picks
+    // their colour and is never shown.
     notification.from = sent
         .sender_name
         .zip(sent.contact_endpoint)
         .map(|(name, identity)| NotificationPerson { name, identity });
-    // A call rings for the person it is from; the category alone is only
-    // the app's word.
+    // A call rings for the person it is from; the category alone is only the app's word.
     if sent.incoming_call && notification.from.is_some() {
         notification.addressed = Some(Addressed::IncomingCall);
     }
@@ -274,8 +266,7 @@ pub(crate) fn shown(
             snoozed: false,
             uri: occurrence.uri,
         });
-    // Never from the wire: an app that could pierce Do Not Disturb would
-    // ask every time.
+    // Never from the wire: an app that could pierce Do Not Disturb would ask every time.
     notification.bypass_dnd = false;
     notification.show_on_lock_screen = false;
     notification
@@ -285,8 +276,8 @@ pub(crate) fn shown(
 const ANSWER_KEYS: [&str; 2] = ["accept", "answer"];
 const DECLINE_KEYS: [&str; 3] = ["decline", "reject", "hangup"];
 
-/// What the bar reads of the notifications each frame: how many are
-/// unread, whether fresh banners are held, and each app's own count.
+/// What the bar reads of the notifications each frame: how many are unread, whether fresh banners
+/// are held, and each app's own count.
 #[derive(Default)]
 pub(crate) struct NoticeSignals {
     unread: Cell<u32>,
@@ -311,9 +302,8 @@ impl NoticeSignals {
         self.quiet.get()
     }
 
-    /// How many notifications each app (by verified id) is showing as
-    /// unread, where it shows any and this person keeps its badges on.
-    /// The count on `app_id`'s badge.
+    /// How many notifications each app (by verified id) is showing as unread, where it shows any
+    /// and this person keeps its badges on. The count on `app_id` 's badge.
     pub(crate) fn badge(&self, app_id: &str) -> u32 {
         self.badges.borrow().get(app_id).copied().unwrap_or(0)
     }
@@ -328,11 +318,10 @@ impl NoticeSignals {
     }
 }
 
-/// Who a notification came from: the app the session sees in the sender's
-/// process (the one it shows a window for), or, for a sender with no window
-/// of its own, the app its process is named by — its systemd unit, the
-/// installed entry it runs, or its program — as the portal names one.
-/// Nothing the sender says about itself is believed.
+/// Who a notification came from: the app the session sees in the sender's process (the one it shows
+/// a window for), or, for a sender with no window of its own, the app its process is named by — its
+/// systemd unit, the installed entry it runs, or its program — as the portal names one. Nothing the
+/// sender says about itself is believed.
 pub(crate) struct AppCallers {
     /// The apps the session sees run, by process.
     running: Arc<Mutex<BTreeMap<u32, String>>>,
@@ -340,8 +329,8 @@ pub(crate) struct AppCallers {
     side: PortalSide,
     /// Where a process with no window of its own is named from.
     requesters: tilo_portal::Requesters,
-    /// What a process was already named: naming one reads its cgroup, its
-    /// program and the installed entries.
+    /// What a process was already named: naming one reads its cgroup, its program and the installed
+    /// entries.
     named: Mutex<BTreeMap<u32, Option<String>>>,
 }
 
@@ -378,10 +367,10 @@ impl Callers for AppCallers {
     }
 }
 
-/// Where a chosen scheduled notification opens, as `(workspace, uri)`.
+/// Where a chosen scheduled notification opens, as `(workspace, uri)` .
 type Opened = Rc<RefCell<Vec<(String, String)>>>;
 
-/// The senders whose notification the person chose, as `(sender, action)`.
+/// The senders whose notification the person chose, as `(sender, action)` .
 type Chosen = Rc<RefCell<Vec<(u32, Option<String>)>>>;
 
 /// What ties the daemon, the desktop's log and the banners app together.
@@ -389,12 +378,11 @@ pub(crate) struct SessionNotifications {
     daemon: Option<Notifications>,
     desktop: DesktopNotifications,
     banners: Link,
-    /// The machine's power, when this session owns it: what holds it from
-    /// going idle is how a presentation, a video or a call tells the desk
-    /// the screen is being watched by others.
+    /// The machine's power, when this session owns it: what holds it from going idle is how a
+    /// presentation, a video or a call tells the desk the screen is being watched by others.
     power: Option<PowerLink>,
-    /// The person's notification policy, kept current by the session's
-    /// settings watch: what each arrival is judged by.
+    /// The person's notification policy, kept current by the session's settings watch: what each
+    /// arrival is judged by.
     policy: Arc<Mutex<NotificationPolicy>>,
     /// The event sounds arrivals make, judged by the same policy.
     sounds: SystemSounds,
@@ -406,18 +394,17 @@ pub(crate) struct SessionNotifications {
     signals: Rc<NoticeSignals>,
     /// What choosing a scheduled notification opens.
     opened: Opened,
-    /// The kept notifications the person chose to open, waiting for the loop
-    /// that opens their apps.
+    /// The kept notifications the person chose to open, waiting for the loop that opens their apps.
     opening: RefCell<Vec<u64>>,
-    /// The senders whose notification the person chose, waiting to be
-    /// answered with an activation token.
+    /// The senders whose notification the person chose, waiting to be answered with an activation
+    /// token.
     chosen: Chosen,
     /// The desktop's notification for each daemon notification it shows.
     by_sender: BTreeMap<u32, u64>,
     /// The daemon notifications whose banner was up at the last look.
     up: BTreeSet<u32>,
-    /// The desk's banners that were up at the last look: a new one is
-    /// something the person was told since then.
+    /// The desk's banners that were up at the last look: a new one is something the person was told
+    /// since then.
     banners_up: BTreeSet<u64>,
     /// Desktop notifications kept out of the centre once their banner left.
     transient: BTreeSet<u64>,
@@ -425,20 +412,18 @@ pub(crate) struct SessionNotifications {
     published: Option<u64>,
     /// Counts arrivals, keeping each one's artwork apart.
     generation: u64,
-    /// The Do Not Disturb change since the readout last said one: whoever
-    /// flipped the switch, on screen it says so.
+    /// The Do Not Disturb change since the readout last said one: whoever flipped the switch, on
+    /// screen it says so.
     quiet_changed: Cell<Option<bool>>,
-    /// Where what the centre keeps is written between sessions; a session
-    /// with nowhere to write it keeps the centre in memory only.
+    /// Where what the centre keeps is written between sessions; a session with nowhere to write it
+    /// keeps the centre in memory only.
     history: Option<std::path::PathBuf>,
-    /// What continues on the person's other devices, and what they showed
-    /// here.
+    /// What continues on the person's other devices, and what they showed here.
     mirror: Rc<mirror::Mirroring>,
 }
 
 impl SessionNotifications {
-    /// Show `daemon`'s notifications in `desktop`'s log, its banners on
-    /// `banners`.
+    /// Show `daemon` 's notifications in `desktop` 's log, its banners on `banners` .
     pub(crate) fn new(
         daemon: Option<Notifications>,
         desktop: DesktopNotifications,
@@ -459,10 +444,9 @@ impl SessionNotifications {
                 notification,
                 action,
             } => {
-                // A notification another device projected is answered there:
-                // the action the person chose, or the end of it here when
-                // they only opened it. The origins that device's id names
-                // are the only ones it can reach.
+                // A notification another device projected is answered there: the action the person
+                // chose, or the end of it here when they only opened it. The origins that device's
+                // id names are the only ones it can reach.
                 if let Some(route) = notification.remote_route.clone() {
                     let chosen = action.as_deref().filter(|key| {
                         notification
@@ -483,16 +467,15 @@ impl SessionNotifications {
                         .borrow_mut()
                         .push((target.workspace.clone(), target.uri.clone()));
                 }
-                // Choosing answers the sender, with a token its app may raise
-                // its window by: the loop mints it.
+                // Choosing answers the sender, with a token its app may raise its window by: the
+                // loop mints it.
                 if let Some(sender) = notification.sender_id {
                     answering.borrow_mut().push((sender, action.clone()));
                 }
             }
             NotificationOutcome::Dismissed { id } => {
-                // Dismissing another device's notification here dismisses it
-                // there too: the app's notification closes, and every other
-                // copy goes with it.
+                // Dismissing another device's notification here dismisses it there too: the app's
+                // notification closes, and every other copy goes with it.
                 answered.answer(*id, |_, id| PersonalFabricAction::NotificationDismiss {
                     id,
                 });
@@ -522,8 +505,8 @@ impl SessionNotifications {
         }
     }
 
-    /// The policy as it stands for `app_id` at the local time now; `None`
-    /// asks for the desktop's own, which no per-app rule narrows.
+    /// The policy as it stands for `app_id` at the local time now; `None` asks for the desktop's
+    /// own, which no per-app rule narrows.
     fn effective(
         &self,
         app_id: Option<&str>,
@@ -539,15 +522,14 @@ impl SessionNotifications {
         )
     }
 
-    /// Whether the person is presenting right now: an app holding the
-    /// machine from going idle says someone is watching the screen without
-    /// touching anything, which is a slideshow, a video or a call.
+    /// Whether the person is presenting right now: an app holding the machine from going idle says
+    /// someone is watching the screen without touching anything, which is a slideshow, a video or a
+    /// call.
     fn presenting(&self) -> bool {
         self.power.as_ref().is_some_and(PowerLink::idle_held)
     }
 
-    /// How the person's calm settings stand at the local time now, as the
-    /// event sounds read them.
+    /// How the person's calm settings stand at the local time now, as the event sounds read them.
     fn quiet_state(&self) -> QuietState {
         let presenting = self.presenting();
         let (_, minute, weekday) = local_now();
@@ -600,21 +582,20 @@ impl SessionNotifications {
         self.quiet_changed.take()
     }
 
-    /// The desk's log of what it shows: the live banners and the centre
-    /// kept behind them.
+    /// The desk's log of what it shows: the live banners and the centre kept behind them.
     pub(crate) fn desktop(&self) -> DesktopNotifications {
         self.desktop.clone()
     }
 
-    /// Carry this device's notifications to the person's other devices over
-    /// `link` from now on, and show what they carry here.
+    /// Carry this device's notifications to the person's other devices over `link` from now on, and
+    /// show what they carry here.
     pub(crate) fn attach_fabric(&self, link: SharedLink) {
         self.mirror.attach(link);
     }
 
-    /// Show what another of the person's devices projected: a notification
-    /// an app sent there, named after that device, unless the person turned
-    /// this app's notifications off from their other devices.
+    /// Show what another of the person's devices projected: a notification an app sent there, named
+    /// after that device, unless the person turned this app's notifications off from their other
+    /// devices.
     pub(crate) fn remote_project(
         &self,
         source: &DeviceId,
@@ -652,8 +633,8 @@ impl SessionNotifications {
         } else {
             Duration::from_millis(projection.expires_unix_ms.saturating_sub(now))
         };
-        // The app's own name beside the device it was told on: a row here
-        // says what was told, and whose device told it.
+        // The app's own name beside the device it was told on: a row here says what was told, and
+        // whose device told it.
         notification.app_name = Some(match projection.app_name.trim() {
             "" => t_args(
                 "notification-from-device-only",
@@ -667,8 +648,8 @@ impl SessionNotifications {
         notification.app_id = Some(projection.app_id.clone());
         notification.actions.clone_from(&projection.actions);
         notification.remote_route = Some(route.clone());
-        // A device's notification never expands what the lock screen says
-        // here, and its text only shows when previews may.
+        // A device's notification never expands what the lock screen says here, and its text only
+        // shows when previews may.
         notification.show_on_lock_screen = false;
         notification.show_preview = !projection.body_redacted;
         let id = if let Some(existing) = self.desktop.replace_remote(&notification) {
@@ -681,17 +662,16 @@ impl SessionNotifications {
         self.mirror.shown(id, route);
     }
 
-    /// Take away what another of the person's devices projected: it is done
-    /// with the notification, or its window on this desk ran out.
+    /// Take away what another of the person's devices projected: it is done with the notification,
+    /// or its window on this desk ran out.
     pub(crate) fn remote_retire(&self, source: &DeviceId, id: ContinuityNotificationId) {
         self.mirror.retire_shown(source, id);
         self.desktop.retire_remote(source.as_str(), id);
     }
 
-    /// Answer what another of the person's devices asked of the notification
-    /// this one projected to it: `action` the person there chose, or `None`
-    /// for being done with it. The app's notification closes here, and every
-    /// other copy goes with it on this pass.
+    /// Answer what another of the person's devices asked of the notification this one projected to
+    /// it: `action` the person there chose, or `None` for being done with it. The app's
+    /// notification closes here, and every other copy goes with it on this pass.
     pub(crate) fn answer_local(&mut self, daemon_id: u32, action: Option<&str>) {
         if let Some(daemon) = &self.daemon {
             if let Some(key) = action {
@@ -707,10 +687,9 @@ impl SessionNotifications {
         self.mirror.retire(daemon_id);
     }
 
-    /// Carry out a choice another of the person's devices made on a
-    /// notification this one projected to it: the app's notification closes
-    /// here, and every other copy goes with it. Returns whether it named one
-    /// this device projected along with an action the app offered.
+    /// Carry out a choice another of the person's devices made on a notification this one projected
+    /// to it: the app's notification closes here, and every other copy goes with it. Returns
+    /// whether it named one this device projected along with an action the app offered.
     pub(crate) fn answered(&mut self, action: &PersonalFabricAction) -> bool {
         let Some((daemon_id, chosen)) = self.mirror.answered(action) else {
             return false;
@@ -719,8 +698,8 @@ impl SessionNotifications {
         true
     }
 
-    /// The notifications the desk shows now, live or kept: what this device
-    /// still has of what it projected.
+    /// The notifications the desk shows now, live or kept: what this device still has of what it
+    /// projected.
     fn shown_ids(&self) -> BTreeSet<u64> {
         let log = self.desktop.log();
         log.active()
@@ -730,15 +709,15 @@ impl SessionNotifications {
             .collect()
     }
 
-    /// The targets of scheduled notifications the person chose since the
-    /// last look, as `(workspace, uri)`, for the session to open.
+    /// The targets of scheduled notifications the person chose since the last look, as
+    /// `(workspace, uri)` , for the session to open.
     pub(crate) fn take_opened(&self) -> Vec<(String, String)> {
         std::mem::take(&mut *self.opened.borrow_mut())
     }
 
-    /// The notification centre as the session publishes it: how many it
-    /// keeps. The list itself is the shell's centre, which reads the desk's
-    /// own log; what the panel needs is the count that opens it.
+    /// The notification centre as the session publishes it: how many it keeps. The list itself is
+    /// the shell's centre, which reads the desk's own log; what the panel needs is the count that
+    /// opens it.
     pub(crate) fn centre(&self) -> NotificationCentre {
         NotificationCentre {
             count: self.desktop.log().history().len(),
@@ -751,9 +730,8 @@ impl SessionNotifications {
         self.desktop.activate_history(id)
     }
 
-    /// Open the retained notification `id` in the app that sent it: what a
-    /// press on it in the centre asks, carried out by the loop that opens
-    /// apps.
+    /// Open the retained notification `id` in the app that sent it: what a press on it in the
+    /// centre asks, carried out by the loop that opens apps.
     pub(crate) fn ask_open(&self, id: u64) {
         self.opening.borrow_mut().push(id);
     }
@@ -763,8 +741,8 @@ impl SessionNotifications {
         std::mem::take(&mut *self.opening.borrow_mut())
     }
 
-    /// Dismiss a retained notification, or every one an app grouped: the
-    /// centre and the panel list them no more.
+    /// Dismiss a retained notification, or every one an app grouped: the centre and the panel list
+    /// them no more.
     pub(crate) fn dismiss(&self, id: Option<u64>, group: Option<&str>) {
         match (id, group) {
             (Some(id), _) => self.desktop.dismiss_history(id),
@@ -801,13 +779,11 @@ impl SessionNotifications {
         self.desktop.undo_clear();
     }
 
-    /// Tell the person `notice`, which the session itself raised rather than
-    /// one of their apps.
+    /// Tell the person `notice` , which the session itself raised rather than one of their apps.
     pub(crate) fn tell(&self, notice: crate::notices::Notice) {
-        // The session raises the notice, so it plays its sound here: a
-        // sender's category never reaches the events only the session may
-        // claim, and the notification carries none for the arrival to
-        // repeat.
+        // The session raises the notice, so it plays its sound here: a sender's category never
+        // reaches the events only the session may claim, and the notification carries none for the
+        // arrival to repeat.
         if let Some(event) = notice.sound {
             self.sounds.play(event, self.quiet_state(), true);
         }
@@ -815,38 +791,35 @@ impl SessionNotifications {
             Some(daemon) => {
                 notice.tell_as(daemon);
             }
-            // A session without a notifications service still draws its
-            // desk: what it raises is kept there, so nothing it says is
-            // lost.
+            // A session without a notifications service still draws its desk: what it raises is
+            // kept there, so nothing it says is lost.
             None => {
                 notice.tell_desk(&self.desktop);
             }
         }
     }
 
-    /// When the desk's banners next change with no one asking: one running
-    /// out, or a Clear all's undo closing.
+    /// When the desk's banners next change with no one asking: one running out, or a Clear all's
+    /// undo closing.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.desktop.next_deadline()
     }
 
-    /// Take in what arrived and what the banners asked, and hand the
-    /// banners what they show now. `token` mints an activation token for
-    /// each notification the person chose, so its app may raise its window.
-    ///
-    /// Answers whether a banner the person was not shown before is up now:
-    /// the loop flashes the screen for it when they asked for a visual
-    /// alert.
+    /// Take in what arrived and what the banners asked, and hand the banners what they show now.
+    /// `token` mints an activation token for each notification the person chose, so its app may
+    /// raise its window.
+    /// Answers whether a banner the person was not shown before is up now: the loop flashes the
+    /// screen for it when they asked for a visual alert.
     pub(crate) fn step(&mut self, token: &mut dyn FnMut() -> Option<String>) -> bool {
         // Banners whose time on screen ran out leave first.
         self.desktop.expire(ui::time::now());
         self.settle(CloseReason::Expired);
-        // Whether fresh banners are held, for the bar's bell and the centre
-        // header, before they are published.
+        // Whether fresh banners are held, for the bar's bell and the centre header, before they are
+        // published.
         self.desktop.set_quiet(self.quiet_status());
         if let Some(daemon) = self.daemon.clone() {
-            // The machine's graphics stopped for good: the person is told
-            // once, in the pass the renderers' record first says so.
+            // The machine's graphics stopped for good: the person is told once, in the pass the
+            // renderers' record first says so.
             crate::notices::tell_graphics_fallback(&daemon);
             for arrival in daemon.drain() {
                 self.arrive(arrival);
@@ -857,13 +830,12 @@ impl SessionNotifications {
         }
         self.answer_chosen(token);
         self.settle(CloseReason::Dismissed);
-        // What the desk no longer shows of this device's notifications leaves
-        // the person's other devices with it.
+        // What the desk no longer shows of this device's notifications leaves the person's other
+        // devices with it.
         let shown = self.shown_ids();
         self.mirror.prune(&shown, tilo_clock::unix_now_ms());
-        // Every banner the desk puts up passes through its log, whether an
-        // app sent it or the session raised it: a new one there is what the
-        // person was just told.
+        // Every banner the desk puts up passes through its log, whether an app sent it or the
+        // session raised it: a new one there is what the person was just told.
         let banners: BTreeSet<u64> = self
             .desktop
             .log()
@@ -878,8 +850,8 @@ impl SessionNotifications {
             self.published = Some(revision);
             self.banners.publish(self.desktop.feed());
         }
-        // What the centre kept since the last look is written to this
-        // person's state, so a restart opens the centre it had.
+        // What the centre kept since the last look is written to this person's state, so a restart
+        // opens the centre it had.
         if self.desktop.take_history_dirty()
             && let Some(path) = &self.history
         {
@@ -908,11 +880,9 @@ impl SessionNotifications {
                 let mut notification = shown(sent, self.generation);
                 notification.show_preview = effective.previews;
                 notification.show_on_lock_screen = effective.lock_screen;
-                // What the person's other devices show of it, judged by the
-                // same policy: their own rules decide whether it is shown
-                // there, and its text leaves this device only when previews
-                // may. The desktop's own news is about this machine and
-                // stays here.
+                // What the person's other devices show of it, judged by the same policy: their own
+                // rules decide whether it is shown there, and its text leaves this device only when
+                // previews may. The desktop's own news is about this machine and stays here.
                 if effective.cross_device && !system {
                     self.mirror.project(
                         sender,
@@ -925,11 +895,10 @@ impl SessionNotifications {
                         tilo_clock::unix_now_ms(),
                     );
                 }
-                // Held banners go straight to the centre, unread: quiet
-                // asks for calm, not to be kept uninformed. Presenting is
-                // held whatever the sender's own rule says, and so is a
-                // banner while the centre stands open: it joins the list
-                // the person is reading rather than covering it.
+                // Held banners go straight to the centre, unread: quiet asks for calm, not to be
+                // kept uninformed. Presenting is held whatever the sender's own rule says, and so
+                // is a banner while the centre stands open: it joins the list the person is reading
+                // rather than covering it.
                 let id = if effective.banners && !self.presenting() && !self.desktop.centre_open() {
                     self.desktop.post(notification)
                 } else {
@@ -950,9 +919,8 @@ impl SessionNotifications {
                     }
                 }
                 if let Some(event) = sound {
-                    // Notifications and messages carry the policy's own
-                    // verdict, which lets a priority sender through focus
-                    // time; other events follow System sounds alone.
+                    // Notifications and messages carry the policy's own verdict, which lets a
+                    // priority sender through focus time; other events follow System sounds alone.
                     let allows = !matches!(
                         event,
                         SystemSoundEvent::Notification | SystemSoundEvent::Message
@@ -970,8 +938,8 @@ impl SessionNotifications {
         }
     }
 
-    /// Answer the apps whose notification the person chose since the last
-    /// pass: the activation token first, then the action, then the close.
+    /// Answer the apps whose notification the person chose since the last pass: the activation
+    /// token first, then the action, then the close.
     fn answer_chosen(&self, token: &mut dyn FnMut() -> Option<String>) {
         for (sender, action) in std::mem::take(&mut *self.chosen.borrow_mut()) {
             let Some(daemon) = &self.daemon else {
@@ -984,7 +952,7 @@ impl SessionNotifications {
         }
     }
 
-    /// The live banner `id`.
+    /// The live banner `id` .
     fn banner(&self, id: u64) -> Option<Notification> {
         self.desktop
             .log()
@@ -1024,9 +992,8 @@ impl SessionNotifications {
         }
     }
 
-    /// Answer or decline the call banner `id` rings for: the caller's own
-    /// answer or decline when it offers one, else opening the call (its
-    /// default action) or closing the banner.
+    /// Answer or decline the call banner `id` rings for: the caller's own answer or decline when it
+    /// offers one, else opening the call (its default action) or closing the banner.
     fn call(&self, id: u64, answer: bool) {
         let Some(banner) = self.banner(id) else {
             return;
@@ -1044,8 +1011,8 @@ impl SessionNotifications {
         });
     }
 
-    /// Tell the senders of banners no longer up that they closed, for
-    /// `reason`; keep a transient one out of the centre.
+    /// Tell the senders of banners no longer up that they closed, for `reason` ; keep a transient
+    /// one out of the centre.
     fn settle(&mut self, reason: CloseReason) {
         let up: BTreeSet<u32> = self
             .desktop
@@ -1108,9 +1075,8 @@ impl SessionNotifications {
 /// The resource the notification centre is published under.
 pub const RESOURCE: &str = "session:notifications";
 
-/// What kind of resource [`RESOURCE`] is: the session's own kind, as the
-/// clipboard is, so the grant the device's panel reads the session's own
-/// readings through reaches it.
+/// What kind of resource [`RESOURCE`] is: the session's own kind, as the clipboard is, so the grant
+/// the device's panel reads the session's own readings through reaches it.
 pub const KIND: &str = tilo_action_policy::roles::SESSION_KIND;
 
 /// What the centre resource offers: what a notification kept there does.
@@ -1159,12 +1125,11 @@ pub enum CentreAction {
     },
 }
 
-/// The centre as the session's services publish it: what it keeps, why fresh
-/// banners are held, and the verbs that change it.
+/// The centre as the session's services publish it: what it keeps, why fresh banners are held, and
+/// the verbs that change it.
 pub(crate) struct Served {
     notifications: Rc<RefCell<SessionNotifications>>,
-    /// The reading last reported, so a pass that changed nothing is no
-    /// revision.
+    /// The reading last reported, so a pass that changed nothing is no revision.
     published: RefCell<Option<NotificationCentre>>,
 }
 
@@ -1261,9 +1226,8 @@ impl Service for Served {
 }
 
 impl crate::Shared {
-    /// Open what the person chose on a scheduled notification, in the
-    /// workspace that scheduled it, and the centre's kept ones in the app
-    /// that sent them: the app that takes its scheme.
+    /// Open what the person chose on a scheduled notification, in the workspace that scheduled it,
+    /// and the centre's kept ones in the app that sent them: the app that takes its scheme.
     pub(crate) fn open_notifications(&self) {
         for (workspace, uri) in self.notifications.borrow().take_opened() {
             let opened = self.search.perform(

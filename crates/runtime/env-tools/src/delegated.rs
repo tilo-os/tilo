@@ -1,8 +1,8 @@
 //! Builds whose images another process signs: a relay member's tools.
 //!
 //! On a relay, a member's `ush` supervisor runs as the member's uid and must
-//! never hold the relay's device key. Its [`ToolBuilder`] is a
-//! [`RemoteBuilder`]: it asks the relay's worker over a socket the worker
+//! never hold the relay's device key. Its [`ToolBuilder`] is
+//! a [`RemoteBuilder`]: it asks the relay's worker over a socket the worker
 //! made for that member. The worker runs the build itself — resolve,
 //! install, seal — as the member's uid within the member's quota
 //! (`tilo-env-tools build-for`, with an [`UnsignedStore`]), so a package
@@ -149,10 +149,6 @@ pub struct UnsignedStore {
 
 impl UnsignedStore {
     /// Seal for `publisher` into `out`, reading runtimes from `store`.
-    ///
-    /// # Errors
-    ///
-    /// On an architecture images aren't built for.
     pub fn new(store: Store, publisher: [u8; 32], out: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             store,

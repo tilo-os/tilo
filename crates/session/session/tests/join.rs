@@ -1,8 +1,7 @@
-//! An app of a headless session joins its workspace's channel with the
-//! device's certified presentation, as the person's own device does, and
-//! another of their devices is in the same channel: each reads the change the
-//! other wrote. A presentation this device's identity does not certify, and
-//! one of another person, are refused.
+//! An app of a headless session joins its workspace's channel with the device's certified
+//! presentation, as the person's own device does, and another of their devices is in the same
+//! channel: each reads the change the other wrote. A presentation this device's identity does not
+//! certify, and one of another person, are refused.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -22,7 +21,6 @@ use std::path::{Path, PathBuf};
 use automerge::transaction::Transactable as _;
 use ed25519_dalek::Signer as _;
 use runtime_collab::CollabClient;
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
@@ -30,8 +28,6 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, SearchOptions, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 /// The app whose record the channel carries.
 const APP: &str = "so.tilo.notes";
 /// The record of `APP` the apps change.
@@ -39,8 +35,8 @@ const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
 /// The workspace the desk shows and the channel is in.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
-/// The person's keys: the identity store's device, and a second device of
-/// theirs the store enrolled when it was paired.
+/// The person's keys: the identity store's device, and a second device of theirs the store enrolled
+/// when it was paired.
 #[derive(Clone)]
 struct Keys {
     /// The public root of the person's identity, as the workspace's owner.
@@ -54,8 +50,8 @@ struct Keys {
 /// The person's keys, and the identity they were provisioned in.
 struct Person {
     keys: Keys,
-    // The environment the identity was provisioned in, restored before the
-    // directories it names are removed.
+    // The environment the identity was provisioned in, restored before the directories it names are
+    // removed.
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
@@ -82,8 +78,8 @@ fn person() -> Person {
     let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
     let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
-    // The other of the person's devices, enrolled as a pairing enrolls one:
-    // the token is this device's, the certificate is the identity's root's.
+    // The other of the person's devices, enrolled as a pairing enrolls one: the token is this
+    // device's, the certificate is the identity's root's.
     let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();
     let token = store
@@ -129,8 +125,8 @@ fn principal(root: &[u8; 32]) -> String {
     }
 }
 
-/// What an app presents to join `route`'s channel: the certificate, and the
-/// device's proof that it is the certificate's.
+/// What an app presents to join `route` 's channel: the certificate, and the device's proof that it
+/// is the certificate's.
 fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
     runtime_collab::CertifiedJoinIdentity {
         workspace_id: WORKSPACE.to_owned(),
@@ -159,20 +155,20 @@ fn desk(person: &Keys) -> DesktopTree {
     }
 }
 
-/// A session serving the apps it starts on `socket`, with the person's desk
-/// and this device's identity.
+/// A session serving the apps it starts on `socket` , with the person's desk and this device's
+/// identity.
 fn session(socket: &Path, person: &Keys) -> Session {
     session_of(socket, person, &[APP], None)
 }
 
-/// A session serving `apps` as the apps it started, keeping its state — and
-/// so its broker's admission journal — at `state` when it is given one.
+/// A session serving `apps` as the apps it started, keeping its state — and so its broker's
+/// admission journal — at `state` when it is given one.
 fn session_of(socket: &Path, person: &Keys, apps: &[&str], state: Option<&Path>) -> Session {
     serving(socket, person, apps, state, Lists::default())
 }
 
-/// [`session_of`] for a device whose app lists are `lists`: what the action
-/// door lists as each app's offers and declared capabilities.
+/// [`session_of`] for a device whose app lists are `lists` : what the action door lists as each
+/// app's offers and declared capabilities.
 fn serving(
     socket: &Path,
     person: &Keys,
@@ -180,30 +176,25 @@ fn serving(
     state: Option<&Path>,
     lists: Lists,
 ) -> Session {
-    // The apps speak from this test's own process, so the launches the
-    // session would have recorded for them name that process.
+    // The apps speak from this test's own process, so the launches the session would have recorded
+    // for them name that process.
     let launches = std::sync::Arc::new(Launches::default());
     for app in apps {
         launches.started(std::process::id(), app, WORKSPACE, true);
     }
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            wake: LoopWake::default(),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: "Ada".to_owned(),
-            launches,
-            state: state.map(Path::to_path_buf),
-            search: SearchOptions {
-                lists,
-                ..SearchOptions::default()
-            },
-            ..Options::default()
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: "Ada".to_owned(),
+        launches,
+        state: state.map(Path::to_path_buf),
+        search: SearchOptions {
+            lists,
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(person));
     for _ in 0..4 {
         session
@@ -213,7 +204,7 @@ fn serving(
     session
 }
 
-/// The channel key of `app`'s record in the workspace.
+/// The channel key of `app` 's record in the workspace.
 fn record_channel(app: &str) -> String {
     tilo_action_broker::route::CrdtRoute::record(app, WORKSPACE, RECORD).channel_key()
 }
@@ -231,7 +222,7 @@ fn settings_channel() -> String {
     record_channel(SETTINGS)
 }
 
-/// One change of the record: `value` written under `key`, as an app writes it.
+/// One change of the record: `value` written under `key` , as an app writes it.
 fn change(key: &str, value: &str) -> Vec<u8> {
     let mut document = automerge::AutoCommit::new();
     document
@@ -246,7 +237,7 @@ fn change(key: &str, value: &str) -> Vec<u8> {
         .expect("a mutation encodes")
 }
 
-/// A signed change of the channel's record, authored by `device`.
+/// A signed change of the channel's record, authored by `device` .
 fn op(device: &ed25519_dalek::SigningKey, key: &str, value: &str, seq: u64) -> Vec<u8> {
     let author = collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
     let mut op = collab_types::SignedOp::new_unsigned(
@@ -262,8 +253,8 @@ fn op(device: &ed25519_dalek::SigningKey, key: &str, value: &str, seq: u64) -> V
     postcard::to_stdvec(&op).expect("an op encodes for the wire")
 }
 
-/// The next change `stream` delivers that `device` wrote: the channel also
-/// carries what this device wrote itself.
+/// The next change `stream` delivers that `device` wrote: the channel also carries what this device
+/// wrote itself.
 async fn written_by(
     stream: &runtime_collab::OpStream,
     device: &ed25519_dalek::SigningKey,
@@ -278,7 +269,7 @@ async fn written_by(
     }
 }
 
-/// What `op` wrote under `key`.
+/// What `op` wrote under `key` .
 fn written(op: &collab_types::SignedOp, key: &str) -> Option<String> {
     use automerge::ReadDoc as _;
     let collab_types::DocumentMutation::Incremental(bytes) =
@@ -295,16 +286,6 @@ fn written(op: &collab_types::SignedOp, key: &str) -> Option<String> {
         .and_then(|scalar| scalar.into_string().ok())
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
-}
-
 /// The session's pass until the apps are done, as the session runs its loop.
 fn until_the_apps_are_done<T>(session: &mut Session, received: &std::sync::mpsc::Receiver<T>) -> T {
     common::wait_for(session, "the apps to finish their calls", |session| {
@@ -316,8 +297,8 @@ fn until_the_apps_are_done<T>(session: &mut Session, received: &std::sync::mpsc:
     })
 }
 
-/// An app connected to the session's plane as `APP` in `WORKSPACE`, as the
-/// launcher hands it the connection.
+/// An app connected to the session's plane as `APP` in `WORKSPACE` , as the launcher hands it the
+/// connection.
 fn connect(socket: &PathBuf, app: &str) -> CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
     launcher::services::write_collab_handoff(&mut stream, app, WORKSPACE)
@@ -332,8 +313,7 @@ fn connect(socket: &PathBuf, app: &str) -> CollabClient {
     client
 }
 
-/// What the session answers to `message` on `handle`, as the status it
-/// leaves the invocation in.
+/// What the session answers to `message` on `handle` , as the status it leaves the invocation in.
 async fn answered(
     handle: &runtime_collab::ChannelHandle,
     message: tilo_actions::remote::RemoteActionMessage,
@@ -363,9 +343,8 @@ async fn answered(
     }
 }
 
-/// Settings, the app the session launched, joins its workspace's channel and
-/// lists the desktop's shortcuts through the session's services: the answer
-/// it gets back from the settings it holds.
+/// Settings, the app the session launched, joins its workspace's channel and lists the desktop's
+/// shortcuts through the session's services: the answer it gets back from the settings it holds.
 fn settings_lists_shortcuts(
     socket: &PathBuf,
     person: &Keys,
@@ -423,8 +402,8 @@ fn settings_lists_shortcuts(
     })
 }
 
-/// The settings `app` reads over the session's door, as the JSON document the
-/// session answered: joined as the launch the session recorded for it.
+/// The settings `app` reads over the session's door, as the JSON document the session answered:
+/// joined as the launch the session recorded for it.
 fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Value {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -448,8 +427,8 @@ fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Valu
     })
 }
 
-/// What the apps found: the changes each read from the other, and how the
-/// identity store's refusals read.
+/// What the apps found: the changes each read from the other, and how the identity store's refusals
+/// read.
 struct Joined {
     first_reads: collab_types::SignedOp,
     second_reads: collab_types::SignedOp,
@@ -457,10 +436,9 @@ struct Joined {
     wrong_person: String,
 }
 
-/// An app on this device and one on the other of the person's devices, both
-/// joining the workspace's channel with their own certificate, each writing
-/// a change and reading the other's; then the presentations this device's
-/// identity refuses.
+/// An app on this device and one on the other of the person's devices, both joining the workspace's
+/// channel with their own certificate, each writing a change and reading the other's; then the
+/// presentations this device's identity refuses.
 fn apps(socket: &PathBuf, person: &Keys) -> Joined {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -500,8 +478,8 @@ fn apps(socket: &PathBuf, person: &Keys) -> Joined {
             .expect("the session admits the other device's change");
         let answered = written_by(&this_reads, &person.other_device).await;
 
-        // A presentation this device's identity never certified: the
-        // certificate is real, the proof is another key's.
+        // A presentation this device's identity never certified: the certificate is real, the proof
+        // is another key's.
         let uncertified = this_device
             .join_channel(
                 &channel(),
@@ -513,8 +491,8 @@ fn apps(socket: &PathBuf, person: &Keys) -> Joined {
             .await
             .err()
             .expect("a proof the certificate does not hold is refused");
-        // A presentation of another person: their own root certified it, and
-        // it is nobody this workspace's identity has heard of.
+        // A presentation of another person: their own root certified it, and it is nobody this
+        // workspace's identity has heard of.
         let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0x64; 32]);
         let stranger_device = ed25519_dalek::SigningKey::from_bytes(&[0x65; 32]);
         let mut stranger = DeviceCert {
@@ -544,7 +522,7 @@ fn apps(socket: &PathBuf, person: &Keys) -> Joined {
 
 #[test]
 fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer() {
-    let home = private_home();
+    let home = common::private_home();
     let socket = home.path().join("collab.sock");
     let person = person();
     let mut session = session(&socket, &person.keys);
@@ -593,13 +571,13 @@ fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer(
     );
 }
 
-/// A session that keeps its state keeps its broker's admission journal, and
-/// still admits the app its launcher started: Settings joins its workspace's
-/// channel, and the shortcuts it lists are the settings this device holds.
+/// A session that keeps its state keeps its broker's admission journal, and still admits the app
+/// its launcher started: Settings joins its workspace's channel, and the shortcuts it lists are the
+/// settings this device holds.
 #[test]
 fn settings_lists_the_desktop_shortcuts_over_the_sessions_door() {
     use tilo_actions::remote::ReceiptStatus;
-    let home = private_home();
+    let home = common::private_home();
     let socket = home.path().join("collab.sock");
     let person = person();
     let state = home.path().join("state");
@@ -631,15 +609,14 @@ fn settings_lists_the_desktop_shortcuts_over_the_sessions_door() {
     );
 }
 
-/// The device's settings app reaches every section of the settings document
-/// over the session's door, because the app lists say its manifest declares
-/// the system reach; an app that declares none reads the shared sections
-/// only.
+/// The device's settings app reaches every section of the settings document over the session's
+/// door, because the app lists say its manifest declares the system reach; an app that declares
+/// none reads the shared sections only.
 #[test]
 fn the_settings_app_the_app_lists_allow_reaches_every_section() {
     let person = person();
-    // A section the session keeps and no app reads as a shared one: what
-    // only the device's own settings app may see.
+    // A section the session keeps and no app reads as a shared one: what only the device's own
+    // settings app may see.
     let mut power = serde_json::Map::new();
     power.insert("probe".to_owned(), serde_json::json!("system"));
     settings_store::update_section(settings_store::power::SECTION, power)
@@ -657,12 +634,11 @@ fn the_settings_app_the_app_lists_allow_reaches_every_section() {
     );
 }
 
-/// What `app` reads of the settings over the session's door, in a session
-/// whose app lists say of each of `declared` whether its manifest asks for
-/// the device's system settings reach.
+/// What `app` reads of the settings over the session's door, in a session whose app lists say of
+/// each of `declared` whether its manifest asks for the device's system settings reach.
 fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_json::Value {
     use tilo_action_broker::services::LaunchableApplication;
-    let home = private_home();
+    let home = common::private_home();
     let socket = home.path().join("collab.sock");
     let lists = AppLists {
         launchable: declared

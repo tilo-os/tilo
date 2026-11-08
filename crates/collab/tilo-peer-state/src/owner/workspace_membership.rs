@@ -21,10 +21,6 @@ impl NativeWorkspaceOwner {
     /// member publishes the changes it made, which every participant admits
     /// as it admits every member's. Exact retries converge; changed
     /// invocation reuse never changes policy.
-    ///
-    /// # Errors
-    /// Refuses a key that is not this device's, a change the caller's
-    /// grants do not allow, exhausted custody or failed durable publication.
     pub fn commit_workspace_membership_command(
         &self,
         request: OwnerCommitRequest,
@@ -86,7 +82,6 @@ impl NativeWorkspaceOwner {
                     let outgoing = crate::owner::publication::prepare(
                         &crate::owner::publication::request(message)?,
                     )?;
-                    crate::owner::publication::reserve(&candidate, &outgoing)?;
                     crate::owner::publication::append_local(&mut candidate, outgoing)?;
                 }
             }
@@ -235,7 +230,11 @@ mod tests {
         let fixture = fixture();
         fixture
             .owner
-            .commit_workspace_membership_command(request(&fixture, agent_grant()), &fixture.key, fixture.now)
+            .commit_workspace_membership_command(
+                request(&fixture, agent_grant()),
+                &fixture.key,
+                fixture.now,
+            )
             .unwrap();
         let before = agent_caps(&fixture.owner, &fixture);
         assert!(!before.is_empty());

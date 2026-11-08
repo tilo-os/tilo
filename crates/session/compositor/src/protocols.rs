@@ -48,8 +48,8 @@ use tilo_wayland_ext::color_management::ColorManagerState;
 
 use crate::state::State;
 
-/// How long an activation token stays good: a launch that takes longer
-/// than this no longer steals focus.
+/// How long an activation token stays good: a launch that takes longer than this no longer steals
+/// focus.
 const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The globals and state of these protocols.
@@ -65,8 +65,8 @@ pub(crate) struct Protocols {
     _fractional_scale: FractionalScaleManagerState,
     _presentation: PresentationState,
     _decoration: XdgDecorationState,
-    /// `org_kde_kwin_server_decoration_manager`: the older spelling of the
-    /// same question for toolkits that only speak it.
+    /// `org_kde_kwin_server_decoration_manager` : the older spelling of the same question for
+    /// toolkits that only speak it.
     kde_decoration: KdeDecorationState,
     _cursor_shape: CursorShapeManagerState,
     _relative_pointer: RelativePointerManagerState,
@@ -76,8 +76,8 @@ pub(crate) struct Protocols {
     _idle_inhibit: IdleInhibitManagerState,
     _content_type: ContentTypeState,
     _dialog: XdgDialogState,
-    /// `wp_color_manager_v1`: what the outputs display and what a client's
-    /// content is in (see [`crate::color_management`]).
+    /// `wp_color_manager_v1` : what the outputs display and what a client's content is in (see
+    /// [`crate::color_management`]).
     pub(crate) color_manager: ColorManagerState,
 }
 
@@ -95,8 +95,8 @@ impl Protocols {
             // CLOCK_MONOTONIC: frame times are compared with input times.
             _presentation: PresentationState::new::<State>(display, 1),
             _decoration: XdgDecorationState::new::<State>(display),
-            // A client that never states a preference is decorated by the
-            // desktop, like every other.
+            // A client that never states a preference is decorated by the desktop, like every
+            // other.
             kde_decoration: KdeDecorationState::new::<State>(display, KdeDefaultMode::Server),
             _cursor_shape: CursorShapeManagerState::new::<State>(display),
             _relative_pointer: RelativePointerManagerState::new::<State>(display),
@@ -112,12 +112,10 @@ impl Protocols {
 }
 
 impl State {
-    /// Offer `linux-dmabuf` with the formats the backend's renderer
-    /// imports. Called once by a backend that can import dma-bufs.
-    ///
-    /// With the GPU the compositor renders on (`device`), clients are told
-    /// to allocate there (default feedback); without it, GL clients find no
-    /// GPU and fall back to software rendering.
+    /// Offer `linux-dmabuf` with the formats the backend's renderer imports. Called once by a
+    /// backend that can import dma-bufs.
+    /// With the GPU the compositor renders on (`device`), clients are told to allocate there
+    /// (default feedback); without it, GL clients find no GPU and fall back to software rendering.
     pub(crate) fn enable_dmabuf(&mut self, formats: Vec<Format>, device: Option<DrmNode>) {
         if self.protocols.dmabuf_global.is_some() {
             return;
@@ -152,9 +150,9 @@ impl State {
         crate::gpu_health::record_dmabuf(node.as_deref());
     }
 
-    /// Whether a client keeps the session from idling: only while the
-    /// surface asking is on screen, so a video left in a hidden tab or on a
-    /// workspace nobody is looking at does not hold the machine awake.
+    /// Whether a client keeps the session from idling: only while the surface asking is on screen,
+    /// so a video left in a hidden tab or on a workspace nobody is looking at does not hold the
+    /// machine awake.
     pub(crate) fn idle_inhibited(&self) -> bool {
         !self.visible_idle_inhibitors().is_empty()
     }
@@ -182,8 +180,8 @@ impl DmabufHandler for State {
         _dmabuf: Dmabuf,
         notifier: ImportNotifier,
     ) {
-        // The formats offered are the renderer's; a buffer that still fails
-        // to import shows as nothing and is reported when drawn.
+        // The formats offered are the renderer's; a buffer that still fails to import shows as
+        // nothing and is reported when drawn.
         if notifier.successful::<Self>().is_err() {
             tracing::debug!("dma-buf import: client gone");
         }
@@ -224,42 +222,39 @@ impl XdgDecorationHandler for State {
     }
 }
 
-/// `org_kde_kwin_server_decoration`: the same answer as
-/// [`XdgDecorationHandler`] for clients that only speak the KDE spelling.
-/// The window's frame is the tab the desktop draws, so the mode is `Server`
-/// whatever the client asks for.
+/// `org_kde_kwin_server_decoration` : the same answer as [`XdgDecorationHandler`] for clients that
+/// only speak the KDE spelling. The window's frame is the tab the desktop draws, so the mode is
+/// `Server` whatever the client asks for.
 impl KdeDecorationHandler for State {
     fn kde_decoration_state(&self) -> &KdeDecorationState {
         &self.protocols.kde_decoration
     }
 
-    /// A new decoration is told the mode once, here: the protocol sends
-    /// `mode` for a change, and the mode never changes.
+    /// A new decoration is told the mode once, here: the protocol sends `mode` for a change, and
+    /// the mode never changes.
     fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
         decoration.mode(KdeMode::Server);
     }
 
-    /// Left unanswered on purpose. A client acknowledges a `mode` with a
-    /// `request_mode`, and GTK 3 acknowledges with the mode it wants, so
-    /// repeating `Server` for each request gave a window that draws its own
-    /// frame (Firefox) an exchange that ended only with the window.
+    /// Left unanswered on purpose. A client acknowledges a `mode` with a `request_mode` , and GTK 3
+    /// acknowledges with the mode it wants, so repeating `Server` for each request gave a window
+    /// that draws its own frame (Firefox) an exchange that ended only with the window.
     fn request_mode(
         &mut self,
         _surface: &WlSurface,
         _decoration: &OrgKdeKwinServerDecoration,
         _mode: WEnum<KdeMode>,
     ) {
-        // The request is the client's preference, not a fact about the
-        // window: the frame stays the desktop's.
+        // The request is the client's preference, not a fact about the window: the frame stays the
+        // desktop's.
     }
 }
 
 impl Protocols {
-    /// A token for an activation the session itself caused (the person
-    /// chose a notification, so its app should come to the front): handing
-    /// it to that app lets it raise its window the way a click on a fresh
-    /// window would, without the app having to be linked to an input event
-    /// it never saw.
+    /// A token for an activation the session itself caused (the person chose a notification, so its
+    /// app should come to the front): handing it to that app lets it raise its window the way a
+    /// click on a fresh window would, without the app having to be linked to an input event it
+    /// never saw.
     pub(crate) fn external_activation_token(&mut self) -> String {
         let data = XdgActivationTokenData {
             timestamp: std::time::Instant::now(),
@@ -326,8 +321,8 @@ impl KeyboardShortcutsInhibitHandler for State {
     }
 
     fn new_inhibitor(&mut self, _inhibitor: KeyboardShortcutsInhibitor) {
-        // Granted (or not) by the next turn's `sync_shortcut_inhibit`, which
-        // knows what holds focus.
+        // Granted (or not) by the next turn's `sync_shortcut_inhibit` , which knows what holds
+        // focus.
     }
 
     fn inhibitor_destroyed(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
@@ -345,8 +340,8 @@ smithay::delegate_presentation!(State);
 smithay::delegate_xdg_decoration!(State);
 smithay::delegate_kde_decoration!(State);
 
-/// A dialog a client marks modal keeps the keyboard from the window it
-/// belongs to: focusing that window focuses the dialog instead.
+/// A dialog a client marks modal keeps the keyboard from the window it belongs to: focusing that
+/// window focuses the dialog instead.
 impl XdgDialogHandler for State {
     fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
         let Some(parent) = toplevel.parent() else {
@@ -377,8 +372,8 @@ smithay::delegate_cursor_shape!(State);
 smithay::delegate_relative_pointer!(State);
 smithay::delegate_pointer_constraints!(State);
 smithay::delegate_pointer_gestures!(State);
-// The tablet manager's requests go through `crate::tablet`, which notes
-// the clients that take tablets; everything else is smithay's.
+// The tablet manager's requests go through `crate::tablet` , which notes the clients that take
+// tablets; everything else is smithay's.
 smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
     smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_manager_v2::ZwpTabletManagerV2: ()
 ] => TabletManagerState);

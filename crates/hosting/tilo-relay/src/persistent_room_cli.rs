@@ -2095,15 +2095,15 @@ mod tests {
 
     /// Someone the listed workspace's door lets in is a member; once the
     /// workspace takes people by invitation, a member invites someone with an
-    /// invitation of their own and lets them in, while the workspace's link is
-    /// no invitation at all. Once it lets anyone in again, members no longer
-    /// invite.
+    /// invitation of their own, which admits them by itself, while the
+    /// workspace's link is no invitation at all. Once it lets anyone in again,
+    /// members no longer invite.
     #[tokio::test]
     #[expect(
         clippy::too_many_lines,
-        reason = "one story: the door, an invitation, admitting it and taking it back"
+        reason = "one story: the door, an invitation redeeming itself and taking it back"
     )]
-    async fn taking_people_by_invitation_members_invite_whose_join_they_admit() {
+    async fn taking_people_by_invitation_the_invitation_admits_the_guest() {
         let dir = tempfile::tempdir().unwrap();
         let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
         ensure_guest_policy(&workspaces, &workspace, &host_cert)
@@ -2151,8 +2151,8 @@ mod tests {
             .await
             .unwrap();
 
-        // The member invites the stranger, who asks to join with it and
-        // waits until the member lets them in.
+        // The member invites the stranger, who redeems it: the invitation's
+        // own grant admits them.
         let stranger = guest(11);
         let issued = invite(&workspaces, &workspace, &member.1).await;
         let WorkspacesReply::Invitation {
@@ -2172,40 +2172,15 @@ mod tests {
             panic!("no challenge");
         };
         let signature = stranger.0.sign(&join_proof_digest(&challenge)).to_bytes();
-        let waiting = workspaces
+        let admitted = workspaces
             .page_join(JoinStep::Prove {
                 challenge,
                 signature,
                 name: "Stranger".into(),
             })
             .await;
-        assert!(matches!(waiting, JoinReply::Waiting), "{waiting:?}");
-        let listed = workspaces
-            .page_rooms(
-                &member.1,
-                WorkspacesRequest::Requests {
-                    workspace: workspace.clone(),
-                },
-            )
-            .await;
-        let WorkspacesReply::Requests(requests) = listed else {
-            panic!("the member sees who waits: {listed:?}");
-        };
-        let [request] = requests.as_slice() else {
-            panic!("{requests:?}");
-        };
-        assert_eq!(request.user_public_key, stranger.1.user_public_key);
-        let admitted = workspaces
-            .page_rooms(
-                &member.1,
-                WorkspacesRequest::Admit {
-                    workspace: workspace.clone(),
-                    request_id: request.request_id,
-                },
-            )
-            .await;
         assert!(
-            matches!(admitted, WorkspacesReply::Workspace(_)),
+            matches!(admitted, JoinReply::Admitted { .. }),
             "{admitted:?}"
         );
         let members = workspaces.summary(&workspace).await.unwrap().members;

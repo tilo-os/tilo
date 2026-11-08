@@ -11,6 +11,7 @@
 mod access;
 mod access_audit;
 mod actions;
+mod admin;
 mod admission;
 mod checkpoint;
 mod commit;
@@ -35,14 +36,14 @@ use admission::{enqueue_state, enqueue_state_inner};
 use checkpoint::buffered_retention_prefix_with_limits;
 use checkpoint::{
     RETENTION_PREFIX_BYTE_CAP, RETENTION_PREFIX_FRAME_CAP, ReplayPendingTarget, ReplayPendingWork,
-    buffered_retention_prefix, eligible_checkpoint_prefix, retention_publication_kind,
+    buffered_retention_prefix, eligible_checkpoint_prefix,
 };
 #[cfg(test)]
 use delivery::write_state_delivery;
 use delivery::{
     STATE_RUN, SessionCoding, delivery_room, encode_charged, write_presence, write_state_deliveries,
 };
-use fanout::{LiveFanout, LiveFrame, PublicationFrames, PublicationScope, live_budget};
+use fanout::{LiveFanout, LiveFrame, live_budget};
 use replay::{
     ReplayCatchup, ReplayWrite, ResumeLog, authorize_state_frame, authorize_state_recipient,
     finish_replay_write, resume_record,
@@ -52,10 +53,9 @@ use session::inbound_bytes;
 use session::{finish_peer_outcome, run_peer_stream};
 pub use session::{run_peer, run_peer_until};
 use state::{
-    FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
-    StateCommit, authorized_state_source, captured_live_current, desktop_refusal, file_refusal_of,
-    gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix, live_audience,
-    unpublished,
+    FanoutStamp, PreparedRecipients, StateCommit, authorized_state_source, desktop_refusal,
+    file_refusal_of, gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix,
+    live_audience, unpublished,
 };
 pub use state::{Lag, StateSource};
 pub(crate) use state::{StateDelivery, StateSession, tell_governor};
@@ -66,6 +66,7 @@ use access::{
     session_peer_authorized, unavailable_target,
 };
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
+use admin::handle_workspaces;
 use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit};
 use compaction::handle_compaction;
 #[cfg(test)]
@@ -198,6 +199,9 @@ pub struct PeerContext {
     /// (synced across their devices through this host) holds its calls
     /// there. `None` holds no carried call.
     pub carried_calls: Option<crate::workspaces::WeakWorkspaces>,
+    /// The governance a device administers its workspaces through, set once
+    /// when the host governs them; `None` administers nothing.
+    pub admin: Option<Arc<crate::workspaces::Workspaces>>,
 }
 
 /// Agent devices by device key: their verified delegation, or `None` once
@@ -244,6 +248,9 @@ struct SessionCtx<'a> {
     /// The workspaces whose calls this host carries; `None` holds no carried
     /// call.
     carried_calls: Option<crate::workspaces::WeakWorkspaces>,
+    /// What a device administers its workspaces through; `None` administers
+    /// nothing.
+    admin: Option<&'a crate::workspaces::Workspaces>,
 }
 
 impl SessionCtx<'_> {

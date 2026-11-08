@@ -1,6 +1,6 @@
-//! A press on the desk is the desk's: the chrome over it never hears it, so
-//! the menu hanging off the bar learns from the stack where it stands, and a
-//! press that misses it takes it down — and stays down for that press.
+//! A press on the desk is the desk's: the chrome over it never hears it, so the menu hanging off
+//! the bar learns from the stack where it stands, and a press that misses it takes it down — and
+//! stays down for that press.
 
 #![allow(
     clippy::unwrap_used,
@@ -97,8 +97,7 @@ fn desk_tree() -> DesktopTree {
 /// The chrome over a desk, with the stack the session shares with it.
 fn chrome() -> (FrameHarness, Overlays) {
     let tree = desk_tree();
-    // The desk's own tree stays unmounted: the chrome is what the press is
-    // judged against.
+    // The desk's own tree stays unmounted: the chrome is what the press is judged against.
     let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
     let overlays = Overlays::new();
     overlays.set_displays(&[DISPLAY], Some(DISPLAY));
@@ -156,8 +155,8 @@ fn a_press_on_the_desk_closes_the_workspace_menu_and_it_stays_down() {
     );
 }
 
-/// A press on the chip that opened the menu closes it, and the chip the same
-/// press also lands on does not put it back up: one press, one answer.
+/// A press on the chip that opened the menu closes it, and the chip the same press also lands on
+/// does not put it back up: one press, one answer.
 #[test]
 fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
     let (mut frame, overlays) = chrome();
@@ -175,8 +174,8 @@ fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
     frame.relayout();
     assert!(!with_chrome(&mut frame, |chrome| chrome.menu_open()));
 
-    // The same press reaches the chip, which asks for the menu as any click
-    // on it does: the menu it just took down stays down.
+    // The same press reaches the chip, which asks for the menu as any click on it does: the menu it
+    // just took down stays down.
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceMenu { at: None });
     });
@@ -232,8 +231,8 @@ fn a_press_on_the_menu_itself_is_the_menus() {
         chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceMenu { at: None });
     });
     frame.relayout();
-    // The panel the menu paints stands under the bar's leading end; its own
-    // middle is not a press outside it.
+    // The panel the menu paints stands under the bar's leading end; its own middle is not a press
+    // outside it.
     assert_eq!(
         overlays.press_outside(140.0, 120.0),
         None,

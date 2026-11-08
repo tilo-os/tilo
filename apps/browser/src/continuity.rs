@@ -10,14 +10,10 @@ pub use browser_continuity::imports::{
 /// App-specific action projections for reviewed import values.
 pub trait ImportActions {
     /// Produce the personal library's import, without private visit data.
-    /// # Errors
-    /// Refuses invalid or oversized import payloads.
     fn bookmark_action(
         &self,
     ) -> Result<ui::tilo_resource::Invoke<crate::personal_bookmarks::PersonalBookmarks>, ActionError>;
     /// Produce an action for the current person's private history record.
-    /// # Errors
-    /// Refuses invalid or oversized import payloads.
     fn history_action(
         &self,
     ) -> Result<ui::tilo_resource::Invoke<crate::history::BrowsingHistory>, ActionError>;

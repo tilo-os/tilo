@@ -27,10 +27,11 @@
 
 use std::collections::BTreeMap;
 use std::os::fd::AsFd as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::output::AppOutput;
 
@@ -218,13 +219,14 @@ impl Spawner {
         }
     }
 
-    /// Put every app this session runs in the tier of what the person can
-    /// see: `on_screen` is the process of each window on an output. An app
-    /// with no window on screen is in the background tier and gives memory
-    /// back first; one whose window the person sees again is in the
-    /// foreground tier.
-    pub fn tier_by_visibility(&self, on_screen: &[u32]) {
-        memory::tier_by_visibility(&self.running, on_screen);
+    /// Put every cgroup a launch of this session runs in in its tier:
+    /// `on_screen` is the process of each window on an output, `own` the
+    /// cgroup this session itself runs in. A launch that is still opening has
+    /// the startup tier; an app with no window on screen is in the background
+    /// tier and gives memory back first; one whose window the person sees
+    /// again is in the foreground tier. `own` keeps the session's tier.
+    pub fn tier_by_visibility(&self, on_screen: &[u32], own: Option<&Path>) {
+        memory::tier_by_visibility(&self.running, on_screen, own);
     }
 
     /// Start `planned` with exactly the environment it planned: nothing the
@@ -257,6 +259,7 @@ impl Spawner {
         mut door: Option<HeldDoor>,
         record: &dyn Fn(u32),
     ) -> Result<(Started, Option<HeldDoor>), SpawnError> {
+        crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
         command
             .args(&planned.args)
@@ -416,6 +419,9 @@ pub(crate) struct App {
     pub(crate) pid: u32,
     /// The app's package id or desktop-file id.
     pub(crate) name: String,
+    /// When this launch started: a launch is served before everything else
+    /// while it opens ([`crate::memory`]).
+    started: Instant,
     #[cfg(target_os = "linux")]
     pidfd: Option<std::os::fd::OwnedFd>,
 }
@@ -430,6 +436,7 @@ impl App {
             return Self {
                 pid,
                 name: app,
+                started: Instant::now(),
                 pidfd: None,
             };
         };
@@ -451,6 +458,7 @@ impl App {
         Self {
             pid,
             name: app,
+            started: Instant::now(),
             pidfd,
         }
     }
@@ -460,7 +468,15 @@ impl App {
         Self {
             pid,
             name: app.to_owned(),
+            started: Instant::now(),
         }
+    }
+
+    /// Whether this launch is still opening: inside the window in which it is
+    /// served before every other app and the desk
+    /// ([`launcher::priority::STARTUP_WINDOW`]).
+    pub(crate) fn opening(&self) -> bool {
+        self.started.elapsed() < launcher::priority::STARTUP_WINDOW
     }
 
     /// The cgroup directory the launcher put this app in, while it is there.

@@ -77,19 +77,11 @@ mod client {
         }
 
         /// The device's `org.freedesktop.UDisks2.Block` interface.
-        ///
-        /// # Errors
-        ///
-        /// Returns an error when the proxy cannot be created.
         pub fn block(&self, device: &str) -> zbus::Result<Proxy<'_>> {
             Proxy::new(&self.connection, SERVICE, object_path(device), IFACE_BLOCK)
         }
 
         /// The device's `org.freedesktop.UDisks2.Filesystem` interface.
-        ///
-        /// # Errors
-        ///
-        /// Returns an error when the proxy cannot be created.
         pub fn filesystem(&self, device: &str) -> zbus::Result<Proxy<'_>> {
             Proxy::new(
                 &self.connection,
@@ -105,9 +97,6 @@ mod client {
         }
 
         /// Refresh kernel partition and filesystem information after imaging.
-        ///
-        /// # Errors
-        /// Returns an error if the daemon cannot rescan the selected device.
         pub fn rescan(&self, device: &str) -> zbus::Result<()> {
             self.block(device)?.call("Rescan", &(no_options(),))
         }
@@ -137,9 +126,6 @@ mod client {
 
         /// Mount an explicitly selected retained Linux filesystem for shared edits.
         /// No forced recovery or ownership change is requested.
-        ///
-        /// # Errors
-        /// Refuses denied or unsupported controlled mount options.
         pub fn mount_shared_files(
             &self,
             device: &str,

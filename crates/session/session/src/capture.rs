@@ -1,19 +1,13 @@
-//! The screenshots the portal asks for, taken from the compositor's
-//! frames.
-//!
-//! The portal runs on the desktop services' runtime and the compositor on
-//! the session's loop, so the portal's side ([`ScreenCapture`]) only sends
-//! a request and wakes the loop; the session answers it on its next pass
-//! ([`Captures::serve`]) with a PNG of what was asked for as it shows.
-//!
-//! What only the person can say — which window, which area — is asked in
-//! the capture studio's selector ([`crate::capture_studio`]), so the answer
-//! comes a pass after they took it, however long that was. A request the
-//! app stops waiting for takes the selector down with it: the future it
-//! awaited says so as it drops.
-//!
-//! A colour pick is answered on that same pass, from the same picture: the
-//! pixel under the pointer where the screenshot of every display puts it.
+//! The screenshots the portal asks for, taken from the compositor's frames.
+//! The portal runs on the desktop services' runtime and the compositor on the session's loop, so
+//! the portal's side ([`ScreenCapture`]) only sends a request and wakes the loop; the session
+//! answers it on its next pass ([`Captures::serve`]) with a PNG of what was asked for as it shows.
+//! What only the person can say — which window, which area — is asked in the capture studio's
+//! selector ([`crate::capture_studio`]), so the answer comes a pass after they took it, however
+//! long that was. A request the app stops waiting for takes the selector down with it: the future
+//! it awaited says so as it drops.
+//! A colour pick is answered on that same pass, from the same picture: the pixel under the pointer
+//! where the screenshot of every display puts it.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -30,8 +24,7 @@ use tilo_service::Wake;
 use crate::capture_io::{CaptureIo, NO_WORKER, WriteFailed, Written};
 use crate::capture_studio::CaptureStudio;
 
-/// What the portal asks for: what to capture, where its answer goes, and
-/// the request it belongs to.
+/// What the portal asks for: what to capture, where its answer goes, and the request it belongs to.
 enum Asked {
     Screenshot {
         id: u64,
@@ -40,9 +33,8 @@ enum Asked {
     },
     /// The colour under the pointer, as red, green and blue from 0 to 1.
     Color { reply: ColorReply },
-    /// Nobody waits for request `id` any more: whatever is up for it comes
-    /// down. An ask already answered is no longer up, so this changes
-    /// nothing for it.
+    /// Nobody waits for request `id` any more: whatever is up for it comes down. An ask already
+    /// answered is no longer up, so this changes nothing for it.
     Withdrawn { id: u64 },
 }
 
@@ -58,8 +50,8 @@ pub struct ScreenCapture {
     wake: Wake,
     /// The next request's number.
     next: AtomicU64,
-    /// Whether the session serves the selector the person picks a window or
-    /// draws an area in, which it says on its first pass with one.
+    /// Whether the session serves the selector the person picks a window or draws an area in, which
+    /// it says on its first pass with one.
     selector: Arc<AtomicBool>,
 }
 
@@ -68,13 +60,13 @@ pub struct Captures {
     requests: Receiver<Asked>,
     directory: PathBuf,
     selector: Arc<AtomicBool>,
-    /// The screenshots being written off the loop, in the order they were
-    /// asked for, each with the app waiting for its file.
+    /// The screenshots being written off the loop, in the order they were asked for, each with the
+    /// app waiting for its file.
     writes: VecDeque<(Receiver<Result<Written, WriteFailed>>, Reply)>,
 }
 
-/// A portal side and the session side that answers it, the screenshots
-/// written under `directory`; `wake` wakes the session's loop.
+/// A portal side and the session side that answers it, the screenshots written under `directory` ;
+/// `wake` wakes the session's loop.
 #[must_use]
 pub fn channel_to(directory: PathBuf, wake: Wake) -> (ScreenCapture, Captures) {
     let (requests, asked) = channel();
@@ -95,9 +87,9 @@ pub fn channel_to(directory: PathBuf, wake: Wake) -> (ScreenCapture, Captures) {
     )
 }
 
-/// Where the session writes the screenshots apps asked for: under the
-/// runtime directory, which only this user reads. Never the person's own
-/// folders: the app is handed its own path into the store instead.
+/// Where the session writes the screenshots apps asked for: under the runtime directory, which only
+/// this user reads. Never the person's own folders: the app is handed its own path into the store
+/// instead.
 #[must_use]
 pub fn directory() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -105,10 +97,9 @@ pub fn directory() -> PathBuf {
         .join("tilo-screenshots")
 }
 
-/// One request as the portal side holds it while it waits: dropped, it tells
-/// the session nobody wants the picture any more, which takes down whatever
-/// was up for it. An ask the session already answered is no longer held, so
-/// that notice changes nothing there.
+/// One request as the portal side holds it while it waits: dropped, it tells the session nobody
+/// wants the picture any more, which takes down whatever was up for it. An ask the session already
+/// answered is no longer held, so that notice changes nothing there.
 struct Asking {
     id: u64,
     requests: Sender<Asked>,
@@ -141,8 +132,8 @@ impl Capture for ScreenCapture {
         }
         (self.wake)();
         Box::pin(async move {
-            // Held until this future drops, so a request the app stops
-            // waiting for takes the selection down with it.
+            // Held until this future drops, so a request the app stops waiting for takes the
+            // selection down with it.
             let _asking = asking;
             answer
                 .await
@@ -163,9 +154,8 @@ impl Capture for ScreenCapture {
         })
     }
 
-    /// What this session takes: everything the displays show and the window
-    /// with focus, and — while it serves the studio's selector — the window
-    /// the person picks and the area they draw.
+    /// What this session takes: everything the displays show and the window with focus, and — while
+    /// it serves the studio's selector — the window the person picks and the area they draw.
     fn targets(&self) -> u32 {
         let mut bits = CaptureTarget::Screen.bit() | CaptureTarget::ActiveWindow.bit();
         if self.selector.load(Ordering::Acquire) {
@@ -176,10 +166,9 @@ impl Capture for ScreenCapture {
 }
 
 impl Captures {
-    /// Answer every screenshot and pick asked for since the last pass: what
-    /// the session captures itself, and what the person takes in `studio`'s
-    /// selector. The picture is read back here and written on `io`, whose
-    /// answer is taken up on a later pass.
+    /// Answer every screenshot and pick asked for since the last pass: what the session captures
+    /// itself, and what the person takes in `studio` 's selector. The picture is read back here and
+    /// written on `io` , whose answer is taken up on a later pass.
     pub(crate) fn serve(
         &mut self,
         compositor: &mut Compositor,
@@ -188,8 +177,8 @@ impl Captures {
     ) {
         let mut studio = studio;
         if studio.is_some() {
-            // From here on there is a selector to ask the person in, so
-            // apps may ask for what only they can name.
+            // From here on there is a selector to ask the person in, so apps may ask for what only
+            // they can name.
             self.selector.store(true, Ordering::Release);
         }
         self.take_writes();
@@ -222,8 +211,8 @@ impl Captures {
         self.take_writes();
     }
 
-    /// Hand the picture asked for to the worker, which writes it off the
-    /// loop: the app is answered on a later pass, once the file is there.
+    /// Hand the picture asked for to the worker, which writes it off the loop: the app is answered
+    /// on a later pass, once the file is there.
     fn take(
         &mut self,
         compositor: &mut Compositor,
@@ -252,8 +241,8 @@ impl Captures {
         self.writes.push_back((write, reply));
     }
 
-    /// Answer the apps whose screenshots the worker wrote since the last
-    /// pass, in the order they asked.
+    /// Answer the apps whose screenshots the worker wrote since the last pass, in the order they
+    /// asked.
     fn take_writes(&mut self) {
         loop {
             let Some((write, _)) = self.writes.front() else {
@@ -261,12 +250,11 @@ impl Captures {
             };
             let answer = match write.try_recv() {
                 Ok(answer) => answer,
-                // Not written yet: it and every ask behind it wait for their
-                // turn on the one worker.
+                // Not written yet: it and every ask behind it wait for their turn on the one
+                // worker.
                 Err(TryRecvError::Empty) => return,
-                // The folder the file was to go in, without work to write
-                // it: the app is told, and the person is not, who never saw
-                // this capture.
+                // The folder the file was to go in, without work to write it: the app is told, and
+                // the person is not, who never saw this capture.
                 Err(TryRecvError::Disconnected) => Err(WriteFailed {
                     folder: self.directory.clone(),
                     cause: WriteCause::Other,
@@ -324,16 +312,15 @@ pub(crate) fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, S
     Ok(desk(compositor, Look::Whole)?.picture)
 }
 
-/// Every display on, each at its place in the layout, as the person in front
-/// of them sees it: the session's own look at its displays, for a check, with
-/// nothing withheld.
+/// Every display on, each at its place in the layout, as the person in front of them sees it: the
+/// session's own look at its displays, for a check, with nothing withheld.
 pub(crate) fn shown(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
     Ok(desk(compositor, Look::Drawn)?.picture)
 }
 
-/// Every display on, each at its place in the layout, drawn to fit `max` —
-/// the frame a video of the desktop is streamed at — and opaque throughout:
-/// one frame of the stream a wireless display is sent.
+/// Every display on, each at its place in the layout, drawn to fit `max` — the frame a video of the
+/// desktop is streamed at — and opaque throughout: one frame of the stream a wireless display is
+/// sent.
 pub(crate) fn video(
     compositor: &mut Compositor,
     max: (u32, u32),
@@ -341,13 +328,13 @@ pub(crate) fn video(
     Ok(desk(compositor, Look::Fitted(max))?.picture)
 }
 
-/// The colour under the pointer: the pixel under it where a screenshot of
-/// every display puts it, as red, green and blue from 0 to 1.
+/// The colour under the pointer: the pixel under it where a screenshot of every display puts it, as
+/// red, green and blue from 0 to 1.
 fn colour(compositor: &mut Compositor) -> Result<(f64, f64, f64), CaptureError> {
     let pointer = compositor.pointer_location();
     let none = || CaptureError::Failed(tilo_portal::NO_COLOUR_UNDER_POINTER.to_owned());
-    // Nothing under the pointer is nothing to pick, whether no display is
-    // on or the pointer is over none of them.
+    // Nothing under the pointer is nothing to pick, whether no display is on or the pointer is over
+    // none of them.
     if !compositor
         .outputs()
         .iter()
@@ -360,8 +347,7 @@ fn colour(compositor: &mut Compositor) -> Result<(f64, f64, f64), CaptureError> 
     desk.colour_at(pointer).ok_or_else(none)
 }
 
-/// A picture of every display on, each at its place in the layout, and
-/// where each one landed in it.
+/// A picture of every display on, each at its place in the layout, and where each one landed in it.
 struct Desk {
     picture: image::RgbaImage,
     placed: Vec<Placed>,
@@ -391,21 +377,18 @@ type Layout = (String, (i32, i32, i32, i32));
 /// What a copy of the desk is for.
 #[derive(Clone, Copy)]
 enum Look {
-    /// The session's own look at its displays, for a check: what is drawn on
-    /// them, nothing withheld.
+    /// The session's own look at its displays, for a check: what is drawn on them, nothing
+    /// withheld.
     Drawn,
-    /// A copy that leaves the session, at every display's own pixels: a
-    /// screenshot.
+    /// A copy that leaves the session, at every display's own pixels: a screenshot.
     Whole,
-    /// A copy that leaves the session, the whole layout fitted into `max`: a
-    /// video frame.
+    /// A copy that leaves the session, the whole layout fitted into `max` : a video frame.
     Fitted((u32, u32)),
 }
 
-/// Every display on, each at its place in the layout, as `look` copies it; a
-/// fitted copy fits the whole layout into that frame — the size a video of
-/// the desktop is streamed at — and every other keeps each display's own
-/// pixels.
+/// Every display on, each at its place in the layout, as `look` copies it; a fitted copy fits the
+/// whole layout into that frame — the size a video of the desktop is streamed at — and every other
+/// keeps each display's own pixels.
 fn desk(compositor: &mut Compositor, look: Look) -> Result<Desk, String> {
     let displays: Vec<Layout> = compositor
         .outputs()
@@ -435,8 +418,7 @@ fn desk(compositor: &mut Compositor, look: Look) -> Result<Desk, String> {
             ),
         }
         .map_err(|error| error.to_string())?;
-        // The frame is in the output's pixels: its place in the layout
-        // scales with it.
+        // The frame is in the output's pixels: its place in the layout scales with it.
         let scale = f64::from(shot.width) / f64::from(rect.2.max(1));
         let Some(pixels) = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba) else {
             return Err(format!("{}: a frame of the wrong size", output.name));
@@ -468,8 +450,8 @@ fn desk(compositor: &mut Compositor, look: Look) -> Result<Desk, String> {
     let (width, height) = (size(left, right), size(top, bottom));
     let mut composed = image::RgbaImage::new(width, height);
     if fitted.is_some() {
-        // Between the displays is the desk, as a display shows it, not
-        // nothing: a video frame has no alpha to carry.
+        // Between the displays is the desk, as a display shows it, not nothing: a video frame has
+        // no alpha to carry.
         for pixel in composed.pixels_mut() {
             *pixel = desk_pixel();
         }
@@ -494,9 +476,8 @@ fn desk(compositor: &mut Compositor, look: Look) -> Result<Desk, String> {
 }
 
 impl Desk {
-    /// The colour `pointer`, a point of the layout, is over: red, green and
-    /// blue from 0 to 1, as the picture shows them. `None` when the pointer
-    /// is over no display.
+    /// The colour `pointer` , a point of the layout, is over: red, green and blue from 0 to 1, as
+    /// the picture shows them. `None` when the pointer is over no display.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -516,8 +497,8 @@ impl Desk {
         };
         let x = pixel(placed.at.0, placed.rect.0, pointer.0, self.picture.width())?;
         let y = pixel(placed.at.1, placed.rect.1, pointer.1, self.picture.height())?;
-        // The picture's alpha says nothing about the colour: a window that
-        // draws nothing shows the desk through, as it does on the display.
+        // The picture's alpha says nothing about the colour: a window that draws nothing shows the
+        // desk through, as it does on the display.
         let [red, green, blue, _] = self.picture.get_pixel(x, y).0;
         Some((
             f64::from(red) / 255.0,
@@ -527,8 +508,7 @@ impl Desk {
     }
 }
 
-/// Whether `point`, a point of the layout, is on the display with
-/// rectangle `rect`.
+/// Whether `point` , a point of the layout, is on the display with rectangle `rect` .
 fn holds(rect: (i32, i32, i32, i32), point: (f64, f64)) -> bool {
     let (x, y, width, height) = rect;
     point.0 >= f64::from(x)
@@ -549,8 +529,8 @@ fn desk_pixel() -> image::Rgba<u8> {
     image::Rgba([channel(red), channel(green), channel(blue), channel(alpha)])
 }
 
-/// The factor the whole layout is scaled by to fit `max`: the smallest of
-/// what its width and its height allow, never above the displays' own size.
+/// The factor the whole layout is scaled by to fit `max` : the smallest of what its width and its
+/// height allow, never above the displays' own size.
 fn layout_factor(displays: &[Layout], max: (u32, u32)) -> f64 {
     let left = displays
         .iter()
@@ -581,8 +561,8 @@ fn layout_factor(displays: &[Layout], max: (u32, u32)) -> f64 {
         .min(1.0)
 }
 
-/// `value` as a whole number of pixels the compositor is asked for, even and
-/// at least two: what an encoder takes.
+/// `value` as a whole number of pixels the compositor is asked for, even and at least two: what an
+/// encoder takes.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -618,8 +598,8 @@ mod tests {
         compositor
     }
 
-    /// A screenshot keeps every display's own pixels, where a video of the
-    /// desktop is the whole layout fitted to what was asked for.
+    /// A screenshot keeps every display's own pixels, where a video of the desktop is the whole
+    /// layout fitted to what was asked for.
     #[test]
     fn a_video_of_the_desktop_is_the_whole_layout_fitted_to_its_size() {
         let mut compositor = desktop();

@@ -162,7 +162,7 @@ pub const TERMINAL_APP_ID: &str = "so.tilo.terminal";
 /// The preamble `tilo-launcher` writes on a sandboxed app's `ush` connection
 /// before handing the descriptor over.
 pub const LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
-/// The handoff's JSON is bounded: it names one app id.
+/// The handoff's JSON is bounded: it names one app id and one workspace.
 const MAX_HANDOFF_BYTES: u32 = 1024;
 
 /// Who is on the other end of a service connection.
@@ -186,16 +186,29 @@ impl Caller {
 }
 
 /// The launcher's handoff: `QUS1`, a little-endian `u32` length, then
-/// `{"protocol":1,"app_id":"…"}`.
+/// `{"protocol":1,"app_id":"…","workspace":"…"}`. `workspace` is the
+/// workspace the app was launched in, absent for a launch in none: the
+/// app's environments are that workspace's ([`crate::workspace::scope_of`]).
 #[derive(Debug, serde::Deserialize)]
 struct Handoff {
     protocol: u16,
     app_id: String,
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
-    let json = serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": app_id }))
-        .map_err(std::io::Error::other)?;
+    encode_launch_handoff(app_id, None)
+}
+
+/// [`encode_handoff`] for an app launched in `workspace`, as `tilo-launcher`
+/// writes it.
+pub fn encode_launch_handoff(app_id: &str, workspace: Option<&str>) -> std::io::Result<Vec<u8>> {
+    let mut handoff = serde_json::json!({ "protocol": 1, "app_id": app_id });
+    if let (Some(workspace), Some(fields)) = (workspace, handoff.as_object_mut()) {
+        fields.insert("workspace".into(), workspace.into());
+    }
+    let json = serde_json::to_vec(&handoff).map_err(std::io::Error::other)?;
     let len = u32::try_from(json.len())
         .ok()
         .filter(|len| *len > 0 && *len <= MAX_HANDOFF_BYTES)
@@ -211,14 +224,21 @@ pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
 /// the bytes already consumed that belong to the request (a connection
 /// without a handoff starts directly with its JSON line).
 pub fn read_caller(stream: &mut impl Read) -> std::io::Result<(Caller, Vec<u8>)> {
+    read_handoff(stream).map(|(caller, _, carried)| (caller, carried))
+}
+
+/// [`read_caller`], with the workspace the launcher said the app was
+/// launched in (`None` for the session's own process, and for an app
+/// launched in no workspace).
+pub fn read_handoff(stream: &mut impl Read) -> std::io::Result<(Caller, Option<String>, Vec<u8>)> {
     // One byte first: a request is JSON and never starts with the magic's
     // first byte, so a short request (`{}`) is never waited on for more.
     let mut first = [0u8; 1];
     if stream.read(&mut first)? == 0 {
-        return Ok((Caller::Session, Vec::new()));
+        return Ok((Caller::Session, None, Vec::new()));
     }
     if first != LAUNCH_MAGIC[..1] {
-        return Ok((Caller::Session, first.to_vec()));
+        return Ok((Caller::Session, None, first.to_vec()));
     }
     let mut rest = [0u8; 3];
     stream.read_exact(&mut rest)?;
@@ -237,7 +257,8 @@ pub fn read_caller(stream: &mut impl Read) -> std::io::Result<(Caller, Vec<u8>)>
     if handoff.protocol != 1 || handoff.app_id.is_empty() {
         return Err(std::io::Error::other("ush handoff is not understood"));
     }
-    Ok((Caller::App(handoff.app_id), Vec::new()))
+    let workspace = handoff.workspace.filter(|workspace| !workspace.is_empty());
+    Ok((Caller::App(handoff.app_id), workspace, Vec::new()))
 }
 
 /// Who asked for a session, as the Terminal reports it.
@@ -624,6 +645,39 @@ mod tests {
         let mut forged = LAUNCH_MAGIC.to_vec();
         forged.extend_from_slice(&u32::MAX.to_le_bytes());
         assert!(read_caller(&mut std::io::Cursor::new(forged)).is_err());
+    }
+
+    /// The launcher says which workspace the app was launched in; a launch
+    /// in none, and an older launcher's handoff, say none.
+    #[test]
+    fn the_launcher_handoff_carries_the_workspace_the_app_was_launched_in() {
+        let workspace = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        let mut wire = encode_launch_handoff("so.tilo.terminal", Some(workspace)).unwrap();
+        wire.extend_from_slice(b"{\"op\":\"list-environments\"}\n");
+        let mut reader = std::io::Cursor::new(wire);
+        let (caller, launched, carried) = read_handoff(&mut reader).unwrap();
+        assert_eq!(caller, Caller::App("so.tilo.terminal".into()));
+        assert_eq!(launched.as_deref(), Some(workspace));
+        assert!(carried.is_empty());
+        let mut rest = String::new();
+        reader.read_to_string(&mut rest).unwrap();
+        assert_eq!(rest, "{\"op\":\"list-environments\"}\n");
+
+        let (_, launched, _) = read_handoff(&mut std::io::Cursor::new(
+            encode_handoff("so.tilo.terminal").unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(launched, None);
+        let (_, launched, _) = read_handoff(&mut std::io::Cursor::new(
+            encode_launch_handoff("so.tilo.terminal", Some("")).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(launched, None, "an empty workspace is none");
+        let (caller, launched, _) = read_handoff(&mut std::io::Cursor::new(
+            b"{\"workspace\":\"w\"}\n".to_vec(),
+        ))
+        .unwrap();
+        assert_eq!((caller, launched), (Caller::Session, None));
     }
 
     #[test]

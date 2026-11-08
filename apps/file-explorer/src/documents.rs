@@ -38,10 +38,6 @@ fn is_document(ext: &str) -> bool {
 }
 
 /// The bytes of the file at `path`, at most [`MAX_FILE_BYTES`] of them.
-///
-/// # Errors
-///
-/// The file cannot be read, is a folder, or is too large.
 pub fn read_file(path: &Path) -> Result<Vec<u8>, String> {
     read_bounded(path)
 }

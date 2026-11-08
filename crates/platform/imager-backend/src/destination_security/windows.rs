@@ -402,10 +402,6 @@ fn create_secured(parent: &File, name: &OsStr, security: &LocalAllocation) -> io
 }
 
 /// Create an ACL-controlled parent for native copier integration tests.
-///
-/// # Errors
-/// Propagates parent-open, current-user token, security-descriptor and
-/// directory-creation errors, including an invalid ACL rule.
 #[cfg(feature = "test-support")]
 pub fn create_acl_fixture(base: &Path, rule: &str) -> io::Result<PathBuf> {
     let parent = cap_primitives::fs::open_ambient_dir(base, cap_primitives::ambient_authority())?;

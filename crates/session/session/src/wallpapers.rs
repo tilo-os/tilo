@@ -33,17 +33,16 @@ const FILE: &str = "wallpapers.json";
 /// The record format this build reads.
 const SCHEMA: u32 = 1;
 
-/// The largest edge a picture of the person's own is decoded to: a 4K
-/// panel's picture covers the widest desk without holding more pixels.
+/// The largest edge a picture of the person's own is decoded to: a 4K panel's picture covers the
+/// widest desk without holding more pixels.
 const CUSTOM_EDGE: u32 = 3840;
 
 fn path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
 }
 
-/// What each workspace on this device shows: its own
-/// `appearance.wallpaper` value, else this device's default; no value at
-/// all is the picture the image ships.
+/// What each workspace on this device shows: its own `appearance.wallpaper` value, else this
+/// device's default; no value at all is the picture the image ships.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Records {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,13 +60,11 @@ impl Records {
             .or(self.default.as_deref())
     }
 
-    /// Apply the person's `value` the way `scope` and `target` say, with
-    /// `active` the workspace they are on; whether that changed anything.
-    ///
-    /// A picture for the lock screen alone leaves the desk as it is. "Every
-    /// workspace" replaces the default and forgets what workspaces had of
-    /// their own; "this workspace" records the one the person is on and
-    /// leaves the others.
+    /// Apply the person's `value` the way `scope` and `target` say, with `active` the workspace
+    /// they are on; whether that changed anything.
+    /// A picture for the lock screen alone leaves the desk as it is. "Every workspace" replaces the
+    /// default and forgets what workspaces had of their own; "this workspace" records the one the
+    /// person is on and leaves the others.
     fn apply(
         &mut self,
         value: Option<&str>,
@@ -112,8 +109,7 @@ fn load_at(path: &Path) -> Records {
     };
     match serde_json::from_str::<Kept>(&text) {
         Ok(kept) if kept.schema == SCHEMA => kept.records,
-        // A file a newer build wrote describes pictures this one cannot
-        // place.
+        // A file a newer build wrote describes pictures this one cannot place.
         _ => {
             tracing::debug!("the kept wallpapers are another build's");
             Records::default()
@@ -130,8 +126,8 @@ fn save_at(path: &Path, records: &Records) {
             schema: SCHEMA,
             records: records.clone(),
         };
-        // Written beside and moved into place: a session that dies mid-write
-        // leaves the wallpapers it had.
+        // Written beside and moved into place: a session that dies mid-write leaves the wallpapers
+        // it had.
         let beside = path.with_extension("json.tmp");
         std::fs::write(&beside, serde_json::to_vec(&kept)?)?;
         std::fs::rename(&beside, path)
@@ -141,8 +137,8 @@ fn save_at(path: &Path, records: &Records) {
     }
 }
 
-/// This device's wallpapers: the picture each workspace shows, decoded once
-/// and kept while a workspace still shows it.
+/// This device's wallpapers: the picture each workspace shows, decoded once and kept while a
+/// workspace still shows it.
 pub(crate) struct Wallpapers {
     /// Where the records are kept, if this session keeps any.
     root: Option<PathBuf>,
@@ -154,28 +150,26 @@ pub(crate) struct Wallpapers {
 #[derive(Default)]
 struct State {
     records: Records,
-    /// The workspace in front, which a change covering one workspace lands
-    /// on.
+    /// The workspace in front, which a change covering one workspace lands on.
     active: Option<String>,
     /// Decoded pictures by the value they show.
     images: HashMap<Option<String>, ImageData>,
-    /// The temperature each picture gives a workspace, by the value it
-    /// shows: a picture is millions of pixels, so its hue is found once.
+    /// The temperature each picture gives a workspace, by the value it shows: a picture is millions
+    /// of pixels, so its hue is found once.
     hues: HashMap<Option<String>, Option<f32>>,
     /// Values decoding off this thread.
     decoding: HashSet<Option<String>>,
-    /// Values that could not be decoded: the image does not carry the
-    /// picture (a source checkout) or the person's own is gone, until the
-    /// records name another.
+    /// Values that could not be decoded: the image does not carry the picture (a source checkout)
+    /// or the person's own is gone, until the records name another.
     unreadable: HashSet<Option<String>>,
-    /// The settings as last read: a change applies once, and a session
-    /// start applies nothing, so a restart keeps what the workspaces had.
+    /// The settings as last read: a change applies once, and a session start applies nothing, so a
+    /// restart keeps what the workspaces had.
     intent: Option<(Option<String>, String, String)>,
 }
 
 impl Wallpapers {
-    /// The wallpapers this device kept under `state`, remembering no picture
-    /// yet; without a state directory, nothing is read or kept.
+    /// The wallpapers this device kept under `state` , remembering no picture yet; without a state
+    /// directory, nothing is read or kept.
     pub(crate) fn new(root: Option<PathBuf>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
@@ -196,8 +190,8 @@ impl Wallpapers {
         }
     }
 
-    /// The picture workspace `id` shows, if it is decoded: a frame draws
-    /// what is ready and asks for the rest.
+    /// The picture workspace `id` shows, if it is decoded: a frame draws what is ready and asks for
+    /// the rest.
     pub(crate) fn picture(&self, id: &str) -> Option<ImageData> {
         let mut state = self.state.lock_recover();
         let value = state.records.value_for(id).map(str::to_owned);
@@ -207,9 +201,9 @@ impl Wallpapers {
         if state.unreadable.contains(&value) || state.decoding.contains(&value) {
             return None;
         }
-        // The first picture is decoded here, where there is nothing to keep
-        // up, so the desk's first frame is the person's wallpaper. One that
-        // replaces a picture shown decodes off this thread.
+        // The first picture is decoded here, where there is nothing to keep up, so the desk's first
+        // frame is the person's wallpaper. One that replaces a picture shown decodes off this
+        // thread.
         if state.images.is_empty() && state.decoding.is_empty() {
             let decoded = decode(value.as_deref());
             return if let Some(image) = decoded {
@@ -249,16 +243,14 @@ impl Wallpapers {
         None
     }
 
-    /// Note which workspace the person is on: the one a change covering
-    /// "this workspace" lands on.
+    /// Note which workspace the person is on: the one a change covering "this workspace" lands on.
     pub(crate) fn set_active(&self, id: Option<String>) {
         self.state.lock_recover().active = id;
     }
 
-    /// The temperature workspace `id`'s wallpaper gives it: its picture's
-    /// dominant hue, found once per picture and kept while a workspace shows
-    /// it. `None` while the picture is not decoded yet, and for a picture
-    /// with no hue (a grey photograph, a missing file), which leaves the
+    /// The temperature workspace `id` 's wallpaper gives it: its picture's dominant hue, found once
+    /// per picture and kept while a workspace shows it. `None` while the picture is not decoded
+    /// yet, and for a picture with no hue (a grey photograph, a missing file), which leaves the
     /// workspace neutral.
     pub(crate) fn hue(&self, id: &str) -> Option<f32> {
         let mut state = self.state.lock_recover();
@@ -274,9 +266,9 @@ impl Wallpapers {
         hue
     }
 
-    /// Start from `document`, the person's settings. A device that kept no
-    /// picture yet takes the one chosen as its default; one that has them
-    /// keeps each workspace's, as [`Self::follow`] does.
+    /// Start from `document` , the person's settings. A device that kept no picture yet takes the
+    /// one chosen as its default; one that has them keeps each workspace's, as [`Self::follow`]
+    /// does.
     pub(crate) fn start(&self, document: &Map<String, Value>) {
         let taken = {
             let mut state = self.state.lock_recover();
@@ -295,9 +287,9 @@ impl Wallpapers {
         self.follow(document);
     }
 
-    /// Follow `document`, the person's settings: a changed picture, where it
-    /// shows or which workspaces it covers is applied to the desk. The
-    /// first read only notes it, as the session's own start read does.
+    /// Follow `document` , the person's settings: a changed picture, where it shows or which
+    /// workspaces it covers is applied to the desk. The first read only notes it, as the session's
+    /// own start read does.
     pub(crate) fn follow(&self, document: &Map<String, Value>) {
         let value = settings_store::appearance::WALLPAPER.from_document(document);
         let appearance = document.get("appearance").and_then(Value::as_object);
@@ -316,14 +308,13 @@ impl Wallpapers {
         let mut state = self.state.lock_recover();
         let active = state.active.clone();
         let (value, scope, target) = &intent;
-        // A change that covers one workspace waits for the one in front
-        // rather than landing on none.
+        // A change that covers one workspace waits for the one in front rather than landing on
+        // none.
         if scope != "all" && target != "lockscreen" && active.is_none() {
             return;
         }
-        // The first read is the session's own start read: what the person
-        // chose is noted, and the workspaces keep the pictures this device
-        // kept for them.
+        // The first read is the session's own start read: what the person chose is noted, and the
+        // workspaces keep the pictures this device kept for them.
         let Some(last) = state.intent.replace(intent.clone()) else {
             return;
         };
@@ -337,8 +328,8 @@ impl Wallpapers {
             return;
         }
         let records = state.records.clone();
-        // The pictures no workspace shows any more are let go: each one is
-        // the whole screen in pixels.
+        // The pictures no workspace shows any more are let go: each one is the whole screen in
+        // pixels.
         let (default, workspaces) = (&records.default, &records.workspaces);
         let shown = |value: &Option<String>| {
             value == default || workspaces.values().any(|own| value.as_deref() == Some(own))
@@ -409,8 +400,8 @@ mod tests {
     fn a_change_lands_on_the_workspace_in_front_after_the_first_read_notes_it() {
         let wallpapers = Wallpapers::new(None, Arc::new(|| {}));
         wallpapers.set_active(Some("2".into()));
-        // The session's own start read applies nothing: the workspaces keep
-        // the pictures this device kept for them.
+        // The session's own start read applies nothing: the workspaces keep the pictures this
+        // device kept for them.
         wallpapers.follow(&appearance(json!({ "wallpaper": "meadow" })));
         assert_eq!(wallpapers.state.lock_recover().records.value_for("2"), None);
         wallpapers.follow(&appearance(json!({ "wallpaper": "dunes" })));
@@ -432,8 +423,8 @@ mod tests {
         shown([20, 40, 220]);
         let blue = wallpapers.hue("1").expect("a blue picture has a hue");
         assert!((blue - 264.0).abs() < 30.0, "blue reads as {blue}");
-        // The picture under the same value is not looked at again: the hue
-        // it gave once is the one it keeps.
+        // The picture under the same value is not looked at again: the hue it gave once is the one
+        // it keeps.
         shown([220, 40, 20]);
         assert_eq!(wallpapers.hue("1"), Some(blue));
         // A workspace showing another picture, not decoded, has no hue yet.

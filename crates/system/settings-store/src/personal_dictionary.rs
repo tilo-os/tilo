@@ -33,9 +33,6 @@ pub struct Word {
 
 impl Word {
     /// Validate and canonicalise an addition, retaining its display casing.
-    ///
-    /// # Errors
-    /// Empty, oversized or non-word text, or an invalid language tag.
     pub fn new(spelling: &str, language: Option<&str>) -> io::Result<Self> {
         let spelling: String = spelling.trim().nfc().collect();
         if spelling.is_empty()
@@ -95,9 +92,6 @@ impl Snapshot {
     /// Preview a queued edit without writing a second vocabulary store.
     /// Imports wait for the host's ownership/migration decision before words
     /// are shown. All other changes use the same canonical word rules.
-    ///
-    /// # Errors
-    /// An invalid entry, missing edit target, duplicate target or full set.
     pub fn preview(&self, edit: &Edit) -> io::Result<Self> {
         let mut next = self.clone();
         match edit {
@@ -320,9 +314,6 @@ impl Service {
     }
 
     /// Apply a user edit to the current person, under the local file lock.
-    ///
-    /// # Errors
-    /// Revoked reader, stale revision, invalid entry, or persistence failure.
     pub fn edit(&self, reader: &Reader, revision: u64, edit: Edit) -> io::Result<Snapshot> {
         let result = self.change(reader, revision, |doc| {
             match edit {

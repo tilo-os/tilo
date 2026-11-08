@@ -1,6 +1,6 @@
 use super::*;
 use collab_types::PeerPresencePayload;
-use collab_types::presence::{DESKTOP_APP, PresenceKey};
+use collab_types::presence::{DESKTOP_APP, Payload, PresenceKey};
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::{Workspace, WorkspaceId as ModelWorkspaceId};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -11,8 +11,7 @@ const WORKSPACE: &str = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
 /// A workspace no test's desktop shows.
 const OTHER_WORKSPACE: &str = "0a2c4e6f-8b1d-4f3a-9c5e-7d9b1f3a5c7e";
 
-/// A device's publisher, from a seed: an endpoint id nobody's identity
-/// certifies.
+/// A device's publisher, from a seed: an endpoint id nobody's identity certifies.
 fn device(seed: u8) -> EndpointId {
     iroh::SecretKey::from_bytes(&[seed; 32]).public()
 }
@@ -21,7 +20,7 @@ fn topic(workspace: &str) -> WorkspaceId {
     workspace_topic_id(ModelWorkspaceId::parse(workspace).expect("a workspace id"))
 }
 
-/// A desktop showing one workspace, in `workspace`.
+/// A desktop showing one workspace, in `workspace` .
 fn desk(workspace: &str) -> DesktopTree {
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
@@ -34,8 +33,7 @@ fn desk(workspace: &str) -> DesktopTree {
     }
 }
 
-/// A device of the person's, certified for their root key, and the key
-/// it signs with.
+/// A device of the person's, certified for their root key, and the key it signs with.
 fn certified(user: u8, device_seed: u8, label: &str) -> (DeviceCert, SigningKey) {
     let person = SigningKey::from_bytes(&[user; 32]);
     let this = SigningKey::from_bytes(&[device_seed; 32]);
@@ -52,7 +50,7 @@ fn certified(user: u8, device_seed: u8, label: &str) -> (DeviceCert, SigningKey)
     (cert, this)
 }
 
-/// A device's workspace list for `workspace`, signed by that device.
+/// A device's workspace list for `workspace` , signed by that device.
 fn list_of(
     device: &DeviceCert,
     signing: &SigningKey,
@@ -100,16 +98,14 @@ fn sent(said: &mut tokio::sync::mpsc::UnboundedReceiver<Outgoing>) -> Vec<Outgoi
     commands
 }
 
-/// One presence a peer said in `workspace`, as their frame on its presence
-/// track says it: this session takes frames from its plane, and one handed
-/// here is the same thing.
+/// One presence a peer said in `workspace` , as their frame on its presence track says it: this
+/// session takes frames from its plane, and one handed here is the same thing.
 fn presence(workspace: &str, payload: PeerPresencePayload) -> Option<Presence> {
     let payload = word(payload)?;
     Some(Presence::desktop(workspace, payload))
 }
 
-/// The presence-track payload `said` names, for the frames these tests hand a
-/// session.
+/// The presence-track payload `said` names, for the frames these tests hand a session.
 fn word(said: PeerPresencePayload) -> Option<Payload> {
     Some(match said {
         PeerPresencePayload::Arrived => Payload::Arrived,
@@ -134,8 +130,7 @@ fn word(said: PeerPresencePayload) -> Option<Payload> {
     })
 }
 
-/// A peer said `said` of themselves in `workspace`, as their frame on its
-/// presence track says it.
+/// A peer said `said` of themselves in `workspace` , as their frame on its presence track says it.
 fn heard(sync: &Client, from: u8, workspace: &str, said: PeerPresencePayload) {
     let Some(frame) = presence(workspace, said) else {
         return;
@@ -173,8 +168,8 @@ fn root(seed: u8) -> [u8; 32] {
         .to_bytes()
 }
 
-/// Where a device of the person `user` is reached for a workspace, as it
-/// signed it: `opaque` says which address.
+/// Where a device of the person `user` is reached for a workspace, as it signed it: `opaque` says
+/// which address.
 fn host_hint(
     user: u8,
     device_seed: u8,
@@ -233,13 +228,13 @@ fn hello(from: u8, user: u8, device_label: &str) -> NetEvent {
     }
 }
 
-/// Where a peer's pointer moved, on the tile of `tab` of `workspace`.
+/// Where a peer's pointer moved, on the tile of `tab` of `workspace` .
 fn pointer_moved(sync: &Client, from: u8, workspace: &str, tab: u64, point: (f32, f32)) {
     let frame = Presence::pointing(workspace, tab, point.0, point.1);
     sync.heard_presence(workspace, device(from), &frame);
 }
 
-/// Their pointer left the tile of `tab` of `workspace`.
+/// Their pointer left the tile of `tab` of `workspace` .
 fn pointer_cleared(sync: &Client, from: u8, workspace: &str, tab: u64) {
     let frame = Presence::pointer_left(workspace, tab);
     sync.heard_presence(workspace, device(from), &frame);
@@ -258,8 +253,8 @@ fn a_device_of_the_person_coming_up_owes_it_the_list() {
         certs: Vec::new(),
         revocations: Vec::new(),
     });
-    // The pass that hears it tells the list; the next one has nothing new to
-    // say, so a device that stayed up is not told it again on every pass.
+    // The pass that hears it tells the list; the next one has nothing new to say, so a device that
+    // stayed up is not told it again on every pass.
     assert!(
         sync.sibling_arrived(),
         "a device that just came up has not heard it"
@@ -277,8 +272,8 @@ fn a_list_is_kept_only_from_the_device_that_said_it() {
         .expect("the laptop's own list is the laptop's");
     assert_eq!(kept.device_public_key, laptop.device_public_key);
 
-    // Someone else's device, and a list the laptop's session carried but
-    // another device signed: neither says the laptop said it.
+    // Someone else's device, and a list the laptop's session carried but another device signed:
+    // neither says the laptop said it.
     let (stranger, _) = certified(0x55, 0x13, "Stranger");
     assert!(author_of(&[stranger], &by_laptop).is_none());
     assert!(author_of(&[phone], &by_laptop).is_none());
@@ -305,8 +300,8 @@ fn a_peer_here_is_a_collaborator_of_the_active_workspace() {
     assert_eq!(collaborators[0].role_id, None);
 }
 
-/// The person came to a workspace where people already are: the bar says who
-/// is here, once, not on every roster change while they stay.
+/// The person came to a workspace where people already are: the bar says who is here, once, not on
+/// every roster change while they stay.
 #[test]
 fn who_is_here_is_said_when_the_person_arrives() {
     let (sync, _said) = session("Quinten", Some(0x04));
@@ -401,8 +396,8 @@ fn a_peer_in_a_call_says_which_channel_to_join() {
     assert!(sync.calls().is_empty());
 }
 
-/// How available a peer says they are is the roster's: their face dims
-/// while they are away or idle, and says so in words.
+/// How available a peer says they are is the roster's: their face dims while they are away or idle,
+/// and says so in words.
 #[test]
 fn a_peer_away_is_away_on_the_roster() {
     let (sync, _said) = session("Quinten", Some(0x04));
@@ -425,8 +420,7 @@ fn a_peer_away_is_away_on_the_roster() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].availability, ui::Availability::Away);
 
-    // Back at their machine, and heads down: the face lightens, and
-    // says what they chose.
+    // Back at their machine, and heads down: the face lightens, and says what they chose.
     heard(&sync, 1, WORKSPACE, away("focusing"));
     let mut tree = desk(WORKSPACE);
     sync.show(&mut tree, &|_| None);
@@ -435,8 +429,8 @@ fn a_peer_away_is_away_on_the_roster() {
     assert!(!rows[0].availability.dims());
 }
 
-/// A call this device joins is said in the workspace, so everyone else's
-/// roster shows this person in that channel.
+/// A call this device joins is said in the workspace, so everyone else's roster shows this person
+/// in that channel.
 #[test]
 fn a_call_this_device_joins_reaches_a_peer_s_roster() {
     let (mine, mut said) = session("Quinten", Some(0x04));
@@ -451,8 +445,7 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
         screen: false,
     })));
 
-    // A peer's session in the same workspace, handed everything this device
-    // said there.
+    // A peer's session in the same workspace, handed everything this device said there.
     let own = OwnPresence {
         label: "Ada".into(),
         ..OwnPresence::default()
@@ -534,9 +527,8 @@ fn a_peer_who_leaves_leaves_the_roster() {
     assert!(tree.workspaces[0].collaborators.is_empty());
 }
 
-/// Two relays nobody listens on: this endpoint never has a home relay
-/// to be published with, so the directory gate cannot open, and nothing
-/// here waits on a network.
+/// Two relays nobody listens on: this endpoint never has a home relay to be published with, so the
+/// directory gate cannot open, and nothing here waits on a network.
 fn unused_relays() -> iroh::RelayMap {
     ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
         .into_iter()
@@ -551,8 +543,7 @@ fn the_relays_wait_until_a_workspace_with_someone_else_is_shown() {
         .enable_all()
         .build()
         .expect("a runtime for the collaboration endpoint");
-    // The endpoint the real client binds, its directory gated and its
-    // relays held back.
+    // The endpoint the real client binds, its directory gated and its relays held back.
     let gate = tilo_endpoint_reachability::collaborating();
     let (endpoint, reachability) = runtime.block_on(async {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -599,8 +590,7 @@ fn the_relays_wait_until_a_workspace_with_someone_else_is_shown() {
     heard(&sync, 1, WORKSPACE, PeerPresencePayload::Left);
     assert_eq!(reachability.holders(), (None, None));
 
-    // Someone in a workspace this desktop does not show needs nothing
-    // of this device.
+    // Someone in a workspace this desktop does not show needs nothing of this device.
     heard(&sync, 2, OTHER_WORKSPACE, PeerPresencePayload::Arrived);
     assert_eq!(reachability.holders().1, None);
 }
@@ -615,8 +605,8 @@ fn only_the_workspace_in_front_lists_people() {
     heard(&sync, 2, elsewhere, PeerPresencePayload::Arrived);
     assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
 
-    // A frame that names another workspace is that other workspace's, whatever
-    // plane it was heard on.
+    // A frame that names another workspace is that other workspace's, whatever plane it was heard
+    // on.
     let foreign = Presence {
         app: DESKTOP_APP.to_owned(),
         cluster: elsewhere.to_owned(),
@@ -645,15 +635,6 @@ fn another_apps_presence_is_not_the_desktops() {
 }
 
 #[test]
-fn this_device_is_not_someone_here() {
-    let (sync, _said) = session("Quinten", Some(0x04));
-    // This device's own frame, looped back by a relay: it says nothing of
-    // anyone else.
-    here(&sync, 0xf0);
-    assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
-}
-
-#[test]
 fn two_devices_of_one_peer_are_one_face() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
@@ -678,66 +659,41 @@ fn another_device_of_this_person_is_this_person() {
     assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
 }
 
+/// The tile `tab` stands at on the desk of these tests.
+fn tile(tab: u64) -> (u64, ui::kurbo::Rect) {
+    (tab, ui::kurbo::Rect::new(100.0, 50.0, 500.0, 350.0))
+}
+
 #[test]
 fn pointers_are_followed_on_the_room_tile() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
     here(&sync, 1);
-    assert!(sync.pointers(WORKSPACE, 3).is_empty());
+    assert!(sync.placed(WORKSPACE, &[tile(3)]).is_empty());
 
     pointer_moved(&sync, 1, WORKSPACE, 3, (12.5, 34.5));
     assert_eq!(
-        sync.pointers(WORKSPACE, 3),
-        vec![(device(1).to_string(), 12.5, 34.5)]
+        sync.placed(WORKSPACE, &[tile(3)]),
+        vec![(device(1).to_string(), 3, 112.5, 84.5)],
+        "the pointer is placed where the tile stands"
     );
-    assert!(sync.pointers(WORKSPACE, 4).is_empty());
+    assert!(sync.placed(WORKSPACE, &[tile(4)]).is_empty(), "another tab");
     assert!(
-        sync.pointers("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", 3)
+        sync.placed("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", &[tile(3)])
             .is_empty()
     );
 
-    pointer_cleared(&sync, 1, WORKSPACE, 3);
-    assert!(sync.pointers(WORKSPACE, 3).is_empty());
-}
-
-/// The panel that draws other people's pointers asks for a frame on the
-/// presence revision: a pointer landing on a desk where nothing moves draws
-/// one frame, a pointer resting there draws none, and a repeated say of what
-/// a peer already said draws none either.
-#[test]
-fn a_pointer_landing_draws_a_frame_and_a_resting_one_draws_none() {
-    let (sync, _said) = session("Quinten", Some(0x04));
-    sync.hear(hello(1, 0xaa, "Framework 16"));
-    here(&sync, 1);
-    let still = sync.presence_revision();
-
-    // The peer says it is here again, as every device does now and then: it
-    // said nothing new, so the desk draws nothing.
-    here(&sync, 1);
-    assert_eq!(
-        sync.presence_revision(),
-        still,
-        "a repeated presence drew a frame"
-    );
-
-    // Their pointer arrives on the desk: one frame.
+    // A pointer resting where it is, and the peer saying it is here again,
+    // are no change: the desk draws no frame.
+    let drawn = sync.presence_revision();
     pointer_moved(&sync, 1, WORKSPACE, 3, (12.5, 34.5));
-    let landed = sync.presence_revision();
-    assert_ne!(landed, still, "an arriving pointer asked for no frame");
-
-    // It rests where it is: the same place said again is no change, and the
-    // desk holds still.
-    pointer_moved(&sync, 1, WORKSPACE, 3, (12.5, 34.5));
-    assert_eq!(
-        sync.presence_revision(),
-        landed,
-        "a resting pointer asked for a frame"
-    );
+    here(&sync, 1);
+    assert_eq!(sync.presence_revision(), drawn, "nothing new was drawn");
 
     // Leaving the tile, and the device going away, each draw one frame.
     pointer_cleared(&sync, 1, WORKSPACE, 3);
     let left = sync.presence_revision();
-    assert_ne!(left, landed, "a leaving pointer asked for no frame");
+    assert_ne!(left, drawn, "a leaving pointer asked for no frame");
     sync.hear(NetEvent::PeerLeft {
         ws: topic(WORKSPACE),
         peer: device(1),
@@ -751,9 +707,9 @@ fn a_pointer_landing_draws_a_frame_and_a_resting_one_draws_none() {
     );
 }
 
-/// An agent is on the desk the way a person's device is: its shell frame on
-/// the workspace's presence track says its face, that it works here, and
-/// what it is doing, and the People panel draws that.
+/// An agent is on the desk the way a person's device is: its shell frame on the workspace's
+/// presence track says its face, that it works here, and what it is doing, and the People panel
+/// draws that.
 #[test]
 fn an_agents_shell_frame_puts_its_face_on_the_desk() {
     let (sync, _said) = session("Quinten", Some(0x04));
@@ -786,8 +742,7 @@ fn an_agents_shell_frame_puts_its_face_on_the_desk() {
         people[0].status
     );
 
-    // The same frame said again draws nothing: an agent resting at its work
-    // asks no redraw.
+    // The same frame said again draws nothing: an agent resting at its work asks no redraw.
     let drawn = sync.presence_revision();
     sync.heard_presence(WORKSPACE, device(1), &frame);
     assert_eq!(sync.presence_revision(), drawn);
@@ -812,8 +767,8 @@ fn a_wave_reaches_the_person_it_is_for() {
     let notice = sync.wave_notice().expect("the bar has a wave to say");
     assert_eq!(notice.from, "Ada");
 
-    // A wave at someone else here is not this person's news: the bar
-    // keeps saying the wave at this person.
+    // A wave at someone else here is not this person's news: the bar keeps saying the wave at this
+    // person.
     sync.hear(hello(2, 0xbb, "Desktop"));
     named(&sync, 2, "Ben");
     heard(

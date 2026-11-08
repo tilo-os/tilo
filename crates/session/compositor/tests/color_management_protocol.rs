@@ -1,7 +1,6 @@
-//! `wp_color_management_v1` against a headless compositor: a client is told
-//! the HDR descriptions it may build, builds and attaches one, and the
-//! compositor keeps it on the window's surface; a client that asks for what
-//! the compositor said it does not support is disconnected alone.
+//! `wp_color_management_v1` against a headless compositor: a client is told the HDR descriptions it
+//! may build, builds and attaches one, and the compositor keeps it on the window's surface; a
+//! client that asks for what the compositor said it does not support is disconnected alone.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -89,14 +88,13 @@ fn unsupported_icc_new_id_disconnects_only_the_client_without_panicking_dispatch
         .flush()
         .expect("flush unsupported request");
 
-    // This exact dispatch used to abort the compositor in wayland-backend's
-    // post-callback new-id bookkeeping. A protocol error must be confined to
-    // this client instead.
+    // This exact dispatch used to abort the compositor in wayland-backend's post-callback new-id
+    // bookkeeping. A protocol error must be confined to this client instead.
     compositor
         .dispatch(Duration::from_millis(2))
         .expect("unsupported ICC request must not panic server dispatch");
-    // Prove the error stayed client-scoped: another ordinary client is
-    // served after the first one was killed.
+    // Prove the error stayed client-scoped: another ordinary client is served after the first one
+    // was killed.
     let mut survivor = TestClient::connect(&mut compositor);
     pump(&mut compositor, &mut [&mut survivor], |_, clients| {
         clients[0].seen.color_manager_done

@@ -63,9 +63,6 @@ impl SpotifyBackend {
     }
 
     /// Authorize in the system browser and seal the grant in custody.
-    ///
-    /// # Errors
-    /// Missing registration, failed browser launch, rejected sign-in or vault failure.
     pub fn sign_in(&self) -> Result<(), BackendError> {
         self.sign_in_for(USE, ACCOUNT)
     }

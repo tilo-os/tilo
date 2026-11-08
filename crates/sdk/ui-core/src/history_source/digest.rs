@@ -11,7 +11,6 @@ use std::collections::HashSet;
 use tilo_sort::CompactSort as _;
 
 use crate::history_source::detail::{contains_opaque_id, human_label};
-use crate::history_source::seen::HistorySeenFrontier;
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 use crate::widget::history_group::{
     GroupingConfig, HistoryGroup, NamedRange, OpFamily, authors_more, authors_pair, group_entries,
@@ -96,18 +95,6 @@ impl ActivityDigest {
             .cloned()
             .collect();
         Self::from_recent(&recent, limit, named_ranges)
-    }
-
-    /// Causal-id based catch-up. Prefer this for persisted "since you
-    /// looked" state; the timestamp constructor remains useful for explicit
-    /// date-range summaries.
-    pub fn from_unseen(
-        entries: &[HistoryEntry],
-        frontier: &HistorySeenFrontier,
-        limit: usize,
-    ) -> Self {
-        let recent: Vec<HistoryEntry> = frontier.unseen(entries).into_iter().cloned().collect();
-        Self::from_recent(&recent, limit, &[])
     }
 
     fn from_recent(recent: &[HistoryEntry], limit: usize, named_ranges: &[NamedRange]) -> Self {
@@ -384,18 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_sessions_follow_named_boundaries_and_delayed_changes() {
-        // phase: unseen_digest_does_not_lose_a_delayed_concurrent_change
-        {
-            let first = entry(1, "Ada", 100);
-            let mut frontier = HistorySeenFrontier::default();
-            frontier.mark_seen(std::slice::from_ref(&first));
-            let delayed = entry(2, "Maren", 50);
-            let digest = ActivityDigest::from_unseen(&[delayed, first], &frontier, 3);
-            assert_eq!(digest.total_changes, 1);
-            assert_eq!(digest.people, 1);
-            assert_eq!(digest.briefs[0].authors[0].name, "Maren");
-        }
+    fn catch_up_sessions_follow_corrected_named_boundaries() {
         // phase: corrected_named_boundaries_redraw_catch_up_sessions_not_action_order
         {
             let mut entries = (1..=4)

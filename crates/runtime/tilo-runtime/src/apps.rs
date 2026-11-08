@@ -15,6 +15,7 @@ use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET};
 /// Where the profile keeps the person's camera and microphone decisions.
 #[cfg(target_os = "macos")]
 const DEVICE_GRANTS: &str = "state/device-grants";
+use app_catalogue::apps::InstalledApp;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -30,7 +31,6 @@ use tilo_action_broker::{
         Launched as LaunchOutcome, LauncherServices,
     },
 };
-use tilo_installed_apps::InstalledApp;
 use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
@@ -124,7 +124,7 @@ impl Apps {
     fn installed(&self) -> Vec<InstalledApp> {
         self.catalog
             .as_ref()
-            .and_then(|catalog| tilo_installed_apps::read(catalog).ok())
+            .and_then(|catalog| app_catalogue::apps::read(catalog).ok())
             .unwrap_or_default()
     }
 
@@ -210,12 +210,6 @@ impl Apps {
 
     /// Launch `app_id` into this profile's workspace through the platform
     /// launcher; the launch's handle, recorded for attestation.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an app that is not installed or has no window, a workspace this
-    /// profile does not serve, and a platform with no launcher or a payload
-    /// it cannot verify; returns spawn errors.
     pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
         if workspace != self.workspace {
             return Err(format!(
@@ -290,7 +284,7 @@ impl LauncherServices for Apps {
         let ids = self
             .catalog
             .as_ref()
-            .and_then(|catalog| tilo_installed_apps::earlier_ids(catalog).ok())
+            .and_then(|catalog| app_catalogue::apps::earlier_ids(catalog).ok())
             .unwrap_or_default();
         tilo_action_policy::earlier::register_all(&ids);
         ids

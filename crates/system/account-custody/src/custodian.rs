@@ -229,9 +229,6 @@ impl Drop for ImportedRegistration {
 
 impl ImportedRegistration {
     /// Bind an explicitly imported Files grant to its original client and source.
-    ///
-    /// # Errors
-    /// Refuses empty, unbounded or control-containing client/source values.
     pub fn new(
         cloud: OAuthCloud,
         client: Registration,
@@ -785,9 +782,6 @@ impl Custodian {
     }
 
     /// Resolve the same selected remote root using the canonical provider consumer.
-    ///
-    /// # Errors
-    /// Refuses invalid provider configuration, unavailable storage or inaccessible grants.
     pub fn resolve_imported_storage(
         &self,
         cloud: OAuthCloud,
@@ -843,9 +837,6 @@ impl Custodian {
     }
 
     /// Validate an explicitly selected imported refresh grant under its original client.
-    ///
-    /// # Errors
-    /// Invalid, revoked, mismatched or unreachable grants are refused.
     pub fn refresh_imported_cloud(
         &self,
         cloud: OAuthCloud,
@@ -896,9 +887,6 @@ impl Custodian {
 
     /// Start Google's files sign-in, optionally with explicitly requested Gmail
     /// access. Both capabilities must be configured; never silently drop mail.
-    ///
-    /// # Errors
-    /// Unconfigured capability or a loopback failure.
     pub fn begin_google_sign_in(&self, mail: bool) -> Result<Authorization, CustodyError> {
         let capabilities = if mail {
             &[crate::Capability::Files, crate::Capability::Mail][..]
@@ -909,9 +897,6 @@ impl Custodian {
     }
 
     /// Start Google sign-in for only the selected files and mail services.
-    ///
-    /// # Errors
-    /// No selected service, incompatible registrations, or a loopback failure.
     pub fn begin_google_services_sign_in(
         &self,
         files: bool,
@@ -932,10 +917,6 @@ impl Custodian {
     /// Every selected use must be configured under the same registration and
     /// endpoints. Microsoft Exchange mail must sign in separately from Graph
     /// identity/files: those resources require different audience tokens.
-    ///
-    /// # Errors
-    /// Empty selection, incompatible configurations, unsupported capabilities,
-    /// mixed Microsoft resources, or a loopback failure.
     pub fn begin_sign_in_for_capabilities(
         &self,
         issuer: OAuthIssuer,
@@ -989,9 +970,6 @@ impl Custodian {
     /// `User.Read`), not an Exchange mail token. Sign in for mail separately
     /// with this address as the login hint, then validate that mail connection
     /// before publishing it. A UPN is not necessarily a mailbox; do not guess.
-    ///
-    /// # Errors
-    /// Graph permission denied, unavailable service, or no mailbox address.
     pub fn microsoft_mail_identity(&self, tokens: &TokenSet) -> Result<String, CustodyError> {
         let http = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(30))
@@ -1030,9 +1008,6 @@ impl Custodian {
 
     /// Validate Gmail access and obtain the provider-confirmed mailbox identity.
     /// A Drive grant alone must never create a working Mail account.
-    ///
-    /// # Errors
-    /// Missing mail permission, unavailable Gmail, or an invalid provider response.
     pub fn gmail_identity(&self, tokens: &TokenSet) -> Result<String, CustodyError> {
         if tokens.scope.as_deref().is_some_and(|scopes| {
             !scopes
@@ -1073,9 +1048,6 @@ impl Custodian {
 
     /// Begin sign-in with a non-empty subset of this use's configured scopes.
     /// Client registration, endpoints and PKCE validation remain unchanged.
-    ///
-    /// # Errors
-    /// Unconfigured use, an unconfigured scope, or a loopback failure.
     pub fn begin_sign_in_for_scopes(
         &self,
         oauth_use: OAuthUse,
@@ -1098,9 +1070,6 @@ impl Custodian {
 
     /// Provider-confirmed scope metadata, without releasing credentials.
     /// `None` means the provider or an older grant did not supply metadata.
-    ///
-    /// # Errors
-    /// Missing grant or an unreadable vault.
     pub fn oauth_scopes(&self, id: &AccountId) -> Result<Option<String>, CustodyError> {
         let vault = self.credentials()?;
         let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
@@ -1115,9 +1084,6 @@ impl Custodian {
     /// empty one when a refresh learns of it (see
     /// [`Self::oauth_access_token`]), which reads here as
     /// [`GrantState::SignInAgain`].
-    ///
-    /// # Errors
-    /// An unreadable vault.
     pub fn oauth_grant_state(&self, id: &AccountId) -> Result<GrantState, CustodyError> {
         let vault = self.credentials()?;
         let Some(secret) = vault.get(id) else {
@@ -1142,9 +1108,6 @@ impl Custodian {
     }
 
     /// Forget a local OAuth grant. Provider-side revocation remains separate.
-    ///
-    /// # Errors
-    /// A vault recovery or persistence failure.
     pub fn forget_oauth(&self, id: &AccountId) -> Result<(), CustodyError> {
         let mut vault = self.credentials()?;
         vault.remove(id);

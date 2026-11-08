@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
 use crate::contract::{
     ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy, ExecutionMode,
-    ResultSpec, RetryPolicy, RiskLevel,
+    ResultSpec, RiskLevel,
 };
 use crate::door::ActionAddress;
 use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
@@ -788,13 +788,6 @@ impl ResourceSpec {
         self
     }
 
-    /// Whether it mirrors a control or a host operation rather than being
-    /// something of the app's own ([`kind_mirrors_a_control`]).
-    #[must_use]
-    pub fn mirrors_a_control(&self) -> bool {
-        kind_mirrors_a_control(&self.kind)
-    }
-
     /// Whether a palette may list it: a titled resource that offers a
     /// person at least one action of its own. An untitled node, a control
     /// mirror, and a node left with only agent actions are all addressing
@@ -992,9 +985,6 @@ pub enum ContinuationEvidence {
 impl ContinuationEvidence {
     /// Stream unambiguous comparison data without allocating a serialized copy.
     /// The format is private to comparison consumers, not a wire protocol.
-    ///
-    /// # Errors
-    /// Propagates a sink failure or an unrepresentable component length.
     pub fn write_canonical_identity(&self, sink: &mut impl std::io::Write) -> std::io::Result<()> {
         fn length(sink: &mut impl std::io::Write, value: usize) -> std::io::Result<()> {
             let value = u64::try_from(value).map_err(|_| {
@@ -2443,12 +2433,6 @@ impl ActionSpec {
     #[must_use]
     pub fn below_field(mut self, field: impl Into<String>) -> Self {
         self.type_mut().contract.field = Some(field.into());
-        self
-    }
-
-    #[must_use]
-    pub fn retry_policy(mut self, retry: RetryPolicy) -> Self {
-        self.type_mut().contract.retry = retry;
         self
     }
 

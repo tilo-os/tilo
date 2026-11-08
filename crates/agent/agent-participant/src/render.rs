@@ -176,12 +176,6 @@ impl RenderService {
 
     /// Answer the render operation at `address` of `record`, whose sources
     /// are in `content`, as the agent invoking it with `arguments`.
-    ///
-    /// # Errors
-    ///
-    /// The render is unavailable on this host, or refused (bad arguments, a
-    /// timeline an agent may not render, a source the workspace lacks), or it
-    /// failed.
     pub fn invoke(
         &self,
         record: &ConfinedReplica,

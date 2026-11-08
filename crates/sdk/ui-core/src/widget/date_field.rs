@@ -58,6 +58,9 @@ pub struct DateField {
     /// What the day is for ("Due"), as the person's app named it: what a screen reader hears
     /// before the day itself. The calendar inside the popover keeps its own name.
     label: Option<String>,
+    /// The field stands as a calendar control of its own, its day told by the entry beside it:
+    /// the chip shows the calendar icon alone, and what a reader hears of it is the day itself.
+    compact: bool,
     optional: bool,
     picked: Picked,
     /// The day the calendar shows and highlights: the day the person picked, and the one the
@@ -74,7 +77,7 @@ impl DateField {
     /// A field showing `value`, which the person may clear when `optional`.
     #[must_use]
     pub fn new(id: &str, value: Option<NaiveDate>, optional: bool) -> Self {
-        Self::built(id, value, None, optional, Vec::new(), None)
+        Self::built(id, value, None, optional, false, Vec::new(), None)
     }
 
     fn built(
@@ -82,16 +85,30 @@ impl DateField {
         value: Option<NaiveDate>,
         at: Option<NaiveTime>,
         optional: bool,
+        compact: bool,
         time: Vec<Element>,
         label: Option<&str>,
     ) -> Self {
         let picked: Picked = Rc::default();
         let shown = crate::LocalState::new(value.unwrap_or_else(crate::clock::today));
         Self {
-            inner: field(id, value, at, optional, &picked, &shown, time, label),
+            inner: field(
+                Chip {
+                    id,
+                    label,
+                    optional,
+                    compact,
+                    time,
+                },
+                value,
+                at,
+                &picked,
+                &shown,
+            ),
             value,
             at,
             label: label.map(str::to_owned),
+            compact,
             optional,
             picked,
             shown,
@@ -111,10 +128,11 @@ impl DateField {
         at: Option<&str>,
         time: Vec<Element>,
         label: Option<&str>,
+        compact: bool,
     ) -> Self {
         let (day, binding) = derived(state, |text| crate::component::moment_day(text));
         let at = time_in(at);
-        let mut field = Self::built(id, day, at, optional, time, label);
+        let mut field = Self::built(id, day, at, optional, compact, time, label);
         field.bound = Some(binding);
         field
     }
@@ -176,7 +194,11 @@ impl DateField {
         let (label, tone) = Self::fact(self.value, self.at);
         let spoken = Self::spoken(self.label.as_deref(), self.value, self.at);
         let chip = self.inner.button_mut();
-        chip.set_label(label, self.value.is_none());
+        // A compact field's day is told by the entry beside it: the chip is the calendar alone.
+        chip.set_label(
+            if self.compact { String::new() } else { label },
+            self.value.is_none(),
+        );
         chip.set_tone(tone);
         chip.set_accessible_name(&spoken);
     }
@@ -252,6 +274,53 @@ impl DateField {
     }
 }
 
+/// The moment `text` holds with its day replaced by `day`, its time of day kept: the ISO text
+/// of the instant when it holds a time, the day alone when it holds none, and nothing for no
+/// day. A moment is one value whichever part of it the person changes.
+pub(crate) fn with_day(text: &str, day: Option<NaiveDate>) -> String {
+    let Some(day) = day else {
+        return String::new();
+    };
+    match time_in(Some(text)) {
+        Some(time) => instant_text(day, time),
+        None => day.format("%Y-%m-%d").to_string(),
+    }
+}
+
+/// The moment `text` holds with its time of day replaced by `time`, its day kept: the ISO text
+/// of the instant when it holds a day, the time of day alone when it holds none (the time of
+/// day of another field), and nothing for no time.
+pub(crate) fn with_time(text: &str, time: Option<NaiveTime>) -> String {
+    let Some(time) = time else {
+        return String::new();
+    };
+    match crate::component::moment_day(text) {
+        Some(day) => instant_text(day, time),
+        // The field's value is the clock a person picked, which reading the field back reads:
+        // machine text, not their clock style.
+        // format: machine
+        None => time.format("%H:%M").to_string(),
+    }
+}
+
+/// The instant `day` at `time` in the person's zone, as ISO-8601 UTC text.
+fn instant_text(day: NaiveDate, time: NaiveTime) -> String {
+    use chrono::TimeZone as _;
+    let local = day.and_time(time);
+    let at = match chrono::Local.from_local_datetime(&local) {
+        chrono::LocalResult::Single(at) | chrono::LocalResult::Ambiguous(at, _) => Some(at),
+        // ignored-failure: an hour the change of clocks skipped keeps its day
+        chrono::LocalResult::None => None,
+    };
+    at.map_or_else(
+        || day.format("%Y-%m-%d").to_string(),
+        |at| {
+            at.with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        },
+    )
+}
+
 /// The time of day `text` names: the time of day a field holds (`09:00`), or the time of day an
 /// instant falls on; `None` for no time.
 pub(crate) fn time_in(text: Option<&str>) -> Option<NaiveTime> {
@@ -265,18 +334,33 @@ pub(crate) fn time_in(text: Option<&str>) -> Option<NaiveTime> {
         .map(|at| at.with_timezone(&chrono::Local).time())
 }
 
+/// What the field's chip says and how it stands: its name, what the day is for, whether the day
+/// may be empty, the calendar alone as a control of its own, and the time controls that stand
+/// over the calendar.
+struct Chip<'a> {
+    id: &'a str,
+    label: Option<&'a str>,
+    optional: bool,
+    compact: bool,
+    time: Vec<Element>,
+}
+
 /// The chip and its popover: the time the day is due at (the `time` slot), the calendar, and
 /// "Clear date" when the date may be empty.
 fn field(
-    id: &str,
+    chip: Chip<'_>,
     value: Option<NaiveDate>,
     at: Option<NaiveTime>,
-    optional: bool,
     picked: &Picked,
     shown: &crate::LocalState<NaiveDate>,
-    time: Vec<Element>,
-    label: Option<&str>,
 ) -> PopoverButton<Stack> {
+    let Chip {
+        id,
+        label,
+        optional,
+        compact,
+        time,
+    } = chip;
     let today = crate::clock::local_now().date_naive();
     let on_day = Rc::clone(picked);
     // The calendar is its own name inside the field: the chip carries what the day is for,
@@ -306,6 +390,16 @@ fn field(
         content = content.push(Box::new(clear));
     }
     let (fact, tone) = DateField::fact(value, at);
+    let spoken = DateField::spoken(label, value, at);
+    if compact {
+        return Button::new(id, "")
+            .with_icon(Icon::Calendar)
+            .role(ButtonRole::Plain)
+            .tooltip(&spoken)
+            .tone(tone)
+            .with_accessible_name(&spoken)
+            .with_popover(content);
+    }
     let chip = Button::new(id, &fact)
         .with_icon(Icon::Calendar)
         .showing_choice()
@@ -315,8 +409,7 @@ fn field(
     } else {
         chip.with_placeholder()
     };
-    chip.with_accessible_name(&DateField::spoken(label, value, at))
-        .with_popover(content)
+    chip.with_accessible_name(&spoken).with_popover(content)
 }
 
 impl Decorator for DateField {
@@ -438,7 +531,7 @@ mod tests {
     #[test]
     fn a_bound_day_shows_and_one_set_while_the_calendar_is_open_waits_for_it() {
         let state = crate::LocalState::new("2026-06-30".to_owned());
-        let mut field = DateField::from_state("due", &state, true, None, Vec::new(), None);
+        let mut field = DateField::from_state("due", &state, true, None, Vec::new(), None, false);
         assert_eq!(
             field.value(),
             NaiveDate::from_ymd_opt(2026, 6, 30),

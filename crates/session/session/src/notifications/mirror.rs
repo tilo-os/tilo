@@ -1,20 +1,15 @@
-//! Notifications that continue across the person's own devices: what this
-//! device shows its others of what it was told, and what they told it.
-//!
-//! A notification an app sent on this device is projected to each of the
-//! person's devices that is online, under an id this session minted
-//! ([`ContinuityNotificationId`]): another device shows it as its own banner
-//! and centre row, named after this device. The projection carries what the
-//! person's policy lets leave (the body only with previews on) and the
-//! actions the app offered, and it stops being shown once its window on the
-//! other device runs out or the person here is done with it, which retires
-//! every copy.
-//!
-//! What the person does with a mirrored notification goes back to the device
-//! that sent it, through the same route it came on: dismissing it closes the
-//! app's notification there, and choosing one of its actions runs that action
-//! there. A device's ids name only what it projected, so nothing here answers
-//! a command for a notification it did not send.
+//! Notifications that continue across the person's own devices: what this device shows its others
+//! of what it was told, and what they told it.
+//! A notification an app sent on this device is projected to each of the person's devices that is
+//! online, under an id this session minted ([`ContinuityNotificationId`]): another device shows it
+//! as its own banner and centre row, named after this device. The projection carries what the
+//! person's policy lets leave (the body only with previews on) and the actions the app offered, and
+//! it stops being shown once its window on the other device runs out or the person here is done
+//! with it, which retires every copy.
+//! What the person does with a mirrored notification goes back to the device that sent it, through
+//! the same route it came on: dismissing it closes the app's notification there, and choosing one
+//! of its actions runs that action there. A device's ids name only what it projected, so nothing
+//! here answers a command for a notification it did not send.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -29,8 +24,8 @@ use tilo_device_fabric::notification::{
 };
 use tilo_device_fabric::{DeviceId, PersonalFabricAction};
 
-/// The most projections one session keeps bookkeeping for: what fits on the
-/// other devices' desks and centres anyway.
+/// The most projections one session keeps bookkeeping for: what fits on the other devices' desks
+/// and centres anyway.
 const MAX_PROJECTED: usize = 128;
 
 /// One notification this device projected to the person's other devices.
@@ -46,8 +41,8 @@ struct Projected {
 
 #[derive(Default)]
 struct State {
-    /// This session's epoch: with it, an id minted now never names a
-    /// notification an earlier run of this device projected.
+    /// This session's epoch: with it, an id minted now never names a notification an earlier run of
+    /// this device projected.
     epoch: [u8; 16],
     /// What this device projected, by the daemon notification it came from.
     out: HashMap<u32, Projected>,
@@ -60,9 +55,8 @@ struct State {
 
 /// This device's side of the person's other devices' notifications.
 pub(crate) struct Mirroring {
-    /// The person's devices: where this device's notifications go, and the
-    /// door what they do with one comes back through. `None` while this
-    /// session is no certified device of theirs.
+    /// The person's devices: where this device's notifications go, and the door what they do with
+    /// one comes back through. `None` while this session is no certified device of theirs.
     link: RefCell<Option<SharedLink>>,
     state: RefCell<State>,
 }
@@ -78,25 +72,22 @@ impl Mirroring {
         })
     }
 
-    /// Project this device's notifications to `link`'s devices from now on.
+    /// Project this device's notifications to `link` 's devices from now on.
     pub(crate) fn attach(&self, link: SharedLink) {
         *self.link.borrow_mut() = Some(link);
     }
 
-    /// The person's devices as this device holds them, when this session
-    /// takes part as one of them and the person lets notifications continue.
+    /// The person's devices as this device holds them, when this session takes part as one of them
+    /// and the person lets notifications continue.
     fn link(&self) -> Option<SharedLink> {
         let link = self.link.borrow().clone()?;
         link.notifications_permitted().then_some(link)
     }
 
-    /// Show the notification app `app` sent here on the person's other
-    /// devices, `notification` being the one the desk shows: its id, what its
-    /// actions are, and when its banner goes. `previews` is whether this
-    /// person lets a notification's text leave this device.
-    ///
-    /// Returns the projection's id; `None` when this session reaches no
-    /// other device of theirs.
+    /// Show the notification app `app` sent here on the person's other devices, `notification`
+    /// being the one the desk shows: its id, what its actions are, and when its banner goes.
+    /// `previews` is whether this person lets a notification's text leave this device.
+    /// Returns the projection's id; `None` when this session reaches no other device of theirs.
     pub(crate) fn project(
         &self,
         daemon_id: u32,
@@ -108,8 +99,8 @@ impl Mirroring {
         let link = self.link()?;
         let (app_id, app_name) = app;
         let mut state = self.state.borrow_mut();
-        // A notification replaced under the id the app sent it with keeps the
-        // projection it had, so the other devices see the update in place.
+        // A notification replaced under the id the app sent it with keeps the projection it had, so
+        // the other devices see the update in place.
         let id = match state.out.get(&daemon_id) {
             Some(projected) => projected.id,
             None if state.out.len() >= MAX_PROJECTED => return None,
@@ -172,10 +163,9 @@ impl Mirroring {
         Some(id)
     }
 
-    /// Everything this device projected that is no longer shown here: the
-    /// other devices take those copies away. Projections whose window ran
-    /// out are forgotten without a word, and the rows of theirs the desk no
-    /// longer shows are forgotten too.
+    /// Everything this device projected that is no longer shown here: the other devices take those
+    /// copies away. Projections whose window ran out are forgotten without a word, and the rows of
+    /// theirs the desk no longer shows are forgotten too.
     pub(crate) fn prune(&self, shown_log_ids: &BTreeSet<u64>, now_unix_ms: u64) {
         let mut state = self.state.borrow_mut();
         state
@@ -214,8 +204,8 @@ impl Mirroring {
         }
     }
 
-    /// The person here is done with the notification the app sent under
-    /// `daemon_id`: the other devices take its copy away.
+    /// The person here is done with the notification the app sent under `daemon_id` : the other
+    /// devices take its copy away.
     pub(crate) fn retire(&self, daemon_id: u32) {
         let projected = {
             let mut state = self.state.borrow_mut();
@@ -233,9 +223,8 @@ impl Mirroring {
         }
     }
 
-    /// The daemon notification and the action, when `action` from `source` is
-    /// a command for a notification this device projected and that action is
-    /// one the app offered.
+    /// The daemon notification and the action, when `action` from `source` is a command for a
+    /// notification this device projected and that action is one the app offered.
     pub(crate) fn answered(&self, action: &PersonalFabricAction) -> Option<(u32, Option<String>)> {
         let state = self.state.borrow();
         match action {
@@ -251,26 +240,25 @@ impl Mirroring {
         }
     }
 
-    /// The device a projection that the desk shows as `log_id` came from, if
-    /// it did: what a choice on it is answered to.
+    /// The device a projection that the desk shows as `log_id` came from, if it did: what a choice
+    /// on it is answered to.
     pub(crate) fn route_of(&self, log_id: u64) -> Option<RemoteNotificationRoute> {
         self.state.borrow().shown.get(&log_id).cloned()
     }
 
-    /// Remember that the desk's notification `log_id` is another device's
-    /// `route`.
+    /// Remember that the desk's notification `log_id` is another device's `route` .
     pub(crate) fn shown(&self, log_id: u64, route: RemoteNotificationRoute) {
         self.state.borrow_mut().shown.insert(log_id, route);
     }
 
-    /// Forget the desk's notification `log_id`: it left the desk, so nothing
-    /// more is answered to it.
+    /// Forget the desk's notification `log_id` : it left the desk, so nothing more is answered to
+    /// it.
     pub(crate) fn gone(&self, log_id: u64) {
         self.state.borrow_mut().shown.remove(&log_id);
     }
 
-    /// Answer the device the desk's notification `log_id` came from with
-    /// `command`, then forget it: the person is done with it here.
+    /// Answer the device the desk's notification `log_id` came from with `command` , then forget
+    /// it: the person is done with it here.
     pub(crate) fn answer(
         &self,
         log_id: u64,
@@ -286,8 +274,8 @@ impl Mirroring {
         self.deliver(&source, command(&source, route.notification_id));
     }
 
-    /// Tell the device `route` shows the notification here what the person
-    /// did with it: run `action` when they chose one, else be done with it.
+    /// Tell the device `route` shows the notification here what the person did with it: run
+    /// `action` when they chose one, else be done with it.
     pub(crate) fn answer_route(&self, route: &RemoteNotificationRoute, action: Option<&str>) {
         self.gone_route(route);
         let Ok(source) = DeviceId::new(route.source_device.clone()) else {
@@ -305,8 +293,7 @@ impl Mirroring {
         self.deliver(&source, action);
     }
 
-    /// A retirement arrived from `source`: the desk forgets every copy of the
-    /// projection it names.
+    /// A retirement arrived from `source` : the desk forgets every copy of the projection it names.
     pub(crate) fn retire_shown(&self, source: &DeviceId, id: ContinuityNotificationId) {
         let source = source.as_str();
         self.state

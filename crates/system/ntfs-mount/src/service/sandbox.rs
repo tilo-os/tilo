@@ -225,11 +225,6 @@ impl Plan {
 }
 
 /// Start `program` with `args`, confined as `confinement` describes.
-///
-/// # Errors
-///
-/// Returns the I/O error if the device cannot be inspected, the child
-/// cannot be confined, or the program cannot be started.
 pub fn spawn(
     confinement: &Confinement<'_>,
     program: &Path,

@@ -276,12 +276,17 @@ impl Shape {
         unit
     }
 
-    /// The collections below this shape whose removals ask nothing
-    /// (`#[model(remove = "quiet")]`), by their dotted paths (`*` for an
-    /// item), as [`tilo_action_policy::edits::dotted`] spells them.
-    #[must_use]
-    pub fn quiet_removals(&self) -> Vec<String> {
-        fn walk(shape: Shape, prefix: &str, out: &mut Vec<String>, depth: usize) {
+    /// The fields below this shape that `select` answers for, by their
+    /// dotted paths (`*` for an item), as
+    /// [`tilo_action_policy::edits::dotted`] spells them.
+    fn selected<X>(&self, select: impl Fn(&FieldShape) -> Option<X>) -> Vec<(String, X)> {
+        fn walk<X>(
+            shape: Shape,
+            prefix: &str,
+            select: &impl Fn(&FieldShape) -> Option<X>,
+            out: &mut Vec<(String, X)>,
+            depth: usize,
+        ) {
             if depth > 16 {
                 return;
             }
@@ -293,21 +298,38 @@ impl Shape {
                         } else {
                             format!("{prefix}.{}", field.key)
                         };
-                        if field.quiet_remove {
-                            out.push(path.clone());
+                        if let Some(value) = select(field) {
+                            out.push((path.clone(), value));
                         }
-                        walk(field.shape, &path, out, depth.saturating_add(1));
+                        walk(field.shape, &path, select, out, depth.saturating_add(1));
                     }
                 }
                 Shape::Collection(item) | Shape::Keyed(item) | Shape::Map(item) => {
-                    walk(*item, &format!("{prefix}.*"), out, depth.saturating_add(1));
+                    walk(
+                        *item,
+                        &format!("{prefix}.*"),
+                        select,
+                        out,
+                        depth.saturating_add(1),
+                    );
                 }
                 Shape::Value => {}
             }
         }
         let mut out = Vec::new();
-        walk(*self, "", &mut out, 0);
+        walk(*self, "", &select, &mut out, 0);
         out
+    }
+
+    /// The collections below this shape whose removals ask nothing
+    /// (`#[model(remove = "quiet")]`), by their dotted paths (`*` for an
+    /// item), as [`tilo_action_policy::edits::dotted`] spells them.
+    #[must_use]
+    pub fn quiet_removals(&self) -> Vec<String> {
+        self.selected(|field| field.quiet_remove.then_some(()))
+            .into_iter()
+            .map(|(path, ())| path)
+            .collect()
     }
 
     /// The fields below this shape that are not [`Trust::Ordinary`], by
@@ -315,33 +337,7 @@ impl Shape {
     /// [`tilo_action_policy::edits::dotted`] spells them.
     #[must_use]
     pub fn guarded_fields(&self) -> Vec<(String, Trust)> {
-        fn walk(shape: Shape, prefix: &str, out: &mut Vec<(String, Trust)>, depth: usize) {
-            if depth > 16 {
-                return;
-            }
-            match shape {
-                Shape::Record(fields) => {
-                    for field in fields {
-                        let path = if prefix.is_empty() {
-                            field.key.to_owned()
-                        } else {
-                            format!("{prefix}.{}", field.key)
-                        };
-                        if field.trust != Trust::Ordinary {
-                            out.push((path.clone(), field.trust));
-                        }
-                        walk(field.shape, &path, out, depth.saturating_add(1));
-                    }
-                }
-                Shape::Collection(item) | Shape::Keyed(item) | Shape::Map(item) => {
-                    walk(*item, &format!("{prefix}.*"), out, depth.saturating_add(1));
-                }
-                Shape::Value => {}
-            }
-        }
-        let mut out = Vec::new();
-        walk(*self, "", &mut out, 0);
-        out
+        self.selected(|field| (field.trust != Trust::Ordinary).then_some(field.trust))
     }
 
     /// The trust of the field at `path`: the strictest of the fields it is

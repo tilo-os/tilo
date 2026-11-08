@@ -4,31 +4,30 @@
 use super::*;
 use crate::chunk::{Chunks, Stamps};
 
-/// Every resource of `doc`, with its app and type id.
+/// Every resource of `doc`, with its app and type id. Every copy of the levels above the
+/// resources is read ([`crate::containers::reach`]): a record a replica wrote before it met the
+/// others is in the map the document does not keep, and it is the record all the same.
 pub(super) fn scan(doc: &Doc) -> BTreeMap<DocId, (AppId, TypeId)> {
     let mut out = BTreeMap::new();
-    let Ok(Some((AmValue::Object(ObjType::Map), records))) = doc.get(&automerge::ROOT, RECORDS_KEY)
-    else {
-        return out;
-    };
-    for stored in doc.keys(&records) {
-        let Ok(Some((AmValue::Object(ObjType::Map), app_obj))) = doc.get(&records, stored.as_str())
-        else {
-            continue;
-        };
-        // Records stored under an id their app had before (`previously:`) are that app's.
-        let app = crate::schema::successor(&stored);
-        let own = app == stored;
-        for id in doc.keys(&app_obj) {
-            let Ok(Some((AmValue::Object(ObjType::Map), obj))) = doc.get(&app_obj, id.as_str())
-            else {
-                continue;
-            };
-            if let Ok(Some((AmValue::Scalar(scalar), _))) = doc.get(&obj, TYPE_KEY)
-                && let ScalarValue::Str(ty) = scalar.as_ref()
-                && (own || !out.contains_key(&id))
-            {
-                out.insert(id, (app.clone(), ty.to_string()));
+    for records in crate::containers::maps(doc, &automerge::ROOT, RECORDS_KEY) {
+        for stored in doc.keys(&records) {
+            // Records stored under an id their app had before (`previously:`) are that app's.
+            let app = crate::schema::successor(&stored);
+            let own = app == stored;
+            for app_obj in crate::containers::maps(doc, &records, &stored) {
+                for id in doc.keys(&app_obj) {
+                    let Ok(Some((AmValue::Object(ObjType::Map), obj))) =
+                        doc.get(&app_obj, id.as_str())
+                    else {
+                        continue;
+                    };
+                    if let Ok(Some((AmValue::Scalar(scalar), _))) = doc.get(&obj, TYPE_KEY)
+                        && let ScalarValue::Str(ty) = scalar.as_ref()
+                        && (own || !out.contains_key(&id))
+                    {
+                        out.insert(id, (app.clone(), ty.to_string()));
+                    }
+                }
             }
         }
     }
@@ -191,8 +190,11 @@ pub(super) fn build(
     let mut removed = crate::index::derive::Removed::new();
     for (_, doc) in chunks.docs() {
         let changes = doc.committed_document().get_changes(&[]);
-        ends.extend(idx::reflect::ends_of(&changes, doc, docs));
-        removed = super::versions::note_versions(&mut versions, &changes, doc, docs);
+        // What wrote a resource: a run's tail in the manifest is written once an item, and a
+        // change that writes nothing else names no resource and makes no version of one.
+        let naming = crate::reads::naming(&changes, doc);
+        ends.extend(idx::reflect::ends_of(naming.iter().copied(), doc, docs));
+        removed = super::versions::note_versions(&mut versions, naming, doc, docs);
     }
     let nested = Nested::default();
     index.write(|writer| {

@@ -7,7 +7,6 @@ use tilo_ui::widget::Scrollable;
 
 #[test]
 fn scrollable_offset_clamps_reveals_and_decays() {
-    // Case `scrollable_clamps_to_content_bounds`.
     {
         let mut s = Scrollable::new_vertical();
         s.set_content_size(200.0, 1000.0);
@@ -18,7 +17,6 @@ fn scrollable_offset_clamps_reveals_and_decays() {
         assert_eq!(s.offset_y(), 0.0);
     }
 
-    // Case `scrollable_scroll_into_view_vertical`.
     {
         let mut s = Scrollable::new_vertical();
         s.set_content_size(200.0, 1000.0);
@@ -27,7 +25,6 @@ fn scrollable_offset_clamps_reveals_and_decays() {
         assert!(s.offset_y() >= 520.0 && s.offset_y() <= 600.0);
     }
 
-    // Case `scrollable_momentum_decays`.
     {
         let mut s = Scrollable::new_vertical();
         s.set_content_size(200.0, 10000.0);
@@ -75,7 +72,6 @@ fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> FrameHarn
 )]
 #[test]
 fn writing_surface_fills_the_viewport_and_settles_across_changes() {
-    // Case `empty_writing_surface_fills_viewport_and_accepts_lower_click`.
     {
         for scale in [1.0, 2.0] {
             let text = LocalState::new(String::new());
@@ -98,7 +94,6 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
         }
     }
 
-    // Case `default_short_multiline_remains_content_sized`.
     {
         let text = LocalState::new(String::new());
         let driver = editor_driver(&text, false, 1.0);
@@ -107,7 +102,6 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
         assert!(targets.get("footer").unwrap().y0 > 300.0);
     }
 
-    // Case `long_writing_surface_retains_overflow_and_footer`.
     {
         let text = LocalState::new("A line of the document.\n".repeat(80));
         let mut driver = editor_driver(&text, true, 1.0);
@@ -125,7 +119,6 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
         assert!(footer.y1 <= 400.0);
     }
 
-    // Case `writing_surface_settles_resize_and_short_long_short_changes`.
     {
         let text = LocalState::new(String::new());
         let mut driver = editor_driver(&text, true, 1.0);
@@ -165,7 +158,6 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
         }
     }
 
-    // Case `writing_surface_preserves_explicit_child_height`.
     {
         // The explicit Container remains 72px even though its wrapper fills 300px.
         let root = Scrollable::new_vertical()
@@ -181,7 +173,6 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
         assert!((driver.targets().get("fixed").unwrap().height() - 72.0).abs() < 1.0);
     }
 
-    // Case `writing_surface_retained_tree_settles_without_changing_child_style`.
     {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
@@ -254,7 +245,6 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
 
 #[test]
 fn scrollable_editor_routes_wheel_and_keeps_focus() {
-    // Case `fractional_height_editor_routes_first_wheel_to_outer_scrollable`.
     {
         // 47 nonempty rows at 22.625px plus padding end in .375px; rounding
         // down must not create an inner scroll range in a fully laid-out input.
@@ -279,7 +269,6 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
         );
     }
 
-    // Case `repeated_click_keeps_default_scrollable_editor_focused`.
     {
         let text = LocalState::new(String::new());
         let mut driver = editor_driver(&text, false, 1.0);
@@ -291,7 +280,6 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
         assert_eq!(text.get(), "first again");
     }
 
-    // Case `pane_background_and_scrollbar_press_still_focus_the_scrollable`.
     {
         for x in [250.0, 394.0] {
             let root = Scrollable::new_vertical()

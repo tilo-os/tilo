@@ -1,14 +1,9 @@
-//! The keys the session answers wherever the keyboard is: the desktop's
-//! chords and the hardware keys along the top of the keyboard.
-//!
-//! The compositor offers this surface every press before the focused
-//! window or panel gets it ([`SurfaceHost::claim_key`]). A press that is a
-//! chord of the desktop's one shortcut table ([`tilo_desktop::shortcuts`])
-//! or a hardware key (volume, brightness, airplane mode, the touchpad,
-//! playback, Print, F1) is taken, and becomes an invocation of a published
-//! action: the chord's `desktop:chrome/shortcut`, quick settings' `volume-up`, the
-//! media service's `play-pause`. The session runs those through the same
-//! door every other caller uses; nothing here performs anything itself.
+//! The keys the session answers wherever the keyboard is: the desktop's chords and the hardware
+//! keys along the top of the keyboard. The compositor offers this surface every press before the
+//! focused window or panel gets it ([`SurfaceHost::claim_key`]). A press that is a chord of the
+//! desktop's one shortcut table ([`tilo_desktop::shortcuts`]) or a hardware key is taken and
+//! becomes an invocation of a published action, run through the same door every other caller uses;
+//! nothing here performs anything itself.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -42,7 +37,7 @@ pub struct Invocation {
 }
 
 impl Invocation {
-    /// `action` of `resource`, without arguments.
+    /// `action` of `resource` , without arguments.
     #[must_use]
     pub fn new(resource: &str, action: &str) -> Self {
         Self {
@@ -59,14 +54,14 @@ impl Invocation {
         self
     }
 
-    /// The same, with `name` set to `value`.
+    /// The same, with `name` set to `value` .
     #[must_use]
     pub fn with(mut self, name: &str, value: impl Into<serde_json::Value>) -> Self {
         self.arguments.insert(name.to_owned(), value.into());
         self
     }
 
-    /// The chrome's shortcut action for `action`.
+    /// The chrome's shortcut action for `action` .
     #[must_use]
     pub fn shortcut(action: ShortcutAction) -> Self {
         let id = serde_json::to_value(action)
@@ -80,27 +75,23 @@ impl Invocation {
 /// Invocations waiting for the session's door.
 pub type Invocations = Rc<RefCell<Vec<Invocation>>>;
 
-/// Chords pressed that run a saved shortcut's keyboard trigger, waiting for
-/// the automation host to fire them.
+/// Chords pressed that run a saved shortcut's keyboard trigger, waiting for the automation host to
+/// fire them.
 pub type PressedChords = Rc<RefCell<Vec<KeyChord>>>;
 
-/// What the keys hand the rest of the session: the shortcuts the person's
-/// presses invoked, and the chords an armed shortcut answers, which the
-/// automation host starts its run on.
+/// What the keys hand the rest of the session: the shortcuts the person's presses invoked, and the
+/// chords an armed shortcut answers, which the automation host starts its run on.
 #[derive(Clone, Default)]
 pub(crate) struct Presses {
     pub invocations: Invocations,
     pub triggered: PressedChords,
 }
 
-/// Quick settings' resource, whose effects the notification and paste keys
-/// run.
+/// Quick settings' resource, whose effects the notification and paste keys run.
 pub const QUICK_SETTINGS: &str = "quick-settings.panel";
-/// What plays: the audio service's media, whose own controls reach the
-/// player in front.
+/// What plays: the audio service's media, whose own controls reach the player in front.
 pub const MEDIA: &str = tilo_audio_service::media::MEDIA;
-/// The sound: the audio service's, which owns the outputs, the level and the
-/// mute.
+/// The sound: the audio service's, which owns the outputs, the level and the mute.
 pub const SOUND: &str = tilo_audio_service::sound::SOUND;
 /// The microphone: the audio service's sound resource.
 pub const MICROPHONE: &str = SOUND;
@@ -117,15 +108,15 @@ pub const SLEEP: &str = tilo_session_power::SLEEP;
 /// The capture studio, whose `screenshot` action the Print key is.
 const CAPTURE_STUDIO: &str = tilo_capture_studio::RESOURCE;
 
-/// `XF86XK_RFKill`, which the keysym tables predate: laptops send it for
-/// the airplane-mode key; `XF86WLAN` is the older spelling.
+/// `XF86XK_RFKill` , which the keysym tables predate: laptops send it for the airplane-mode key;
+/// `XF86WLAN` is the older spelling.
 const KEY_XF86_RFKILL: u32 = 0x1008_ffb5;
 
 /// The app the calculator key opens.
 const CALCULATOR: &str = "so.tilo.calculator";
 
-/// How long a key's readout waits for the device to answer it before what it
-/// showed stands as it is.
+/// How long a key's readout waits for the device to answer it before what it showed stands as it
+/// is.
 const READOUT_SETTLE: Duration = Duration::from_millis(250);
 
 /// A key's readout whose action the device took and has not answered yet.
@@ -137,8 +128,8 @@ pub(crate) struct PendingReadout {
     pub(crate) at: Instant,
 }
 
-/// When the readouts a device has not answered yet stop waiting for what it
-/// answers: after that, what one showed stands as it is.
+/// When the readouts a device has not answered yet stop waiting for what it answers: after that,
+/// what one showed stands as it is.
 pub(crate) fn next_readout_deadline(waiting: &[PendingReadout]) -> Option<Instant> {
     waiting
         .iter()
@@ -146,25 +137,23 @@ pub(crate) fn next_readout_deadline(waiting: &[PendingReadout]) -> Option<Instan
         .min()
 }
 
-/// A hardware key: the action it runs, whether holding it repeats it, and
-/// whether it works on the lock screen (it changes a level and reveals
-/// nothing behind the lock).
+/// A hardware key: the action it runs, whether holding it repeats it, and whether it works on the
+/// lock screen (it changes a level and reveals nothing behind the lock).
 struct Hardware {
     action: HardwareAction,
     repeats: bool,
     while_locked: bool,
     /// The readout that answers it on screen.
     readout: Option<OsdKind>,
-    /// Shift on the key asks for every display, as it does on the brightness
-    /// key: the invocation carries `all`.
+    /// Shift on the key asks for every display, as it does on the brightness key: the invocation
+    /// carries `all` .
     shift_all: bool,
     /// The app the key's invocation opens, carried as its `app` argument.
     app: Option<&'static str>,
 }
 
-/// What a hardware key runs: an action of the session's resources, or one of
-/// the desktop's own shortcuts, which the chrome carries out as its chord
-/// would.
+/// What a hardware key runs: an action of the session's resources, or one of the desktop's own
+/// shortcuts, which the chrome carries out as its chord would.
 #[derive(Clone, Copy)]
 enum HardwareAction {
     Resource {
@@ -172,8 +161,7 @@ enum HardwareAction {
         action: &'static str,
     },
     Shortcut(ShortcutAction),
-    /// Print: the capture studio, or the capture a modifier on it takes at
-    /// once.
+    /// Print: the capture studio, or the capture a modifier on it takes at once.
     Print,
 }
 
@@ -193,8 +181,7 @@ const fn hardware(
     }
 }
 
-/// A key that asks for `action` of the desktop's shortcut table, as the
-/// chord bound to it does.
+/// A key that asks for `action` of the desktop's shortcut table, as the chord bound to it does.
 const fn desktop(action: ShortcutAction, repeats: bool, while_locked: bool) -> Hardware {
     Hardware {
         action: HardwareAction::Shortcut(action),
@@ -218,17 +205,16 @@ impl Hardware {
         self
     }
 
-    /// The key's action opens `app`: what the calculator key opens.
+    /// The key's action opens `app` : what the calculator key opens.
     const fn opening(mut self, app: &'static str) -> Self {
         self.app = Some(app);
         self
     }
 }
 
-/// What the Print key asks the capture studio for: the studio itself, the
-/// whole display at once with Shift, or the window in front at once with
-/// Alt. The studio's own action takes the window in front when nothing is
-/// named, and comes up to choose one when nothing is in front.
+/// What the Print key asks the capture studio for: the studio itself, the whole display at once
+/// with Shift, or the window in front at once with Alt. The studio's own action takes the window in
+/// front when nothing is named, and comes up to choose one when nothing is in front.
 fn print_invocation(modifiers: tilo_compositor::KeyModifiers) -> Invocation {
     if modifiers.shift {
         return Invocation::new(CAPTURE_STUDIO, "screenshot").with("source", "display");
@@ -286,24 +272,23 @@ fn classify(keysym: u32) -> Option<Hardware> {
             hardware(KEYBOARD_BACKLIGHT, "toggle", false, true).reads(OsdKind::KeyboardBacklight)
         }
         keysyms::XF86_Display => hardware(DISPLAYS, "next-mode", false, false),
-        // The calculator key on a media keyboard opens Calculator, as the
-        // launcher's own action does; the lock screen stays shut.
+        // The calculator key on a media keyboard opens Calculator, as the launcher's own action
+        // does; the lock screen stays shut.
         keysyms::XF86_Calculator => {
             hardware(CHROME_RESOURCE, "open-app", false, false).opening(CALCULATOR)
         }
-        // The dedicated sleep key, and the suspend and standby spellings
-        // other keyboards send, sleeps the machine whatever the power
-        // policy says the power button does; it keeps its key to itself on
-        // the lock screen, as suspending from there would.
+        // The dedicated sleep key, and the suspend and standby spellings other keyboards send,
+        // sleeps the machine whatever the power policy says the power button does; it keeps its key
+        // to itself on the lock screen, as suspending from there would.
         keysyms::XF86_Sleep | keysyms::XF86_Suspend | keysyms::XF86_Standby => {
             hardware(SLEEP, "sleep", false, false)
         }
-        // The power key works on the lock screen too: a press there that the
-        // policy resolves to lock turns the display off instead.
+        // The power key works on the lock screen too: a press there that the policy resolves to
+        // lock turns the display off instead.
         keysyms::XF86_PowerOff => hardware(SLEEP, "power-key", false, true),
-        // The Print key opens the capture studio; Shift takes the whole
-        // screen at once and Alt the window in front, as the studio's own
-        // actions take them. The lock screen shows no desktop to take.
+        // The Print key opens the capture studio; Shift takes the whole screen at once and Alt the
+        // window in front, as the studio's own actions take them. The lock screen shows no desktop
+        // to take.
         keysyms::Print => Hardware {
             action: HardwareAction::Print,
             repeats: false,
@@ -312,9 +297,8 @@ fn classify(keysym: u32) -> Option<Hardware> {
             shift_all: false,
             app: None,
         },
-        // F1 names every key the desktop answers. It is the desktop's own
-        // key, which nothing may be bound to, so the guide opens whatever
-        // modifiers are held with it.
+        // F1 names every key the desktop answers. It is the desktop's own key, which nothing may be
+        // bound to, so the guide opens whatever modifiers are held with it.
         keysyms::F1 => desktop(ShortcutAction::ShortcutHelp, false, false),
         _ => return None,
     })
@@ -323,20 +307,17 @@ fn classify(keysym: u32) -> Option<Hardware> {
 /// What the shortcut guide took from the person since it last looked.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Caught {
-    /// Escape: the guide waits for no chord any more, and what the last
-    /// press was refused for is no longer the person's concern.
+    /// Escape: the guide waits for no chord any more, and what the last press was refused for is no
+    /// longer the person's concern.
     Cancelled,
     /// The chord the person pressed for the shortcut that waited for one.
     Chord(KeyChord),
 }
 
-/// What the shortcut guide and the session's keys share while the guide is
-/// up: that it is, which shortcut waits for a new chord, and the chords
-/// pressed for it since the guide last looked.
-///
-/// It is the key surface's answer to the guide being modal: the surface
-/// sees every press before it acts anywhere, so it is the one place that
-/// can hold one back and hand it to the guide instead.
+/// What the shortcut guide and the session's keys share while the guide is up: that it is, which
+/// shortcut waits for a new chord, and the chords pressed for it since the guide last looked.
+/// It is the key surface's answer to the guide being modal: the surface sees every press before it
+/// acts anywhere, so it is the one place that can hold one back and hand it to the guide instead.
 #[derive(Clone, Default)]
 pub(crate) struct GuideKeys {
     inner: Rc<GuideKeysInner>,
@@ -350,8 +331,8 @@ struct GuideKeysInner {
 }
 
 impl GuideKeys {
-    /// The guide is up, or has gone: a guide that is gone waits for no
-    /// chord and has nothing left to answer.
+    /// The guide is up, or has gone: a guide that is gone waits for no chord and has nothing left
+    /// to answer.
     pub(crate) fn set_up(&self, up: bool) {
         self.inner.up.set(up);
         if !up {
@@ -365,19 +346,17 @@ impl GuideKeys {
         self.inner.up.get()
     }
 
-    /// The shortcut whose new chord the next press is, while the guide waits
-    /// for one.
+    /// The shortcut whose new chord the next press is, while the guide waits for one.
     pub(crate) fn listening(&self) -> Option<String> {
         self.inner.listening.borrow().clone()
     }
 
-    /// Wait for a new chord for `action`.
+    /// Wait for a new chord for `action` .
     pub(crate) fn listen_for(&self, action: &str) {
         self.inner.listening.replace(Some(action.to_owned()));
     }
 
-    /// Stop waiting for a chord: the guide stays up and takes its keys for
-    /// nothing but itself.
+    /// Stop waiting for a chord: the guide stays up and takes its keys for nothing but itself.
     pub(crate) fn stop_listening(&self) {
         self.inner.listening.replace(None);
     }
@@ -393,32 +372,29 @@ impl GuideKeys {
     }
 }
 
-/// The controller the person last drove the desktop with, and whether the
-/// keys being routed are that controller's own rather than their fingers on
-/// a keyboard.
+/// The controller the person last drove the desktop with, and whether the keys being routed are
+/// that controller's own rather than their fingers on a keyboard.
 #[derive(Clone, Default)]
 pub(crate) struct ControllerKeys {
-    /// The controller the person last drove the desktop with, which a press
-    /// of their own replaces: the guide then leads with the keyboard.
+    /// The controller the person last drove the desktop with, which a press of their own replaces:
+    /// the guide then leads with the keyboard.
     pub(crate) last: Rc<Cell<Option<ui::ControllerFamily>>>,
-    /// Whether the keys being routed are a controller's own, standing for
-    /// its presses rather than the person's fingers on a keyboard.
+    /// Whether the keys being routed are a controller's own, standing for its presses rather than
+    /// the person's fingers on a keyboard.
     pub(crate) own: Rc<Cell<bool>>,
 }
 
-/// What stands over the desk and what the keys owe it: Escape folds the card
-/// a desk widget has open, and closes the topmost surface of the stack that
-/// answers Escape. Neither hears keys itself, so both say here what theirs
-/// are worth.
+/// What stands over the desk and what the keys owe it: Escape folds the card a desk widget has
+/// open, and closes the topmost surface of the stack that answers Escape. Neither hears keys
+/// itself, so both say here what theirs are worth.
 #[derive(Clone, Default)]
 pub(crate) struct DeskKeys {
     fold: DeskFold,
     overlays: Overlays,
     /// The desk's own overlays, where Alt+Tab's walk lives.
     switcher: Option<Rc<crate::overlays::Overlays>>,
-    /// What the keys ask the panel's own app, when this device has one and
-    /// draws it: Escape asks it to go back a page, and the panel answers
-    /// whether it had one.
+    /// What the keys ask the panel's own app, when this device has one and draws it: Escape asks it
+    /// to go back a page, and the panel answers whether it had one.
     panel: Option<Rc<RefCell<Vec<&'static str>>>>,
 }
 
@@ -441,8 +417,8 @@ impl DeskKeys {
         self
     }
 
-    /// The same, with the queue the panel's own app is asked through, when
-    /// this device has one and draws it.
+    /// The same, with the queue the panel's own app is asked through, when this device has one and
+    /// draws it.
     #[must_use]
     pub(crate) fn with_panel(mut self, asks: Option<Rc<RefCell<Vec<&'static str>>>>) -> Self {
         self.panel = asks;
@@ -453,12 +429,11 @@ impl DeskKeys {
 /// The key above Tab: `` ` ``, and `~` with Shift held.
 const ABOVE_TAB: [u32; 2] = [keysyms::grave, keysyms::asciitilde];
 
-/// What a press is to the window switcher Alt+Tab opened, or to the chord
-/// that opens it.
+/// What a press is to the window switcher Alt+Tab opened, or to the chord that opens it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SwitcherKey {
-    /// Walk on (or back, with Shift), opening the walk over `opened` when it
-    /// is not up yet. Everything else steps inside the scope already walking.
+    /// Walk on (or back, with Shift), opening the walk over `opened` when it is not up yet.
+    /// Everything else steps inside the scope already walking.
     Walk {
         back: bool,
         opened: crate::overlays::SwitcherScope,
@@ -474,10 +449,9 @@ enum SwitcherKey {
 }
 
 impl SwitcherKey {
-    /// The desk action it asks for: the walk, the place or the commit, as
-    /// the desk's own published action. `walking` is the scope of the walk
-    /// already up: a walk going keeps it, so Alt+grave opens over the app in
-    /// front's windows and Alt+Tab steps inside it.
+    /// The desk action it asks for: the walk, the place or the commit, as the desk's own published
+    /// action. `walking` is the scope of the walk already up: a walk going keeps it, so Alt+grave
+    /// opens over the app in front's windows and Alt+Tab steps inside it.
     fn asks(self, walking: Option<crate::overlays::SwitcherScope>) -> Option<Invocation> {
         match self {
             Self::Walk { back, opened } => {
@@ -514,8 +488,8 @@ impl SwitcherKey {
     }
 }
 
-/// The virtual terminal `Ctrl+Alt+F1..F12` asks for, or `None`: the function
-/// keys line up with the terminals, numbered from 1.
+/// The virtual terminal `Ctrl+Alt+F1..F12` asks for, or `None` : the function keys line up with the
+/// terminals, numbered from 1.
 fn virtual_terminal(keysym: u32) -> Option<i32> {
     let vt = match keysym {
         keysyms::F1 => 1,
@@ -537,47 +511,45 @@ fn virtual_terminal(keysym: u32) -> Option<i32> {
 
 /// The surface that takes the session's keys; it shows nothing.
 pub(crate) struct SessionKeys {
-    /// The desktop's shortcut table, shared with the shortcut guide so the
-    /// guide explains the chords the keys resolve against.
+    /// The desktop's shortcut table, shared with the shortcut guide so the guide explains the
+    /// chords the keys resolve against.
     shortcuts: Rc<RefCell<ShortcutConfig>>,
-    /// The display sheet's presentation: Super+P puts it up while it is not
-    /// there, and once it is, the chord moves inside it instead.
+    /// The display sheet's presentation: Super+P puts it up while it is not there, and once it is,
+    /// the chord moves inside it instead.
     displays: Option<tilo_sheets::Presentation>,
     invocations: Invocations,
-    /// The chords pressed that run a saved shortcut's keyboard trigger: the
-    /// automation host starts them, on the pass that follows.
+    /// The chords pressed that run a saved shortcut's keyboard trigger: the automation host starts
+    /// them, on the pass that follows.
     triggered: PressedChords,
     /// The apps' shortcuts, which work wherever the keyboard is.
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
-    /// The shortcut guide's keys while it is up: what it holds back from
-    /// the desktop behind it, and the chord it waits for.
+    /// The shortcut guide's keys while it is up: what it holds back from the desktop behind it, and
+    /// the chord it waits for.
     guide: GuideKeys,
-    /// Whether a desk widget has its card open, which Escape folds. The desk
-    /// is under the windows and hears no keys itself, so it says here what
-    /// its keys are worth.
+    /// Whether a desk widget has its card open, which Escape folds. The desk is under the windows
+    /// and hears no keys itself, so it says here what its keys are worth.
     fold: DeskFold,
-    /// What stands over the desk: Escape closes the topmost surface that
-    /// answers it, and while one holds the keyboard a press is that
-    /// surface's and not the window's.
+    /// What stands over the desk: Escape closes the topmost surface that answers it, and while one
+    /// holds the keyboard a press is that surface's and not the window's.
     overlays: Overlays,
-    /// The desk's own overlays, where Alt+Tab's walk lives: the keys it
-    /// answers while it is up, and the chord that opens it.
+    /// The desk's own overlays, where Alt+Tab's walk lives: the keys it answers while it is up, and
+    /// the chord that opens it.
     switcher: Option<Rc<crate::overlays::Overlays>>,
     /// What the keys ask the panel's own app, when this device draws it.
     panel: Option<Rc<RefCell<Vec<&'static str>>>>,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
-    /// The controller the person last drove the desktop with, which a press
-    /// of their own replaces: the guide then leads with the keyboard.
+    /// The controller the person last drove the desktop with, which a press of their own replaces:
+    /// the guide then leads with the keyboard.
     controller: Rc<Cell<Option<ui::ControllerFamily>>>,
-    /// Whether the keys being routed are a controller's own, standing for
-    /// its presses rather than the person's fingers on a keyboard.
+    /// Whether the keys being routed are a controller's own, standing for its presses rather than
+    /// the person's fingers on a keyboard.
     controller_keys: Rc<Cell<bool>>,
-    /// When each display's bar shows over the window covering it: Super asks
-    /// for it, and the app under it has nothing of that press.
+    /// When each display's bar shows over the window covering it: Super asks for it, and the app
+    /// under it has nothing of that press.
     reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
-    /// The commands a press raises that are the session's own rather than a
-    /// published action's, such as leaving for a virtual terminal.
+    /// The commands a press raises that are the session's own rather than a published action's,
+    /// such as leaving for a virtual terminal.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
 }
 
@@ -619,29 +591,27 @@ impl SessionKeys {
         }
     }
 
-    /// Take the commands the session's own presses raise, such as a virtual
-    /// terminal's: the same queue the session's controls drain.
+    /// Take the commands the session's own presses raise, such as a virtual terminal's: the same
+    /// queue the session's controls drain.
     pub(crate) fn with_commands(mut self, commands: Rc<RefCell<Vec<SessionCommand>>>) -> Self {
         self.commands = commands;
         self
     }
 
-    /// Whether `key` is the desk's own: Escape folds the card a desk widget
-    /// has open, and what sits behind the desk does not hear it.
+    /// Whether `key` is the desk's own: Escape folds the card a desk widget has open, and what sits
+    /// behind the desk does not hear it.
     fn folds_the_desk(&self, key: &HostKey) -> bool {
         key.unmodified_keysym == keysyms::Escape && self.fold.is_open()
     }
 
-    /// What `key` is to Alt+Tab's walk: the chord that opens it, what it does
-    /// while it is up, or nothing when it is not the walk's at all. While the
-    /// walk is up it is modal, as every desktop's switcher is: the keys are
-    /// its own, and none of them reaches the window behind it.
+    /// What `key` is to Alt+Tab's walk: the chord that opens it, what it does while it is up, or
+    /// nothing when it is not the walk's at all. While the walk is up it is modal, as every
+    /// desktop's switcher is: the keys are its own, and none of them reaches the window behind it.
     fn switcher_key(&self, key: &HostKey) -> Option<SwitcherKey> {
         let desk = self.switcher.as_deref()?;
         if !desk.is_up() {
-            // Alt+Tab walks the workspace's windows, and Alt with the key
-            // above Tab the ones the app in front shows: fixed chords, as no
-            // shortcut table holds a modifier.
+            // Alt+Tab walks the workspace's windows, and Alt with the key above Tab the ones the
+            // app in front shows: fixed chords, as no shortcut table holds a modifier.
             if !key.pressed || !key.modifiers.alt {
                 return None;
             }
@@ -660,9 +630,8 @@ impl SessionKeys {
             return None;
         }
         if !key.pressed {
-            // Letting Alt go goes to the window the walk reached, whether the
-            // press was Alt's or was lost to another seat: every other release
-            // is the walk's, and does nothing.
+            // Letting Alt go goes to the window the walk reached, whether the press was Alt's or
+            // was lost to another seat: every other release is the walk's, and does nothing.
             let alt = matches!(key.keysym, keysyms::Alt_L | keysyms::Alt_R);
             return Some(if alt || !key.modifiers.alt {
                 SwitcherKey::Commit
@@ -670,8 +639,8 @@ impl SessionKeys {
                 SwitcherKey::Hold
             });
         }
-        // A key still repeating after Alt came up does not walk: the walk ends
-        // on that release, and a repeat must not choose another window.
+        // A key still repeating after Alt came up does not walk: the walk ends on that release, and
+        // a repeat must not choose another window.
         if key.repeat && !key.modifiers.alt {
             return Some(SwitcherKey::Hold);
         }
@@ -698,9 +667,8 @@ impl SessionKeys {
             },
             keysyms::Home => SwitcherKey::Place(0),
             keysyms::End => SwitcherKey::Place(-1),
-            // A press without Alt settles on the window the walk reached: Alt
-            // came up without the walk hearing it. It does not type into a
-            // window nobody chose yet.
+            // A press without Alt settles on the window the walk reached: Alt came up without the
+            // walk hearing it. It does not type into a window nobody chose yet.
             _ if !key.modifiers.alt => SwitcherKey::Commit,
             _ => SwitcherKey::Hold,
         })
@@ -730,10 +698,9 @@ impl SessionKeys {
             .flatten()
     }
 
-    /// Whether `key` is the display sheet's chord, which puts the sheet up:
-    /// Super+P, as the desktop's fixed table names it. A sheet that is up is
-    /// not opened again: what is drawn takes the chord and moves the
-    /// highlight inside it.
+    /// Whether `key` is the display sheet's chord, which puts the sheet up: Super+P, as the
+    /// desktop's fixed table names it. A sheet that is up is not opened again: what is drawn takes
+    /// the chord and moves the highlight inside it.
     fn opens_the_display_sheet(&self, key: &HostKey) -> bool {
         let Some(displays) = &self.displays else {
             return false;
@@ -798,10 +765,9 @@ impl SessionKeys {
             .map(|_| chord)
     }
 
-    /// The invocation a press is, and how it is claimed. `inhibited` while a
-    /// focused client holds the desktop's shortcuts (a virtual machine, a
-    /// remote desktop): only a hardware key and locking the session stay the
-    /// desktop's then.
+    /// The invocation a press is, and how it is claimed. `inhibited` while a focused client holds
+    /// the desktop's shortcuts (a virtual machine, a remote desktop): only a hardware key and
+    /// locking the session stay the desktop's then.
     fn resolve(
         &self,
         key: &HostKey,
@@ -842,22 +808,21 @@ impl SessionKeys {
             return (action == ShortcutAction::Lock)
                 .then(|| (Invocation::shortcut(action), KeyClaim::Take));
         }
-        // Super+P is the display sheet's, as it is on every desktop: the
-        // keys the fixed table names come before any app's chord.
+        // Super+P is the display sheet's, as it is on every desktop: the keys the fixed table names
+        // come before any app's chord.
         if self.opens_the_display_sheet(key) {
             return Some((Invocation::new(DISPLAYS, "open-sheet"), KeyClaim::Take));
         }
-        // The fixed chords Settings cannot rebind are the desktop's before
-        // any app's, and run the same verb their menu rows and an agent's
-        // invocation name.
+        // The fixed chords Settings cannot rebind are the desktop's before any app's, and run the
+        // same verb their menu rows and an agent's invocation name.
         if let Some(action) = Self::fixed_action(key) {
             return Some((
                 Invocation::new(CHROME_RESOURCE, "fixed-shortcut").with("action", action.id()),
                 KeyClaim::Take,
             ));
         }
-        // An app's bound shortcut is the person's answer to its sheet: it
-        // is pressed like the desktop's own chords are.
+        // An app's bound shortcut is the person's answer to its sheet: it is pressed like the
+        // desktop's own chords are.
         if let Some(resource) = self.portal_shortcut(key) {
             return Some((Invocation::new(&resource, "activate"), KeyClaim::Take));
         }
@@ -868,14 +833,14 @@ impl SessionKeys {
         Some((Invocation::shortcut(action), KeyClaim::Take))
     }
 
-    /// Whether `invocation` is the desktop's way to the shortcut guide, which
-    /// stays its own key while the guide is up.
+    /// Whether `invocation` is the desktop's way to the shortcut guide, which stays its own key
+    /// while the guide is up.
     fn shows_the_guide(invocation: &Invocation) -> bool {
         *invocation == Invocation::shortcut(ShortcutAction::ShortcutHelp)
     }
 
-    /// A press the guide is up over: it answers only what is its own, and
-    /// while it waits for a new chord, that press is the chord.
+    /// A press the guide is up over: it answers only what is its own, and while it waits for a new
+    /// chord, that press is the chord.
     fn guide_key(&self, key: &HostKey) {
         let resolved = self.resolve(key, false, false);
         // F1 and the desktop's help chord stay the guide's own way out,
@@ -886,8 +851,8 @@ impl SessionKeys {
             self.invocations.borrow_mut().push(invocation.clone());
             return;
         }
-        // A hardware key changes a level or takes the screen: it is no chord
-        // of the desktop's table, so it answers as it does without the guide.
+        // A hardware key changes a level or takes the screen: it is no chord of the desktop's
+        // table, so it answers as it does without the guide.
         if classify(key.keysym).is_some() {
             if let Some((invocation, _)) = resolved {
                 self.invocations.borrow_mut().push(invocation);
@@ -895,8 +860,7 @@ impl SessionKeys {
             return;
         }
         if self.guide.listening().is_none() || key.repeat {
-            // The guide is modal for everything else: a chord acts once it
-            // is gone.
+            // The guide is modal for everything else: a chord acts once it is gone.
             return;
         }
         if key.unmodified_keysym == keysyms::Escape {
@@ -913,8 +877,8 @@ impl SessionKeys {
     }
 }
 
-/// Whether `key` is a Super key going down for the first time: the key that
-/// asks for a bar hidden by a fullscreen window.
+/// Whether `key` is a Super key going down for the first time: the key that asks for a bar hidden
+/// by a fullscreen window.
 fn is_super(key: &HostKey) -> bool {
     key.pressed
         && !key.repeat
@@ -929,8 +893,8 @@ impl SurfaceHost for SessionKeys {
         Vec::new()
     }
 
-    /// The session's keys draw nothing: they take chords and hand the rest
-    /// on, so no frame is theirs to ask for.
+    /// The session's keys draw nothing: they take chords and hand the rest on, so no frame is
+    /// theirs to ask for.
     fn prepare_frame(&mut self) -> bool {
         false
     }
@@ -944,11 +908,10 @@ impl SurfaceHost for SessionKeys {
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
     fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
-        // Ctrl+Alt+F1..F12 asks for a virtual terminal. On a bare terminal the
-        // session holds the keyboard itself, so the kernel never sees the
-        // chord: without this, and from a desktop that cannot give the machine
-        // back, the person could not leave it for a text console at all. A
-        // locked session takes no such chord, as the lock takes no other.
+        // Ctrl+Alt+F1..F12 asks for a virtual terminal. On a bare terminal the session holds the
+        // keyboard itself, so the kernel never sees the chord: without this, and from a desktop
+        // that cannot give the machine back, the person could not leave it for a text console at
+        // all. A locked session takes no such chord, as the lock takes no other.
         if !locked
             && key.pressed
             && !key.repeat
@@ -962,9 +925,9 @@ impl SurfaceHost for SessionKeys {
                 .push(SessionCommand::SwitchVt { vt });
             return KeyClaim::Take;
         }
-        // Super going down asks for the bar over the window that covers the
-        // display, as reaching for the top edge does. The app under it has
-        // nothing of a modifier that asked for the desktop's own bar.
+        // Super going down asks for the bar over the window that covers the display, as reaching
+        // for the top edge does. The app under it has nothing of a modifier that asked for the
+        // desktop's own bar.
         if !locked && !inhibited && is_super(key) && self.reveals.borrow().covers_display(None) {
             self.invocations
                 .borrow_mut()
@@ -973,14 +936,13 @@ impl SurfaceHost for SessionKeys {
         }
         if self.guide.up() {
             if self.guide.listening().is_some() {
-                // The guide waits for a shortcut's new keys: every press is
-                // that chord, and none of them reaches what is behind it.
+                // The guide waits for a shortcut's new keys: every press is that chord, and none of
+                // them reaches what is behind it.
                 return KeyClaim::Take;
             }
-            // The guide is modal: a chord of the desktop's table or an app's
-            // shortcut must not act on what it hides. A hardware key (the
-            // volume keys, F1) is no chord and answers as it does without
-            // the guide.
+            // The guide is modal: a chord of the desktop's table or an app's shortcut must not act
+            // on what it hides. A hardware key (the volume keys, F1) is no chord and answers as it
+            // does without the guide.
             if classify(key.keysym).is_none() {
                 if self.trigger_chord(key).is_some() {
                     return KeyClaim::Take;
@@ -990,9 +952,9 @@ impl SurfaceHost for SessionKeys {
                     .map_or(KeyClaim::Pass, |(_, claim)| claim);
             }
         }
-        // Alt+Tab's walk: the chord that opens it, and, while it is up, every
-        // key — its own Alt's release among them. A locked session, or one
-        // whose focused client holds the shortcuts, opens no walk.
+        // Alt+Tab's walk: the chord that opens it, and, while it is up, every key — its own Alt's
+        // release among them. A locked session, or one whose focused client holds the shortcuts,
+        // opens no walk.
         if let Some(action) = self.switcher_key(key) {
             let up = self
                 .switcher
@@ -1012,10 +974,9 @@ impl SurfaceHost for SessionKeys {
         if self.folds_the_desk(key) {
             return KeyClaim::Take;
         }
-        // A chord that runs a saved shortcut is the session's, as a chord of
-        // the desktop's own table is: the shortcut fires rather than the
-        // window behind it. A locked session, or one whose focused client
-        // holds the shortcuts, answers neither.
+        // A chord that runs a saved shortcut is the session's, as a chord of the desktop's own
+        // table is: the shortcut fires rather than the window behind it. A locked session, or one
+        // whose focused client holds the shortcuts, answers neither.
         if !locked && !inhibited && self.trigger_chord(key).is_some() {
             return KeyClaim::Take;
         }
@@ -1025,21 +986,20 @@ impl SurfaceHost for SessionKeys {
 
     fn key(&mut self, key: &HostKey) {
         if !key.pressed {
-            // The app hears its shortcut released wherever the modifiers
-            // are by then: the chord is remembered by the key that held it.
+            // The app hears its shortcut released wherever the modifiers are by then: the chord is
+            // remembered by the key that held it.
             if let Some(resource) = self.held.borrow_mut().remove(&key.keycode) {
                 self.invocations
                     .borrow_mut()
                     .push(Invocation::new(&resource, "deactivate"));
             }
-            // Letting Alt go is the walk's, wherever the press that opened it
-            // was recorded: the switcher goes to the window it reached.
+            // Letting Alt go is the walk's, wherever the press that opened it was recorded: the
+            // switcher goes to the window it reached.
             self.walk_the_switcher(key);
             return;
         }
-        // A press of the person's own: the guide leads with the keyboard
-        // again. The controller's own presses reach here too, standing for
-        // its buttons, and say nothing about a keyboard.
+        // A press of the person's own: the guide leads with the keyboard again. The controller's
+        // own presses reach here too, standing for its buttons, and say nothing about a keyboard.
         if !self.controller_keys.get() {
             self.controller.set(None);
         }
@@ -1047,8 +1007,8 @@ impl SurfaceHost for SessionKeys {
             self.guide_key(key);
             return;
         }
-        // Alt+Tab's walk answers the keys the desk's switcher shows: the
-        // walk, its places, and the press that settles it.
+        // Alt+Tab's walk answers the keys the desk's switcher shows: the walk, its places, and the
+        // press that settles it.
         if self.switcher_key(key).is_some() {
             self.walk_the_switcher(key);
             return;
@@ -1057,10 +1017,9 @@ impl SurfaceHost for SessionKeys {
             if slot == Slot::QuickSettings
                 && let Some(asks) = &self.panel
             {
-                // The panel's own pages are its own: Escape goes back one of
-                // them, and the panel answers whether it had one to go back
-                // to (`Shared::panel_back`). Its main page has none, and the
-                // session closes the panel there.
+                // The panel's own pages are its own: Escape goes back one of them, and the panel
+                // answers whether it had one to go back to (`Shared::panel_back`). Its main page
+                // has none, and the session closes the panel there.
                 asks.borrow_mut().push("back");
                 return;
             }
@@ -1073,14 +1032,14 @@ impl SurfaceHost for SessionKeys {
             self.fold.ask();
             return;
         }
-        // A chord of a saved shortcut's keyboard trigger starts the shortcut:
-        // the automation host is handed the press on this pass.
+        // A chord of a saved shortcut's keyboard trigger starts the shortcut: the automation host
+        // is handed the press on this pass.
         if let Some(chord) = self.trigger_chord(key) {
             self.triggered.borrow_mut().push(chord);
             return;
         }
-        // A repeat of a key taken once is not run again (only a level key
-        // repeats); the compositor repeats only keys claimed repeating.
+        // A repeat of a key taken once is not run again (only a level key repeats); the compositor
+        // repeats only keys claimed repeating.
         if let Some(resource) = self.portal_shortcut(key) {
             self.held.borrow_mut().insert(key.keycode, resource.clone());
             self.invocations
@@ -1095,8 +1054,7 @@ impl SurfaceHost for SessionKeys {
 }
 
 impl Shared {
-    /// What the touchpad gestures the desktop took asked, as the chrome's
-    /// published actions.
+    /// What the touchpad gestures the desktop took asked, as the chrome's published actions.
     pub(crate) fn follow_gestures(&self) {
         let gestures = self.desktop.take_gestures();
         let mut invocations = self.invocations.borrow_mut();
@@ -1105,10 +1063,9 @@ impl Shared {
                 DeskGesture::StepStrip(steps) => {
                     Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps)
                 }
-                // A strip under the fingers is the desk's own drawing, as
-                // the strip deck is: the fingers move it here, where the
-                // frame is, rather than through a published action that
-                // would arrive a pass later.
+                // A strip under the fingers is the desk's own drawing, as the strip deck is: the
+                // fingers move it here, where the frame is, rather than through a published action
+                // that would arrive a pass later.
                 DeskGesture::StripDrag { travel, began } => {
                     self.desktop.with_widgets(|host| {
                         if began {
@@ -1124,9 +1081,8 @@ impl Shared {
                         .with_widgets(|host| host.end_strip_carry(cancelled));
                     continue;
                 }
-                // The deck is the desk's own drawing: the fingers move it
-                // here, where the frame is, rather than through a published
-                // action that would arrive a pass later.
+                // The deck is the desk's own drawing: the fingers move it here, where the frame is,
+                // rather than through a published action that would arrive a pass later.
                 DeskGesture::StripDeckDrag { travel } => {
                     self.desktop.with_widgets(|host| {
                         if host.wants_hand_on_deck() {
@@ -1142,8 +1098,8 @@ impl Shared {
                         host.end_strip_deck(travel);
                     });
                     if steps != 0 {
-                        // A finger chose the strip: the change it makes is
-                        // drawn sliding, not landed as a chord's would be.
+                        // A finger chose the strip: the change it makes is drawn sliding, not
+                        // landed as a chord's would be.
                         ui::motion::note_source(ui::tokens::MotionSource::Gesture);
                         invocations.push(
                             Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps),
@@ -1161,8 +1117,8 @@ impl Shared {
         }
     }
 
-    /// What a secondary click on a window's bar asked, as the window menu's
-    /// own published action: that window's menu up, where it was pressed.
+    /// What a secondary click on a window's bar asked, as the window menu's own published action:
+    /// that window's menu up, where it was pressed.
     pub(crate) fn follow_tab_menus(&self) {
         let tabs = self.desktop.take_tab_menus();
         let mut invocations = self.invocations.borrow_mut();
@@ -1175,12 +1131,10 @@ impl Shared {
         }
     }
 
-    /// Run the published actions keys and gestures asked for, through the
-    /// door every caller uses.
-    ///
-    /// The lock screen withholds the hosted surfaces' actions while it is
-    /// up; the keys that work there are the device's own (a level, the
-    /// power key), and the services publishing those still run.
+    /// Run the published actions keys and gestures asked for, through the door every caller uses.
+    /// The lock screen withholds the hosted surfaces' actions while it is up; the keys that work
+    /// there are the device's own (a level, the power key), and the services publishing those still
+    /// run.
     pub(crate) fn run_invocations(
         &self,
         locked: bool,
@@ -1212,9 +1166,8 @@ impl Shared {
                         let now = self.reading(kind);
                         self.show_readout(&now);
                         if started == ResourceOperationStart::Accepted {
-                            // The device has not answered yet: the readout
-                            // shows where it started, and again where the
-                            // device left it once the reading says so.
+                            // The device has not answered yet: the readout shows where it started,
+                            // and again where the device left it once the reading says so.
                             self.waiting.borrow_mut().push(PendingReadout {
                                 kind,
                                 before: now,
@@ -1245,8 +1198,8 @@ impl Shared {
         ran
     }
 
-    /// What a service publishes now, read back from `resource`, or `None`
-    /// while nothing publishes it or it does not read back.
+    /// What a service publishes now, read back from `resource` , or `None` while nothing publishes
+    /// it or it does not read back.
     fn published<T: serde::de::DeserializeOwned>(&self, resource: &str) -> Option<T> {
         let reading = self.services.borrow().read(resource)?;
         serde_json::from_value(reading)
@@ -1256,15 +1209,14 @@ impl Shared {
             .ok()
     }
 
-    /// The readout of `kind` as the device's own service publishes it now:
-    /// naming the device it is about, so the pill says whose level it is.
+    /// The readout of `kind` as the device's own service publishes it now: naming the device it is
+    /// about, so the pill says whose level it is.
     pub(crate) fn reading(&self, kind: OsdKind) -> Osd {
         if !kind.has_level() {
             return self.without_level(kind);
         }
-        // A brightness key on a machine with no display it can dim: the
-        // readout says there is nothing to adjust rather than a level of its
-        // own, which would be a zero about no display.
+        // A brightness key on a machine with no display it can dim: the readout says there is
+        // nothing to adjust rather than a level of its own, which would be a zero about no display.
         if kind == OsdKind::Brightness
             && self
                 .published::<displays::Reading>(displays::RESOURCE)
@@ -1321,9 +1273,8 @@ impl Shared {
         })
     }
 
-    /// The readout of a key whose action is on or off, as the services
-    /// publish it now: the pill shows what the key turned on or off, not a
-    /// level.
+    /// The readout of a key whose action is on or off, as the services publish it now: the pill
+    /// shows what the key turned on or off, not a level.
     fn without_level(&self, kind: OsdKind) -> Osd {
         let on = match kind {
             OsdKind::Microphone => self
@@ -1334,9 +1285,9 @@ impl Shared {
                 .is_some_and(|network| network.airplane_mode),
             _ => true,
         };
-        // A transport readout names the song it is about, read from the one
-        // now-playing reading every surface shows. Going to the next or the
-        // previous song names no song: which one plays is not read yet.
+        // A transport readout names the song it is about, read from the one now-playing reading
+        // every surface shows. Going to the next or the previous song names no song: which one
+        // plays is not read yet.
         let name = matches!(kind, OsdKind::Play | OsdKind::Pause)
             .then(|| {
                 self.readings
@@ -1353,8 +1304,8 @@ impl Shared {
         })
     }
 
-    /// The display a brightness key is about: the one the person works on
-    /// when it can be dimmed, else the first one that can ([`displays::Reading::brightness`]).
+    /// The display a brightness key is about: the one the person works on when it can be dimmed,
+    /// else the first one that can ([`displays::Reading::brightness`]).
     fn dimmable(reading: &displays::Reading) -> Option<&displays::Display> {
         reading
             .focused
@@ -1373,9 +1324,8 @@ impl Shared {
             })
     }
 
-    /// Show the readouts a device answered since the key was pressed, where it
-    /// left them: the level a person sees is the one their key produced, not
-    /// the one before it.
+    /// Show the readouts a device answered since the key was pressed, where it left them: the level
+    /// a person sees is the one their key produced, not the one before it.
     pub(crate) fn show_answered_readouts(&self) {
         let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
         let now = Instant::now();
@@ -1391,15 +1341,13 @@ impl Shared {
         *self.waiting.borrow_mut() = unanswered;
     }
 
-    /// Whether `error` is the session saying that no display here can be
-    /// dimmed.
+    /// Whether `error` is the session saying that no display here can be dimmed.
     fn says_nothing_to_dim(error: &DoorError) -> bool {
         matches!(error, DoorError::Unavailable { code, .. } if code == "no-backlight")
     }
 
-    /// Show `osd` through the readout's published action, on the display the
-    /// person works on: the readout answers there, over whatever that display
-    /// shows, including the lock.
+    /// Show `osd` through the readout's published action, on the display the person works on: the
+    /// readout answers there, over whatever that display shows, including the lock.
     pub(crate) fn show_readout(&self, osd: &Osd) {
         let display = self
             .services
@@ -1413,8 +1361,8 @@ impl Shared {
                     .ok()
             })
             .and_then(|reading| {
-                // A brightness key dims the display it is about; every other
-                // readout answers on the display the person works on.
+                // A brightness key dims the display it is about; every other readout answers on the
+                // display the person works on.
                 if osd.kind() == OsdKind::Brightness {
                     Self::dimmable(&reading).map(|display| display.connector.clone())
                 } else {
@@ -1463,8 +1411,7 @@ mod tests {
         )
     }
 
-    /// The key surface with the shortcut guide up, and the guide's shared
-    /// keys.
+    /// The key surface with the shortcut guide up, and the guide's shared keys.
     fn with_guide() -> (SessionKeys, GuideKeys) {
         let guide = GuideKeys::default();
         guide.set_up(true);
@@ -1678,8 +1625,8 @@ mod tests {
 
     #[test]
     fn escape_asks_the_panel_to_go_back_before_it_closes_it() {
-        // The panel's app draws the quick settings on this device: Escape is
-        // its own pages' first, and the session waits for its answer.
+        // The panel's app draws the quick settings on this device: Escape is its own pages' first,
+        // and the session waits for its answer.
         let asks = Rc::new(RefCell::new(Vec::new()));
         let overlays = Overlays::new();
         overlays.open(Slot::QuickSettings, None);
@@ -1701,8 +1648,8 @@ mod tests {
             "nothing closes until the panel says it has nowhere left to go"
         );
 
-        // A device whose shell draws the quick settings has no panel app to
-        // ask: Escape closes the surface itself.
+        // A device whose shell draws the quick settings has no panel app to ask: Escape closes the
+        // surface itself.
         let mut shell = SessionKeys::new(
             Rc::new(RefCell::new(ShortcutConfig::default())),
             Presses::default(),
@@ -1764,8 +1711,8 @@ mod tests {
                 "a walk going keeps the windows it crosses: {keysym:#x}"
             );
         }
-        // The other chord does not cross to the other scope in a walk going: it steps, as it
-        // always has. The scope is the chord that opened the walk.
+        // The other chord does not cross to the other scope in a walk going: it steps, as it always
+        // has. The scope is the chord that opened the walk.
         let (mut keys, walk) = with_walk();
         walk.walk(Some("workspace"), 1);
         let grave = key(keysyms::grave, Some('`'), alt(KeyModifiers::default()));
@@ -1902,14 +1849,14 @@ mod tests {
             serde_json::to_value(ui::floating_surface::CaptureStudioProtocolMode::Screenshot)
                 .unwrap_or_default(),
         );
-        // Print alone asks the studio to come up choosing a screenshot: the
-        // person then picks the screen, a window or a region.
+        // Print alone asks the studio to come up choosing a screenshot: the person then picks the
+        // screen, a window or a region.
         assert_eq!(
             keys.resolve(&print, false, false),
             Some((studio, KeyClaim::Take))
         );
-        // Shift takes the whole display at once, and Alt the window in
-        // front, as the studio's own actions take them.
+        // Shift takes the whole display at once, and Alt the window in front, as the studio's own
+        // actions take them.
         let shift = key(
             keysyms::Print,
             None,
@@ -1951,8 +1898,8 @@ mod tests {
             logo: true,
             ..KeyModifiers::default()
         };
-        // The key a US keyboard labels L types `д` on a Russian layout; the
-        // chord is the Latin letter the same key carries on US.
+        // The key a US keyboard labels L types `д` on a Russian layout; the chord is the Latin
+        // letter the same key carries on US.
         let mut cyrillic = key(keysyms::Cyrillic_de, Some('д'), logo);
         cyrillic.latin_keysym = u32::from('l');
         assert_eq!(
@@ -2057,8 +2004,8 @@ mod tests {
         ] {
             assert_eq!(keys.resolve(&pressed, false, false), fixed(id), "{id}");
         }
-        // The chords the keys answer where they resolve keep that answer:
-        // the window walk, the workspace steps, the display sheet and Print.
+        // The chords the keys answer where they resolve keep that answer: the window walk, the
+        // workspace steps, the display sheet and Print.
         for answered_before in [
             key(
                 keysyms::Tab,
@@ -2105,8 +2052,8 @@ mod tests {
             keys.invocations.borrow().as_slice(),
             [Invocation::shortcut(ShortcutAction::ShortcutHelp)]
         );
-        // A key that answers nothing at all is not the guide's to take: the
-        // sheet behind it moves its focus with Tab.
+        // A key that answers nothing at all is not the guide's to take: the sheet behind it moves
+        // its focus with Tab.
         let tab = key(keysyms::Tab, None, KeyModifiers::default());
         assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::Pass);
         // A hardware key changes a level whatever is on screen.
@@ -2181,8 +2128,8 @@ mod tests {
             KeyClaim::Pass,
             "the virtual machine answers its own Tab"
         );
-        // Locking the session stays the desktop's: a machine that could hold
-        // that chord could hide the way out of itself.
+        // Locking the session stays the desktop's: a machine that could hold that chord could hide
+        // the way out of itself.
         let lock = key(keysyms::l, Some('l'), logo);
         assert_eq!(keys.claim_key(&lock, false, false), KeyClaim::Take);
         assert_eq!(keys.claim_key(&lock, false, true), KeyClaim::Take);
@@ -2239,8 +2186,8 @@ mod tests {
             ),
             KeyClaim::Pass
         );
-        // The automation armed a shortcut on that chord: the session answers
-        // it, and hands the press on once.
+        // The automation armed a shortcut on that chord: the session answers it, and hands the
+        // press on once.
         let mut table = shortcuts.borrow().clone();
         assert!(tilo_action_broker::automation::replace_trigger_chords(
             &mut table,
@@ -2331,8 +2278,8 @@ mod tests {
             commands.borrow().as_slice(),
             [SessionCommand::SwitchVt { vt: 3 }]
         );
-        // A layout that types another character on that key still names the
-        // terminal: the chord is the key the US keyboard calls F4.
+        // A layout that types another character on that key still names the terminal: the chord is
+        // the key the US keyboard calls F4.
         let mut other = key(keysyms::Cyrillic_ze, Some('з'), chord);
         other.latin_keysym = keysyms::F4;
         assert_eq!(keys.claim_key(&other, false, false), KeyClaim::Take);
@@ -2343,8 +2290,7 @@ mod tests {
                 SessionCommand::SwitchVt { vt: 4 }
             ]
         );
-        // The same keys without Alt, or on a locked session, are not the
-        // session's to take.
+        // The same keys without Alt, or on a locked session, are not the session's to take.
         let plain = KeyModifiers {
             ctrl: true,
             ..KeyModifiers::default()

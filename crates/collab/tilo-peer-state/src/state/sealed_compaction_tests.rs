@@ -1956,6 +1956,23 @@ fn the_key_holder_writes_a_new_records_genesis_sealed() {
         AutoCommit::load(&opened.document).unwrap().get_heads(),
         genesis.get_heads()
     );
+    // Its writer reads the record as it was written, before and after a
+    // restart: the empty start in the clear is content the record carries.
+    let read = |host: &StatePeer| {
+        let capture = host
+            .capture_document(
+                f.owner.verifying_key().to_bytes(),
+                (APP, record),
+                f.now,
+                64 * 1024,
+                Some(&mut |op| open(&keys, op)),
+            )
+            .unwrap_or_else(|error| panic!("the record does not read: {error}"));
+        AutoCommit::load(&capture.into_bytes()).unwrap().get_heads()
+    };
+    assert_eq!(read(&host), genesis.get_heads());
+    let restored = f.restore(&host.durable().unwrap()).unwrap();
+    assert_eq!(read(&restored), genesis.get_heads(), "after a restart");
     assert!(envelope_of(&message).encryption.is_some());
 }
 

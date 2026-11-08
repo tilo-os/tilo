@@ -542,8 +542,8 @@ fn select(
     }
 }
 
-/// Which encoders an export actually selected. The encode-side counterpart of
-/// [`crate::hw::HwReport`]: a record of what was chosen, not a claim about
+/// Which encoders an export actually selected. The encode-side counterpart
+/// of [`crate::hw::HwReport`]: a record of what was chosen, not a claim about
 /// what the machine can do.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EncodeReport {

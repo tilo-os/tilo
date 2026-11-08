@@ -43,29 +43,134 @@ fn shared_menu_layout_matches_the_former_taffy_pass() {
     }
 }
 
-#[cfg(test)]
-mod open_with_tests {
-    use super::*;
-    use crate::model::Entry;
+/// Stands in for the session's document door in tests: it records what Files
+/// asks to open and answers what Files lists, so a test reads the ask the
+/// session would have served. Files asks off its own thread, so what it asked
+/// is one lock, not a thread's own state.
+pub(super) mod session_door {
+    use runtime_portal::tools::DocumentApp;
     use std::path::{Path, PathBuf};
+    use std::sync::{LazyLock, Mutex, MutexGuard};
 
     #[derive(Default)]
-    struct RecRunner {
-        /// Paths handed to the system default handler (non-document opens).
-        opened: Vec<PathBuf>,
-        /// How the desktop answers them; `None` opens.
+    struct Door {
+        /// What Files asked to open, `(path, app)` newest last.
+        opens: Vec<(PathBuf, Option<String>)>,
+        /// What the door answers the next open with; `None` opens.
         refusal: Option<String>,
+        /// What the door lists for a document's type.
+        candidates: Vec<DocumentApp>,
+        /// What the door answers the next listing with; `None` answers.
+        listing_refusal: Option<String>,
+        /// How many listings Files asked for.
+        listings: usize,
     }
-    impl CommandRunner for RecRunner {
-        fn open_default(&mut self, path: &Path) -> ui::portal::LaunchChannel {
-            self.opened.push(path.to_path_buf());
-            let (tx, rx) = std::sync::mpsc::channel();
-            let _ = tx.send(match self.refusal.clone() {
-                Some(reason) => ui::portal::LaunchOutcome::Failed(reason),
-                None => ui::portal::LaunchOutcome::Opened,
-            });
-            rx
+
+    static DOOR: LazyLock<Mutex<Door>> = LazyLock::new(|| Mutex::new(Door::default()));
+
+    fn door() -> MutexGuard<'static, Door> {
+        DOOR.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Record from now on: forget earlier asks and listings.
+    pub(super) fn start() {
+        *door() = Door::default();
+    }
+
+    /// The door's answer to an open: record the ask, then open or refuse.
+    /// Stands in for [`crate::open_with::request`].
+    pub(super) fn record_open(path: &Path, app: Option<&str>) -> Result<(), String> {
+        let mut door = door();
+        door.opens
+            .push((path.to_path_buf(), app.map(str::to_owned)));
+        match door.refusal.take() {
+            Some(reason) => Err(reason),
+            None => Ok(()),
         }
+    }
+
+    /// The door's answer to a listing: [`listing`]'s apps, counted. Stands in
+    /// for [`crate::open_with::candidates`].
+    pub(super) fn record_candidates(_path: &Path) -> Result<Vec<DocumentApp>, String> {
+        let mut door = door();
+        door.listings += 1;
+        match door.listing_refusal.take() {
+            Some(reason) => Err(reason),
+            None => Ok(door.candidates.clone()),
+        }
+    }
+
+    /// Answer the next listing with `reason`; listings after it answer again.
+    pub(super) fn refuse_listing(reason: &str) {
+        door().listing_refusal = Some(reason.into());
+    }
+
+    /// Answer every listing with `apps`, the one the type opens with first.
+    pub(super) fn listing(apps: Vec<DocumentApp>) {
+        door().candidates = apps;
+    }
+
+    /// Answer the next open with `reason`; opens after it succeed again.
+    pub(super) fn refuse(reason: &str) {
+        door().refusal = Some(reason.into());
+    }
+
+    /// What Files asked to open, `path app` each, `-` for the type's own app.
+    pub(super) fn asks() -> Vec<String> {
+        door()
+            .opens
+            .iter()
+            .map(|(path, app)| format!("{} {}", path.display(), app.as_deref().unwrap_or("-")))
+            .collect()
+    }
+
+    /// The paths Files asked to open, in order.
+    pub(super) fn opened() -> Vec<PathBuf> {
+        door().opens.iter().map(|(path, _)| path.clone()).collect()
+    }
+
+    /// How many listings Files asked for.
+    pub(super) fn listings() -> usize {
+        door().listings
+    }
+}
+
+/// Make `w` ask [`session_door`] instead of the session.
+pub(super) fn asking_session(w: &FileExplorerWidget) {
+    w.state().open_request = session_door::record_open;
+    w.state().document_candidates = session_door::record_candidates;
+}
+
+/// Wait for the open `w` asked for to be answered and taken in, as its next
+/// pump would: the ask runs off the window's thread.
+pub(super) fn settle_opens(w: &FileExplorerWidget) {
+    tilo_test_env::wait_until("the window to take in the open's answer", || {
+        w.state().take_open_replies()
+    });
+}
+
+#[cfg(test)]
+mod open_with_tests {
+    use super::session_door::{self, asks, listings};
+    use super::*;
+    use crate::model::Entry;
+    use runtime_portal::tools::DocumentApp;
+    use std::path::{Path, PathBuf};
+
+    fn pdf_apps() -> Vec<DocumentApp> {
+        vec![
+            DocumentApp {
+                id: "org.gnome.Evince.desktop".into(),
+                name: "Evince".into(),
+                is_default: true,
+            },
+            DocumentApp {
+                id: "so.tilo.pdf-viewer".into(),
+                name: "PDF Viewer".into(),
+                is_default: false,
+            },
+        ]
     }
 
     fn file_entry(name: &str) -> Entry {
@@ -101,123 +206,59 @@ mod open_with_tests {
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
     }
 
-    /// Each phase installs (or clears) its own thread-local opener and clears it
-    /// again before the next phase.
+    /// Every activated file is handed to the session, whatever its type. The
+    /// explorer must not sort files into "documents" and "everything else" —
+    /// which app owns a `.pdf` or a `.png` is the session's answer, from what
+    /// is installed, and a table here would be wrong the moment anybody
+    /// installs anything.
     #[test]
-    fn activation_hands_files_to_the_host_or_the_desktop_fallback() {
-        activating_a_file_hands_the_path_to_the_host();
-        a_refused_open_is_shown_to_the_user();
-        without_a_host_every_type_falls_back_to_the_desktop_handler();
-    }
-
-    /// Every activated file goes to the host, whatever its type. The
-    /// explorer must not sort files into "documents" and "everything
-    /// else" — which app owns a `.pdf` or a `.png` is the desktop's
-    /// answer, from what is installed, and a table here would be wrong
-    /// the moment anybody installs anything.
-    fn activating_a_file_hands_the_path_to_the_host() {
-        let asked: std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>> = std::rc::Rc::default();
-        let sink = asked.clone();
-        set_document_opener(move |p| {
-            sink.borrow_mut().push(p.to_path_buf());
-            Ok(())
-        });
-
+    fn activation_hands_every_file_to_the_session_to_open() {
+        session_door::start();
         let w = FileExplorerWidget::new();
+        asking_session(&w);
         w.state().entries = ["report.odt", "photo.png", "slides.pdf", "main.rs"]
             .iter()
             .map(|f| file_entry(f))
             .collect();
-        let mut runner = RecRunner::default();
         for i in 0..4 {
-            assert!(
-                w.state().open_entry(i, &mut runner).unwrap(),
-                "entry {i} opens"
-            );
+            assert!(w.state().open_entry(i).unwrap(), "entry {i} opens");
+            settle_opens(&w);
         }
 
         assert_eq!(
-            *asked.borrow(),
+            asks(),
             vec![
-                PathBuf::from("/docs/report.odt"),
-                PathBuf::from("/docs/photo.png"),
-                PathBuf::from("/docs/slides.pdf"),
-                PathBuf::from("/docs/main.rs"),
+                "/docs/report.odt -",
+                "/docs/photo.png -",
+                "/docs/slides.pdf -",
+                "/docs/main.rs -",
             ],
-            "the host is asked for every file, with its own path"
-        );
-        assert!(
-            runner.opened.is_empty(),
-            "and does not go behind the host's back to xdg-open"
+            "every file is handed to the session, with its own path"
         );
         assert_eq!(w.state().status, None, "a successful open reports nothing");
-        clear_document_opener();
     }
 
-    /// A host that cannot open the file says why, and the explorer shows
-    /// it. Activation is never silent.
+    /// A session that cannot open the file says why, and the explorer shows it.
+    /// Activation is never silent.
+    #[test]
     fn a_refused_open_is_shown_to_the_user() {
-        set_document_opener(|_| Err("no installed app opens .zzz files (thing.zzz)".into()));
+        session_door::start();
+        session_door::refuse("no installed app opens .zzz files (thing.zzz)");
         let w = FileExplorerWidget::new();
+        asking_session(&w);
         w.state().entries = vec![file_entry("thing.zzz")];
-        let mut runner = RecRunner::default();
-        assert!(w.state().open_entry(0, &mut runner).unwrap());
+        assert!(w.state().open_entry(0).unwrap());
+        settle_opens(&w);
         let told = w
             .state()
             .notice_line()
             .expect("the refusal is said in a notice");
         assert!(told.contains("thing.zzz"), "must name the file: {told}");
         assert!(told.contains("no installed app"), "and say why: {told}");
-        assert!(runner.opened.is_empty(), "a refusal is not a fallback");
-        clear_document_opener();
-    }
-
-    /// With no host installed — the explorer run outside a Tilo session —
-    /// activation still opens the file, via the desktop's own handler,
-    /// rather than doing nothing.
-    fn without_a_host_every_type_falls_back_to_the_desktop_handler() {
-        clear_document_opener();
-        for f in [
-            "pic.jpg",
-            "movie.mp4",
-            "song.flac",
-            "doc.pdf",
-            "main.rs",
-            "report.odt",
-        ] {
-            let w = FileExplorerWidget::new();
-            w.state().entries = vec![file_entry(f)];
-            let mut runner = RecRunner::default();
-            assert!(
-                w.state().open_entry(0, &mut runner).unwrap(),
-                "{f} should open"
-            );
-            assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
-            assert_eq!(
-                w.state().status,
-                None,
-                "{f}: an open the desktop took reports nothing"
-            );
-        }
-
-        // A desktop that refuses (the shell has no app for it, or the file
-        // was never granted) is shown, not swallowed.
-        let w = FileExplorerWidget::new();
-        w.state().entries = vec![file_entry("thing.zzz")];
-        let mut runner = RecRunner {
-            refusal: Some("No installed app opens .zzz files".into()),
-            ..RecRunner::default()
-        };
-        assert!(w.state().open_entry(0, &mut runner).unwrap());
         assert_eq!(
-            w.state().notice_line().as_deref(),
-            Some(
-                format!(
-                    "{}. No installed app opens .zzz files",
-                    t_args("files-open-failed", &[arg("name", "thing.zzz")])
-                )
-                .as_str()
-            )
+            asks(),
+            vec!["/docs/thing.zzz -"],
+            "a refusal is not retried behind the session's back"
         );
     }
 
@@ -361,73 +402,6 @@ mod open_with_tests {
         );
     }
 
-    /// A host route that records what Files asked of it.
-    struct RecordingRoute {
-        apps: Vec<crate::open_with::OpenWithApp>,
-        calls: std::cell::RefCell<Vec<String>>,
-    }
-
-    impl crate::open_with::OpenWithRoute for RecordingRoute {
-        fn candidates(&self, _path: &Path) -> crate::open_with::OpenWithCandidates {
-            self.calls.borrow_mut().push("candidates".into());
-            crate::open_with::OpenWithCandidates {
-                type_label: ".pdf files".into(),
-                apps: self.apps.clone(),
-            }
-        }
-        fn open_with(&self, path: &Path, app_id: &str) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("open {} {app_id}", path.display()));
-            Ok(())
-        }
-        fn set_default(&self, path: &Path, app_id: &str) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("default {} {app_id}", path.display()));
-            Ok(())
-        }
-    }
-
-    impl RecordingRoute {
-        fn actions(&self) -> Vec<String> {
-            self.calls
-                .borrow()
-                .iter()
-                .filter(|call| *call != "candidates")
-                .cloned()
-                .collect()
-        }
-    }
-
-    struct ClearRoute;
-    impl Drop for ClearRoute {
-        fn drop(&mut self) {
-            crate::open_with::clear_open_with_route();
-            clear_document_opener();
-        }
-    }
-
-    fn pdf_route() -> (Rc<RecordingRoute>, ClearRoute) {
-        let route = Rc::new(RecordingRoute {
-            apps: vec![
-                crate::open_with::OpenWithApp {
-                    id: "org.gnome.Evince.desktop".into(),
-                    name: "Evince".into(),
-                    is_default: true,
-                },
-                crate::open_with::OpenWithApp {
-                    id: "so.tilo.pdf-viewer".into(),
-                    name: "PDF Viewer".into(),
-                    is_default: false,
-                },
-            ],
-            calls: std::cell::RefCell::default(),
-        });
-        crate::open_with::set_open_with_route(route.clone());
-        (route, ClearRoute)
-    }
-
     fn menu_labels(menu: &ContextMenu) -> Vec<String> {
         menu.items()
             .iter()
@@ -435,8 +409,13 @@ mod open_with_tests {
             .collect()
     }
 
+    /// A Files window on `/docs` with a PDF selected, asking the stand-in
+    /// session door and told that [`pdf_apps`] opens its type.
     fn pdf_widget() -> FileExplorerWidget {
+        session_door::start();
+        session_door::listing(pdf_apps());
         let w = FileExplorerWidget::new();
+        asking_session(&w);
         w.state().current_path = PathBuf::from("/docs");
         w.state().entries = vec![file_entry("slides.pdf"), file_entry("notes.txt")];
         w.state().selection.select_only(0);
@@ -445,10 +424,6 @@ mod open_with_tests {
 
     #[test]
     fn open_with_lists_the_default_first_and_opens_exactly_the_chosen_app() {
-        let (route, _clear) = pdf_route();
-        // Choosing an app never goes through activation's opener or the
-        // standalone desktop handler.
-        set_document_opener(|path| panic!("activation opener used for {}", path.display()));
         let mut w = pdf_widget();
         w.state().open_context_menu(Point::new(40.0, 40.0));
         assert!(menu_labels(&w.chrome().context_menu).contains(&"Open with".to_string()));
@@ -464,42 +439,16 @@ mod open_with_tests {
             FileCommand::OpenWith {
                 path: PathBuf::from("/docs/slides.pdf"),
                 app_id: "so.tilo.pdf-viewer".into(),
-                always: false,
             }
         );
         w.state().apply_command(viewer);
-        assert_eq!(
-            route.actions(),
-            vec!["open /docs/slides.pdf so.tilo.pdf-viewer"]
-        );
+        settle_opens(&w);
+        assert_eq!(asks(), vec!["/docs/slides.pdf so.tilo.pdf-viewer"]);
         assert_eq!(w.state().status, None, "a successful open reports nothing");
     }
 
     #[test]
-    fn always_use_makes_the_app_the_default_before_opening() {
-        let (route, _clear) = pdf_route();
-        let w = pdf_widget();
-        w.state().apply_command(FileCommand::OpenWith {
-            path: PathBuf::from("/docs/slides.pdf"),
-            app_id: "so.tilo.pdf-viewer".into(),
-            always: true,
-        });
-        assert_eq!(
-            route.actions(),
-            vec![
-                "default /docs/slides.pdf so.tilo.pdf-viewer",
-                "open /docs/slides.pdf so.tilo.pdf-viewer",
-            ]
-        );
-        assert_eq!(
-            w.state().status.as_deref(),
-            Some("PDF Viewer now opens .pdf files")
-        );
-    }
-
-    #[test]
     fn open_with_is_offered_only_for_one_regular_file() {
-        let (_route, _clear) = pdf_route();
         let w = pdf_widget();
         w.state().entries.push(Entry {
             is_dir: true,
@@ -512,23 +461,30 @@ mod open_with_tests {
         assert_eq!(w.state().open_with_subject(), None, "one file at a time");
     }
 
+    /// A type nothing claims: "Open with" says so, the chooser stays shut, and
+    /// nothing is launched.
     #[test]
-    fn without_a_route_open_with_says_so_and_launches_nothing() {
-        crate::open_with::clear_open_with_route();
+    fn a_type_no_app_opens_says_so_and_opens_nothing() {
         let mut w = pdf_widget();
-        w.state().apply_command(FileCommand::OpenWith {
-            path: PathBuf::from("/docs/slides.pdf"),
-            app_id: "so.tilo.pdf-viewer".into(),
-            always: false,
-        });
-        assert!(
-            w.state()
-                .status
-                .as_deref()
-                .is_some_and(|status| status.contains("slides.pdf")),
-            "{:?}",
-            w.state().status
+        session_door::listing(Vec::new());
+        w.state().invalidate_open_with();
+        w.state().open_open_with_submenu(Point::new(10.0, 10.0));
+        assert_eq!(
+            menu_labels(&w.chrome().submenu),
+            vec!["No application opens this file"]
         );
+        w.state().open_app_chooser();
+        assert_eq!(w.state().status, Some(t("files-open-with-none")));
+        assert!(session_door::opened().is_empty(), "nothing was launched");
+    }
+
+    /// A session that cannot answer the listing leaves Files with no apps to
+    /// offer rather than a guess at which one.
+    #[test]
+    fn a_listing_the_session_cannot_answer_offers_no_apps() {
+        let mut w = pdf_widget();
+        session_door::refuse_listing("the session did not answer");
+        w.state().invalidate_open_with();
         w.state().open_open_with_submenu(Point::new(10.0, 10.0));
         assert_eq!(
             menu_labels(&w.chrome().submenu),
@@ -538,7 +494,6 @@ mod open_with_tests {
 
     #[test]
     fn open_with_is_a_typed_action_on_file_resources() {
-        let (route, _clear) = pdf_route();
         let mut w = pdf_widget();
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
@@ -563,7 +518,6 @@ mod open_with_tests {
 
         let mut args = serde_json::Map::new();
         args.insert("app".into(), "so.tilo.pdf-viewer".into());
-        args.insert("always".into(), true.into());
         let encoded = spec.build_json(&args).unwrap();
         assert!(matches!(
             crate::files_app::published::start(
@@ -577,13 +531,8 @@ mod open_with_tests {
             .unwrap(),
             Some(ui::framework::Effected::Done(_))
         ));
-        assert_eq!(
-            route.actions(),
-            vec![
-                "default /docs/slides.pdf so.tilo.pdf-viewer",
-                "open /docs/slides.pdf so.tilo.pdf-viewer",
-            ]
-        );
+        settle_opens(&w);
+        assert_eq!(asks(), vec!["/docs/slides.pdf so.tilo.pdf-viewer"]);
         let folder = crate::search_provider::entry_resource_id(Path::new("/docs/notes.txt"));
         assert!(
             ui::tilo_actions::door::spec_of(&resources, &folder, "open-with:so.tilo.pdf-viewer")
@@ -593,8 +542,7 @@ mod open_with_tests {
     }
 
     #[test]
-    fn other_application_searches_every_app_to_open_once_or_always() {
-        let (route, _clear) = pdf_route();
+    fn other_application_searches_every_app_to_open_once() {
         let mut w = pdf_widget();
         w.state().apply_command(FileCommand::OpenWithOther);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
@@ -611,9 +559,7 @@ mod open_with_tests {
         let rows: Vec<String> = ui::tilo_actions::flatten(&resources)
             .into_iter()
             .filter(|row| {
-                row.resource_id.0 == entry_id
-                    && (row.action.id.starts_with("open-with-app:")
-                        || row.action.id.starts_with("always-open-with:"))
+                row.resource_id.0 == entry_id && row.action.id.starts_with("open-with-app:")
             })
             .map(|row| row.action.label.clone())
             .collect();
@@ -621,9 +567,7 @@ mod open_with_tests {
             rows,
             vec![
                 "Open with Evince (default)".to_string(),
-                "Always open .pdf files with Evince (default)".to_string(),
                 "Open with PDF Viewer".to_string(),
-                "Always open .pdf files with PDF Viewer".to_string(),
             ]
         );
         // Picking a row resolves through the published resource, exactly as
@@ -632,7 +576,7 @@ mod open_with_tests {
         let spec = ui::tilo_actions::door::spec_of(
             &resources,
             &entry_id,
-            "always-open-with:org.gnome.Evince.desktop",
+            "open-with-app:org.gnome.Evince.desktop",
         )
         .expect("the chooser's rows are real actions");
         let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
@@ -645,29 +589,21 @@ mod open_with_tests {
             &automerge::ROOT,
         )
         .unwrap();
-        assert_eq!(
-            route.actions(),
-            vec![
-                "default /docs/slides.pdf org.gnome.Evince.desktop",
-                "open /docs/slides.pdf org.gnome.Evince.desktop",
-            ]
-        );
+        settle_opens(&w);
+        assert_eq!(asks(), vec!["/docs/slides.pdf org.gnome.Evince.desktop"]);
     }
 
     #[test]
     fn candidates_are_asked_once_per_type_per_listing() {
-        let (route, _clear) = pdf_route();
         let w = pdf_widget();
         let doc = automerge::AutoCommit::new();
         let _ = crate::files_app::published::tree(&w, &doc);
         let _ = crate::files_app::published::tree(&w, &doc);
-        let asked = route
-            .calls
-            .borrow()
-            .iter()
-            .filter(|call| *call == "candidates")
-            .count();
-        assert_eq!(asked, 2, "one ask for .pdf and one for .txt, then cached");
+        assert_eq!(
+            listings(),
+            2,
+            "one ask for .pdf and one for .txt, then cached"
+        );
     }
 
     fn displayed_names(w: &FileExplorerWidget) -> Vec<String> {
@@ -685,20 +621,24 @@ mod open_with_tests {
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(folder.path().join(name), name).unwrap();
         }
-        set_document_opener(|_| Ok(()));
-        let _clear = ClearRoute;
+        session_door::start();
         let w = FileExplorerWidget::with_persistence(Some(config.path()), None);
+        asking_session(&w);
         w.state().navigate(folder.path().to_path_buf());
         assert_eq!(displayed_names(&w), vec!["a.txt", "b.txt", "c.txt"]);
-        let mut runner = RecRunner::default();
         for name in ["b.txt", "a.txt", "c.txt", "a.txt"] {
             let index = displayed_names(&w)
                 .iter()
                 .position(|candidate| candidate == name)
                 .unwrap();
-            assert!(w.state().open_entry(index, &mut runner).unwrap());
+            assert!(w.state().open_entry(index).unwrap());
+            settle_opens(&w);
         }
-        assert!(runner.opened.is_empty(), "the host opened every file");
+        assert_eq!(
+            session_door::opened().len(),
+            4,
+            "the session opened every file"
+        );
 
         w.state()
             .apply_command(FileCommand::Navigate(crate::recent::location()));
@@ -832,164 +772,6 @@ mod open_with_tests {
                 .collect::<Vec<_>>(),
             vec!["final.txt"]
         );
-    }
-    mod retained_open_with_tests {
-        use super::*;
-        use ui::collaboration::{CollabEvent, CollabRequest, open_selected};
-
-        fn discovered_files() -> FileExplorerWidget {
-            crate::open_with::clear_open_with_route();
-            let files = FileExplorerWidget::new();
-            files.state().current_path = PathBuf::from("/run/tilo/retained-home/Documents");
-            let mut entry = file_entry("report.md");
-            entry.path = files.state().current_path.join("report.md");
-            files.state().entries = vec![entry];
-            files.state().dispatcher = Some(ui::framework::testing::dispatcher::<
-                crate::resource::FileExplorer,
-            >("so.tilo.file-explorer"));
-            assert!(
-                {
-                    let state = files.state();
-                    state.open_with_candidates(&state.entries[0].path)
-                }
-                .apps
-                .is_empty()
-            );
-            let CollabRequest::SelectedDiscovery {
-                request_id,
-                command,
-                on_behalf_of,
-            } = files
-                .state()
-                .selected_open
-                .discovery
-                .take_request()
-                .unwrap()
-            else {
-                panic!("the actual Files discovery request is required");
-            };
-            assert!(on_behalf_of.is_none());
-            let reply = open_selected::discovery::Reply {
-                schema: 1,
-                request_id: command.request_id,
-                components: command.components,
-                type_label: "Markdown document".into(),
-                source_operation: Some(uuid::Uuid::new_v4().to_string()),
-                targets: vec![open_selected::discovery::Target {
-                    app_id: "so.tilo.word-processor".into(),
-                    package_sha256: "a".repeat(64),
-                    name: "Writer".into(),
-                    is_default: true,
-                    access: open_selected::v2::SelectedAccess::EditInParent,
-                }],
-            };
-            assert!(files.state().selected_open.discovery.event(
-                &CollabEvent::SelectedDiscoveryResult {
-                    request_id,
-                    result: Ok(reply)
-                }
-            ));
-            files
-        }
-
-        #[test]
-        fn retained_open_with_publishes_explicit_edit_and_defaults_to_read() {
-            let files = discovered_files();
-            let doc = automerge::AutoCommit::new();
-            let resource = FilesState::entry_resource_id(&files.state().entries[0]);
-            let resources = crate::files_app::published::tree(&files, &doc);
-            let spec = ui::tilo_actions::door::spec_of(&resources, &resource, "open-with").unwrap();
-            let access = spec
-                .params()
-                .iter()
-                .find(|param| param.name == "access")
-                .unwrap();
-            assert_eq!(
-                access
-                    .choices
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>(),
-                vec!["read-only", "edit-in-parent"]
-            );
-            assert_eq!(access.schema.as_ref().unwrap()["default"], "read-only");
-            let mut args =
-                serde_json::Map::from_iter([("app".into(), "so.tilo.word-processor".into())]);
-            let encoded = spec.build_json(&args).unwrap();
-            assert!(
-                matches!(crate::effects::FilesEffect::from_payload(&encoded.payload).unwrap(), crate::effects::FilesEffect::OpenWith { access: Some(access), .. } if access == "read-only")
-            );
-            args.insert("access".into(), "edit-in-parent".into());
-            args.insert("always".into(), false.into());
-            let encoded = spec.build_json(&args).unwrap();
-            let effect = crate::effects::FilesEffect::from_payload(&encoded.payload).unwrap();
-            assert!(
-                matches!(&effect, crate::effects::FilesEffect::OpenWith { access: Some(access), .. } if access == "edit-in-parent")
-            );
-            let invocation = ui::tilo_actions::InvocationId(uuid::Uuid::new_v4());
-            assert!(matches!(
-                files
-                    .state()
-                    .run_effect_for(effect, Some(invocation))
-                    .unwrap(),
-                Ran::Pending
-            ));
-            let CollabRequest::SelectedDiscovery {
-                command,
-                on_behalf_of,
-                ..
-            } = files
-                .state()
-                .selected_open
-                .discovery
-                .take_request()
-                .unwrap()
-            else {
-                panic!("Edit must renew the original action's discovery scope");
-            };
-            assert_eq!(on_behalf_of, Some(invocation));
-            let scope = command.invocation.unwrap();
-            assert_eq!(scope.resource, resource);
-            assert_eq!(scope.app_id, "so.tilo.word-processor");
-            assert_eq!(
-                scope.access,
-                open_selected::v2::SelectedAccess::EditInParent
-            );
-            assert!(
-                files.state().selected_open.take_request().is_none(),
-                "presentation never grants file descriptors or launches an editor"
-            );
-        }
-
-        #[test]
-        fn retained_edit_without_original_invocation_never_falls_back_to_path_launch() {
-            let files = discovered_files();
-            let resource = FilesState::entry_resource_id(&files.state().entries[0]);
-            let error = files
-                .state()
-                .run_effect_for(
-                    crate::effects::FilesEffect::OpenWith {
-                        entry: resource,
-                        app: "so.tilo.word-processor".into(),
-                        always: Some(false),
-                        access: Some("edit-in-parent".into()),
-                    },
-                    None,
-                )
-                .err()
-                .expect("an original semantic action is mandatory");
-            assert_eq!(error, t("files-open-with-action-unavailable"));
-            assert!(files.state().selected_open.take_request().is_none());
-            assert!(
-                files
-                    .state()
-                    .selected_open
-                    .discovery
-                    .take_request()
-                    .is_none()
-            );
-            assert!(!files.state().selected_open.is_pending());
-        }
     }
 }
 
@@ -5198,17 +4980,18 @@ mod command_path_tests {
             .iter()
             .position(|entry| entry.name == "Photos")
             .unwrap();
-        files.state().open_entry(photos, &mut SystemRunner).unwrap();
+        session_door::start();
+        asking_session(&files);
+        files.state().open_entry(photos).unwrap();
         assert_eq!(files.state().entries_snapshot().len(), 1);
         assert_eq!(files.state().entries_snapshot()[0].name, "one.jpg");
-        // A file inside opens as a copy read off the window's thread.
-        files.state().open_queue.clear();
-        assert!(files.state().open_entry(0, &mut SystemRunner).unwrap());
+        // A file inside opens as a copy read off the window's thread, which
+        // the session is then asked to open.
+        assert!(files.state().open_entry(0).unwrap());
         files.state().wait_for_archive_members();
-        let copy = files
-            .state()
-            .open_queue
-            .pop_front()
+        settle_opens(&files);
+        let copy = session_door::opened()
+            .pop()
             .expect("the member's copy is opened");
         assert_eq!(std::fs::read(&copy).unwrap(), b"one");
 
@@ -5566,13 +5349,6 @@ mod injected_startup_tests {
     use super::*;
     use crate::model::fixture_io_guard::{DenyAmbientIo, OwnedListings};
 
-    struct ClearOpener;
-    impl Drop for ClearOpener {
-        fn drop(&mut self) {
-            clear_document_opener();
-        }
-    }
-
     fn startup(path: &Path) -> StartupInputs {
         StartupInputs {
             initial_dir: path.to_path_buf(),
@@ -5586,14 +5362,8 @@ mod injected_startup_tests {
     fn absent_services() -> HostedFileServices {
         HostedFileServices {
             thumbnails: None,
-            document_opener: DocumentOpenRoute::Unavailable,
-            open_with: None,
             local_clipboard: false,
         }
-    }
-
-    fn deferred_services() -> HostedFileServices {
-        HostedFileServices::deferred_document_open()
     }
 
     fn owned_child(parent: &Path) -> PathBuf {
@@ -5665,7 +5435,7 @@ mod injected_startup_tests {
     #[test]
     fn injected_startup_uses_only_explicit_host_inputs_and_services() {
         injected_startup_and_reload_keep_the_host_directory_and_catalogs();
-        injected_services_absence_never_builds_thumbnails_or_uses_global_opener();
+        injected_services_absence_never_builds_thumbnails_or_reaches_past_the_session();
         injected_listing_and_refresh_use_only_explicit_workspace_roots();
         fixture_io_guards_stop_before_following_io();
     }
@@ -5716,113 +5486,27 @@ mod injected_startup_tests {
         );
     }
 
-    fn injected_services_absence_never_builds_thumbnails_or_uses_global_opener() {
+    /// Without hosted services a window builds no thumbnails and reaches only
+    /// the session's document door: activation asks it, and nothing else.
+    fn injected_services_absence_never_builds_thumbnails_or_reaches_past_the_session() {
         let parent = tempfile::tempdir().unwrap();
         let child = owned_child(parent.path());
         let guard = DenyAmbientIo::new();
         let listings = OwnedListings::new(&child);
-        let calls = Rc::new(Cell::new(0));
-        set_document_opener({
-            let calls = calls.clone();
-            move |_| {
-                calls.set(calls.get() + 1);
-                Err("test TLS opener must remain unused".into())
-            }
-        });
-        let _clear = ClearOpener;
         let widget = FileExplorerWidget::with_startup_inputs_and_services(
             startup(&child),
             absent_services(),
         );
+        session_door::start();
+        asking_session(&widget);
         assert!(widget.state().thumbs.is_none());
         crate::command::push(&widget.state().cmds, FileCommand::Activate(0));
         assert!(widget.state().drain_commands());
-        let told = widget.state().notice_line().expect("a failed open is said");
-        assert!(told.contains(&t("files-open-unavailable")), "{told}");
-        assert_eq!(calls.get(), 0);
+        settle_opens(&widget);
+        assert_eq!(session_door::opened(), vec![child.join("Welcome.txt")]);
+        assert_eq!(widget.state().notice_line(), None);
         assert_eq!(guard.attempts(), 0);
         assert_eq!(listings.observations(), vec![(child, false)]);
-    }
-
-    #[test]
-    fn deferred_document_open_reports_the_shell_refusal_on_the_next_sync() {
-        let parent = tempfile::tempdir().unwrap();
-        let child = owned_child(parent.path());
-        let mut widget = FileExplorerWidget::with_startup_inputs_and_services(
-            startup(&child),
-            deferred_services(),
-        );
-        // Nearby Send asks nothing until the shell announces a change, so it
-        // sets no deadline; nothing may be due yet.
-        assert!(
-            Widget::next_wake_deadline(&widget).is_none_or(|deadline| deadline > ui::time::now()),
-            "the completed-reply branch, rather than Nearby Send, must supply the immediate wake"
-        );
-        widget
-            .state()
-            .request_deferred_document_open(
-                child.join("Welcome.txt"),
-                ui::widget::DocumentOpenCapability::issue(),
-            )
-            .unwrap();
-        let Some(ui::widget::AppHostIntent::OpenDocument { token, reply, .. }) =
-            widget.state().take_host_intent()
-        else {
-            panic!("deferred route must hand the path to its shell host");
-        };
-        let reply = reply.upgrade().expect("widget retains its pending reply");
-        reply
-            .borrow_mut()
-            .complete(token.wrapping_add(1), Err("stale reply".into()));
-        assert!(
-            reply.borrow().is_pending(token),
-            "a stale shell completion must not replace this request"
-        );
-        reply
-            .borrow_mut()
-            .complete(token, Err("document storage unavailable".into()));
-        assert!(
-            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= ui::time::now()),
-            "a shell reply after draw must schedule the one follow-up Files sync"
-        );
-        let document = automerge::AutoCommit::new();
-        Widget::sync(&mut widget, &document, &automerge::ROOT);
-        let told = widget
-            .state()
-            .notice_line()
-            .expect("the shell's refusal is said");
-        assert!(
-            told.starts_with(&t_args("files-open-failed", &[arg("name", "Welcome.txt")])),
-            "{told}"
-        );
-        assert!(told.contains("document storage unavailable"), "{told}");
-        assert!(widget.state().pending_document_open.is_none());
-    }
-
-    #[test]
-    fn dropped_deferred_document_request_cannot_be_admitted() {
-        let parent = tempfile::tempdir().unwrap();
-        let child = owned_child(parent.path());
-        let reply = {
-            let widget = FileExplorerWidget::with_startup_inputs_and_services(
-                startup(&child),
-                deferred_services(),
-            );
-            widget
-                .state()
-                .request_deferred_document_open(
-                    child.join("Welcome.txt"),
-                    ui::widget::DocumentOpenCapability::issue(),
-                )
-                .unwrap();
-            let Some(ui::widget::AppHostIntent::OpenDocument { reply, .. }) =
-                widget.state().take_host_intent()
-            else {
-                panic!("deferred route must have an owner-bound reply");
-            };
-            reply
-        };
-        assert!(reply.upgrade().is_none());
     }
 
     fn injected_listing_and_refresh_use_only_explicit_workspace_roots() {
@@ -5880,23 +5564,12 @@ mod injected_startup_tests {
 }
 
 fn headless_f2_renames_fixture_without_opening_a_file() {
-    struct RestoreOpener;
-    impl Drop for RestoreOpener {
-        fn drop(&mut self) {
-            clear_document_opener();
-        }
-    }
-    let _restore = RestoreOpener;
-    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let sink = opened.clone();
-    set_document_opener(move |path| {
-        sink.borrow_mut().push(path.to_path_buf());
-        Err("unexpected external open during rename regression".into())
-    });
     let directory = tempfile::tempdir().unwrap();
     let original = directory.path().join("report.txt");
     std::fs::write(&original, b"preserved bytes").unwrap();
     let widget = FileExplorerWidget::with_persistence(None, None);
+    asking_session(&widget);
+    session_door::start();
     widget.state().navigate(directory.path().to_path_buf());
     let mut driver =
         ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
@@ -5913,7 +5586,7 @@ fn headless_f2_renames_fixture_without_opening_a_file() {
         driver.type_text(name);
         driver.key("Enter");
         assert!(
-            opened.borrow().is_empty(),
+            session_door::opened().is_empty(),
             "F2 must enter rename before Enter is sent"
         );
         let destination = directory.path().join(name);
@@ -6100,16 +5773,20 @@ mod sort_selection_tests {
             shift: false,
         });
         assert!(!files.state().selection.is_selected(2));
+        // The anchor stays where the choice began (a, now at the top), while the cursor
+        // is the row the Ctrl-click just took out of the choice (b, now second).
         files.state().toggle_sort_order();
         assert_eq!(files.state().selection.selected(), vec![0]);
-        assert_eq!(files.state().selection.anchor(), Some(1));
+        assert_eq!(files.state().selection.anchor(), Some(0));
         assert_eq!(files.state().selection.primary(), Some(1));
+        // Shift extends from the choice's beginning, so the row the cursor rests on and
+        // everything between come back in rather than a range from it replacing the choice.
         files.state().apply_command(FileCommand::Click {
             index: 3,
             ctrl: false,
             shift: true,
         });
-        assert_eq!(files.state().selection.selected(), vec![1, 2, 3]);
+        assert_eq!(files.state().selection.selected(), vec![0, 1, 2, 3]);
     }
 
     #[test]
@@ -6595,8 +6272,6 @@ fn hosted_window(home: &Path) -> FileExplorerWidget {
         },
         HostedFileServices {
             thumbnails: None,
-            document_opener: DocumentOpenRoute::Unavailable,
-            open_with: None,
             local_clipboard: false,
         },
     )

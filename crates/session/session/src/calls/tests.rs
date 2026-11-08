@@ -38,16 +38,14 @@ const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 const CHANNEL: &str = "c_standup";
 const APP: &str = "so.tilo.chat";
 const RECORD: &str = "chat";
-/// What the tone's playout reads as heard, against the silence a call
-/// plays while nobody speaks.
+/// What the tone's playout reads as heard, against the silence a call plays while nobody speaks.
 const HEARD: f32 = 0.02;
 
 fn public(seed: u8) -> EndpointId {
     iroh::SecretKey::from_bytes(&[seed; 32]).public()
 }
 
-/// The person a device is a device of, in the hex everyone here knows
-/// them by.
+/// The person a device is a device of, in the hex everyone here knows them by.
 fn person(seed: u8) -> String {
     hex::encode(
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
@@ -107,8 +105,8 @@ fn private_home() -> tempfile::TempDir {
     root
 }
 
-/// One of the person's devices, on its own loopback endpoint, taking part
-/// in the collaboration plane as its certified self.
+/// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
+/// plane as its certified self.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let mut cert = tilo_user_identity::DeviceCert {
@@ -143,8 +141,8 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
     .expect("a loopback endpoint binds")
 }
 
-/// The workspace as this device knows its governance: both of a call's
-/// devices may read its channels.
+/// The workspace as this device knows its governance: both of a call's devices may read its
+/// channels.
 struct Directory {
     admitted: std::collections::BTreeSet<Ed25519PublicKey>,
 }
@@ -169,9 +167,9 @@ impl ChannelDirectory for Directory {
     }
 }
 
-/// One channel's keys, as the device `device` of the workspace whose vault
-/// key is `vault` runs holds them: the same service every device runs, with
-/// the channel's keys still on their way until someone founds them.
+/// One channel's keys, as the device `device` of the workspace whose vault key is `vault` runs
+/// holds them: the same service every device runs, with the channel's keys still on their way until
+/// someone founds them.
 fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
     let directory = tempfile::tempdir().expect("a directory to keep channel state in");
     let broker = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -197,9 +195,9 @@ fn call_channel() -> collab_types::ChannelId {
     collab_types::document_channel_id(APP, WORKSPACE, RECORD)
 }
 
-/// Found the call's channel, as the pass a session runs does: the first
-/// device that takes part creates the group once its wait is due, and the
-/// test's workspace has no other participant to ask.
+/// Found the call's channel, as the pass a session runs does: the first device that takes part
+/// creates the group once its wait is due, and the test's workspace has no other participant to
+/// ask.
 #[allow(
     clippy::future_not_send,
     reason = "the channel service is driven from the test's own thread, and the test runtime does not need it to be Send"
@@ -234,8 +232,7 @@ async fn founded(keys: &ChannelKeyProvider) {
     }
 }
 
-/// A session taking part in the workspace through `sync`, showing the
-/// desk.
+/// A session taking part in the workspace through `sync` , showing the desk.
 fn session(sync: &std::rc::Rc<Client>, socket: &std::path::Path) -> Session {
     let session = Session::headless(
         Options {
@@ -335,8 +332,7 @@ fn availability(client: &Client, from: u8, call: Option<String>) {
     );
 }
 
-/// `from` is in the call `call` names, with their camera and screen as
-/// `camera` and `screen` say.
+/// `from` is in the call `call` names, with their camera and screen as `camera` and `screen` say.
 fn availability_showing(client: &Client, from: u8, call: String, camera: bool, screen: bool) {
     presence(
         client,
@@ -359,8 +355,8 @@ fn call_presence() -> String {
     .encode()
 }
 
-/// What a call's playout reads over `over` here: the tone's energy, or
-/// the silence a call plays while nobody speaks.
+/// What a call's playout reads over `over` here: the tone's energy, or the silence a call plays
+/// while nobody speaks.
 async fn level(probe: &Arc<Mutex<Vec<f32>>>, over: Duration) -> f32 {
     if let Ok(mut played) = probe.lock() {
         played.clear();
@@ -375,8 +371,7 @@ async fn level(probe: &Arc<Mutex<Vec<f32>>>, over: Duration) -> f32 {
     (energy / samples).sqrt()
 }
 
-/// The instant `bound` from now: the moment a sound a person made has to
-/// be heard by.
+/// The instant `bound` from now: the moment a sound a person made has to be heard by.
 fn within(bound: Duration) -> Instant {
     Instant::now()
         .checked_add(bound)
@@ -384,10 +379,8 @@ fn within(bound: Duration) -> Instant {
 }
 
 /// Wait until this side of the call does, or does not, hear the tone.
-///
-/// What it waits for is the call's own audio: moved by the call's worker
-/// on its own thread, between two sessions' devices, so the bound is the
-/// suite's, not a second count.
+/// What it waits for is the call's own audio: moved by the call's worker on its own thread, between
+/// two sessions' devices, so the bound is the suite's, not a second count.
 #[allow(
     clippy::future_not_send,
     reason = "a session's client is not Send, and the test runtime does not need it to be"
@@ -396,9 +389,9 @@ async fn wait_heard(what: &str, probe: &Arc<Mutex<Vec<f32>>>, heard: bool) {
     wait_heard_by(what, probe, heard, tilo_test_env::hang_deadline()).await;
 }
 
-/// As [`wait_heard`], by the instant `deadline`: the audio a person
-/// unmuting is heard again is theirs at once, not after a bound long
-/// enough for a stream that started over to catch up with where it was.
+/// As [`wait_heard`], by the instant `deadline` : the audio a person unmuting is heard again is
+/// theirs at once, not after a bound long enough for a stream that started over to catch up with
+/// where it was.
 #[allow(
     clippy::future_not_send,
     reason = "a session's client is not Send, and the test runtime does not need it to be"
@@ -413,25 +406,24 @@ async fn wait_heard_by(what: &str, probe: &Arc<Mutex<Vec<f32>>>, heard: bool, de
     }
 }
 
-/// A session that carries its calls: the endpoint it binds, the channel
-/// keys, and the workspace's admitted devices.
+/// A session that carries its calls: the endpoint it binds, the channel keys, and the workspace's
+/// admitted devices.
 struct Carrier {
     calls: Arc<Calls>,
     factory: Factory,
     probe: Arc<Mutex<Vec<f32>>>,
-    /// What carries the workspace's plane's objects to the calls, while a
-    /// plane is attached.
+    /// What carries the workspace's plane's objects to the calls, while a plane is attached.
     _heard: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// Wait until `client`'s endpoint has bound: a call runs on it.
+/// Wait until `client` 's endpoint has bound: a call runs on it.
 #[allow(
     clippy::future_not_send,
     reason = "a session's client is not Send, and the test runtime does not need it to be"
 )]
 async fn bound(client: &Client) {
-    // The endpoint binds on its own task and over the network, so the
-    // bound is the suite's, not a second count.
+    // The endpoint binds on its own task and over the network, so the bound is the suite's, not a
+    // second count.
     let deadline = tilo_test_env::hang_deadline();
     while client.endpoint().is_none() {
         assert!(Instant::now() < deadline, "the session's endpoint binds");
@@ -455,8 +447,7 @@ fn relay() -> Arc<Relay> {
     Arc::new(Relay::new(Arc::new(Nobody)))
 }
 
-/// The workspace scope's content keys, as its own channel hands them to
-/// its members.
+/// The workspace scope's content keys, as its own channel hands them to its members.
 fn workspace_keys() -> channel_crypto::ChannelContentKeys {
     let channel = Scope::workspace(WORKSPACE.to_owned()).channel_id();
     ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
@@ -465,8 +456,7 @@ fn workspace_keys() -> channel_crypto::ChannelContentKeys {
         .expect("the workspace's keys")
 }
 
-/// `device`'s plane in the test workspace, on `relay`, hearing and heard
-/// by `devices`.
+/// `device` 's plane in the test workspace, on `relay` , hearing and heard by `devices` .
 fn plane(
     relay: &Relay,
     device: [u8; 32],
@@ -504,8 +494,8 @@ fn carrier(client: &Client, keys: &ChannelKeyProvider, heard_on: Option<Arc<Plan
         camera: pictures::Camera::TestPattern,
         played: Some(Arc::clone(&probe)),
     });
-    // What the session's own pass does with a plane's objects: hand them
-    // to the calls playing that workspace, voice and pictures alike.
+    // What the session's own pass does with a plane's objects: hand them to the calls playing that
+    // workspace, voice and pictures alike.
     let draining = heard_on.map(|plane| {
         calls
             .planes
@@ -529,8 +519,8 @@ fn carrier(client: &Client, keys: &ChannelKeyProvider, heard_on: Option<Arc<Plan
     }
 }
 
-/// Two of one person's devices in one call, each hearing the other's
-/// tone: the devices' sides of it.
+/// Two of one person's devices in one call, each hearing the other's tone: the devices' sides of
+/// it.
 struct Pair {
     left: Carrier,
     right: Carrier,
@@ -560,8 +550,8 @@ async fn one_call(laptop: &Client, desk: &Client) -> Pair {
     bound(desk).await;
     let (keys, kept) = keys(0x11, 0x11, &[0x11, 0x22]);
     founded(&keys).await;
-    // Voice runs on the workspace's plane: both devices publish and hear
-    // on their own plane in one scope, as they do in a workspace's relay.
+    // Voice runs on the workspace's plane: both devices publish and hear on their own plane in one
+    // scope, as they do in a workspace's relay.
     let relay = relay();
     let workspace = workspace_keys();
     let devices = [*public(0x11).as_bytes(), *public(0x22).as_bytes()];
@@ -598,9 +588,8 @@ async fn one_call(laptop: &Client, desk: &Client) -> Pair {
     }
 }
 
-/// One device of a call leaves it and comes back: the device that stayed
-/// hears it again within a second of its return, and it hears the one
-/// that stayed.
+/// One device of a call leaves it and comes back: the device that stayed hears it again within a
+/// second of its return, and it hears the one that stayed.
 #[allow(
     clippy::future_not_send,
     reason = "a session's client is not Send, and the test runtime does not need it to be"
@@ -616,9 +605,8 @@ async fn leaves_and_rejoins() {
         ..
     } = one_call(&laptop, &desk).await;
     let (leaving, staying, rejoining) = (&mut here, &right, &left);
-    // Heard for a while, the device owns a place in the playout of the
-    // one that stays, well past the start of a stream: a stream that
-    // starts over would take that long to be heard again.
+    // Heard for a while, the device owns a place in the playout of the one that stays, well past
+    // the start of a stream: a stream that starts over would take that long to be heard again.
     tokio::time::sleep(Duration::from_millis(2000)).await;
     wait_heard("the device is heard before it leaves", &staying.probe, true).await;
     // Left, this device is heard by no one, and the call lets it go.
@@ -634,9 +622,8 @@ async fn leaves_and_rejoins() {
         false,
     )
     .await;
-    // Back in the call, it is heard again at once: its stream starts at
-    // the place its own playhead gives it, not behind where the device
-    // that stayed was already playing the stream it lost.
+    // Back in the call, it is heard again at once: its stream starts at the place its own playhead
+    // gives it, not behind where the device that stayed was already playing the stream it lost.
     let mut back = rejoining
         .factory
         .prepare(target())
@@ -689,10 +676,9 @@ async fn two_devices_in_one_call_hear_each_other_until_a_mute_a_deafen_or_a_leav
         "a call with the channel's keys is live"
     );
 
-    // The tone has been heard this long before this device is muted: a
-    // stream that starts over when it unmutes is behind by every frame
-    // it spoke here, which is seconds of silence, not the instant a
-    // stream that keeps its place is heard at once.
+    // The tone has been heard this long before this device is muted: a stream that starts over when
+    // it unmutes is behind by every frame it spoke here, which is seconds of silence, not the
+    // instant a stream that keeps its place is heard at once.
     assert!(
         level(&left.probe, Duration::from_secs(6)).await > HEARD,
         "the tone speaks until this device mutes"
@@ -703,8 +689,8 @@ async fn two_devices_in_one_call_hear_each_other_until_a_mute_a_deafen_or_a_leav
     wait_heard("a muted device is not heard", &right.probe, false).await;
     wait_heard("a muted device still hears", &left.probe, true).await;
 
-    // Unmuted, this device is heard again at once, and deafened it hears
-    // nothing while the call plays on.
+    // Unmuted, this device is heard again at once, and deafened it hears nothing while the call
+    // plays on.
     here.start_capture("tone").expect("the test's tone");
     wait_heard_by(
         "unmuting is heard again",
@@ -730,9 +716,8 @@ async fn two_devices_in_one_call_hear_each_other_until_a_mute_a_deafen_or_a_leav
     there.close();
 }
 
-/// Ana's `source` as `there` receives it, until `wanted` pictures came:
-/// every one the Low layer of her stream for it, returning what they
-/// cost, the largest among them, and how long they took.
+/// Ana's `source` as `there` receives it, until `wanted` pictures came: every one the Low layer of
+/// her stream for it, returning what they cost, the largest among them, and how long they took.
 #[allow(
     clippy::future_not_send,
     reason = "a session's call is not Send, and the test runtime does not need it to be"
@@ -789,9 +774,9 @@ async fn receive_pictures(
     )
 }
 
-/// Ana's camera, shown by Ben's app in a filmstrip tile: the call encodes
-/// the layer he shows and nothing else, so what arrives is the size of
-/// that layer and its bitrate, not the camera's 720p source.
+/// Ana's camera, shown by Ben's app in a filmstrip tile: the call encodes the layer he shows and
+/// nothing else, so what arrives is the size of that layer and its bitrate, not the camera's 720p
+/// source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     let root = person_key();
@@ -849,8 +834,8 @@ async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     here.set_camera(true).expect("Ana's camera");
 
     let mut cursor = 0;
-    // One layer's bitrate, not a 720p source's: what arrived over the
-    // time it took fits the layer's budget, keyframes and all.
+    // One layer's bitrate, not a 720p source's: what arrived over the time it took fits the layer's
+    // budget, keyframes and all.
     let (bytes, biggest, elapsed) = receive_pictures(
         &mut there,
         &mut cursor,
@@ -892,8 +877,8 @@ async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     there.close();
 }
 
-/// Draw the desk into `share` as the session's pass does, until the test
-/// stops it: the call takes each frame the share holds and sends it.
+/// Draw the desk into `share` as the session's pass does, until the test stops it: the call takes
+/// each frame the share holds and sends it.
 fn drawing(share: &'static Arc<ScreenShare>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -909,9 +894,8 @@ fn drawing(share: &'static Arc<ScreenShare>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// Ana's shared desktop reaches Ben's device over the plane at the layer
-/// his app shows, and a locked desktop sends nothing at all until it is
-/// unlocked.
+/// Ana's shared desktop reaches Ben's device over the plane at the layer his app shows, and a
+/// locked desktop sends nothing at all until it is unlocked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
     let root = person_key();
@@ -980,8 +964,8 @@ async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
     );
     feeding.abort();
 
-    // Locked, the desktop draws nothing and sends nothing: not the frame
-    // the share held, and none after it.
+    // Locked, the desktop draws nothing and sends nothing: not the frame the share held, and none
+    // after it.
     hand_screen(share, true, || panic!("a locked desktop is not drawn"));
     tokio::time::sleep(Duration::from_millis(300)).await;
     // Whatever was in flight is taken and dropped: nothing follows it.
@@ -1013,8 +997,8 @@ async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
     there.close();
 }
 
-/// A locked desktop's share stops at once: the frame the pass drew before
-/// the lock is never handed on, and a locked pass draws nothing new.
+/// A locked desktop's share stops at once: the frame the pass drew before the lock is never handed
+/// on, and a locked pass draws nothing new.
 #[test]
 fn a_locked_screen_stops_the_share_at_once() {
     let share = ScreenShare::new();
@@ -1039,8 +1023,8 @@ fn a_locked_screen_stops_the_share_at_once() {
     assert!(share.take().is_some(), "the frame the pass just drew");
     hand_screen(&share, false, drawn);
     assert!(share.take().is_some(), "a frame worth drawing arrives");
-    // The screen locks: the frame the pass drew last is forgotten, and a
-    // locked pass hands on nothing.
+    // The screen locks: the frame the pass drew last is forgotten, and a locked pass hands on
+    // nothing.
     hand_screen(&share, true, || panic!("a locked desktop is not drawn"));
     assert!(share.withheld(), "the share withholds what it held");
     assert!(
@@ -1059,8 +1043,8 @@ fn a_locked_screen_stops_the_share_at_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_joins_while_the_channels_keys_are_still_on_their_way() {
     let person = person_key();
-    // This desk's device is not the one its workspace is governed by, and
-    // its channel's keys have not reached it yet.
+    // This desk's device is not the one its workspace is governed by, and its channel's keys have
+    // not reached it yet.
     let laptop = device(&person, 0x22, "Laptop");
     let desk = device(&person, 0x11, "Desk");
     laptop.connect(desk.endpoint_addr());
@@ -1110,9 +1094,9 @@ async fn a_session_that_cannot_carry_a_call_ends_it_and_says_why() {
         .expect("the desk hands its apps a media service")
         .clone();
 
-    // Chat joins a voice channel through that service, as its people's
-    // call action does. This session carries no transport, so the call
-    // cannot be carried: it says so rather than pretending to be live.
+    // Chat joins a voice channel through that service, as its people's call action does. This
+    // session carries no transport, so the call cannot be carried: it says so rather than
+    // pretending to be live.
     let chat =
         tilo_native_media::Caller::connected(7, APP, "the-workspace", CHANNEL, Arc::new(|| Ok(())));
     let joined = media
@@ -1150,8 +1134,8 @@ async fn a_session_that_cannot_carry_a_call_ends_it_and_says_why() {
     assert_eq!(ended.state, State::Ended);
     assert_eq!(ended.issue, Some(Issue::Unavailable));
 
-    // Another person's device still reads this person in a call when
-    // this person's presence says so: the presence is the whole of it.
+    // Another person's device still reads this person in a call when this person's presence says
+    // so: the presence is the whole of it.
     let peer = Client::untethered(public(0xb0), OwnPresence::default());
     peer.follow_desktop(&desk_tree());
     peer.hear(hello(0xf0, "Framework 16"));
@@ -1183,8 +1167,8 @@ async fn a_session_that_cannot_carry_a_call_ends_it_and_says_why() {
     tokio::task::block_in_place(|| drop(session));
 }
 
-/// A channel's roster says who in it has a camera or a screen on, as the
-/// presence of their devices says: theirs and this device's own alike.
+/// A channel's roster says who in it has a camera or a screen on, as the presence of their devices
+/// says: theirs and this device's own alike.
 #[test]
 fn a_channels_roster_says_who_has_a_camera_or_screen_on() {
     let mine = Client::untethered(
@@ -1195,8 +1179,7 @@ fn a_channels_roster_says_who_has_a_camera_or_screen_on() {
         },
     );
     mine.follow_desktop(&desk_tree());
-    // Two people in the channel, sending nothing: in it, with neither
-    // on.
+    // Two people in the channel, sending nothing: in it, with neither on.
     for (seed, label) in [(0xaa, "Framework 16"), (0xbb, "ThinkPad")] {
         mine.hear(hello(seed, label));
         presence(&mine, seed, collab_types::PeerPresencePayload::Arrived);

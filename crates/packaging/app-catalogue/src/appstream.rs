@@ -134,10 +134,6 @@ pub fn load_all(sources: &[AppstreamSource], locale: &str) -> Vec<CatalogueEntry
 }
 
 /// The apps of one cached `AppStream` file.
-///
-/// # Errors
-///
-/// The file cannot be opened, decompressed or parsed.
 pub fn load(source: &AppstreamSource, locale: &str) -> Result<Vec<CatalogueEntry>, String> {
     let file = std::fs::File::open(&source.file).map_err(|error| error.to_string())?;
     let compressed = source

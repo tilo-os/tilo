@@ -151,12 +151,10 @@ pub enum FileCommand {
     /// Open the "Open With" flyout for the single selected file. Handled by
     /// the menu routing (opens a submenu), like the templates flyout.
     OpenWithMenu,
-    /// Open `path` with exactly `app_id`; with `always`, first make that app
-    /// the person's default for the file's type.
+    /// Open `path` with exactly `app_id`.
     OpenWith {
         path: PathBuf,
         app_id: String,
-        always: bool,
     },
     /// Open the searchable app chooser for the single selected file.
     OpenWithOther,

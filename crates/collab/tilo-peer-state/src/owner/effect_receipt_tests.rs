@@ -120,6 +120,77 @@ fn the_owner_that_committed_a_receipt_publishes_it_without_reopening() {
     );
 }
 
+/// A device's record holds the receipt of an effect it served whose public
+/// half the view it restores does not carry yet: the workspace opens, and the
+/// receipt stays what answers that invocation. A receipt that contradicts the
+/// public half the view does carry still refuses the whole record.
+#[test]
+fn a_receipt_whose_public_half_is_not_admitted_keeps_its_workspace() {
+    let mut fixture = fixture();
+    let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("member.json");
+    let member = enroll_remote_history_member(&mut fixture, &path);
+    let member_key = SigningKey::from_bytes(&[116; 32]);
+    let owner = crate::owner::open_file(&path).unwrap();
+    let operation = request(&member, EffectReceiptStatus::Succeeded);
+    owner
+        .commit_effect_receipt(&operation, &member_key, fixture.now)
+        .unwrap();
+    drop(owner);
+    // The view a device restores is the workspace as its host admits it, which
+    // holds an effect's public half only once the change that carries it is
+    // merged. A receipt served before that names an invocation the view has
+    // never seen.
+    let pending = uuid::Uuid::from_bytes([9; 16]);
+    rewrite_stored_receipt(&path, |_id, receipt| (pending.to_string(), receipt.clone()));
+    let restored = crate::owner::open_file(&path).unwrap();
+    assert_eq!(
+        restored.workspaces(),
+        vec![workspace],
+        "the workspace whose receipt the view cannot check yet is kept"
+    );
+    // A receipt the view can check, and that differs from it, is a record
+    // that was changed behind the workspace's back: that still refuses.
+    let served = decode(&operation).unwrap().invocation.0.to_string();
+    rewrite_stored_receipt(&path, |_id, stored| {
+        stored["receipt"]["generation"] = serde_json::json!(0);
+        (served.clone(), stored.clone())
+    });
+    assert!(
+        crate::owner::open_file(&path).is_err(),
+        "a receipt that contradicts its admitted half refuses the record"
+    );
+}
+
+/// Change the one effect receipt `path`'s record holds to what `rewrite`
+/// answers for its id and its stored receipt.
+fn rewrite_stored_receipt(
+    path: &std::path::Path,
+    rewrite: impl FnOnce(&mut String, &mut serde_json::Value) -> (String, serde_json::Value),
+) {
+    let (part, bytes) = record_on_disk(path)
+        .into_iter()
+        .find(|(_, bytes)| {
+            serde_json::from_slice::<serde_json::Value>(bytes)
+                .is_ok_and(|record| record.get("effect_receipts").is_some())
+        })
+        .expect("the record's part that holds its effect receipts");
+    let mut record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let receipts = record["effect_receipts"]
+        .as_object_mut()
+        .expect("the effect receipts the record holds");
+    let (mut id, mut receipt) = receipts
+        .iter()
+        .next()
+        .map(|(id, receipt)| (id.clone(), receipt.clone()))
+        .expect("a stored receipt");
+    let (new_id, new_receipt) = rewrite(&mut id, &mut receipt);
+    receipts.remove(&id);
+    receipts.insert(new_id, new_receipt);
+    std::fs::write(&part, serde_json::to_vec(&record).unwrap()).unwrap();
+}
+
 /// A receipt of a new invocation by the person `by` is a device of.
 fn request(by: &DeviceCert, status: EffectReceiptStatus) -> OwnerCommitRequest {
     let invocation = InvocationId::new();

@@ -1,7 +1,6 @@
-//! The desktop's search in the headless native session, driven only through
-//! what the session publishes: search opens and takes its query by the
-//! desk's `search`, shows its rows as resources, and a chosen row runs by
-//! its `choose-search-row` through the action host.
+//! The desktop's search in the headless native session, driven only through what the session
+//! publishes: search opens and takes its query by the desk's `search` , shows its rows as
+//! resources, and a chosen row runs by its `choose-search-row` through the action host.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -25,7 +24,7 @@ use tilo_actions::remote::{
     RemoteActionTarget, application_action_target, application_open_target,
 };
 use tilo_actions::{DoorError, ResourceSpec};
-use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
+use tilo_compositor::{InputEvent, KeyRepeat};
 use tilo_desktop::desk_verbs::{
     CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, launchpad_card_id,
 };
@@ -36,9 +35,8 @@ use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_search::providers::settings::SETTINGS_APP;
 use tilo_session::{AppActions, AppLists, Lists, Options, SearchOptions, Session};
 
-/// The host search door every window and the shell publish: what a window's
-/// search control, its toolbar's magnifier and Ctrl+K run
-/// (`tilo_ui::search::SearchRequest`).
+/// The host search door every window and the shell publish: what a window's search control, its
+/// toolbar's magnifier and Ctrl+K run (`tilo_ui::search::SearchRequest`).
 const HOST_SEARCH: &str = "tilo.host:search";
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
@@ -95,37 +93,32 @@ fn session(host: Rc<Host>) -> Session {
     session_over(host, None, None)
 }
 
-/// A session whose search also lists the records `records` keeps current
-/// and what apps published into `content`.
+/// A session whose search also lists the records `records` keeps current and what apps published
+/// into `content` .
 fn session_over(
     host: Rc<Host>,
     records: Option<tilo_session::Records>,
     content: Option<Arc<AppContentIndex>>,
 ) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(AppLists {
-                    applications: vec![AppEntry {
-                        id: "so.tilo.sheets".into(),
-                        title: "Sheets".into(),
-                        category: None,
-                        description: None,
-                    }],
-                    ..AppLists::default()
-                }),
-                content,
-                records,
-                ..SearchOptions::default()
-            },
-            apps: Some(host),
-            collab: false,
-            ..Options::default()
+    crate::common::headless(Options {
+        search: SearchOptions {
+            lists: Lists::fixed(AppLists {
+                applications: vec![AppEntry {
+                    id: "so.tilo.sheets".into(),
+                    title: "Sheets".into(),
+                    category: None,
+                    description: None,
+                }],
+                ..AppLists::default()
+            }),
+            content,
+            records,
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session")
+        apps: Some(host),
+        collab: false,
+        ..Options::default()
+    })
 }
 
 /// Run frames until `done` holds.
@@ -152,7 +145,7 @@ fn rows(session: &Session) -> Vec<ResourceSpec> {
         .unwrap_or_default()
 }
 
-/// The first row whose label starts with `title`.
+/// The first row whose label starts with `title` .
 fn row(session: &Session, title: &str) -> Option<ResourceSpec> {
     rows(session)
         .into_iter()
@@ -212,114 +205,67 @@ fn type_key(session: &mut Session, keycode: u32) {
     }
 }
 
-/// Keys typed while the desk's search is open go into its query field: the
-/// desk takes the keyboard while its own search shows, rather than leaving
-/// the letters to the window behind it.
-#[test]
-fn typing_into_the_open_search_reaches_its_query() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    // A held key repeats; these keys are tapped, and a step of a headless
-    // session can take longer than a repeat waits.
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    for keycode in [46, 30, 38] {
-        type_key(&mut session, keycode);
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
-    });
+/// The query the open search carries, as the desk publishes it.
+fn query(session: &Session) -> Option<String> {
+    find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label)
 }
 
-/// The same, for search opened by the chord the person presses: Super+Space
-/// through the seat reaches the desk's own search, and what they type next
-/// reaches its query.
-#[test]
-fn typing_after_the_search_chord_reaches_its_query() {
-    let _settled = ui::motion::testing::settled();
+/// A session with key repeat pushed past the test's own steps: a held key repeats, and a step of a
+/// headless session can take longer than a repeat waits, so these keys are tapped instead.
+fn seated() -> Session {
     let mut session = session(Rc::new(Host::default()));
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
         rate: 0,
     });
     session.step(Duration::from_millis(1)).expect("step");
-    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-        session
-            .compositor()
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
+    session
+}
+
+/// Open the desk's search: by its own action, or by the chord the person presses, Super+Space
+/// through the seat.
+fn open(session: &mut Session, by_chord: bool) {
+    if by_chord {
+        chord(session);
+    } else {
+        invoke(session, DESK_RESOURCE, "search", serde_json::json!({}));
     }
-    until(&mut session, |session| {
+    until(session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    for keycode in [46, 30, 38] {
-        type_key(&mut session, keycode);
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
     });
 }
 
-/// The same a moment later: the field keeps the keyboard while search stays
-/// open and the desk redraws under it, so a person who takes their time
-/// before typing loses nothing.
+/// Keys typed while the desk's search is open go into its query field: the desk takes the keyboard
+/// while its own search shows, rather than leaving the letters to the window behind it. Where the
+/// search was opened by its action or by the chord, and whether the letters are tapped at once or
+/// after the desk has settled, they all reach the same field.
 #[test]
-fn typing_once_search_has_settled_reaches_its_query() {
+fn typing_reaches_the_searches_query_however_it_was_opened() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-        session
-            .compositor()
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
+    for (by_chord, waited) in [(false, false), (true, false), (true, true)] {
+        let mut session = seated();
+        open(&mut session, by_chord);
+        if waited {
+            // The field keeps the keyboard while the desk redraws under it,
+            // so a person who takes their time before typing loses nothing.
+            await_search(&mut session, None);
+        }
+        for keycode in [46, 30, 38] {
+            type_key(&mut session, keycode);
+        }
+        until(&mut session, |session| {
+            query(session).as_deref() == Some("cal")
+        });
     }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    await_search(&mut session, None);
-    for keycode in [46, 30, 38] {
-        type_key(&mut session, keycode);
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
-    });
 }
 
-/// Letters a fast typist sends close together reach the query all the same:
-/// three keys land in one batch, with no frame between press and release.
+/// Letters a fast typist sends close together reach the query all the same: three keys land in one
+/// batch, with no frame between press and release.
 #[test]
 fn typing_letters_in_one_batch_reaches_the_query() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-        session
-            .compositor()
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
+    let mut session = seated();
+    open(&mut session, true);
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
     }
@@ -335,57 +281,43 @@ fn typing_letters_in_one_batch_reaches_the_query() {
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
     }
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     assert_eq!(
-        label.as_deref(),
+        query(&session).as_deref(),
         Some("cal"),
         "every letter reaches the query"
     );
 }
 
-/// Clearing the query by hand does not end the typing: what is typed after
-/// the last letter is deleted reaches the query as the first letters did.
+/// Clearing the query by hand does not end the typing: what is typed after the last letter is
+/// deleted reaches the query as the first letters did.
 #[test]
 fn typing_after_deleting_the_whole_query_reaches_it_again() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-        session
-            .compositor()
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
+    let mut session = seated();
+    open(&mut session, true);
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
     }
     // Letters and deletions alike arrive a frame apart, as a person's do.
-    let untyped = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
+    let untyped = query(&session);
     keys(&mut session, &[46, 30, 38]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
-    assert_eq!(label.as_deref(), Some("cal"), "the first letters reach it");
-    keys(&mut session, &[14, 14, 14]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
-    assert_eq!(label, untyped, "the query is empty again");
-    keys(&mut session, &[48, 24, 24]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     assert_eq!(
-        label.as_deref(),
+        query(&session).as_deref(),
+        Some("cal"),
+        "the first letters reach it"
+    );
+    keys(&mut session, &[14, 14, 14]);
+    assert_eq!(query(&session), untyped, "the query is empty again");
+    keys(&mut session, &[48, 24, 24]);
+    assert_eq!(
+        query(&session).as_deref(),
         Some("boo"),
         "typing after deleting still lands"
     );
 }
 
-/// The chord toggles: a press over the open search closes it, and the next
-/// one brings it back, as the shell's own search key does.
+/// The chord toggles: a press over the open search closes it, and the next one brings it back, as
+/// the shell's own search key does.
 #[test]
 fn the_search_chord_closes_the_open_search_and_opens_it_again() {
     let _settled = ui::motion::testing::settled();
@@ -409,10 +341,9 @@ fn the_search_chord_closes_the_open_search_and_opens_it_again() {
     });
 }
 
-/// Nothing typed offers what a person may want to do from an empty desk:
-/// making a workspace, and joining one where this session can. Leaving this
-/// workspace, and ending the computer's session, are looked for by name —
-/// and found.
+/// Nothing typed offers what a person may want to do from an empty desk: making a workspace, and
+/// joining one where this session can. Leaving this workspace, and ending the computer's session,
+/// are looked for by name — and found.
 #[test]
 fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
     let _settled = ui::motion::testing::settled();
@@ -459,9 +390,9 @@ fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
     );
 }
 
-/// The desk publishes its own actions on a resource named after the person
-/// and the desktop. That name says whose desk it is, never what an action
-/// does, so searching for the person finds none of the desk's actions.
+/// The desk publishes its own actions on a resource named after the person and the desktop. That
+/// name says whose desk it is, never what an action does, so searching for the person finds none of
+/// the desk's actions.
 #[test]
 fn searching_for_the_person_lists_no_action_of_the_desks_own() {
     let _settled = ui::motion::testing::settled();
@@ -551,8 +482,7 @@ fn a_welcome_card_does_what_its_published_action_does() {
     let mut session = session(Rc::clone(&host));
     session.step(Duration::from_millis(1)).expect("step");
 
-    // The verb published for agents: Meet's own card, by the resource action
-    // the catalogue lists.
+    // The verb published for agents: Meet's own card, by the resource action the catalogue lists.
     invoke(
         &mut session,
         &launchpad_card_id("meet"),
@@ -577,9 +507,9 @@ fn a_welcome_card_does_what_its_published_action_does() {
         "Chat starts a call in the workspace: {target:?}"
     );
 
-    // The card on the desk, pressed, asks Chat for the same thing. The
-    // empty desk and its cards are the desktop surface's own: the session's
-    // door names them as the controls an assistive technology presses.
+    // The card on the desk, pressed, asks Chat for the same thing. The empty desk and its cards are
+    // the desktop surface's own: the session's door names them as the controls an assistive
+    // technology presses.
     let card = session
         .controls()
         .into_iter()
@@ -719,30 +649,24 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
     );
 }
 
-/// A session with the settings service, over a home of its own: its search
-/// leaves out what the person switched off, as the desk reads that when it
-/// starts.
+/// A session with the settings service, over a home of its own: its search leaves out what the
+/// person switched off, as the desk reads that when it starts.
 fn session_with_settings() -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(tilo_settings_service::SettingsService::new())],
-            search: SearchOptions {
-                preferences: tilo_desktop_search::SearchPreferences::from_values(
-                    &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
-                ),
-                ..SearchOptions::default()
-            },
-            collab: false,
-            ..Options::default()
+    crate::common::headless(Options {
+        services: vec![Box::new(tilo_settings_service::SettingsService::new())],
+        search: SearchOptions {
+            preferences: tilo_desktop_search::SearchPreferences::from_values(
+                &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
+            ),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session")
+        collab: false,
+        ..Options::default()
+    })
 }
 
-/// Search for `query` and choose the row titled `title`: a switch stays in
-/// view, anything else closes search.
+/// Search for `query` and choose the row titled `title` : a switch stays in view, anything else
+/// closes search.
 fn choose(session: &mut Session, query: &str, title: &str) {
     search_for(session, query);
     let Some(row) = row(session, title) else {
@@ -817,9 +741,9 @@ fn open_search(session: &Session) -> Option<ResourceSpec> {
     find(&session.resources(), SEARCH_RESOURCE)
 }
 
-/// Whether the desk publishes the open search as over: no source has still
-/// to answer for the query and its rows are cut to the card. The search
-/// says it is still searching in its detail until then.
+/// Whether the desk publishes the open search as over: no source has still to answer for the query
+/// and its rows are cut to the card. The search says it is still searching in its detail until
+/// then.
 fn search_settled(search: &ResourceSpec) -> bool {
     search
         .presentation
@@ -861,9 +785,8 @@ fn await_search(session: &mut Session, query: Option<&str>) {
     );
 }
 
-/// Search for `query` and wait for the search to be over: the published
-/// search names what is typed, and its rows stand once every source has
-/// answered and they are cut to the card.
+/// Search for `query` and wait for the search to be over: the published search names what is typed,
+/// and its rows stand once every source has answered and they are cut to the card.
 fn search_for(session: &mut Session, query: &str) {
     invoke(
         session,
@@ -874,7 +797,7 @@ fn search_for(session: &mut Session, query: &str) {
     await_search(session, Some(query));
 }
 
-/// The row whose label is exactly `title`.
+/// The row whose label is exactly `title` .
 fn titled(session: &Session, title: &str) -> Option<ResourceSpec> {
     rows(session)
         .into_iter()
@@ -888,13 +811,12 @@ fn a_source_switched_off_from_search_leaves_search_and_stays_off() {
     let mut session = session_with_settings();
     session.step(Duration::from_millis(1)).unwrap();
 
-    // Settings' pages are one of the sources search asks: its Keyboard page
-    // is a row of its own.
+    // Settings' pages are one of the sources search asks: its Keyboard page is a row of its own.
     search_for(&mut session, "keyboard layout");
     assert!(titled(&session, "Keyboard").is_some());
 
-    // What finds a source is the row that switches it off, and it stays in
-    // view so it can be switched back on.
+    // What finds a source is the row that switches it off, and it stays in view so it can be
+    // switched back on.
     choose(
         &mut session,
         "disable settings search",
@@ -930,8 +852,8 @@ fn a_source_switched_off_from_search_leaves_search_and_stays_off() {
         "it stays off across a restart"
     );
 
-    // And what was switched off is switched back on where it was: the
-    // source's own row says what it is set to.
+    // And what was switched off is switched back on where it was: the source's own row says what it
+    // is set to.
     choose(
         &mut session,
         "enable settings search",
@@ -949,12 +871,12 @@ fn a_source_switched_off_from_search_leaves_search_and_stays_off() {
     );
 }
 
-/// The app whose record index the record of this test is named in: any app of
-/// the workspace keeps one, and search reads them all the same way.
+/// The app whose record index the record of this test is named in: any app of the workspace keeps
+/// one, and search reads them all the same way.
 const NOTES: &str = "so.tilo.notes";
 
-/// The name the document a row brings here is kept under: a file-backed
-/// record, as a workspace that is not this one names it.
+/// The name the document a row brings here is kept under: a file-backed record, as a workspace that
+/// is not this one names it.
 const QUARTERLY: &str = "Quarterly plan.odt";
 
 /// The workspaces the desk shows, by id and by the name it gives each.
@@ -978,11 +900,10 @@ fn workspace_in_front(session: &Session) -> String {
         .expect("a workspace")
 }
 
-/// Save `rows` (`(id, kind)`) as `package`'s index of `workspace` holds them —
-/// what it held before is what the workspace no longer names — and publish it
-/// in one rename: the index of a workspace that appears while the session
-/// runs appears as one directory, which is what the worker following the
-/// device's indexes is told about.
+/// Save `rows` (`(id, kind)`) as `package` 's index of `workspace` holds them — what it held before
+/// is what the workspace no longer names — and publish it in one rename: the index of a workspace
+/// that appears while the session runs appears as one directory, which is what the worker following
+/// the device's indexes is told about.
 fn write_index(
     home: &tilo_test_env::TestHome,
     package: &str,
@@ -1010,9 +931,8 @@ fn write_index(
     std::fs::rename(&staged, &directory).expect("the index published");
 }
 
-/// The records `package`'s index of `workspace` names, read the way the
-/// workspace's apps read them: the record set's own discovery over the index
-/// document.
+/// The records `package` 's index of `workspace` names, read the way the workspace's apps read
+/// them: the record set's own discovery over the index document.
 fn known_in(package: &str, workspace: &str) -> Vec<String> {
     let Ok(mut store) = app_state::DocStore::open_workspace(package, workspace) else {
         return Vec::new();
@@ -1029,8 +949,8 @@ fn known_in(package: &str, workspace: &str) -> Vec<String> {
         .collect()
 }
 
-/// Wait for `done` as long as a loaded machine takes: the session writes the
-/// reference on a worker of its own.
+/// Wait for `done` as long as a loaded machine takes: the session writes the reference on a worker
+/// of its own.
 fn within(mut done: impl FnMut() -> bool) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() < tilo_test_env::hang_bound() {
@@ -1042,8 +962,7 @@ fn within(mut done: impl FnMut() -> bool) -> bool {
     done()
 }
 
-/// Whether `done` never holds while something that would make it hold is
-/// given `window` to land.
+/// Whether `done` never holds while something that would make it hold is given `window` to land.
 fn never(window: Duration, mut done: impl FnMut() -> bool) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() < window {
@@ -1055,9 +974,9 @@ fn never(window: Duration, mut done: impl FnMut() -> bool) -> bool {
     !done()
 }
 
-/// The row titled `title` for `query`, reopening search until the session has
-/// read the device's indexes again: a record another workspace holds is listed
-/// once the worker following them has read that workspace's index.
+/// The row titled `title` for `query` , reopening search until the session has read the device's
+/// indexes again: a record another workspace holds is listed once the worker following them has
+/// read that workspace's index.
 fn find_row(session: &mut Session, query: &str, title: &str) -> ResourceSpec {
     let started = std::time::Instant::now();
     loop {
@@ -1084,8 +1003,8 @@ fn find_row(session: &mut Session, query: &str, title: &str) -> ResourceSpec {
 fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     let home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    // An app of this device already keeps an index, in a workspace the desk does
-    // not show: the directories the session follows as more appear.
+    // An app of this device already keeps an index, in a workspace the desk does not show: the
+    // directories the session follows as more appear.
     write_index(
         &home,
         NOTES,
@@ -1143,9 +1062,9 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
         "this workspace holds the record: {:?}",
         known_in(NOTES, &here)
     );
-    // A record whose identity is a path is also opened, so bringing it here
-    // and opening it are one gesture; the file opens in the workspace the
-    // reference went into, by the address an app takes a document by.
+    // A record whose identity is a path is also opened, so bringing it here and opening it are one
+    // gesture; the file opens in the workspace the reference went into, by the address an app takes
+    // a document by.
     assert_eq!(
         host.opened.borrow().clone(),
         vec![(
@@ -1159,8 +1078,8 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
 /// The record a row names after the workspace holding it stopped naming it.
 const STALE: &str = "file:/work/Stale plan.odt";
 
-/// The record the index names instead: search offers it only once the session
-/// has read the index again, which is also when [`STALE`] stopped being held.
+/// The record the index names instead: search offers it only once the session has read the index
+/// again, which is also when [`STALE`] stopped being held.
 const FRESH: &str = "file:/work/Fresh plan.odt";
 
 #[test]
@@ -1176,9 +1095,8 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
     // The row is collected now and chosen below.
     let stale = find_row(&mut session, "stale", "Stale plan.odt");
 
-    // The workspace holding it stops naming it, in one write that names
-    // another record: search offering the record added is what says the
-    // session has read the index again.
+    // The workspace holding it stops naming it, in one write that names another record: search
+    // offering the record added is what says the session has read the index again.
     write_index(&home, NOTES, "elsewhere", &[(FRESH, "document")]);
     find_row(&mut session, "fresh", "Fresh plan.odt");
     invoke(
@@ -1195,12 +1113,11 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
         "a record no workspace names any more is not offered"
     );
 
-    // The row collected before it stopped being held brings nothing here. A
-    // chosen row is carried out for its effect rather than reported by an
-    // error, so what is checked is the effect: no reference is written, for
-    // as long as writing one takes. The refusal itself, for a row still shown
-    // by an open search, is the session's own to make and is proven in
-    // `search::tests::a_row_for_a_record_no_workspace_names_any_more_is_refused`.
+    // The row collected before it stopped being held brings nothing here. A chosen row is carried
+    // out for its effect rather than reported by an error, so what is checked is the effect: no
+    // reference is written, for as long as writing one takes. The refusal itself, for a row still
+    // shown by an open search, is the session's own to make and is proven in
+    // `search::tests::a_row_for_a_record_no_workspace_names_any_more_is_refused` .
     let _ = session.invoke(
         stale.id.as_str(),
         "choose-search-row",
@@ -1215,8 +1132,8 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
     );
 }
 
-/// Publish one entry an app of `workspace` holds, as its record `tab:0001`
-/// filled with what it has: the one item, named `title`.
+/// Publish one entry an app of `workspace` holds, as its record `tab:0001` filled with what it has:
+/// the one item, named `title` .
 fn published(index: &AppContentIndex, workspace: &str, title: &str) {
     use ui::search::index_publication::{IndexDelta, IndexEntry};
 
@@ -1270,8 +1187,8 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = workspace_in_front(&session);
 
-    // What an app published before it closed: no app runs here, and the only
-    // actions host is the fixture that runs nothing.
+    // What an app published before it closed: no app runs here, and the only actions host is the
+    // fixture that runs nothing.
     published(&content, &workspace, "Groceries for the weekend");
     let row = find_row(&mut session, "groceries", "Groceries for the weekend");
     assert_eq!(
@@ -1281,8 +1198,7 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
         "the row says which app holds it"
     );
 
-    // Choosing it asks the app to open at the entry, starting it first when
-    // it is closed.
+    // Choosing it asks the app to open at the entry, starting it first when it is closed.
     invoke(
         &mut session,
         row.id.as_str(),
@@ -1299,8 +1215,8 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     assert_eq!(arguments["anchor"], "n1");
     drop(session);
 
-    // A restart reads back what the index kept on disk: the entry is found
-    // again, with nothing publishing it.
+    // A restart reads back what the index kept on disk: the entry is found again, with nothing
+    // publishing it.
     assert!(
         within(|| kept(dir.path())),
         "the index keeps the entry on disk"
@@ -1311,8 +1227,8 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     find_row(&mut session, "groceries", "Groceries for the weekend");
 }
 
-/// A program the person added to their apps: its file at `path`, and the
-/// entry Tilo keeps for it, written the way the registry writes one.
+/// A program the person added to their apps: its file at `path` , and the entry Tilo keeps for it,
+/// written the way the registry writes one.
 fn add_downloaded(home: &tilo_test_env::TestHome, key: &str, name: &str, path: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -1358,8 +1274,8 @@ fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so()
     let mut session = session(Rc::clone(&host));
     session.step(Duration::from_millis(1)).unwrap();
 
-    // The app is found by its name and starts the way every host app starts:
-    // the entry Tilo keeps for it.
+    // The app is found by its name and starts the way every host app starts: the entry Tilo keeps
+    // for it.
     let row = find_row(&mut session, "dropped", "Dropped Tool");
     assert_eq!(
         row.presentation.and_then(|shown| shown.detail),
@@ -1377,8 +1293,8 @@ fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so()
         ["tilo-downloaded-Dropped"]
     );
 
-    // The one whose file went away is found all the same, and its row says
-    // what happened instead of starting nothing.
+    // The one whose file went away is found all the same, and its row says what happened instead of
+    // starting nothing.
     let row = find_row(&mut session, "gone", "Gone Tool");
     assert_eq!(
         row.presentation.and_then(|shown| shown.detail),
@@ -1386,8 +1302,8 @@ fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so()
     );
 }
 
-/// A host app of the machine, as its desktop entry names it, and one of the
-/// person's Tilo apps beside it: what a device has, both ways.
+/// A host app of the machine, as its desktop entry names it, and one of the person's Tilo apps
+/// beside it: what a device has, both ways.
 fn host_app_lists() -> AppLists {
     AppLists {
         applications: vec![AppEntry {
@@ -1406,8 +1322,8 @@ fn host_app_lists() -> AppLists {
     }
 }
 
-/// Type `text` as the keyboard attached to the seat types it: each character
-/// by the key this seat's layout puts it on, as `tilo-control type` does.
+/// Type `text` as the keyboard attached to the seat types it: each character by the key this seat's
+/// layout puts it on, as `tilo-control type` does.
 fn type_at_the_seat(session: &mut Session, text: &str) {
     for ch in text.chars() {
         assert!(
@@ -1423,11 +1339,10 @@ fn type_at_the_seat(session: &mut Session, text: &str) {
     }
 }
 
-/// The palette `tilo.host:search` opens takes what the person types: the
-/// session's search, drawn over everything its own tree draws, so the keys go
-/// to its field and not to the desk or a window under it. What is typed is
-/// the query the desk's search runs, which the desk publishes for whoever
-/// reads it (the shell, an agent) as its own open search.
+/// The palette `tilo.host:search` opens takes what the person types: the session's search, drawn
+/// over everything its own tree draws, so the keys go to its field and not to the desk or a window
+/// under it. What is typed is the query the desk's search runs, which the desk publishes for
+/// whoever reads it (the shell, an agent) as its own open search.
 #[test]
 fn the_palette_the_host_search_opens_takes_the_keys() {
     let _settled = ui::motion::testing::settled();
@@ -1437,8 +1352,8 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
         rate: 0,
     });
     session.step(Duration::from_millis(1)).expect("step");
-    // The host search door, as `so.tilo.session` publishes it: what a
-    // window's search control, its toolbar's magnifier and Ctrl+K run.
+    // The host search door, as `so.tilo.session` publishes it: what a window's search control, its
+    // toolbar's magnifier and Ctrl+K run.
     invoke(&mut session, HOST_SEARCH, "open", serde_json::json!({}));
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_some()
@@ -1448,8 +1363,8 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
         find(&session.resources(), SEARCH_RESOURCE)
             .is_some_and(|search| search.label == "nothinghere")
     });
-    // The palette answers the query it holds: the row offering the web for
-    // it is there, which a palette that never took the keys would not have.
+    // The palette answers the query it holds: the row offering the web for it is there, which a
+    // palette that never took the keys would not have.
     assert!(
         session
             .accessible_labels()
@@ -1460,290 +1375,122 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
     );
 }
 
-/// Every way into search finds the person's apps by name, from one list of
-/// apps. The platform search door (`tilo.host:search`) is what a window's
-/// search control, its toolbar's magnifier and Ctrl+K run, and what an agent
-/// asks; opening it here must search what the desk's own search searches —
-/// the apps this device has, both of them, from the session's one list.
-#[test]
-fn the_host_search_finds_a_host_app_by_name() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::new(Host::default())),
-            collab: false,
-            ..Options::default()
+/// A session whose search lists the apps this device has — the machine's `Alacritty` and the
+/// person's `Notes` — with `host` taking the launches.
+fn host_session(host: Rc<Host>) -> Session {
+    let mut session = crate::common::headless(Options {
+        search: SearchOptions {
+            lists: Lists::fixed(host_app_lists()),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
+        apps: Some(host as Rc<dyn AppActions>),
+        collab: false,
+        ..Options::default()
     });
     session.step(Duration::from_millis(1)).expect("step");
-
-    invoke(&mut session, HOST_SEARCH, "open", serde_json::json!({}));
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    type_at_the_seat(&mut session, "alacritty");
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE)
-            .is_some_and(|search| search.label == "alacritty")
-    });
-    await_search(&mut session, Some("alacritty"));
-    assert!(
-        titled(&session, "Alacritty").is_some(),
-        "the machine's app is found by name from the platform search door: {:?}",
-        rows(&session)
-            .into_iter()
-            .map(|row| row.label)
-            .collect::<Vec<_>>()
-    );
+    session
 }
 
-/// The same for one of the person's Tilo apps: the list the door searches is
-/// the session's one list of apps, so an installed app is found by name too.
+/// The titles of the rows the search shows now.
+fn labels(session: &Session) -> Vec<String> {
+    rows(session).into_iter().map(|row| row.label).collect()
+}
+
+/// The ways a person reaches search, each of which searches the session's one list of apps.
+#[derive(Clone, Copy, Debug)]
+enum Opening {
+    /// The platform search door (`tilo.host:search`): what a window's search control, its toolbar's
+    /// magnifier and Ctrl+K run, and what an agent asks.
+    HostDoor,
+    /// The desk's own `search` verb, in the workspace scope its chip names.
+    Desk,
+    /// The applications alone, as the launchpad's "Open an app" lists them.
+    Applications,
+}
+
+impl Opening {
+    /// Open search this way, already asking `query` .
+    fn open(self, session: &mut Session, query: &str) {
+        match self {
+            Self::HostDoor => {
+                invoke(
+                    session,
+                    HOST_SEARCH,
+                    "open",
+                    serde_json::json!({ "query": query }),
+                );
+            }
+            Self::Desk => {
+                invoke(
+                    session,
+                    DESK_RESOURCE,
+                    "search",
+                    serde_json::json!({ "query": query }),
+                );
+            }
+            Self::Applications => {
+                session
+                    .handle()
+                    .open_search(ui::search::Scope::WindowGroup(None), Some(query.to_owned()));
+            }
+        }
+        await_search(session, Some(query));
+    }
+}
+
+/// Every way into search finds the person's apps by name, from one list of apps: the machine's
+/// `Alacritty` and the person's `Notes` alike.
 #[test]
-fn the_host_search_finds_an_installed_app_by_name() {
+fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::new(Host::default())),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-
-    invoke(&mut session, HOST_SEARCH, "open", serde_json::json!({}));
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    type_at_the_seat(&mut session, "notes");
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "notes")
-    });
-    await_search(&mut session, Some("notes"));
-    assert!(
-        titled(&session, "Notes").is_some(),
-        "the person's own app is found by name from the platform search door: {:?}",
-        rows(&session)
-            .into_iter()
-            .map(|row| row.label)
-            .collect::<Vec<_>>()
-    );
+    for (query, title) in [("alacritty", "Alacritty"), ("notes", "Notes")] {
+        let mut session = host_session(Rc::new(Host::default()));
+        Opening::HostDoor.open(&mut session, query);
+        assert!(
+            titled(&session, title).is_some(),
+            "{title} is found by name from the platform search door: {:?}",
+            labels(&session)
+        );
+    }
+    for opening in [Opening::Desk, Opening::Applications] {
+        let mut session = host_session(Rc::new(Host::default()));
+        opening.open(&mut session, "alacritty");
+        assert!(
+            titled(&session, "Alacritty").is_some(),
+            "{opening:?} lists an app the person can open: {:?}",
+            labels(&session)
+        );
+    }
 }
 
-/// Choosing the row the platform search door found starts the app: the launch
-/// reaches the launcher, as choosing a row of the desk's own search does.
+/// Choosing the row any search found starts the app: the launch reaches the launcher, as choosing a
+/// row of the desk's own search does.
 #[test]
-fn choosing_the_host_app_the_host_search_found_starts_it() {
+fn choosing_the_row_any_search_found_starts_the_app() {
     let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::clone(&host) as Rc<dyn AppActions>),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).expect("step");
-
-    invoke(
-        &mut session,
-        HOST_SEARCH,
-        "open",
-        serde_json::json!({ "query": "alacritty" }),
-    );
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE)
-            .is_some_and(|search| search.label == "alacritty")
-    });
-    await_search(&mut session, Some("alacritty"));
-    let app = titled(&session, "Alacritty").unwrap_or_else(|| {
-        panic!(
-            "the app's row: {:?}",
-            rows(&session)
-                .into_iter()
-                .map(|row| row.label)
-                .collect::<Vec<_>>()
-        )
-    });
-    invoke(
-        &mut session,
-        app.id.as_str(),
-        "choose-search-row",
-        serde_json::json!({}),
-    );
-    until(&mut session, |_| !host.started.borrow().is_empty());
-    assert_eq!(
-        host.started.borrow().as_slice(),
-        ["Alacritty.desktop"],
-        "the app the platform search door found starts"
-    );
+    for opening in [Opening::HostDoor, Opening::Desk, Opening::Applications] {
+        let host = Rc::new(Host::default());
+        let mut session = host_session(Rc::clone(&host));
+        opening.open(&mut session, "alacritty");
+        let app = titled(&session, "Alacritty")
+            .unwrap_or_else(|| panic!("the app's row from {opening:?}: {:?}", labels(&session)));
+        invoke(
+            &mut session,
+            app.id.as_str(),
+            "choose-search-row",
+            serde_json::json!({}),
+        );
+        until(&mut session, |_| !host.started.borrow().is_empty());
+        assert_eq!(
+            host.started.borrow().as_slice(),
+            ["Alacritty.desktop"],
+            "the app found by {opening:?} starts"
+        );
+    }
 }
 
-/// The desktop's own search finds the machine's apps by name, however it is
-/// opened: the field's scope chip names the workspace the search reaches
-/// into, and that never hides what the person can open.
-#[test]
-fn the_desk_search_finds_a_host_app_by_name_whichever_way_it_opens() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::new(Host::default())),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.compositor().set_key_repeat(KeyRepeat {
-        delay: Duration::from_secs(60),
-        rate: 0,
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-
-    // Opened with nothing typed, as the desk's `search` verb does: the field
-    // shows the Workspace scope chip.
-    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    type_at_the_seat(&mut session, "alacritty");
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE)
-            .is_some_and(|search| search.label == "alacritty")
-    });
-    await_search(&mut session, Some("alacritty"));
-    assert!(
-        titled(&session, "Alacritty").is_some(),
-        "an app the person can open is found by its name from the search in the workspace scope: {:?}",
-        rows(&session)
-            .into_iter()
-            .map(|row| row.label)
-            .collect::<Vec<_>>()
-    );
-}
-
-/// Choosing that row starts the app: the launch reaches the launcher.
-#[test]
-fn choosing_the_host_app_found_by_search_starts_it() {
-    let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::clone(&host) as Rc<dyn AppActions>),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).expect("step");
-    search_for(&mut session, "alacritty");
-    let app = titled(&session, "Alacritty").expect("the app's row");
-    invoke(
-        &mut session,
-        app.id.as_str(),
-        "choose-search-row",
-        serde_json::json!({}),
-    );
-    until(&mut session, |_| !host.started.borrow().is_empty());
-    assert_eq!(
-        host.started.borrow().as_slice(),
-        ["Alacritty.desktop"],
-        "the app the row names starts"
-    );
-}
-
-/// The applications a window group's new tab may show, and the empty desk's
-/// launchpad opens: each app this device has, by its name.
-#[test]
-fn the_applications_scope_lists_a_host_app() {
-    let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::clone(&host) as Rc<dyn AppActions>),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).expect("step");
-    // The launchpad's "Open an app": the applications alone.
-    session.handle().open_search(
-        ui::search::Scope::WindowGroup(None),
-        Some("alacritty".to_owned()),
-    );
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some()
-    });
-    await_search(&mut session, Some("alacritty"));
-    let app = titled(&session, "Alacritty").unwrap_or_else(|| {
-        panic!(
-            "an app the person can open is listed by the applications' own search: {:?}",
-            rows(&session)
-                .into_iter()
-                .map(|row| row.label)
-                .collect::<Vec<_>>()
-        )
-    });
-    // And it opens: the row's launch is the one the session starts.
-    invoke(
-        &mut session,
-        app.id.as_str(),
-        "choose-search-row",
-        serde_json::json!({}),
-    );
-    until(&mut session, |_| !host.started.borrow().is_empty());
-    assert_eq!(host.started.borrow().as_slice(), ["Alacritty.desktop"]);
-}
-
-/// Tasks as it publishes its capture to the workspace: its root, with the
-/// action that takes the one line a person types (`title` is that parameter).
+/// Tasks as it publishes its capture to the workspace: its root, with the action that takes the one
+/// line a person types (`title` is that parameter).
 fn tasks_capture() -> Vec<ResourceSpec> {
     let capture = tilo_actions::ActionSpec::prompted_param(
         "new_task",
@@ -1760,9 +1507,9 @@ fn tasks_capture() -> Vec<ResourceSpec> {
     vec![ResourceSpec::new("tasks", "tl.Tasks.tasks", "Tasks").with_action(capture)]
 }
 
-/// One line typed into the search writes a task down with no Tasks window
-/// open: the workspace's capture answers the sentence as its own line, and
-/// choosing it runs the app's action with the words as typed.
+/// One line typed into the search writes a task down with no Tasks window open: the workspace's
+/// capture answers the sentence as its own line, and choosing it runs the app's action with the
+/// words as typed.
 #[test]
 fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
     let _settled = ui::motion::testing::settled();
@@ -1774,8 +1521,8 @@ fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
             .map(|workspace| workspace.id().to_string())
             .expect("a workspace")
     });
-    // The workspace's action host publishes Tasks' capture; no window of the
-    // app is open to write it in.
+    // The workspace's action host publishes Tasks' capture; no window of the app is open to write
+    // it in.
     host.publishing.borrow_mut().push(PublishedActions::of(
         "so.tilo.lang.tasks",
         &workspace,

@@ -1,4 +1,4 @@
-//! [`SwipeRow`]: a row that follows the finger sideways and uncovers what swiping it does.
+//! [`SwipeRow`] — a row that follows the finger sideways and uncovers what swiping it does.
 //!
 //! A horizontal drag on a touch screen moves the row with the finger (a vertical one is the
 //! list's scroll and leaves it alone). Dragging towards the trailing edge uncovers the leading
@@ -79,6 +79,8 @@ struct Drag {
     from: f64,
     /// Whether the drag is sideways: unknown until it moved past [`SLOP`].
     sideways: Option<bool>,
+    /// Whether the finger left where it came down: a contact that never did is a tap.
+    dragged: bool,
     /// The last two samples of the finger, for its velocity at release.
     samples: [(f64, Instant); 2],
 }
@@ -268,6 +270,7 @@ impl SwipeRow {
                     start: at,
                     from,
                     sideways: None,
+                    dragged: false,
                     samples: [(at.x, now), (at.x, now)],
                 });
                 false
@@ -277,8 +280,12 @@ impl SwipeRow {
                     return false;
                 };
                 let moved = at - drag.start;
-                if drag.sideways.is_none() && moved.hypot() >= SLOP {
-                    drag.sideways = Some(moved.x.abs() > moved.y.abs());
+                if moved.hypot() >= SLOP {
+                    // The finger left where it came down: this contact is a drag, not a tap.
+                    drag.dragged = true;
+                    if drag.sideways.is_none() {
+                        drag.sideways = Some(moved.x.abs() > moved.y.abs());
+                    }
                 }
                 drag.samples = [drag.samples[1], (at.x, now)];
                 match drag.sideways {
@@ -306,7 +313,10 @@ impl SwipeRow {
                 // Where the finger lifted, and when: a finger held still before it lifts
                 // throws nothing.
                 drag.samples = [drag.samples[1], (at.x, now)];
-                let sideways = drag.sideways == Some(true);
+                // A finger that lifted where it came down tapped the row: the platform turns
+                // that into a click, and the row's list answers it, opening what was tapped.
+                // Only a drag that headed across is the row's.
+                let sideways = drag.sideways == Some(true) && drag.dragged;
                 self.release(&drag, phase == TouchPhase::Cancelled);
                 sideways
             }
@@ -489,6 +499,14 @@ impl Decorator for SwipeRow {
 
     fn needs_animation_frame(&self) -> bool {
         self.offset.is_moving(crate::motion::frame_now()) || self.content.needs_animation_frame()
+    }
+
+    /// Rest what the frame drew. The list draws the rows near its box and culls the others away,
+    /// and a row it did not draw owes nothing for the offset it moved by unseen: the next frame
+    /// draws it where it is now, so a row out of view does not keep a window at rest awake.
+    fn mark_drawn(&mut self) {
+        self.drawn = self.offset.get(crate::motion::frame_now());
+        self.content.mark_drawn();
     }
 
     fn needs_redraw(&self) -> bool {

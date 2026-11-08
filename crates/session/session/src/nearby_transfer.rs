@@ -58,35 +58,33 @@ use crate::fabric::Continuity;
 /// The one app the action door serves: the certified Files application.
 pub(crate) const FILES_APP_ID: &str = "so.tilo.file-explorer";
 
-/// How long the handles one Files connection holds stay usable. Files does
-/// not ask again on a timer, so a wait it holds is woken to ask shortly
-/// before they lapse ([`HANDLE_REFRESH`]).
+/// How long the handles one Files connection holds stay usable. Files does not ask again on a
+/// timer, so a wait it holds is woken to ask shortly before they lapse ([`HANDLE_REFRESH`]).
 const HANDLE_TTL: Duration = Duration::from_secs(120);
-/// When a wait is woken so Files takes a snapshot and its handles are renewed
-/// while they are still good.
+/// When a wait is woken so Files takes a snapshot and its handles are renewed while they are still
+/// good.
 const HANDLE_REFRESH: Duration = Duration::from_secs(105);
 const MAX_TRANSFER_HANDLES: usize = 256;
-/// How long an offer this device received waits for its person's decision
-/// before it is withdrawn.
+/// How long an offer this device received waits for its person's decision before it is withdrawn.
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_PENDING_OFFERS: usize = 64;
-/// How long a staged object no device acknowledged waits before it is offered
-/// again: a device that restarted, or whose person was away, still gets it.
+/// How long a staged object no device acknowledged waits before it is offered again: a device that
+/// restarted, or whose person was away, still gets it.
 const OFFER_AGAIN: Duration = Duration::from_secs(10);
 const MAX_HISTORY: usize = 32;
 const NOT_YOURS: &str = "this Nearby Send handle belongs to another connection";
 const NO_DESTINATION: &str = "that folder is not one of this workspace's files";
 const NO_WORKER: &str = "the nearby transfer worker stopped";
 
-/// Where the spool this session stages into lives: beside what the rest of
-/// the session keeps, private to the person.
+/// Where the spool this session stages into lives: beside what the rest of the session keeps,
+/// private to the person.
 #[must_use]
 pub(crate) fn spool_root() -> Option<PathBuf> {
     tilo_paths::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
 }
 
-/// The person's other devices that are here now, as Files and the capture
-/// studio list them: online, never this device, by their own names.
+/// The person's other devices that are here now, as Files and the capture studio list them: online,
+/// never this device, by their own names.
 #[must_use]
 pub(crate) fn devices(link: &SharedLink) -> Vec<ScreenshotSendDevice> {
     let local = link
@@ -107,8 +105,8 @@ pub(crate) fn devices(link: &SharedLink) -> Vec<ScreenshotSendDevice> {
     devices
 }
 
-/// What a studio send answers when the worker is done with it, wherever that
-/// ends: offered, or refused in the engine's own words.
+/// What a studio send answers when the worker is done with it, wherever that ends: offered, or
+/// refused in the engine's own words.
 type StudioReply = Box<dyn FnOnce(Sent) + Send>;
 
 /// One transferred object that is over, as Files' list still shows it.
@@ -149,8 +147,7 @@ impl Offer {
     }
 }
 
-/// One object this device offered, waiting for the receiving device's
-/// checkpoint.
+/// One object this device offered, waiting for the receiving device's checkpoint.
 #[derive(Clone)]
 struct Offered {
     target: DeviceId,
@@ -200,8 +197,8 @@ fn expires(now: Instant) -> Instant {
     now.checked_add(HANDLE_TTL).unwrap_or(now)
 }
 
-/// Everything a Nearby snapshot is built from, and the handles issued to the
-/// connections that asked for one.
+/// Everything a Nearby snapshot is built from, and the handles issued to the connections that asked
+/// for one.
 #[derive(Default)]
 struct State {
     targets: HashMap<NearbyTargetHandle, TargetBinding>,
@@ -209,8 +206,7 @@ struct State {
     destinations: HashMap<NearbyDestinationHandle, DestinationBinding>,
     /// Offers this device received, by transfer, waiting for its person.
     offers: BTreeMap<[u8; 16], Offer>,
-    /// Objects this device offered, by transfer, waiting for the receiving
-    /// device's checkpoint.
+    /// Objects this device offered, by transfer, waiting for the receiving device's checkpoint.
     offering: BTreeMap<[u8; 16], Offered>,
     /// Where each accepted receive installs what it receives.
     installing: BTreeMap<[u8; 16], SecureNearbyDestination>,
@@ -220,8 +216,8 @@ struct State {
     /// The folder each connection chose to remember for this session.
     remembered: BTreeMap<String, PathBuf>,
     queues: Queues,
-    /// The digest of the view the last pass announced, so a change is said
-    /// once and an idle desktop wakes nobody.
+    /// The digest of the view the last pass announced, so a change is said once and an idle desktop
+    /// wakes nobody.
     observed: Option<u64>,
 }
 
@@ -344,8 +340,8 @@ impl State {
     }
 }
 
-/// This session's Nearby Send: what it may offer, what it holds, and the
-/// thread that owns the spool.
+/// This session's Nearby Send: what it may offer, what it holds, and the thread that owns the
+/// spool.
 pub struct NearbyTransfer {
     inner: Arc<Inner>,
 }
@@ -361,19 +357,19 @@ impl std::fmt::Debug for NearbyTransfer {
 }
 
 struct Inner {
-    /// The fabric this session runs on; `None` on a session that is no
-    /// certified device of the person's, which reaches none of their others.
+    /// The fabric this session runs on; `None` on a session that is no certified device of the
+    /// person's, which reaches none of their others.
     link: Option<SharedLink>,
     continuity: Continuity,
     /// Where staged objects live: `None` on a session that keeps no state,
     /// where a send is refused rather than half-staged.
     spool: Option<PathBuf>,
-    /// What the session's loop is told to turn, so a hand-over that finished
-    /// on the worker reaches the person on the next frame.
+    /// What the session's loop is told to turn, so a hand-over that finished on the worker reaches
+    /// the person on the next frame.
     wake: Wake,
     jobs: Mutex<Sender<Job>>,
-    /// Where a workspace's grants are read: what Files there may read, and
-    /// where a received file may land.
+    /// Where a workspace's grants are read: what Files there may read, and where a received file
+    /// may land.
     authority: Mutex<Option<Arc<dyn WorkspaceAuthority>>>,
     state: Mutex<State>,
     /// The revision Files' waits follow.
@@ -387,10 +383,9 @@ enum Job {
         transfer_id: [u8; 16],
         target: DeviceId,
         source: SecureNearbySource,
-        /// Whether the bytes start at once, or wait for the receiving
-        /// device's checkpoint: a screenshot the person already picked a
-        /// device for streams now, a file whose receiver must still choose a
-        /// folder waits for that choice.
+        /// Whether the bytes start at once, or wait for the receiving device's checkpoint: a
+        /// screenshot the person already picked a device for streams now, a file whose receiver
+        /// must still choose a folder waits for that choice.
         stream_now: bool,
     },
     /// A studio send: open the screenshot, stage it, offer it, and answer.
@@ -410,7 +405,7 @@ enum Job {
     },
     /// Offer a staged object again, at this device's own initiative.
     Reoffer { transfer_id: [u8; 16] },
-    /// Accept an offer this device's person approved, into `destination`.
+    /// Accept an offer this device's person approved, into `destination` .
     Accept {
         transfer_id: [u8; 16],
         manifest: IncomingManifest,
@@ -485,8 +480,7 @@ impl NearbyTransfer {
         Ok(Arc::new(Self { inner }))
     }
 
-    /// The workspaces' grants are read from the desk `authority` decides
-    /// against.
+    /// The workspaces' grants are read from the desk `authority` decides against.
     pub(crate) fn attach_authority(&self, authority: Arc<dyn WorkspaceAuthority>) {
         *self.inner.authority.lock_recover() = Some(authority);
     }
@@ -503,9 +497,8 @@ impl NearbyTransfer {
         self.inner.link.as_ref().map_or_else(Vec::new, devices)
     }
 
-    /// Send the file at `path` to `target` for the capture studio, answering
-    /// `reply` once it is on its way or refused. Returns the refusal it can
-    /// make here, or `None` when the worker took it.
+    /// Send the file at `path` to `target` for the capture studio, answering `reply` once it is on
+    /// its way or refused. Returns the refusal it can make here, or `None` when the worker took it.
     pub(crate) fn studio_send(
         &self,
         target: DeviceId,
@@ -533,8 +526,8 @@ impl NearbyTransfer {
         }
     }
 
-    /// One of the person's devices addressed this one: what it says of the
-    /// transfer it offers, accepts, withdraws or finished.
+    /// One of the person's devices addressed this one: what it says of the transfer it offers,
+    /// accepts, withdraws or finished.
     pub(crate) fn action(
         &self,
         source: &DeviceId,
@@ -681,8 +674,8 @@ impl NearbyTransfer {
         self.inner.changed();
     }
 
-    /// One pass of the session's loop: withdraw offers nobody decided, offer
-    /// again what no device acknowledged, and say what moved.
+    /// One pass of the session's loop: withdraw offers nobody decided, offer again what no device
+    /// acknowledged, and say what moved.
     pub(crate) fn pump(&self) {
         if self.inner.continuity.file_transfer_permitted() {
             self.inner.expire_offers();
@@ -691,14 +684,13 @@ impl NearbyTransfer {
         self.inner.observe();
     }
 
-    /// The files under `workspace` that Files may write into, widest grant
-    /// first: where a received file can land.
+    /// The files under `workspace` that Files may write into, widest grant first: where a received
+    /// file can land.
     fn destinations(&self, workspace: &str) -> Vec<(PathBuf, String)> {
         destinations(self.inner.authority.lock_recover().as_ref(), workspace)
     }
 
-    /// What `context`'s connection may see now, with a handle for each thing
-    /// it may name.
+    /// What `context` 's connection may see now, with a handle for each thing it may name.
     fn snapshot(&self, context: &NearbyTransferRequestContext) -> NearbyTransferSnapshot {
         let now = Instant::now();
         let peer_id = context.peer_id();
@@ -775,8 +767,8 @@ impl NearbyTransfer {
         snapshot
     }
 
-    /// Offer the file `grant`-relative `path` names to `target`, as one more
-    /// Files send: the handle Files holds names it before it is staged.
+    /// Offer the file `grant` -relative `path` names to `target` , as one more Files send: the
+    /// handle Files holds names it before it is staged.
     fn send_file(
         &self,
         context: &NearbyTransferRequestContext,
@@ -1005,16 +997,15 @@ impl NearbyTransferServices for NearbyTransfer {
         }
         let mut changes = self.inner.changes.subscribe();
         Some(Box::pin(async move {
-            // Handles are renewed by a snapshot, so a wait that nothing else
-            // moves is still woken before the ones its holder has lapse.
+            // Handles are renewed by a snapshot, so a wait that nothing else moves is still woken
+            // before the ones its holder has lapse.
             let _ = tokio::time::timeout(HANDLE_REFRESH, changes.changed()).await;
             *changes.borrow_and_update()
         }))
     }
 }
 
-/// One transfer as Files' list shows it, from the live view and then the
-/// history behind it.
+/// One transfer as Files' list shows it, from the live view and then the history behind it.
 struct Row {
     transfer_id: [u8; 16],
     peer: DeviceId,
@@ -1258,9 +1249,8 @@ fn link_of(inner: &Inner) -> Result<&SharedLink, String> {
         .ok_or_else(|| "this session is no certified device of the person's".to_owned())
 }
 
-/// Open the file `path` names beneath the Files grant that holds it. Files
-/// names files by raw bytes: a name that is not UTF-8 is still one the person
-/// may send.
+/// Open the file `path` names beneath the Files grant that holds it. Files names files by raw
+/// bytes: a name that is not UTF-8 is still one the person may send.
 fn source_from_grants(
     requested: &Path,
     grants: &[Capability],
@@ -1285,8 +1275,8 @@ fn source_from_grants(
     SecureNearbySource::open_beneath(grant, requested)
 }
 
-/// The folders Files may write into in `workspace`, as paths and the names
-/// the person knows them by.
+/// The folders Files may write into in `workspace` , as paths and the names the person knows them
+/// by.
 fn destinations(
     authority: Option<&Arc<dyn WorkspaceAuthority>>,
     workspace: &str,
@@ -1331,8 +1321,8 @@ fn destinations(
         .collect()
 }
 
-/// Whether `action` is one the transfer engine carries: the offer, a
-/// checkpoint, a withdrawal, a restart or where a transfer ended.
+/// Whether `action` is one the transfer engine carries: the offer, a checkpoint, a withdrawal, a
+/// restart or where a transfer ended.
 #[must_use]
 pub(crate) fn carried_by_engine(action: &PersonalFabricAction) -> bool {
     matches!(
@@ -1357,7 +1347,7 @@ fn folder_label(path: &Path) -> String {
     }
 }
 
-/// `text`, cut to `limit` bytes on a character boundary.
+/// `text` , cut to `limit` bytes on a character boundary.
 fn clamp(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_owned();
@@ -1374,8 +1364,8 @@ fn clamp(text: &str, limit: usize) -> String {
     }
 }
 
-/// Progress in whole percent: a snapshot moves on with every chunk, and
-/// Files hears of it at most a hundred times a transfer.
+/// Progress in whole percent: a snapshot moves on with every chunk, and Files hears of it at most a
+/// hundred times a transfer.
 fn percent(done: u64, total: u64) -> u64 {
     done.min(total)
         .saturating_mul(100)
@@ -1383,8 +1373,8 @@ fn percent(done: u64, total: u64) -> u64 {
         .unwrap_or(0)
 }
 
-/// Stage `source` and offer it to `target`, streaming at once when the
-/// receiving device need not choose a folder first.
+/// Stage `source` and offer it to `target` , streaming at once when the receiving device need not
+/// choose a folder first.
 fn stage(
     inner: &Inner,
     store: &mut Option<NearbyTransferStore>,
@@ -1408,8 +1398,8 @@ fn stage(
         total_bytes: staged.total_bytes,
         content_hash: staged.content_hash,
     };
-    // The offer is recorded as out before it leaves, so a checkpoint that
-    // answers it at once finds the transfer it speaks of.
+    // The offer is recorded as out before it leaves, so a checkpoint that answers it at once finds
+    // the transfer it speaks of.
     {
         let mut state = inner.state.lock_recover();
         state.offering.insert(
@@ -1450,8 +1440,7 @@ fn stage(
     Ok(())
 }
 
-/// Stream the staged object `transfer_id` to `target` from the checkpoint it
-/// says it holds.
+/// Stream the staged object `transfer_id` to `target` from the checkpoint it says it holds.
 fn stream(
     inner: &Inner,
     store: &NearbyTransferStore,
@@ -1493,8 +1482,7 @@ fn stream(
     Ok(())
 }
 
-/// Stream what the receiving device's checkpoint names, once the offer really
-/// was made to it.
+/// Stream what the receiving device's checkpoint names, once the offer really was made to it.
 fn share(
     inner: &Inner,
     store: &mut Option<NearbyTransferStore>,
@@ -1607,8 +1595,8 @@ fn accept(
     Ok(())
 }
 
-/// Drop a receive nobody took: tell its sending device where it stands, and
-/// remove what was kept of it.
+/// Drop a receive nobody took: tell its sending device where it stands, and remove what was kept of
+/// it.
 fn cancel_incoming(inner: &Inner, store: &mut Option<NearbyTransferStore>, transfer_id: [u8; 16]) {
     let offer = {
         let mut state = inner.state.lock_recover();
@@ -1850,8 +1838,8 @@ fn settled(
     {
         return;
     }
-    // The receiving device either installed the file or refused it: either
-    // way this device no longer needs the staged copy.
+    // The receiving device either installed the file or refused it: either way this device no
+    // longer needs the staged copy.
     if let Err(error) = store.cancel_outgoing(transfer_id) {
         tracing::warn!(%error, "a staged send was not removed");
     }
@@ -1937,8 +1925,8 @@ impl Inner {
         });
     }
 
-    /// A fresh handle bound to `peer_id`'s connection on `channel`, for one
-    /// send this session starts itself.
+    /// A fresh handle bound to `peer_id` 's connection on `channel` , for one send this session
+    /// starts itself.
     fn issue_transfer(
         &self,
         peer_id: u64,
@@ -1950,8 +1938,7 @@ impl Inner {
             .bind_transfer(peer_id, channel, transfer_id, Instant::now())
     }
 
-    /// What Files in `workspace` may read: the filesystem grants its workspace
-    /// carries for it.
+    /// What Files in `workspace` may read: the filesystem grants its workspace carries for it.
     fn files_grants(&self, workspace: &str) -> Vec<Capability> {
         let authority = self.authority.lock_recover().clone();
         let Some(authority) = authority else {
@@ -2008,8 +1995,8 @@ impl Inner {
         if !self.continuity.file_transfer_permitted() {
             return refuse("file transfer is turned off on this device");
         }
-        // A media handoff is admitted by the action that named it, which this
-        // session carries none of: nothing of that kind lands here.
+        // A media handoff is admitted by the action that named it, which this session carries none
+        // of: nothing of that kind lands here.
         if kind == TransferKind::MediaHandoff {
             return refuse("this session takes no media handoff");
         }
@@ -2091,8 +2078,7 @@ impl Inner {
         }
     }
 
-    /// Offer again every staged object no device acknowledged, and nothing
-    /// while nothing is due.
+    /// Offer again every staged object no device acknowledged, and nothing while nothing is due.
     fn offer_again(&self) {
         let now = Instant::now();
         let due: Vec<[u8; 16]> = {
@@ -2137,9 +2123,8 @@ impl Inner {
         }
     }
 
-    /// A digest of everything a snapshot is built from. It may change when
-    /// the snapshot would not (one extra ask is harmless); it never stays the
-    /// same when the snapshot would change.
+    /// A digest of everything a snapshot is built from. It may change when the snapshot would not
+    /// (one extra ask is harmless); it never stays the same when the snapshot would change.
     fn digest(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for device in self.link.as_ref().map_or_else(Vec::new, devices) {
@@ -2223,9 +2208,9 @@ mod tests {
     }
 }
 
-/// Two of the person's devices, on this machine's loopback with real
-/// certificates and the real peer actor: what Files sends from one reaches
-/// the other as the same bytes, and both Files lists say so.
+/// Two of the person's devices, on this machine's loopback with real certificates and the real peer
+/// actor: what Files sends from one reaches the other as the same bytes, and both Files lists say
+/// so.
 #[cfg(all(test, target_os = "linux"))]
 mod transfers_between_devices {
     #![allow(
@@ -2309,8 +2294,7 @@ mod transfers_between_devices {
         ed25519_dalek::SigningKey::from_bytes(&[21; 32])
     }
 
-    /// The person's continuity switches with nothing turned off, as their
-    /// settings say.
+    /// The person's continuity switches with nothing turned off, as their settings say.
     fn permitted() -> Continuity {
         let continuity = Continuity::default();
         let document: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
@@ -2321,8 +2305,7 @@ mod transfers_between_devices {
         continuity
     }
 
-    /// The desk this device decides against: one workspace, whose Files grant
-    /// is `folder`.
+    /// The desk this device decides against: one workspace, whose Files grant is `folder` .
     struct Desk {
         tree: DesktopTree,
     }
@@ -2334,7 +2317,7 @@ mod transfers_between_devices {
         }
     }
 
-    /// The desk of a device whose Files may read and write `folder`.
+    /// The desk of a device whose Files may read and write `folder` .
     fn desk(folder: &Path) -> Desk {
         let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
         let slot = WorkspaceSlot::of_workspace(workspace_id);
@@ -2356,8 +2339,8 @@ mod transfers_between_devices {
         }
     }
 
-    /// One of the person's devices, certified by `person`, on its own key, its
-    /// Files granted `folder` and its transfers staged in `spool`.
+    /// One of the person's devices, certified by `person` , on its own key, its Files granted
+    /// `folder` and its transfers staged in `spool` .
     fn device(
         person: &ed25519_dalek::SigningKey,
         seed: u8,
@@ -2428,8 +2411,8 @@ mod transfers_between_devices {
         }
     }
 
-    /// One pass of each session's loop, as the session's own loop makes it:
-    /// what the devices sent is carried out, the Nearby Sends by the engine.
+    /// One pass of each session's loop, as the session's own loop makes it: what the devices sent
+    /// is carried out, the Nearby Sends by the engine.
     fn pass(devices: &[&Device]) {
         for device in devices {
             device.client.follow();
@@ -2437,8 +2420,7 @@ mod transfers_between_devices {
         }
     }
 
-    /// Run the sessions' passes until `done` holds, or the deadline passes:
-    /// whether `done` held.
+    /// Run the sessions' passes until `done` holds, or the deadline passes: whether `done` held.
     fn until(devices: &[&Device], mut done: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + DEADLINE;
         loop {
@@ -2453,7 +2435,7 @@ mod transfers_between_devices {
         }
     }
 
-    /// The file a snapshot lists for `name`, if it lists one.
+    /// The file a snapshot lists for `name` , if it lists one.
     fn listed(snapshot: &NearbyTransferSnapshot, name: &str) -> Option<NearbyTransferStatus> {
         snapshot
             .transfers
@@ -2499,8 +2481,8 @@ mod transfers_between_devices {
             "the two devices' sessions came up"
         );
 
-        // Files on the laptop lists the desk, and the desk's own folder as
-        // where a file it receives would land.
+        // Files on the laptop lists the desk, and the desk's own folder as where a file it receives
+        // would land.
         let targets = laptop.snapshot().targets;
         let target = targets
             .iter()

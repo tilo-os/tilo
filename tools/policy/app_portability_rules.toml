@@ -28,6 +28,17 @@ schema = 1
 # crates, which get only `model-rules`.
 model-crates = "apps/*-model"
 model-rules = ["R1", "R2", "R3", "D1", "D2"]
+# What a model crate is built on beyond `ui` and the platform crates: the
+# record layer it is the record of (its document, resource types, references
+# and actions) and the guest ABI the document host loads it by. It never links
+# the toolkit, so it names the layer `ui` re-exports rather than `ui`.
+model-allowed-packages = [
+    "tilo-document",
+    "tilo-resource",
+    "tilo-actions",
+    "tilo-reference",
+    "tilo-model-guest",
+]
 exempt-dirs = ["tests", "benches", "examples"]
 
 # Apps that declare every one of these platforms may contain none of these
@@ -198,7 +209,10 @@ severity = "warn"
 # `tilo-recurrence` is the SDK's RFC 5545 recurrence rules for apps: the stored
 # rule text, its expansion, and the repeat presets a picker shows, portable to
 # every target.
-allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui", "tilo-rich-text", "tilo-page-raster", "tilo-recurrence"]
+# `wire-frame` is the tree's one socket framer, std-only and portable: an app
+# that speaks a protocol over a stream a platform crate opened frames it with
+# these bytes rather than carrying a framer of its own.
+allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui", "tilo-rich-text", "tilo-page-raster", "tilo-recurrence", "wire-frame"]
 # `vendor/*` holds forks of third-party crates (winit, vello, …), which stand
 # in for the upstream crate an app would otherwise depend on.
 # `crates/runtime/engines/*` are engine libraries beside the runtime,

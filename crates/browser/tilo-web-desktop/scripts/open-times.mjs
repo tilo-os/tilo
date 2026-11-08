@@ -1,4 +1,5 @@
 import {summarizeOpenTimes} from './open-times-summary.mjs';
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 
 // Open every application of a built desktop bundle in headless Chromium and
 // time each open: from dispatching the desktop's `launch` command (what an
@@ -69,7 +70,7 @@ const open = (app, withMetrics) => `(async () => {
     observer.observe(host, {attributes: true, attributeFilter: ['data-frames']});
   });
   const start = performance.now();
-  await nav.dispatch({kind: 'launch', generation: snapshot.generation, app: ${JSON.stringify(app)}});
+  await nav.dispatch(${JSON.stringify(verb.openApp(app))});
   const end = await Promise.race([presented, new Promise(r => setTimeout(() => r(NaN), 10000))]);
   const after = nav.getSnapshot();
   const opened = after.entries.length === before + 1 && after.entries.some(e => e.route.tab === after.active?.tab && e.label);

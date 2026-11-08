@@ -56,9 +56,6 @@ pub trait Host {
     }
 
     /// A tool's standard output (30 s timeout, nonzero exit refused).
-    ///
-    /// # Errors
-    /// The tool failing, missing or timing out.
     fn run(&self, argv: &[&str]) -> Result<Vec<u8>> {
         crate::process::checked(argv, TIMEOUT)
     }
@@ -110,9 +107,6 @@ fn non_empty_str(value: &Value) -> Option<&str> {
 
 /// What the booted image is: its reference, manifest digest, composefs
 /// digest and ostree checksum.
-///
-/// # Errors
-/// `bootc status` failing, or an identity missing or malformed.
 pub fn booted_identity(host: &dyn Host) -> Result<Value> {
     let status = json(&host.run(&["bootc", "status", "--json"])?)?;
     let booted = field(field(&status, "status")?, "booted")?;
@@ -170,9 +164,6 @@ pub fn booted_identity(host: &dyn Host) -> Result<Value> {
 
 /// What the cached Podman copy is: its image ID and the hash of its raw
 /// manifest, which binds the layers.
-///
-/// # Errors
-/// A tool failing, or an identity missing or malformed.
 pub fn cached_image_identity(host: &dyn Host) -> Result<Value> {
     let details = json(&host.run(&["podman", "image", "inspect", IMAGE])?)?;
     let [detail] = details.as_array().map(Vec::as_slice).unwrap_or_default() else {
@@ -239,10 +230,6 @@ pub fn can_reuse(host: &dyn Host) -> bool {
 }
 
 /// Records the receipt for what is booted and cached now.
-///
-/// # Errors
-/// The opt-in absent, an identity unavailable, an unsafe receipt directory
-/// or receipt, or a write failing.
 pub fn record(host: &dyn Host) -> Result<()> {
     require(enabled(host), "VM cache opt-in is absent")?;
     let receipt = current_receipt(host)?;

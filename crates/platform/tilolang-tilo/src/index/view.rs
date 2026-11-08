@@ -57,9 +57,6 @@ pub fn child(resource: &str, id: &str) -> String {
 
 impl View<'_> {
     /// The value of `field` of `resource`, if the index holds one.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn field(&self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
         // A resource's versions are the log's, with the provisional ones of the actions this
         // device committed and the record does not hold yet.
@@ -72,9 +69,6 @@ impl View<'_> {
     /// The items that left the collection `field` of `holder`, in the order they left, each
     /// with the version that removed it ([`super::REMOVED`]): what a list shows of them struck
     /// until the person has seen them go.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn removed(&self, holder: &str, field: &str) -> Result<Vec<(String, Version)>, IndexError> {
         let Some(json) = self.text(holder, &super::removed_field(field))? else {
             return Ok(Vec::new());
@@ -89,9 +83,6 @@ impl View<'_> {
 
     /// The newest version of `resource` (the store's open writes included), else `None`: what a
     /// mark of it says, read without the resource's log.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn newest(&self, resource: &str) -> Result<Option<Version>, IndexError> {
         if let Some(written) = self.overlay.newest(resource) {
             return Ok(written.map(|stamp| stamp.version.clone()));
@@ -106,9 +97,6 @@ impl View<'_> {
     /// items a collection of one of them had removed), at most `page` of them, most recent
     /// first, and whether the document holds more, the store's open writes included: what a
     /// window's mark counts the unseen changes of, and the order a catch-up lists them in.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn newest_page(
         &self,
         path: &str,
@@ -146,9 +134,6 @@ impl View<'_> {
     }
 
     /// The type (`$type`) or order key (`$key`) of `resource`.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn text(&self, resource: &str, key: &str) -> Result<Option<String>, IndexError> {
         if let Some(written) = self.overlay.text(resource, key) {
             return Ok(written);
@@ -158,9 +143,6 @@ impl View<'_> {
 
     /// The order key of the item at `path` in the collection `field` of `resource`: `None`
     /// when it is not in that collection.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn key_in(
         &self,
         path: &str,
@@ -173,9 +155,6 @@ impl View<'_> {
     }
 
     /// [`Self::key_in`] as the index holds it, without the open writes.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn held_key_in(
         &self,
         path: &str,
@@ -197,9 +176,6 @@ impl View<'_> {
     }
 
     /// The type of `resource`, if the index holds it.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn type_of(&self, resource: &str) -> Result<Option<String>, IndexError> {
         self.text(resource, TYPE)
     }
@@ -214,9 +190,6 @@ impl View<'_> {
     }
 
     /// The items of the collection `field` of `resource`, in order.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn list(&self, resource: &str, field: &str) -> Result<Merged, IndexError> {
         let name = member_list(resource, field);
         let merged = match self.overlay.list(resource, &name) {
@@ -294,9 +267,6 @@ impl View<'_> {
 
     /// The values the column `column` of the resource at `path` (of `schema`) holds as this
     /// view reads its fields: a collection as how many items it holds.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub(super) fn column_values(
         &self,
         path: &str,
@@ -314,9 +284,6 @@ impl View<'_> {
 
     /// Whether `pred`, a test over the fields of `schema` by id (a type's `primary`), holds of
     /// the resource at `path` as this view reads its fields, as a named filter's column holds.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn passes(
         &self,
         path: &str,
@@ -336,9 +303,6 @@ impl View<'_> {
     }
 
     /// The listing of the collection `field` of `resource`, read page by page.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn listing(&self, resource: &str, field: &str) -> Result<Listing, IndexError> {
         Ok(Listing::paged(Rc::new(self.list(resource, field)?)))
     }
@@ -373,9 +337,6 @@ impl View<'_> {
     }
 
     /// Where the item `id` is in the collection `field` of `resource`.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn position(
         &self,
         resource: &str,
@@ -394,9 +355,6 @@ impl View<'_> {
     /// the path of the resource holding it: its own texts name it before its items' do, its
     /// first text field first, and only a resource holding no text of its own falls back to its
     /// items ([`crate::reads::first_text`]). The text names it by its first non-blank line.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn first_text(
         &self,
         path: &str,
@@ -444,9 +402,6 @@ impl View<'_> {
     /// Every resource holding a text that is not blank, by path, with its schema and those
     /// texts in field order ([`Texts`]): what search finds of the package. One pass over the index's
     /// fields; a resource the open writes touched is read through them.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn every_text(&self) -> Result<Vec<Texts>, IndexError> {
         let mut out = Vec::new();
         let mut seen = BTreeSet::new();
@@ -517,9 +472,6 @@ impl View<'_> {
 
     /// The resources the rich text of the resource at `path` refers to, each once, in the one
     /// form: what search finds it by as they are called now, and what its backlinks are.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn references(&self, path: &str, schema: &TypeSchema) -> Result<Vec<String>, IndexError> {
         let mut out: Vec<String> = Vec::new();
         for field in schema
@@ -543,9 +495,6 @@ impl View<'_> {
 
     /// The texts of the resource at `path`, in field order, that are not blank: what search
     /// finds it by, as stored (read for a reader by whoever shows them).
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn texts(&self, path: &str, schema: &TypeSchema) -> Result<Vec<FieldValue>, IndexError> {
         let mut out = Vec::new();
         for field in schema.fields.iter().filter(|f| f.kind.holds_text()) {
@@ -573,9 +522,6 @@ fn held(entries: Vec<Entry>) -> Base {
 /// How the listing of the collection `coll` went from `before` to `after`, for the items
 /// `ids` (those added, removed or moved): removals from the end first, then insertions in
 /// order, each index the one the steps before it left.
-///
-/// # Errors
-/// The index cannot be read or is corrupt.
 pub fn splices(
     before: &View<'_>,
     after: &View<'_>,
@@ -638,9 +584,6 @@ pub fn splices(
 }
 
 /// Every resource of the index (records and items) with text, by path: what search lists.
-///
-/// # Errors
-/// The index cannot be read or is corrupt.
 pub fn resources(snapshot: &Snapshot) -> Result<BTreeMap<String, String>, IndexError> {
     let mut out = BTreeMap::new();
     for (doc, ty, _chunk) in snapshot.docs()? {

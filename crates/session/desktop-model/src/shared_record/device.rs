@@ -1,31 +1,15 @@
 //! One device's copy of a workspace's layout record.
-//!
-//! The record ([`super`]) is the workspace's layout, shared by every device
-//! that shows the workspace. Each device applies its own changes to the record
-//! when they happen, online or offline, and folds in what the others did once
-//! their changes arrive. Nothing waits for another device, and nothing is sent
-//! to the device a window runs on to be applied there.
-//!
-//! Merge rules, which automerge gives per field of an entry:
-//!
-//! - Where an entry is (its parent and its order among its siblings) is one
-//!   last-writer-wins value per field. Concurrent moves of one window leave it
-//!   in the one place every device picks the same way; moves of different
-//!   windows all land.
-//! - A close deletes the entry, so a move made concurrently, which writes
-//!   only inside it, does not bring it back.
-//! - A window moved into a group closed meanwhile keeps a group of its own
-//!   ([`super::read`]).
-//!
-//! What the record never holds is decided by each device alone, and folding
-//! keeps it by id: group widths, maximization, the active tab, focus history,
-//! which of this device's displays shows a group, and how this device shows a
-//! window. A window that runs only on one device is written as a
-//! [`TileContent::HostedWindow`] naming that device; the host shows its
-//! live surface where the record places it, every other device a stream of it.
-//! A device's own way of showing a window (a live surface, a peer's window
-//! before a local instance is bound to it) is never written back: a window's
-//! content is written only when it changed in what every device sees.
+//! The record ([`super`]) is shared by every device that shows the workspace. Each
+//! device applies its own changes when they happen, online or offline, and folds in
+//! what the others did once their changes arrive: nothing waits for another device,
+//! and nothing is sent to the device a window runs on to be applied there.
+//! The merge rules are automerge's per field of an entry: where an entry is is one
+//! last-writer-wins value per field, a close deletes the entry so a concurrent move
+//! does not bring it back, and a window moved into a group closed meanwhile keeps a
+//! group of its own.
+//! What the record never holds is decided by each device alone and kept by id:
+//! widths, maximization, the active tab, focus history, which display shows a
+//! group, and how this device shows a window. That is never written back.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 

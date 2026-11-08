@@ -171,11 +171,6 @@ impl RoamingProvenance {
     }
 
     /// Load and validate provenance from the configured settings directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when no configuration directory is available or
-    /// the sidecar cannot be read, and forwards decoding and validation errors.
     pub fn load() -> Result<Self, ProvenanceError> {
         let path = path()
             .ok_or_else(|| ProvenanceError::Io(std::io::Error::other("no config directory")))?;

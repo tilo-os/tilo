@@ -293,9 +293,6 @@ impl Draft {
 
     /// Whether every one of `edits` changes a field this draft offers for
     /// editing to a value of its type.
-    ///
-    /// # Errors
-    /// The first edit that does not.
     pub fn check_edits(&self, edits: &[DraftEdit]) -> Result<(), String> {
         edits
             .iter()

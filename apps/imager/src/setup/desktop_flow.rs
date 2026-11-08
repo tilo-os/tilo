@@ -197,10 +197,6 @@ impl DesktopFlow {
     }
 
     /// Begin a fresh non-mutating readiness check.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the readiness worker cannot be launched.
     pub fn start_check(&mut self) -> Result<(), String> {
         self.cancel = None;
         self.cancel_requested = false;
@@ -218,11 +214,6 @@ impl DesktopFlow {
     }
 
     /// Recheck the exact reviewed release before starting a download.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no release is ready or the readiness worker cannot
-    /// be launched.
     pub fn start_install(&mut self) -> Result<(), String> {
         let DesktopFlowState::Ready(selection) = &self.state else {
             return Err("Desktop installation is not ready for authorization.".into());
@@ -238,10 +229,6 @@ impl DesktopFlow {
     }
 
     /// Retry always re-probes; prior UI state never authorizes another attempt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the readiness worker cannot be launched.
     pub fn retry(&mut self) -> Result<(), String> {
         self.approved_selection = None;
         self.start_check()

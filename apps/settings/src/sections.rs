@@ -162,5 +162,6 @@ fn held_sections(cx: &ViewCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
     hold::<crate::prefs::OskSourceSettings>(cx, &mut held);
     hold::<crate::prefs::DeviceVpnPrefs>(cx, &mut held);
     hold::<crate::prefs::NetworkUsage>(cx, &mut held);
+    hold::<crate::prefs::AgentDoorDevice>(cx, &mut held);
     held
 }

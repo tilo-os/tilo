@@ -1,20 +1,13 @@
-//! This device's workspaces: the engine that holds the state of every
-//! workspace the person joined, and the enrollment that brings a joined
-//! workspace's state here.
-//!
-//! A workspace's state — its people, what its apps recorded, its history — is
-//! held by the peer-state engine beside the desk ([`NativeWorkspaceOwner`]),
-//! in a file of its own under this device's state ([`FILE`]). Joining a
-//! workspace redeems the invitation its door answered with
-//! ([`tilo_peer_state::owner::enroll::prepare_and_complete`]), which is how
-//! this device becomes a member of the workspace and takes in what it held
-//! before this device arrived: a late joiner reads the whole history, not only
-//! what is recorded from now on.
-//!
-//! The engine keeps the workspace id each workspace on the desk is held under
-//! ([`Slots`]), because an enrollment installs into the workspace made for it
-//! and nowhere else.
-
+//! This device's workspaces: the engine that holds the state of every workspace
+//! the person joined, and the enrollment that brings a joined workspace's state
+//! here.
+//! A workspace's state — its people, what its apps recorded, its history — is held
+//! by the peer-state engine beside the desk ([`NativeWorkspaceOwner`]), in a file of
+//! its own under this device's state ([`FILE`]). Joining redeems the invitation its
+//! door answered with ([`tilo_peer_state::owner::enroll::prepare_and_complete`]),
+//! and a late joiner reads the whole history, not only what is recorded from now
+//! on. The engine keeps the id each workspace on the desk is held under
+//! ([`Slots`]), because an enrollment installs into the workspace made for it.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,15 +30,15 @@ use tilo_user_identity::RevocationList;
 use crate::channels;
 use crate::sync;
 
-/// The engine's record, under this device's state directory: the name an
-/// earlier build kept it under, so the state it wrote is still read.
+/// The engine's record, under this device's state directory: the name an earlier build kept it
+/// under, so the state it wrote is still read.
 const FILE: &str = "rooms.json";
 
 /// The largest document the session reads out of a workspace.
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 
-/// Someone a workspace has in it: the person, as their user key in hex, the
-/// name the workspace knows them by, and the part they take in it.
+/// Someone a workspace has in it: the person, as their user key in hex, the name the workspace
+/// knows them by, and the part they take in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {
     /// The person (user root, hex).
@@ -65,15 +58,14 @@ pub enum NotDeletable {
     NotHeld,
     /// Someone else is still in it, so it is not this device's to delete.
     OthersInIt,
-    /// Another of the person's devices holds it too: deleting it here would
-    /// not delete it for them.
+    /// Another of the person's devices holds it too: deleting it here would not delete it for them.
     OtherDevice,
     /// It belongs to someone else.
     NotOwner,
 }
 
-/// An invitation this device made: the link a person hands over, the part it
-/// brings whoever redeems it in at, and when it stops working.
+/// An invitation this device made: the link a person hands over, the part it brings whoever redeems
+/// it in at, and when it stops working.
 #[derive(Clone, Debug)]
 pub(crate) struct Issued {
     /// The invitation's id, as the workspace's own records name it.
@@ -86,8 +78,8 @@ pub(crate) struct Issued {
     pub(crate) expires_at_ns: u64,
 }
 
-/// The workspace id each workspace on the desk is held under, as the engine's
-/// record names them and the desk names its own.
+/// The workspace id each workspace on the desk is held under, as the engine's record names them and
+/// the desk names its own.
 #[derive(Default)]
 struct Slots(std::sync::Mutex<BTreeMap<WorkspaceSlot, WorkspaceId>>);
 
@@ -108,9 +100,8 @@ impl FileHost for Slots {
         self.0.lock_recover().get(&slot).copied()
     }
 
-    /// Bind the workspace an enrollment installs into to its workspace id
-    /// before the record reaches the disk: a publication refused here installs
-    /// nothing.
+    /// Bind the workspace an enrollment installs into to its workspace id before the record reaches
+    /// the disk: a publication refused here installs nothing.
     fn publish(
         &self,
         _next: &tilo_peer_state::owner::NativeAuthorityStorage,
@@ -141,25 +132,41 @@ impl FileHost for Slots {
     }
 }
 
+/// What this device may seal a workspace's record with ([`Engine::seal_keys`]): the channel's keys,
+/// the wait for them, or this device's own lack of a secret store to hold any.
+pub(crate) enum SealKeys {
+    /// The keys this device seals the record's writes with.
+    Here(channel_crypto::ChannelContentKeys),
+    /// The keys are not here yet: the answer arrives as the workspace's other messages do, and the
+    /// write waits for it.
+    Waiting,
+    /// This device has no secret store, so it holds no channel keys of any
+    /// workspace: a sealed record is one it can neither write nor read here,
+    /// and no workspace refused anything.
+    NoSecretStore,
+}
+
 /// This device's workspaces, and the identity they are held with.
 pub struct Engine {
     owner: NativeWorkspaceOwner,
     slots: Arc<Slots>,
     identity: HostIdentity,
-    /// Where the workspaces' channels find this device's keys, once the
-    /// channel service is running: the session opens the workspaces before it
-    /// opens the service, and every reader of a sealed record goes through
-    /// this.
+    /// Where the workspaces' channels find this device's keys, once the channel service is running:
+    /// the session opens the workspaces before it opens the service, and every reader of a sealed
+    /// record goes through this.
     keys: ChannelKeyProvider,
-    /// The workspace transport of this session's collaboration plane, once it
-    /// runs: a record the workspace's hosts send only once asked is asked for
-    /// here, and the plane is gone while this is `None`.
+    /// The workspace transport of this session's collaboration plane, once it runs: a record the
+    /// workspace's hosts send only once asked is asked for here, and the plane is gone while this
+    /// is `None` .
     link: std::sync::Mutex<Option<Arc<channels::ChannelLink>>>,
-    /// The desk's workspaces this device could not found here: founding one
-    /// is asked for again only by a later session, not by every pass over the
-    /// desk.
+    /// The desk's workspaces this device could not found here: founding one is asked for again only
+    /// by a later session, not by every pass over the desk.
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
 }
+
+/// A record's bytes, with the heads they were last saved at: what [`Engine::record_since`] answers
+/// when the record changed since the caller last read it.
+type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -170,13 +177,9 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
-    /// Open this device's workspaces under `state`, with the workspaces the
-    /// desk already holds: an enrollment only ever installs into the workspace
-    /// made for it, so the engine knows which one that is before it is asked.
-    ///
-    /// A session that keeps no state (a screenshot, a test without a state
-    /// directory) holds no workspace.
-    ///
+    /// Open this device's workspaces under `state`, with the workspaces the desk
+    /// already holds. A session that keeps no state (a screenshot, a test without a
+    /// state directory) holds no workspace.
     /// # Errors
     /// The record holds no valid state, or the file cannot be written.
     pub fn open(
@@ -204,8 +207,8 @@ impl Engine {
         })
     }
 
-    /// This device's engine, when this computer has an identity and a state
-    /// directory to keep its workspaces in.
+    /// This device's engine, when this computer has an identity and a state directory to keep its
+    /// workspaces in.
     pub(crate) fn for_this_device(
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = (WorkspaceSlot, WorkspaceId)>,
@@ -226,26 +229,15 @@ impl Engine {
         self.owner.contains_workspace(workspace)
     }
 
-    /// What the workspace `workspace` holds of the app `app`'s `record`: the
-    /// document as the workspace last admitted it, which is what the desk
-    /// shows of it — also what it held before this device joined.
-    ///
-    /// A record the workspace keeps sealed opens with this device's channel
-    /// keys, so its history reads whole here: the keys a member holds reach
-    /// back past the membership it joined in. Reading one is taking part in
-    /// its channel ([`Self::join_channel`]): a device that holds none of its
-    /// keys yet asks the workspace for them, and reads the record once they
-    /// are here.
-    ///
-    /// A record the workspace's hosts send a device only once it asks (an
-    /// on-demand record, or a part of a chain behind its head) is asked for
-    /// on its first read, and reads as nothing yet until its history arrived
-    /// ([`Self::asks_for_record`]).
-    ///
+    /// What the workspace `workspace` holds of the app `app`'s `record`: the document
+    /// as the workspace last admitted it, also what it held before this device joined.
+    /// A sealed record opens with this device's channel keys, which reach back past the
+    /// membership it joined in; a device that holds none yet asks for them
+    /// ([`Self::join_channel`]) and reads the record once they are here. A record the
+    /// hosts send only once asked is asked for on its first read.
     /// # Errors
-    /// The workspace is not held here, this device may not read the record,
-    /// the record is sealed and this device holds no keys of it, or the
-    /// document cannot be read now.
+    /// The workspace is not held here, this device may not read the record, the record
+    /// is sealed and this device holds no keys of it, or the document cannot be read.
     pub fn record(
         &self,
         workspace: &str,
@@ -256,13 +248,9 @@ impl Engine {
             .map(|read| read.map(|(bytes, _)| bytes))
     }
 
-    /// [`Self::record`], with the heads the bytes were saved at, and told the heads `known`
-    /// this caller already holds of the record: a record whose admitted heads still are those
-    /// is answered as unchanged without capturing or saving the document at all. A desk read
-    /// on every pass is one whose document does not change between passes, and saving it each
-    /// time copied its whole history — a cost that grew with the workspace's life and an
-    /// allocation that grew with it.
-    ///
+    /// [`Self::record`], with the heads the bytes were saved at, and told the heads
+    /// `known` this caller already holds: a record whose admitted heads still are those
+    /// is answered as unchanged without capturing or saving the document at all.
     /// # Errors
     /// As [`Self::record`].
     pub fn record_since(
@@ -271,7 +259,7 @@ impl Engine {
         app: &str,
         record: &str,
         known: Option<[u8; 32]>,
-    ) -> Result<Option<(Vec<u8>, [u8; 32])>, String> {
+    ) -> Result<SavedRecord, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         if self.asks_for_record(workspace, app, record)? {
             return Ok(None);
@@ -288,10 +276,9 @@ impl Engine {
             return Ok(None);
         }
         let reader = self.identity.device_cert.device_public_key;
-        // Taken before the workspace's view is held: the channel service's
-        // pump settles the groups under its own lock and reads the
-        // workspace's governance there, so a read that asked it for keys
-        // while holding the view would wait on it as it waits on the view.
+        // Taken before the workspace's view is held: the channel service's pump settles the groups
+        // under its own lock and reads the workspace's governance there, so a read that asked it
+        // for keys while holding the view would wait on it as it waits on the view.
         let history = self.keys.get().and_then(|keys| {
             keys.history_keys(workspace, &collab_types::ChannelRoute::new(app, record))
         });
@@ -320,10 +307,8 @@ impl Engine {
         })
     }
 
-    /// Every record `workspace` holds here, by its app and id: what a reader
-    /// of the workspace's records is asked to index, without being told each
-    /// route. A workspace this device does not hold lists nothing.
-    ///
+    /// Every record `workspace` holds here, by its app and id. A workspace this device
+    /// does not hold lists nothing.
     /// # Errors
     /// The workspace is not held here, or its documents cannot be listed now.
     pub fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
@@ -332,11 +317,9 @@ impl Engine {
             .with_current(workspace, |view| Ok(view.peer().records()))
     }
 
-    /// Take part in the channel of `record` of `workspace`, whose keys this
-    /// device reads it with: the channel service asks the workspace's devices
-    /// for access the first time, and its governance answers with the group.
-    /// Says whether the keys are here; while they are not, the record reads as
-    /// nothing, and the answer arrives as the workspace's other messages do.
+    /// Take part in the channel of `record` of `workspace` : the channel service asks the
+    /// workspace's devices for access the first time, and its governance answers with the group.
+    /// Says whether the keys are here; while they are not, the record reads as nothing.
     pub(crate) fn join_channel(
         &self,
         workspace: WorkspaceId,
@@ -361,47 +344,40 @@ impl Engine {
         }
     }
 
-    /// The keys this device seals writes of `record` of `app` with in
-    /// `workspace`, a workspace whose records are its members' sealed
-    /// channels: `Ok(None)` while the record's channel keys are not here yet,
-    /// and the answer arrives as the workspace's other messages do. That
-    /// includes a channel the workspace's governance does not name this device
-    /// in yet, as it does on the first look after a session starts: the device
-    /// waits for the answer rather than being told it will never get one.
-    ///
+    /// The keys this device seals writes of `record` of `app` with in `workspace`.
+    /// [`SealKeys::Waiting`] says they are not here yet and will arrive as the
+    /// workspace's other messages do, which includes a channel the governance does not
+    /// name this device in yet. [`SealKeys::NoSecretStore`] is this device's own lack,
+    /// not any workspace's verdict.
     /// # Errors
-    /// This session has no channel service, this device has no secret store,
-    /// or the workspace removed it from the record's channel: it holds no
-    /// keys, and none are coming.
+    /// This session has no channel service, or the workspace removed this device from
+    /// the record's channel: it holds no keys, and none are coming.
     pub(crate) fn seal_keys(
         &self,
         workspace: WorkspaceId,
         app: &str,
         record: &str,
-    ) -> Result<Option<channel_crypto::ChannelContentKeys>, String> {
+    ) -> Result<SealKeys, String> {
         let Some(keys) = self.keys.get() else {
             return Err("this session's channel service is not running".to_owned());
         };
         let route = collab_types::ChannelRoute::new(app, record);
-        match keys.access_record(workspace, &route).0 {
-            ChannelAccess::Ready(keys) => Ok(Some(keys)),
-            // Asked and not admitted yet, or admitted nowhere the governance
-            // here can name: either way the keys are not here yet.
-            ChannelAccess::Waiting | ChannelAccess::Unavailable => Ok(None),
-            ChannelAccess::Removed => Err(format!(
-                "the workspace removed this device from {record}'s channel"
-            )),
-            ChannelAccess::NoSecretStore => {
-                Err("this device has no secret store, so it holds no channel keys".to_owned())
+        Ok(match keys.access_record(workspace, &route).0 {
+            ChannelAccess::Ready(keys) => SealKeys::Here(keys),
+            // Asked and not admitted yet, or admitted nowhere the governance here can name: either
+            // way the keys are not here yet.
+            ChannelAccess::Waiting | ChannelAccess::Unavailable => SealKeys::Waiting,
+            ChannelAccess::Removed => {
+                return Err(format!(
+                    "the workspace removed this device from {record}'s channel"
+                ));
             }
-        }
+            ChannelAccess::NoSecretStore => SealKeys::NoSecretStore,
+        })
     }
 
-    /// Ask `workspace`'s hosts for the record on `channel` the first time it
-    /// is read, and say whether it is one they send only once asked (an
-    /// on-demand record, or a part of a chain behind its head): its history
-    /// then arrives as the workspace's other documents do, and later reads ask
-    /// nobody.
+    /// Ask `workspace`'s hosts for the record on `channel` the first time it is read,
+    /// and say whether it is one they send only once asked.
     fn asks_for_record(
         &self,
         workspace: WorkspaceId,
@@ -422,10 +398,8 @@ impl Engine {
         Ok(true)
     }
 
-    /// The devices the workspace `workspace` admits, by the publisher each of
-    /// their sessions is known by: the roster its window streams carry between
-    /// ([`channels::roster_of`]).
-    ///
+    /// The devices the workspace `workspace` admits, by the publisher each of their
+    /// sessions is known by ([`channels::roster_of`]).
     /// # Errors
     /// The workspace is not held here, or its governance cannot be read.
     pub fn roster(&self, workspace: &str) -> Result<Vec<String>, String> {
@@ -438,9 +412,8 @@ impl Engine {
         })
     }
 
-    /// The devices the workspace admits, as a call's roster names them:
-    /// whoever its governance certified and has not removed may reach a call
-    /// in it.
+    /// The devices the workspace admits, as a call's roster names them: whoever its governance
+    /// certified and has not removed may reach a call in it.
     pub(crate) fn roster_devices(&self, workspace: &str) -> Result<Vec<[u8; 32]>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         channels::roster_of(self, workspace).map(|roster| {
@@ -451,10 +424,9 @@ impl Engine {
         })
     }
 
-    /// Who the workspace has in it, as its governance tells it: every person
-    /// it was shared with, by the name it knows them by and the part they take
-    /// in it. A joined workspace brings its people with it, so this is how the
-    /// desk knows them before any of them is here.
+    /// Who the workspace has in it, as its governance tells it: every person it was shared with, by
+    /// the name it knows them by and the part they take in it. A joined workspace brings its people
+    /// with it, so this is how the desk knows them before any of them is here.
     pub fn people(&self, workspace: &str) -> Result<Vec<Person>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.with_current(workspace, |view| {
@@ -474,10 +446,8 @@ impl Engine {
         })
     }
 
-    /// The people of `workspace` and the grants it makes, as its governance
-    /// here records them: the one source of who shares it, in what part, and
-    /// what each of them may do.
-    ///
+    /// The people of `workspace` and the grants it makes, as its governance records
+    /// them: the one source of who shares it, in what part, and what each may do.
     /// # Errors
     /// The workspace is not held here, or its governance cannot be read.
     pub fn policy(&self, workspace: &str) -> Result<WorkspacePolicy, String> {
@@ -486,10 +456,8 @@ impl Engine {
             .with_current(workspace, |view| view.peer().governance().governed_policy())
     }
 
-    /// Whether this device's person may administer `workspace` here: the
-    /// workspace's governance gives their person the grant action, which is
-    /// what a change to its people — letting an app author there — is decided
-    /// by. A workspace decided by another device's governance says no here,
+    /// Whether this device's person may administer `workspace` here: the governance gives their
+    /// person the grant action. A workspace decided by another device's governance says no,
     /// whatever this device holds of it.
     #[must_use]
     pub fn administers(&self, workspace: &str) -> bool {
@@ -508,8 +476,8 @@ impl Engine {
             .unwrap_or(false)
     }
 
-    /// The name `workspace` knows `person` by, when it knows one: what an
-    /// invitation made for them records as its invitee.
+    /// The name `workspace` knows `person` by, when it knows one: what an invitation made for them
+    /// records as its invitee.
     pub(crate) fn name_of(&self, workspace: &str, person: [u8; 32]) -> Option<String> {
         let person = hex::encode(person);
         self.people(workspace)
@@ -520,10 +488,8 @@ impl Engine {
             .filter(|name| !name.is_empty())
     }
 
-    /// The invitations into `workspace` this device's person issued that are
-    /// still redeemable: the links they made, listed where they made them,
-    /// since a link is answered by the device that signed it.
-    ///
+    /// The invitations into `workspace` this device's person issued that are still
+    /// redeemable: a link is answered by the device that signed it.
     /// # Errors
     /// The workspace is not held here, or its join ledger cannot be read now.
     pub(crate) fn invitations(
@@ -535,14 +501,11 @@ impl Engine {
         self.owner.pending_invitations(workspace, now)
     }
 
-    /// Cancel the invitation `invitation` into `workspace`, named by the id
-    /// listing it reports, as the person who issued it: the link admits nobody
-    /// from now on. Answers whether the workspace changed here; cancelling the
-    /// same link again changes nothing.
-    ///
+    /// Cancel the invitation `invitation` into `workspace`, as the person who issued it:
+    /// the link admits nobody from now on.
     /// # Errors
-    /// The workspace is not held here, the invitation was not issued from this
-    /// device's person, or the workspace cannot be published.
+    /// The workspace is not held here, the invitation was not issued from this device's
+    /// person, or the workspace cannot be published.
     pub(crate) fn cancel_invitation(
         &self,
         workspace: &str,
@@ -563,11 +526,8 @@ impl Engine {
         )
     }
 
-    /// Whether this device's person may invite into `workspace`, as the
-    /// workspace's own governance answers it: a current member whose part
-    /// there grants inviting. What the surfaces that offer inviting are told;
-    /// [`Self::issue_invitation`] asks again, with the part its link hands
-    /// out.
+    /// Whether this device's person may invite into `workspace` , as its governance answers it.
+    /// [`Self::issue_invitation`] asks again, with the part its link hands out.
     #[must_use]
     pub fn may_invite(&self, workspace: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -584,18 +544,16 @@ impl Engine {
             .unwrap_or(false)
     }
 
-    /// Whether this device's person may delete `workspace`: they own it, no
-    /// one else is in it, and this device is the only one holding it — so a
-    /// workspace taken off this device is a workspace gone everywhere, and
-    /// not one another of their devices would list again.
+    /// Whether this device's person may delete `workspace` : they own it, no one else is in it, and
+    /// this device is the only one holding it — so a workspace taken off this device is a workspace
+    /// gone everywhere, and not one another of their devices would list again.
     #[must_use]
     pub fn may_delete(&self, workspace: WorkspaceId) -> bool {
         self.not_deletable(workspace).is_none()
     }
 
-    /// Why `workspace` is not this device's person's to delete here, when it
-    /// is not: what the surfaces offering deleting say beside a delete they
-    /// cannot offer.
+    /// Why `workspace` is not this device's person's to delete here, when it is not: what the
+    /// surfaces offering deleting say beside a delete they cannot offer.
     #[must_use]
     pub fn not_deletable(&self, workspace: WorkspaceId) -> Option<NotDeletable> {
         if !self.holds(workspace) {
@@ -628,20 +586,17 @@ impl Engine {
         None
     }
 
-    /// Take `workspace` out of this device's record, with everything of it
-    /// this device holds: what a deleted workspace leaves behind. Answers
-    /// whether the record held it.
-    ///
+    /// Take `workspace` out of this device's record, with everything of it this device
+    /// holds. Answers whether the record held it.
     /// # Errors
     /// The record cannot be published.
     pub(crate) fn delete(&self, workspace: WorkspaceId) -> Result<bool, String> {
         self.owner.release_workspace(workspace)
     }
 
-    /// The parts this device's person may hand out in an invitation into
-    /// `workspace`, from the least to the most: what the surfaces offering a
-    /// part to grant list. Empty when the person may not invite at all, since
-    /// no part is theirs to hand out then.
+    /// The parts this device's person may hand out in an invitation into `workspace` , from the
+    /// least to the most: what the surfaces offering a part to grant list. Empty when the person
+    /// may not invite at all, since no part is theirs to hand out then.
     #[must_use]
     pub(crate) fn invitable_roles(&self, workspace: &str) -> Vec<MemberRole> {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -670,20 +625,14 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    /// An invitation into `workspace` this device's person makes, at the part
-    /// `role` names, redeemable until `expires_in_seconds` from `now` through
-    /// the endpoint this session serves: the link to hand to whoever is being
-    /// invited, in the text their device joins with.
-    ///
-    /// The invitation names this device, which answers its redemption as it
-    /// answers any join of a workspace it holds: a link is worth as much as
-    /// the device that signed it being reachable. When `recipient_user_public_key`
-    /// names someone, only a device certified for that person may redeem it;
-    /// otherwise whoever holds the link may.
-    ///
+    /// An invitation into `workspace` this device's person makes, at the part `role`
+    /// names, redeemable until `expires_in_seconds` from `now`: the link to hand to
+    /// whoever is invited. A link is worth as much as the device that signed it being
+    /// reachable; when `recipient_user_public_key` names someone, only a device
+    /// certified for that person may redeem it.
     /// # Errors
-    /// The workspace is not held here, this device's person may not invite
-    /// into it or hand out that part, or the workspace cannot be published.
+    /// The workspace is not held here, this device's person may not invite into it or
+    /// hand out that part, or the workspace cannot be published.
     pub(crate) fn issue_invitation(
         &self,
         workspace: &str,
@@ -691,31 +640,14 @@ impl Engine {
         invitee_name: Option<String>,
         recipient_user_public_key: Option<[u8; 32]>,
         expires_in_seconds: u64,
-        endpoint: iroh::EndpointAddr,
+        endpoint: &iroh::EndpointAddr,
         now: SystemTime,
     ) -> Result<Issued, String> {
         let room = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let workspace_id = tilo_peer_state::join::room_workspace_id(workspace)
-            .map_err(|error| error.to_string())?;
         let identity = self.identity();
-        // What the joiner dials: this device's endpoint, signed by the device
-        // the grant names, as a host of its own workspace.
-        let packet_relay_url = endpoint
-            .relay_urls()
-            .next()
-            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
-        let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
-            version: 1,
-            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-            room: workspace.to_owned(),
-            workspace_id,
-            endpoint_addr: endpoint,
-            host_user_public_key: identity.device_cert.user_public_key,
-            host_device_certificate: identity.device_cert.clone(),
-            packet_relay_url,
-        }
-        .transport_hint(&identity.device_signing_key)
-        .map_err(|error| error.to_string())?;
+        // What the joiner dials: this device's endpoint, signed by the device the grant names, as a
+        // host of its own workspace.
+        let hint = self.own_host_hint(workspace, endpoint)?;
         let now_ns: u64 = now
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
@@ -748,13 +680,9 @@ impl Engine {
         })
     }
 
-    /// The revocations the workspace's governance records, as it last admitted
-    /// them: the devices of any of its people it refuses to hear from. `None`
-    /// when this device holds no such workspace, so nothing of it is known.
-    ///
-    /// What is checked against this: whether a shortcut's saver may still
-    /// start it here, and whether an app of the workspace may still be
-    /// believed about who saved one.
+    /// The revocations the workspace's governance records, as it last admitted them. `None` when
+    /// this device holds no such workspace. What is checked against this is whether a shortcut's
+    /// saver may still start it here.
     #[must_use]
     pub fn revocations(&self, workspace: &str) -> Option<RevocationList> {
         let workspace = WorkspaceId::parse(workspace)?;
@@ -762,9 +690,8 @@ impl Engine {
             .with_current(workspace, |view| {
                 let mut list = RevocationList::new();
                 for entry in view.peer().revocations() {
-                    // The workspace verified every entry when it admitted it:
-                    // an entry that does not verify now leaves its refusals
-                    // unknown rather than trusting the rest.
+                    // The workspace verified every entry when it admitted it: an entry that does
+                    // not verify now leaves its refusals unknown rather than trusting the rest.
                     list.insert(entry).map_err(|error| error.to_string())?;
                 }
                 Ok(list)
@@ -772,32 +699,26 @@ impl Engine {
             .ok()
     }
 
-    /// Who governs the workspace, as the id its governance names: the owner it
-    /// was made under, whose devices sign for it. A joined workspace keeps the
-    /// owner its host's governance has, never the person who joined; one made
-    /// here has this person's.
-    ///
+    /// Who governs the workspace, as the id its governance names. A joined workspace
+    /// keeps the owner its host's governance has, never the person who joined.
     /// # Errors
-    /// The workspace is not held here yet, or its governance cannot be read
-    /// now.
+    /// The workspace is not held here yet, or its governance cannot be read now.
     pub fn owner_of(&self, workspace: &str) -> Result<String, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.with_current(workspace, |view| {
             let owner = view.peer().governance().owner_user_public_key();
             if owner == [0; 32] {
-                // A workspace whose governance names nobody has no owner to
-                // carry: a claim made here would be this device's, not the
-                // workspace's.
+                // A workspace whose governance names nobody has no owner to carry: a claim made
+                // here would be this device's, not the workspace's.
                 return Err("the workspace's governance names no owner".to_owned());
             }
             Ok(hex::encode(owner))
         })
     }
 
-    /// The verdicts `workspace` holds on writes: this device's own, and the
-    /// ones other devices recorded on its writes. Each names the changes the
-    /// refused write would have brought, so a history row reads where it is
-    /// not.
+    /// The verdicts `workspace` holds on writes: this device's own, and the ones other devices
+    /// recorded on its writes. Each names the changes the refused write would have brought, so a
+    /// history row reads where it is not.
     #[must_use]
     pub fn write_refusals(&self, workspace: &str) -> Vec<neighbour_wire::WriteRefusal> {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -806,9 +727,9 @@ impl Engine {
         self.owner.write_refusals(workspace)
     }
 
-    /// The verdicts other devices recorded on this device's writes, with the
-    /// workspace each was filed in, where waiting changes nothing: what the
-    /// person hears once per verdict, because their writes stop arriving.
+    /// The verdicts other devices recorded on this device's writes, with the workspace each was
+    /// filed in, where waiting changes nothing: what the person hears once per verdict, because
+    /// their writes stop arriving.
     #[must_use]
     pub fn lasting_refusals(&self) -> Vec<(String, neighbour_wire::WriteRefusal)> {
         let mine = self.identity.device_cert.device_public_key;
@@ -839,8 +760,8 @@ impl Engine {
         &self.owner
     }
 
-    /// Where `workspace`'s host is reached and the device its enrollment pins:
-    /// the address its live plane is dialled at.
+    /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
+    /// live plane is dialled at.
     pub(crate) fn workspace_host(
         &self,
         workspace: WorkspaceId,
@@ -858,9 +779,9 @@ impl Engine {
             .ok()
     }
 
-    /// Where the hosts of the workspaces this device holds are reached, by
-    /// workspace id, postcard encoded: what the person's other devices need to
-    /// enter a workspace listed here at the device that hosts it.
+    /// Where the hosts of the workspaces this device holds are reached, by workspace id, postcard
+    /// encoded: what the person's other devices need to enter a workspace listed here at the device
+    /// that hosts it.
     pub(crate) fn host_hints(&self) -> Vec<(String, Vec<u8>)> {
         self.owner
             .workspaces()
@@ -876,42 +797,71 @@ impl Engine {
             .collect()
     }
 
-    /// Where a read asks the workspaces' hosts for a record they send only
-    /// once asked: the plane this session's channels travel on.
+    /// Where a read asks the workspaces' hosts for a record they send only once asked: the plane
+    /// this session's channels travel on.
     pub(crate) fn attach_link(&self, link: Arc<channels::ChannelLink>) {
         *self.link.lock_recover() = Some(link);
     }
 
-    /// Where this device's channels hear its workspaces' governance and tell
-    /// which devices each admits: the plane's side of them, `None` when this
-    /// session runs no channel service.
+    /// Where this device's channels hear its workspaces' governance and tell which devices each
+    /// admits: the plane's side of them, `None` when this session runs no channel service.
     pub(crate) fn link(&self) -> Option<Arc<channels::ChannelLink>> {
         self.link.lock_recover().clone()
     }
 
-    /// Where this session's channel service installs this device's keys: the
-    /// broker, the room host and every sealed read meet here.
+    /// Where this session's channel service installs this device's keys: the broker, the room host
+    /// and every sealed read meet here.
     pub(crate) fn keys(&self) -> ChannelKeyProvider {
         self.keys.clone()
     }
 
-    /// This device's collaboration identity: the key its endpoint and its
-    /// channels sign with, and the certificate that says whose it is.
+    /// This device's collaboration identity: the key its endpoint and its channels sign with, and
+    /// the certificate that says whose it is.
     pub(crate) fn identity(&self) -> &HostIdentity {
         &self.identity
     }
 
-    /// Found `workspace` — made on this desk in `slot`, under `name` — when
-    /// this device is the one that made it and nothing here holds it yet:
-    /// who is in the workspace, who may invite into it and what its apps
-    /// record there become the workspace's own, hosted here, instead of what
-    /// this desk alone keeps. An earlier session's workspace is founded the
-    /// same way, once.
-    ///
-    /// A workspace this device may not own, or one that could not be
-    /// published, stays the desk's own: it is not asked for again until a
-    /// later session.
-    pub(crate) fn found(&self, slot: WorkspaceSlot, workspace: WorkspaceId, name: &str) {
+    /// Where this device's own host of `workspace` is reached at `endpoint`,
+    /// signed by this device: what an invitation names for the joiner, and
+    /// what a workspace founded here records of its own host.
+    fn own_host_hint(
+        &self,
+        workspace: &str,
+        endpoint: &iroh::EndpointAddr,
+    ) -> Result<tilo_peer_state::join::TransportHint, String> {
+        let workspace_id = tilo_peer_state::join::room_workspace_id(workspace)
+            .map_err(|error| error.to_string())?;
+        let identity = self.identity();
+        let packet_relay_url = endpoint
+            .relay_urls()
+            .next()
+            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+            room: workspace.to_owned(),
+            workspace_id,
+            endpoint_addr: endpoint.clone(),
+            host_user_public_key: identity.device_cert.user_public_key,
+            host_device_certificate: identity.device_cert.clone(),
+            packet_relay_url,
+        }
+        .transport_hint(&identity.device_signing_key)
+        .map_err(|error| error.to_string())
+    }
+
+    /// Found `workspace` — made on this desk in `slot` , under `name` — when this device made it
+    /// and nothing here holds it yet: who is in it, who may invite and what its apps record become
+    /// the workspace's own, hosted here. `endpoint` is where other devices reach this one, which
+    /// the workspace's record keeps as its host's address. A workspace this device may not own, or
+    /// one that could not be published, stays the desk's own.
+    pub(crate) fn found(
+        &self,
+        slot: WorkspaceSlot,
+        workspace: WorkspaceId,
+        name: &str,
+        endpoint: Option<&iroh::EndpointAddr>,
+    ) {
         if self.holds(workspace) || self.unfounded.lock_recover().contains(&workspace) {
             return;
         }
@@ -919,11 +869,29 @@ impl Engine {
         if !identity.device_cert.capabilities.can_own_workspaces {
             return;
         }
+        // A session with nowhere other devices reach this one founds the workspace all the same:
+        // its records and its governance are held here, and its own host's address is named in the
+        // record once this device has one ([`Self::name_own_hosts`]).
+        let host_hint = match endpoint {
+            Some(endpoint) => match self.own_host_hint(&workspace.to_string(), endpoint) {
+                Ok(hint) => Some(hint),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        %workspace,
+                        "this device's own host of the workspace could not be named"
+                    );
+                    return;
+                }
+            },
+            None => None,
+        };
         match self.owner.create_workspace(
             workspace,
             name,
             &identity.device_cert,
             &identity.device_signing_key,
+            host_hint,
             SystemTime::now(),
         ) {
             Ok(_) => self.bind(slot, workspace),
@@ -934,26 +902,49 @@ impl Engine {
         }
     }
 
-    /// Name the workspace a join is installing into by the workspace id it
-    /// holds: an enrollment only installs into the workspace made for it, and
-    /// says so before the host is asked.
+    /// Name where this device's own host of each workspace it holds is reached at `endpoint` , for
+    /// one founded before its record said: a workspace founded here is reached at its own host, and
+    /// a record that does not say so leaves its records where no device reaches them.
+    pub(crate) fn name_own_hosts(&self, endpoint: &iroh::EndpointAddr) {
+        for workspace in self.owner.hosts_unnamed() {
+            let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
+                Ok(hint) => hint,
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, "this device's own host could not be named");
+                    continue;
+                }
+            };
+            match self.owner.name_host(workspace, hint) {
+                Ok(true) => {
+                    tracing::info!(%workspace, "the workspace's own host is named in its record");
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, "the workspace's own host was not named");
+                }
+            }
+        }
+    }
+
+    /// Name the workspace a join is installing into by the workspace id it holds: an enrollment
+    /// only installs into the workspace made for it, and says so before the host is asked.
     pub(crate) fn bind(&self, workspace: WorkspaceSlot, workspace_id: WorkspaceId) {
         self.slots.0.lock_recover().insert(workspace, workspace_id);
     }
 
-    /// Let go of a workspace a join did not install into, so this device
-    /// keeps nothing it does not hold.
+    /// Let go of a workspace a join did not install into, so this device keeps nothing it does not
+    /// hold.
     pub(crate) fn unbind(&self, workspace: WorkspaceSlot) {
         self.slots.0.lock_recover().remove(&workspace);
     }
 }
 
-/// What the broker's owner commits ask of this device's workspaces: the
-/// engine's owner is the canonical copy of every workspace it holds, and
-/// what it commits leaves on the plane's session with the workspace's host.
+/// What the broker's owner commits ask of this device's workspaces: the engine's owner is the
+/// canonical copy of every workspace it holds, and what it commits leaves on the plane's session
+/// with the workspace's host.
 impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
-    /// A held workspace whose host takes part in no channels: its records are
-    /// documents the owner commits, never sealed channels.
+    /// A held workspace whose host takes part in no channels: its records are documents the owner
+    /// commits, never sealed channels.
     fn commits_documents(&self, workspace_id: WorkspaceId) -> bool {
         self.holds(workspace_id)
             && self
@@ -999,8 +990,8 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
         Ok(self.identity.device_signing_key.clone())
     }
 
-    /// Send the owner's outgoing custody of `workspace` to its peers soon:
-    /// what was just committed leaves this device. Queued, never awaited.
+    /// Send the owner's outgoing custody of `workspace` to its peers soon: what was just committed
+    /// leaves this device. Queued, never awaited.
     fn schedule_publication(&self, workspace_id: WorkspaceId) {
         if let Some(link) = self.link() {
             link.publish_custody(workspace_id);
@@ -1034,16 +1025,15 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
     }
 }
 
-/// The id a listing reports for an invitation, as its 32 bytes: 64 hex
-/// characters.
+/// The id a listing reports for an invitation, as its 32 bytes: 64 hex characters.
 fn invitation_id(text: &str) -> Result<[u8; 32], String> {
     let bytes = hex::decode(text).map_err(|error| error.to_string())?;
     <[u8; 32]>::try_from(bytes.as_slice())
         .map_err(|_| "an invitation's id is 64 hex characters".to_owned())
 }
 
-/// The id cancelling `invite_id` asks under: the link is what is cancelled, so
-/// asking again about the same link is the same request.
+/// The id cancelling `invite_id` asks under: the link is what is cancelled, so asking again about
+/// the same link is the same request.
 fn cancellation_id(invite_id: [u8; 32]) -> [u8; 32] {
     *blake3::Hasher::new_derive_key("Tilo invitation cancellation v1")
         .update(&invite_id)
@@ -1051,13 +1041,13 @@ fn cancellation_id(invite_id: [u8; 32]) -> [u8; 32] {
         .as_bytes()
 }
 
-/// A workspace's revocations, as the threads beside the session's loop ask for
-/// them: the broker decides on its own thread and the automation host arms
-/// shortcuts on the loop, and both refuse a device the workspace revoked.
+/// A workspace's revocations, as the threads beside the session's loop ask for them: the broker
+/// decides on its own thread and the automation host arms shortcuts on the loop, and both refuse a
+/// device the workspace revoked.
 pub(crate) type Revocations = Arc<dyn Fn(&str) -> Option<RevocationList> + Send + Sync>;
 
-/// What a workspace of this device's engine revokes, for the callers that ask
-/// from another thread. A session that holds no workspace knows of none.
+/// What a workspace of this device's engine revokes, for the callers that ask from another thread.
+/// A session that holds no workspace knows of none.
 pub(crate) fn revocations_of(engine: Option<&Arc<Engine>>) -> Revocations {
     let engine = engine.cloned();
     Arc::new(move |workspace: &str| {
@@ -1067,7 +1057,7 @@ pub(crate) fn revocations_of(engine: Option<&Arc<Engine>>) -> Revocations {
     })
 }
 
-/// Where this device's workspaces are kept under `state`.
+/// Where this device's workspaces are kept under `state` .
 fn record_path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
 }
@@ -1109,23 +1099,31 @@ mod tests {
         (identity, root)
     }
 
-    /// This device's engine, kept in `state`.
+    /// This device's engine, kept in `state` .
     fn engine(state: &Path, identity: HostIdentity) -> Engine {
         Engine::open(identity, Some(state), Vec::new()).expect("an engine")
+    }
+
+    /// Where a desk's own host is reached: its device's endpoint.
+    fn endpoint(identity: &HostIdentity) -> iroh::EndpointAddr {
+        iroh::EndpointAddr::new(
+            iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+                .expect("a device endpoint"),
+        )
     }
 
     #[test]
     fn a_desk_workspace_is_founded_under_the_identity_the_desk_made() {
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, person) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
         let slot = WorkspaceSlot(7);
 
-        engine.found(slot, workspace, "Desk");
-        // Again, as every pass over the desk does: one workspace, still the
-        // one the desk made.
-        engine.found(slot, workspace, "Desk");
+        engine.found(slot, workspace, "Desk", Some(&at));
+        // Again, as every pass over the desk does: one workspace, still the one the desk made.
+        engine.found(slot, workspace, "Desk", Some(&at));
 
         assert!(
             engine.holds(workspace),
@@ -1144,21 +1142,50 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_this_device_hosts_commits_here_without_a_host_address() {
+    fn a_workspace_this_device_hosts_names_its_own_host_and_commits_here() {
+        use tilo_action_broker::owner_commits::OwnerCustody as _;
+
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
+        let host = identity.device_cert.device_public_key;
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+
+        let hint = engine
+            .owner
+            .with_current(workspace, |view| view.transport_hint().cloned())
+            .expect("a workspace this device founded names where its host is reached");
+        assert_eq!(
+            hint.host.device_public_key, host,
+            "the host it names is this device, whose host is in this process"
+        );
+        engine
+            .check_custody(&engine.owner, workspace)
+            .expect("its own member acts there, its host being in this process");
+    }
+
+    #[test]
+    fn a_workspace_this_device_hosts_without_an_address_commits_here() {
         use tilo_action_broker::owner_commits::OwnerCustody as _;
 
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk");
+        engine.found(WorkspaceSlot(7), workspace, "Desk", None);
 
+        assert!(
+            engine.holds(workspace),
+            "a session with nowhere other devices reach it founds its desk's workspace"
+        );
         assert!(
             engine
                 .owner
                 .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
                 .expect("the workspace is held here"),
-            "a workspace this device founded names no host to dial"
+            "its record names no host to reach until this device has one"
         );
         engine
             .check_custody(&engine.owner, workspace)
@@ -1169,9 +1196,10 @@ mod tests {
     fn a_workspace_made_here_and_held_nowhere_else_may_be_deleted() {
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk");
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
 
         assert!(
             engine.may_delete(workspace),
@@ -1206,10 +1234,11 @@ mod tests {
         let (identity, _) = identity(DeviceCapabilities::member());
         let mut identity = identity;
         identity.device_cert.capabilities.can_own_workspaces = false;
+        let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
 
-        engine.found(WorkspaceSlot(7), workspace, "Desk");
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
 
         assert!(!engine.holds(workspace));
         assert!(!engine.may_invite(&workspace.to_string()));

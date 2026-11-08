@@ -149,8 +149,6 @@ impl<R: BufRead, W: Write> Client<R, W> {
 
     /// Upload as a bounded binary stream on a byte-transparent transport,
     /// and in JSON-line chunks ([`Self::upload_json_lines`]) on any other.
-    /// # Errors
-    /// Source, transport, integrity or daemon failures.
     pub fn upload(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
         if !self.binary_uploads {
             return self.upload_json_lines(bytes);
@@ -205,9 +203,6 @@ impl<R: BufRead, W: Write> Client<R, W> {
 
     /// Stream `bytes` to the daemon in chunks and return the upload id for
     /// [`crate::LayerSource::Upload`].
-    ///
-    /// # Errors
-    /// Read failures on `bytes`, call failures, and incorrect byte acknowledgments.
     pub fn upload_json_lines(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
         let upload = self.call(LayerUploadBegin {})?.upload;
         let mut buffer = vec![0_u8; UPLOAD_CHUNK_BYTES];

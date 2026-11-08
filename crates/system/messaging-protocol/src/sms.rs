@@ -14,9 +14,6 @@ pub struct CreateText {
 
 /// Prepare one explicitly selected international recipient. Short codes and
 /// national-format numbers require separate user-resolved routes, not guessing.
-///
-/// # Errors
-/// Refuses other services, unresolved numbers and empty/oversized text.
 pub fn create_text(route: &Route, text: &str) -> Result<CreateText, Error> {
     if route.service() != Service::Sms {
         return Err(Error::Unsupported);

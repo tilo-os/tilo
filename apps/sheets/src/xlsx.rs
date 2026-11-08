@@ -457,21 +457,12 @@ pub(crate) fn snapshot_of(
 /// numbers (with a number-format code for currency/percent/date/time) so the
 /// file opens cleanly in Excel/Sheets. Tab names Excel would refuse are made
 /// valid and unique.
-///
-/// # Errors
-///
-/// Returns an error if the package can't be assembled or `path` can't be
-/// written.
 pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     write_file(path, &xlsx_bytes(tables)?)?;
     Ok(())
 }
 
 /// Tables as the bytes of an `.xlsx` workbook, as [`write_xlsx`] writes it.
-///
-/// # Errors
-///
-/// Returns an error if the package can't be assembled.
 pub fn xlsx_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
     let mut styles: Vec<CellStyle<'static>> = Vec::new();
     let snap = snapshot_of(
@@ -501,10 +492,6 @@ pub fn xlsx_bytes(tables: &[SheetTable]) -> anyhow::Result<Vec<u8>> {
 }
 
 /// The bytes of a file a chooser named.
-///
-/// # Errors
-///
-/// The file cannot be read (on the web: it has no native path).
 pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     tilo_files::blocking::read(&dir, &name)
@@ -512,10 +499,6 @@ pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, tilo_files::FsError> {
 
 /// Save `bytes` as the file a chooser named, keeping an existing file's link
 /// and permissions.
-///
-/// # Errors
-///
-/// The file cannot be written (on the web: it has no native path).
 pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     tilo_files::blocking::save_document(&dir, &name, bytes)

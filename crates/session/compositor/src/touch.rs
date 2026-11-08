@@ -1,13 +1,10 @@
 //! Touchscreens and touchpad gestures, routed.
-//!
-//! A touch on a hosted surface reaches it as a pointer press (hosts take
-//! pointer input only); the desktop is offered every touch first and may
-//! take it (the top edge's swipe); every other touch goes to the client
-//! surface under it through the seat's touch handle and stays with that
-//! surface until the finger lifts. Touchpad gestures of one or two fingers
-//! belong to the client under the pointer (`zwp_pointer_gestures_v1`: a
-//! browser's pinch-to-zoom); three or more are offered to the desktop first
-//! ([`crate::WindowPolicy::gesture`]).
+//! A touch on a hosted surface reaches it as a pointer press (hosts take pointer input only); the
+//! desktop is offered every touch first and may take it (the top edge's swipe); every other touch
+//! goes to the client surface under it through the seat's touch handle and stays with that surface
+//! until the finger lifts. Touchpad gestures of one or two fingers belong to the client under the
+//! pointer (`zwp_pointer_gestures_v1`: a browser's pinch-to-zoom); three or more are offered to the
+//! desktop first ([`crate::WindowPolicy::gesture`]).
 
 use smithay::backend::input::ButtonState;
 use smithay::input::pointer::{
@@ -28,9 +25,9 @@ use crate::state::State;
 /// A client surface and its origin in the logical layout.
 pub(crate) type Focus = Option<(WlSurface, Point<f64, Logical>)>;
 
-/// Whether the client `surface` belongs to bound `wl_touch`. One that did not
-/// has the seat's touch objects of no use: a finger reaches it as a pointer
-/// press at the same place, so a tap still clicks.
+/// Whether the client `surface` belongs to bound `wl_touch` . One that did not has the seat's touch
+/// objects of no use: a finger reaches it as a pointer press at the same place, so a tap still
+/// clicks.
 fn binds_touch(surface: &WlSurface) -> bool {
     surface.client().is_some_and(|client| {
         client
@@ -42,11 +39,10 @@ fn binds_touch(surface: &WlSurface) -> bool {
 /// Where each finger on the screen went down.
 #[derive(Debug, Default)]
 pub(crate) struct Touches {
-    /// Fingers on a hosted surface, by slot: the host's index and where
-    /// the finger is.
+    /// Fingers on a hosted surface, by slot: the host's index and where the finger is.
     hosts: Vec<(u32, usize, Point<f64, Logical>)>,
-    /// Fingers the desktop took, by slot and where the finger is
-    /// ([`crate::WindowPolicy::touch`]): nothing under them sees them.
+    /// Fingers the desktop took, by slot and where the finger is ([`crate::WindowPolicy::touch`]):
+    /// nothing under them sees them.
     pub(crate) desktop: Vec<(u32, Point<f64, Logical>)>,
     /// Fingers on client surfaces.
     pub(crate) clients: Vec<Finger>,
@@ -63,16 +59,16 @@ pub(crate) struct Finger {
     pub(crate) focus: Focus,
     /// Where the finger is.
     pub(crate) at: Point<f64, Logical>,
-    /// The client bound no `wl_touch`: the finger reaches it as a pointer
-    /// press, which is the only way it can be typed on at all.
+    /// The client bound no `wl_touch` : the finger reaches it as a pointer press, which is the only
+    /// way it can be typed on at all.
     pointer: bool,
     /// When it went down, for the times the pointer events carry.
     time: u32,
 }
 
 impl Touches {
-    /// A finger holding a hosted surface, taken from it: the hosted app
-    /// starts a drag that follows it. Its slot, the host and where it is.
+    /// A finger holding a hosted surface, taken from it: the hosted app starts a drag that follows
+    /// it. Its slot, the host and where it is.
     pub(crate) fn take_host_finger(&mut self) -> Option<(u32, usize, Point<f64, Logical>)> {
         self.hosts.pop()
     }
@@ -114,9 +110,9 @@ impl State {
             )
         };
         self.touch.clients.retain(|finger| finger.slot != slot);
-        // One finger at a time holds the pointer down: a second one on a
-        // client that bound no touch has no pointer of its own, and pressing
-        // it again would be a press the client never lifted.
+        // One finger at a time holds the pointer down: a second one on a client that bound no touch
+        // has no pointer of its own, and pressing it again would be a press the client never
+        // lifted.
         let pointer = focus
             .as_ref()
             .is_some_and(|(surface, _)| !binds_touch(surface))
@@ -148,8 +144,8 @@ impl State {
                 time,
             },
         );
-        // A finger on an X11 window is the press Xwayland runs its drags
-        // under, as the pointer's is.
+        // A finger on an X11 window is the press Xwayland runs its drags under, as the pointer's
+        // is.
         self.x11_drag_motion(at);
     }
 
@@ -192,8 +188,8 @@ impl State {
                 (finger.focus.clone(), finger.pointer)
             })
             .unwrap_or_default();
-        // The lock screen covers the display, stretched to it: it reads the
-        // point where it drew what the finger is over.
+        // The lock screen covers the display, stretched to it: it reads the point where it drew
+        // what the finger is over.
         let at = if self.locked() {
             self.lock_point(at)
         } else {
@@ -293,8 +289,7 @@ impl State {
                 host.pointer_leave();
             }
         }
-        // A cancelled contact leaves no drag running: the proxy Xwayland
-        // raised for it comes down.
+        // A cancelled contact leaves no drag running: the proxy Xwayland raised for it comes down.
         let at = self
             .touch
             .clients
@@ -326,8 +321,8 @@ impl State {
         self.x11_drag_motion(at);
     }
 
-    /// A finger on a client that bound no `wl_touch`, as the pointer it can
-    /// take: moved to the finger, and pressed there or lifted as `button` says.
+    /// A finger on a client that bound no `wl_touch` , as the pointer it can take: moved to the
+    /// finger, and pressed there or lifted as `button` says.
     fn touch_pointer(
         &mut self,
         focus: Focus,

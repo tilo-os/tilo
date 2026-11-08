@@ -1,24 +1,18 @@
 //! A value that carries its measure, its provenance and its as-of.
 //!
-//! A number on screen is a claim. [`Measured`] keeps the three things that make
-//! the claim honest together, so an app cannot render the number without also
-//! having the answer to "measured how?", "from where?" and "when?":
+//! A number on screen is a claim. [`Measured`] keeps the three things that make it honest
+//! together, so an app cannot render the number without also having the answer to "measured
+//! how?", "from where?" and "when?": a [`Measure`] naming what it counts and its unit, a source
+//! naming where the reading came from, and an as-of instant that makes it age on screen
+//! ([stale](Measured::is_stale) past its own expected interval).
 //!
-//! - a [`Measure`] names what the number counts (`Memory in use`, `Memory
-//!   (RSS)`, `Packets dropped`), and its unit when it has one;
-//! - a source names where the reading came from (`this device`, the system
-//!   journal, a repository manifest);
-//! - an as-of instant makes the reading age on screen, and a reading older
-//!   than its own expected interval is [stale](Measured::is_stale).
+//! `Unknown` is a designed state, not zero: [`Measured::unknown`] carries the reason (and the
+//! action that would resolve it) and renders an em dash. A number is never a stand-in for "we
+//! did not measure".
 //!
-//! `Unknown` is a designed state, not zero: [`Measured::unknown`] carries the
-//! reason (and the app can offer the action that would resolve it) and renders
-//! an em dash. A number is never a stand-in for "we did not measure".
-//!
-//! The type is a value, not a widget: it is what a view renders. Use
-//! [`Measured::value_or_dash`] in the value position, [`Measured::caption`] under it
-//! (provenance is always the caption line, never beside the value), and
-//! [`Measured::is_stale`] to dim the provenance rather than the value.
+//! The type is what a view renders, not a widget: [`Measured::value_or_dash`] in the value
+//! position, [`Measured::caption`] under it (provenance is always the caption line, never
+//! beside the value), and [`Measured::is_stale`] dimming the provenance rather than the value.
 //!
 //! ```
 //! use tilo_ui::fact::{Measure, Measured};

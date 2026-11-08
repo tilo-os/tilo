@@ -97,8 +97,6 @@ COPY \
     os/usr/lib/systemd/user/tilo-projector.socket \
     os/usr/lib/systemd/user/tilo-cache-gc.service \
     os/usr/lib/systemd/user/tilo-cache-gc.timer \
-    os/usr/lib/systemd/user/tilo-app-update.service \
-    os/usr/lib/systemd/user/tilo-app-update.timer \
     os/usr/lib/systemd/user/tilo-public-content-refresh.service \
     os/usr/lib/systemd/user/tilo-public-content-refresh.timer \
     os/usr/lib/systemd/user/tilo-runtime-resident.service \
@@ -218,6 +216,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-fs-start.timer \
     os/usr/lib/systemd/system/fs-identity.path \
     os/usr/lib/systemd/system/tilo-device-key-init.service \
+    os/usr/lib/systemd/system/tilo-device-branch.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
     os/usr/lib/systemd/system/tilo-firstboot-user.service \
@@ -721,6 +720,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
        /etc/systemd/system/graphical.target.wants/power-profiles-daemon.service \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
+    systemctl enable tilo-device-branch.service && \
     systemctl enable tilo-firstboot.service && \
     systemctl enable tilo-flatpak-defaults.service && \
     # Fedora's remote-add starts with tilo-flatpak-defaults, off the greeter's path; enabled

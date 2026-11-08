@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "every test here keeps its fixture and guards alive through its assertions"
+)]
 use super::*;
 
 #[path = "host_action_lifecycle_tests.rs"]
@@ -147,10 +151,6 @@ fn configured_certificates_without_a_native_seat_never_admit_unsigned_owners() {
     assert!(state.completed_invocations.lock().unwrap().is_empty());
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn certificate_less_local_origin_is_compatible_only_without_identity_authority() {
     use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
@@ -204,10 +204,6 @@ fn certificate_less_local_origin_is_compatible_only_without_identity_authority()
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn host_uuid_and_terminal_use_the_same_durable_record() {
     let root = tempfile::tempdir().unwrap();
@@ -281,10 +277,6 @@ fn host_uuid_and_terminal_use_the_same_durable_record() {
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn failed_admission_barrier_returns_no_dispatch_permit_or_accepted_update() {
     for failure in [
@@ -323,10 +315,6 @@ fn failed_admission_barrier_returns_no_dispatch_permit_or_accepted_update() {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn failed_terminal_barrier_does_not_publish_success() {
     let root = tempfile::tempdir().unwrap();

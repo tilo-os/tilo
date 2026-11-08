@@ -52,8 +52,8 @@ fn compile(lists: &[&str], max_rules_per_chunk: usize) -> Result<ChunkedFilter, 
 }
 
 /// The engine's self-check ([`self_check`]) for its check binary, by the
-/// unmangled name the binary links, as the toolkit opens
-/// [`tilo_adblock_engine_entry`]: nothing compiles against this library, so
+/// unmangled name the binary links, as the toolkit
+/// opens [`tilo_adblock_engine_entry`]: nothing compiles against this library, so
 /// it exports no Rust item. Prints the report; whether it passed.
 #[cfg(feature = "thin")]
 #[unsafe(no_mangle)]
@@ -75,9 +75,6 @@ pub extern "C-unwind" fn tilo_adblock_engine_check() -> bool {
 ///
 /// The check binary runs it through its unmangled entry, so a release proves
 /// the library loads and runs against the runtime it ships with.
-///
-/// # Errors
-/// Names what the compiler produced wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     let list = "||ads.example.com^\n###ad-banner\n";

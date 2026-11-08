@@ -18,6 +18,7 @@ use std::{
 
 pub const SOURCE_PATH: &str = "/run/tilo/retained/source";
 mod removal;
+use super::refused;
 use super::workspace;
 pub use removal::RetainedNativeOwner;
 pub const REMOVAL_DIRECTORY_FD: i32 = removal::FD;
@@ -31,9 +32,6 @@ pub(crate) const TOKEN_FD: RawFd = 49;
 const MAX_TOKEN: u64 = 1024 * 1024;
 const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 const NAMESPACES: [&str; 5] = ["mnt", "pid", "net", "ipc", "user"];
-fn refused(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message)
-}
 const WORKSPACE: workspace::Layout = workspace::Layout {
     label: "Retained source",
     person: workspace::Person::Empty,
@@ -57,30 +55,18 @@ fn namespaces() -> io::Result<Vec<(u64, u64)>> {
 pub trait RetainedIoAuthority: super::ServiceAuthority {
     /// Only the concrete current certified daemon/source adapter provides this
     /// held sealed root descriptor. Browsing has no verifier or raw fallback.
-    ///
-    /// # Errors
-    /// Returns an error if the held verifier cannot be authenticated or cloned.
     fn native_history_verifier(&self) -> io::Result<Option<File>> {
         Ok(None)
     }
 
     /// Held root-sealed selected edit derivative, never caller supplied bytes.
-    ///
-    /// # Errors
-    /// Returns an error if the held edit permit cannot be authenticated or cloned.
     fn selected_replacement_permit(&self) -> io::Result<Option<File>> {
         Ok(None)
     }
 
     /// Obtain the independently admitted original source credentials.
-    ///
-    /// # Errors
-    /// Refuses unavailable or no longer authenticated source credentials.
     fn source_credentials(&self) -> io::Result<RetainedIoCredentials>;
     /// Obtain the canonical retained native owner's identity.
-    ///
-    /// # Errors
-    /// Refuses absent or invalid independently admitted owner custody.
     fn native_owner_sha256(&self) -> io::Result<[u8; 32]> {
         Err(refused(
             "Canonical retained native owner was not independently admitted",
@@ -93,16 +79,10 @@ pub trait RetainedIoAuthority: super::ServiceAuthority {
         ))
     }
     /// Retain namespace custody for recovery after the worker stops.
-    ///
-    /// # Errors
-    /// Returns an error if the adapter cannot retain this native owner.
     fn retain_native_owner(&self, _owner: RetainedNativeOwner) -> io::Result<()> {
         Ok(())
     }
     /// Confirm that native namespace obligations have been retired.
-    ///
-    /// # Errors
-    /// Refuses unavailable retirement custody or outstanding recovery obligations.
     fn confirm_native_retirement(&self) -> io::Result<()> {
         Err(refused("Native source retirement custody is unavailable"))
     }
@@ -118,10 +98,6 @@ pub struct RetainedIoCredentials {
 }
 impl RetainedIoCredentials {
     /// Admit canonical source credentials from a root-only source record.
-    ///
-    /// # Errors
-    /// Refuses non-root callers, root or sentinel identities, and oversized,
-    /// unsorted or duplicate supplementary groups.
     pub fn admitted(uid: u32, gid: u32, groups: &[u32]) -> io::Result<Self> {
         root()?;
         validate_credentials(uid, gid, groups)?;
@@ -307,10 +283,6 @@ impl RetainedIoAdmission {
     /// The root adapter obtains these inputs from `TrustedCaptureService`; no
     /// launch option, environment variable or publisher in an untrusted DTO
     /// supplies that policy. The runtime directory is internal metadata custody.
-    ///
-    /// # Errors
-    /// Refuses revoked custody, duplicate runtime admission or an invalid signed
-    /// runtime; propagates runtime directory and executable verification errors.
     pub fn with_native_runtime(
         mut self,
         runtime: &std::path::Path,
@@ -336,10 +308,6 @@ impl RetainedIoAdmission {
     }
     /// Bind exactly the actual sidecar installation already verified against
     /// the host application's embedded service identity, without registry lookup.
-    ///
-    /// # Errors
-    /// Refuses revoked custody, duplicate installation admission or an invalid
-    /// signed worker package; propagates path and installation verification errors.
     pub fn with_installation(
         mut self,
         installed: package_store::InstalledPackage,
@@ -577,63 +545,35 @@ impl RetainedIoAdmission {
     }
     pub(crate) fn splice_credentials(&self, argv: &mut Vec<String>) -> io::Result<()> {
         self.check()?;
-        if argv.iter().any(|v| {
-            [
-                "--share-net",
-                "--unshare-user",
-                "--uid",
-                "--gid",
-                "--original-source-fd",
-            ]
-            .contains(&v.as_str())
-        }) {
-            return Err(refused("Retained namespace plan changed"));
-        }
-        let pos = argv
-            .iter()
-            .position(|v| v == "--unshare-all")
-            .ok_or_else(|| refused("Retained private namespace missing"))?;
-        argv.splice(
-            pos..=pos,
-            [
-                "--unshare-pid",
-                "--unshare-net",
-                "--unshare-ipc",
-                "--unshare-uts",
-                "--unshare-cgroup-try",
-                "--cap-drop",
-                "ALL",
-                "--cap-add",
-                "CAP_SETUID",
-                "--cap-add",
-                "CAP_SETGID",
-            ]
-            .map(String::from),
-        );
-        let shim = argv
-            .iter()
-            .position(|v| v == "__sandbox-exec")
-            .ok_or_else(|| refused("Retained I/O signed shim missing"))?;
-        argv.splice(
-            shim.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?..=shim,
-            ["--retained-io-fd".into(), TOKEN_FD.to_string()],
-        );
-        let mut traversal = Vec::new();
-        for p in [
-            "/run/tilo",
-            "/run/tilo/retained",
-            "/etc",
-            "/etc/alternatives",
-            "/run/tilo-runtime",
-            "/var",
-            "/var/tilo-apps",
-            "/usr/share",
-            "/usr/share/X11",
-        ] {
-            traversal.extend(["--perms".into(), "0755".into(), "--dir".into(), p.into()]);
-        }
-        argv.splice(0..0, traversal);
-        Ok(())
+        super::splice_custody(
+            argv,
+            &super::CustodySplice {
+                token_flag: "--retained-io-fd",
+                token_fd: TOKEN_FD,
+                extra_caps: &[],
+                traversal: &[
+                    "/run/tilo",
+                    "/run/tilo/retained",
+                    "/etc",
+                    "/etc/alternatives",
+                    "/run/tilo-runtime",
+                    "/var",
+                    "/var/tilo-apps",
+                    "/usr/share",
+                    "/usr/share/X11",
+                ],
+                forbidden: &[
+                    "--share-net",
+                    "--unshare-user",
+                    "--uid",
+                    "--gid",
+                    "--original-source-fd",
+                ],
+                changed: "Retained namespace plan changed",
+                no_namespaces: "Retained private namespace missing",
+                no_shim: "Retained I/O signed shim missing",
+            },
+        )
     }
 }
 fn source_metadata(source: &File, directory: bool) -> io::Result<Option<File>> {

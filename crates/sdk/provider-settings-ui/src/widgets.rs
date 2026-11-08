@@ -3,8 +3,8 @@
 //!
 //! A page is a stack of groups on the window ground, separated by space and
 //! type weight rather than boxes: each group is a [`ui::widget::Section`]
-//! with a `Heading` title over its rows. A setting is a
-//! [`ui::widget::ListRow`]: its label, an optional one-line explanation
+//! with a `Heading` title over its rows. A setting is
+//! a [`ui::widget::ListRow`]: its label, an optional one-line explanation
 //! under it, and its control on the trailing edge. Consecutive rows are one
 //! list, edge to edge with an inset separator between them. A reading is a
 //! row whose value trails; a thing you act on is a row of its own (a
@@ -34,8 +34,8 @@ pub type El = Box<dyn Widget>;
 /// `s4` = 16, `s6` = 24 …). Settings composes its tree before a `Theme` is
 /// resolved, so this is the one scale every helper reads.
 ///
-/// Where a gap is a lone spacer rather than a column's rhythm, prefer
-/// [`gap`]: it names a [`SpacingStep`] the toolkit resolves against the
+/// Where a gap is a lone spacer rather than a column's rhythm,
+/// prefer [`gap`]: it names a [`SpacingStep`] the toolkit resolves against the
 /// *live* theme at layout time, so a retuned custom scale reaches it.
 pub fn spacing() -> Spacing {
     Spacing::default()

@@ -130,8 +130,6 @@ fn put_lease(frame: &mut [u8], lease: &Lease) -> io::Result<()> {
 }
 
 /// Encode one bounded request. Replacement is literal text and cannot press Enter.
-/// # Errors
-/// Rejects invalid identities, zero request/transaction IDs and control payloads.
 pub fn encode(request: u64, operation: &Request) -> io::Result<Vec<u8>> {
     if request == 0 {
         return Err(invalid());
@@ -261,9 +259,6 @@ fn take_lease(frame: &[u8]) -> io::Result<Lease> {
 /// The producer's half: decode one request as [`encode`] wrote it, with its
 /// request ID. The lease is taken as sent, for the producer to compare with
 /// its own; a zero transaction is the producer's to refuse as invalid.
-/// # Errors
-/// Rejects malformed framing, unknown operations, fields an Inspect or
-/// Revoke may not carry, text on anything but a Replace, and control text.
 pub fn decode_request(frame: &[u8]) -> io::Result<(u64, Request)> {
     if frame.len() < HEADER_BYTES
         || frame.len() > FRAME_BYTES

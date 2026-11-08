@@ -1,4 +1,4 @@
-//! [`RichInput`]: a field to type rich text into, bound to a `RichText` value: a chat's
+//! [`RichInput`] — a field to type rich text into, bound to a `RichText` value: a chat's
 //! composer (`rich_input(bind: draft)`). Its completion drawers are its own, the system's
 //! behaviour of every rich input, never declared by a view: `@` offers the people of the workspace,
 //! `:` the emoji, and the triggers the system gives sources for ([`RichInput::set_sources`]).

@@ -51,8 +51,7 @@ use crate::backend::{BackendError, Screenshot};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 
-/// The shared-memory formats frames are written in: what every capture
-/// client reads.
+/// The shared-memory formats frames are written in: what every capture client reads.
 const SHM_FORMATS: [wl_shm::Format; 2] = [wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888];
 
 /// The dma-buf formats offered, when the backend can draw into dma-bufs.
@@ -111,22 +110,22 @@ pub(crate) enum Watcher {
 /// What a frame copies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// A part of an output, by name: the region in its physical pixels as
-    /// shown (after its transform); an empty region is the whole output.
+    /// A part of an output, by name: the region in its physical pixels as shown (after its
+    /// transform); an empty region is the whole output.
     Output {
         name: String,
         region: Rectangle<i32, Physical>,
     },
     /// A window, by its foreign-toplevel identifier.
     Window(String),
-    /// The pointer's image, while it is over the target it belongs to (a
-    /// cursor session's), at that target's scale.
+    /// The pointer's image, while it is over the target it belongs to (a cursor session's), at that
+    /// target's scale.
     Cursor(Box<Target>),
 }
 
 impl Target {
-    /// A whole output, by name (see [`Target::Output`]: an empty region is
-    /// the output's whole frame).
+    /// A whole output, by name (see [`Target::Output`]: an empty region is the output's whole
+    /// frame).
     #[must_use]
     pub fn output(name: impl Into<String>) -> Self {
         Self::Output {
@@ -155,8 +154,7 @@ enum Scene {
     Output(Output, Rectangle<i32, Physical>),
     /// A window and the top left of its geometry in its own coordinates.
     Window(smithay::desktop::Window, Point<i32, Logical>),
-    /// The pointer's image, its hotspot at this point of the buffer; `None`
-    /// while it is hidden.
+    /// The pointer's image, its hotspot at this point of the buffer; `None` while it is hidden.
     Cursor(Option<Point<i32, Physical>>),
 }
 
@@ -175,8 +173,8 @@ pub struct Frame {
 pub enum Copied {
     /// Nothing changed since the watcher's last copy: the frame waits.
     Waiting,
-    /// The buffer holds the region; these parts of it changed since the
-    /// watcher's last copy (buffer coordinates).
+    /// The buffer holds the region; these parts of it changed since the watcher's last copy (buffer
+    /// coordinates).
     Done(Vec<Rectangle<i32, Buffer>>),
 }
 
@@ -221,8 +219,8 @@ pub(crate) struct DmabufTargets {
     pub(crate) formats: Vec<Format>,
 }
 
-/// The dma-buf targets of `formats` capture offers: those of a format
-/// frames are drawn in; `None` when there are none.
+/// The dma-buf targets of `formats` capture offers: those of a format frames are drawn in; `None`
+/// when there are none.
 fn dmabuf_targets(device: u64, formats: impl IntoIterator<Item = Format>) -> Option<DmabufTargets> {
     let formats: Vec<Format> = formats
         .into_iter()
@@ -258,8 +256,8 @@ impl Capture {
         }
     }
 
-    /// Offer dma-buf targets of `formats` (those the renderer draws into)
-    /// on `device`, besides shared memory.
+    /// Offer dma-buf targets of `formats` (those the renderer draws into) on `device` , besides
+    /// shared memory.
     pub(crate) fn set_dmabuf_targets(
         &mut self,
         device: u64,
@@ -273,8 +271,7 @@ impl Capture {
         self.toplevels.window(identifier)
     }
 
-    /// The mapped windows an app may capture: their identifiers and what
-    /// they say.
+    /// The mapped windows an app may capture: their identifiers and what they say.
     pub(crate) fn shareable_windows(&self) -> Vec<(String, crate::policy::WindowInfo)> {
         self.toplevels
             .windows()
@@ -292,9 +289,9 @@ impl Capture {
         std::mem::take(&mut self.pending)
     }
 
-    /// The damage of `elements` since `watcher`'s last copy, in the
-    /// region's physical pixels; all of it at a watcher's first copy or
-    /// when the region's size or the output's scale or transform changed.
+    /// The damage of `elements` since `watcher` 's last copy, in the region's physical pixels; all
+    /// of it at a watcher's first copy or when the region's size or the output's scale or transform
+    /// changed.
     fn damage_since<E: smithay::backend::renderer::element::Element>(
         &mut self,
         watcher: &Watcher,
@@ -342,8 +339,7 @@ impl Capture {
         }
     }
 
-    /// Forget watchers that are gone: disconnected clients, destroyed
-    /// sessions.
+    /// Forget watchers that are gone: disconnected clients, destroyed sessions.
     fn retain_watchers(&mut self, display: &DisplayHandle) {
         self.watches.retain(|watch| match &watch.watcher {
             Watcher::Client(client, _) => display
@@ -376,8 +372,7 @@ impl State {
         Some((output.clone(), size))
     }
 
-    /// The size of the buffers frames of `target` take; `None` when it is
-    /// gone.
+    /// The size of the buffers frames of `target` take; `None` when it is gone.
     fn frame_size(&self, target: &Target) -> Option<Size<i32, Physical>> {
         self.view(target).map(|view| view.size)
     }
@@ -388,8 +383,7 @@ impl State {
             Target::Output { name, region } => {
                 let (output, shown) = self.shown_size(name)?;
                 let transform = output.current_transform();
-                // An empty region is the whole output: what a share stream
-                // of a screen copies.
+                // An empty region is the whole output: what a share stream of a screen copies.
                 let region = if region.size.w <= 0 || region.size.h <= 0 {
                     Rectangle::from_size(shown)
                 } else {
@@ -421,8 +415,7 @@ impl State {
             }
             Target::Cursor(of) => {
                 let scale = self.view(of)?.scale;
-                // A hidden pointer is one clear pixel, not the end of the
-                // session.
+                // A hidden pointer is one clear pixel, not the end of the session.
                 let (size, hotspot) = match self.cursor_shape(scale) {
                     Some((size, hotspot)) if size.w > 0 && size.h > 0 => (size, Some(hotspot)),
                     _ => (Size::from((1, 1)), None),
@@ -437,8 +430,8 @@ impl State {
         }
     }
 
-    /// Where the pointer is over `target`, in the physical pixels of its
-    /// frames; `None` when it is elsewhere.
+    /// Where the pointer is over `target` , in the physical pixels of its frames; `None` when it is
+    /// elsewhere.
     pub(crate) fn pointer_on(&self, target: &Target) -> Option<Point<i32, Physical>> {
         let view = self.view(target)?;
         let at: Point<i32, Physical> = match &view.scene {
@@ -459,8 +452,8 @@ impl State {
 }
 
 impl dyn crate::Backend {
-    /// Copy the frames that can be copied now and tell their clients; keep
-    /// those waiting for damage.
+    /// Copy the frames that can be copied now and tell their clients; keep those waiting for
+    /// damage.
     pub(crate) fn serve_captures(&mut self, state: &mut State) {
         image_copy::refresh_sessions(state);
         let display = state.display.clone();
@@ -489,9 +482,9 @@ impl dyn crate::Backend {
     }
 }
 
-/// The part of an output shown at `region` (logical, relative to the
-/// output; all of it when `None`) in its physical pixels, clipped to the
-/// `shown` size; `None` when nothing of it is on the output.
+/// The part of an output shown at `region` (logical, relative to the output; all of it when `None`
+/// ) in its physical pixels, clipped to the `shown` size; `None` when nothing of it is on the
+/// output.
 pub(crate) fn region_on_output(
     region: Option<Rectangle<i32, Logical>>,
     scale: f64,
@@ -511,8 +504,8 @@ pub(crate) fn region_on_output(
     (clipped.size.w > 0 && clipped.size.h > 0).then_some(clipped)
 }
 
-/// The size of the buffer a region of an output with `transform` is copied
-/// into (its sides swap for quarter turns).
+/// The size of the buffer a region of an output with `transform` is copied into (its sides swap for
+/// quarter turns).
 pub(crate) fn buffer_size(
     region: Size<i32, Physical>,
     transform: Transform,
@@ -561,9 +554,8 @@ impl From<smithay::wayland::shm::BufferData> for ShmLayout {
     }
 }
 
-/// Whether a shared-memory buffer can take a frame of `size` from a pool
-/// of `pool_len` bytes: an offered format, the frame's size, rows wide
-/// enough and all inside the pool.
+/// Whether a shared-memory buffer can take a frame of `size` from a pool of `pool_len` bytes: an
+/// offered format, the frame's size, rows wide enough and all inside the pool.
 pub(crate) fn check_shm(
     layout: ShmLayout,
     pool_len: usize,
@@ -605,8 +597,7 @@ pub(crate) fn check_shm(
     Ok(())
 }
 
-/// Whether a dma-buf can take a frame of `size`: an offered format and
-/// modifier, the frame's size.
+/// Whether a dma-buf can take a frame of `size` : an offered format and modifier, the frame's size.
 pub(crate) fn check_dmabuf(
     size: (i32, i32),
     format: Format,
@@ -652,10 +643,9 @@ fn write_pixels(rgba: &[u8], layout: ShmLayout, pool: &mut [u8]) -> Option<()> {
     Some(())
 }
 
-/// Draw what `frame` copies (a region of an output or a window) into its
-/// buffer with `renderer`, through an offscreen image of type `T` for
-/// shared memory. Waits (draws nothing) when the frame waits for damage and
-/// nothing changed.
+/// Draw what `frame` copies (a region of an output or a window) into its buffer with `renderer` ,
+/// through an offscreen image of type `T` for shared memory. Waits (draws nothing) when the frame
+/// waits for damage and nothing changed.
 pub fn copy<R, T>(
     renderer: &mut R,
     state: &mut State,
@@ -687,8 +677,7 @@ where
         scale,
         Held::Back,
     ) else {
-        // A locked session shows no windows: their frames wait for the
-        // unlock.
+        // A locked session shows no windows: their frames wait for the unlock.
         return Ok(Copied::Waiting);
     };
     let damage = state
@@ -737,7 +726,7 @@ where
     Ok(Copied::Done(damage))
 }
 
-/// Draw `elements` over `clear` into a bound target of `size`.
+/// Draw `elements` over `clear` into a bound target of `size` .
 fn draw<R, E>(
     renderer: &mut R,
     target: &mut R::Framebuffer<'_>,
@@ -755,8 +744,7 @@ where
     let drawn = tracker
         .render_output(renderer, target, 0, elements, clear)
         .map_err(|error| crate::backend::failed("render capture", error))?;
-    // The client reads the buffer as soon as it is told: the GPU has to be
-    // done with it.
+    // The client reads the buffer as soon as it is told: the GPU has to be done with it.
     drawn
         .sync
         .wait()
@@ -767,16 +755,15 @@ where
 /// A scene's drawable elements and the colour cleared behind them.
 type SceneElements<R> = (Vec<RelocateRenderElement<OutputRenderElement<R>>>, [f32; 4]);
 
-/// Whether `window` is one a capture may not show (see [`protect`]), and
-/// so one a picture of it may not show either.
+/// Whether `window` is one a capture may not show (see [`protect`]), and so one a picture of it may
+/// not show either.
 pub(crate) fn protected(state: &State, window: &smithay::desktop::Window) -> bool {
     crate::state::describe(state, window)
         .is_some_and(|info| state.capture.protection.covers(info.app_id.as_deref()))
 }
 
-/// A flat placeholder of `size` at `at`, in physical pixels, drawn at
-/// `opacity`: what a protected window leaves behind in a capture and in a
-/// picture of it.
+/// A flat placeholder of `size` at `at` , in physical pixels, drawn at `opacity` : what a protected
+/// window leaves behind in a capture and in a picture of it.
 pub(crate) fn placeholder<R>(
     at: Point<i32, Physical>,
     size: Size<i32, Physical>,
@@ -802,16 +789,14 @@ where
     ))
 }
 
-/// The placeholders of what `output` shows a capture may not see, where it
-/// stands on it, in physical pixels: the windows of an app the session keeps
-/// private (one that closed included, while the desktop still animates it
-/// away), and the layers of a hosted surface that shows a secret (see
-/// [`protect`] and [`crate::host::SurfaceHost::withholds_captures`]), and the
-/// lock screen while it is up. A capture draws them over the scene and under
-/// the pointer: a protected window or surface hides, one that merely passes
-/// behind it is covered along with it, which shows nothing it would not show
-/// anyway. A copy that is the session's own look ([`Held::Nothing`]) covers
-/// nothing.
+/// The placeholders of what `output` shows a capture may not see, where it stands on it, in
+/// physical pixels: the windows of an app the session keeps private (one that closed included,
+/// while the desktop still animates it away), and the layers of a hosted surface that shows a
+/// secret (see [`protect`] and [`crate::host::SurfaceHost::withholds_captures`]), and the lock
+/// screen while it is up. A capture draws them over the scene and under the pointer: a protected
+/// window or surface hides, one that merely passes behind it is covered along with it, which shows
+/// nothing it would not show anyway. A copy that is the session's own look ([`Held::Nothing`])
+/// covers nothing.
 fn placeholders<R>(
     state: &State,
     output: &Output,
@@ -859,9 +844,8 @@ where
             }
         }
     }
-    // A window that closed still stands on the desk while the desktop
-    // animates it away, drawn from the last frame it drew: a protected one
-    // is covered until the desktop lets it go.
+    // A window that closed still stands on the desk while the desktop animates it away, drawn from
+    // the last frame it drew: a protected one is covered until the desktop lets it go.
     for closing in &state.closing {
         if !state
             .capture
@@ -901,9 +885,8 @@ where
     placeholders
 }
 
-/// What `scene` shows, drawn with `renderer`: its elements and what is
-/// cleared behind them, with what `held` covers. `None` while the session is
-/// locked, when no window is shown.
+/// What `scene` shows, drawn with `renderer` : its elements and what is cleared behind them, with
+/// what `held` covers. `None` while the session is locked, when no window is shown.
 fn scene_elements<R>(
     renderer: &mut R,
     state: &State,
@@ -929,8 +912,8 @@ where
             let offset = Point::<i32, Physical>::from((-region.loc.x, -region.loc.y));
             (elements, offset, BACKGROUND)
         }
-        // A locked session shows no window: there is nothing for a window's
-        // frame to copy, whoever asks.
+        // A locked session shows no window: there is nothing for a window's frame to copy, whoever
+        // asks.
         Scene::Window(..) if state.locked() => return None,
         Scene::Window(window, _) if held == Held::Back && protected(state, window) => {
             let size = window.geometry().size.to_physical_precise_round(scale);
@@ -954,8 +937,7 @@ where
                     1.0,
                 ),
             );
-            // Around and behind a window is nothing: clear, for formats with
-            // alpha.
+            // Around and behind a window is nothing: clear, for formats with alpha.
             (elements, Point::default(), [0.0; 4])
         }
         Scene::Cursor(hotspot) => {
@@ -975,9 +957,9 @@ where
     ))
 }
 
-/// What `target` shows now, drawn with `renderer` into an offscreen image
-/// and read back as rows of R, G, B, A, with what `held` covers: what a share
-/// stream pushes, or the session's own look at a display.
+/// What `target` shows now, drawn with `renderer` into an offscreen image and read back as rows of
+/// R, G, B, A, with what `held` covers: what a share stream pushes, or the session's own look at a
+/// display.
 pub(crate) fn read_back<R, T>(
     renderer: &mut R,
     state: &State,
@@ -1006,11 +988,10 @@ where
     })
 }
 
-/// What `target` shows now, drawn to fit `max` — at most `max`'s width and
-/// height, never larger than the target itself — and read back as rows of
-/// R, G, B, A: one frame of the stream a wireless display is sent. The whole
-/// target is drawn smaller, so a video of the desktop costs what its profile
-/// asks for rather than what the display shows.
+/// What `target` shows now, drawn to fit `max` — at most `max` 's width and height, never larger
+/// than the target itself — and read back as rows of R, G, B, A: one frame of the stream a wireless
+/// display is sent. The whole target is drawn smaller, so a video of the desktop costs what its
+/// profile asks for rather than what the display shows.
 pub(crate) fn read_back_scaled<R, T>(
     renderer: &mut R,
     state: &State,
@@ -1035,8 +1016,8 @@ where
     let (elements, clear) =
         scene_elements(renderer, state, &scene, target, false, scale, Held::Back)
             .ok_or_else(|| BackendError("the session is locked".into()))?;
-    // Every element is drawn into the smaller frame instead of the target's
-    // own: a scene scaled by one factor is what a stream at that size shows.
+    // Every element is drawn into the smaller frame instead of the target's own: a scene scaled by
+    // one factor is what a stream at that size shows.
     let scaled: Vec<_> = elements
         .into_iter()
         .map(|element| RescaleRenderElement::from_element(element, Point::default(), factor))
@@ -1049,9 +1030,8 @@ where
     })
 }
 
-/// `source` as a frame that fits `max` — scaled down by one factor, never
-/// up — and that factor. Each side is even and at least two pixels, which is
-/// the smallest an encoder takes.
+/// `source` as a frame that fits `max` — scaled down by one factor, never up — and that factor.
+/// Each side is even and at least two pixels, which is the smallest an encoder takes.
 fn scaled_size(source: Size<i32, Physical>, max: (u32, u32)) -> Option<(Size<i32, Physical>, f64)> {
     let (width, height) = (u32::try_from(source.w).ok()?, u32::try_from(source.h).ok()?);
     if width == 0 || height == 0 {
@@ -1083,8 +1063,7 @@ fn even(value: f64) -> i32 {
     ((value.floor().clamp(0.0, f64::from(i32::MAX)) as i32).max(2)) & !1
 }
 
-/// Draw `elements` into an offscreen image of `size` and read it back as
-/// rows of R, G, B, A.
+/// Draw `elements` into an offscreen image of `size` and read it back as rows of R, G, B, A.
 pub(crate) fn render_to_memory<R, T, E>(
     renderer: &mut R,
     size: Size<i32, Physical>,
@@ -1127,8 +1106,8 @@ where
 mod tests {
     use super::*;
 
-    /// A frame drawn for a stream fits the size asked for, keeps the
-    /// desktop's shape and has the even sides an encoder takes.
+    /// A frame drawn for a stream fits the size asked for, keeps the desktop's shape and has the
+    /// even sides an encoder takes.
     #[test]
     fn a_streamed_frame_fits_what_was_asked_for() {
         let (frame, factor) = scaled_size(Size::from((1920, 1080)), (1280, 720)).expect("a frame");

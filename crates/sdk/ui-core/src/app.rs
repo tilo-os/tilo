@@ -2379,7 +2379,7 @@ impl App {
         answering.next().is_none().then_some(single)
     }
 
-    /// [`Self::rebuild_structure`]: whether a control asked for the keyboard in the tree it
+    /// [`Self::rebuild_structure`] — whether a control asked for the keyboard in the tree it
     /// built ([`Widget::take_focus_request`]) and has it. That request is where the keyboard
     /// goes, over where it was before the rebuild: a caller restoring the focus it captured
     /// before must leave it.
@@ -2565,6 +2565,17 @@ impl App {
                     }
                 }
             }
+        }
+
+        // A part its owner rebuilt (a page, a list showing other rows) holds
+        // the answer the keyboard was on when the control itself survives:
+        // it answers to the same name, alone in the new tree, and the
+        // keyboard goes back to it rather than to nothing.
+        if self.focused_node.is_none()
+            && let Some(name) = self.focus_anchor.clone()
+            && let Some(node) = self.unique_answering(&name)
+        {
+            self.set_focused_node(Some(node));
         }
 
         // The widgets built above are fresh instances the OLD `sync` never

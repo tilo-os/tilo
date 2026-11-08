@@ -374,6 +374,8 @@ pub struct SuggestionList {
     /// The panel spans the viewport's width right above its anchor: a phone's
     /// drawer docked above the keyboard, its rows a finger tall.
     docked: bool,
+    /// A rect a host placed the panel at, over the list's own placement.
+    placed: Option<Rect>,
     /// The panel's height, following its rows on the platform's spring.
     height: crate::motion::Extent,
     /// Turns beside a header whose rows are on their way.
@@ -412,6 +414,7 @@ impl SuggestionList {
             side: crate::widget::PopoverSide::Below,
             align: crate::widget::PanelAlign::Leading,
             docked: false,
+            placed: None,
             height: crate::motion::Extent::default(),
             spinner: crate::widget::spinner::Spinner::new(),
         }
@@ -814,6 +817,28 @@ impl SuggestionList {
         self.scroll.set_line_step(self.metrics.row);
     }
 
+    /// The panel's size for the rows as measured, which is what a host that
+    /// places the list by hand needs before it paints once.
+    pub fn wanted_size(&self) -> (f64, f64) {
+        let m = &self.metrics;
+        let height = self.view_height() + 2.0 * m.inset + self.header;
+        let width = self
+            .anchor
+            .width()
+            .max(self.content_width)
+            .max(self.min_width);
+        (width, height)
+    }
+
+    /// Put the panel where a host placed it, keeping the rows inside: a host
+    /// that places the list by the rules of its own surface (a menu beside a
+    /// control it must not cover) measures with [`Self::measure`], places,
+    /// and hands the rect over here.
+    pub fn set_rect(&mut self, rect: Rect) {
+        self.placed = Some(rect);
+        self.place_scroll();
+    }
+
     /// The panel's rect: under the anchor, or above it when there is more
     /// room there, inside the viewport. `None` with nothing to show.
     pub fn rect(&self) -> Option<Rect> {
@@ -825,6 +850,9 @@ impl SuggestionList {
         let viewport = self
             .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        if let Some(placed) = self.placed {
+            return Some(placed);
+        }
         if self.docked {
             // Across the viewport, its bottom on the anchor's top: the
             // keyboard and the field stay where they are, the drawer above.
@@ -1055,14 +1083,9 @@ impl SuggestionList {
         (widest.max(status) + 2.0 * (m.pad + m.inset)).ceil()
     }
 
-    /// Paint the list in the window's top layer.
-    pub fn paint(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    /// Measure the width the rows need, as the next paint will: a host that
+    /// places a list by hand measures before it has painted once.
+    pub fn measure(&mut self, text: &mut TextRenderer, theme: &Theme) {
         self.set_theme(theme);
         let style = theme.text(self.role);
         let measured = self.measured.as_ref().is_some_and(|key| {
@@ -1080,6 +1103,17 @@ impl SuggestionList {
                 text_scale: text.text_scale(),
             });
         }
+    }
+
+    /// Paint the list in the window's top layer.
+    pub fn paint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.measure(text, theme);
         let Some(target) = self.rect() else {
             return;
         };

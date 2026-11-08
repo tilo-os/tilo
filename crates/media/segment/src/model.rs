@@ -75,9 +75,6 @@ impl SubjectModel {
 
     /// How much of each pixel of `picture` is its subject, at the
     /// picture's own size.
-    ///
-    /// # Errors
-    /// Returns why the picture cannot be read, or the model's failure.
     pub fn matte(&self, picture: &Picture) -> Result<Matte, Error> {
         picture.check()?;
         let side = self.family.side();

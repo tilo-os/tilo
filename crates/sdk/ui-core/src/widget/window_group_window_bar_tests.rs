@@ -1,5 +1,6 @@
 use super::*;
-use crate::widget::{AppKind, NavShell, TaffyTreeExt};
+use crate::tokens::TextRole;
+use crate::widget::{AppKind, TaffyTreeExt};
 
 /// A page of text that fills what it is given, so a bar over it shows.
 struct Page {
@@ -57,109 +58,6 @@ impl Widget for Page {
 
     fn name(&self) -> &'static str {
         "Page"
-    }
-}
-
-/// A Tilo app drawn in-process: a `NavShell` with a sidebar, a content
-/// column and their header rows.
-struct HeaderedApp {
-    rect: Rect,
-    shell: NavShell,
-}
-
-impl HeaderedApp {
-    fn new(header_in_bar: bool) -> Self {
-        let shell = NavShell::new()
-            .sidebar(Box::new(Page { rect: Rect::ZERO }))
-            .content(Box::new(Page { rect: Rect::ZERO }))
-            .sidebar_header("Notes", Vec::new())
-            .content_header(
-                "Groceries",
-                vec![Box::new(crate::widget::Button::icon_only(
-                    "more",
-                    crate::icons::Icon::MoreHorizontal,
-                    "More",
-                ))],
-            );
-        let shell = if header_in_bar {
-            shell.with_header_in_window_bar()
-        } else {
-            shell
-        };
-        Self {
-            rect: Rect::ZERO,
-            shell,
-        }
-    }
-}
-
-impl Widget for HeaderedApp {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let child = self.shell.build_layout(taffy, theme, node_map);
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_node(style, &[child], node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some(&child) = taffy.children(node).unwrap_or_default().first() {
-            self.shell
-                .apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.shell.draw(scene, transform, tr, theme, presence);
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.shell]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.shell]
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        self.shell.take_structure_dirty()
-    }
-
-    fn name(&self) -> &'static str {
-        "HeaderedApp"
-    }
-}
-
-impl crate::widget::app_widget::AppWidget for HeaderedApp {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Files
-    }
-    fn app_title(&self) -> &'static str {
-        "Notes"
-    }
-    fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-        crate::widget::app_widget::IconDescriptor::Glyph("N")
     }
 }
 
@@ -264,31 +162,6 @@ fn lay_out(g: &mut WindowGroup, theme: &Theme) {
     }
 }
 
-fn paint(g: &mut WindowGroup, theme: &Theme, scale: f64) -> Scene {
-    let mut scene = Scene::new();
-    let t = Affine::scale(scale);
-    // The desktop's top bar above the window, so a gap would show.
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        t,
-        theme.tokens.colors.surfaces.base,
-        None,
-        &Rect::new(0.0, 0.0, W, TOP),
-    );
-    g.draw(
-        &mut scene,
-        t,
-        &mut TextRenderer::new(),
-        theme,
-        &PresenceCtx::empty(),
-    );
-    scene
-}
-
-/// Review frames: a maximized foreign-like window at rest (1× and 2×),
-/// the bar revealed and its Restore hovered, and a Tilo app with its
-/// header in the bar at rest and revealed, plus one with a permanent
-/// header and the controls merged into its row.
 /// Maximized, the bar and its search stay the window's children, so a
 /// host's walks (tooltips, accessibility, redraw) reach them as when
 /// restored.
@@ -306,89 +179,6 @@ fn maximized_the_bar_and_search_stay_children() {
     };
     assert!(is(&g.bar), "the bar is a child");
     assert!(is(&g.search), "the search is a child");
-}
-
-#[test]
-#[ignore = "a review tool: needs a GPU adapter; writes PNGs to TILO_UI_SCREENSHOT_DIR"]
-fn render_maximized_bar_frames() {
-    let dir = std::path::PathBuf::from(
-        std::env::var("TILO_UI_SCREENSHOT_DIR").expect("TILO_UI_SCREENSHOT_DIR"),
-    );
-    std::fs::create_dir_all(&dir).expect("shot dir");
-    let theme = Theme::dark().with_reduce_motion(true);
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "small fixed canvas"
-    )]
-    let shoot = |g: &mut WindowGroup, scale: f64, name: &str, pointer: Option<Point>| {
-        let (pw, ph) = ((W * scale) as u32, (H * scale) as u32);
-        let mut renderer =
-            crate::offscreen::OffscreenRenderer::try_new(pw, ph).expect("a GPU adapter");
-        let mut scene = paint(g, &theme, scale);
-        if let Some(p) = pointer {
-            let dot = vello::kurbo::Circle::new(p, 4.0);
-            let t = Affine::scale(scale);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                t,
-                vello::peniko::Color::from_rgb8(255, 210, 0),
-                None,
-                &dot,
-            );
-        }
-        let rgba = renderer.render(&scene, vello::peniko::Color::BLACK);
-        crate::png::write_rgba8(dir.join(format!("{name}.png")), pw, ph, &rgba)
-            .expect("write frame");
-    };
-
-    for scale in [1.0, 2.0] {
-        let mut g = page_group();
-        lay_out(&mut g, &theme);
-        shoot(&mut g, scale, &format!("maximized-rest-{scale}x"), None);
-    }
-    // A sequence: pointer on the app's top row, resting in the band,
-    // the bar shown, Restore hovered, then down into the app.
-    let mut g = page_group();
-    lay_out(&mut g, &theme);
-    let _ = paint(&mut g, &theme, 1.0);
-    let top_row = Point::new(700.0, TOP + 22.0);
-    g.note_maximized_pointer(top_row);
-    let _ = g.elapse_maximized_chrome_intent();
-    shoot(&mut g, 2.0, "seq-1-aiming-at-app-top-row", Some(top_row));
-    let band = Point::new(1100.0, TOP + 2.0);
-    g.note_maximized_pointer(band);
-    g.note_maximized_pointer(Point::new(1101.0, TOP + 2.0));
-    shoot(&mut g, 2.0, "seq-2-resting-in-band", Some(band));
-    let _ = g.elapse_maximized_chrome_intent();
-    shoot(&mut g, 2.0, "seq-3-bar-shown", Some(band));
-    let restore = g.presentation_bounds().restore.expect("shown");
-    g.note_maximized_pointer(restore.center());
-    g.restore_hover = true;
-    shoot(&mut g, 2.0, "seq-4-restore-hovered", Some(restore.center()));
-    g.restore_hover = false;
-    let below = Point::new(restore.center().x, 400.0);
-    g.note_maximized_pointer(Point::new(restore.center().x, 300.0));
-    g.note_maximized_pointer(below);
-    shoot(&mut g, 2.0, "seq-5-back-in-app", Some(below));
-
-    for (header_in_bar, name) in [
-        (true, "notes-header-in-bar"),
-        (false, "files-permanent-header"),
-    ] {
-        let mut g = group(TileContent::App(Box::new(HeaderedApp::new(header_in_bar))));
-        lay_out(&mut g, &theme);
-        shoot(&mut g, 2.0, &format!("{name}-rest"), None);
-        g.set_maximized_chrome_shown_for_tests(true);
-        lay_out(&mut g, &theme);
-        let _ = paint(&mut g, &theme, 2.0);
-        shoot(
-            &mut g,
-            2.0,
-            &format!("{name}-revealed"),
-            Some(Point::new(900.0, TOP + 2.0)),
-        );
-    }
 }
 
 /// A maximized window keeps its bar in a band above its content: the

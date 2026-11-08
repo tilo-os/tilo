@@ -53,17 +53,7 @@ impl Widget for Owner {
     );
 
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
-    fn build_layout(
-        &mut self,
-        t: &mut taffy::TaffyTree<()>,
-        _: &crate::Theme,
-        _: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        t.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn name(&self) -> &str {
-        "Acknowledgment owner"
-    }
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "Acknowledgment owner");
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         self.sibling
             .as_mut()
@@ -317,7 +307,6 @@ fn document_effects_defer_only_the_actual_locally_applied_background_action() {
 }
 #[test]
 fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
-    // Case `locally_applied_document_acknowledges_exact_owner_frontier_and_noop_only`.
     {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "body", "before").unwrap();
@@ -367,7 +356,6 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
         assert!(owner.sibling.as_ref().unwrap().receipts.is_empty());
     }
 
-    // Case `view_and_effect_operations_do_not_acknowledge_document_actions`.
     {
         let mut owner = Owner::default();
         let mut doc = AutoCommit::new();

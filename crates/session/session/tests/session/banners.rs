@@ -78,19 +78,14 @@ fn a_raised_notification_shows_a_banner_that_expires() {
     let portal = desktop
         .portal()
         .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: desktop.services(),
-            wake,
-            desktop: Some(Rc::clone(&desktop)),
-            portal,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        services: desktop.services(),
+        wake,
+        desktop: Some(Rc::clone(&desktop)),
+        portal,
+        collab: false,
+        ..Options::default()
+    });
     settle(&mut session, 8);
     let desk = screen(&mut session);
 

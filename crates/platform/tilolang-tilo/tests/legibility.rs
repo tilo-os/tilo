@@ -103,6 +103,7 @@ pub(crate) fn built_over(ada: &Replica) -> Host {
     let host = Host::open(
         Opening {
             record: Some(&ada.doc),
+            chunks: None,
             index_dir: Some(dir),
             device: None,
         },

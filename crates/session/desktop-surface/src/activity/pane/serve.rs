@@ -1,7 +1,6 @@
 //! The pane's history as the session serves it to apps
-//! ([`tilo_actions::remote::workspace_activity`]): the reads an app follows
-//! and the writes it asks for, each addressed by history id rather than by
-//! a row on a screen.
+//! ([`tilo_actions::remote::workspace_activity`]): the reads an app follows and the writes it asks
+//! for, each addressed by history id rather than by a row on a screen.
 
 use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
@@ -10,10 +9,10 @@ use tilo_actions::remote::workspace_activity as wire;
 
 use super::{
     ActivityDeepLink, ActivityTree, ActivityView, BoundaryDirection, DetailAction,
-    GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, RecordId, RecordStore,
-    SystemTime, WorkSessionBoundary, WorkspaceActivityOutcome, WorkspaceActivityPane,
-    WorkspaceHistoryId, WorkspaceScope, comparison_change_labels, comparison_field_changes,
-    detail_provenance, handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
+    GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, RecordId, SystemTime,
+    WorkSessionBoundary, WorkspaceActivityOutcome, WorkspaceActivityPane, WorkspaceHistoryId,
+    WorkspaceScope, comparison_change_labels, comparison_field_changes, detail_provenance,
+    handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
 };
 
 fn millis(at: SystemTime) -> i64 {
@@ -148,7 +147,7 @@ fn hex(id: &HistoryEntryId) -> String {
     wire::entry_hex(id.as_bytes())
 }
 
-/// The arguments an action carries, read as `T`.
+/// The arguments an action carries, read as `T` .
 fn read<T: serde::de::DeserializeOwned>(
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, String> {
@@ -156,8 +155,8 @@ fn read<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("the action's arguments were not understood: {error}"))
 }
 
-/// The desktop a served read or write is about, as its host holds it: read
-/// through, or written to only by what writes.
+/// The desktop a served read or write is about, as its host holds it: read through, or written to
+/// only by what writes.
 pub trait ServedTree {
     type Tree: ActivityTree;
     fn read<R>(&mut self, read: impl FnOnce(&Self::Tree) -> R) -> R;
@@ -175,8 +174,8 @@ impl<T: ActivityTree> ServedTree for &mut T {
     }
 }
 
-/// Whether `action` is one only the person at the device asks for: what
-/// they saw, which sources they hear about each morning.
+/// Whether `action` is one only the person at the device asks for: what they saw, which sources
+/// they hear about each morning.
 #[must_use]
 pub fn is_personal(action: &str) -> bool {
     [
@@ -218,10 +217,9 @@ pub fn is_document_write(action: &str) -> bool {
     .contains(&action)
 }
 
-/// Why an agent may not ask for `action` with `arguments`, if it may not:
-/// what this device has seen and the sources it hears about are the
-/// person's own, and so is every workspace's history but the one the agent
-/// works in.
+/// Why an agent may not ask for `action` with `arguments` , if it may not: what this device has
+/// seen and the sources it hears about are the person's own, and so is every workspace's history
+/// but the one the agent works in.
 #[must_use]
 pub fn refused_to_agent(
     action: &str,
@@ -234,9 +232,8 @@ pub fn refused_to_agent(
 }
 
 impl WorkspaceActivityPane {
-    /// A fingerprint of everything the served reads show: it moves when
-    /// one of them would read differently, and an app following them is
-    /// read again only then.
+    /// A fingerprint of everything the served reads show: it moves when one of them would read
+    /// differently, and an app following them is read again only then.
     pub fn served_revision(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for entry in self.timeline.entries() {
@@ -292,7 +289,6 @@ impl WorkspaceActivityPane {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
         tree: &mut impl ServedTree,
-        records: Option<&RecordStore>,
     ) -> Result<serde_json::Value, String> {
         let value = match action {
             wire::FEED => {
@@ -304,7 +300,7 @@ impl WorkspaceActivityPane {
             wire::FOCUS => serde_json::to_value(self.serve_focus()),
             wire::DETAIL => {
                 let query: wire::DetailQuery = read(arguments)?;
-                serde_json::to_value(tree.write(|tree| self.serve_detail(&query, tree, records)))
+                serde_json::to_value(tree.write(|tree| self.serve_detail(&query, tree)))
             }
             other => return Err(format!("`{other}` is not a read")),
         };
@@ -323,21 +319,22 @@ impl WorkspaceActivityPane {
             self.lens = lens;
             self.reinstall_filter();
         }
-        let groups_by_entry = self.groups_by_entry();
+        let groups = self.groups_by_entry();
         let refused = self.refusals_by_change();
-        let entries = self.timeline.entries();
+        let visible = (0..self.timeline.visible_len())
+            .filter_map(|index| self.timeline.visible_entry(index))
+            .collect::<Vec<_>>();
         wire::Feed {
             workspace: self.workspace_name.clone(),
             scope: wire_scope(self.scope),
-            total: entries.len(),
-            entries: entries
+            total: visible.len(),
+            entries: visible
                 .iter()
-                .enumerate()
                 .rev()
                 .take(query.page())
-                .map(|(index, entry)| {
+                .map(|entry| {
                     let refused = refused.get(&hex(&entry.id)).map(Vec::as_slice);
-                    self.wire_entry(entry, groups_by_entry.get(index), refused)
+                    self.wire_entry(entry, groups.get(&entry.id), refused)
                 })
                 .collect(),
             groups: self
@@ -366,20 +363,20 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// The named group each timeline entry sits in, by index.
-    fn groups_by_entry(&self) -> Vec<Option<String>> {
-        let mut groups = vec![None; self.timeline.entries().len()];
+    /// The named group each timeline entry sits in, by entry.
+    fn groups_by_entry(&self) -> HashMap<HistoryEntryId, Option<String>> {
+        let entries = self.timeline.entries();
+        let mut groups = HashMap::new();
         for (range, start, end) in self.named_positions() {
-            for slot in groups.iter_mut().take(end.saturating_add(1)).skip(start) {
-                *slot = Some(range.id.clone());
+            for entry in entries.iter().take(end.saturating_add(1)).skip(start) {
+                groups.insert(entry.id, Some(range.id.clone()));
             }
         }
         groups
     }
 
-    /// What each change's writes were refused, by the change's history id: a
-    /// verdict names the changes one write would have brought, and this
-    /// device's own writes are its own history.
+    /// What each change's writes were refused, by the change's history id: a verdict names the
+    /// changes one write would have brought, and this device's own writes are its own history.
     fn refusals_by_change(&self) -> HashMap<String, Vec<wire::Refusal>> {
         let mut by_change: HashMap<String, Vec<wire::Refusal>> = HashMap::new();
         for refusal in self.host.refusals(&self.workspace) {
@@ -486,10 +483,7 @@ impl WorkspaceActivityPane {
                     at_ms: millis(resume.timestamp),
                 },
             ),
-            away: self.last_active.is_some()
-                && self.last_active == self.presence_workspace
-                && self.away_digest.total_changes > 0
-                && self.digest == self.away_digest,
+            away: self.away_workspace.is_some(),
             sources_available: self.host.morning_sources_available()
                 && self.scope == WorkspaceScope::ThisWorkspace,
             sources,
@@ -497,9 +491,8 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// The workspace's layout at each recent change, from the first the
-    /// workspace stood in: the changes that made the workspace before it show
-    /// nothing to replay.
+    /// The workspace's layout at each recent change, from the first the workspace stood in: the
+    /// changes that made the workspace before it show nothing to replay.
     pub fn serve_replay(&self) -> wire::Replay {
         wire::Replay {
             frames: self
@@ -566,7 +559,6 @@ impl WorkspaceActivityPane {
         &mut self,
         query: &wire::DetailQuery,
         tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
     ) -> wire::Detail {
         if !self.select_range(&query.range) {
             return wire::Detail {
@@ -582,7 +574,7 @@ impl WorkspaceActivityPane {
         };
         let comparison = if query.compare && detail.can_compare {
             if self.comparison_selection != self.selected_ids() || !self.comparison_attempted {
-                self.apply_detail_action(DetailAction::Compare, tree, records);
+                self.apply_detail_action(DetailAction::Compare, tree);
             }
             Some(
                 self.comparison
@@ -614,8 +606,8 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// The agent task the selection is, as its detail shows it: what was
-    /// asked, by whom, each record it changed and what Undo can reach.
+    /// The agent task the selection is, as its detail shows it: what was asked, by whom, each
+    /// record it changed and what Undo can reach.
     fn detail_run(&self) -> Option<wire::Run> {
         self.selected_agent_run().map(|indexed| {
             let run = &indexed.run;
@@ -727,9 +719,9 @@ impl WorkspaceActivityPane {
         .collect()
     }
 
-    /// Start showing what changed since this device last looked, from the
-    /// frontier it holds now. What it marks seen moves the frontier only
-    /// when the showing ends ([`Self::end_summary`]) or it says so.
+    /// Start showing what changed since this device last looked, from the frontier it holds now.
+    /// What it marks seen moves the frontier only when the showing ends ([`Self::end_summary`]) or
+    /// it says so.
     pub fn begin_summary(&mut self, workspace: u64) {
         self.begin_view(workspace);
         self.view = ActivityView::CatchUp;
@@ -740,21 +732,14 @@ impl WorkspaceActivityPane {
         self.finish_view(workspace);
     }
 
-    /// Count the changes `viewed` names as shown to the person in
-    /// `workspace`; with `now`, as seen at once.
+    /// Count the changes `viewed` names as shown to the person in `workspace` ; with `now` , as
+    /// seen at once.
     pub fn mark_viewed(&mut self, workspace: u64, viewed: &wire::Viewed) {
         if self.scope != WorkspaceScope::ThisWorkspace || self.last_active != Some(workspace) {
             return;
         }
         let shown = self.viewed_changes.entry(workspace).or_default();
         for id in viewed.entries.iter().filter_map(|hex| entry_id(hex)) {
-            if self
-                .external_entry
-                .as_ref()
-                .is_some_and(|entry| entry.id == id)
-            {
-                continue;
-            }
             shown.insert(
                 self.projected_origins
                     .get(&id)
@@ -770,8 +755,8 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// What the person last asked to be shown from outside the app, until
-    /// an app says it showed it ([`Self::take_focus`]).
+    /// What the person last asked to be shown from outside the app, until an app says it showed it
+    /// ([`Self::take_focus`]).
     pub fn serve_focus(&self) -> Option<wire::Focus> {
         self.focus.clone()
     }
@@ -802,8 +787,8 @@ impl WorkspaceActivityPane {
         });
     }
 
-    /// Offer the change, person, work group or resource `link` names to
-    /// the app that shows the history.
+    /// Offer the change, person, work group or resource `link` names to the app that shows the
+    /// history.
     pub fn focus_deep_link(&mut self, link: &ActivityDeepLink) {
         let entry = link
             .entry_id
@@ -822,11 +807,10 @@ impl WorkspaceActivityPane {
                                     || item.id.strip_prefix("file:") == Some(resource)
                             })
                         }) || self.projected_origins.get(&entry.id).is_some_and(|origin| {
-                            matches!(
-                                &origin.origin,
-                                crate::activity::index::HistoryOrigin::Record { id, .. }
-                                    if id.as_str() == resource
-                            )
+                            origin
+                                .origin
+                                .record()
+                                .is_some_and(|id| id.as_str() == resource)
                         })
                     })
                     .map(|entry| entry.id)
@@ -857,16 +841,15 @@ impl WorkspaceActivityPane {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
         tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
     ) -> Result<WorkspaceActivityOutcome, String> {
         let detail = |pane: &mut Self, range: &wire::Range, action, tree: &mut _| {
             if !pane.select_range(range) {
                 return Err(t("activity-history-gone"));
             }
-            Ok(pane.apply_detail_action(action, tree, records))
+            Ok(pane.apply_detail_action(action, tree))
         };
-        // The host decides what its history may take: a desktop that only
-        // shows one refuses every change of it here, where it knows.
+        // The host decides what its history may take: a desktop that only shows one refuses every
+        // change of it here, where it knows.
         if is_document_write(action) && !self.host.mutations_available() {
             return Err(t("activity-served-read-only"));
         }
@@ -910,8 +893,8 @@ impl WorkspaceActivityPane {
                 if !self.select_range(&range) {
                     return Err(t("activity-history-gone"));
                 }
-                // A record the host holds no writer for reads, and does not
-                // go back: refuse rather than answer a change that never was.
+                // A record the host holds no writer for reads, and does not go back: refuse rather
+                // than answer a change that never was.
                 if !self
                     .selection_detail()
                     .is_some_and(|detail| self.selection_is_writable(&detail))
@@ -923,7 +906,7 @@ impl WorkspaceActivityPane {
                 } else {
                     DetailAction::Restore
                 };
-                Ok(self.apply_detail_action(action, tree, records))
+                Ok(self.apply_detail_action(action, tree))
             }
             wire::UNDO_RUN => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
             wire::UNDO_RECORD => {
@@ -942,9 +925,8 @@ impl WorkspaceActivityPane {
                 let Some(task) = task else {
                     return Err(t("activity-undo-task-unavailable"));
                 };
-                // Asked of the task, so undo names the run's group in the
-                // document: the same step a task-wide undo would take
-                // back, one record at a time.
+                // Asked of the task, so undo names the run's group in the document: the same step a
+                // task-wide undo would take back, one record at a time.
                 Ok(if self.undo_task_record(&task, &query.app_id, &query.id) {
                     handled_outcome()
                 } else {

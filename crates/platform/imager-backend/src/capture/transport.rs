@@ -167,9 +167,6 @@ impl HostChannel {
     }
 
     /// Distinct source-input receiver; output's directory-only gate stays intact.
-    /// # Errors
-    /// Rejects a stale peer, missing descriptor, wrong tag or kind, or writable input;
-    /// propagates descriptor-transfer, metadata, descriptor-flag and acknowledgment errors.
     pub fn receive_mounted_input(&mut self, tag: u8, directory: bool) -> io::Result<File> {
         self.validate_peer()?;
         let (bytes, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;

@@ -623,7 +623,6 @@ impl Destination {
 /// SOCKS5 reply codes we emit.
 pub mod reply {
     pub const SUCCESS: u8 = 0x00;
-    pub const GENERAL_FAILURE: u8 = 0x01;
     /// "connection not allowed by ruleset" — the allowlist said no.
     pub const NOT_ALLOWED: u8 = 0x02;
     pub const HOST_UNREACHABLE: u8 = 0x04;
@@ -1188,10 +1187,6 @@ pub async fn connect_upstream_async(
 /// bypass it — the bytes are opaque to it and every policy decision is
 /// made on the host side. Exists so an unmodified HTTP client honouring
 /// `ALL_PROXY` works, since `socks5h://` needs a TCP endpoint.
-///
-/// # Errors
-///
-/// Returns an error if the loopback listener on `port` cannot be bound.
 pub fn run_relay(gate_socket: &Path, port: u16) -> io::Result<()> {
     serve_relay(
         std::net::TcpListener::bind(("127.0.0.1", port))?,
@@ -1203,11 +1198,6 @@ pub fn run_relay(gate_socket: &Path, port: u16) -> io::Result<()> {
 /// connect as soon as this is called. At most [`MAX_CONNECTIONS`] are
 /// carried at once, each as a task on a one-worker runtime owned by the
 /// calling thread. Returns only on error.
-///
-/// # Errors
-///
-/// Returns an error if the listener can't be registered with the runtime
-/// or the runtime can't start.
 pub fn serve_relay(listener: std::net::TcpListener, gate_socket: &Path) -> io::Result<()> {
     serve_relay_limited(listener, gate_socket, MAX_CONNECTIONS)
 }

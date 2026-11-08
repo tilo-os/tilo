@@ -145,8 +145,8 @@ impl Doors {
 
     /// Reserve the door of the process about to start for `app` in `workspace`,
     /// unless one is reserved already. Later windows of the app there are
-    /// routed to it. The reservation is given up when it is dropped before
-    /// [`Reservation::launched`]: the launch did not start.
+    /// routed to it. The reservation is given up when it is dropped
+    /// before [`Reservation::launched`]: the launch did not start.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "one look at the doors decides and records a window's process, so two launches never both start one"
@@ -309,8 +309,8 @@ impl Doors {
     /// reserves. Only a `routable` launch, the app's own window with nothing
     /// named to open, can open in a running process.
     ///
-    /// # Errors
-    /// [`Routed::Opened`]: the running process opens the window and nothing
+    /// #
+    /// Errors [`Routed::Opened`]: the running process opens the window and nothing
     /// starts.
     pub fn route_or_reserve(
         self: &Rc<Self>,

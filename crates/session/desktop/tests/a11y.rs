@@ -1,6 +1,5 @@
-//! What the chrome tells assistive technology: the overlays it paints —
-//! the emoji card and the strip labels — are in the tree its host
-//! publishes, and a reader lands on what the person sees.
+//! What the chrome tells assistive technology: the overlays it paints — the emoji card and the
+//! strip labels — are in the tree its host publishes, and a reader lands on what the person sees.
 
 #![allow(
     clippy::unwrap_used,
@@ -8,15 +7,13 @@
     clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use emoji::Recents;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome, DesktopRules, JOIN_WORKSPACE};
-use tilo_desktop::emoji_picker::{EmojiLink, EmojiPlace, RecentsStore};
+use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
@@ -116,20 +113,6 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-#[derive(Clone)]
-struct MemoryRecents(Rc<RefCell<Recents>>);
-
-impl RecentsStore for MemoryRecents {
-    fn load(&self) -> Recents {
-        self.0.borrow().clone()
-    }
-
-    fn save(&self, recents: &Recents) -> Result<(), String> {
-        *self.0.borrow_mut() = recents.clone();
-        Ok(())
-    }
-}
-
 /// The desk and the chrome a window shows over it, before either is mounted.
 struct Desk {
     surface: DesktopSurface,
@@ -138,14 +121,11 @@ struct Desk {
     link: EmojiLink,
 }
 
-/// A desk of two strips and the chrome over it, and the link the host keeps
-/// the picker through.
+/// A desk of two strips and the chrome over it, and the link the host keeps the picker through.
 fn desk() -> Desk {
     let tree = desk_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
-    let link = EmojiLink::new(Box::new(MemoryRecents(Rc::new(RefCell::new(
-        Recents::default(),
-    )))));
+    let link = EmojiLink::default();
     let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
@@ -165,8 +145,8 @@ fn desk() -> Desk {
     }
 }
 
-/// The chrome over a test desk: the frame that mounts it, the frame that
-/// mounts the desk under it, and the link the host keeps the picker through.
+/// The chrome over a test desk: the frame that mounts it, the frame that mounts the desk under it,
+/// and the link the host keeps the picker through.
 fn chrome() -> (FrameHarness, FrameHarness, DesktopHandle, EmojiLink) {
     let Desk {
         surface,
@@ -210,8 +190,7 @@ fn type_text(frame: &mut FrameHarness, text: &str) {
     }
 }
 
-/// Run `visit` on the chrome the frame mounts, as the session's chrome layer
-/// holds it.
+/// Run `visit` on the chrome the frame mounts, as the session's chrome layer holds it.
 fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrome) -> R) -> R {
     let mut chrome = frame.root_mut::<DesktopChrome>();
     visit(&mut chrome)
@@ -228,8 +207,8 @@ fn draw_chrome(frame: &mut FrameHarness) {
     });
 }
 
-/// What the reader says unprompted this frame: the live regions the tree
-/// carries, which a screen reader announces as they change.
+/// What the reader says unprompted this frame: the live regions the tree carries, which a screen
+/// reader announces as they change.
 fn announced(frame: &FrameHarness) -> Vec<String> {
     frame
         .a11y_nodes()
@@ -262,12 +241,11 @@ fn highlighted(frame: &mut FrameHarness) -> String {
             .selected()
             .expect("the card highlights an emoji")
             .to_owned();
-        chrome.emoji().spoken_name(&text)
+        ui::emoji_catalogue::emoji_name(&text)
     })
 }
 
-/// The name of the emoji the person is on, as the card says it, in the
-/// window the live app runs.
+/// The name of the emoji the person is on, as the card says it, in the window the live app runs.
 fn highlighted_in(app: &mut ui::App) -> String {
     let chrome = app
         .root_widget_mut()
@@ -279,11 +257,10 @@ fn highlighted_in(app: &mut ui::App) -> String {
         .selected()
         .expect("the card highlights an emoji")
         .to_owned();
-    chrome.emoji().spoken_name(&text)
+    ui::emoji_catalogue::emoji_name(&text)
 }
 
-/// What Tilo's own screen reader said, through the toolkit's recording
-/// speaker.
+/// What Tilo's own screen reader said, through the toolkit's recording speaker.
 #[derive(Clone, Default)]
 struct Heard(Arc<Mutex<tts::NullSpeaker>>);
 
@@ -318,8 +295,7 @@ impl tts::Speaker for Heard {
     }
 }
 
-/// The desk's window, as its host shows it: events and frames in, pixels
-/// out.
+/// The desk's window, as its host shows it: events and frames in, pixels out.
 struct Screen;
 
 impl ui::app::AppSurface for Screen {
@@ -338,8 +314,8 @@ impl Screen {
         app.surface_input(self, event.clone(), false);
     }
 
-    /// One frame of the window, and then what it says of its live regions as
-    /// the next one opens: what the person sees is what the reader reads.
+    /// One frame of the window, and then what it says of its live regions as the next one opens:
+    /// what the person sees is what the reader reads.
     fn frame(&self, app: &mut ui::App) {
         let mut scene = ui::vello::Scene::new();
         for _ in 0..3 {
@@ -350,9 +326,9 @@ impl Screen {
     }
 }
 
-/// Super+. opens the card in a window of its own, with Tilo's own reader
-/// listening: it hears the card's footer, the polite region the card paints
-/// inside its own dialog, and the emoji it names follows the arrows.
+/// Super+. opens the card in a window of its own, with Tilo's own reader listening: it hears the
+/// card's footer, the polite region the card paints inside its own dialog, and the emoji it names
+/// follows the arrows.
 #[test]
 fn the_built_in_reader_hears_the_cards_footer() {
     let Desk {
@@ -381,8 +357,8 @@ fn the_built_in_reader_hears_the_cards_footer() {
         screen.send(&mut app, &char_key(&character.to_string()));
     }
 
-    // The reader says the emoji the person is on, from the footer the card
-    // keeps inside its own subtree.
+    // The reader says the emoji the person is on, from the footer the card keeps inside its own
+    // subtree.
     screen.frame(&mut app);
     let first = highlighted_in(&mut app);
     assert_eq!(
@@ -404,8 +380,8 @@ fn the_built_in_reader_hears_the_cards_footer() {
     );
 }
 
-/// Super+. opens the card; a reader reaches it in the published tree and
-/// hears the emoji the person is on, which follows the arrows.
+/// Super+. opens the card; a reader reaches it in the published tree and hears the emoji the person
+/// is on, which follows the arrows.
 #[test]
 fn the_emoji_card_is_the_readers_and_it_says_the_emoji_the_person_is_on() {
     let (mut frame, _desk, _handle, link) = chrome();
@@ -455,8 +431,8 @@ fn the_emoji_card_is_the_readers_and_it_says_the_emoji_the_person_is_on() {
     );
 }
 
-/// Super+S opens the strip labels; a reader reaches each strip by name and
-/// choosing one goes there, as pressing it does.
+/// Super+S opens the strip labels; a reader reaches each strip by name and choosing one goes there,
+/// as pressing it does.
 #[test]
 fn the_strip_labels_are_the_readers_and_choosing_one_goes_there() {
     let (mut frame, mut desk, handle, _link) = chrome();
@@ -496,8 +472,8 @@ fn action(id: &str, title: &str, source: HostActionSource) -> HostAction {
     }
 }
 
-/// The Tilo menu lists what only the session can do, above About; choosing
-/// one asks the session for it by the id it published it under.
+/// The Tilo menu lists what only the session can do, above About; choosing one asks the session for
+/// it by the id it published it under.
 #[test]
 fn the_tilo_menu_lists_the_sessions_own_actions_above_about() {
     let (mut frame, _desk, handle, _link) = chrome();
@@ -541,9 +517,8 @@ fn the_tilo_menu_lists_the_sessions_own_actions_above_about() {
     );
 }
 
-/// The switcher offers joining another workspace exactly when the session
-/// published the action that opens the directory, and choosing it asks for
-/// that action.
+/// The switcher offers joining another workspace exactly when the session published the action that
+/// opens the directory, and choosing it asks for that action.
 #[test]
 fn the_switcher_offers_joining_a_workspace_when_the_session_does() {
     let (mut frame, _desk, handle, _link) = chrome();

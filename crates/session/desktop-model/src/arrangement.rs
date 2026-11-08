@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::GroupId;
+use crate::layout::Strip;
 
 /// Which arrangement a workspace shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -112,6 +113,200 @@ impl CanvasPlace {
 /// design language's `group` rhythm.
 pub const CANVAS_GAP: u32 = 24;
 
+/// The window a group the desk opened takes on the canvas when nobody named a place for it:
+/// the framed canvas's window, in canvas pixels, which is what the arrangement's own place
+/// action defaults to for a place a person types at.
+const MISSING_PLACE_WIDTH: u32 = 720;
+/// See [`MISSING_PLACE_WIDTH`].
+const MISSING_PLACE_HEIGHT: u32 = 520;
+
+/// The corner of the work area a floated window keeps its distance from, so
+/// the window lands sensibly on every member's screen size.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FloatCorner {
+    TopLeft,
+    TopRight,
+    /// The corner a window floats to when the person names none, as cards
+    /// do.
+    #[default]
+    BottomRight,
+    BottomLeft,
+    /// A corner a newer build stores that this one does not know: the window
+    /// still floats, kept at the default corner.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where a window floats: its corner of the work area, the distance from the
+/// two edges meeting there, and its size, all in whole logical pixels.
+///
+/// Anchoring to a corner rather than to the screen's top-left keeps a float
+/// where the person put it on a display of any size: a window 40 px from the
+/// bottom-right is 40 px from the bottom-right of everyone's work area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FloatPlace {
+    #[serde(default)]
+    pub corner: FloatCorner,
+    /// Distance from the corner's left or right edge.
+    pub dx: i32,
+    /// Distance from the corner's top or bottom edge.
+    pub dy: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl FloatPlace {
+    #[must_use]
+    pub fn new(corner: FloatCorner, dx: i32, dy: i32, width: u32, height: u32) -> Self {
+        Self {
+            corner,
+            dx,
+            dy,
+            width,
+            height,
+        }
+    }
+
+    /// The float of a window of `width` × `height` let go as `rect` on the
+    /// work area `area`: anchored to the corner `rect` lies nearest, at the
+    /// distance it was let go from that corner's edges.
+    #[must_use]
+    pub fn of_rect(area: CanvasPlace, rect: CanvasPlace) -> Self {
+        let centre = (
+            rect.x
+                .saturating_add(i32::try_from(rect.width / 2).unwrap_or(i32::MAX)),
+            rect.y
+                .saturating_add(i32::try_from(rect.height / 2).unwrap_or(i32::MAX)),
+        );
+        let right = i32::try_from(area.right()).unwrap_or(i32::MAX);
+        let bottom = i32::try_from(area.bottom()).unwrap_or(i32::MAX);
+        let corners = [
+            FloatCorner::TopLeft,
+            FloatCorner::TopRight,
+            FloatCorner::BottomRight,
+            FloatCorner::BottomLeft,
+        ];
+        let corner = corners
+            .into_iter()
+            .min_by_key(|corner| {
+                let at = corner_point(*corner, area);
+                let dx = i64::from(at.0).saturating_sub(i64::from(centre.0));
+                let dy = i64::from(at.1).saturating_sub(i64::from(centre.1));
+                (
+                    dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)),
+                    *corner,
+                )
+            })
+            .unwrap_or_default();
+        let dx = if corner.is_right() {
+            right.saturating_sub(
+                rect.x
+                    .saturating_add(i32::try_from(rect.width).unwrap_or(0)),
+            )
+        } else {
+            rect.x.saturating_sub(area.x)
+        };
+        let dy = if corner.is_bottom() {
+            bottom.saturating_sub(
+                rect.y
+                    .saturating_add(i32::try_from(rect.height).unwrap_or(0)),
+            )
+        } else {
+            rect.y.saturating_sub(area.y)
+        };
+        Self::new(corner, dx.max(0), dy.max(0), rect.width, rect.height)
+    }
+
+    /// The window's rect on the work area `area`: its size, never larger
+    /// than the area, at its distance from the corner, kept inside the area.
+    #[must_use]
+    pub fn resolved(&self, area: CanvasPlace) -> CanvasPlace {
+        let width = self.width.max(1).min(area.width.max(1));
+        let height = self.height.max(1).min(area.height.max(1));
+        let room = |total: u32, size: u32| i32::try_from(total.saturating_sub(size)).unwrap_or(0);
+        let dx = self.dx.max(0).min(room(area.width, width));
+        let dy = self.dy.max(0).min(room(area.height, height));
+        let x = if self.corner.is_right() {
+            area.x
+                .saturating_add(room(area.width, width))
+                .saturating_sub(dx)
+        } else {
+            area.x.saturating_add(dx)
+        };
+        let y = if self.corner.is_bottom() {
+            area.y
+                .saturating_add(room(area.height, height))
+                .saturating_sub(dy)
+        } else {
+            area.y.saturating_add(dy)
+        };
+        CanvasPlace::new(x, y, width, height)
+    }
+
+    /// The face of the window nearest its corner, as the corner's distance
+    /// from the corner's own edges (0 = flush with them): what a resize or a
+    /// drag keeps while the window changes size around that face.
+    #[must_use]
+    pub fn at(&self, dx: i32, dy: i32) -> Self {
+        Self {
+            dx: dx.max(0),
+            dy: dy.max(0),
+            ..*self
+        }
+    }
+}
+
+impl FloatCorner {
+    /// Whether the corner is on the work area's right side.
+    #[must_use]
+    pub fn is_right(self) -> bool {
+        matches!(self, Self::TopRight | Self::BottomRight)
+    }
+
+    /// Whether the corner is on the work area's bottom side.
+    #[must_use]
+    pub fn is_bottom(self) -> bool {
+        matches!(self, Self::BottomLeft | Self::BottomRight)
+    }
+
+    /// Its name where a person or an agent names it: an action's argument and
+    /// a shell's reading of the arrangement.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top-left",
+            Self::TopRight => "top-right",
+            Self::BottomRight | Self::Unknown => "bottom-right",
+            Self::BottomLeft => "bottom-left",
+        }
+    }
+
+    /// The corner `text` names; `None` for a name this build does not know.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "top-left" => Some(Self::TopLeft),
+            "top-right" => Some(Self::TopRight),
+            "bottom-right" => Some(Self::BottomRight),
+            "bottom-left" => Some(Self::BottomLeft),
+            _ => None,
+        }
+    }
+}
+
+/// The point of the work area `area` a corner names.
+fn corner_point(corner: FloatCorner, area: CanvasPlace) -> (i32, i32) {
+    let right = i32::try_from(area.right()).unwrap_or(i32::MAX);
+    let bottom = i32::try_from(area.bottom()).unwrap_or(i32::MAX);
+    (
+        if corner.is_right() { right } else { area.x },
+        if corner.is_bottom() { bottom } else { area.y },
+    )
+}
+
 /// A workspace's arrangement: which kind it shows and where its groups stand
 /// on the canvas. Places are kept while the strips show, so going back to
 /// the canvas finds every window where it was left.
@@ -127,26 +322,44 @@ pub struct Arrangement {
         deserialize_with = "crate::serde_ids::deserialize_id_btree_map"
     )]
     pub places: BTreeMap<GroupId, CanvasPlace>,
+    /// Where each floated window stands: a window the person lifted off the
+    /// grid, over it and on every member's desk. The group keeps its strip
+    /// and order, so snapping it back returns it exactly where it was.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "crate::serde_ids::deserialize_id_btree_map"
+    )]
+    pub floats: BTreeMap<GroupId, FloatPlace>,
 }
 
 impl Arrangement {
     /// Whether this is the arrangement a workspace has before anyone chose
-    /// one: strips, nothing placed.
+    /// one: strips, nothing placed, nothing floating.
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.kind == ArrangementKind::Strips && self.places.is_empty()
-    }
-
-    /// Whether the workspace shows its canvas.
-    #[must_use]
-    pub fn is_canvas(&self) -> bool {
-        self.kind == ArrangementKind::Canvas
+        self.kind == ArrangementKind::Strips && self.places.is_empty() && self.floats.is_empty()
     }
 
     /// Where `group` stands, once placed.
     #[must_use]
     pub fn place_of(&self, group: GroupId) -> Option<CanvasPlace> {
         self.places.get(&group).copied()
+    }
+
+    /// Where `group` floats, while it does.
+    #[must_use]
+    pub fn float_of(&self, group: GroupId) -> Option<FloatPlace> {
+        self.floats.get(&group).copied()
+    }
+
+    /// Float `group` where `float` says (`None` snaps it back into the grid).
+    /// Returns whether it changed.
+    pub fn set_float(&mut self, group: GroupId, float: Option<FloatPlace>) -> bool {
+        match float {
+            Some(float) => self.floats.insert(group, float) != Some(float),
+            None => self.floats.remove(&group).is_some(),
+        }
     }
 
     /// The free place of `width` × `height` nearest `anchor` (the corner a
@@ -280,10 +493,52 @@ impl Arrangement {
     /// Forget the places of groups for which `live` is false: a closed
     /// window leaves its space free. Returns whether any went.
     pub fn retain_groups(&mut self, live: impl Fn(GroupId) -> bool) -> bool {
-        let before = self.places.len();
+        let held = self.places.len().saturating_add(self.floats.len());
         self.places.retain(|id, _| live(*id));
-        self.places.len() != before
+        self.floats.retain(|id, _| live(*id));
+        self.places.len().saturating_add(self.floats.len()) != held
     }
+
+    /// Stand every group `strips` hold that has no place yet, and keep every place that
+    /// is there: the framed canvas, the spaces canvas and the traditional desktop draw a
+    /// group by its place, so a window the desk opened and nobody placed stands on none of
+    /// them, and a desk a person opened an app on looks empty.
+    ///
+    /// The groups of a strip stand in a row from the strip's corner (`canvas.md` §6), so the
+    /// next one goes just past the last one that stands; a strip whose windows none stand yet
+    /// starts at the origin, where the first place a person types at also lands. The point an
+    /// absent group belongs to is the free space nearest its strip's row, so a window the
+    /// person opened is where they look for it. Returns whether any was placed.
+    pub fn place_missing(&mut self, strips: &[Strip]) -> bool {
+        let gap = i64::from(CANVAS_GAP);
+        let step = i64::from(MISSING_PLACE_WIDTH).saturating_add(gap);
+        // Where each group that does not stand yet belongs, walking each strip's row from
+        // its corner: a strip starts at the origin and each group of it follows the one
+        // before, at its right edge, whether that one stands already or is about to.
+        let mut wanted: Vec<(GroupId, (i32, i32))> = Vec::new();
+        for strip in strips {
+            let mut x = 0_i64;
+            for group in &strip.window_groups {
+                if let Some(place) = self.place_of(group.id) {
+                    x = place.right().saturating_add(gap);
+                    continue;
+                }
+                wanted.push((group.id, (clamp_point(x), 0)));
+                x = x.saturating_add(step);
+            }
+        }
+        for (group, anchor) in &wanted {
+            let place =
+                self.free_place_near(*anchor, MISSING_PLACE_WIDTH, MISSING_PLACE_HEIGHT, None);
+            self.places.insert(*group, place);
+        }
+        !wanted.is_empty()
+    }
+}
+
+/// A canvas coordinate as a place keeps it.
+fn clamp_point(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
 #[cfg(test)]
@@ -294,6 +549,7 @@ mod tests {
         Arrangement {
             kind: ArrangementKind::Canvas,
             places: places.iter().copied().collect(),
+            floats: BTreeMap::new(),
         }
     }
 
@@ -393,6 +649,62 @@ mod tests {
         let json = serde_json::to_string(&workspace).expect("serialises");
         let back: crate::Workspace = serde_json::from_str(&json).expect("reads back");
         assert_eq!(back.arrangement, workspace.arrangement);
+    }
+
+    #[test]
+    fn a_workspace_stored_before_floats_reads_with_none() {
+        let json = r#"{"kind":"Strips","places":{}}"#;
+        let arrangement: Arrangement = serde_json::from_str(json).expect("reads back");
+        assert!(arrangement.floats.is_empty());
+    }
+
+    #[test]
+    fn a_float_is_kept_from_its_corner_and_resolves_on_any_screen() {
+        let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
+        let small = CanvasPlace::new(1280, 0, 1280, 720);
+        assert_eq!(float.resolved(small), CanvasPlace::new(1880, 216, 640, 480));
+        let large = CanvasPlace::new(0, 0, 2560, 1440);
+        assert_eq!(float.resolved(large), CanvasPlace::new(1880, 936, 640, 480));
+        // A window larger than the work area fills it rather than hanging off.
+        let huge = FloatPlace::new(FloatCorner::TopLeft, 10, 10, 4000, 3000);
+        assert_eq!(huge.resolved(small), CanvasPlace::new(1280, 0, 1280, 720));
+        let back: FloatPlace =
+            serde_json::from_str(&serde_json::to_string(&float).unwrap()).unwrap();
+        assert_eq!(back, float);
+    }
+
+    #[test]
+    fn dropping_a_window_anchors_it_to_the_corner_nearest_where_it_was_let_go() {
+        let area = CanvasPlace::new(0, 0, 1600, 900);
+        let bottom_right = FloatPlace::of_rect(area, CanvasPlace::new(900, 380, 640, 480));
+        assert_eq!(bottom_right.corner, FloatCorner::BottomRight);
+        assert_eq!((bottom_right.dx, bottom_right.dy), (60, 40));
+        assert_eq!(
+            bottom_right.resolved(area),
+            CanvasPlace::new(900, 380, 640, 480),
+            "the window stays exactly where it was let go"
+        );
+        let top_left = FloatPlace::of_rect(area, CanvasPlace::new(30, 20, 400, 300));
+        assert_eq!(top_left.corner, FloatCorner::TopLeft);
+        assert_eq!((top_left.dx, top_left.dy), (30, 20));
+    }
+
+    #[test]
+    fn floating_and_snapping_back_moves_nothing_else() {
+        let place = CanvasPlace::new(40, 40, 400, 300);
+        let mut arrangement = canvas(&[(1, place)]);
+        let float = FloatPlace::new(FloatCorner::TopRight, 10, 10, 640, 480);
+        assert!(arrangement.set_float(1, Some(float)));
+        assert!(!arrangement.set_float(1, Some(float)), "nothing changed");
+        assert_eq!(arrangement.float_of(1), Some(float));
+        assert_eq!(
+            arrangement.place_of(1),
+            Some(place),
+            "its canvas place is kept"
+        );
+        assert!(arrangement.set_float(1, None));
+        assert!(!arrangement.set_float(1, None));
+        assert_eq!(arrangement.place_of(1), Some(place), "snap back is exact");
     }
 
     #[test]

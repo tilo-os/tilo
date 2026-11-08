@@ -19,15 +19,14 @@ use crate::time::{Duration, Instant};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::chart_geometry;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
-
-const WEDGE_STEPS: u32 = 64;
 
 /// A stable, labelled radial datum. Negative and non-finite values are treated
 /// as zero. `id` survives sorting and updates and is returned on activation.
@@ -491,28 +490,6 @@ impl PieMarks {
             .map(|s| s.index)
     }
 
-    fn wedge(center: Point, inner: f64, outer: f64, start: f64, end: f64) -> BezPath {
-        let mut path = BezPath::new();
-        let sweep = end - start;
-        let polar = |r: f64, a: f64| Point::new(center.x + r * a.cos(), center.y + r * a.sin());
-        path.move_to(polar(outer, start));
-        for step in 1..=WEDGE_STEPS {
-            let a = start + sweep * f64::from(step) / f64::from(WEDGE_STEPS);
-            path.line_to(polar(outer, a));
-        }
-        if inner <= 0.0 {
-            path.line_to(center);
-        } else {
-            path.line_to(polar(inner, end));
-            for step in 1..=WEDGE_STEPS {
-                let a = end - sweep * f64::from(step) / f64::from(WEDGE_STEPS);
-                path.line_to(polar(inner, a));
-            }
-        }
-        path.close_path();
-        path
-    }
-
     fn draw_tooltip(
         &self,
         scene: &mut Scene,
@@ -750,7 +727,7 @@ impl PlotMarks for PieMarks {
                 transform,
                 slice.color,
                 None,
-                &Self::wedge(
+                &chart_geometry::ring_sector(
                     center,
                     inner,
                     outer,

@@ -25,7 +25,7 @@ use accounts::thunderbird::{AccountMetadata, Transport};
 use accounts::{Account, AccountId, AccountStore};
 use mail_parser::MimeHeaders;
 use serde::{Deserialize, Serialize};
-use tilo_seal::{Context, Label, PasswordParams, SymmetricKey, envelope};
+use tilo_seal::{Context, Frame, FrameError, Label, SymmetricKey, envelope, migration_password};
 use zeroize::Zeroizing;
 
 use crate::account_sources::thunderbird::{
@@ -56,11 +56,15 @@ const MAX_CACHE: u64 = 256 * 1024 * 1024;
 /// How often a merge is retried after the kept file changed under it.
 const CACHE_ATTEMPTS: usize = 3;
 const MAIL_APP: &str = "so.tilo.mail";
-const ARTIFACT_MAGIC: &[u8; 8] = b"TILOTB01";
-const WRAP_DOMAIN: &[u8] = b"tilo-thunderbird-password/v1\0";
-const MAX_WRAPPED: usize = 16 * 1024;
+const MAIL_ARTIFACT: Frame = Frame::new(
+    b"TILOTB01",
+    b"tilo-thunderbird-password/v1\0",
+    16 * 1024,
+    MAX_SEALED,
+);
+
 /// Upper bound of one password-wrapped selected-mail artifact.
-pub const MAX_THUNDERBIRD_ARTIFACT: usize = MAX_SEALED + MAX_WRAPPED + 16;
+pub const MAX_THUNDERBIRD_ARTIFACT: usize = MAIL_ARTIFACT.max_len();
 
 /// The exact reviewed children to export. An empty account list is an empty
 /// selection, not "everything". IDs are the opaque IDs from discovery.
@@ -161,9 +165,6 @@ impl ThunderbirdSelection {
 
     /// Structural checks that need no live source. The manifest uses this
     /// before the exact reviewed selection is available again.
-    ///
-    /// # Errors
-    /// Refuses an empty, oversized or duplicate selection shape.
     pub fn validate_shape(&self) -> Result<(), ConnectionError> {
         if self.accounts.is_empty() || self.accounts.len() > MAX_ACCOUNTS {
             return Err(ConnectionError::InvalidConfiguration);
@@ -217,9 +218,6 @@ impl SealedThunderbird {
     }
 
     /// Parse only the envelope framing. Authentication happens on import.
-    ///
-    /// # Errors
-    /// Refuses an oversized or malformed envelope.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectionError> {
         if bytes.len() > MAX_SEALED {
             return Err(ConnectionError::InvalidConfiguration);
@@ -254,14 +252,11 @@ impl PasswordSealedThunderbird {
     /// # Errors
     /// Refuses an oversized, malformed or non-canonical artifact.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectionError> {
-        parse_artifact(bytes)?;
+        MAIL_ARTIFACT.parse(bytes).map_err(frame_error)?;
         Ok(Self(bytes.to_vec()))
     }
 
     /// Read one already-granted private artifact with bounded/no-follow access.
-    ///
-    /// # Errors
-    /// Refuses redirected, oversized or non-private inputs.
     pub fn read(path: &Path) -> Result<Self, ConnectionError> {
         read_artifact(path).map_err(|_| ConnectionError::StorageUnavailable)
     }
@@ -276,30 +271,12 @@ impl PasswordSealedThunderbird {
     ) -> Result<Self, ConnectionError> {
         selection.validate(reviewed)?;
         validate_password(password)?;
-        let context = wrap_binding(setup_binding)?;
+        binding(setup_binding)?;
         let key = SymmetricKey::generate().map_err(|_| ConnectionError::CredentialUnavailable)?;
         let selected = seal_selected(reviewed, selection, &key, setup_binding)?;
-        let wrapped = envelope::seal_with_password(
-            password,
-            PasswordParams::DEFAULT,
-            Context::new(Label::MigrationPackage, &context),
-            key.expose_secret(),
-        )
-        .map_err(|_| ConnectionError::CredentialUnavailable)?;
-        let mut bytes = Vec::with_capacity(16 + wrapped.len() + selected.0.len());
-        bytes.extend_from_slice(ARTIFACT_MAGIC);
-        bytes.extend_from_slice(
-            &u32::try_from(wrapped.len())
-                .map_err(|_| ConnectionError::InvalidConfiguration)?
-                .to_le_bytes(),
-        );
-        bytes.extend_from_slice(&wrapped);
-        bytes.extend_from_slice(
-            &u32::try_from(selected.0.len())
-                .map_err(|_| ConnectionError::InvalidConfiguration)?
-                .to_le_bytes(),
-        );
-        bytes.extend_from_slice(&selected.0);
+        let bytes = MAIL_ARTIFACT
+            .seal(password, setup_binding, &key, selected.as_bytes())
+            .map_err(frame_error)?;
         Self::from_bytes(&bytes)
     }
 
@@ -316,114 +293,29 @@ impl PasswordSealedThunderbird {
         setup_binding: &[u8],
     ) -> Result<(SealedThunderbird, SymmetricKey), ConnectionError> {
         validate_password(password)?;
-        let context = wrap_binding(setup_binding)?;
-        let (wrapped, selected) = parse_artifact(&self.0)?;
-        let key = envelope::open_with_password(
-            password,
-            Context::new(Label::MigrationPackage, &context),
-            wrapped,
-        )
-        .map_err(|_| ConnectionError::CredentialUnavailable)?;
-        let key: [u8; 32] = key
-            .as_slice()
-            .try_into()
-            .map_err(|_| ConnectionError::CredentialUnavailable)?;
-        Ok((
-            SealedThunderbird::from_bytes(selected)?,
-            SymmetricKey::from_bytes(key),
-        ))
+        let (key, selected) = MAIL_ARTIFACT
+            .open(password, setup_binding, &self.0)
+            .map_err(frame_error)?;
+        Ok((SealedThunderbird::from_bytes(&selected)?, key))
+    }
+}
+
+fn frame_error(error: FrameError) -> ConnectionError {
+    match error {
+        FrameError::Malformed => ConnectionError::InvalidConfiguration,
+        FrameError::Unauthenticated => ConnectionError::CredentialUnavailable,
     }
 }
 
 fn validate_password(password: &[u8]) -> Result<(), ConnectionError> {
-    if password.len() > 4096
-        || std::str::from_utf8(password).map_or(true, |text| text.chars().count() < 15)
-    {
+    if !migration_password(password) {
         return Err(ConnectionError::InvalidConfiguration);
     }
     Ok(())
 }
 
-fn wrap_binding(setup: &[u8]) -> Result<Vec<u8>, ConnectionError> {
-    binding(setup)?;
-    let mut context = WRAP_DOMAIN.to_vec();
-    context.extend_from_slice(setup);
-    Ok(context)
-}
-
-fn parse_artifact(bytes: &[u8]) -> Result<(&[u8], &[u8]), ConnectionError> {
-    if bytes.len() > MAX_THUNDERBIRD_ARTIFACT || bytes.get(..8) != Some(ARTIFACT_MAGIC) {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    let length = |offset: usize| -> Result<usize, ConnectionError> {
-        let bytes: [u8; 4] = bytes
-            .get(offset..offset + 4)
-            .ok_or(ConnectionError::InvalidConfiguration)?
-            .try_into()
-            .map_err(|_| ConnectionError::InvalidConfiguration)?;
-        Ok(u32::from_le_bytes(bytes) as usize)
-    };
-    let wrapped_len = length(8)?;
-    if wrapped_len > MAX_WRAPPED {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    let wrapped = bytes
-        .get(12..12 + wrapped_len)
-        .ok_or(ConnectionError::InvalidConfiguration)?;
-    let selected_len = length(12 + wrapped_len)?;
-    let start = 16 + wrapped_len;
-    if selected_len > MAX_SEALED || bytes.len() != start + selected_len {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    let parsed =
-        envelope::Envelope::parse(wrapped).map_err(|_| ConnectionError::CredentialUnavailable)?;
-    if !matches!(parsed.source, envelope::KeySource::Password { params, salt } if params == PasswordParams::DEFAULT && salt.len() == envelope::SALT_LEN)
-    {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    let selected = &bytes[start..];
-    if !matches!(
-        envelope::Envelope::parse(selected)
-            .map_err(|_| ConnectionError::CredentialUnavailable)?
-            .source,
-        envelope::KeySource::Key(_)
-    ) {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    Ok((wrapped, selected))
-}
-
 fn read_artifact(path: &Path) -> std::io::Result<PasswordSealedThunderbird> {
-    use crate::{destination_security, migration_directory::PinnedDirectory};
-    use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-    use cap_primitives::fs::{FollowSymlinks, OpenOptions};
-    let parent = PinnedDirectory::open_absolute(
-        path.parent()
-            .ok_or_else(|| std::io::Error::other("Artifact parent missing"))?,
-    )?;
-    destination_security::check_private_file(&parent.file)?;
-    parent.validate_destination()?;
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No).nonblock(true);
-    let mut file = cap_primitives::fs::open(
-        &parent.file,
-        Path::new(
-            path.file_name()
-                .ok_or_else(|| std::io::Error::other("Artifact name missing"))?,
-        ),
-        &options,
-    )?;
-    destination_security::check_private_file(&file)?;
-    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_THUNDERBIRD_ARTIFACT as u64 {
-        return Err(std::io::Error::other(
-            "Mail artifact exceeds bounds or is not a file",
-        ));
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(MAX_THUNDERBIRD_ARTIFACT as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    parent.validate()?;
+    let bytes = crate::destination_security::read_private_file(path, MAX_THUNDERBIRD_ARTIFACT)?;
     PasswordSealedThunderbird::from_bytes(&bytes)
         .map_err(|_| std::io::Error::other("Malformed mail artifact"))
 }
@@ -512,10 +404,6 @@ fn binding(binding: &[u8]) -> Result<Vec<u8>, ConnectionError> {
 /// Export exactly the reviewed selection under a fresh caller-owned transport
 /// key. The source files are re-read through their pinned profile handles and
 /// the profile is revalidated before the artifact is produced.
-///
-/// # Errors
-/// Refuses an invalid selection, a changed source, unavailable local files or
-/// a bundle beyond the transport bound.
 pub fn seal_selected(
     reviewed: &ReviewedThunderbird,
     selection: &ThunderbirdSelection,

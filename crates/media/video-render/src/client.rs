@@ -128,10 +128,6 @@ pub struct JobDir {
 impl JobDir {
     /// Make a new job directory under `parent`, readable only by this user,
     /// holding at most `budget` bytes of sources.
-    ///
-    /// # Errors
-    ///
-    /// The directory could not be made.
     pub fn create(parent: &Path, budget: u64) -> Result<Self, String> {
         use std::os::unix::fs::DirBuilderExt as _;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -163,21 +159,12 @@ impl JobDir {
     }
 
     /// Keep the record's document for the helper.
-    ///
-    /// # Errors
-    ///
-    /// It could not be written.
     pub fn put_snapshot(&self, bytes: &[u8]) -> Result<(), String> {
         std::fs::write(self.path.join(SNAPSHOT), bytes)
             .map_err(|error| format!("the timeline could not be handed over: {error}"))
     }
 
     /// Copy source `hash` from `reader` for the helper, within the budget.
-    ///
-    /// # Errors
-    ///
-    /// The hash is not one, the sources together outgrow the budget, or the
-    /// copy failed.
     pub fn put_source(&mut self, hash: &str, reader: &mut dyn std::io::Read) -> Result<(), String> {
         if hash.is_empty() || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(format!("{hash:?} is not a content hash"));

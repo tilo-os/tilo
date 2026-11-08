@@ -143,10 +143,6 @@ impl Watcher {
 
     /// Start watching: `on_events` is called on the watch's thread with each
     /// batch of changes the platform delivers together, in order.
-    ///
-    /// # Errors
-    ///
-    /// The platform's failure to watch the root or a directory below it.
     pub fn start(
         self,
         on_events: impl FnMut(&[Event]) + Send + 'static,
@@ -196,10 +192,6 @@ impl Watcher {
 /// its full path) is written, created, removed or renamed, when `directory`
 /// itself is removed or moved away (the watch ends then), and when changes
 /// may have been missed (an overflowed or failed queue).
-///
-/// # Errors
-///
-/// The platform's failure to watch `directory`.
 pub fn watch_changes(
     directory: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,
@@ -211,10 +203,6 @@ pub fn watch_changes(
 /// [`watch_changes`] for every entry below `root`, at any depth: an entry of
 /// a subdirectory, one created later included. `names` is given each changed
 /// entry's full path.
-///
-/// # Errors
-///
-/// The platform's failure to watch `root` or a directory below it.
 pub fn watch_tree_changes(
     root: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,
@@ -226,10 +214,6 @@ pub fn watch_tree_changes(
 /// Call `on_change` when an entry of `directory` that `names` accepts (given
 /// its full path) is created, removed or renamed, and when changes may have
 /// been missed. Writes to the entries are not reported.
-///
-/// # Errors
-///
-/// The platform's failure to watch `directory`.
 pub fn watch_presence(
     directory: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,

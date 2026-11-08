@@ -11,6 +11,7 @@ use super::status_action::place_status_action;
 use super::{Column, Inputs, NavGeometry, Part, at_mut};
 use crate::num::{f32_of_f64, f64_of_usize};
 use crate::widget::WidgetLayoutError;
+use crate::widget::layout_info::HeaderRow;
 use crate::widget::manual::{ManualContext, MeasureConstraint};
 
 /// The layout policy the host runs: place every built part at the rect the
@@ -149,6 +150,13 @@ pub(super) fn measure(
     Ok((f64::from(measured.width), f64::from(measured.height)))
 }
 
+/// What a column's header row settled on, published for an audit, or cleared where the window
+/// folds the row away.
+fn publish(inputs: &Inputs, column: Column, row: Option<HeaderRow>) {
+    let mut fits = inputs.fit.borrow_mut();
+    at_mut(&mut fits, column).header = row;
+}
+
 /// Lay out one header row: the title at its measured width after the
 /// leading buttons, the actions trailing (labelled buttons collapsing to
 /// their icons, then the rest moving into the More menu when they do not
@@ -167,6 +175,9 @@ fn place_header(
     let header = g.header(column);
     let ci = column.index();
     let index_of = |part: Part| inputs.parts.iter().position(|p| *p == part);
+    // The row's account of itself stands only while the row does: a column the window folds
+    // away has nothing to be held to.
+    publish(inputs, column, None);
     if header == Rect::ZERO || header.width() <= 0.0 {
         return Ok(());
     }
@@ -224,19 +235,65 @@ fn place_header(
             widths.iter().sum::<f64>() + gap * f64_of_usize(widths.len().saturating_sub(1))
         }
     };
-    let reserve = run(&compact);
+    // Labels, icons, or the More menu. Where the host lists the window's
+    // actions, the row keeps none of them and has no door either: the
+    // person reaches them where the host lists them.
+    let more = index_of(Part::More(column));
+    let door = more.filter(|_| !inputs.actions_listed);
+    let door_w = match door {
+        Some(index) => measure(ctx, index, None)?.0,
+        None => 0.0,
+    };
+    // What stands at the trailing edge when `shown` of the row's actions stand there: those, at
+    // `widths`, and the door behind whatever else there is (it is there only when something is
+    // behind it).
+    let trailing = |widths: &[f64], shown: usize| -> f64 {
+        let mut width = run(widths.get(..shown).unwrap_or(&[]));
+        if shown < items.len() {
+            width += if shown > 0 { gap + door_w } else { door_w };
+        }
+        width
+    };
+    // The actions the row never gives up: the column's primary one and those before it, since a
+    // row stands its controls from the start. Where the host lists the window's actions, the row
+    // keeps none of them.
+    let never = if inputs.actions_listed {
+        0
+    } else {
+        fit.primary
+            .map_or(0, |primary| primary + 1)
+            .min(items.len())
+    };
+    // A column too narrow to hold even those keeps none of them in its row: what it cannot stand
+    // waits in the row's menu, rather than spilling past the column's own edge.
+    let must = if trailing(&compact, never) <= avail {
+        never
+    } else {
+        0
+    };
+    // The actions the app stands in the row rather than only in its menu.
+    let kept = if inputs.actions_listed {
+        0
+    } else {
+        fit.menu_from
+            .map_or(items.len(), |from| from.min(items.len()))
+    };
 
-    // The title: its measured width, never pushing the actions past their
-    // icons, and keeping a third of the row however many actions there are.
+    // The title: what it says, and what its actions must leave it. The actions give way first —
+    // a label for its icon, then a place in the row for the menu's door — so the title is cut
+    // only once they have nothing left to give.
     let mut start = lead;
+    let mut title: Option<(usize, f64, f64, f64)> = None;
     if let Some(index) = index_of(Part::Title(column)) {
         let (tw, th) = measure(ctx, index, None)?;
-        let room = if reserve > 0.0 {
-            avail - reserve - gap
+        let floor = trailing(&compact, must);
+        let room = if floor > 0.0 {
+            (avail - floor - gap).max(0.0)
         } else {
             avail
         };
-        let width = tw.min(room.max(tw.min(avail / 3.0))).clamp(0.0, avail);
+        let width = tw.min(room).clamp(0.0, avail);
+        title = Some((index, width, tw, th));
         if let Some(slot) = placed.get_mut(index) {
             *slot = Some(centred(lead, width, th));
         }
@@ -246,38 +303,23 @@ fn place_header(
     }
     let band = (trail - start).max(0.0);
 
-    // Labels, icons, or the More menu. Where the host lists the window's
-    // actions, the row keeps none of them and has no door either: the
-    // person reaches them where the host lists them.
-    let more = index_of(Part::More(column));
-    let door = more.filter(|_| !inputs.actions_listed);
-    let (use_compact, shown) = if run(&full) <= band {
-        (false, items.len())
-    } else if run(&compact) <= band {
-        (true, items.len())
+    let (use_compact, shown) = if trailing(&full, kept) <= band {
+        (false, kept)
+    } else if trailing(&compact, kept) <= band {
+        (true, kept)
     } else {
-        let more_w = match door {
-            Some(index) => measure(ctx, index, None)?.0,
-            None => 0.0,
-        };
         // The toolkit's one overflow rule: how many of the row's controls fit
         // beside the door's own button. What does not fit is named in the
         // menu, never dropped from the row.
-        (
-            true,
-            crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w),
-        )
-    };
-    // The row shows its everyday actions and its menu holds the rest, whatever room it has.
-    // Where the host lists the window's actions, the row keeps none of them: each stands once,
-    // where the host lists it, not twice.
-    let shown = if inputs.actions_listed {
-        0
-    } else {
-        fit.menu_from.map_or(shown, |from| shown.min(from))
+        let fits = crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + door_w);
+        (true, fits.min(kept).max(must))
     };
     fit.compact = use_compact;
     fit.shown = Some(shown);
+    // The row's own account of what it kept, for an audit to hold it to its rule once the
+    // rects stand.
+    let keeps = (0..shown).any(|i| fit.capable.get(i).copied().unwrap_or(false));
+    let primary = fit.primary;
     let widths = if use_compact { &compact } else { &full };
     let overflow = shown < items.len();
     let more_size = match (overflow, door) {
@@ -290,6 +332,21 @@ fn place_header(
     }
     let mut x = (trail - total).max(start.min(trail));
     let actions_x0 = if total > 0.0 { x } else { trail };
+    // The title was given what the actions must leave it, and the row often keeps fewer of them
+    // than that: the room between the title and the first control is the title's, up to what it
+    // says, where no leading fill stands there to take it.
+    if let Some((index, width, tw, th)) = title {
+        let end = if total > 0.0 { actions_x0 - gap } else { trail };
+        let room = (end - lead).max(0.0);
+        let wanted = tw.min(room).clamp(0.0, avail);
+        if index_of(Part::Leading(column)).is_none() && wanted > width {
+            if let Some(slot) = placed.get_mut(index) {
+                *slot = Some(centred(lead, wanted, th));
+            }
+            start = lead + wanted + gap;
+            title = Some((index, wanted, tw, th));
+        }
+    }
     for (k, (index, _, h)) in items.iter().enumerate() {
         let rect = if k < shown {
             let w = widths.get(k).copied().unwrap_or(0.0);
@@ -322,6 +379,40 @@ fn place_header(
         if let Some(slot) = placed.get_mut(index) {
             *slot = Some(centred(start, lw.min(room), lh));
         }
+    }
+    // What the row settled on, for an audit to hold it to its own rule. A row with no title has
+    // nothing to be cut, but still answers for the actions it kept.
+    let placed_at = |index: usize| placed.get(index).copied().flatten().unwrap_or(Rect::ZERO);
+    if avail > 0.0 {
+        let (needs, has, free) = match title {
+            Some((index, width, tw, _)) => {
+                let rect = placed_at(index);
+                // Where the next thing in the row stands: the leading fill, an action, or the
+                // door on the title's trailing side, or the row's own trailing edge.
+                let next = [Part::Leading(column), Part::More(column)]
+                    .into_iter()
+                    .filter_map(index_of)
+                    .chain((0..items.len()).filter_map(|i| index_of(Part::Action(column, i))))
+                    .map(placed_at)
+                    .map(|part| part.x0)
+                    .filter(|x0| *x0 >= rect.x1 - 0.5)
+                    .fold(trail, f64::min);
+                (tw, width, (next - rect.x1).max(0.0))
+            }
+            None => (0.0, 0.0, 0.0),
+        };
+        publish(
+            inputs,
+            column,
+            Some(HeaderRow {
+                column: column.key(),
+                title_needs: f32_of_f64(needs),
+                title_has: f32_of_f64(has),
+                free_beside_title: f32_of_f64(free),
+                labelled_action: !use_compact && keeps,
+                primary_shown: must == 0 || primary.is_none_or(|primary| primary < shown),
+            }),
+        );
     }
     Ok(())
 }

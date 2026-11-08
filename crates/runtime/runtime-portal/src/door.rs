@@ -20,10 +20,6 @@ pub const MAX_MESSAGE: usize = 1024;
 const MAX_FDS: usize = 5;
 
 /// `fields` as one message: NUL-separated, so no field may contain a NUL.
-///
-/// # Errors
-///
-/// A field that contains a NUL.
 pub fn encode(fields: &[&[u8]]) -> io::Result<Vec<u8>> {
     if fields.iter().any(|field| field.contains(&0)) {
         return Err(io::Error::new(
@@ -41,11 +37,6 @@ pub fn decode(message: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Send `fields`, with `fds` beside them, as one message over `socket`.
-///
-/// # Errors
-///
-/// A field with a NUL, more descriptors than one message carries, or the
-/// socket's refusal.
 #[cfg(unix)]
 pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
@@ -57,12 +48,14 @@ pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) ->
     {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    let sent = sendmsg(
-        socket,
-        &[io::IoSlice::new(&message)],
-        &mut control,
-        SendFlags::NOSIGNAL,
-    )?;
+    // A peer that has gone must not signal the process. `MSG_NOSIGNAL` says
+    // that where the platform has it; macOS has no such flag and its Rust
+    // runtime already ignores `SIGPIPE`, so the send fails with `EPIPE`.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let flags = SendFlags::NOSIGNAL;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let flags = SendFlags::empty();
+    let sent = sendmsg(socket, &[io::IoSlice::new(&message)], &mut control, flags)?;
     if sent == message.len() {
         Ok(())
     } else {
@@ -72,10 +65,6 @@ pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) ->
 
 /// One message and the descriptors that came with it, close-on-exec;
 /// `None` at end of file.
-///
-/// # Errors
-///
-/// A message that was cut short, or the socket's refusal.
 #[cfg(unix)]
 pub fn receive(
     socket: BorrowedFd<'_>,
@@ -84,12 +73,18 @@ pub fn receive(
     use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, recvmsg};
     let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FDS))];
     let mut control = RecvAncillaryBuffer::new(&mut space);
+    // `MSG_CMSG_CLOEXEC` marks the descriptors close-on-exec as they arrive.
+    // A platform without it (macOS) marks them below instead.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let flags = RecvFlags::CMSG_CLOEXEC;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let flags = RecvFlags::empty();
     let received = loop {
         match recvmsg(
             socket,
             &mut [io::IoSliceMut::new(buffer)],
             &mut control,
-            RecvFlags::CMSG_CLOEXEC,
+            flags,
         ) {
             Err(rustix::io::Errno::INTR) => {}
             other => break other?,
@@ -100,6 +95,10 @@ pub fn receive(
         if let RecvAncillaryMessage::ScmRights(rights) = message {
             fds.extend(rights);
         }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    for fd in &fds {
+        rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
     }
     if received
         .flags

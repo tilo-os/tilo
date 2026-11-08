@@ -11,7 +11,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "concepts",
-        "VM, slot, layer, generation, seat, headful vs headless",
+        "VM, branch, slot, layer, generation, seat, headful vs headless",
         include_str!("../guide/concepts.md"),
     ),
     (
@@ -135,8 +135,20 @@ mod tests {
                 "compositor",
                 "seat0",
                 "qemu:///session",
+                "tilo-vm vm branch box a b c --stop",
+                "tilo-device-branch.service",
             ] {
                 assert!(text.contains(needle), "quickstart lacks {needle}");
+            }
+            let concepts = topic("concepts").unwrap();
+            for needle in [
+                "tilo-vm vm branch",
+                "/sys/class/dmi/id/product_uuid",
+                "new device",
+                "tilo-device-branch.service",
+                "Boot the source once on a current image",
+            ] {
+                assert!(concepts.contains(needle), "concepts lacks {needle}");
             }
         }
 

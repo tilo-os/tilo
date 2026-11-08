@@ -229,11 +229,6 @@ impl DeviceFleetStore {
     }
 
     /// Ensure the current machine appears in the fleet for `identity_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity can't be loaded, if this device's
-    /// certificate can't be read, or if persisting the updated fleet fails.
     pub fn register_current_device(&self, identity_id: &str) -> io::Result<DeviceFleet> {
         let (_, profile) = self.identity(identity_id)?;
         let cert_path = self
@@ -245,12 +240,6 @@ impl DeviceFleetStore {
     }
 
     /// Mint a short-lived enrollment token from this already trusted device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity or this device's key/certificate
-    /// can't be loaded, if the certificate doesn't verify or doesn't grant
-    /// `can_admit_devices`, or if minting or encoding the token fails.
     pub fn mint_enrollment(
         &self,
         identity_id: &str,
@@ -408,12 +397,6 @@ impl DeviceFleetStore {
     }
 
     /// Root-sign a permanent revocation and persist it with the fleet.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity or fleet can't be loaded, if
-    /// `device_public_key` isn't enrolled under `identity_id`, if signing
-    /// the revocation fails, or if persisting the updated fleet fails.
     pub fn revoke(
         &self,
         identity_id: &str,
@@ -486,11 +469,6 @@ impl DeviceFleetStore {
 
     /// Certify a disk-unlock boot key for an enrolled, unrevoked device of
     /// `identity_id`: the root signs `cert` in place.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot sign, the certificate names
-    /// another root, or the device is not an unrevoked member of the fleet.
     pub fn certify_boot_key(
         &self,
         identity_id: &str,
@@ -522,10 +500,6 @@ impl DeviceFleetStore {
 
     /// The person's secret-sync key, when this device holds the root of
     /// `identity_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot be loaded or holds no root.
     pub fn secret_sync_key(&self, identity_id: &str) -> io::Result<tilo_seal::SecretKey> {
         let (root, _) = self.identity(identity_id)?;
         root.secret_sync_key()
@@ -537,48 +511,12 @@ impl DeviceFleetStore {
     /// The setup path uses this so an existing machine accepts a device the
     /// imager certified, and so the new machine accepts the devices it should
     /// join. The certificate must already verify and belong to `identity_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the certificate is invalid, belongs to another
-    /// person, or the fleet cannot be saved.
     pub fn remember_certificate(
         &self,
         identity_id: &str,
         cert: DeviceCert,
     ) -> io::Result<DeviceFleet> {
         self.insert_certificate(identity_id, cert)
-    }
-
-    /// Keep a revocation the person's root signed that reached this device
-    /// from another of theirs, so this device refuses the revoked one after a
-    /// restart too. Returns whether the fleet changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the revocation does not verify, belongs to another
-    /// identity, or the fleet cannot be saved.
-    pub fn remember_revocation(
-        &self,
-        identity_id: &str,
-        entry: RevocationEntry,
-    ) -> io::Result<bool> {
-        verify_revocation_entry(&entry)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        if entry.user_public_key != decode_hex_32(identity_id)? {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "revocation belongs to another identity",
-            ));
-        }
-        let _fleet_lock = self.lock_fleets()?;
-        let mut fleet = self.load(identity_id)?;
-        if fleet.is_revoked(&entry.revoked_device_public_key) {
-            return Ok(false);
-        }
-        fleet.revocations.push(entry);
-        self.save(&fleet)?;
-        Ok(true)
     }
 
     fn insert_certificate(&self, identity_id: &str, cert: DeviceCert) -> io::Result<DeviceFleet> {
@@ -605,74 +543,9 @@ impl DeviceFleetStore {
         Ok(fleet)
     }
 
-    /// The approver of `identity_id`'s new devices at the hosts the person
-    /// shares: the person's root, signing only member-approval commands
-    /// (which requests wait, and the answer to one). Certificates are issued
-    /// by [`Self::certify_paired_device`] alone.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot be loaded.
-    pub fn pairing_approver(&self, identity_id: &str) -> io::Result<PairingApprover> {
-        let (root, profile) = self.identity(identity_id)?;
-        Ok(PairingApprover {
-            root: Arc::new(root),
-            user_public_key: profile.user_public_key,
-        })
-    }
-
-    /// Root-sign the certificate a new device of `identity_id` asked for
-    /// with `request` (it showed the person its pairing code, and they
-    /// approved it on this device), as a browser of theirs, and keep it
-    /// with the fleet so the person's devices list it and can revoke it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot sign, the request does not
-    /// verify or names another person or a revoked device, or the fleet
-    /// cannot be saved.
-    pub fn certify_paired_device(
-        &self,
-        identity_id: &str,
-        request: &tilo_user_identity::CertificationRequest,
-        now_ns: u64,
-    ) -> io::Result<DeviceCert> {
-        let (root, profile) = self.identity(identity_id)?;
-        let fleet = self.load(identity_id)?;
-        let mut revocations = tilo_user_identity::RevocationList::new();
-        for entry in fleet.revocations {
-            revocations
-                .insert(entry)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        }
-        let policy = tilo_user_identity::CertificationPolicy::browser();
-        let mut cert = tilo_user_identity::prepare_device_cert(
-            request,
-            profile.user_public_key,
-            &policy,
-            &revocations,
-            now_ns,
-        )
-        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
-        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        cert.signature = root
-            .sign(&digest)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        tilo_user_identity::verify_issued_cert(request, &cert, &policy, &revocations, now_ns)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        self.insert_certificate(identity_id, cert.clone())?;
-        Ok(cert)
-    }
-
     /// This device's material of `identity_id`'s key, which signs only
     /// after the person approved what it signs
     /// ([`crate::certification_ceremony`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity is not registered here or cannot be
-    /// opened.
     pub fn identity_key(&self, identity_id: &str) -> io::Result<runtime_identity::SigningIdentity> {
         self.identity(identity_id).map(|(key, _)| key)
     }
@@ -737,15 +610,6 @@ impl DeviceFleetStore {
             .parent()
             .and_then(Path::parent)
             .map_or_else(PathBuf::new, Path::to_path_buf)
-    }
-
-    /// The files [`Self::load`] reads for `identity_id`: its fleet and the
-    /// shared home-peer registry, for a caller that watches them.
-    #[must_use]
-    pub fn backing_files(&self, identity_id: &str) -> Vec<PathBuf> {
-        std::iter::once(self.path(identity_id))
-            .chain(self.home_peer_registry())
-            .collect()
     }
 
     fn path(&self, identity_id: &str) -> PathBuf {
@@ -1294,34 +1158,5 @@ mod tests {
         );
         assert!(store.lock_fleets().is_err());
         assert_eq!(fs::read_dir(&elsewhere).expect("target").count(), 0);
-    }
-}
-
-/// The person's root as the approver of their new devices at a host they
-/// share ([`DeviceFleetStore::pairing_approver`]): it signs member-approval
-/// commands and nothing else, so no certificate or revocation can be made
-/// through it.
-#[derive(Clone)]
-pub struct PairingApprover {
-    root: Arc<runtime_identity::SigningIdentity>,
-    user_public_key: [u8; 32],
-}
-
-impl collab_types::signer::DeviceSigner for PairingApprover {
-    fn device_public_key(&self) -> [u8; 32] {
-        self.user_public_key
-    }
-
-    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
-        let signed = if message.starts_with(tilo_relay_protocol::certify::MEMBER_APPROVAL_LABEL) {
-            self.root
-                .sign(&message)
-                .map_err(|error| collab_types::signer::SignError(error.to_string()))
-        } else {
-            Err(collab_types::signer::SignError(
-                "the pairing approver signs approval commands only".into(),
-            ))
-        };
-        Box::pin(std::future::ready(signed))
     }
 }

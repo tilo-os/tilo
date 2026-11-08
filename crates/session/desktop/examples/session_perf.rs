@@ -1,40 +1,11 @@
-//! Session performance: the desktop the person lands on, measured with no GPU.
-//!
-//! The measured surface is the one both hosts show
-//! ([`tilo_desktop_surface::DesktopSurface`]): the session draws it under its
-//! windows, the page draws it with its apps inside. Two tile profiles cover
-//! what the hosts put in a window's tab, because they cost different things:
-//!
-//! * `arriving` — the native session: a window's pixels are the client's own
-//!   buffer, so a tab's tile is only the arriving placeholder and the frame is
-//!   the desk's chrome (strips, tab bars, edges);
-//! * `apps` — the page: every tab mounts its app component and the surface
-//!   draws it (word processor, chat and notes in the fixture);
-//! * `activities` — the floating layer's cards over a desk: three of them,
-//!   one ticking, then one dragged across the surface.
-//!
-//! Numbers per profile, all from the production frame path
-//! ([`ui::headless::FrameHarness`]):
-//!
-//! * `build` — constructing the surface from its tree;
-//! * `first-frame` — from there to a drawn frame (startup);
-//! * `steady` — 120 forced frames with nothing changed: what a frame owes
-//!   while something animates;
-//! * `typing` — 60 keystrokes into a focused document (the `apps` profile);
-//! * `tick` — frames while a timer's reading moves on: what one changed
-//!   card costs, and that it damages only its own ground (`activities`);
-//! * `drag` — the frames a moved pointer draws while a card follows it
-//!   (`activities`);
-//! * `idle` — frames offered after settling that find no work to do.
-//!
-//! Every phase reports its allocations: a steady frame must not allocate.
-//! Output is a table, or `--json PATH` for the budget check in `tools/perf/`.
-//!
-//! ```text
-//! cargo run -p tilo-desktop --release --example session_perf -- \
-//!     --profile arriving --json out.json
-//! ```
-//! `TILO_PERF_DEVICE` labels the machine in the JSON (`opi3b`, `x86`, ...).
+//! Session performance: the desktop the person lands on, measured with no GPU. The measured surface
+//! is the one both hosts show ([`tilo_desktop_surface::DesktopSurface`]); the `arriving` , `apps`
+//! and `activities` profiles cover what the hosts put in a window's tab, because they cost
+//! different things. Every number comes from the production frame path
+//! ([`ui::headless::FrameHarness`]): `build` , `first-frame` (startup), `steady` (forced frames
+//! with nothing changed), `typing` , `tick` , `drag` and `idle` frames that find no work. Every
+//! phase reports its allocations: a steady frame must not allocate. Output is a table, or
+//! `--json PATH` for the budget check in `tools/perf/` .
 
 #![allow(
     clippy::unwrap_used,
@@ -209,8 +180,8 @@ impl TileSource for Source {
     }
 }
 
-/// Three workspaces of two strips, two windows each, `tabs` tabs per window:
-/// a session someone has used for a while, not an empty one.
+/// Three workspaces of two strips, two windows each, `tabs` tabs per window: a session someone has
+/// used for a while, not an empty one.
 fn fixture(
     profile: Profile,
     tabs_per_window: usize,
@@ -228,8 +199,8 @@ fn fixture(
         chat::definition(),
         notes::definition(),
     ];
-    // The host's catalogue holds each app once, as a session's does; a tab
-    // names it again without adding it.
+    // The host's catalogue holds each app once, as a session's does; a tab names it again without
+    // adding it.
     for definition in &definitions {
         catalog.register(definition).unwrap();
     }
@@ -254,9 +225,8 @@ fn fixture(
                             id,
                             definition.record_kind.clone(),
                         );
-                        // Chat's tabs of one workspace share the package's
-                        // record, so a tab that is not the first opens what
-                        // one before it made.
+                        // Chat's tabs of one workspace share the package's record, so a tab that is
+                        // not the first opens what one before it made.
                         if created.insert((definition.app_id().to_string(), checkout.id.clone())) {
                             store.create_record(&checkout).unwrap();
                             store.with(&checkout.id, |doc| match which {
@@ -360,9 +330,8 @@ fn measure_frames(harness: &mut FrameHarness, name: &str, frames: usize) -> Phas
     }
 }
 
-/// Frames while three fingers carry the strip: each frame takes the hand's
-/// next report and draws the strip where it has carried it, back and forth
-/// across the windows.
+/// Frames while three fingers carry the strip: each frame takes the hand's next report and draws
+/// the strip where it has carried it, back and forth across the windows.
 fn measure_pan(harness: &mut FrameHarness, name: &str, frames: usize, extent: f64) -> Phase {
     /// Nine pixels of finger travel a frame, the pace of a brisk pan.
     const STEP: f64 = 9.0;
@@ -441,10 +410,9 @@ fn phase_json(phase: &Phase) -> serde_json::Value {
     })
 }
 
-/// The floating layer's own frames, hosted as both hosts host it: three
-/// activity cards docked in the corner, one of them ticking, and a card
-/// dragged across the surface. What it measures is the layer alone, so the
-/// numbers are the cards' cost rather than the desk's.
+/// The floating layer's own frames, hosted as both hosts host it: three activity cards docked in
+/// the corner, one of them ticking, and a card dragged across the surface. What it measures is the
+/// layer alone, so the numbers are the cards' cost rather than the desk's.
 fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String> {
     use ui::floating_layer::{Card, Corner, Placement};
     use ui::live_activity::{Control, ControlKind, Kind, Summary};
@@ -486,17 +454,16 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
         expanded: false,
     };
 
-    // Startup: the surface from nothing, as the session makes it, counted on
-    // its own so the harness below is not in it.
+    // Startup: the surface from nothing, as the session makes it, counted on its own so the harness
+    // below is not in it.
     let start = Instant::now();
     let surface = tilo_activities::ActivitiesSurface::new(None);
     let build_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
     let link = surface.link();
     let mut harness = FrameHarness::new(State::new(), Box::new(surface), (1600, 1000));
 
-    // The harness's own first frame (its theme and its empty tree) is not the
-    // layer's: it stands before the cards arrive, unmeasured. The first frame
-    // counted is the one that draws them.
+    // The harness's own first frame (its theme and its empty tree) is not the layer's: it stands
+    // before the cards arrive, unmeasured. The first frame counted is the one that draws them.
     harness.begin_profiling();
     harness.profile_frame();
     harness.clear_profile_samples();
@@ -510,9 +477,9 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
     // Steady: the three cards stand still.
     let steady = measure_frames(&mut harness, "steady", 120);
 
-    // Ticking: the timer's reading moves on every frame. What the session
-    // does between frames (a new feed) is its own cost; the frame counted
-    // here is the layer's, and it may touch the card that changed only.
+    // Ticking: the timer's reading moves on every frame. What the session does between frames (a
+    // new feed) is its own cost; the frame counted here is the layer's, and it may touch the card
+    // that changed only.
     for seconds in 1..=3 {
         link.publish(feed(seconds));
         harness.profile_frame();
@@ -583,8 +550,8 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
     for _ in 0..120 {
         let before = width(&link.shown());
         pointer += Vec2::new(2.0, 1.0);
-        // The frame a moved pointer draws is the event's own: a second frame
-        // offered behind it finds nothing left to change.
+        // The frame a moved pointer draws is the event's own: a second frame offered behind it
+        // finds nothing left to change.
         start_allocations();
         harness.send_host_event(&WindowEvent::CursorMoved {
             device_id,
@@ -600,8 +567,8 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
             continue;
         };
         if before == Some(after) {
-            // The press took hold and the pointer is still inside its slop:
-            // the card has not moved, so there is nothing to repaint.
+            // The press took hold and the pointer is still inside its slop: the card has not moved,
+            // so there is nothing to repaint.
             if !shown.damage.is_zero_area() {
                 drag_violations += 1;
             }
@@ -755,9 +722,8 @@ fn run() -> Result<(), String> {
     let build_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
     let (build_allocs, build_bytes) = stop_allocations();
 
-    // Startup: the first drawn frame.
-    // Mounted as its own type so a phase can hand it a frame's worth of
-    // input between frames, as a host does.
+    // Startup: the first drawn frame. Mounted as its own type so a phase can hand it a frame's
+    // worth of input between frames, as a host does.
     let mut harness =
         FrameHarness::for_root(State::new(), surface, (1600, 1000), ui::Theme::dark());
     start_allocations();
@@ -771,16 +737,15 @@ fn run() -> Result<(), String> {
     // Steady: forced frames with nothing changed (the animation frame).
     let steady = measure_frames(&mut harness, "steady", 120);
 
-    // A strip under three fingers: a report a frame, and the frame drawing
-    // where it carried the strip.
+    // A strip under three fingers: a report a frame, and the frame drawing where it carried the
+    // strip.
     let extent = handle
         .snapshot("g", vec![])
         .desktop_pan
         .map_or(600.0, |pan| pan.max.min(1_000.0));
     let pan = measure_pan(&mut harness, "pan", 120, extent);
 
-    // Interactive: typing into the focused document, where the profile mounts
-    // apps at all.
+    // Interactive: typing into the focused document, where the profile mounts apps at all.
     let mut typing = Phase::default();
     if profile == Profile::Apps {
         harness
@@ -789,16 +754,14 @@ fn run() -> Result<(), String> {
         typing = measure_frames(&mut harness, "typing", 60);
     }
 
-    // Idle: frames offered with nothing to draw. The frames above ran
-    // microseconds apart, so the clock barely moved and a window's entrance
-    // still counts as moving; settle the animations on the toolkit's clock
-    // first, as a capture does, and then no offered frame may find work.
+    // Idle: frames offered with nothing to draw. The frames above ran microseconds apart, so the
+    // clock barely moved and a window's entrance still counts as moving; settle the animations on
+    // the toolkit's clock first, as a capture does, and then no offered frame may find work.
     harness.settle_for_capture(ui::time::Duration::from_millis(2000));
-    // Settling moves what the desk shows: a placeholder says where its
-    // content comes from once it has stood a while. A host presents that
-    // frame as soon as it is due; presenting it here keeps the offers below
-    // to the idle loop itself, rather than counting the one frame the
-    // settled state is still owed six hundred times.
+    // Settling moves what the desk shows: a placeholder says where its content comes from once it
+    // has stood a while. A host presents that frame as soon as it is due; presenting it here keeps
+    // the offers below to the idle loop itself, rather than counting the one frame the settled
+    // state is still owed six hundred times.
     for _ in 0..3 {
         if !harness.frame_schedule().needs_redraw {
             break;

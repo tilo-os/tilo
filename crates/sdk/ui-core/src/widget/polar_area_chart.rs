@@ -8,7 +8,7 @@
 use std::f64::consts::{FRAC_PI_2, TAU};
 use tilo_sort::CompactSort as _;
 use vello::Scene;
-use vello::kurbo::{Affine, Arc, Circle, ParamCurve, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::paint::with_alpha;
@@ -16,6 +16,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_data::ChartItem;
+use crate::widget::chart_geometry::annulus;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
@@ -238,24 +239,6 @@ impl PolarAreaMarks {
     }
 }
 
-fn sector_path(
-    center: Point,
-    inner: f64,
-    outer: f64,
-    start: f64,
-    sweep: f64,
-) -> vello::kurbo::BezPath {
-    let mut path = vello::kurbo::BezPath::new();
-    let outer_arc = Arc::new(center, (outer, outer), start, sweep, 0.0);
-    let inner_arc = Arc::new(center, (inner, inner), start + sweep, -sweep, 0.0);
-    path.move_to(outer_arc.eval(0.0));
-    outer_arc.to_cubic_beziers(0.1, |p1, p2, p3| path.curve_to(p1, p2, p3));
-    path.line_to(inner_arc.eval(0.0));
-    inner_arc.to_cubic_beziers(0.1, |p1, p2, p3| path.curve_to(p1, p2, p3));
-    path.close_path();
-    path
-}
-
 impl PlotMarks for PolarAreaMarks {
     type Hover = String;
     type Activated = String;
@@ -379,7 +362,7 @@ impl PlotMarks for PolarAreaMarks {
                 transform,
                 color,
                 None,
-                &sector_path(center, inner, radius, start, sweep),
+                &annulus(center, inner, radius, start, start + sweep),
             );
             self.sectors.push(Sector {
                 id: datum.id.clone(),

@@ -1,34 +1,26 @@
 //! `SidebarDrawer` — the headless sidebar controller for painted apps.
 //!
-//! A widget app uses [`crate::widget::NavShell`]; an app that paints its
-//! whole window itself holds a `SidebarDrawer` instead. The drawer owns the
-//! same decisions the shell makes, from the same metrics: docked beside the
-//! content while it fits beside the content's minimum (shrinking toward its
-//! own minimum first), the eased reveal, and the person's show/hide choice
-//! per size class. Too narrow to dock, a panel that asked for the push
-//! layout ([`SidebarDrawer::with_push`]: a list of rows the drawer would
-//! cover, as `NavShell` decides from the content's kind) takes turns with
-//! the content: open, the list fills the window
-//! ([`SidebarDrawer::is_push`]) and the toggle in the header row brings the
-//! content back, which is also where a choice in the list lands. Every other
-//! panel — a content-primary app ([`crate::widget::ContentKind::Document`]),
-//! an inspector, a video library beside the picture, an
-//! [`SidebarDrawer::overlay_only`] panel — floats as a drawer over the
-//! content. A drawer is not modal and dims nothing: a
-//! press on the content beside it ([`SidebarDrawer::scrim_rect`]) puts it
-//! away. It hands back the resolved
-//! rects; the host paints the panel with [`SidebarDrawer::paint_panel`] and
-//! the toggle with [`SidebarDrawer::draw_toggle`], and its rows with
-//! [`crate::chrome::paint_nav_row`].
+//! A widget app uses [`crate::widget::NavShell`]; an app that paints its whole window itself holds
+//! a `SidebarDrawer` instead. The drawer owns the same decisions the shell makes, from the same
+//! metrics: docked beside the content while it fits above the content's minimum (shrinking toward
+//! its own minimum first), the eased reveal, and the person's show/hide choice per size class. Too
+//! narrow to dock, a panel that asked for the push layout ([`SidebarDrawer::with_push`]: a list of
+//! rows the drawer would cover, as `NavShell` decides from the content's kind) takes turns with the
+//! content: open, the list fills the window ([`SidebarDrawer::is_push`]) and the toggle in the
+//! header row brings the content back, which is also where a choice in the list lands. Every other
+//! panel — a content-primary app ([`crate::widget::ContentKind::Document`]), an inspector, a video
+//! library beside the picture, an [`SidebarDrawer::overlay_only`] panel — floats as a drawer over
+//! the content. It is not modal and dims nothing: a press on the content beside it
+//! ([`SidebarDrawer::scrim_rect`]) puts it away. It hands back the resolved rects; the host paints
+//! the panel with [`SidebarDrawer::paint_panel`], the toggle with [`SidebarDrawer::draw_toggle`]
+//! and the rows with [`crate::chrome::paint_nav_row`].
 //!
-//! An inspector that asks for it ([`SidebarDrawer::sheet_when_narrow`])
-//! does not float beside a narrow window's content: it rises as a sheet from
-//! the window's foot ([`crate::widget::BottomSheet`]), as `NavShell`'s
-//! inspector does, and the content above it stays live.
+//! An inspector that asks for it ([`SidebarDrawer::sheet_when_narrow`]) rises as a sheet from the
+//! window's foot ([`crate::widget::BottomSheet`]) instead of floating, as `NavShell`'s inspector
+//! does, and the content above it stays live.
 //!
-//! Lifecycle per frame: [`SidebarDrawer::tick`] once from the draw path,
-//! then [`SidebarDrawer::resolve`] with the outer rect. On the event path
-//! call `resolve` alone so hit-tests match the last paint.
+//! Per frame: [`SidebarDrawer::tick`] once from the draw path, then [`SidebarDrawer::resolve`] with
+//! the outer rect; on the event path call `resolve` alone so hit-tests match the last paint.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -568,14 +560,16 @@ impl SidebarDrawer {
         self.toggle.conventions = conventions;
     }
 
-    /// What the toggle does now, for its name and tooltip.
-    fn toggle_name(&self) -> &'static str {
-        match (self.side, self.is_open()) {
-            (SidebarSide::Left, true) => "Hide sidebar",
-            (SidebarSide::Left, false) => "Show sidebar",
-            (SidebarSide::Right, true) => "Hide inspector",
-            (SidebarSide::Right, false) => "Show inspector",
-        }
+    /// What the toggle does now, for its name and tooltip, in the language the
+    /// window speaks.
+    fn toggle_name(&self) -> String {
+        let key = match (self.side, self.is_open()) {
+            (SidebarSide::Left, true) => "window-toolbar-hide-sidebar",
+            (SidebarSide::Left, false) => "window-toolbar-show-sidebar",
+            (SidebarSide::Right, true) => "window-toolbar-hide-inspector",
+            (SidebarSide::Right, false) => "window-toolbar-show-inspector",
+        };
+        crate::i18n::I18nManager::lookup_plain(key)
     }
 
     /// Route `event` to the drawer's own parts: the toggle (hover, a press
@@ -1087,13 +1081,12 @@ impl SidebarDrawer {
         rect: Rect,
         hovered: bool,
     ) {
-        let (icon, name) = match (self.side, self.is_open()) {
-            (SidebarSide::Left, true) => (crate::icons::Icon::PanelLeft, "Hide sidebar"),
-            (SidebarSide::Left, false) => (crate::icons::Icon::PanelLeft, "Show sidebar"),
-            (SidebarSide::Right, true) => (crate::icons::Icon::PanelRight, "Hide inspector"),
-            (SidebarSide::Right, false) => (crate::icons::Icon::PanelRight, "Show inspector"),
+        let icon = match self.side {
+            SidebarSide::Left => crate::icons::Icon::PanelLeft,
+            SidebarSide::Right => crate::icons::Icon::PanelRight,
         };
-        let face = crate::widget::ButtonFace::icon_only(rect, icon, name).hovered(hovered);
+        let name = self.toggle_name();
+        let face = crate::widget::ButtonFace::icon_only(rect, icon, &name).hovered(hovered);
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
     }
 }

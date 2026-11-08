@@ -1,12 +1,10 @@
 //! Dead keys and the Compose key: what a run of keys types together.
-//!
-//! xkb turns a key into a keysym, and some keysyms type nothing on their own:
-//! `dead_acute` and `Multi_key` open a sequence that the keys after them
-//! finish (`´` then `e` is `é`, Compose then `o` `c` is `©`). A client
-//! holding the keymap answers that itself, from the same compose table; a
-//! hosted surface types through the keys the compositor resolves, so the
-//! compositor answers for it here, from the compose table of the session's
-//! locale — the sequences the person's own apps know.
+//! xkb turns a key into a keysym, and some keysyms type nothing on their own: `dead_acute` and
+//! `Multi_key` open a sequence that the keys after them finish (`´` then `e` is `é` , Compose then
+//! `o` `c` is `©` ). A client holding the keymap answers that itself, from the same compose table;
+//! a hosted surface types through the keys the compositor resolves, so the compositor answers for
+//! it here, from the compose table of the session's locale — the sequences the person's own apps
+//! know.
 
 use std::ffi::OsString;
 
@@ -20,8 +18,8 @@ pub(crate) struct Compose {
 }
 
 impl Compose {
-    /// The compose table for the locale the session runs in; `None` when
-    /// there is none for it, and keys then type as they are.
+    /// The compose table for the locale the session runs in; `None` when there is none for it, and
+    /// keys then type as they are.
     pub(crate) fn for_session_locale() -> Option<Self> {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let locale = session_locale();
@@ -41,16 +39,15 @@ impl Compose {
         })
     }
 
-    /// What pressing the key with `keysym` types, given the character the
-    /// layout gives it on its own: nothing while a sequence is open, the
-    /// text the sequence finishes with, and the key's own character
-    /// otherwise — a key that does not continue the sequence types as it
-    /// is, as it does in the person's apps.
+    /// What pressing the key with `keysym` types, given the character the layout gives it on its
+    /// own: nothing while a sequence is open, the text the sequence finishes with, and the key's
+    /// own character otherwise — a key that does not continue the sequence types as it is, as it
+    /// does in the person's apps.
     pub(crate) fn typed(&mut self, keysym: Keysym, own: Option<char>) -> Option<String> {
         use xkb::compose::{FeedResult, Status};
         if self.state.feed(keysym) == FeedResult::Ignored {
-            // Modifiers and keys with no character take no part in a
-            // sequence, and leave the open one alone.
+            // Modifiers and keys with no character take no part in a sequence, and leave the open
+            // one alone.
             return own.map(String::from);
         }
         match self.state.status() {
@@ -90,8 +87,8 @@ fn session_locale() -> OsString {
 mod tests {
     use super::*;
 
-    /// A table of this test's own, so what a sequence types does not depend
-    /// on the locale data the machine running it has.
+    /// A table of this test's own, so what a sequence types does not depend on the locale data the
+    /// machine running it has.
     fn compose() -> Compose {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let sequences = "# a dead key and the Compose key, as the locale's table has them\n\

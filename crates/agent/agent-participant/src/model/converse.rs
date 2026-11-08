@@ -100,10 +100,6 @@ pub trait PlanTurns: Send {
     /// every attempt at it, so a metered endpoint bills it once; `retry`
     /// says this is the turn asked again after its first call was lost to
     /// the network, for the usage log.
-    ///
-    /// # Errors
-    ///
-    /// The provider's or the transport's failure, typed.
     fn turn(
         &mut self,
         request: &ModelRequest,

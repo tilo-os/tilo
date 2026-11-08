@@ -38,6 +38,7 @@ use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
+use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
@@ -129,6 +130,21 @@ impl PeerTransport for Broker {
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.joined.take().map(Ok)
+    }
+
+    /// The record's chunks travel on routes of their own, each joined as the replica reaches
+    /// into it: the broker takes them all, and the changes they carry.
+    fn join_route(
+        &mut self,
+        _route: RouteSpec,
+        _kind: collaboration::record::RecordKind,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn send_to_route(&mut self, _route: RouteSpec, request: CollabRequest) -> Result<(), String> {
+        self.sent.borrow_mut().push(request);
+        Ok(())
     }
 }
 
@@ -664,19 +680,22 @@ impl Session {
         published
     }
 
-    /// The host's frames and the window's, until neither has anything left to do: how many
-    /// turns it took.
-    fn settle(&mut self) -> u32 {
+    /// The host's frames and the window's, until neither has anything left to do. It reports
+    /// nothing: a turn here waits on work the instance does off the frame, and how many turns
+    /// that wait took is the machine's, not the window's. What a test counts of an interaction
+    /// is the work it did (`StoreStats`, `ReadStats`), and what it holds is the state it left —
+    /// `FrameHarness::frame_schedule` says whether the window came to rest.
+    fn settle(&mut self) {
         // An index built off the frame is what the window waits for: this is how long the wait
         // is given before the frames are taken to be at rest.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let mut quiet = 0_u32;
-        let mut turns = 0_u32;
         while quiet < QUIET_TURNS {
-            turns = turns.saturating_add(1);
             let changed = self.host.turn();
             self.window.frame();
-            let waiting = (!self.index_ready() || self.search_index_pending())
+            // The window reads what the first step of a build holds while the rest of the
+            // workspace is derived off the frame: at rest only once the store has read all of it.
+            let waiting = (!self.index_whole() || self.search_index_pending())
                 && std::time::Instant::now() < deadline;
             if changed || waiting {
                 quiet = 0;
@@ -694,17 +713,17 @@ impl Session {
                 }
             }
         }
-        turns
     }
 
     /// Whether the window's instance reads the workspace's indexes: until then it shows the
-    /// platform's loading state.
+    /// platform's loading state. An index being built answers from its first step, so this is
+    /// reached before the whole workspace is read.
     fn index_ready(&self) -> bool {
         self.host
             .instances()
             .next()
             .and_then(|hosted| hosted.instance().host())
-            .is_some_and(|host| host.index_ready())
+            .is_some_and(|host| host.index_answers())
     }
 
     /// Whether the instance is still reading the whole of the workspace's search index off the
@@ -730,12 +749,48 @@ impl Session {
         assert!(self.index_ready(), "the window reads the workspace's index");
     }
 
+    /// Close the window and let the host end its instance, as the session's loop does when a
+    /// person closes one: the index the window built reaches the disk, and the workspace's
+    /// index is there for the next window to open over.
+    fn close(self) {
+        let Self {
+            mut host, window, ..
+        } = self;
+        drop(window);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while host.instances().next().is_some() && std::time::Instant::now() < deadline {
+            host.turn();
+        }
+        assert!(
+            host.instances().next().is_none(),
+            "the window's instance ends with its window"
+        );
+    }
+
+    /// Whether the window's store has read the whole workspace: until it has, the lists it shows
+    /// are the part it has read, and a count it does not have yet shows as not yet known.
+    fn index_whole(&self) -> bool {
+        self.host
+            .instances()
+            .next()
+            .and_then(|hosted| hosted.instance().host())
+            .is_some_and(|host| host.store().settled())
+    }
+
     /// How many indexes the window's instance built from its record: none when it opens over
     /// the ones an earlier run of the app kept.
     fn builds(&self) -> u64 {
         let hosted = self.host.instances().next().expect("the window's instance");
         let host = hosted.instance().host().expect("the instance's store");
         host.store().stats().builds
+    }
+
+    /// How many indexes the window's instance brought up to date from the heads they were
+    /// stamped with: a chunk caught up after the index was built, rather than built over.
+    fn catch_ups(&self) -> u64 {
+        let hosted = self.host.instances().next().expect("the window's instance");
+        let host = hosted.instance().host().expect("the instance's store");
+        host.store().stats().catch_ups
     }
 
     /// Hand the window's store every chunk of `chunks`, as a replica that joined each chunk's

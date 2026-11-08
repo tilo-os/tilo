@@ -1,10 +1,8 @@
-//! `Table` — a CRDT-native **editable grid**. Unlike
-//! [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
-//! sortable list view), this is a structural editor: the user types into
-//! cells and adds / removes rows and columns anywhere via hover affordances
-//! in the gutters. The widget only reads the document: every change the user
-//! makes is a [`TableEdit`] its owner takes ([`Table::take_edits`]) and
-//! submits as an action, applying it with [`apply`].
+//! `Table` — a CRDT-native **editable grid**, not a read-oriented list view
+//! like [`crate::widget::data_table::DataTable`]: the user types into cells and adds and removes rows
+//! and columns from affordances in the gutters. The widget only reads the document: every change
+//! is a [`TableEdit`] its owner takes ([`Table::take_edits`]) and submits as an action, applying
+//! it with [`apply`].
 //!
 //! # Data model (under the widget's `path`, a Map)
 //!
@@ -15,18 +13,16 @@
 //! * `header` — `Bool`: render the first row as a header band.
 //! * `seq`    — `Int`: monotonic id counter (combined with the actor id).
 //!
-//! Row and column ids are stable and never renumbered on insert/delete — only
-//! the `rows`/`cols` *order lists* change, so inserting a column in the
-//! middle is a single list insert plus one empty `Text` per row, merging
-//! cleanly with a concurrent edit to any other cell.
+//! Row and column ids are stable and never renumbered on insert or delete — only the order lists
+//! change, so inserting a column in the middle is one list insert plus one empty `Text` per row,
+//! merging cleanly with a concurrent edit to any other cell.
 //!
 //! # Rendering
 //!
-//! Each cell uses [`crate::widget::TextInput`] in plain-chrome mode, so caret
-//! placement, selection, word navigation, and clipboard handling are shared.
-//! Cells are laid out with a CSS-grid Taffy node (one track per column, fixed
-//! row height); the widget paints the grid lines, header band, row banding,
-//! and the insert / delete / resize affordances in the gutters on top.
+//! Each cell is a [`crate::widget::TextInput`] in plain-chrome mode, so caret placement,
+//! selection, word navigation and clipboard are shared. Cells sit on a CSS-grid Taffy node (one
+//! track per column, fixed row height); the widget paints the grid lines, header band, row
+//! banding and the insert, delete and resize affordances on top.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;

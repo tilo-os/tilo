@@ -109,9 +109,6 @@ impl AccountConfig {
     }
 
     /// Encode connection metadata. The in-memory password is never included.
-    ///
-    /// # Errors
-    /// Returns an error if the connection metadata cannot be serialized.
     pub fn to_value(&self) -> serde_json::Result<serde_json::Value> {
         serde_json::to_value(self)
     }

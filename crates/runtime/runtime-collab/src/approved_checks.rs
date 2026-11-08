@@ -36,9 +36,6 @@ pub struct Request {
 }
 impl Request {
     /// Encode bounded correlation data, never execution authority.
-    ///
-    /// # Errors
-    /// Refuses invalid identities, unknown schema or oversized data.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         if self.version != 1 || !invocation(&self.invocation) || !identifier(&self.check_id) {
             return Err("invalid approved-check request".into());
@@ -50,9 +47,6 @@ impl Request {
         Ok(bytes)
     }
     /// Decode the closed request vocabulary.
-    ///
-    /// # Errors
-    /// Refuses malformed, duplicate, unknown or invalid fields and oversized input.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err("approved-check request too large".into());
@@ -104,9 +98,6 @@ pub struct Report {
 }
 impl Report {
     /// Encode a bounded informational observation.
-    ///
-    /// # Errors
-    /// Refuses invalid correlation, sequence, phase, counts or oversized data.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         if !invocation(&self.invocation) || !identifier(&self.check_id) || self.sequence == 0 {
             return Err("invalid approved-check report correlation".into());
@@ -132,9 +123,6 @@ impl Report {
     }
 
     /// Decode the closed informational vocabulary.
-    ///
-    /// # Errors
-    /// Refuses unknown, duplicate, malformed, invalid or oversized fields.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_REPORT_BYTES {
             return Err("approved-check report too large".into());
@@ -234,9 +222,6 @@ impl Receipt {
                 || self.cleanup_observed && (self.exit_code.is_some() || self.signal.is_some()))
     }
     /// Encode only bounded observed metadata and diagnostics.
-    ///
-    /// # Errors
-    /// Refuses invalid or oversized receipts.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         if !self.valid() {
             return Err("invalid approved-check receipt".into());
@@ -248,9 +233,6 @@ impl Receipt {
         Ok(bytes)
     }
     /// Decode one bounded receipt without trusting its contents as authority.
-    ///
-    /// # Errors
-    /// Refuses malformed, duplicate, unknown, invalid or oversized data.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_RECEIPT_BYTES {
             return Err("approved-check receipt too large".into());
@@ -264,9 +246,6 @@ impl Receipt {
 #[cfg(feature = "client")]
 impl crate::ChannelHandle {
     /// Execute one host-approved ID for this target's actual accepted action.
-    ///
-    /// # Errors
-    /// Refuses invalid requests, unavailable transport, stale custody or invalid replies.
     pub async fn approved_check(&self, request: &Request) -> Result<Receipt, crate::NotAvailable> {
         let encoded = request.encode().map_err(crate::NotAvailable::Refused)?;
         let reply = self.approved_check_command(encoded).await?;
@@ -317,11 +296,6 @@ impl ApprovedCheckReportedProgressStream {
     }
 
     /// Pull one bounded observation or the unchanged terminal receipt.
-    ///
-    /// # Errors
-    /// Refuses malformed or miscorrelated observations, nonmonotonic
-    /// sequences and reads after terminal completion. Any refusal freezes
-    /// this stream.
     pub async fn read(&mut self) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
         if self.terminal {
             return Err(report_error("approved-check report lane is terminal"));

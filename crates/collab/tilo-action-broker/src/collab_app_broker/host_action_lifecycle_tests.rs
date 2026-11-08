@@ -1,9 +1,9 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "every test here keeps its fixture and guards alive through its assertions"
+)]
 use super::*;
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn retired_host_rejects_late_completion_without_rewriting_observation() {
     let root = tempfile::tempdir().unwrap();
@@ -48,10 +48,6 @@ fn retired_host_rejects_late_completion_without_rewriting_observation() {
     assert!(record.update.is_terminal());
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn host_terminal_is_single_assignment_and_never_cancellable() {
     let root = tempfile::tempdir().unwrap();
@@ -91,10 +87,6 @@ fn host_terminal_is_single_assignment_and_never_cancellable() {
     assert_eq!(state.invocation_status(admitted.id), Some(terminal));
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn recovered_host_replay_uses_exact_owner_and_request_without_dispatch() {
     let fixture = crate::collab_app_broker::host_steps::signed_test_support::Fixture::new(
@@ -164,10 +156,6 @@ fn recovered_host_replay_uses_exact_owner_and_request_without_dispatch() {
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn app_local_origin_replays_host_terminal_before_live_target_resolution() {
     let fixture = crate::collab_app_broker::host_steps::signed_test_support::Fixture::new(

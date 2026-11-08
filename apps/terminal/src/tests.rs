@@ -257,6 +257,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 &crate::target::SessionTarget::default_environment(),
                 crate::Requester::Person,
                 None,
+                None,
             );
             assert!(supervisor.join().unwrap().contains("open-session"));
             (opened.err(), terminal_end.read_timeout().unwrap())
@@ -326,6 +327,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             &[],
             &crate::target::SessionTarget::default_environment(),
             crate::Requester::Person,
+            None,
             None,
         );
         let (request, _supervisor_end, _pair, _lease) = supervisor.join().unwrap();

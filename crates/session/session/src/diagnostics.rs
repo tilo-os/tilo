@@ -1,20 +1,15 @@
 //! Profiling the session on the device admin's request.
-//!
-//! The image keeps debuggers and `perf` off every process
-//! (`kernel.yama.ptrace_scope = 3`, `kernel.perf_event_paranoid = 3`), the
-//! session included, and that hardening stays. So the session profiles itself
-//! with the instruments it already has, for a window the admin asks for
-//! through this resource: [`tilo_frame_metrics::profile`] records the loop's
-//! frames, phases and threads, and completes itself when the window is over.
-//!
-//! The resource also reports what the session's heap is doing
-//! ([`tilo_compositor::heap_trim`]): whether a trim a close asked for is still
-//! owed, how many ran, and whether startup's trim has run.
-//!
-//! It is published on the session's door like the desk and the session's
-//! controls, so the action model lists it: `tilo-control actions list
-//! session-diagnostics`, an agent through the broker, and the test-control
-//! door all reach the same verbs, and `profile-status` answers the same
+//! The image keeps debuggers and `perf` off every process (`kernel.yama.ptrace_scope = 3`,
+//! `kernel.perf_event_paranoid = 3` ), the session included, and that hardening stays. So the
+//! session profiles itself with the instruments it already has, for a window the admin asks for
+//! through this resource: [`tilo_frame_metrics::profile`] records the loop's frames, phases and
+//! threads, and completes itself when the window is over.
+//! The resource also reports what the session's heap is doing ([`tilo_compositor::heap_trim`]):
+//! whether a trim a close asked for is still owed, how many ran, and whether startup's trim has
+//! run.
+//! It is published on the session's door like the desk and the session's controls, so the action
+//! model lists it: `tilo-control actions list session-diagnostics` , an agent through the broker,
+//! and the test-control door all reach the same verbs, and `profile-status` answers the same
 //! reading the owner's `profile_status` request does.
 
 use serde_json::{Map, Value, json};
@@ -85,8 +80,8 @@ fn resource() -> ResourceSpec {
         .with_action(status)
 }
 
-/// What the session knows of its own cost now: the profiler's state and the
-/// heap trim's. One reading for every door that asks.
+/// What the session knows of its own cost now: the profiler's state and the heap trim's. One
+/// reading for every door that asks.
 #[must_use]
 pub fn reading() -> Value {
     json!({
@@ -99,8 +94,8 @@ pub fn reading() -> Value {
     })
 }
 
-/// The session's diagnostics as a surface on its door: the profiler, its
-/// reading, and the heap trim.
+/// The session's diagnostics as a surface on its door: the profiler, its reading, and the heap
+/// trim.
 pub(crate) struct Served;
 
 impl Published for Served {
@@ -109,8 +104,7 @@ impl Published for Served {
     }
 
     fn revision(&self) -> Option<u64> {
-        // What it offers never changes; what it answers does, and is read
-        // when asked.
+        // What it offers never changes; what it answers does, and is read when asked.
         Some(0)
     }
 
@@ -140,8 +134,7 @@ impl Published for Served {
     }
 }
 
-/// Start recording a profile of the session for `seconds`, into the session's
-/// profile directory.
+/// Start recording a profile of the session for `seconds` , into the session's profile directory.
 fn profile_start(arguments: &Map<String, Value>) -> Result<Value, DoorError> {
     use tilo_frame_metrics::profile;
     let seconds = match arguments.get("seconds") {
@@ -188,8 +181,8 @@ mod tests {
             .map(|spec| spec.id.as_str())
             .collect();
         assert_eq!(actions, ["profile-start", "profile-stop", "profile-status"]);
-        // The reading: the profiler's state and the heap trim's, whether or
-        // not a trim ever ran in this process.
+        // The reading: the profiler's state and the heap trim's, whether or not a trim ever ran in
+        // this process.
         let reading = reading();
         assert_eq!(reading["profile"]["state"], "idle");
         assert!(reading["heap_trim"]["pending"].is_boolean());

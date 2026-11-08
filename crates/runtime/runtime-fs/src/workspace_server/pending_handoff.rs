@@ -1,27 +1,26 @@
 //! Single-use routes to actual source-resident prepared Work. Tickets are not grants.
 use super::{
-    Arc, ConnectedWorkspaceServer, DirEntry, Duration, MAX_BACKEND_CALLS, Metadata, Rc, Server,
+    Arc, ConnectedWorkspaceServer, DirEntry, Duration, MAX_BACKEND_CALLS, Metadata, Server,
     WorkspaceBackend, directory, io, oneshot,
 };
 use crate::directory_backend::WorkspacePendingReplacementBackend;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use std::collections::HashMap;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use tilo_fs_client::connection::{ServeObject, serve_connected};
 const LIMIT: usize = 64;
 const EXPIRY: Duration = Duration::from_secs(10);
 /// Counts actual blocking callback lifetimes, including futures dropped at EOF.
 #[derive(Default)]
-pub(super) struct CallDrain {
+pub(crate) struct CallDrain {
     count: Mutex<usize>,
     changed: Condvar,
 }
-pub(super) struct CallGuard(Arc<CallDrain>);
+pub(crate) struct CallGuard(Arc<CallDrain>);
 impl CallDrain {
-    pub(super) fn enter(self: &Arc<Self>) -> Result<CallGuard, String> {
+    pub(crate) fn enter(self: &Arc<Self>) -> Result<CallGuard, String> {
         let mut count = self.count.lock().map_err(|_| "handoff drain poisoned")?;
         *count = count.checked_add(1).ok_or("handoff callback overflow")?;
         drop(count);
@@ -201,8 +200,6 @@ impl PendingHandoffRegistry {
     }
     /// Register the exact accepted pending transport before its QPE/RPC work.
     /// Only the owned source supervisor calls this with its actual held cap.
-    /// # Errors
-    /// Refuses an absent, replayed, mismatched or closed actual registry route.
     pub fn begin_pending(
         &self,
         ticket: [u8; 16],
@@ -218,8 +215,6 @@ impl PendingHandoffRegistry {
         result
     }
     /// Register only the SAME actual consumed Read subject's accepted socket.
-    /// # Errors
-    /// Refuses absent/replayed/mismatched or closed actual source routes.
     pub fn begin_read(
         &self,
         ticket: [u8; 16],
@@ -260,8 +255,6 @@ impl PendingHandoffRegistry {
     }
     /// Called only AFTER the owned supervisor has joined the exact child.
     /// Its RPC thread has already drained every submitted blocking callback.
-    /// # Errors
-    /// Refuses an unobservable registry, absent route or duplicate join.
     pub fn observed_join(&self, ticket: [u8; 16], result: Result<(), String>) -> io::Result<()> {
         let mut state = self
             .state
@@ -349,8 +342,6 @@ impl PendingHandoffRegistry {
         }
     }
     /// Consume an actual Read capability once; it cannot select Pending or `WorkspaceFs`.
-    /// # Errors
-    /// Refuses closed/replayed/expired tickets or current original Read loss.
     pub fn take_read(
         &self,
         ticket: [u8; 16],
@@ -381,8 +372,6 @@ impl PendingHandoffRegistry {
     }
     /// Consume once only after authenticating the owned source connection.
     /// This returns the existing native object, never reconstructs Work from data.
-    /// # Errors
-    /// Refuses closed, expired, replayed, mismatched or revoked reservations.
     pub fn take(
         &self,
         ticket: [u8; 16],
@@ -412,8 +401,6 @@ impl PendingHandoffRegistry {
         Ok(entry.pending)
     }
     /// Close routing before joining every owned handoff and native callback.
-    /// # Errors
-    /// Refuses an unobservable poisoned registry.
     pub fn close(&self) -> io::Result<()> {
         let mut state = self
             .state
@@ -442,8 +429,6 @@ impl WorkspaceBackend for ClosedBackend {
 /// Serve ONLY this actual held pending capability on an independently kernel
 /// authenticated connection. Opens no path, selects no arbitrary object, and
 /// supplies no `WorkspaceFs` bootstrap or native authority constructor.
-/// # Errors
-/// Refuses revoked native Work or failure to own the exact RPC server.
 pub fn serve_pending_connected(
     stream: std::os::unix::net::UnixStream,
     pending: Arc<dyn WorkspacePendingReplacementBackend>,
@@ -463,32 +448,22 @@ pub fn serve_pending_connected(
     let thread = std::thread::Builder::new()
         .name("source-pending-capability".into())
         .spawn(move || {
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&local_runtime, async move {
+            local_runtime.block_on(async move {
                 pending.check().map_err(io::Error::other)?;
                 let drain = Arc::new(CallDrain::default());
-                let server = Rc::new(Server {
+                let server = Arc::new(Server {
                     backend: Arc::new(ClosedBackend),
                     runtime,
                     calls: registry.calls.clone(),
                     handoffs: None,
                     drain: Some(drain.clone()),
                 });
-                let client = directory::pending_client(server, pending);
-                let (read, write) = stream.into_split();
-                let network = twoparty::VatNetwork::new(
-                    read.compat(),
-                    write.compat_write(),
-                    rpc_twoparty_capnp::Side::Server,
-                    capnp::message::ReaderOptions::default(),
-                );
-                let rpc = RpcSystem::new(Box::new(network), Some(client.client));
+                let root: Arc<dyn ServeObject> = Arc::new(directory::PendingReplacement {
+                    server: Arc::clone(&server),
+                    pending,
+                });
                 let result = tokio::select! {
-                    result = rpc => match result {
-                        Ok(()) => Ok(()),
-                        Err(error) if error.kind == capnp::ErrorKind::Disconnected => Ok(()),
-                        Err(error) => Err(io::Error::other(error.to_string())),
-                    },
+                    result = serve_connected(stream, root) => result,
                     _ = stopped => Ok(()),
                 };
                 drain.wait()?;
@@ -503,8 +478,6 @@ pub fn serve_pending_connected(
 
 /// Serve ONLY a genuine original Read subject after independent source QPE.
 /// No record mapping, byte grant, Pending or `WorkspaceFs` fallback.
-/// # Errors
-/// Refuses source retirement or inability to own the exact connected server.
 pub fn serve_history_read_connected(
     stream: std::os::unix::net::UnixStream,
     subject: Arc<dyn crate::directory_backend::WorkspaceHistoryReadSubjectBackend>,
@@ -524,33 +497,20 @@ pub fn serve_history_read_connected(
     let thread = std::thread::Builder::new()
         .name("source-history-read-capability".into())
         .spawn(move || {
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&local_runtime, async move {
+            local_runtime.block_on(async move {
                 subject.check().map_err(io::Error::other)?;
                 let drain = Arc::new(CallDrain::default());
-                let server = Rc::new(Server {
+                let server = Arc::new(Server {
                     backend: Arc::new(ClosedBackend),
                     runtime,
                     calls: registry.calls.clone(),
                     handoffs: None,
                     drain: Some(drain.clone()),
                 });
-                let client = directory::history_read_client(server, subject)
-                    .map_err(|error| io::Error::other(error.to_string()))?;
-                let (read, write) = stream.into_split();
-                let network = twoparty::VatNetwork::new(
-                    read.compat(),
-                    write.compat_write(),
-                    rpc_twoparty_capnp::Side::Server,
-                    capnp::message::ReaderOptions::default(),
-                );
-                let rpc = RpcSystem::new(Box::new(network), Some(client.client));
+                let root =
+                    directory::history_read_root(&server, subject).map_err(io::Error::other)?;
                 let result = tokio::select! {
-                    result = rpc => match result {
-                        Ok(()) => Ok(()),
-                        Err(error) if error.kind == capnp::ErrorKind::Disconnected => Ok(()),
-                        Err(error) => Err(io::Error::other(error.to_string())),
-                    },
+                    result = serve_connected(stream, root) => result,
                     _ = stopped => Ok(()),
                 };
                 drain.wait()?;
@@ -566,12 +526,9 @@ pub fn serve_history_read_connected(
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
-    use crate::fs_capnp;
-    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
     #[test]
-    fn actual_pending_rpc_release_joins_without_retiring_original_native_session() {
+    fn actual_pending_capability_release_joins_without_retiring_original_native_session() {
         let mut fixture = crate::operations::tests::pending_replacement_for_transport();
         let directory = crate::directory::DirectoryCapability::new(
             fixture.session.clone(),
@@ -610,25 +567,30 @@ mod retirement_tests {
         });
         tokio::task::LocalSet::new().block_on(&runtime, async {
             tokio::time::timeout(tilo_test_env::hang_bound(), async {
-                client.set_nonblocking(true).unwrap();
-                let stream = tokio::net::UnixStream::from_std(client).unwrap();
-                let (read, write) = stream.into_split();
-                let network = twoparty::VatNetwork::new(read.compat(), write.compat_write(), rpc_twoparty_capnp::Side::Client, capnp::message::ReaderOptions::default());
-                let mut rpc = RpcSystem::new(Box::new(network), None);
-                let raw: fs_capnp::pending_replacement::Client = rpc.bootstrap(rpc_twoparty_capnp::Side::Server);
-                let rpc = tokio::task::spawn_local(rpc);
-                let remote = crate::directory_client::PendingReplacementClient::from_authenticated_source_capability(raw);
+                let connection = tilo_fs_client::connection::Connection::connect(
+                    "test-pending",
+                    client.try_clone().unwrap(),
+                )
+                .unwrap();
+                let remote = crate::directory_client::PendingReplacementClient::from_object(
+                    tilo_fs_client::connection::Object::root(connection),
+                );
                 remote.check_scope().await.unwrap();
-                assert!(remote.retire_daemon_handoff(ticket).await.is_err(), "daemon bootstrap cannot retire its own provider through the controller lane");
+                assert!(
+                    remote.retire_daemon_handoff(ticket).await.is_err(),
+                    "daemon bootstrap cannot retire its own provider through the controller lane"
+                );
                 let registry = registry.clone();
                 let pending = pending.clone();
-                tokio::task::spawn_blocking(move || registry.retire(&pending, ticket)).await.unwrap().unwrap();
-                if let Err(error) = rpc.await.expect("actual handoff RPC driver must not panic") {
-                    assert_eq!(error.kind, capnp::ErrorKind::Disconnected,
-                        "observed departure allows clean EOF/disconnect only");
-                }
+                tokio::task::spawn_blocking(move || registry.retire(&pending, ticket))
+                    .await
+                    .unwrap()
+                    .unwrap();
                 assert!(remote.check_scope().await.is_err());
-            }).await.expect("actual per-handoff retirement must be bounded");
+                client.shutdown(std::net::Shutdown::Both).unwrap();
+            })
+            .await
+            .expect("actual per-handoff retirement must be bounded");
         });
         joined.join().unwrap().unwrap();
         assert!(registry.state.lock().unwrap().active.is_empty());
@@ -687,10 +649,8 @@ mod retirement_tests {
 #[cfg(test)]
 mod read_release_tests {
     use super::*;
+    use crate::OpenMode;
     use crate::workspace_server::serve_workspace_connected;
-    use crate::{OpenMode, fs_capnp};
-    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     /// Actual kernel peer refusal is not a reason to strand an independently
     /// owned source capability. This is the source/transport boundary, not an
     /// installed-editor authority-positive fixture.
@@ -887,24 +847,27 @@ mod read_release_tests {
         });
         tokio::task::LocalSet::new().block_on(&runtime, async {
             tokio::time::timeout(tilo_test_env::hang_bound(), async {
-                client.set_nonblocking(true).unwrap();
-                let stream = tokio::net::UnixStream::from_std(client).unwrap();
-                let (read,write) = stream.into_split();
-                let network = twoparty::VatNetwork::new(read.compat(), write.compat_write(), rpc_twoparty_capnp::Side::Client, capnp::message::ReaderOptions::default());
-                let mut rpc = RpcSystem::new(Box::new(network),None);
-                let raw: fs_capnp::history_read_subject::Client = rpc.bootstrap(rpc_twoparty_capnp::Side::Server);
-                let rpc = tokio::task::spawn_local(rpc);
-                let remote = crate::directory_client::HistoryReadSubjectClient::from_authenticated_source_capability(raw);
+                let connection = tilo_fs_client::connection::Connection::connect(
+                    "test-history-read",
+                    client.try_clone().unwrap(),
+                )
+                .unwrap();
+                let remote = crate::directory_client::HistoryReadSubjectClient::from_object(
+                    tilo_fs_client::connection::Object::root(connection),
+                );
                 remote.check_scope().await.unwrap();
                 assert!(remote.retire_daemon_handoff(ticket).await.is_err());
-                let registry = registry.clone();let subject = subject.clone();
-                tokio::task::spawn_blocking(move || registry.retire_read(&subject,ticket)).await.unwrap().unwrap();
-                if let Err(error) = rpc.await.expect("actual handoff RPC driver must not panic") {
-                    assert_eq!(error.kind, capnp::ErrorKind::Disconnected,
-                        "observed departure allows clean EOF/disconnect only");
-                }
+                let registry = registry.clone();
+                let subject = subject.clone();
+                tokio::task::spawn_blocking(move || registry.retire_read(&subject, ticket))
+                    .await
+                    .unwrap()
+                    .unwrap();
                 assert!(remote.check_scope().await.is_err());
-            }).await.expect("actual Read realm retirement must be bounded");
+                client.shutdown(std::net::Shutdown::Both).unwrap();
+            })
+            .await
+            .expect("actual Read realm retirement must be bounded");
         });
         joined.join().unwrap().unwrap();
         assert!(registry.state.lock().unwrap().active.is_empty());

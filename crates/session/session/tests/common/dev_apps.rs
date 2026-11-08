@@ -1,13 +1,11 @@
 //! The tilolang apps a development session installs, for the tests that start one: each
-//! `apps/tl/<name>` built with `tilolang build` into a signed `.tapp`, and installed with
+//! `apps/tl/<name>` built with `tilolang build` into a signed `.tapp` , and installed with
 //! `package-store` into the test's own app store, the way `tilo-install` installs a person's app
 //! and `dist/dev/shell-run.sh` installs a dev session's.
-//!
-//! The session then reads the apps the way it reads any installed app: the payload from its
-//! store row, the manifest the launcher opens it with, and the origins the connector planning
-//! plans from. Nothing here compiles a package into a session; the only thing a test seeds is
-//! each app's first scenario, which [`tilo_session::seeded_apps::seeded`] does.
-//!
+//! The session then reads the apps the way it reads any installed app: the payload from its store
+//! row, the manifest the launcher opens it with, and the origins the connector planning plans from.
+//! Nothing here compiles a package into a session; the only thing a test seeds is each app's first
+//! scenario, which [`tilo_session::seeded_apps::seeded`] does.
 //! The packages are copied to a scratch directory before they are built: a build writes each
 //! package's ids lock and source catalogue, and a test never writes the tree it runs from.
 
@@ -17,19 +15,19 @@ use std::sync::OnceLock;
 use tilo_app_package::pack::SigningIdentity;
 use tilolang_cli::package::{self, BuildOptions};
 
-/// The tilolang apps a development session installs, by the directory under `apps/tl`: the
-/// package ids [`tilo_session::seeded_apps::APPS`] names are these, in this order.
+/// The tilolang apps a development session installs, by the directory under `apps/tl` : the package
+/// ids [`tilo_session::seeded_apps::APPS`] names are these, in this order.
 pub const APPS: [&str; 6] = ["discussion", "notes", "tasks", "chat", "mail", "tube"];
 
-/// The tree's `apps/tl`.
+/// The tree's `apps/tl` .
 fn packages() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
 }
 
 /// The Tilo runtime the packages a test builds name: the release the tree's apps declare
-/// (`tilo-runtime/2026.07`). Nothing here launches an app in a sandbox — a test's session reads
-/// the packages and plans their connectors — so the bundle need not be installed on the machine
-/// the test runs on, and a build on a builder without one is the same test.
+/// (`tilo-runtime/2026.07`). Nothing here launches an app in a sandbox — a test's session reads the
+/// packages and plans their connectors — so the bundle need not be installed on the machine the
+/// test runs on, and a build on a builder without one is the same test.
 fn runtime() -> &'static str {
     package::DEFAULT_TILO_RUNTIME
 }
@@ -79,8 +77,8 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
         )
         .unwrap_or_else(|error| panic!("{app} builds: {error}"));
         for app in built {
-            // A build of one app is a build of every package it uses too, and each is an app of
-            // its own: install each once, so a package two of them use is not installed twice.
+            // A build of one app is a build of every package it uses too, and each is an app of its
+            // own: install each once, so a package two of them use is not installed twice.
             if installed.contains(&app.app) {
                 continue;
             }
@@ -93,7 +91,7 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
                         Ok(package_store::Admission {
                             pinned: false,
                             attested_by: String::new(),
-                            source: source.clone(),
+                            source,
                             held: false,
                         })
                     },
@@ -107,7 +105,7 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
     installed
 }
 
-/// Copy the package at `from` into `to`, created.
+/// Copy the package at `from` into `to` , created.
 fn copy_package(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("the package's directory");
     for entry in std::fs::read_dir(from).expect("the package reads") {

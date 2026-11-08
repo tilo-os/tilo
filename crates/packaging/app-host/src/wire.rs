@@ -223,10 +223,6 @@ async fn next_call<R: AsyncRead + Unpin>(mut reader: R) -> Next<R> {
 
 /// Serve `host` on one connection until the peer hangs up. Must run on a
 /// `LocalSet`. A host panic resumes here, ending the connection.
-///
-/// # Errors
-///
-/// A malformed frame or a failed write.
 #[allow(
     clippy::future_not_send,
     reason = "calls run on the connection's LocalSet and never cross a thread"

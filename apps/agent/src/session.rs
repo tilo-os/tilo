@@ -180,6 +180,12 @@ pub struct Config {
     /// The model the desktop chose for this agent, when it launched it with
     /// one; otherwise the Settings default this process can read, if any.
     pub provider: Option<crate::providers::ProviderSelection>,
+    /// The certificate this connection is admitted with, when it is given one
+    /// rather than inheriting the launcher's. A harness that runs an agent
+    /// against a real broker over an explicit endpoint presents the same
+    /// certificate a person's app does, so the agent is admitted as the agent
+    /// the workspace keeps — never as an anonymous diagnostic peer.
+    pub identity: Option<ui::collaboration::CertifiedEndpointIdentity>,
 }
 
 pub struct Session {
@@ -224,12 +230,6 @@ fn ask_for_document(link: &mut Link) -> Result<()> {
 
 impl Session {
     /// Connect, announce the route, and ask the workspace for the document.
-    ///
-    /// # Errors
-    ///
-    /// When the connection to the compositor's collaboration broker cannot
-    /// be made, or the initial route join or presence announce fails to
-    /// send.
     pub fn connect(cfg: Config) -> Result<Self> {
         let managed = managed_context(&cfg)?;
         let mut link = match &cfg.endpoint {
@@ -239,7 +239,7 @@ impl Session {
                 cfg.cluster,
                 cfg.record.clone(),
                 Some(cfg.agent_id.clone()),
-                None,
+                cfg.identity.clone(),
             )?,
             None => Link::connect(
                 &cfg.app_id,
@@ -397,6 +397,31 @@ impl Session {
             self.chooser = own;
         }
         result
+    }
+
+    /// Answer one turn, `run`, as [`Self::run`] answers the ones the broker
+    /// delivers: the same planning, per-step reporting and terminal update,
+    /// without waiting for a broker to hand it over. What a harness that
+    /// drives an agent one turn at a time uses, so a test proves the agent's
+    /// own path — never a second one beside it.
+    ///
+    /// # Errors
+    /// Why the turn stopped before its reply was told.
+    pub fn run_one(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        self.run_task(run)
+    }
+
+    /// Plan with `chooser` from now on, in place of the one this session
+    /// connected with: how a harness scripts the model a turn is planned
+    /// with, while every other part of the run stays the production one.
+    pub fn set_chooser(&mut self, chooser: Chooser) {
+        self.chooser = chooser;
+    }
+
+    /// The chooser this session plans with now.
+    #[must_use]
+    pub fn chooser(&self) -> &Chooser {
+        &self.chooser
     }
 
     /// The chooser that plans with `model` for one run: the provider's

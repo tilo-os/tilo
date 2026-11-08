@@ -34,8 +34,6 @@ pub struct ActionState {
     pub primary: Option<ResourceRef>,
     /// The principal the runtime authenticated for this invocation: what `invoker` reads.
     pub invoker: Principal,
-    /// The recorded suggestion this run approves, if any; see `ExecCtx::origin`.
-    pub origin: Option<String>,
     /// What the person a suggestion was accepted from proposed, if this run is one: recorded in
     /// its change so history says who suggested it ([`crate::store::Version::suggested_by`]).
     pub suggested_by: Option<Principal>,
@@ -79,7 +77,8 @@ pub struct QueuedBlock {
 
 /// The run the code now executing is part of: an action's, or an agent program's. Its journal
 /// is what a suspension and the resumption that follows replay, and where the reads of a run
-/// that may suspend are recorded.
+/// that may suspend are recorded. Its id is the run's identity: what its outside effects are
+/// keyed by, the same on every replica that runs the invocation.
 pub struct RunState {
     pub run: RunId,
     pub journal: Journal,
@@ -109,6 +108,22 @@ impl RunState {
     pub fn push(&mut self, entry: JournalEntry) {
         self.journal.entries.push(entry);
         self.cursor = self.cursor.saturating_add(1);
+    }
+
+    /// Whether the code now running is answered from the journal: the run is where it already
+    /// was, and what it asks of the world has happened before.
+    pub fn replaying(&self) -> bool {
+        self.journaled && self.journal.entries.get(self.cursor).is_some()
+    }
+
+    /// The key the outside effect being queued now is held under: the run's identity and how
+    /// many effects it queued before it, so that a device running the same invocation queues each
+    /// effect under the same key as the device that ran it first, and the record holds one. A
+    /// notice a run writes is the record of its key ([`crate::notify`]).
+    pub fn next_effect_key(&mut self) -> String {
+        let ordinal = self.journal.effects;
+        self.journal.effects = ordinal.saturating_add(1);
+        format!("{}:{ordinal}", self.run)
     }
 }
 
@@ -214,10 +229,6 @@ impl Frames {
     }
 
     /// Put a value in the current frame and return its handle.
-    ///
-    /// # Errors
-    ///
-    /// A message when no frame is running or the frame's table is full.
     pub fn alloc(&mut self, v: Value) -> Result<i32, String> {
         let frame = self.top_mut()?;
         let index = u32::try_from(frame.vals.len())

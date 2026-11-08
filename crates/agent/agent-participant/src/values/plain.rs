@@ -90,11 +90,6 @@ enum Place {
 /// Fill in what `arguments` write as arithmetic where `params` take a date
 /// or a number, at the top level and in the fields and items their schemas
 /// type.
-///
-/// # Errors
-///
-/// The argument whose text is neither a plain value nor arithmetic read
-/// whole, named with the forms that are.
 pub(crate) fn fill(
     arguments: &mut serde_json::Map<String, serde_json::Value>,
     params: &[tilo_actions::ActionParam],
@@ -226,10 +221,6 @@ fn fill_leaf(value: &mut serde_json::Value, wants: Wants) -> Result<(), String> 
 
 /// `text`, given where `wants` is taken, as the value it computes: `None`
 /// when it is a plain value already (left for the app to check).
-///
-/// # Errors
-///
-/// Text that is no plain value and no arithmetic read whole.
 pub(crate) fn typed(text: &str, wants: Wants) -> Result<Option<serde_json::Value>, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -281,10 +272,6 @@ pub(crate) fn typed(text: &str, wants: Wants) -> Result<Option<serde_json::Value
 }
 
 /// The value plain arithmetic `text` computes, a date or a number.
-///
-/// # Errors
-///
-/// Text not read whole as one of the forms, with the forms.
 pub(crate) fn evaluate(text: &str) -> Result<Value, String> {
     let tokens = tokens(text, Reading::Lenient)?;
     if let Some((day, _)) = date_form(&tokens) {

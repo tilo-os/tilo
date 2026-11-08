@@ -437,32 +437,16 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     )
     .await
     .unwrap();
-    assert_eq!(asked, JoinReply::Waiting);
-    let WorkspacesReply::Requests(waiting) = workspaces(
-        &ada,
-        WorkspacesRequest::Requests {
-            workspace: acme.workspace.clone(),
-        },
-    )
-    .await
-    else {
-        panic!("no requests");
-    };
-    let [bo_request] = waiting.as_slice() else {
-        panic!("{waiting:?}");
-    };
-    assert_eq!(bo_request.name, "Bo");
-    let admitted = workspaces(
-        &ada,
-        WorkspacesRequest::Admit {
-            workspace: acme.workspace.clone(),
-            request_id: bo_request.request_id,
-        },
-    )
-    .await;
     assert!(
-        matches!(admitted, WorkspacesReply::Workspace(_)),
-        "{admitted:?}"
+        matches!(
+            &asked,
+            JoinReply::Admitted {
+                name,
+                role: WorkspaceRole::Editor,
+                ..
+            } if name == "Acme"
+        ),
+        "the invitation admits the person who holds it: {asked:?}"
     );
     let status = join(
         &*https,

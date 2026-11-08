@@ -39,9 +39,6 @@ pub use tilo_oauth;
 /// The engine's check binary and the apps' `--probe-accounts-engine` call
 /// it, so a release proves the library loads and runs against the runtime
 /// it ships with, and that the apps load it themselves.
-///
-/// # Errors
-/// Names the part that answered wrongly.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use account_custody::{ClientTable, OAuthCloud, OAuthIssuer, OAuthUse};

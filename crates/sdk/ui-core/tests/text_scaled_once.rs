@@ -182,7 +182,6 @@ fn retained_widgets() -> Vec<(&'static str, fn() -> Element, f64)> {
 
 #[test]
 fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
-    // Case `retained_widget_labels_follow_the_text_scale_once_through_the_harness`.
     {
         for (widget, build, expected) in retained_widgets() {
             let mut label_ink = Vec::new();
@@ -202,7 +201,6 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
         }
     }
 
-    // Case `immediate_mode_painters_encode_glyphs_at_the_text_scale_once`.
     {
         let painters: Vec<(&str, Box<Painter>, f32)> = vec![
             (
@@ -237,7 +235,6 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
         }
     }
 
-    // Case `a_resolved_role_measures_the_same_at_every_renderer_scale`.
     {
         let style = Theme::dark().with_text_scale(2.0).text(TextRole::Body);
         let mut one = TextRenderer::new();

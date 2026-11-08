@@ -858,6 +858,62 @@ fn a_rendered_row_that_changes_keeps_the_windows_tree() {
     );
 }
 
+/// A conversation read from its first row: its rows stand at the width a page's blocks are
+/// read at, under the top of the column, rather than across a wide window or under a band the
+/// window's foot left.
+#[test]
+fn a_page_column_holds_the_readable_measure_from_its_first_row() {
+    fn pages<'a>(
+        node: &'a crate::headless::InspectionNode,
+        out: &mut Vec<&'a crate::headless::InspectionNode>,
+    ) {
+        if node.widget == "Page" {
+            out.push(node);
+        }
+        for child in &node.children {
+            pages(child, out);
+        }
+    }
+
+    let mut source = WholeList {
+        props: BTreeMap::from([("page_column".to_owned(), Value::Bool(true))]),
+        items: ["a", "b", "c"]
+            .iter()
+            .map(|key| given(key, &[("title", Value::Text((*key).into()))]))
+            .collect(),
+    };
+    let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
+    let list = <crate::widget::DescribedList as Described>::from_props("list", props);
+    let mut harness = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        list,
+        (1600, 900),
+        crate::theme::Theme::dark(),
+    );
+    harness.relayout();
+    let inspection = harness.inspection();
+    let mut found = Vec::new();
+    pages(&inspection.root, &mut found);
+    assert_eq!(found.len(), 3, "one page row per message");
+    let measure = f64::from(crate::widget::arrange::MEASURE_REM)
+        * f64::from(crate::widget::arrange::rem_of(&crate::theme::Theme::dark()));
+    for page in &found {
+        let width = page.children.first().expect("a row").rect[2];
+        assert!(
+            (width - measure).abs() <= 1.0,
+            "a row at the readable measure: {width}"
+        );
+    }
+    let first = found
+        .iter()
+        .map(|row| row.rect[1])
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        first < 100.0,
+        "the first message under the top of the column: {first}"
+    );
+}
+
 #[test]
 fn rows_that_name_no_group_stand_under_their_own_heading() {
     use crate::widget::RowGroup;

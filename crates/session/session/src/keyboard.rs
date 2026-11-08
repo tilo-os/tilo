@@ -27,8 +27,8 @@ use crate::surfaces::{
 /// The resource the keyboard's app reads.
 pub const KEYBOARD: &str = "keyboard";
 
-/// What the session calls the keyboard's app: its name in the log, the key it
-/// stops by, and the program it is installed as.
+/// What the session calls the keyboard's app: its name in the log, the key it stops by, and the
+/// program it is installed as.
 pub const SURFACE: &str = "osk";
 
 /// Its program, as it is installed beside the session's own.
@@ -40,17 +40,15 @@ const KEYBOARD_KIND: &str = "keyboard.on-screen";
 /// The margin between the keyboard and the bottom and sides of the display,
 /// in logical pixels.
 const MARGIN: i32 = 20;
-/// How wide the keyboard grows at most before it stops widening with the
-/// display.
+/// How wide the keyboard grows at most before it stops widening with the display.
 const WIDEST: u32 = 960;
-/// How tall the keyboard is at least, on a short display, and how tall it
-/// grows at most: it takes two fifths of the display's height between them.
+/// How tall the keyboard is at least, on a short display, and how tall it grows at most: it takes
+/// two fifths of the display's height between them.
 const LOWEST: u32 = 220;
 const TALLEST: u32 = 380;
 
-/// How many times the keyboard's app is started for the same display before
-/// it is given up on: one that will not stay up leaves the person without a
-/// keyboard rather than starting for ever.
+/// How many times the keyboard's app is started for the same display before it is given up on: one
+/// that will not stay up leaves the person without a keyboard rather than starting for ever.
 const TRIES: u32 = 3;
 
 /// The keyboard's surface app, when one is installed: a window of its own
@@ -63,25 +61,22 @@ pub fn surface() -> Result<Surface, StartError> {
     Ok(surface_of(program_path(PROGRAM)?))
 }
 
-/// The keyboard's surface app, run from `program`.
+/// The keyboard's surface app, run from `program` .
 #[must_use]
 pub fn surface_of(program: impl Into<std::path::PathBuf>) -> Surface {
     Surface::new(SURFACE, program)
         .layer(Layer::Top)
         .anchor(Anchor::BOTTOM)
-        // Its taps type into the field it stands over: the keyboard it takes
-        // would be the field's, and taking it would close the field.
+        // Its taps type into the field it stands over: the keyboard it takes would be the field's,
+        // and taking it would close the field.
         .keyboard(Interactivity::None)
 }
 
-/// Where the keyboard stands on a display of `width` by `height` logical
-/// pixels: the size its window takes, and the margin from the edges it is
-/// pinned to.
-///
-/// At the bottom, centred, no wider than [`WIDEST`], between [`LOWEST`] and
-/// [`TALLEST`] tall with [`MARGIN`] to the display's edge: wide enough to
-/// type on with two thumbs on a phone, and narrow enough to leave the window
-/// it types into in view on a monitor.
+/// Where the keyboard stands on a display of `width` by `height` logical pixels: the size its
+/// window takes, and the margin from the edges it is pinned to.
+/// At the bottom, centred, no wider than [`WIDEST`], between [`LOWEST`] and [`TALLEST`] tall with
+/// [`MARGIN`] to the display's edge: wide enough to type on with two thumbs on a phone, and narrow
+/// enough to leave the window it types into in view on a monitor.
 #[must_use]
 pub fn band(width: i32, height: i32) -> ((u32, u32), (i32, i32, i32, i32)) {
     let (width, height) = (i64::from(width), i64::from(height));
@@ -99,13 +94,13 @@ pub fn band(width: i32, height: i32) -> ((u32, u32), (i32, i32, i32, i32)) {
         u32::try_from(widest).unwrap_or(1),
         u32::try_from(tallest.min(shortest)).unwrap_or(1),
     );
-    // Only the bottom edge is pinned, so only its margin places the keyboard:
-    // it stands that far above the display's edge.
+    // Only the bottom edge is pinned, so only its margin places the keyboard: it stands that far
+    // above the display's edge.
     (band, (0, 0, i32::try_from(margin).unwrap_or(0), 0))
 }
 
-/// What the on-screen keyboard does now. The session's loop says whether it
-/// belongs on screen and where it stands; the service hands that to the app.
+/// What the on-screen keyboard does now. The session's loop says whether it belongs on screen and
+/// where it stands; the service hands that to the app.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Shown {
     /// The keyboard belongs on screen now.
@@ -120,10 +115,10 @@ pub enum Run {
     /// It does not run: nobody may want it now.
     #[default]
     Down,
-    /// It does not run, and is not asked again this session: its program is
-    /// not installed, and does not appear by waiting.
+    /// It does not run, and is not asked again this session: its program is not installed, and does
+    /// not appear by waiting.
     Failed,
-    /// It runs on `display`, `size` logical pixels wide and tall.
+    /// It runs on `display` , `size` logical pixels wide and tall.
     Standing { display: String, size: (u32, u32) },
 }
 
@@ -157,7 +152,7 @@ pub struct KeyboardService {
 }
 
 impl KeyboardService {
-    /// The service publishing `state`.
+    /// The service publishing `state` .
     #[must_use]
     pub fn new(state: Keyboard) -> Self {
         let shown = Some(state.shown());
@@ -178,8 +173,8 @@ impl Service for KeyboardService {
         (resource == KEYBOARD).then(|| reading(&*self.state.shown.borrow()))
     }
 
-    /// The keyboard is read, never asked: it types through the compositor's
-    /// input method, and shows or hides itself by what is published here.
+    /// The keyboard is read, never asked: it types through the compositor's input method, and shows
+    /// or hides itself by what is published here.
     fn invoke(
         &mut self,
         resource: &str,
@@ -200,20 +195,17 @@ impl Service for KeyboardService {
 }
 
 impl crate::Session {
-    /// Follow the on-screen keyboard: run its app while the person may want
-    /// it, on the display they are working on, and publish whether it shows
-    /// and where it stands.
-    ///
-    /// A field's focus reaches an input method only once one is connected, so
-    /// the app runs from before the tap into a field rather than from it:
-    /// what it does about showing itself is decided each pass, from the
-    /// person's choice and what the compositor sees of their typing.
+    /// Follow the on-screen keyboard: run its app while the person may want it, on the display they
+    /// are working on, and publish whether it shows and where it stands.
+    /// A field's focus reaches an input method only once one is connected, so the app runs from
+    /// before the tap into a field rather than from it: what it does about showing itself is
+    /// decided each pass, from the person's choice and what the compositor sees of their typing.
     pub(crate) fn follow_keyboard(&mut self) {
         let keyboard = self.shared.keyboard.clone();
         let entry = self.compositor.text_entry();
         let preference = self.keyboard_preference;
-        // The lock screen draws its own keyboard over a locked session, and
-        // takes every key: nothing of the session's stands over it.
+        // The lock screen draws its own keyboard over a locked session, and takes every key:
+        // nothing of the session's stands over it.
         let unlocked = !self.compositor.locked();
         // An engine of the active source owns the seat's input method: its
         // keys compose characters, which a keyboard's committed text cannot,
@@ -222,8 +214,8 @@ impl crate::Session {
         let runs = unlocked && !composing && crate::a11y_settings::keyboard_runs(preference, entry);
         if !runs {
             self.stop_keyboard();
-            // Wanted again later, the keyboard is asked afresh: its tries
-            // are the ones since it was last not wanted at all.
+            // Wanted again later, the keyboard is asked afresh: its tries are the ones since it was
+            // last not wanted at all.
             self.keyboard_run = Run::Down;
             self.keyboard_starts = 0;
             keyboard.show(Shown::default());
@@ -233,8 +225,8 @@ impl crate::Session {
             keyboard.show(Shown::default());
             return;
         }
-        // The app may have exited since the last pass: the keyboard stands on
-        // nothing then, and is started again where the person types.
+        // The app may have exited since the last pass: the keyboard stands on nothing then, and is
+        // started again where the person types.
         if matches!(self.keyboard_run, Run::Standing { .. }) && !self.surfaces.running(SURFACE) {
             self.keyboard_run = Run::Down;
             self.keyboard_starts = self.keyboard_starts.saturating_add(1);
@@ -304,8 +296,8 @@ impl crate::Session {
         }
     }
 
-    /// The display the person is working on, with its rectangle: the one
-    /// holding the focused window, and the first display there is otherwise.
+    /// The display the person is working on, with its rectangle: the one holding the focused
+    /// window, and the first display there is otherwise.
     fn keyboard_display(&self) -> Option<(String, (i32, i32, i32, i32))> {
         let displays: Vec<(String, (i32, i32, i32, i32))> = self
             .compositor

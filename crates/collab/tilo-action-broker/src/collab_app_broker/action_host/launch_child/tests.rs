@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "every test here keeps its fixture and guards alive through its assertions"
+)]
 use super::super::*;
 use super::*;
 use crate::collab_app_broker::InvocationOwner;
@@ -84,10 +88,6 @@ fn parent() -> InvokeRequest {
     request
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn failed_child_barrier_never_calls_launcher() {
     let launcher = Arc::new(Launcher {
@@ -114,10 +114,6 @@ fn failed_child_barrier_never_calls_launcher() {
     assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn launcher_outcome_completes_signed_child_not_parent() {
     for fail in [false, true] {
@@ -182,10 +178,6 @@ impl crate::services::LocalPersonServices for NativePerson {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn protected_native_parent_is_checked_before_child_rebind() {
     let launcher = Arc::new(Launcher {
@@ -244,10 +236,6 @@ fn protected_native_parent_is_checked_before_child_rebind() {
     assert_eq!(launcher.calls.load(Ordering::SeqCst), 1);
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn launcher_observes_signed_admission_before_its_first_effect() {
     let launcher = Arc::new(Launcher {
@@ -317,10 +305,6 @@ fn launcher_observes_signed_admission_before_its_first_effect() {
     fixture.assert_signed(&child, true);
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 /// Stop at the actual durable admission boundary, then withdraw the original
 /// certificate before continuing through the production launch/close effect.
 #[test]
@@ -411,10 +395,6 @@ fn revoked_original_after_admission_never_launches_or_closes() {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 /// Re-enrolling a request under a new origin during admission must not turn
 /// its original local custody into fresh authority.
 #[test]
@@ -456,10 +436,6 @@ fn local_origin_replacement_during_admission_is_refused() {
     );
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 /// A valid certificate cannot keep a retired private connection alive across
 /// the durable barrier, even when another worker replaces it on the same route.
 #[test]
@@ -717,10 +693,6 @@ fn revocation_gate(fixture: &Fixture) -> (Box<dyn FnOnce() + Send>, std::thread:
     (gate, revoker)
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn production_invoke_revoked_at_durable_admission_never_launches_or_closes() {
     for certified in [false, true] {
@@ -833,10 +805,6 @@ impl LauncherServices for DiscoveryGate {
     }
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the test keeps its fixture and guards alive through its assertions"
-)]
 #[test]
 fn production_retained_invoke_revoked_during_discovery_never_starts_launcher() {
     let launcher = Arc::new(DiscoveryGate {

@@ -1,17 +1,14 @@
-//! The wait for the clock to admit this device's certificate, in front of the
-//! desk: the identity on disk is intact and its certificate is outside its
-//! validity at the clock's reading, so the screen says what the clock must
-//! reach and goes away by itself once it does. This is never first-use setup
-//! or a restore: nothing here replaces an identity, and the desk takes the
-//! wait's place as soon as the clock admits the certificate.
-//!
+//! The wait for the clock to admit this device's certificate, in front of the desk: the identity on
+//! disk is intact and its certificate is outside its validity at the clock's reading, so the screen
+//! says what the clock must reach and goes away by itself once it does. This is never first-use
+//! setup or a restore: nothing here replaces an identity, and the desk takes the wait's place as
+//! soon as the clock admits the certificate.
 //! Nothing here polls. The wait is the identity host's policy clock
-//! (`tilo_identity_host::policy_change`): an absolute `CLOCK_REALTIME`
-//! timerfd armed at the instant the certificate becomes valid and cancelled
-//! by any step of the clock, plus inotify on the identity directories, so a
-//! clock that network time steps forward, or a certificate written anew, ends
-//! the wait at once. The identity is verified again on a worker, which wakes
-//! the session's loop with what it found.
+//! (`tilo_identity_host::policy_change`): an absolute `CLOCK_REALTIME` timerfd armed at the instant
+//! the certificate becomes valid and cancelled by any step of the clock, plus inotify on the
+//! identity directories, so a clock that network time steps forward, or a certificate written anew,
+//! ends the wait at once. The identity is verified again on a worker, which wakes the session's
+//! loop with what it found.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -37,8 +34,8 @@ enum Check {
     Clock(CertificateClockError),
     /// The stored identity no longer verifies: owner recovery.
     Recovery(IdentityProblem),
-    /// Something that proves nothing about the identity (a store or keyring
-    /// this account cannot read): try again at the next change.
+    /// Something that proves nothing about the identity (a store or keyring this account cannot
+    /// read): try again at the next change.
     Failed(String),
 }
 
@@ -62,8 +59,8 @@ pub struct ClockWait {
     host_desktop: bool,
     /// What the clock refused, and the certificate it read.
     refusal: CertificateClockError,
-    /// Wakes the session's loop when the clock, the identity's files or a
-    /// finished check change what the wait answers.
+    /// Wakes the session's loop when the clock, the identity's files or a finished check change
+    /// what the wait answers.
     waiter: Waker,
     /// The identity host's announcements, kept for as long as the wait runs.
     watch: Option<policy_change::Watch>,
@@ -96,20 +93,18 @@ impl ClockWait {
         }
     }
 
-    /// Arm the wait: the policy clock announces the instant the certificate
-    /// becomes valid, or any step of the clock, and the identity directories
-    /// announce a certificate written anew. `waiter` wakes the session's loop
-    /// for each of them.
+    /// Arm the wait: the policy clock announces the instant the certificate becomes valid, or any
+    /// step of the clock, and the identity directories announce a certificate written anew.
+    /// `waiter` wakes the session's loop for each of them.
     pub(crate) fn listening(mut self, waiter: Waker) -> Self {
         let waking = waiter.clone();
         let watch = policy_change::Watch::new(move || waking.wake_by_ref());
         self.checked = watch.arm();
-        // An expired certificate has no instant a forward-running clock
-        // reaches: the timer is armed as far out as it goes, so only a step
-        // of the clock ends that wait.
+        // An expired certificate has no instant a forward-running clock reaches: the timer is armed
+        // as far out as it goes, so only a step of the clock ends that wait.
         policy_change::wake_at(self.refusal.valid_at_ns().unwrap_or(u64::MAX));
-        // Starts the identity directories' inotify watch: a certificate
-        // written anew ends the wait as well.
+        // Starts the identity directories' inotify watch: a certificate written anew ends the wait
+        // as well.
         let _ = policy_change::identity_files_watched();
         self.waiter = waiter;
         self.watch = Some(watch);
@@ -121,8 +116,8 @@ impl ClockWait {
         self.done
     }
 
-    /// Advance the wait: collect a finished check, or start one when the
-    /// clock or the identity's files changed since the last.
+    /// Advance the wait: collect a finished check, or start one when the clock or the identity's
+    /// files changed since the last.
     pub(crate) fn pump(&mut self) -> ClockWaitStep {
         let Some(watch) = self.watch.as_ref() else {
             return ClockWaitStep::Waiting;
@@ -171,8 +166,7 @@ impl ClockWait {
         if policy_change::epoch() == self.checked {
             return ClockWaitStep::Waiting;
         }
-        // Armed before the check reads anything, so a change during it wakes
-        // the loop for one more.
+        // Armed before the check reads anything, so a change during it wakes the loop for one more.
         self.checked = watch.arm();
         self.start_check();
         ClockWaitStep::Waiting
@@ -204,8 +198,8 @@ impl ClockWait {
         self.done = true;
     }
 
-    /// What the wait shows: what the clock reads, what the certificate needs
-    /// instead, and that the desk opens by itself.
+    /// What the wait shows: what the clock reads, what the certificate needs instead, and that the
+    /// desk opens by itself.
     pub(crate) fn screen(&self) -> Container {
         let now = ui::format::timestamp(&UnixSecs(secs(self.refusal.clock_ns)));
         let body = match self.refusal.reason {
@@ -239,8 +233,8 @@ impl ClockWait {
     }
 }
 
-/// The setup an identity that stopped verifying is restored through, for a
-/// session on Tilo's own image or on an operating system it does not control.
+/// The setup an identity that stopped verifying is restored through, for a session on Tilo's own
+/// image or on an operating system it does not control.
 fn recovery_view(identity_dir: &std::path::Path, host_desktop: bool) -> OnboardingView {
     if host_desktop {
         OnboardingView::new_for_host_desktop_recovery(identity_dir.to_path_buf())
@@ -249,8 +243,7 @@ fn recovery_view(identity_dir: &std::path::Path, host_desktop: bool) -> Onboardi
     }
 }
 
-/// Verify the identity `identity_dir` holds and settle what a verified one
-/// leaves behind.
+/// Verify the identity `identity_dir` holds and settle what a verified one leaves behind.
 fn verify(identity_dir: &std::path::Path) -> Check {
     match startup::verify_now(identity_dir) {
         Ok(()) => match startup::settle(identity_dir) {
@@ -283,8 +276,8 @@ mod tests {
         }
     }
 
-    /// A wait with nothing to listen to still shows why the desk is off, and
-    /// does not end on its own.
+    /// A wait with nothing to listen to still shows why the desk is off, and does not end on its
+    /// own.
     #[test]
     fn the_wait_holds_the_desk_until_the_clock_is_admitted() {
         let mut wait = ClockWait::new(
@@ -299,9 +292,8 @@ mod tests {
         assert!(wait.done(), "the desk takes the wait's place");
     }
 
-    /// A certificate the clock reads as not yet valid becomes valid when the
-    /// clock reaches its instant, and one it reads as expired only when the
-    /// clock is moved back.
+    /// A certificate the clock reads as not yet valid becomes valid when the clock reaches its
+    /// instant, and one it reads as expired only when the clock is moved back.
     #[test]
     fn only_a_forward_running_clock_admits_a_certificate_dated_ahead() {
         assert_eq!(

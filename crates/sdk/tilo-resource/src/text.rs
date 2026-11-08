@@ -29,9 +29,6 @@ pub const AUTHOR_MARK: &str = "author";
 /// Mark `inserted`, just written at the document text index `at` of the text
 /// object `obj`, as written by the author of the action applying now. Nothing
 /// is marked outside an action or for an action with no invoker.
-///
-/// # Errors
-/// Returns the document's error when the mark cannot be written.
 pub fn mark_authored(
     doc: &mut impl Transactable,
     obj: &ObjId,
@@ -84,6 +81,22 @@ impl PlainText {
             _ => None,
         }
     }
+}
+
+/// Copy the text object `from` onto the new text object `into`: its
+/// characters and its marks. A record's migration moves a whole value, and a
+/// text's formatting is part of what it is.
+pub fn copy_whole(
+    doc: &mut Doc,
+    from: &ObjId,
+    into: &ObjId,
+) -> Result<(), automerge::AutomergeError> {
+    let text = doc.text(from)?;
+    doc.splice_text(into, 0, 0, &text)?;
+    for mark in doc.marks(from)? {
+        doc.mark(into, mark, automerge::marks::ExpandMark::None)?;
+    }
+    Ok(())
 }
 
 /// Where `chars` characters into `text` falls in the document's own text
@@ -407,6 +420,30 @@ mod tests {
         .apply_under(&mut plain, &obj)
         .unwrap();
         assert!(plain.marks(&obj).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_copied_text_keeps_its_words_and_its_marks() {
+        use automerge::marks::{ExpandMark, Mark};
+        let mut doc = Doc::new();
+        let from = doc.put_object(ROOT, "from", ObjType::Text).unwrap();
+        doc.splice_text(&from, 0, 0, "hello world").unwrap();
+        doc.mark(
+            &from,
+            Mark::new("strong".to_owned(), true, 0, 5),
+            ExpandMark::After,
+        )
+        .unwrap();
+        let into = doc.put_object(ROOT, "into", ObjType::Text).unwrap();
+        copy_whole(&mut doc, &from, &into).unwrap();
+        assert_eq!(doc.text(&into).unwrap(), "hello world");
+        let marks: Vec<(String, usize, usize)> = doc
+            .marks(&into)
+            .unwrap()
+            .into_iter()
+            .map(|mark| (mark.name().to_owned(), mark.start, mark.end))
+            .collect();
+        assert_eq!(marks, vec![("strong".to_owned(), 0, 5)]);
     }
 
     #[test]

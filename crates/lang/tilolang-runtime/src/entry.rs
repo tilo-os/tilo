@@ -99,10 +99,6 @@ impl Core {
     ///
     /// `None` when the text names no item: text that is nothing but space and what the other
     /// parameters take ("fri 10am @bo") makes nothing, as it does from a view's entry.
-    ///
-    /// # Errors
-    ///
-    /// A text naming a field the action does not have, or a filled value that does not fit.
     pub(crate) fn entry_fill_given(
         &self,
         action: &str,

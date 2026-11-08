@@ -1,30 +1,13 @@
-//! Voice calls on the collaboration plane: the channel this device's call is
-//! in, and who is in the channels every workspace this session takes part in
-//! shows.
-//!
-//! Being in a call is the presence every member of the workspace reads:
-//! joining
-//! publishes the channel, leaving stops saying it, and a channel's roster is
-//! what the members in it say of themselves. The session publishes this from
-//! its pass ([`Calls::follow`]), and the calls themselves through the service
-//! an app reaches ([`tilo_native_media`]), whose carrier is this plane
-//! ([`Factory`]).
-//!
-//! A channel id is the whole of a call's identity on the wire: the presence
-//! names the channel and what it is called, and a roster says who is in a
-//! channel, with no workspace beside it.
-//!
-//! What a call carries is the workspace's live plane ([`tilo_live::plane`]):
-//! its voice is one more sealed track of the session's plane in that
-//! workspace, which every device in the workspace already carries, and the
-//! people the workspace says are in the channel are the ones this device
-//! plays. Its pictures are tracks of the same plane, one per camera and
-//! screen layer a device in the call shows: the plane asks for exactly the
-//! layers someone draws, and a layer nobody draws is never encoded.
-//!
-//! A page in a call publishes and reads its pictures on its own joined plane,
-//! as one more device of the workspace: the same tracks, the same demand, and
-//! the same objects, without a lane of its host's.
+//! Voice calls on the collaboration plane: the channel this device's call is in,
+//! and who is in the channels every workspace this session takes part in shows.
+//! Being in a call is the presence every member reads: joining publishes the
+//! channel, leaving stops saying it, and a channel's roster is what the members in
+//! it say of themselves. A channel id is the whole of a call's identity on the wire.
+//! What a call carries is the workspace's live plane ([`tilo_live::plane`]): its
+//! voice is one more sealed track, and its pictures are tracks, one per camera and
+//! screen layer a device shows, so a layer nobody draws is never encoded. A page in
+//! a call publishes and reads its pictures on its own joined plane, as one more
+//! device of the workspace.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -50,70 +33,66 @@ use media::voice::call::{self, Audio, Source, Voice};
 mod pictures;
 mod plane_pictures;
 
-/// How often a live call moves what it carries: one frame's worth, so a
-/// captured frame is sealed and sent as soon as the microphone or the camera
-/// has it.
+/// How often a live call moves what it carries: one frame's worth, so a captured frame is sealed
+/// and sent as soon as the microphone or the camera has it.
 const PUMP: Duration = Duration::from_millis(10);
-/// Voice objects one workspace's plane may have heard before a call plays
-/// them: a call that starts late plays the newest of them, never a backlog.
+/// Voice objects one workspace's plane may have heard before a call plays them: a call that starts
+/// late plays the newest of them, never a backlog.
 const HEARD: usize = 256;
-/// Bytes of pictures one workspace's plane may have heard before its calls
-/// draw them: a call that stops taking them drops streams whole, which start
-/// over at their next keyframe.
+/// Bytes of pictures one workspace's plane may have heard before its calls draw them: a call that
+/// stops taking them drops streams whole, which start over at their next keyframe.
 const CARRIED_PICTURES: usize = 8 * 1024 * 1024;
-/// Pictures one workspace's plane may have heard before its calls draw them:
-/// a burst of them is a few passes' worth, never a backlog.
+/// Pictures one workspace's plane may have heard before its calls draw them: a burst of them is a
+/// few passes' worth, never a backlog.
 const CARRIED: usize = 256;
-/// What the person's answer covers when an app turns a camera on, by the
-/// name every app's device capabilities use.
+/// What the person's answer covers when an app turns a camera on, by the name every app's device
+/// capabilities use.
 const CAMERA: &str = "camera";
 /// What the person's answer covers when an app shares a screen.
 const SCREEN: &str = "screen";
-/// The largest desktop a shared screen is captured at: the screen's largest
-/// layer, so nothing is captured that no tile could show.
+/// The largest desktop a shared screen is captured at: the screen's largest layer, so nothing is
+/// captured that no tile could show.
 const SCREEN_MAX: (u32, u32) = {
     let (width, height) = pictures::Layer::High.size(pictures::Source::Screen);
     (width as u32, height as u32)
 };
-/// Bytes of received pictures one answer carries at most: several tiles of
-/// every layer, so a burst of them is drawn in one pass.
+/// Bytes of received pictures one answer carries at most: several tiles of every layer, so a burst
+/// of them is drawn in one pass.
 const PICTURES_BUDGET: usize = 1024 * 1024;
-/// What the person's answer covers: the microphone, by the name every app's
-/// device capabilities use.
+/// What the person's answer covers: the microphone, by the name every app's device capabilities
+/// use.
 const MICROPHONE: &str = "microphone";
 
 /// The calls of every workspace this session takes part in.
 pub(crate) struct Calls {
     /// The calls here, as the people in them say.
     live: Mutex<Vec<LiveCall>>,
-    /// Who is in each channel, as the members say: what a voice channel
-    /// shows.
+    /// Who is in each channel, as the members say: what a voice channel shows.
     rosters: Mutex<Vec<Roster>>,
-    /// What the rosters last said, to wake the apps watching them only when
-    /// they moved.
+    /// What the rosters last said, to wake the apps watching them only when they moved.
     said: Mutex<String>,
     /// Woken whenever a workspace's calls may have changed.
     changed: Arc<tokio::sync::Notify>,
-    /// Woken whenever a call may have pictures to draw: a plane heard one, or
-    /// a call changed what it shows.
+    /// Woken whenever a call may have pictures to draw: a plane heard one, or a call changed what
+    /// it shows.
     arrived: Arc<tokio::sync::Notify>,
-    /// This session's live plane in each workspace, as it stands: what a
-    /// call's voice is published into and heard from.
+    /// This session's live plane in each workspace, as it stands: what a call's voice is published
+    /// into and heard from.
     planes: Mutex<BTreeMap<String, Arc<Plane>>>,
-    /// What each workspace's plane heard since the last call, newest last:
-    /// the calls of that workspace play it.
+    /// What each workspace's plane heard since the last call, newest last: the calls of that
+    /// workspace play it.
     heard: Mutex<BTreeMap<String, VecDeque<Heard>>>,
     /// What the plane of each workspace showed for a call of `channel`,
     /// newest last: that call draws it, and no other.
     pictures: Mutex<BTreeMap<(String, String), Carried>>,
-    /// Who is in each channel, as a device of it: the person each device in
-    /// a call is, and the revision of that map.
+    /// Who is in each channel, as a device of it: the person each device in a call is, and the
+    /// revision of that map.
     people: Mutex<BTreeMap<String, People>>,
     /// The revision of the next map of people a channel gets.
     people_revision: AtomicU64,
-    /// The next voice object each workspace publishes. One counter for the
-    /// session, so a stream keeps its place across a call that ends and comes
-    /// back, and across the microphone being muted.
+    /// The next voice object each workspace publishes. One counter for the session, so a stream
+    /// keeps its place across a call that ends and comes back, and across the microphone being
+    /// muted.
     audio: Mutex<BTreeMap<String, u32>>,
 }
 
@@ -135,9 +114,8 @@ impl Calls {
         })
     }
 
-    /// Take in the calls everyone here says they are in, and the channel
-    /// this device joined (if any), so a voice channel shows a join or a
-    /// leave on this pass.
+    /// Take in the calls everyone here says they are in, and the channel this device joined (if
+    /// any), so a voice channel shows a join or a leave on this pass.
     pub(crate) fn follow(&self, sync: &sync::Client, own: Option<&sync::InCall>) {
         let live = sync.calls();
         let mut people: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -165,8 +143,8 @@ impl Calls {
                 }
             }
         }
-        // This device's own call: nobody here hears it from this session, so
-        // it is said from what the session itself published.
+        // This device's own call: nobody here hears it from this session, so it is said from what
+        // the session itself published.
         if let (Some(call), Some(person)) = (own, sync.own().user) {
             let channel = &call.call.channel;
             people
@@ -193,9 +171,9 @@ impl Calls {
         };
         *self.rosters.lock_recover() = rosters;
         *self.live.lock_recover() = live;
-        // Who the callers of each channel are, device by device: a call
-        // re-reads its own channel's map when its revision moves, and shows
-        // the new devices what the app shows of their people.
+        // Who the callers of each channel are, device by device: a call re-reads its own channel's
+        // map when its revision moves, and shows the new devices what the app shows of their
+        // people.
         {
             let mut held = self.people.lock_recover();
             held.retain(|channel, _| devices.contains_key(channel));
@@ -223,8 +201,8 @@ impl Calls {
                 *held = planes;
             }
         }
-        // What the planes heard and showed since the last pass, each
-        // workspace's own: the calls playing it take it.
+        // What the planes heard and showed since the last pass, each workspace's own: the calls
+        // playing it take it.
         for (workspace, heard) in sync.take_call_audio() {
             self.hear(&workspace, heard);
         }
@@ -246,14 +224,14 @@ impl Calls {
         self.arrived.notify_waiters();
     }
 
-    /// The plane `workspace`'s call's voice runs on, while this session is in
-    /// the workspace's plane.
+    /// The plane `workspace` 's call's voice runs on, while this session is in the workspace's
+    /// plane.
     pub(crate) fn plane(&self, workspace: &str) -> Option<Arc<Plane>> {
         self.planes.lock_recover().get(workspace).cloned()
     }
 
-    /// Put one object `workspace`'s plane heard where the calls playing that
-    /// workspace take it: the voice it plays, or the pictures it draws.
+    /// Put one object `workspace` 's plane heard where the calls playing that workspace take it:
+    /// the voice it plays, or the pictures it draws.
     fn hear(&self, workspace: &str, heard: Heard) {
         if heard.track == Track::Audio {
             voice_in(
@@ -264,9 +242,8 @@ impl Calls {
                 heard,
             );
         } else {
-            // A picture belongs to the call of the channel its sender is a
-            // caller of: that call's app draws it, and no other call of the
-            // workspace does.
+            // A picture belongs to the call of the channel its sender is a caller of: that call's
+            // app draws it, and no other call of the workspace does.
             let channels: Vec<String> = self
                 .people
                 .lock_recover()
@@ -286,7 +263,7 @@ impl Calls {
         }
     }
 
-    /// What `workspace`'s plane heard since the last call, oldest first.
+    /// What `workspace` 's plane heard since the last call, oldest first.
     fn took(&self, workspace: &str) -> Vec<Heard> {
         self.heard
             .lock_recover()
@@ -295,9 +272,9 @@ impl Calls {
             .unwrap_or_default()
     }
 
-    /// What the plane of `workspace` showed for `channel`'s call since the
-    /// last pass, oldest first, and the streams that lost a picture since:
-    /// nothing of those is drawn until their next keyframe.
+    /// What the plane of `workspace` showed for `channel` 's call since the last pass, oldest
+    /// first, and the streams that lost a picture since: nothing of those is drawn until their next
+    /// keyframe.
     fn took_pictures(
         &self,
         workspace: &str,
@@ -310,8 +287,7 @@ impl Calls {
             .unwrap_or_default()
     }
 
-    /// The sequence of the next voice object this device publishes in
-    /// `workspace`.
+    /// The sequence of the next voice object this device publishes in `workspace` .
     fn next_audio(&self, workspace: &str) -> u32 {
         let mut audio = self.audio.lock_recover();
         let next = audio.entry(workspace.to_owned()).or_insert(0);
@@ -321,8 +297,7 @@ impl Calls {
         sequence
     }
 
-    /// What `channel` is called, as the people in it say; empty when nobody
-    /// named it.
+    /// What `channel` is called, as the people in it say; empty when nobody named it.
     pub(crate) fn name(&self, channel: &str) -> String {
         self.live
             .lock_recover()
@@ -337,8 +312,8 @@ impl Calls {
         self.rosters.lock_recover().clone()
     }
 
-    /// The devices the workspace says are in `channel`'s call, this one among
-    /// them: whose objects the call plays and draws.
+    /// The devices the workspace says are in `channel` 's call, this one among them: whose objects
+    /// the call plays and draws.
     fn callers(&self, channel: &str) -> Vec<[u8; 32]> {
         let live = self.live.lock_recover();
         live.iter()
@@ -354,10 +329,9 @@ impl Calls {
 }
 
 impl Calls {
-    /// The person each device in `channel`'s call is, as the callers said:
-    /// what the pictures a device sends are named by, and whose tile a device
-    /// feeds. A device whose caller names no person is left out, its pictures
-    /// unnamed.
+    /// The person each device in `channel` 's call is, as the callers said: what the pictures a
+    /// device sends are named by, and whose tile a device feeds. A device whose caller names no
+    /// person is left out, its pictures unnamed.
     fn persons(&self, channel: &str) -> BTreeMap<[u8; 32], String> {
         self.people
             .lock_recover()
@@ -378,16 +352,16 @@ impl Calls {
     }
 }
 
-/// Who is in one channel, as its callers say: the person each device is, and
-/// the revision of that map.
+/// Who is in one channel, as its callers say: the person each device is, and the revision of that
+/// map.
 #[derive(Default)]
 struct People {
     by_device: BTreeMap<[u8; 32], String>,
     revision: u64,
 }
 
-/// The rosters each of the workspace's voice channels shows, as everyone in
-/// them says: who is in a call there, and who has a camera or screen on.
+/// The rosters each of the workspace's voice channels shows, as everyone in them says: who is in a
+/// call there, and who has a camera or screen on.
 fn rosters_of(
     people: BTreeMap<String, BTreeSet<String>>,
     mut cameras: BTreeMap<String, BTreeSet<String>>,
@@ -413,8 +387,8 @@ fn rosters_of(
         .collect()
 }
 
-/// Which person each device in `live`'s channels is, channel by channel: a
-/// call shows its people's pictures from the devices presence names.
+/// Which person each device in `live` 's channels is, channel by channel: a call shows its people's
+/// pictures from the devices presence names.
 fn callers_in(live: &[LiveCall]) -> BTreeMap<String, BTreeMap<[u8; 32], String>> {
     let mut devices: BTreeMap<String, BTreeMap<[u8; 32], String>> = BTreeMap::new();
     for call in live {
@@ -434,9 +408,8 @@ fn callers_in(live: &[LiveCall]) -> BTreeMap<String, BTreeMap<[u8; 32], String>>
     devices
 }
 
-/// The workspace planes this session is in now: a call's voice and pictures
-/// run on the one its workspace is in, and are no longer carried once this
-/// device leaves the workspace.
+/// The workspace planes this session is in now: a call's voice and pictures run on the one its
+/// workspace is in, and are no longer carried once this device leaves the workspace.
 fn planes_of(sync: &sync::Client) -> BTreeMap<String, Arc<Plane>> {
     sync.live()
         .map(|live| {
@@ -448,8 +421,8 @@ fn planes_of(sync: &sync::Client) -> BTreeMap<String, Arc<Plane>> {
         .unwrap_or_default()
 }
 
-/// Keep `heard` with the newest voice `bucket` holds: a call reads only what
-/// arrived since its last pass.
+/// Keep `heard` with the newest voice `bucket` holds: a call reads only what arrived since its last
+/// pass.
 fn voice_in(bucket: &mut VecDeque<Heard>, heard: Heard) {
     bucket.push_back(heard);
     while bucket.len() > HEARD {
@@ -457,9 +430,8 @@ fn voice_in(bucket: &mut VecDeque<Heard>, heard: Heard) {
     }
 }
 
-/// Pictures one workspace's calls have not drawn yet, and the streams that
-/// lost one on the way: past the bound, the oldest stream goes whole, and
-/// starts over at its next keyframe.
+/// Pictures one workspace's calls have not drawn yet, and the streams that lost one on the way:
+/// past the bound, the oldest stream goes whole, and starts over at its next keyframe.
 #[derive(Default)]
 struct Carried {
     queue: VecDeque<Heard>,
@@ -497,8 +469,8 @@ impl Carried {
         }
     }
 
-    /// What was queued, and the streams that lost a picture, for the call
-    /// playing in this workspace.
+    /// What was queued, and the streams that lost a picture, for the call playing in this
+    /// workspace.
     fn take(&mut self) -> (Vec<Heard>, Vec<([u8; 32], Track)>) {
         let lost = self.lost.iter().copied().collect();
         self.lost.clear();
@@ -506,9 +478,8 @@ impl Carried {
     }
 }
 
-/// What voice channel `channel` is called, as the app that holds it
-/// published the row its call is joined from: its label, empty when the app
-/// publishes no such row.
+/// What voice channel `channel` is called, as the app that holds it published the row its call is
+/// joined from: its label, empty when the app publishes no such row.
 pub(crate) fn channel_name(
     surfaces: &[tilo_action_broker::collab_app_broker::PublishedSurface],
     (workspace, app, record): (&str, &str, &str),
@@ -524,22 +495,21 @@ pub(crate) fn channel_name(
         .filter(|name| !name.is_empty())
 }
 
-/// The devices a workspace's governance admits, read fresh: what a call's
-/// roster is made of, and who this device accepts frames from.
+/// The devices a workspace's governance admits, read fresh: what a call's roster is made of, and
+/// who this device accepts frames from.
 pub(crate) type Admitted = Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>;
 
 /// Where a call's carrier reads what only the session knows: its endpoint,
 /// the channel service, the workspace's governance, the person's answers,
 /// and what the audio runs on.
 pub(crate) struct Sources {
-    /// The calls of the workspaces this session takes part in, as the loop
-    /// heard them: who else is in the channel this device joins.
+    /// The calls of the workspaces this session takes part in, as the loop heard them: who else is
+    /// in the channel this device joins.
     pub(crate) calls: Arc<Calls>,
-    /// The session's own endpoint, which names this device. `None` for a
-    /// session taking part in no transport, which carries no call.
+    /// The session's own endpoint, which names this device. `None` for a session taking part in no
+    /// transport, which carries no call.
     pub(crate) endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
-    /// This device's channel keys: the ones a call in the channel seals its
-    /// audio with.
+    /// This device's channel keys: the ones a call in the channel seals its audio with.
     pub(crate) keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
     /// The devices `workspace` admits, which a call's roster names.
     pub(crate) roster: Option<Admitted>,
@@ -547,13 +517,11 @@ pub(crate) struct Sources {
     pub(crate) questions: Option<tilo_service::Questions>,
     /// What the call hears and is heard by.
     pub(crate) audio: Audio,
-    /// This person, as the workspace names them: whose tile their own camera
-    /// feeds.
+    /// This person, as the workspace names them: whose tile their own camera feeds.
     pub(crate) person: Option<String>,
     /// What this device's camera captures from.
     pub(crate) camera: pictures::Camera,
-    /// Where a test reads the samples the call played, in place of a
-    /// speaker.
+    /// Where a test reads the samples the call played, in place of a speaker.
     #[cfg(test)]
     pub(crate) played: Option<Arc<Mutex<Vec<f32>>>>,
 }
@@ -563,8 +531,8 @@ pub(crate) struct Sources {
 /// the audio and the pictures travel the workspace's live plane.
 pub(crate) struct Factory {
     sources: Arc<Sources>,
-    /// The person's answers about the microphone: the prompt the session's
-    /// apps get, so one allowance covers every call of the session.
+    /// The person's answers about the microphone: the prompt the session's apps get, so one
+    /// allowance covers every call of the session.
     consents: Option<tilo_portal::consent::Consents>,
 }
 
@@ -626,8 +594,7 @@ impl MediaFactory for Factory {
     }
 }
 
-/// Start this device's side of `target`'s call, or say why it cannot carry
-/// one here.
+/// Start this device's side of `target` 's call, or say why it cannot carry one here.
 async fn open(
     sources: &Sources,
     consents: Option<tilo_portal::consent::Consents>,
@@ -696,10 +663,9 @@ async fn open(
     }))
 }
 
-/// The keys the call's channel holds, or why the call cannot be carried: keys
-/// that are on their way still carry it, since it opens joining the channel
-/// and the worker takes them when they arrive. Only a device the channel has
-/// no keys for at all leaves it uncarried.
+/// The keys the call's channel holds, or why the call cannot be carried: keys that are on their way
+/// still carry it, since it opens joining the channel and the worker takes them when they arrive.
+/// Only a device the channel has no keys for at all leaves it uncarried.
 fn call_keys(
     sources: &Sources,
     workspace_id: WorkspaceId,
@@ -733,8 +699,7 @@ fn voice_issue(error: call::CallError) -> Issue {
     }
 }
 
-/// This device's microphones, opened for the call, and what the app is
-/// offered of them.
+/// This device's microphones, opened for the call, and what the app is offered of them.
 async fn opened_microphones(audio: Audio) -> Result<(Voice, Vec<Source>, Vec<Input>), Issue> {
     let voice = tokio::task::spawn_blocking(move || Voice::open(audio))
         .await
@@ -751,8 +716,7 @@ async fn opened_microphones(audio: Audio) -> Result<(Voice, Vec<Source>, Vec<Inp
     Ok((voice, microphones, offered))
 }
 
-/// The devices `workspace` admits: who may send to this device in
-/// its channels' calls.
+/// The devices `workspace` admits: who may send to this device in its channels' calls.
 fn admitted(sources: &Sources, workspace: &str) -> LiveRoster {
     let devices = sources
         .roster
@@ -762,8 +726,8 @@ fn admitted(sources: &Sources, workspace: &str) -> LiveRoster {
     LiveRoster::new(devices)
 }
 
-/// One call this device is in, as the call service holds it: where the call
-/// stands, and what it sends.
+/// One call this device is in, as the call service holds it: where the call stands, and what it
+/// sends.
 pub(crate) struct Call {
     shared: Arc<Shared>,
     inputs: Vec<Input>,
@@ -771,8 +735,8 @@ pub(crate) struct Call {
 
 impl MediaSession for Call {
     fn tick(&mut self, _now: Instant) -> Result<State, Issue> {
-        // A call the person left is over: whatever its audio said in the same
-        // moment — a stream that ended with the call, say — is not why it did.
+        // A call the person left is over: whatever its audio said in the same moment — a stream
+        // that ended with the call, say — is not why it did.
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(Issue::SessionEnded);
         }
@@ -828,16 +792,15 @@ impl MediaSession for Call {
     }
 }
 
-/// The channel's keys and who may read them, and what the workspace's
-/// governance admitted at the same time: what seals this call's frames.
+/// The channel's keys and who may read them, and what the workspace's governance admitted at the
+/// same time: what seals this call's frames.
 struct Current {
     keys: channel_crypto::ChannelContentKeys,
     roster: LiveRoster,
 }
 
-/// This call's own side: what it plays, the microphone it seals frames with
-/// while the person is heard, and the pictures it sends while they are
-/// shown.
+/// This call's own side: what it plays, the microphone it seals frames with while the person is
+/// heard, and the pictures it sends while they are shown.
 struct Side {
     voice: Voice,
     /// This device's camera, while the person has it on in the call.
@@ -846,8 +809,8 @@ struct Side {
     screen: Option<Arc<pictures::Sending>>,
 }
 
-/// This device's camera: the capture feeding the call's encoder thread, and
-/// that thread, which ends when the last handle to it goes.
+/// This device's camera: the capture feeding the call's encoder thread, and that thread, which ends
+/// when the last handle to it goes.
 struct CameraSend {
     /// Dropping the last handle ends the encoder thread and what it sends.
     sending: Arc<pictures::Sending>,
@@ -866,42 +829,38 @@ struct Shared {
     workspace: String,
     /// The workspace's admitted devices, re-read while the call lasts.
     admitted: Option<Admitted>,
-    /// The channel's keys and roster, once this device holds them: the call
-    /// is up from then, and joining until.
+    /// The channel's keys and roster, once this device holds them: the call is up from then, and
+    /// joining until.
     current: Mutex<Option<Current>>,
     side: Mutex<Side>,
     /// The microphones this call may send.
     sources: Vec<Source>,
-    /// This call's pictures: what this device sends, and what arrived here
-    /// for the app to draw.
+    /// This call's pictures: what this device sends, and what arrived here for the app to draw.
     video: Arc<pictures::Video>,
-    /// The desktop this session shares, which this call encodes while the
-    /// person shares it.
+    /// The desktop this session shares, which this call encodes while the person shares it.
     screen: Arc<ScreenShare>,
     /// What the app shows of the people in this call, as it last said.
     showing: Mutex<Vec<Shown>>,
-    /// The devices this call has shown the app's layers to, on the plane:
-    /// one that left the call is unsubscribed, and the plane stops reading
-    /// its pictures.
+    /// The devices this call has shown the app's layers to, on the plane: one that left the call is
+    /// unsubscribed, and the plane stops reading its pictures.
     shown_devices: Mutex<BTreeSet<[u8; 32]>>,
     /// The revision of the call's people this call last showed itself to,
     /// and the plane's picture demand it last woke its encoders for.
     shows_at: AtomicU64,
     pictures_at: AtomicU64,
-    /// The app changed what it shows, and the call has not told the plane
-    /// since: the app asks from wherever its question arrives, and the
-    /// plane's tracks are made from the call's own task.
+    /// The app changed what it shows, and the call has not told the plane since: the app asks from
+    /// wherever its question arrives, and the plane's tracks are made from the call's own task.
     shows_dirty: AtomicBool,
-    /// This person, as the workspace names them: whose tile their own camera
-    /// feeds, and what their own pictures are labelled.
+    /// This person, as the workspace names them: whose tile their own camera feeds, and what their
+    /// own pictures are labelled.
     person: Option<String>,
-    /// The calls this session takes part in, as presence said
-    /// them: who is in this call, and which person each device is.
+    /// The calls this session takes part in, as presence said them: who is in this call, and which
+    /// person each device is.
     presence: Arc<Calls>,
     /// What this device's camera captures from.
     camera: pictures::Camera,
-    /// The timestamp each device's voice stream was last heard at, in this
-    /// call: a stream that starts over is recognised by its own bytes.
+    /// The timestamp each device's voice stream was last heard at, in this call: a stream that
+    /// starts over is recognised by its own bytes.
     streams: Mutex<BTreeMap<[u8; 32], u64>>,
     caller: tilo_portal::PortalCaller,
     call: String,
@@ -933,10 +892,9 @@ impl Shared {
         if let Some(consents) = &self.consents
             && !consents.allowed(&self.caller, MICROPHONE)
         {
-            // The person has not allowed their microphone yet: ask them
-            // through the session's own sheet, and open nothing until they
-            // answer. Asking again while the question waits is refused by
-            // the service itself.
+            // The person has not allowed their microphone yet: ask them through the session's own
+            // sheet, and open nothing until they answer. Asking again while the question waits is
+            // refused by the service itself.
             let consents = consents.clone();
             let caller = self.caller.clone();
             let handle = format!("call-microphone:{}", self.call);
@@ -982,13 +940,11 @@ impl Shared {
         self.side.lock_recover().voice.set_deafened(deafened);
     }
 
-    /// Show these people's pictures here, each at the layer named: every
-    /// device of theirs in the call is told, and encodes only that. The app
-    /// asks from wherever its question arrives, so the plane's tracks are
-    /// made on the call's own pass, from what is recorded here.
+    /// Show these people's pictures here, each at the layer named: every device of theirs in the
+    /// call is told, and encodes only that. The app asks from wherever its question arrives, so the
+    /// plane's tracks are made on the call's own pass, from what is recorded here.
     fn show(&self, shown: Vec<Shown>) {
-        // This person's own camera tile is fed here, at the largest layer
-        // the app shows of them.
+        // This person's own camera tile is fed here, at the largest layer the app shows of them.
         let own = self.person.as_ref().and_then(|own| {
             shown
                 .iter()
@@ -1002,9 +958,8 @@ impl Shared {
         self.presence.pictures_arrived();
     }
 
-    /// Tell every device of the call what this device shows of it: nothing
-    /// of a device whose person the app no longer shows, and nothing of a
-    /// device the call lost.
+    /// Tell every device of the call what this device shows of it: nothing of a device whose person
+    /// the app no longer shows, and nothing of a device the call lost.
     fn send_showing(&self, persons: &BTreeMap<[u8; 32], String>) {
         let showing = self.showing.lock_recover().clone();
         let devices: BTreeSet<[u8; 32]> = persons.keys().copied().collect();
@@ -1032,15 +987,14 @@ impl Shared {
         }
     }
 
-    /// Turn this person's camera on in the call, or off: the capture feeds
-    /// the call's encoder, which sends only the layers someone shows.
+    /// Turn this person's camera on in the call, or off: the capture feeds the call's encoder,
+    /// which sends only the layers someone shows.
     fn set_camera(self: &Arc<Self>, on: bool) -> Result<(), Issue> {
         if self.closed() {
             return Err(Issue::CameraLost);
         }
         if !on {
-            // Dropping the capture and the sender stops the camera and its
-            // encoder.
+            // Dropping the capture and the sender stops the camera and its encoder.
             self.side.lock_recover().camera = None;
             return Ok(());
         }
@@ -1082,9 +1036,8 @@ impl Shared {
         Ok(())
     }
 
-    /// Share this person's screen in the call, or stop: the session's own
-    /// pass hands the share its frames, and the call's encoder encodes them
-    /// for the layers someone shows.
+    /// Share this person's screen in the call, or stop: the session's own pass hands the share its
+    /// frames, and the call's encoder encodes them for the layers someone shows.
     fn set_screen(self: &Arc<Self>, on: bool) -> Result<(), Issue> {
         if self.closed() {
             return Err(Issue::ScreenLost);
@@ -1106,9 +1059,9 @@ impl Shared {
         Ok(())
     }
 
-    /// Ask the person through the session's own prompt for `capability`:
-    /// whether they already allowed it for this call. A question that was
-    /// not answered yet is not asked again; the service refuses the second.
+    /// Ask the person through the session's own prompt for `capability` : whether they already
+    /// allowed it for this call. A question that was not answered yet is not asked again; the
+    /// service refuses the second.
     fn ask(&self, capability: &str, handle: &str, reason: &str) -> bool {
         let Some(consents) = &self.consents else {
             return true;
@@ -1131,8 +1084,8 @@ impl Shared {
         false
     }
 
-    /// The pictures that arrived here for the app, oldest first, named by
-    /// the person whose device sent them.
+    /// The pictures that arrived here for the app, oldest first, named by the person whose device
+    /// sent them.
     fn pictures(&self, after: u64) -> (Vec<Picture>, u64) {
         let (taken, cursor) = self.video.take(after, PICTURES_BUDGET);
         let persons = self.presence.persons(&self.call);
@@ -1144,8 +1097,8 @@ impl Shared {
                 persons.get(&picture.from).cloned()
             };
             let Some(person) = person else {
-                // A device the callers do not name a person for: the app has
-                // nobody to draw its picture under.
+                // A device the callers do not name a person for: the app has nobody to draw its
+                // picture under.
                 continue;
             };
             pictures.push(Picture {
@@ -1158,9 +1111,8 @@ impl Shared {
         (pictures, cursor)
     }
 
-    /// Move the pictures once: the desktop the pass just drew goes to the
-    /// encoder, and a locked screen's last picture is forgotten rather than
-    /// sent again.
+    /// Move the pictures once: the desktop the pass just drew goes to the encoder, and a locked
+    /// screen's last picture is forgotten rather than sent again.
     fn pump_video(&self) {
         let Some(sending) = self.side.lock_recover().screen.clone() else {
             return;
@@ -1183,8 +1135,8 @@ impl Shared {
         }
         let mut side = self.side.lock_recover();
         side.camera = None;
-        // The desktop's share is the session's, which this call stops only
-        // if it was the one sharing it.
+        // The desktop's share is the session's, which this call stops only if it was the one
+        // sharing it.
         let shared_screen = side.screen.take().is_some();
         side.voice.close();
         drop(side);
@@ -1198,13 +1150,11 @@ impl Shared {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// Move the call's audio once: publish what the microphone captured on
-    /// the workspace's plane, and play what the call's devices published
-    /// there.
-    ///
-    /// The plane carries one voice track per device per workspace, so what it
-    /// heard is played only from the devices this call's channel says are in
-    /// it. A deafened call drops the frames rather than holding them.
+    /// Move the call's audio once: publish what the microphone captured on the workspace's plane,
+    /// and play what the call's devices published there.
+    /// The plane carries one voice track per device per workspace, so what it heard is played only
+    /// from the devices this call's channel says are in it. A deafened call drops the frames rather
+    /// than holding them.
     fn pump(&self) {
         let now = Instant::now();
         let deafened = self.deafened.load(Ordering::Acquire);
@@ -1260,9 +1210,9 @@ impl Shared {
         let captured = match side.voice.pump(now).map_err(voice_issue) {
             Ok(captured) => captured,
             Err(issue) => {
-                // The person's microphone stopped: capture is off from now
-                // on, and the call says why. Its place in the stream stays
-                // where it is, so starting capture again is heard at once.
+                // The person's microphone stopped: capture is off from now on, and the call says
+                // why. Its place in the stream stays where it is, so starting capture again is
+                // heard at once.
                 *self.issue.lock_recover() = Some(issue);
                 return;
             }
@@ -1281,8 +1231,8 @@ impl Shared {
                     continue;
                 };
                 if plane.publish(Track::Audio, sequence, &body).is_err() {
-                    // The plane ended: what follows is published when this
-                    // session's pass joins it again.
+                    // The plane ended: what follows is published when this session's pass joins it
+                    // again.
                     break;
                 }
             }
@@ -1301,9 +1251,9 @@ impl Shared {
         drop(side);
     }
 
-    /// Re-read what the workspace admits and what the channel's keys are: a
-    /// membership change reaches the call as it happens, and a channel whose
-    /// keys were still on their way when the call joined brings it up.
+    /// Re-read what the workspace admits and what the channel's keys are: a membership change
+    /// reaches the call as it happens, and a channel whose keys were still on their way when the
+    /// call joined brings it up.
     fn refresh(&self) {
         let roster = self
             .admitted
@@ -1354,15 +1304,14 @@ impl Shared {
     }
 }
 
-/// Carry `shared`'s call: move what it carries until it ends, and draw the
-/// pictures the plane heard the moment they arrive.
+/// Carry `shared` 's call: move what it carries until it ends, and draw the pictures the plane
+/// heard the moment they arrive.
 async fn run(shared: Arc<Shared>) {
     // The audio moves on the call's own clock, one frame's worth at a time;
     // a picture is drawn as soon as the plane heard it, never on a pass.
     let arrived = shared.presence.arrived();
-    // Whether the call is live is the channel's keys to say, not this task's
-    // starting: a call whose keys are still on their way joins the channel and
-    // says so until `refresh` brings it up.
+    // Whether the call is live is the channel's keys to say, not this task's starting: a call whose
+    // keys are still on their way joins the channel and says so until `refresh` brings it up.
     let mut beat = tokio::time::interval(PUMP);
     beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut ticks = 0_u32;
@@ -1370,10 +1319,9 @@ async fn run(shared: Arc<Shared>) {
         if shared.closed() {
             break;
         }
-        // Wait on the call's clock and on the plane in the same pass: the
-        // wake is registered before the pictures are taken, so one that
-        // arrives while they are taken wakes the next pass rather than the
-        // next tick.
+        // Wait on the call's clock and on the plane in the same pass: the wake is registered before
+        // the pictures are taken, so one that arrives while they are taken wakes the next pass
+        // rather than the next tick.
         let arrived = arrived.notified();
         tokio::pin!(arrived);
         arrived.as_mut().enable();
@@ -1393,21 +1341,21 @@ async fn run(shared: Arc<Shared>) {
     shared.unsubscribe_pictures();
 }
 
-/// The desktop this session shares: the pass that draws it hands it the
-/// frames, and every call sharing it encodes what it took.
+/// The desktop this session shares: the pass that draws it hands it the frames, and every call
+/// sharing it encodes what it took.
 pub(crate) fn screen_share() -> &'static Arc<ScreenShare> {
     static SHARE: std::sync::OnceLock<Arc<ScreenShare>> = std::sync::OnceLock::new();
     SHARE.get_or_init(|| Arc::new(ScreenShare::new()))
 }
 
-/// When the screen a call shares next needs a frame of the desk; `None` while
-/// nothing is shared, or a locked desktop withholds it.
+/// When the screen a call shares next needs a frame of the desk; `None` while nothing is shared, or
+/// a locked desktop withholds it.
 pub(crate) fn next_screen_frame() -> Option<Instant> {
     screen_share().next_frame(Instant::now())
 }
 
-/// Hand the desktop this session shares the frame the pass just drew: the
-/// largest screen layer at most, and never a locked screen.
+/// Hand the desktop this session shares the frame the pass just drew: the largest screen layer at
+/// most, and never a locked screen.
 pub(crate) fn share_screen(compositor: &mut tilo_compositor::Compositor) {
     let locked = compositor.locked();
     hand_screen(screen_share(), locked, || {
@@ -1415,9 +1363,9 @@ pub(crate) fn share_screen(compositor: &mut tilo_compositor::Compositor) {
     });
 }
 
-/// Hand `share` what `draw` draws of the desktop, unless a locked desktop
-/// stops it first: locking forgets the frame the share held, so nothing of
-/// the screen before the lock is ever sent, now or after unlocking.
+/// Hand `share` what `draw` draws of the desktop, unless a locked desktop stops it first: locking
+/// forgets the frame the share held, so nothing of the screen before the lock is ever sent, now or
+/// after unlocking.
 fn hand_screen(
     share: &ScreenShare,
     locked: bool,
@@ -1442,8 +1390,8 @@ fn hand_screen(
     }
 }
 
-/// The layers of each source this device shows of `person`: nothing at all
-/// for a device whose person the app shows nowhere.
+/// The layers of each source this device shows of `person` : nothing at all for a device whose
+/// person the app shows nowhere.
 fn layers_shown(
     shown: &[Shown],
     person: Option<&String>,

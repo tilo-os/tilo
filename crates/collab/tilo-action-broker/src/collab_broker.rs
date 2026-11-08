@@ -67,17 +67,6 @@ pub struct FanoutState {
     peer_id_counter: AtomicU64,
     app_broker: Mutex<Option<Arc<AppBrokerState>>>,
     local_subs: Mutex<Vec<Arc<WorkspaceSubscription>>>,
-    certified_people: Mutex<Vec<std::sync::Weak<CertifiedPeopleSubscription>>>,
-}
-
-/// Host-local observer of complete, owner-certified workspace membership. This is
-/// intentionally separate from ordinary app Context fanout: only the broker's
-/// native membership refresh can publish it.
-pub type CertifiedPeopleSink =
-    Arc<dyn Fn(String, Vec<ui::collaboration::Collaborator>) + Send + Sync>;
-
-pub struct CertifiedPeopleSubscription {
-    sink: CertifiedPeopleSink,
 }
 
 /// A subscriber inside the shell process, addressed by workspace — how the
@@ -121,10 +110,6 @@ impl Default for FanoutState {
 }
 
 impl FanoutState {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_peer_counter_for_test(&self, value: u64) {
-        self.peer_id_counter.store(value, Ordering::Relaxed);
-    }
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -132,7 +117,6 @@ impl FanoutState {
             peer_id_counter: AtomicU64::new(0),
             app_broker: Mutex::new(None),
             local_subs: Mutex::new(Vec::new()),
-            certified_people: Mutex::new(Vec::new()),
         }
     }
 
@@ -167,38 +151,6 @@ impl FanoutState {
             .unwrap_or_default()
     }
 
-    pub(crate) fn subscribe_certified_people(
-        &self,
-        sink: CertifiedPeopleSink,
-    ) -> Arc<CertifiedPeopleSubscription> {
-        let subscription = Arc::new(CertifiedPeopleSubscription { sink });
-        let state = self.app_broker();
-        if let Ok(mut observers) = self.certified_people.lock() {
-            observers.push(Arc::downgrade(&subscription));
-            if let Some(state) = state {
-                for (workspace, people) in state.certified_people_for_shell() {
-                    (subscription.sink)(workspace, people);
-                }
-            }
-        }
-        subscription
-    }
-
-    pub(crate) fn publish_certified_people(&self, workspace: &str) {
-        let people = self.app_broker().map_or_else(Vec::new, |state| {
-            state.certified_people_in_workspace(workspace)
-        });
-        if let Ok(mut observers) = self.certified_people.lock() {
-            observers.retain(|observer| {
-                let Some(observer) = observer.upgrade() else {
-                    return false;
-                };
-                (observer.sink)(workspace.to_owned(), people.clone());
-                true
-            });
-        }
-    }
-
     /// Mint the next typed connection id, reserving zero for the broker root
     /// and `u64::MAX` for the current-connection sentinel. The counter itself
     /// remains the number of accepted connections, including before the first.
@@ -221,15 +173,6 @@ impl FanoutState {
         previous.saturating_add(1)
     }
 
-    /// How many typed connections this broker has ever accepted. Read as a
-    /// generation, not a count: it only rises, so
-    /// a value newer than the one recorded beside an announcement means
-    /// someone connected who wasn't there to hear it — see
-    /// `remote_participant_id` in the native adapter, which uses that to re-say a name.
-    pub fn connections_seen(&self) -> u64 {
-        self.peer_id_counter.load(Ordering::Relaxed)
-    }
-
     /// Attach the app broker's fanout sink. Called at most once, at
     /// broker-spawn time; repeat calls are silently ignored.
     pub fn attach_app_broker(&self, state: Arc<AppBrokerState>) {
@@ -249,11 +192,6 @@ impl FanoutState {
     /// fanout. The broker releases its journal before this method detaches it,
     /// and a replacement can never be cleared by the old thread's guard.
     pub(crate) fn shutdown_app_broker(&self, state: &Arc<AppBrokerState>) {
-        let certified_workspaces = state
-            .certified_people_for_shell()
-            .into_iter()
-            .map(|(workspace, _)| workspace)
-            .collect::<Vec<_>>();
         self.request_shutdown();
         state.stop();
         {
@@ -270,17 +208,6 @@ impl FanoutState {
         }
         match self.local_subs.lock() {
             Ok(mut subscribers) => subscribers.clear(),
-            Err(poisoned) => poisoned.into_inner().clear(),
-        }
-        match self.certified_people.lock() {
-            Ok(mut observers) => {
-                for observer in observers.iter().filter_map(std::sync::Weak::upgrade) {
-                    for workspace in &certified_workspaces {
-                        (observer.sink)(workspace.clone(), Vec::new());
-                    }
-                }
-                observers.clear();
-            }
             Err(poisoned) => poisoned.into_inner().clear(),
         }
     }
@@ -445,9 +372,6 @@ impl BrokerDiscovery for WeakBrokerDiscovery {
 
 impl WeakAppActionBroker {
     /// Acquire a temporary facade only while the owning session still accepts work.
-    ///
-    /// # Errors
-    /// The session has dropped or stopped its actual broker.
     pub fn upgrade(&self) -> Result<AppActionBroker, String> {
         self.0.current()
     }
@@ -506,9 +430,6 @@ impl AppActionBroker {
     /// `AppBrokerState::await_membership_surface`). Ask before
     /// [`Self::change_workspace_membership`] in a workspace that may have
     /// appeared since the broker last published its workspaces' actions.
-    ///
-    /// # Errors
-    /// The broker is shutting down.
     pub fn await_membership_surface(
         &self,
         workspace: &str,
@@ -523,8 +444,8 @@ impl AppActionBroker {
     /// (`AppBrokerState::app_authorship_commit`). Blocks on the owner's
     /// commit: call it off the broker's loop and the frame loop.
     ///
-    /// # Errors
-    /// [`AppAuthorshipError::Unasked`]: the broker is shutting down, or the
+    /// #
+    /// Errors [`AppAuthorshipError::Unasked`]: the broker is shutting down, or the
     /// device may not ask it in this workspace; [`AppAuthorshipError::Refused`]:
     /// the workspace's owner refused or could not commit it.
     pub fn grant_app_authorship(
@@ -631,11 +552,6 @@ impl AppActionBroker {
 
     /// A local action door bound to an already-issued signed workspace admission and
     /// one host-issued execution. No device is enrolled and no grant is minted.
-    ///
-    /// # Errors
-    ///
-    /// Refuses unavailable/currently invalid admission, a missing registered
-    /// policy clock, or any mismatch with the transport-owned caller.
     pub fn certified_local_action_host(
         &self,
         caller: &tilo_actions::remote::Caller,
@@ -662,8 +578,6 @@ impl AppActionBroker {
     }
 
     /// Reuse the checked signed personal-cluster admission for native owner checks.
-    /// # Errors
-    /// Refuses non-person, foreign, stale or unadmitted execution; grants none.
     pub fn certified_person_context(
         &self,
         caller: &tilo_actions::remote::Caller,
@@ -673,10 +587,6 @@ impl AppActionBroker {
     }
 
     /// The durable invocation host this broker serves, while it is live.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a stopped broker, or one whose journal does not admit work.
     pub fn invocation_host(&self) -> Result<uuid::Uuid, String> {
         self.state
             .while_live_fenced(AppBrokerState::invocation_host)
@@ -780,10 +690,6 @@ impl AppActionBroker {
     }
 
     /// Start a published action and return its lifecycle job.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action is unavailable or cannot be dispatched.
     pub fn start(
         &self,
         peer_id: u64,
@@ -914,33 +820,6 @@ impl AppActionBroker {
             .start_interactive_shortcut_run(caller, workspace, shortcut, inputs)
     }
 
-    /// [`Self::start_interactive_shortcut_run`], going on from where an
-    /// earlier run got to: the steps before `from` are taken from that run's
-    /// record as they happened, and `from` and everything after it run again
-    /// from the shortcut as it is now. Fixing a step and running it again
-    /// does not repeat the steps before it.
-    ///
-    /// # Errors
-    ///
-    /// Why the shortcut cannot run for `caller`, or why the run it says to go
-    /// on from cannot be continued.
-    pub fn continue_interactive_shortcut_run(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        workspace: &str,
-        shortcut: &str,
-        inputs: serde_json::Map<String, serde_json::Value>,
-        from: tilo_automation::Continuation,
-    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
-        self.state.start_interactive_shortcut_run_continuing(
-            caller,
-            workspace,
-            shortcut,
-            inputs,
-            Some(from),
-        )
-    }
-
     /// The oldest step of an interactive shortcut run waiting for its
     /// person.
     #[must_use]
@@ -1016,15 +895,6 @@ impl AppActionBroker {
     #[must_use]
     pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.state.surface_changes()
-    }
-
-    /// One invocation's current status, only when `actor` owns it.
-    #[must_use]
-    pub fn status_for_actor(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
-        self.state
-            .while_live(|state| Ok(state.invocation_status_for_actor(id, actor)))
-            .ok()
-            .flatten()
     }
 
     pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
@@ -1103,10 +973,6 @@ pub struct BrokerHandle {
 }
 impl BrokerHandle {
     /// Observe current private host-worker provenance for a native publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the live broker cannot evaluate the provenance.
     pub fn is_current_host_worker(
         &self,
         peer: u64,
@@ -1171,15 +1037,6 @@ impl BrokerHandle {
         sink: FanoutSink,
     ) -> Arc<WorkspaceSubscription> {
         self.fanout.subscribe_workspaces(workspaces, sink)
-    }
-
-    /// Observe complete native workspace membership after broker admission. The
-    /// callback never receives ordinary application Context fanout.
-    pub fn observe_certified_people(
-        &self,
-        sink: CertifiedPeopleSink,
-    ) -> Arc<CertifiedPeopleSubscription> {
-        self.fanout.subscribe_certified_people(sink)
     }
 
     /// Exact current owner-backed agent identity for a native participant.
@@ -1250,10 +1107,6 @@ fn join_owned_thread(thread: JoinHandle<()>, identity: Option<usize>) {
     }
 }
 /// Start the production broker with explicit host-owned authority and services.
-///
-/// # Errors
-///
-/// Returns an I/O error when the broker socket or thread cannot be set up.
 pub fn spawn_with_services(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
@@ -1284,10 +1137,6 @@ struct HarnessAdmission {
 }
 
 /// Native compatibility fixtures only; production callers inject current authority.
-///
-/// # Errors
-///
-/// Returns an I/O error when the broker socket or thread cannot be set up.
 #[cfg(any(test, feature = "test-support"))]
 pub fn spawn_with_test_services(
     socket: PathBuf,
@@ -1308,41 +1157,6 @@ pub fn spawn_with_test_services(
         HarnessAdmission {
             trusted_devices,
             certificate_authority: None,
-        },
-        channels,
-        fanout,
-    )
-}
-
-/// [`spawn_with_test_services`] for a harness that admits its enrolled
-/// devices under `certificate_authority`, as a session's broker admits its
-/// person's devices under the identity store: membership changes, an
-/// opening app's authorship among them, then run as they do in a session,
-/// while local callers stay the harness's own.
-///
-/// # Errors
-///
-/// Returns an I/O error when the broker socket or thread cannot be set up.
-#[cfg(any(test, feature = "test-support"))]
-pub fn spawn_with_harness_authority(
-    socket: PathBuf,
-    membership: Option<crate::services::WorkspaceAuthorityHandle>,
-    publisher: Arc<crate::collab_outbound::PeerPublisher>,
-    services: crate::services::HostServices,
-    trusted_devices: Arc<Vec<[u8; 32]>>,
-    certificate_authority: Arc<dyn crate::certificate_authority::CertificateAuthority>,
-    channels: Arc<Mutex<BrokerChannels>>,
-    fanout: Arc<FanoutState>,
-) -> std::io::Result<BrokerHandle> {
-    spawn_inner(
-        socket,
-        membership,
-        publisher,
-        None,
-        services,
-        HarnessAdmission {
-            trusted_devices: Some(trusted_devices),
-            certificate_authority: Some(certificate_authority),
         },
         channels,
         fanout,
@@ -1390,10 +1204,6 @@ fn spawn_inner(
 }
 
 /// Ordinary peer production constructor. All trust and durability belong to the caller's owner.
-///
-/// # Errors
-///
-/// Returns an I/O error when the publisher is not wired or the broker cannot start.
 pub fn spawn_native_peer(
     socket: PathBuf,
     membership: crate::services::WorkspaceAuthorityHandle,
@@ -1409,10 +1219,6 @@ pub fn spawn_native_peer(
     )
 }
 /// [`spawn_native_peer`] with explicit host services.
-///
-/// # Errors
-///
-/// Returns an I/O error when the publisher is not wired or the broker cannot start.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "public constructor contract: callers hand over their configuration"

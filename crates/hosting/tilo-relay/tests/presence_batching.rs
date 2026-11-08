@@ -37,10 +37,10 @@ use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, encode_state};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
-use tilo_relay::{AttributedPresence, Envelope, Inbound, RelayClient, RelayCoeditSession};
+use tilo_relay::{AttributedPresence, Envelope, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
 
 const WORKSPACE: u64 = 710;
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
@@ -251,27 +251,7 @@ async fn presence_reaches_a_member_in_order() {
     ))
     .await;
     let mut member = Member::open(&relay, &reader).await;
-    // The publisher dials as the shell does.
-    let publisher = RelayCoeditSession::join(
-        RelayClient::connect_v2_to_enrolled_home_peer(
-            client_endpoint().await,
-            relay.relay.node_addr(),
-            user.user_pk,
-            relay.relay.handle().mesh_profile().device,
-            author.cert.clone(),
-            author.sk.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .unwrap(),
-        WORKSPACE,
-        author.device_pubkey(),
-    )
-    .unwrap();
-    tilo_test_env::within("the publisher's subscription", async {
-        while !matches!(publisher.recv().await, Some(Inbound::Ready { .. })) {}
-    })
-    .await;
+    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
 
     let user_hex = hex::encode(user.user_pk);
     let before = session_bytes(&relay, reader.device_pubkey());
@@ -393,26 +373,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let body = doc.get(ROOT, "body").unwrap().unwrap().1;
 
     let mut member = Member::open(&relay, &reader).await;
-    let publisher = RelayCoeditSession::join(
-        RelayClient::connect_v2_to_enrolled_home_peer(
-            client_endpoint().await,
-            relay.relay.node_addr(),
-            user.user_pk,
-            relay.relay.handle().mesh_profile().device,
-            author.cert.clone(),
-            author.sk.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .unwrap(),
-        WORKSPACE,
-        author.device_pubkey(),
-    )
-    .unwrap();
-    tilo_test_env::within("the publisher's subscription", async {
-        while !matches!(publisher.recv().await, Some(Inbound::Ready { .. })) {}
-    })
-    .await;
+    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
 
     let mut writes = Vec::new();
     let mut delta_first = 0usize;
@@ -501,26 +462,7 @@ async fn a_clients_resting_pointer_arrives_without_another_message() {
         &members,
     ))
     .await;
-    let publisher = RelayCoeditSession::join(
-        RelayClient::connect_v2_to_enrolled_home_peer(
-            client_endpoint().await,
-            relay.relay.node_addr(),
-            user.user_pk,
-            relay.relay.handle().mesh_profile().device,
-            author.cert.clone(),
-            author.sk.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .unwrap(),
-        WORKSPACE,
-        author.device_pubkey(),
-    )
-    .unwrap();
-    tilo_test_env::within("the publisher's subscription", async {
-        while !matches!(publisher.recv().await, Some(Inbound::Ready { .. })) {}
-    })
-    .await;
+    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
     let user_hex = hex::encode(user.user_pk);
 
     let mut member = Member::open(&relay, &reader).await;

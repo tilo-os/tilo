@@ -825,10 +825,13 @@ impl super::Decorator for ContextMenuArea {
         self.environment = environment;
     }
 
+    /// What a frame paints: the content's own change, what the menu paints
+    /// over it (which is nothing while it is closed, [`ContextMenu::needs_redraw`]),
+    /// and a picker it stands open. A box standing without the menu is the
+    /// menu's painting too.
     fn needs_redraw(&self) -> bool {
         self.content.needs_redraw()
             || self.menu.needs_redraw()
-            || self.menu.send_to_alone_open()
             || self.content.needs_animation_frame()
             || self.picker_wanted.is_some()
             || self
@@ -871,7 +874,7 @@ impl super::Decorator for ContextMenuArea {
         }
         // A box the window or the shell asked for with no menu around it:
         // it stands where its anchor does, until it sends.
-        if let Some((about, bounds, draft)) = crate::shared_selection::take_open_send_box()
+        if let Some(box_) = crate::shared_selection::take_open_send_box()
             && !self.menu.is_open()
         {
             if self.viewport.is_none() {
@@ -879,7 +882,7 @@ impl super::Decorator for ContextMenuArea {
             }
             self.menu.set_viewport(self.viewport);
             self.menu
-                .open_send_to_alone(about, bounds, draft.as_deref());
+                .open_send_to_alone(box_.about, box_.bounds, box_.draft.as_deref(), &box_.to);
         }
         self.content
             .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -891,7 +894,7 @@ impl super::Decorator for ContextMenuArea {
         if let Some((anchor, pick)) = self.picker_wanted.take() {
             let mut picker = super::EmojiPicker::framed();
             let viewport = self.viewport.unwrap_or_else(|| self.content.get_rect());
-            picker.open_at(anchor, viewport, theme);
+            picker.open_at(Some(anchor), viewport, theme);
             self.picker = Some((picker, pick));
         }
         if let Some((picker, _)) = self.picker.as_mut() {

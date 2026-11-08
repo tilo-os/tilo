@@ -58,12 +58,10 @@ pub struct BoundActionAddress {
 }
 
 impl BoundActionAddress {
-    /// The address of `action` on `resource` as `instance` publishes it, or
-    /// `None` when either half is empty or contains the address separator.
-    ///
-    /// This checks the format only. The host still resolves the instance
-    /// against its fresh resource tree and revalidates arguments before the
-    /// action door opens; constructing a value grants no authority.
+    /// The address of `action` on `resource` as `instance` publishes it, or `None` when either half
+    /// is empty or contains the address separator. This checks the format only: the host still
+    /// resolves the instance against its fresh resource tree and revalidates arguments before the
+    /// action door opens, so constructing a value grants no authority.
     #[must_use]
     pub fn new(
         instance_id: crate::application::InstanceId,
@@ -595,11 +593,9 @@ impl Drop for Answering {
     }
 }
 
-/// Deliver feedback only to the component that emitted the local intent.
-/// Domain resource addresses can be shared by multiple live instances.
-///
-/// `on_behalf_of` names the operation the submission continues (an effect
-/// that submitted it and waits for it), as
+/// Deliver feedback only to the component that emitted the local intent: domain resource addresses
+/// can be shared by several live instances. `on_behalf_of` names the operation the submission
+/// continues (an effect that submitted it and waits for it), as
 /// [`crate::widget::controls::result_on_behalf_of`] tells the component.
 pub(crate) fn notify_control_invocation_result(
     root: &mut dyn Widget,
@@ -1443,12 +1439,11 @@ pub(crate) fn same_owner_standing(before: &[BoundOwnerMark], after: &[BoundOwner
 
 #[cfg(feature = "native")]
 impl BoundResourceCache {
-    /// An input dispatch lends each owner its record mutably, which advances
-    /// the owner's admission generation whether or not anything was written.
-    /// When the owners' records stand exactly where they did `before` the
-    /// dispatch, carry each snapshot that was current then to the generation
-    /// now. Returns `false`, carrying nothing, when any owner's record moved
-    /// or the owners changed: the caller must republish.
+    /// An input dispatch lends each owner its record mutably, which advances the owner's admission
+    /// generation whether or not anything was written. When the records stand exactly where they
+    /// did `before`, carry each snapshot current then to the generation now. Returns `false`,
+    /// carrying nothing, when any owner's record moved or the owners changed: the caller must
+    /// republish.
     pub(crate) fn carry_across_input(
         &self,
         before: &[BoundOwnerMark],
@@ -3439,13 +3434,11 @@ pub(crate) fn service_retained_owner_model(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
-/// A record's save moved on, and nothing else woke the owner
-/// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner
-/// is told the save status alone. No model callback runs (update, settle,
-/// sync), nothing is offered, and the window's layout stands: the status
-/// is shown by what the owner presents of it (the window's bar), as when a
-/// sync delivers it. A save still in flight wakes the owner again when it
-/// moves on. Whether the owner shows something new, which a frame draws.
+/// A record's save moved on and nothing else woke the owner
+/// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner is told the save status
+/// alone. No model callback runs (update, settle, sync), nothing is offered and the window's layout
+/// stands: the status shows through what the owner presents of it (the window's bar). A save still
+/// in flight wakes the owner again.
 pub(crate) fn service_owner_save_progress(
     root: &mut dyn Widget,
     work: &crate::owner_wake::OwnerWakeRequest,
@@ -4013,8 +4006,8 @@ pub(crate) struct TakenActionBracket {
 }
 
 impl TakenActionBracket {
-    /// `widget`'s bracket, if it reported one. Rising-edge, like
-    /// [`crate::undo::take_committed_action`]: taking it clears it.
+    /// `widget`'s bracket, if it reported one. Rising-edge,
+    /// like [`crate::undo::take_committed_action`]: taking it clears it.
     pub(crate) fn take(widget: &mut dyn Widget) -> Option<Self> {
         let before = crate::undo::take_committed_action(widget)?;
         Some(Self {
@@ -5131,31 +5124,6 @@ mod bound_action_address_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/owned_restore_tests.rs"]
 mod owned_restore_tests;
-
-/// Remote delivery is not a local action. A physical or logical edit must be
-/// finished by its existing owner; the network queue never commits it.
-#[cfg(all(feature = "native", any(test, feature = "test-support")))]
-pub(crate) fn can_merge_remote_owned_document(
-    store: &RecordStore,
-    checkout: &RecordCheckout,
-) -> Result<bool, crate::history_mode::routes::RemoteApplyError> {
-    use crate::history_mode::routes::RemoteApplyError;
-    store
-        .open_existing_record_checked(checkout)
-        .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
-    store
-        .with_action_state(&checkout.id, |doc, _, state| {
-            doc.pending_ops() == 0
-                && !state.pending.as_ref().is_some_and(|pending| {
-                    !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
-                })
-                && state
-                    .generation
-                    .and_then(|value| value.checked_add(1))
-                    .is_some()
-        })
-        .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))
-}
 
 pub(crate) fn merge_remote_owned_document(
     store: &RecordStore,

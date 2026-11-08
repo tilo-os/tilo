@@ -1,25 +1,22 @@
-//! Where the windows the desk shows stand, as the last layout left them: the
-//! whole of each window, and the bounds of the tab it shows. Every display
-//! shows a strip of its own, so that is every row the desk draws, not only
-//! the one the person works in.
+//! Where the windows the desk shows stand, as the last layout left them: the whole of each window,
+//! and the bounds of the tab it shows. Every display shows a strip of its own, so that is every row
+//! the desk draws, not only the one the person works in.
 use ui::kurbo::Rect;
 use ui::widget::{GroupRow, Widget as _};
 
 use super::{DesktopHandle, TabId};
 
 impl DesktopHandle {
-    /// Where each window the desk draws draws its active tab, in the
-    /// surface's coordinates, as of the last layout. Hidden tabs are
-    /// absent, and so is a window whose display shows another strip than
-    /// its own.
+    /// Where each window the desk draws draws its active tab, in the surface's coordinates, as of
+    /// the last layout. Hidden tabs are absent, and so is a window whose display shows another
+    /// strip than its own.
     pub fn shown_tabs(&self) -> Vec<(TabId, Rect)> {
         self.shared.borrow().shown_tabs.content()
     }
 
-    /// Where each drawn window's active tab stands, in the surface's
-    /// coordinates, as of the last layout: the tab's content where it has
-    /// laid out, and the whole window where it has not (a window this device
-    /// shows but has not opened, whose position an offset on it still means
+    /// Where each drawn window's active tab stands, in the surface's coordinates, as of the last
+    /// layout: the tab's content where it has laid out, and the whole window where it has not (a
+    /// window this device shows but has not opened, whose position an offset on it still means
     /// something across). Hidden tabs are absent.
     pub fn shown_tiles(&self) -> Vec<(TabId, Rect)> {
         self.shared.borrow().shown_tabs.tiles()
@@ -32,17 +29,15 @@ impl DesktopHandle {
         self.shared.borrow().shown_tabs.content_top()
     }
 
-    /// Where the whole window of `tab` stands — its bar, and the tab's
-    /// content in it — in the surface's coordinates, as of the last layout:
-    /// where a menu for it hangs from.
+    /// Where the whole window of `tab` stands — its bar, and the tab's content in it — in the
+    /// surface's coordinates, as of the last layout: where a menu for it hangs from.
     #[must_use]
     pub fn window_rect(&self, tab: TabId) -> Option<Rect> {
         self.shared.borrow().shown_tabs.window_rect(tab)
     }
 }
 
-/// Where a window the desk draws stands, and the bounds of the tab it
-/// shows.
+/// Where a window the desk draws stands, and the bounds of the tab it shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ShownTab {
     /// The tab the window shows: the active one of its bar.
@@ -69,7 +64,7 @@ impl ShownTabs {
             .unwrap_or_default()
     }
 
-    /// The windows of `row`, as its groups were just laid out.
+    /// The windows of `row` , as its groups were just laid out.
     pub(super) fn of_row(row: &GroupRow) -> Self {
         Self(
             row.groups
@@ -86,9 +81,8 @@ impl ShownTabs {
         )
     }
 
-    /// These windows and `other`'s together: every row the desk draws. A
-    /// window in both (a group on its way from one strip to another) keeps
-    /// `other`'s place, the row drawn over it.
+    /// These windows and `other` 's together: every row the desk draws. A window in both (a group
+    /// on its way from one strip to another) keeps `other` 's place, the row drawn over it.
     pub(super) fn and(mut self, other: Self) -> Self {
         for shown in other.0 {
             match self.0.iter_mut().find(|have| have.tab == shown.tab) {
@@ -99,8 +93,7 @@ impl ShownTabs {
         self
     }
 
-    /// Where each window draws its active tab: absent while its app's window
-    /// is not laid out.
+    /// Where each window draws its active tab: absent while its app's window is not laid out.
     pub(super) fn content(&self) -> Vec<(TabId, Rect)> {
         self.0
             .iter()
@@ -108,12 +101,10 @@ impl ShownTabs {
             .collect()
     }
 
-    /// Where each window of the shown strip's active tab stands: the tab's
-    /// content where its window laid one out, and the whole window where it
-    /// has not. A window shown without its content laid out (one this device
-    /// has open bit does not draw here) still has a place on the desk, and
-    /// what is drawn on its tile — another person's pointer — keeps meaning
-    /// there.
+    /// Where each window of the shown strip's active tab stands: the tab's content where its window
+    /// laid one out, and the whole window where it has not. A window shown without its content laid
+    /// out (one this device has open bit does not draw here) still has a place on the desk, and
+    /// what is drawn on its tile — another person's pointer — keeps meaning there.
     pub(super) fn tiles(&self) -> Vec<(TabId, Rect)> {
         self.0
             .iter()
@@ -127,9 +118,8 @@ impl ShownTabs {
         Some(shown.window)
     }
 
-    /// The top of the highest window's content: where banners start, below
-    /// the windows' bars, which pinned to the strip's top would cover their
-    /// own controls.
+    /// The top of the highest window's content: where banners start, below the windows' bars, which
+    /// pinned to the strip's top would cover their own controls.
     pub(super) fn content_top(&self) -> f64 {
         self.0
             .iter()

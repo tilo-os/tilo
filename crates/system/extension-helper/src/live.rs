@@ -794,9 +794,6 @@ impl Plan {
     /// it holds goes into either phase's layer (so the system phase does not
     /// take back what the desktop already runs), and a component whose path
     /// it changed but the staged image has as booted restarts.
-    ///
-    /// # Errors
-    /// A tree that cannot be read.
     pub fn settle(
         &mut self,
         components: &Components,
@@ -918,9 +915,6 @@ impl Plan {
 
 /// Every difference between `base/usr` and `new/usr`, in path order. A
 /// directory gone from `new` is one removal; its contents are not listed.
-///
-/// # Errors
-/// A tree that cannot be read.
 pub fn diff(base: &Path, new: &Path) -> io::Result<Vec<Change>> {
     let mut changes = Vec::new();
     walk_new(&base.join("usr"), &new.join("usr"), "/usr", &mut changes)?;

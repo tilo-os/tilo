@@ -57,11 +57,24 @@ struct TargetCfg {
 
 /// Which packages the gate counts beyond the apps.
 #[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default)]
 struct Scope {
-    /// The pattern of the app model crates, which get only `model-rules`.
-    model_crates: Option<String>,
-    model_rules: Vec<String>,
+    #[serde(flatten)]
+    model: Model,
+}
+
+/// The app model crates: the pattern that selects them, the rules they are
+/// held to, and what they are allowed to depend on.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+struct Model {
+    /// The pattern of the app model crates, which get only `rules`.
+    crates: Option<String>,
+    rules: Vec<String>,
+    /// The crates a model crate is built on beyond `ui` and the platform
+    /// crates: the record layer it is a record of, and the guest ABI the host
+    /// loads it by. None of it is the toolkit.
+    allowed_packages: Vec<String>,
 }
 
 /// The SDK's own portable crates: the same run-time traps are banned there,
@@ -457,15 +470,10 @@ fn source_line(path: &Path, line: usize) -> Option<String> {
 }
 
 /// Lint one app directory.
-///
-/// # Errors
-///
-/// Returns an error when the app's manifests or a reachable source file cannot
-/// be read or parsed.
 pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
     let table = rules()?;
     let manifest = app_manifest(app_dir)?;
-    let (findings, files) = package_findings(app_dir, table)?;
+    let (findings, files) = package_findings(app_dir, table, &[])?;
     Ok(report_for(
         app_dir,
         &manifest.package,
@@ -486,9 +494,14 @@ fn app_manifest(app_dir: &Path) -> Result<tilo_app_package::Manifest> {
 
 /// Every platform-specific site of every rule in `dir`: its manifest and its
 /// shipped code, deduplicated by path, line and rule. Which rules apply is
-/// the caller's to decide, from the package's platforms and its scope.
-fn package_findings(dir: &Path, table: &RulesTable) -> Result<(Vec<PortabilityFinding>, usize)> {
-    let cargo = CargoFacts::read(dir, table)?;
+/// the caller's to decide, from the package's platforms and its scope;
+/// `model_packages` names the record layer a model crate may depend on.
+fn package_findings(
+    dir: &Path,
+    table: &RulesTable,
+    model_packages: &[String],
+) -> Result<(Vec<PortabilityFinding>, usize)> {
+    let cargo = CargoFacts::read(dir, table, model_packages)?;
     let mut findings = cargo.findings.clone();
     let scanner = Scanner::new(table, &cargo.native_idents);
     let mut files: usize = 0;
@@ -589,12 +602,8 @@ fn report_for(
 
 /// The app's shipped module trees (library and binaries), test items
 /// removed, for other checks that read the same code as the lint.
-///
-/// # Errors
-///
-/// When the Cargo manifest or a reachable source file cannot be read or parsed.
 pub(crate) fn shipped_sources(app_dir: &Path) -> Result<Vec<(PathBuf, TokenStream)>> {
-    let cargo = CargoFacts::read(app_dir, rules()?)?;
+    let cargo = CargoFacts::read(app_dir, rules()?, &[])?;
     shipped_modules(&cargo.roots(app_dir))
 }
 
@@ -883,11 +892,6 @@ impl PortabilityGate {
 
 /// The platform code of every app, app model crate and portable SDK crate in
 /// the workspace containing `start`, counted against its baseline.
-///
-/// # Errors
-///
-/// When the workspace, a manifest, a rules table or a source file cannot be
-/// read.
 pub fn gate(start: &Path) -> Result<PortabilityGate> {
     let table = rules()?;
     let (root, _workspace) = workspace_dir(start)?;
@@ -908,12 +912,14 @@ pub fn gate(start: &Path) -> Result<PortabilityGate> {
     directories.sort();
     let model_crates = table
         .scope
-        .model_crates
+        .model
+        .crates
         .as_deref()
         .unwrap_or("apps/*-model");
     let model_rules: BTreeSet<&str> = table
         .scope
-        .model_rules
+        .model
+        .rules
         .iter()
         .map(String::as_str)
         .filter(|rule| {
@@ -928,7 +934,7 @@ pub fn gate(start: &Path) -> Result<PortabilityGate> {
             .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
         if directory.join("tilo-app.toml").is_file() {
             let manifest = app_manifest(&directory)?;
-            let (findings, files) = package_findings(&directory, table)?;
+            let (findings, files) = package_findings(&directory, table, &[])?;
             let report = report_for(&directory, &manifest.package, table, findings, files);
             for finding in &report.findings {
                 counted(&mut counts, "apps", &name, finding.kind.rule());
@@ -941,7 +947,8 @@ pub fn gate(start: &Path) -> Result<PortabilityGate> {
             strict |= !report.passed();
             apps.push(report);
         } else if wildcard(model_crates, &format!("apps/{name}")) {
-            let (findings, _) = package_findings(&directory, table)?;
+            let (findings, _) =
+                package_findings(&directory, table, &table.scope.model.allowed_packages)?;
             for finding in findings
                 .into_iter()
                 .filter(|finding| model_rules.contains(finding.kind.rule()))
@@ -979,7 +986,7 @@ pub fn gate(start: &Path) -> Result<PortabilityGate> {
                     .map(str::to_owned)
             })
             .unwrap_or_else(|| crate_path.clone());
-        let (findings, _) = package_findings(&directory, table)?;
+        let (findings, _) = package_findings(&directory, table, &[])?;
         for finding in findings
             .into_iter()
             .filter(|finding| sdk_rules.contains(finding.kind.rule()))
@@ -1062,7 +1069,8 @@ struct CargoFacts {
 }
 
 impl CargoFacts {
-    fn read(app_dir: &Path, table: &RulesTable) -> Result<Self> {
+    /// `model_packages`: the record layer a model crate may depend on.
+    fn read(app_dir: &Path, table: &RulesTable, model_packages: &[String]) -> Result<Self> {
         let path = app_dir.join("Cargo.toml");
         let text =
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
@@ -1081,7 +1089,7 @@ impl CargoFacts {
                 .collect(),
         };
         facts.target_sections(&manifest, &text, table);
-        let sdk_aliases = facts.dependencies(app_dir, &manifest, &text, table);
+        let sdk_aliases = facts.dependencies(app_dir, &manifest, &text, table, model_packages);
         facts.features(&manifest, &text, table, &sdk_aliases);
         Ok(facts)
     }
@@ -1143,6 +1151,7 @@ impl CargoFacts {
         manifest: &toml::Table,
         text: &str,
         table: &RulesTable,
+        model_packages: &[String],
     ) -> BTreeSet<String> {
         let (workspace_dir, workspace_deps) = workspace(app_dir);
         let native_crates = table.list("R2", |rule| &rule.native_crates);
@@ -1183,7 +1192,13 @@ impl CargoFacts {
                         Some(workspace_dir.as_deref()?.join(path))
                     });
                 if let Some(where_) = path.and_then(|path| {
-                    internal_dependency(table, package, &path, workspace_dir.as_deref())
+                    internal_dependency(
+                        table,
+                        package,
+                        &path,
+                        workspace_dir.as_deref(),
+                        model_packages,
+                    )
                 }) {
                     self.push(
                         line(),
@@ -1302,12 +1317,14 @@ fn sdk_feature(rule: Option<&RuleSpec>, alias: &str, feature: &str) -> Option<(S
 }
 
 /// Where the path dependency `package` in `dir` lives, relative to the
-/// workspace, when rule D2 does not allow it.
+/// workspace, when rule D2 does not allow it — `model_packages` are the
+/// record layer a model crate may depend on.
 fn internal_dependency(
     table: &RulesTable,
     package: &str,
     dir: &Path,
     workspace_dir: Option<&Path>,
+    model_packages: &[String],
 ) -> Option<String> {
     let rule = table.rule("D2")?;
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -1317,6 +1334,7 @@ fn internal_dependency(
         .unwrap_or(dir);
     let relative = relative.to_string_lossy().replace('\\', "/");
     let allowed = rule.allowed_packages.iter().any(|name| name == package)
+        || model_packages.iter().any(|name| name == package)
         || rule
             .allowed_paths
             .iter()

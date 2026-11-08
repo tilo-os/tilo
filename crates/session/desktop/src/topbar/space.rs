@@ -1,5 +1,5 @@
-//! The bar's room in the desktop's column, for a desktop that draws its
-//! bar elsewhere (the shell hosts the bar as an app over the desktop).
+//! The bar's room in the desktop's column, for a desktop that draws its bar elsewhere (the shell
+//! hosts the bar as an app over the desktop).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -15,8 +15,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-/// How the bar stands on its display, which its room in the column
-/// follows.
+/// How the bar stands on its display, which its room in the column follows.
 pub type Standing = Rc<dyn Fn() -> TopBarPresence>;
 
 /// Takes the workspace [`super::TopBarChrome`] takes in the desktop's column
@@ -47,9 +46,8 @@ impl BarSpace {
     }
 }
 
-/// The strip this workspace takes while the bar is docked, and none while the
-/// bar is hidden or shown over the window covering its display: either
-/// way the window takes the whole display.
+/// The strip this workspace takes while the bar is docked, and none while the bar is hidden or
+/// shown over the window covering its display: either way the window takes the whole display.
 fn space_style(presence: TopBarPresence, theme: &Theme) -> Style {
     Style {
         display: if presence == TopBarPresence::Docked {
@@ -123,14 +121,12 @@ impl Widget for BarSpace {
         self.stale()
     }
 
-    /// It draws nothing: what it takes is room in the column, which a
-    /// settled tree keeps.
+    /// It draws nothing: what it takes is room in the column, which a settled tree keeps.
     fn needs_redraw(&self) -> bool {
         false
     }
 
-    /// Docking or hiding the bar moves the windows, so the tree it was laid
-    /// out in is rebuilt.
+    /// Docking or hiding the bar moves the windows, so the tree it was laid out in is rebuilt.
     fn take_structure_dirty(&mut self) -> bool {
         self.stale()
     }

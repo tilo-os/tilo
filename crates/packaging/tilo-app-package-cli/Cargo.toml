@@ -33,7 +33,7 @@ tilo-app-package = { path = "../tilo-app-package" }
 # Signed `/entries` rows for `tilo-app-package entry`, and the publisher key
 # file every `--identity` names.
 registry-types = { path = "../registry-types" }
-registry-client = { path = "../registry-client" }
+app-registry = { path = "../app-registry" }
 # `bot-entry` reads a Shortcut and encodes it canonically.
 tilo-automation = { path = "../../collab/automation" }
 tilo-clock = { path = "../../platform/tilo-clock" }

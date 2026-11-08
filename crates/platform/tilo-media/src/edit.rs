@@ -260,9 +260,6 @@ impl ClipEncoder {
     /// `bitrate` bits per second. With `sound`, the file also carries the
     /// sound given to [`Self::encode_sound`], where the host encodes Opus
     /// ([`Self::has_sound`] says, once ready).
-    ///
-    /// # Errors
-    /// Why no encoder could be made here.
     pub fn start(
         width: u32,
         height: u32,

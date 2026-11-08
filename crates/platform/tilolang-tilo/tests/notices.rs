@@ -5,8 +5,9 @@
 use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service, Started};
-use tilolang_runtime::Meta;
+use tilolang_runtime::{InvokeOutcome, Meta, Principal, Resolution, Value};
 use tilolang_tilo::host::Host;
+use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::notices::{Closed, Notice, Tell};
 use tilolang_tilo::records_service::RecordService;
 
@@ -21,6 +22,40 @@ const TASKS: (&str, &str) = (
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
 const TASKS_APP: &str = "so.tilo.lang.tasks";
+
+/// An app that tells a person about a note and then asks who seals it: the notice is written
+/// before the ask, as something that goes out before one is.
+const TELLER: (&str, &str) = (
+    r#"app so.tilo.test.teller "Teller"
+
+type Note {
+    sealed: Bool
+}
+
+/// Tells the person about the note, then asks who seals it.
+action tell_and_seal(n: Note) uses notify {
+    notify(to: invoker, title: "A note of yours", body: "", opens: n)
+    seal(n)
+}
+
+/// Seals the note: it reaches outside, so a person decides it before it happens.
+action seal(n: Note) {
+    outside("smtp.send", (n.sealed,))
+    n.sealed = true
+}
+
+root Note
+
+default view note for Note
+
+view note(n: Note) {
+    ui.Text("a note")
+}
+"#,
+    "",
+);
+const TELLER_APP: &str = "so.tilo.test.teller";
+const WORKSPACE: &str = "workspace";
 
 /// An app that keeps each person's resources in their own record, and tells them about one of
 /// them: what a notice from it names to open is that person's own record, not the workspace's.
@@ -169,7 +204,7 @@ fn remind(
     for (action, values) in [
         ("assign", json!({ "who": { "person": "bo" } })),
         ("due_today", json!({})),
-        ("remind_at", json!({ "after": { "some": 3600 } })),
+        ("remind_at", json!({ "when": "2026-10-27T10:00:00Z" })),
     ] {
         service
             .invoke(call, &action_id(meta, action), &args(values))
@@ -186,7 +221,8 @@ fn record_of(service: &RecordService) -> AutoCommit {
 
 /// What the notice's tag names: its id in the record.
 fn id_of(tag: &str) -> String {
-    tag.trim_start_matches("notice:")
+    tag.strip_prefix("notice:")
+        .expect("a notice's tag starts with its kind")
         .split('/')
         .next()
         .expect("a notice's tag names it")
@@ -199,6 +235,232 @@ fn place(notice: &Notice) -> ui::mentions::Place {
         app: notice.opens.app.clone(),
         record: notice.opens.record.clone(),
         resource: notice.opens.resource.clone(),
+    }
+}
+
+/// Invoke the action `name` of `meta`'s package on `args` as the replica's own person, commit
+/// what it made, and answer what it returned.
+fn invoke(replica: &mut Replica, meta: &Meta, name: &str, args: Vec<Value>) -> Value {
+    let id = action_id(meta, name);
+    let InvokeOutcome::Done(value) = replica
+        .host
+        .runtime()
+        .invoke_action(&Principal::new(&replica.name), (id.as_str(), args))
+        .unwrap()
+    else {
+        panic!("`{name}` runs");
+    };
+    replica.commit();
+    value
+}
+
+/// Ada's tasks on a replica of her own: a task of Bo's, due today, reminded of an hour from
+/// nine, with the clock at nine as the actions were made.
+fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String>>) {
+    let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, TASKS]);
+    ada.host.set_clock({
+        let clock = std::rc::Rc::clone(&clock);
+        move || clock.borrow().clone()
+    });
+    let meta = packages.last().unwrap().meta.clone();
+    let tasks = ada.host.root_of(TASKS_APP).unwrap();
+    ada.commit();
+    let Value::Ref(task) = invoke(
+        &mut ada,
+        &meta,
+        "new_task",
+        vec![
+            Value::resource(&tasks),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text("Call the landlord"),
+        ],
+    ) else {
+        panic!("a new task is a task");
+    };
+    let task = tilolang_runtime::value::ResourceRef::clone(&task.target);
+    invoke(
+        &mut ada,
+        &meta,
+        "assign",
+        vec![
+            Value::resource(&task),
+            Value::some(Value::Principal(Principal::new("bo"))),
+        ],
+    );
+    invoke(&mut ada, &meta, "due_today", vec![Value::resource(&task)]);
+    invoke(
+        &mut ada,
+        &meta,
+        "remind_at",
+        vec![Value::resource(&task), Value::text("2026-10-27T10:00:00Z")],
+    );
+    (ada, meta, clock)
+}
+
+/// `who`'s standing in the teller workspace: an editor allowed to tell and to reach outside from
+/// `tell_and_seal`, so the action runs up to the seal it asks about.
+fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
+    use tilo_action_policy::{
+        Answer, Grant, KindSet, Role, Standing, Subject, TreePath, WorkspacePolicy,
+    };
+    let mut policy = WorkspacePolicy::new(WORKSPACE, "sol");
+    for member in ["ada", "grace"] {
+        policy.members.insert(member.to_owned(), Role::Editor);
+    }
+    let tell = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "tell_and_seal")
+        .expect("the teller tells");
+    let node = TreePath::workspace(WORKSPACE)
+        .app(TELLER_APP)
+        .kind(meta.kind_of("Note"))
+        .action(&tell.id);
+    let owner = Subject::person("sol");
+    policy.grants.extend([
+        Grant::new(
+            "tells",
+            Subject::person(who),
+            node.clone(),
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            owner.clone(),
+        ),
+        // The app's own code bounds it too, and its code asks before reaching outside.
+        Grant::new(
+            "app-tells",
+            Subject::app(TELLER_APP),
+            node,
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            owner,
+        ),
+    ]);
+    Standing::person(policy, who)
+}
+
+/// Two replicas of a teller workspace: ada told the note's person about it, and sealing the note
+/// waits on an answer either of them may give.
+fn teller_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
+    let (_, probe) = Replica::new("probe", AutoCommit::new(), &[TELLER]);
+    let meta = probe[0].meta.clone();
+    let ids = probe[0].ids.clone();
+    let packages = [(TELLER.0, ids.as_str())];
+    let (mut ada, _) = Replica::standing(
+        "ada",
+        AutoCommit::new(),
+        &packages,
+        Some(teller_standing(&meta, "ada")),
+    );
+    let note = ada.host.root_of(TELLER_APP).unwrap();
+    ada.commit();
+    let tell = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "tell_and_seal")
+        .expect("the teller tells");
+    let args = vec![Value::resource(&note)];
+    let InvokeOutcome::Suggested(suggestion) = ada
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (tell.id.as_str(), args.clone()))
+        .unwrap()
+    else {
+        panic!("sealing the note asks first");
+    };
+    let invocation = ada
+        .host
+        .runtime()
+        .record_suggestion(&Principal::new("ada"), tell.id.as_str(), args, &suggestion)
+        .unwrap();
+    ada.commit();
+    let grace = Replica::standing(
+        "grace",
+        ada.doc.fork(),
+        &packages,
+        Some(teller_standing(&meta, "grace")),
+    )
+    .0;
+    (ada, grace, invocation)
+}
+
+#[test]
+fn a_notice_a_run_writes_before_it_asks_is_one_when_both_replicas_run_it() {
+    let (mut ada, mut grace, invocation) = teller_workspace();
+    // Ada answers: the run goes on from its journal, and the notice the prefix wrote stays one.
+    assert_eq!(
+        ada.host
+            .runtime()
+            .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+            .unwrap(),
+        "done"
+    );
+    ada.commit();
+    assert_eq!(notices(&ada.host).len(), 1, "told once");
+
+    // Grace holds no journal of the run: answering runs the whole action again, telling the
+    // person once more before it reaches the ask — under the record ada wrote, so it is one
+    // notice — and then answering that seals the note.
+    let answer = |grace: &Replica| {
+        grace.host.runtime().resolve_invocation(
+            &invocation,
+            &Principal::new("grace"),
+            Resolution::Approve,
+        )
+    };
+    assert_eq!(
+        answer(&grace).unwrap(),
+        "suggested",
+        "it runs the prefix again"
+    );
+    grace.commit();
+    assert_eq!(answer(&grace).unwrap(), "done");
+    grace.commit();
+    assert_eq!(
+        notices(&grace.host).len(),
+        1,
+        "one notice on her device too"
+    );
+
+    ada.sync_with(&mut grace);
+    for replica in [&ada, &grace] {
+        assert_eq!(notices(&replica.host).len(), 1, "one notice between them");
+    }
+}
+
+#[test]
+fn a_reminder_its_trigger_runs_on_two_devices_is_told_once() {
+    let (mut ada, _, clock) = reminded_workspace();
+    let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
+
+    // Another device of the workspace, which has not heard from ada's yet: both come to run the
+    // reminder at its moment, as they do when the origin moves between them.
+    let mut bo = ada.fork("bo", &[DISCUSSION, TASKS]);
+    bo.host.set_clock({
+        let clock = std::rc::Rc::clone(&clock);
+        move || clock.borrow().clone()
+    });
+    bo.host.root_of(TASKS_APP).unwrap();
+
+    assert_eq!(ada.host.run_triggers(ten), 1, "the reminder comes due");
+    ada.commit();
+    assert_eq!(
+        bo.host.run_triggers(ten),
+        1,
+        "and on the other, before it heard"
+    );
+    bo.commit();
+
+    ada.sync_with(&mut bo);
+    for replica in [&ada, &bo] {
+        let told = notices(&replica.host);
+        assert_eq!(told.len(), 1, "one notice between them: {told:#?}");
+        assert_eq!(told[0].0, "bo", "for the task's assignee");
     }
 }
 

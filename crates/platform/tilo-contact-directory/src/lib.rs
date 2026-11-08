@@ -466,9 +466,6 @@ impl ContactDirectory {
 impl ContactDirectory {
     /// Resolve one exact endpoint only if all replicas currently agree on its
     /// unique person. This recheck belongs immediately before freezing a send.
-    ///
-    /// # Errors
-    /// Refuses missing/deleted identities or conflicting confirmations.
     pub fn resolve(&self, service: &str, recipient: &str) -> Result<Id, Refusal> {
         validate_endpoint(service, recipient)?;
         let mut matches = self
@@ -496,9 +493,6 @@ impl ContactDirectory {
 
     /// Revision-aware resolver for provider adapters. Never silently downgrades
     /// a versioned association to the compatibility endpoint API.
-    ///
-    /// # Errors
-    /// Refuses malformed, missing, revoked, ambiguous or changed identities.
     pub fn resolve_account(
         &self,
         service: &str,

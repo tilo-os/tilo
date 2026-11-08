@@ -34,15 +34,33 @@ pub(crate) fn restore(
         return Err("invalid native committed workspace record".into());
     }
     match (&record.enrollment, &record.vouched) {
-        (Some(enrollment), None) => validate_enrollment(workspace, record, enrollment)?,
+        (Some(enrollment), None) => {
+            if record.host_hint.is_some() {
+                return Err("native workspace record holds an enrollment and a host hint".into());
+            }
+            validate_enrollment(workspace, record, enrollment)?;
+        }
         (None, Some(vouched)) => {
+            if record.host_hint.is_some() {
+                return Err("native workspace record holds a vouch and a host hint".into());
+            }
             crate::owner::vouched::validate(workspace, record, &vouched.bootstrap)?;
         }
         // A workspace this device's own host keeps was founded here
         // ([`NativeWorkspaceOwner::create_workspace`]): no other device
         // admitted this one into it, so there is neither an enrollment nor
-        // a vouch to hold.
-        (None, None) if record.device == record.workspace_host => {}
+        // a vouch to hold, and where its own host is reached is the hint
+        // the record carries.
+        (None, None) if record.device == record.workspace_host => {
+            if let Some(hint) = &record.host_hint {
+                crate::owner::validate_host_hint(
+                    hint,
+                    &workspace.to_string(),
+                    record.workspace_id,
+                    &record.device,
+                )?;
+            }
+        }
         (None, None) => {
             return Err("a native workspace record holds no single enrollment".into());
         }
@@ -122,10 +140,6 @@ impl NativeWorkspaceOwner {
     /// response is retried with the exact same proof. `local` is the
     /// local slot the enrolled workspace will be shown in, where the host has
     /// slots.
-    ///
-    /// # Errors
-    /// The owner is fenced, the workspace is already enrolled or has another
-    /// proof in flight, the slot is gone or the record cannot be published.
     pub fn prepare_enrollment_into(
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
@@ -354,10 +368,6 @@ impl NativeWorkspaceOwner {
         })
     }
     /// Install a completed enrollment: the workspace's first committed replica.
-    ///
-    /// # Errors
-    /// The Complete does not match the persisted proof, the admitted role
-    /// differs from the signed one, or the record cannot be published.
     pub fn install(
         &self,
         enrollment: &VerifiedNativeEnrollment,
@@ -434,6 +444,7 @@ impl NativeWorkspaceOwner {
                 transport_hint: enrollment.transport_hint().clone(),
             }),
             vouched: None,
+            host_hint: None,
             peer: peer.durable()?,
             generation: 1,
             continuity: 0,
@@ -461,10 +472,6 @@ impl NativeWorkspaceOwner {
     /// [`Self::with_current`] races another local write, which then makes it
     /// stale. A caller that needs the dense sequence prepares it inside the
     /// turn with [`Self::commit_document_with_current`].
-    ///
-    /// # Errors
-    /// The request is not an admissible local document write, its signed
-    /// sequence is stale, or the record cannot be published.
     pub fn commit_document(
         &self,
         request: crate::owner_commit::OwnerCommitRequest,
@@ -515,7 +522,8 @@ impl NativeWorkspaceOwner {
             .map_err(|e| e.to_string())?
             .is_some()
         {
-            if !publication::has_exact(&candidate, &outgoing)?
+            if !candidate.hosted_here()
+                && !publication::has_exact(&candidate, &outgoing)?
                 && !publication::retry_covered(&candidate, &outgoing)?
             {
                 return Err("exact local admission has no retained publication custody".into());
@@ -526,7 +534,6 @@ impl NativeWorkspaceOwner {
                 aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
             });
         }
-        publication::reserve(&candidate, &outgoing)?;
         candidate
             .peer
             .admit_new_local_document(&app, &record, *envelope, now)?;

@@ -16,6 +16,9 @@
 /// One action sent to another device of the workspace, signed by its sender.
 pub mod actions;
 pub mod colorimetry;
+/// Content a record references, asked of a workspace by hash and answered in
+/// pieces: what every participant of a workspace speaks, host or page.
+pub mod content;
 pub mod hdr_metadata;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;
@@ -663,8 +666,8 @@ pub enum NeighbourMsg {
         cluster_id: String,
         hash: String,
     },
-    /// One bounded piece of a record's content, answering `requester`'s
-    /// [`Self::RecordContentWant`]: `bytes` start at `offset` of the
+    /// One bounded piece of a record's content, answering
+    /// `requester`'s [`Self::RecordContentWant`]: `bytes` start at `offset` of the
     /// `total`-byte content named by `hash`. The receiver keeps the content
     /// only once every piece arrived and the bytes hash to `hash`. Appended
     /// to preserve every existing Postcard discriminant.

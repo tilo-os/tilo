@@ -19,8 +19,8 @@ pub struct State {
     pub tree: DesktopTree,
     pub overlays: Overlays,
     pub glance: ActivityGlance,
-    /// The activities the bar's pill names, each with the app that shows
-    /// it: an activity's id is only its own app's.
+    /// The activities the bar's pill names, each with the app that shows it: an activity's id is
+    /// only its own app's.
     pub activities: Vec<(String, ui::live_activity::Summary)>,
     pub active_exposures: Vec<ActiveExposure>,
     pub watching: u32,
@@ -31,8 +31,7 @@ pub struct State {
     pub notification_badge: u32,
     pub notifications_only: bool,
     pub arrived: Option<ArrivalNotice>,
-    /// Unread counts per verified application id, as an application's
-    /// own icon shows them.
+    /// Unread counts per verified application id, as an application's own icon shows them.
     pub app_badges: HashMap<String, u32>,
 }
 impl State {

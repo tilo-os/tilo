@@ -738,11 +738,6 @@ impl InstallerApp {
     /// its confirmation contract, bind its arguments strictly, then apply it.
     /// The unattended driver and host-side tests use this instead of a second
     /// path.
-    ///
-    /// # Errors
-    ///
-    /// Returns the door's stable code and sentence when the effect is not
-    /// published, unavailable, unconfirmed or given arguments it cannot bind.
     pub fn invoke_published(
         &mut self,
         id: &str,
@@ -761,11 +756,6 @@ impl InstallerApp {
     /// confirmation and binding; the handlers still re-check the wizard's own
     /// preconditions, so a caller that reached this function some other way
     /// cannot skip a step.
-    ///
-    /// # Errors
-    ///
-    /// Returns the sentence the wizard would show when the effect cannot do
-    /// its job now.
     #[allow(
         clippy::too_many_lines,
         reason = "one match arm per effect keeps each handler next to its siblings"

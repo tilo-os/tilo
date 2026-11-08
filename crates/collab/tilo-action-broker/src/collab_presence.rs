@@ -72,9 +72,6 @@ pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload
 
 /// [`from_peer`], telling a frame shown to nobody (`Ok(None)`) from one
 /// that does not decode.
-///
-/// # Errors
-/// Why the frame does not decode.
 pub fn decode_peer(
     presence: PeerPresence,
 ) -> Result<Option<(PresenceKey, PresencePayload)>, String> {

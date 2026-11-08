@@ -2,8 +2,8 @@
 //! secondary actions (rename, forget, remove) in a menu, so a row carries
 //! one control of its own instead of a line of buttons.
 //!
-//! Each entry runs an exported resource action through an
-//! [`ActionEmitter`]: the host resolves its policy (and asks for
+//! Each entry runs an exported resource action through
+//! an [`ActionEmitter`]: the host resolves its policy (and asks for
 //! confirmation where it must) before it runs, exactly as for a bound
 //! button, and an entry whose action the surface does not offer is shown
 //! disabled. Agents and assistive technology reach the same actions on the

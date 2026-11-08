@@ -292,9 +292,6 @@ fn format_name(format: CellFormat) -> String {
 /// in the date format, so it calculates and exports as a date; numbers and
 /// booleans as they are, other text as text. `None` for null, which leaves
 /// the cell.
-///
-/// # Errors
-/// A value that is no string, number, boolean or null.
 pub fn cell_input(
     value: &serde_json::Value,
 ) -> Result<Option<(String, Option<CellFormat>)>, ui::tilo_resource::Refusal> {

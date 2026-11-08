@@ -425,30 +425,45 @@ thread_local! {
     /// What the search answered, by request, waiting for the box that asked.
     static ROWS: RefCell<HashMap<u64, Vec<Recipient>>> = RefCell::new(HashMap::new());
     /// A box asked for with no menu around it: what is selected, where to
-    /// stand, and what is already typed.
-    static ALONE: RefCell<Option<(Option<SharedSelection>, Option<[f64; 4]>, Option<String>)>> =
-        const { RefCell::new(None) };
+    /// stand, what is already typed, and whom the session opened it to.
+    static ALONE: RefCell<Option<OpenSendBox>> = const { RefCell::new(None) };
+}
+
+/// A box a window is asked to open with no menu around it.
+#[derive(Clone, Debug, Default)]
+pub struct OpenSendBox {
+    /// What the box is about, when the window knows of a selection.
+    pub about: Option<SharedSelection>,
+    /// Where what it is about stands, so the box opens beside it.
+    pub bounds: Option<[f64; 4]>,
+    /// What is already typed into it.
+    pub draft: Option<String>,
+    /// Whom the session opened it to, when it named them: the one place a
+    /// report goes. Empty for a box the person addresses.
+    pub to: Vec<Recipient>,
 }
 
 /// Open the box with no menu: what a window's own key does over a selection,
-/// and what the shell's send key asks of an app.
+/// and what the shell's send key or its "report a problem" asks of an app.
 pub fn open_send_box(
     about: Option<SharedSelection>,
     bounds: Option<[f64; 4]>,
     draft: Option<&str>,
+    to: &[Recipient],
 ) {
     ALONE.with(|alone| {
-        *alone.borrow_mut() = Some((
+        *alone.borrow_mut() = Some(OpenSendBox {
             about,
             bounds,
-            draft.map(|draft| draft.chars().take(MAX_SEND_CHARS).collect()),
-        ));
+            draft: draft.map(|draft| draft.chars().take(MAX_SEND_CHARS).collect()),
+            to: to.to_vec(),
+        });
     });
 }
 
 /// A box asked for with no menu since the last call. For the area that
 /// carries one.
-pub fn take_open_send_box() -> Option<(Option<SharedSelection>, Option<[f64; 4]>, Option<String>)> {
+pub fn take_open_send_box() -> Option<OpenSendBox> {
     ALONE.with(|alone| alone.borrow_mut().take())
 }
 

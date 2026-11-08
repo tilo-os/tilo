@@ -1,8 +1,6 @@
 //! Input as the compositor routes it, whatever device produced it.
-//!
-//! Backends translate their devices (libinput, a host window, a test or a
-//! remote seat) into these events; the compositor routes each to the hosted
-//! surface or client it belongs to.
+//! Backends translate their devices (libinput, a host window, a test or a remote seat) into these
+//! events; the compositor routes each to the hosted surface or client it belongs to.
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, GestureBeginEvent,
@@ -25,14 +23,14 @@ pub enum InputEvent {
     PointerMotion { x: f64, y: f64 },
     /// The pointer moved by a logical offset.
     PointerMotionRelative { dx: f64, dy: f64 },
-    /// A pointer button (evdev code, `BTN_LEFT` = `0x110`) changed state.
+    /// A pointer button (evdev code, `BTN_LEFT` = `0x110` ) changed state.
     PointerButton { button: u32, pressed: bool },
     /// Scrolling, in logical pixels.
     PointerAxis { horizontal: f64, vertical: f64 },
     /// A key (evdev code) changed state.
     Key { keycode: u32, pressed: bool },
-    /// A finger touched the screen at a logical position. `slot` tells
-    /// fingers apart until they lift.
+    /// A finger touched the screen at a logical position. `slot` tells fingers apart until they
+    /// lift.
     TouchDown { slot: u32, x: f64, y: f64 },
     /// A touching finger moved.
     TouchMotion { slot: u32, x: f64, y: f64 },
@@ -40,8 +38,7 @@ pub enum InputEvent {
     TouchUp { slot: u32 },
     /// The touches reported since the last frame belong together.
     TouchFrame,
-    /// Every current touch is void (the device took it back): clients
-    /// undo what the touches did.
+    /// Every current touch is void (the device took it back): clients undo what the touches did.
     TouchCancel,
     /// A drawing tablet's tool (pen, eraser, ...) did something.
     Tablet(TabletEvent),
@@ -53,12 +50,11 @@ pub enum InputEvent {
     Switch { switch: Switch, on: bool },
 }
 
-/// Input on its way to the desktop, as a capture sees it: what an input
-/// capture decides on before the desktop does.
+/// Input on its way to the desktop, as a capture sees it: what an input capture decides on before
+/// the desktop does.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ObservedInput {
-    /// The pointer at (`x`, `y`) in the layout, having moved by
-    /// (`dx`, `dy`).
+    /// The pointer at (`x`, `y` ) in the layout, having moved by (`dx`, `dy` ).
     PointerMotion { x: f64, y: f64, dx: f64, dy: f64 },
     /// A pointer button (evdev code) changed state.
     PointerButton { button: u32, pressed: bool },
@@ -128,8 +124,8 @@ pub enum GestureEvent {
     PinchBegin {
         fingers: u32,
     },
-    /// `scale` is absolute against the begin; `rotation` is degrees
-    /// clockwise since the last update.
+    /// `scale` is absolute against the begin; `rotation` is degrees clockwise since the last
+    /// update.
     PinchUpdate {
         dx: f64,
         dy: f64,
@@ -175,7 +171,7 @@ pub enum TabletPhase {
     Motion,
     TipDown,
     TipUp,
-    /// A tool button (evdev code, `BTN_STYLUS` = `0x14b`).
+    /// A tool button (evdev code, `BTN_STYLUS` = `0x14b` ).
     Button {
         button: u32,
         pressed: bool,
@@ -193,9 +189,9 @@ pub struct TabletEvent {
     /// Where the tool is, in the logical layout.
     pub x: f64,
     pub y: f64,
-    /// `0.0 ..= 1.0`.
+    /// `0.0 ..= 1.0` .
     pub pressure: f64,
-    /// `0.0 ..= 1.0`.
+    /// `0.0 ..= 1.0` .
     pub distance: f64,
     /// Degrees from the vertical on each axis.
     pub tilt: (f64, f64),
@@ -203,8 +199,8 @@ pub struct TabletEvent {
     pub slider: f64,
     /// Degrees and clicks the tool's wheel turned.
     pub wheel: (f64, i32),
-    /// Deliver the tool as a pointer even to apps that take tablets (an
-    /// eraser the person mapped to a mouse button).
+    /// Deliver the tool as a pointer even to apps that take tablets (an eraser the person mapped to
+    /// a mouse button).
     pub as_pointer: bool,
     /// The pointer button the tip presses for apps that see a pointer;
     /// `None` clicks nothing.
@@ -220,11 +216,9 @@ pub enum PadAction {
     Removed,
     /// A button (numbered from zero) changed state.
     Button { button: u32, pressed: bool },
-    /// A finger on a ring, at `degrees` (clockwise from the top), or lifted
-    /// (`None`).
+    /// A finger on a ring, at `degrees` (clockwise from the top), or lifted (`None`).
     Ring { ring: u32, degrees: Option<f64> },
-    /// A finger on a strip, at `position` (`0.0` top or left to `1.0`), or
-    /// lifted.
+    /// A finger on a strip, at `position` (`0.0` top or left to `1.0` ), or lifted.
     Strip { strip: u32, position: Option<f64> },
     /// A group of the pad's controls switched to another mode.
     Mode { group: u32, mode: u32 },
@@ -241,10 +235,9 @@ pub struct TabletPadEvent {
 }
 
 impl InputEvent {
-    /// A device event as the compositor routes it, whichever backend read
-    /// it (libinput on a TTY, the host window when nested); absolute
-    /// positions are mapped onto `extent`, the logical size they span.
-    /// Events the compositor does not route yet give `None`.
+    /// A device event as the compositor routes it, whichever backend read it (libinput on a TTY,
+    /// the host window when nested); absolute positions are mapped onto `extent` , the logical size
+    /// they span. Events the compositor does not route yet give `None` .
     pub(crate) fn from_device<B: InputBackend>(
         event: DeviceEvent<B>,
         extent: Size<i32, Logical>,
@@ -389,8 +382,7 @@ impl InputEvent {
 }
 
 impl TabletEvent {
-    /// A tool event with its axes, the tablet's surface mapped onto
-    /// `extent`.
+    /// A tool event with its axes, the tablet's surface mapped onto `extent` .
     fn read<B: InputBackend, E: TabletToolEvent<B>>(
         event: &E,
         phase: TabletPhase,
@@ -420,15 +412,14 @@ impl TabletEvent {
     }
 }
 
-/// A touch slot as a plain number: single-touch devices have no slot
-/// concept (libinput reports none), all one finger, so slot 0 is honest.
+/// A touch slot as a plain number: single-touch devices have no slot concept (libinput reports
+/// none), all one finger, so slot 0 is honest.
 pub(crate) fn touch_slot(slot: TouchSlot) -> u32 {
     u32::try_from(i32::from(slot)).unwrap_or(0)
 }
 
-/// Logical pixels scrolled on `axis`: a wheel notch (120 in v120 units) is
-/// [`WHEEL_STEP`] pixels, as clients expect; fingers and continuous devices
-/// report pixels.
+/// Logical pixels scrolled on `axis` : a wheel notch (120 in v120 units) is [`WHEEL_STEP`] pixels,
+/// as clients expect; fingers and continuous devices report pixels.
 fn scroll_amount<B: InputBackend>(event: &B::PointerAxisEvent, axis: Axis) -> f64 {
     match event.source() {
         AxisSource::Wheel | AxisSource::WheelTilt => event.amount_v120(axis).map_or_else(
@@ -442,8 +433,8 @@ fn scroll_amount<B: InputBackend>(event: &B::PointerAxisEvent, axis: Axis) -> f6
 /// Logical pixels one wheel notch scrolls.
 const WHEEL_STEP: f64 = 15.0;
 
-/// A key as a hosted surface receives it: the compositor's keymap already
-/// applied, so hosts need no keyboard state of their own.
+/// A key as a hosted surface receives it: the compositor's keymap already applied, so hosts need no
+/// keyboard state of their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostKey {
     /// The evdev code.
@@ -456,13 +447,12 @@ pub struct HostKey {
     pub keysym: u32,
     /// The keysym of the key's first level (no Shift), for shortcuts.
     pub unmodified_keysym: u32,
-    /// The keysym another configured layout puts on this key when the active
-    /// one has none in Latin: a shortcut is named by it, so Ctrl+C copies
-    /// while a Cyrillic, Greek or Hebrew layout types.
+    /// The keysym another configured layout puts on this key when the active one has none in Latin:
+    /// a shortcut is named by it, so Ctrl+C copies while a Cyrillic, Greek or Hebrew layout types.
     pub latin_keysym: u32,
-    /// The text the key types, if it types any: the character the layout
-    /// gives it, or what a dead key's or the Compose key's sequence finishes
-    /// with, which is a character of its own or several.
+    /// The text the key types, if it types any: the character the layout gives it, or what a dead
+    /// key's or the Compose key's sequence finishes with, which is a character of its own or
+    /// several.
     pub text: Option<String>,
     /// The modifiers held as the key changed.
     pub modifiers: KeyModifiers,

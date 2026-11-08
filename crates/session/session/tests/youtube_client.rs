@@ -33,8 +33,8 @@ const CREATOR: &str = "MKBHD";
 /// A video the channel published, by the title its page lists.
 const VIDEO: &str = "The phone that finally lasts a week";
 
-/// The seeded apps with the `YouTube` client among them: notes, tasks, chat, mail and the
-/// client, each filled by its first scenario, on the canvas.
+/// The seeded apps with the `YouTube` client among them: notes, tasks, chat, mail and the client,
+/// each filled by its first scenario, on the canvas.
 fn seeded_session(root: &std::path::Path) -> Session {
     common::seeded_session(root)
 }
@@ -94,8 +94,7 @@ fn youtube_videos_of_a_creator_places_the_channel_and_its_page_draws() {
         "the query places the client's channel, and only it: {placed:?}"
     );
 
-    // Its page draws: the channel's name, and the video it published, as its own package
-    // draws it.
+    // Its page draws: the channel's name, and the video it published, as its own package draws it.
     until(&mut session, "the channel's page", |session| {
         session.shell_says(CREATOR) && session.shell_says(VIDEO)
     });

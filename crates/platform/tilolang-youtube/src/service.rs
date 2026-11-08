@@ -91,27 +91,15 @@ impl std::error::Error for ServiceError {}
 /// What the origin asks of a service. Never waits on the network itself: the service does.
 pub trait Service: Send + Sync {
     /// What YouTube finds for `query`.
-    ///
-    /// # Errors
-    /// YouTube could not be reached, or refused the query.
     fn search(&self, query: &str) -> Result<SearchPage, ServiceError>;
 
     /// A channel's page and its newest videos.
-    ///
-    /// # Errors
-    /// YouTube could not be reached, or has no such channel.
     fn channel(&self, key: &str) -> Result<ChannelPage, ServiceError>;
 
     /// The videos YouTube lists as trending.
-    ///
-    /// # Errors
-    /// YouTube could not be reached.
     fn trending(&self) -> Result<TrendingPage, ServiceError>;
 
     /// The address a video's bytes play from.
-    ///
-    /// # Errors
-    /// YouTube could not be reached, or serves no playable stream of it.
     fn stream(&self, key: &str) -> Result<String, ServiceError>;
 }
 

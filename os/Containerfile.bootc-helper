@@ -20,15 +20,20 @@ COPY os/external-assets/bootc-install-reseal/*.patch /patches/
 COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
 # Fetches from the internet, so it runs in the build job's own network: podman hands a
 # nested build container public resolvers (the job's /etc/resolv.conf names only its own),
-# and the CI runners' egress serves those unreliably.
+# and the CI runners' egress serves those unreliably. Cargo asks the git command for
+# bootc's git dependency, and the command aborts a transfer that stays below
+# http.lowSpeedLimit for http.lowSpeedTime instead of waiting on it without end.
 RUN --network=host configure-fedora-mirrors \
-    && dnf install -y ostree-devel patch \
+    && dnf install -y ostree-devel patch git \
     && dnf clean all \
+    && git config --global http.lowSpeedLimit 1000 \
+    && git config --global http.lowSpeedTime 20 \
     && curl -fsSL "https://github.com/bootc-dev/bootc/archive/refs/tags/v${BOOTC_VERSION}.tar.gz" -o /bootc.tar.gz \
     && echo "${BOOTC_SHA256}  /bootc.tar.gz" | sha256sum -c - \
     && tar -xzf /bootc.tar.gz -C / \
     && cd "/bootc-${BOOTC_VERSION}" \
     && for p in /patches/*.patch; do patch -p1 < "$p"; done \
+    && export CARGO_NET_GIT_FETCH_WITH_CLI=true CARGO_NET_RETRY=6 \
     && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --locked --release -p bootc \
     && install -D -m 0755 target/release/bootc /out/bootc \
     && /out/bootc --version

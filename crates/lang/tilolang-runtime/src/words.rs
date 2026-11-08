@@ -4,11 +4,22 @@
 //! package loads, and resolves a declaration's label, description and noun through it where it
 //! builds what a view reads. The host that draws decides the language: its `Words` resolves in
 //! the person's locale. Without one the source words stand.
+//!
+//! A window shows one package's views as its own and runs the packages they use. The own
+//! package's catalogues choose the window's language, once; a used package's words ride along
+//! in it and never choose it ([`Words::add`], [`Words::add_used`]).
 
 /// Where a runtime's words come from.
 pub trait Words {
-    /// Takes in a package's catalogues, `(locale, Fluent text)`.
+    /// Takes in the catalogues of the package the window shows, `(locale, Fluent text)`: the
+    /// languages it ships are the ones the window's language is chosen from, with the person's
+    /// preference (i18n.md §4). A host chooses on the first, and keeps it.
     fn add(&self, catalogues: &[(String, String)]);
+    /// Takes in the catalogues of a package the window uses: its views run inline in the
+    /// window's, and its words are read in the language the window speaks, never choosing it.
+    /// A word of it the window's language lacks falls back to its source language, not to
+    /// another of its translations.
+    fn add_used(&self, catalogues: &[(String, String)]);
     /// The message `key` in the reader's language, given `args` (a declaration's `d-<id>`,
     /// `d-<id>.noun` with a `count`, or one of the platform's phrases); `source` when no
     /// catalogue holds it.
@@ -27,12 +38,39 @@ pub trait Words {
     }
 }
 
+/// The catalogues of one loaded package, `(locale, Fluent text)` each, and which package of the
+/// window they belong to: what the runtime keeps to hand them to the words a host sets later.
+pub type LoadedCatalogues = (WordsRole, Vec<(String, String)>);
+
+/// Which package of a window a catalogue belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WordsRole {
+    /// The package the window shows: the languages it ships are the ones the window's
+    /// language is chosen from, once.
+    Window,
+    /// A package the window uses: its words ride along in the window's language.
+    Used,
+}
+
+impl WordsRole {
+    /// Hand `catalogues` to `words` as this role's: the window's own choose its language, a
+    /// used package's ride along.
+    pub fn hand(self, words: &dyn Words, catalogues: &[(String, String)]) {
+        match self {
+            Self::Window => words.add(catalogues),
+            Self::Used => words.add_used(catalogues),
+        }
+    }
+}
+
 /// The source words: what a package's declarations say, untranslated.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SourceWords;
 
 impl Words for SourceWords {
     fn add(&self, _catalogues: &[(String, String)]) {}
+
+    fn add_used(&self, _catalogues: &[(String, String)]) {}
 
     fn word(&self, _key: &str, _args: &[(String, String)], source: &str) -> String {
         source.to_owned()

@@ -1085,25 +1085,6 @@ launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich seh
 launchpad-subtitle-private = Wähle, wie du anfängst. Nur du siehst, was du hier machst, bis du jemanden einlädst.
 launchpad-subtitle-public = Wähle, wie du anfängst. Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
 
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Emoji suchen
-emoji-picker-groups = Emoji-Kategorien
-emoji-picker-recent = Zuletzt verwendet
-emoji-picker-results = Passende Emoji
-emoji-picker-no-results = Keine Emoji gefunden
-emoji-picker-tones = Hauttöne
-emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
-emoji-picker-a11y-description = Tippe, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem du geschrieben hast, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
-
-# Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = heller Hautton
-emoji-picker-tone-medium-light = mittelheller Hautton
-emoji-picker-tone-medium = mittlerer Hautton
-emoji-picker-tone-medium-dark = mitteldunkler Hautton
-emoji-picker-tone-dark = dunkler Hautton
-
 # Der Fensterwechsler (Alt+Tab).
 window-switcher-title = Fenster wechseln
 window-switcher-description = Fenster in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke Tab oder die Pfeiltasten zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
@@ -1209,13 +1190,8 @@ notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
 activity-acknowledge-viewed = Als gesehen markieren
 activity-acknowledge-description = Markiert die hier gezeigten Änderungen als gesehen. Wartende Aufgaben bleiben offen.
-notification-alarm-snoozed = Um 5 Minuten verschoben. Verwirf diesen Eintrag, um die ausstehende Erinnerung abzubrechen.
 notification-alarm-dismiss = Verwerfen
 notification-alarm-snooze = In 5 Minuten erneut erinnern
-notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
-notification-alarm-action-title = { $action }: { $title }
-notification-alarm-action-subtitle = Für dieses Weckereignis
-notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
 notification-sender-claims = App sagt: { $name }
 notification-open = Öffnen
 notification-quiet-do-not-disturb = Nicht stören
@@ -1245,8 +1221,6 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
-
-emoji-picker-hint-tone = Hautton wählen
 
 workspace-settings-hint-close = Schließen
 workspace-settings-hint-save = Speichern
@@ -1347,6 +1321,9 @@ session-host-lock = Sperren
 session-host-log-out = Abmelden
 session-host-restart = Neu starten
 session-host-shut-down = Ausschalten
+session-host-report-problem = Ein Problem melden
+session-host-report-problem-description = Schick Tilo, was nicht funktioniert
+session-feedback-destination = Tilo-Feedback
 session-left-workspace = Du hast { $name } verlassen
 session-left-workspace-body = Seine Fenster sind von diesem Rechner verschwunden. Du kannst ihm über das Verzeichnis wieder beitreten.
 session-deleted-workspace = { $name } ist gelöscht
@@ -1457,6 +1434,8 @@ window-menu-full-screen = Vollbild
 window-menu-exit-full-screen = Vollbild beenden
 window-menu-maximize = Den Streifen füllen
 window-menu-restore = Den Streifen zurückgeben
+window-menu-float = Dieses Fenster schweben lassen
+window-menu-snap-back = Zurück in den Streifen
 window-menu-move-to-strip = In eine Leiste verschieben
 window-menu-move-to-workspace = In einen Arbeitsbereich verschieben
 window-menu-move-to-display = Auf einen Bildschirm verschieben

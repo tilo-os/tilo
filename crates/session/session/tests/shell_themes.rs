@@ -43,15 +43,12 @@ mod common;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_compositor::{OutputConfig, Screenshot};
+use tilo_compositor::Screenshot;
 use tilo_session::{Options, Session};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const PERSON: &str = "Pat";
-/// The person's appearance section, as the settings service publishes it: the
-/// resource whose `field-edit` action the theme is chosen through, and whose
-/// stored fields say what it holds.
+/// The person's appearance section, as the settings service publishes it: the resource whose
+/// `field-edit` action the theme is chosen through, and whose stored fields say what it holds.
 const APPEARANCE: &str = "settings:settings.appearance";
 
 /// A node the shell lays out for assistive technology: what it is, what it says,
@@ -64,8 +61,8 @@ struct Node {
 }
 
 impl Node {
-    /// The node, as the toolkit's accessibility tree is walked for it: every
-    /// window's nodes in the order the exporter lists them.
+    /// The node, as the toolkit's accessibility tree is walked for it: every window's nodes in the
+    /// order the exporter lists them.
     fn floor(&self) -> [f64; 4] {
         self.bounds.unwrap_or([0.0; 4])
     }
@@ -111,9 +108,8 @@ impl Theme {
         },
     ];
 
-    /// Whether this theme's `type` role draws text at another weight than the
-    /// stock one (the design language's 400 / 500 / 600), so its text runs
-    /// measure a pixel wider or narrower.
+    /// Whether this theme's `type` role draws text at another weight than the stock one (the design
+    /// language's 400 / 500 / 600), so its text runs measure a pixel wider or narrower.
     fn moves_type_metrics(self) -> bool {
         ui::theme::Preset::find(self.id)
             .expect("a shipped preset")
@@ -124,27 +120,21 @@ impl Theme {
     }
 }
 
-/// The session the test runs in: the tilolang shell as the whole screen, the
-/// seeded notes, tasks, chat and mail apps published, and the person's settings
-/// service beside them, which publishes the appearance section the theme is
-/// chosen through.
+/// The session the test runs in: the tilolang shell as the whole screen, the seeded notes, tasks,
+/// chat and mail apps published, and the person's settings service beside them, which publishes the
+/// appearance section the theme is chosen through.
 fn session() -> Session {
     let apps = common::seeded_apps();
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![
-                Box::new(apps),
-                Box::new(tilo_settings_service::SettingsService::new()),
-            ],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![
+            Box::new(apps),
+            Box::new(tilo_settings_service::SettingsService::new()),
+        ],
+        ..Options::default()
+    })
 }
 
 /// Run `frames` frames of the session.
@@ -159,9 +149,9 @@ fn reached(session: &mut Session, mut done: impl FnMut(&Session) -> bool) -> boo
     common::reached(session, |session| done(session))
 }
 
-/// Set the field `field` of the appearance section to `value` through the
-/// section's own published `field-edit`: what Settings' Appearance page and Quick
-/// Settings' Dark mode tile run, and what an agent or a script runs.
+/// Set the field `field` of the appearance section to `value` through the section's own published
+/// `field-edit` : what Settings' Appearance page and Quick Settings' Dark mode tile run, and what
+/// an agent or a script runs.
 fn set_field(session: &mut Session, field: &str, value: &Value) {
     let arguments: Map<String, Value> = json!({
         "edit": {"path": [{"field": field}], "op": "set", "value": value}
@@ -174,7 +164,7 @@ fn set_field(session: &mut Session, field: &str, value: &Value) {
         .unwrap_or_else(|error| panic!("set {field}: {error:?}"));
 }
 
-/// How the session publishes the appearance section's field `field`.
+/// How the session publishes the appearance section's field `field` .
 fn published(session: &Session, field: &str) -> Value {
     session
         .read(APPEARANCE)
@@ -197,8 +187,8 @@ fn choose_theme(session: &mut Session, theme: Theme) {
         "mode",
         &json!(if theme.light { "light" } else { "dark" }),
     );
-    // The section is what the shell reads its theme from; the shell has drawn
-    // the choice when the session publishes it.
+    // The section is what the shell reads its theme from; the shell has drawn the choice when the
+    // session publishes it.
     assert!(
         reached(session, |session| {
             published(session, key) == json!(theme.id)
@@ -210,7 +200,7 @@ fn choose_theme(session: &mut Session, theme: Theme) {
     );
 }
 
-/// The resource of the type `ty` whose label is `label`, from `resources`.
+/// The resource of the type `ty` whose label is `label` , from `resources` .
 fn find(resources: &[tilo_actions::ResourceSpec], ty: &str, label: &str) -> Option<String> {
     resources.iter().find_map(|resource| {
         if resource.kind == ty && resource.label == label {
@@ -221,9 +211,9 @@ fn find(resources: &[tilo_actions::ResourceSpec], ty: &str, label: &str) -> Opti
     })
 }
 
-/// Place `resource` on the canvas of the workspace in front, at `(x, y)` and
-/// `width` by `height`, through the arrangement's published `place`: what an
-/// agent does when it puts something on the canvas for the person.
+/// Place `resource` on the canvas of the workspace in front, at `(x, y)` and `width` by `height` ,
+/// through the arrangement's published `place` : what an agent does when it puts something on the
+/// canvas for the person.
 fn place(session: &mut Session, resource: &str, x: i32, y: i32, width: i32, height: i32) {
     let (workspace, row, strip, place) = {
         let tree = session.handle().read(Clone::clone);
@@ -254,8 +244,8 @@ fn place(session: &mut Session, resource: &str, x: i32, y: i32, width: i32, heig
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
 }
 
-/// The whole laid-out tree, in place: every window's node, as assistive
-/// technology reads it from the session's own export.
+/// The whole laid-out tree, in place: every window's node, as assistive technology reads it from
+/// the session's own export.
 fn laid_out(session: &Session) -> Vec<Node> {
     let mut out = Vec::new();
     for (_, _, tree) in session.a11y_windows() {
@@ -280,7 +270,7 @@ fn frame(session: &mut Session) -> Screenshot {
         .expect("the session draws its display")
 }
 
-/// How many of `a`'s and `b`'s pixels differ.
+/// How many of `a` 's and `b` 's pixels differ.
 fn differing_pixels(a: &Screenshot, b: &Screenshot) -> usize {
     assert_eq!(
         (a.width, a.height),
@@ -294,8 +284,7 @@ fn differing_pixels(a: &Screenshot, b: &Screenshot) -> usize {
         .count()
 }
 
-/// The names the tree says, in order: what the shell shows, without a theme's
-/// hand in it.
+/// The names the tree says, in order: what the shell shows, without a theme's hand in it.
 fn names(nodes: &[Node]) -> Vec<(String, &str)> {
     nodes
         .iter()
@@ -303,14 +292,14 @@ fn names(nodes: &[Node]) -> Vec<(String, &str)> {
         .collect()
 }
 
-/// The shell at rest with a note and the inbox on the canvas: the seeded apps
-/// published, both places drawing their app, and the shell's views settled.
+/// The shell at rest with a note and the inbox on the canvas: the seeded apps published, both
+/// places drawing their app, and the shell's views settled.
 fn seated_session() -> Session {
     let mut session = session();
     step(&mut session, 200);
 
-    // A note and the inbox on the canvas, at two places of their own, so the
-    // shell's own views and two apps' views all stand on what is compared.
+    // A note and the inbox on the canvas, at two places of their own, so the shell's own views and
+    // two apps' views all stand on what is compared.
     let resources = session.resources();
     let note = find(&resources, "tl.so.tilo.lang.notes.Note", "Groceries").expect("a seeded note");
     let inbox =
@@ -332,13 +321,12 @@ fn seated_session() -> Session {
     session
 }
 
-/// Choose `theme`, wait for the switch to settle, and read what the shell lays
-/// out and draws; then prove the shell runs no view and draws no frame while it
-/// stays at rest.
+/// Choose `theme` , wait for the switch to settle, and read what the shell lays out and draws; then
+/// prove the shell runs no view and draws no frame while it stays at rest.
 fn settle_into(session: &mut Session, theme: Theme) -> (Vec<Node>, Screenshot) {
     choose_theme(session, theme);
-    // The switch is a change of the theme every part is drawn in; once it has
-    // settled the shell is at rest.
+    // The switch is a change of the theme every part is drawn in; once it has settled the shell is
+    // at rest.
     step(session, 300);
 
     let tree = laid_out(session);
@@ -350,8 +338,7 @@ fn settle_into(session: &mut Session, theme: Theme) -> (Vec<Node>, Screenshot) {
     );
     let shot = frame(session);
 
-    // Nothing is drawn while idle: two windows of frames each draw no frame and
-    // run no view.
+    // Nothing is drawn while idle: two windows of frames each draw no frame and run no view.
     for window in 0..2 {
         let before = session.shell_work().expect("the shell runs");
         step(session, 200);
@@ -366,13 +353,12 @@ fn settle_into(session: &mut Session, theme: Theme) -> (Vec<Node>, Screenshot) {
     (tree, shot)
 }
 
-/// The layout does not change: `theme`'s tree is `default`'s node for node —
-/// the same kinds in the same order, the same names, the same heights, and the
-/// same boxes — except where a theme's own `type` role moves a text run's width.
-/// A run set in a heavier weight measures wider; in a packed row, what stands
-/// after it starts a pixel further along and keeps the row's own gaps. Nothing
-/// else moves: a box a view lays out (a place, a strip, a panel, a heading's
-/// block) stands exactly where the default theme stands it.
+/// The layout does not change: `theme` 's tree is `default` 's node for node — the same kinds in
+/// the same order, the same names, the same heights, and the same boxes — except where a theme's
+/// own `type` role moves a text run's width. A run set in a heavier weight measures wider; in a
+/// packed row, what stands after it starts a pixel further along and keeps the row's own gaps.
+/// Nothing else moves: a box a view lays out (a place, a strip, a panel, a heading's block) stands
+/// exactly where the default theme stands it.
 fn assert_same_layout(default: &[Node], theme: Theme, tree: &[Node]) {
     assert_eq!(
         names(tree),
@@ -390,8 +376,8 @@ fn assert_same_layout(default: &[Node], theme: Theme, tree: &[Node]) {
     for (index, (default, themed)) in default.iter().zip(tree).enumerate() {
         let [dx0, dy0, dx1, dy1] = default.floor();
         let [x0, y0, x1, y1] = themed.floor();
-        // The vertical never moves: a text weight changes how wide a run
-        // measures, not its leading, its row or its line.
+        // The vertical never moves: a text weight changes how wide a run measures, not its leading,
+        // its row or its line.
         assert_eq!(
             (y0, y1),
             (dy0, dy1),
@@ -402,8 +388,8 @@ fn assert_same_layout(default: &[Node], theme: Theme, tree: &[Node]) {
         if (x0, x1) == (dx0, dx1) {
             continue;
         }
-        // This node moved across. Only a theme whose `type` role moves text
-        // weights may move anything at all.
+        // This node moved across. Only a theme whose `type` role moves text weights may move
+        // anything at all.
         assert!(
             theme.moves_type_metrics(),
             "{}: node {index} ({:?}) stands at ({x0}, {x1}) where Default stands it at \
@@ -413,8 +399,8 @@ fn assert_same_layout(default: &[Node], theme: Theme, tree: &[Node]) {
             default.label
         );
         moved += 1;
-        // A run set in another weight measures a pixel or two wider or narrower
-        // at this text size: never a step a view asked for.
+        // A run set in another weight measures a pixel or two wider or narrower at this text size:
+        // never a step a view asked for.
         let own_delta = ((x1 - x0) - (dx1 - dx0)).abs();
         assert!(
             own_delta <= 3.0,
@@ -425,9 +411,8 @@ fn assert_same_layout(default: &[Node], theme: Theme, tree: &[Node]) {
             x1 - x0,
             dx1 - dx0
         );
-        // A run pushed out by one before it in a packed row starts further along
-        // by what that one took — a pixel or two a run, never a gap or a margin
-        // the view lays out.
+        // A run pushed out by one before it in a packed row starts further along by what that one
+        // took — a pixel or two a run, never a gap or a margin the view lays out.
         assert!(
             (-0.01..=6.0).contains(&(x0 - dx0)),
             "{}: node {index} ({:?}) starts {} px from Default's {dx0}",
@@ -436,8 +421,8 @@ fn assert_same_layout(default: &[Node], theme: Theme, tree: &[Node]) {
             x0 - dx0
         );
     }
-    // Nothing but a theme's type role moves anything: a theme whose type role is
-    // the stock one lays out Default's rectangles exactly.
+    // Nothing but a theme's type role moves anything: a theme whose type role is the stock one lays
+    // out Default's rectangles exactly.
     if theme.moves_type_metrics() {
         println!(
             "{}: {} nodes, {moved} moved across by its type role's weights, all heights and \
@@ -489,9 +474,9 @@ fn switching_the_theme_changes_how_the_shell_looks_not_its_layout() {
     // This test's own home, beside the run's app store the session's apps come from.
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
-    // The bar draws the time, and a minute turning over is a change, not idle
-    // work: the test holds the clock at the minute it runs in, as a capture
-    // does, so what it watches at rest is the shell and nothing else.
+    // The bar draws the time, and a minute turning over is a change, not idle work: the test holds
+    // the clock at the minute it runs in, as a capture does, so what it watches at rest is the
+    // shell and nothing else.
     let at = ui::time::wall()
         .checked_sub(Duration::from_secs(
             u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))

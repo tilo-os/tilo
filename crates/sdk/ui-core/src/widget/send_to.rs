@@ -34,13 +34,15 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::floating_surface as panel;
 
-/// How wide the box stands, at a text scale of one.
-const WIDTH: f32 = 320.0;
-/// The air between the menu and the box.
-const GAP: f32 = 8.0;
 /// The rows of the search shown at once: more than a person reads while
 /// typing, and few enough that the box stays beside its menu.
 const MAX_ROWS: usize = 6;
+/// The rows the message field is tall while the words fit on one line: air
+/// enough to look like somewhere to write.
+const MESSAGE_ROWS: usize = 2;
+/// The rows it grows to as the words wrap: past this the box would stand
+/// taller than what it is sent with, so its words scroll instead.
+const MAX_MESSAGE_ROWS: usize = 4;
 
 /// Which field the keyboard is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,8 +78,12 @@ pub struct SendToBox {
     about: Option<SharedSelection>,
     /// The subjects, chips in the order they show.
     subjects: Vec<SharedSelection>,
-    /// Whom it goes to: the agent being made by default.
+    /// Whom it goes to: the agent being made by default, or, when the session
+    /// opened the box to a fixed destination, that alone.
     to: Vec<Recipient>,
+    /// Whether the session named whom it goes to: the box then searches for
+    /// nobody and its chips stay, so a report cannot be addressed elsewhere.
+    addressed: bool,
     /// What is typed into the recipient field, and the search it asked for.
     search: String,
     search_selection: Selection,
@@ -125,6 +131,7 @@ impl SendToBox {
             about: None,
             subjects: Vec::new(),
             to: vec![Recipient::new_agent(crate::i18n!("send-to-new-agent"))],
+            addressed: false,
             search: String::new(),
             search_selection: Selection::default(),
             search_composition: QueryComposition::default(),
@@ -191,6 +198,13 @@ impl SendToBox {
         &self.to
     }
 
+    /// Whether the session named whom it goes to, so nobody is searched for
+    /// and the chips stay.
+    #[must_use]
+    pub fn addressed(&self) -> bool {
+        self.addressed
+    }
+
     /// What the message says.
     #[must_use]
     pub fn text(&self) -> &str {
@@ -227,8 +241,10 @@ impl SendToBox {
     }
 
     /// Show the box about what the menu acts on, with `draft` in its message
-    /// field (a sentence typed into the menu that no row answered).
-    pub fn open(&mut self, draft: Option<&str>) {
+    /// field (a sentence typed into the menu that no row answered), and to
+    /// `to` when the session names whom it goes to — the one place a report
+    /// goes — else to the agent a message makes, which the person may change.
+    pub fn open(&mut self, draft: Option<&str>, to: &[Recipient]) {
         self.open = true;
         crate::shared_selection::set_box_open(true);
         self.focused = true;
@@ -238,22 +254,30 @@ impl SendToBox {
         if let Some(about) = self.about.clone() {
             self.subjects.push(about);
         }
-        if self.to.is_empty() {
+        self.to.clear();
+        self.addressed = !to.is_empty();
+        if self.addressed {
+            self.to.extend_from_slice(to);
+        } else {
             self.to
                 .push(Recipient::new_agent(crate::i18n!("send-to-new-agent")));
         }
         self.search.clear();
+        self.search_selection = Selection::default();
         self.rows.clear();
         self.hovered = None;
         self.answered = false;
         self.ask_search();
+        self.focus = if draft.is_some() || self.addressed {
+            SendToFocus::Message
+        } else {
+            SendToFocus::Recipients
+        };
         if let Some(text) = draft {
             text.clone_into(&mut self.text);
             self.text_selection = Selection::collapsed(self.text.len());
-            self.focus = SendToFocus::Message;
         } else {
             self.text.clear();
-            self.focus = SendToFocus::Recipients;
         }
     }
 
@@ -298,10 +322,9 @@ impl SendToBox {
         if viewport.is_some() {
             self.viewport = viewport;
         }
-        let scale = self.text_scale;
-        let width = f64::from(WIDTH) * scale;
+        let width = self.width();
         let height = self.height();
-        let gap = f64::from(GAP) * scale;
+        let gap = self.gap();
         // Its menu's own reach stands in when nothing knows the window: the
         // box still lands beside the menu rather than anywhere.
         let viewport = self.viewport.unwrap_or(Rect::new(
@@ -346,10 +369,9 @@ impl SendToBox {
 
     /// The box's height, from what it holds.
     fn height(&self) -> f64 {
-        let scale = self.text_scale;
         let row = self.row_height();
         let pad = self.padding();
-        let gap = f64::from(GAP) / 2.0 * scale;
+        let gap = self.gap() / 2.0;
         let results = (self.rows.len().min(MAX_ROWS) as f64) * row;
         pad * 2.0
             + self.header_height() // the quiet line naming the box
@@ -358,9 +380,51 @@ impl SendToBox {
             + gap
             + row // the subjects
             + gap
-            + row * 2.0 // the message
+            + self.message_height() // the message, as tall as it wraps
             + gap
             + row // Send
+    }
+
+    /// How tall the message stands: two rows while its words fit on one line,
+    /// and as much of them as wrap, up to four, so the box makes room for what
+    /// is written in it rather than scrolling sideways.
+    fn message_height(&self) -> f64 {
+        let theme = &self.theme;
+        let style = theme.text(TextRole::Body);
+        let least = self.row_height() * MESSAGE_ROWS as f64;
+        let most = self.row_height() * MAX_MESSAGE_ROWS as f64;
+        if self.text.trim().is_empty() {
+            return least;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a finite field width in CSS pixels fits the f32 shaping API"
+        )]
+        let width =
+            (self.width() - self.padding() * 2.0 - f64::from(theme.tokens.spacing.s2) * 2.0) as f32;
+        if !(width.is_finite() && width >= 1.0) {
+            return least;
+        }
+        let (_, height) = crate::text_render::with_layout_renderer(theme.text_scale, |renderer| {
+            renderer.measure_style(&self.text, Some(width), &style)
+        });
+        (f64::from(height) + self.message_air() * 2.0).clamp(least, most)
+    }
+
+    /// How wide the box stands.
+    fn width(&self) -> f64 {
+        f64::from(self.theme.tokens.metrics.panel_width_utility) * self.text_scale
+    }
+
+    /// The air between the menu and the box.
+    fn gap(&self) -> f64 {
+        f64::from(self.theme.tokens.spacing.s2) * self.text_scale
+    }
+
+    /// The air above and below the message's lines, so its words never touch
+    /// the field's edge.
+    fn message_air(&self) -> f64 {
+        f64::from(self.theme.tokens.spacing.s1) * self.text_scale
     }
 
     fn row_height(&self) -> f64 {
@@ -419,7 +483,7 @@ impl SendToBox {
     fn lay_chips(&self, asks: &[f64], y: f64, room: f64) -> (Vec<Rect>, f64) {
         let rect = self.rect;
         let row = self.row_height();
-        let gap = f64::from(GAP) / 2.0 * self.text_scale;
+        let gap = self.gap() / 2.0;
         let start = rect.x0 + self.padding();
         let mut chips = Vec::new();
         let narrowest = row * 0.5 + gap;
@@ -447,7 +511,7 @@ impl SendToBox {
         let rect = self.rect;
         let row = self.row_height();
         let pad = self.padding();
-        let gap = f64::from(GAP) / 2.0 * self.text_scale;
+        let gap = self.gap() / 2.0;
         let mut y = rect.y0 + pad;
         let header = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + self.header_height());
         y += self.header_height();
@@ -459,9 +523,10 @@ impl SendToBox {
             .to
             .iter()
             .map(|recipient| {
-                !(recipient.kind == RecipientKind::NewAgent
-                    && recipient.name
-                        == crate::i18n::I18nManager::lookup_plain("send-to-new-agent"))
+                !(self.addressed
+                    || recipient.kind == RecipientKind::NewAgent
+                        && recipient.name
+                            == crate::i18n::I18nManager::lookup_plain("send-to-new-agent"))
             })
             .collect();
         let asks: Vec<f64> = self
@@ -470,7 +535,13 @@ impl SendToBox {
             .zip(&removable)
             .map(|(recipient, remove)| self.chip_ask(&recipient.name, *remove))
             .collect();
-        let search_room = (row * 5.0).min(room * 0.4);
+        // A box opened to whom it sends to has no field to search in: its
+        // chips take the line.
+        let search_room = if self.addressed {
+            0.0
+        } else {
+            (row * 5.0).min(room * 0.4)
+        };
         let (chips, x) = self.lay_chips(&asks, y, (room - search_room).max(0.0));
         let removes: Vec<Option<Rect>> = chips
             .iter()
@@ -480,12 +551,16 @@ impl SendToBox {
             })
             .collect();
         let start = (x + gap).max(rect.x0 + pad);
-        let search = Rect::new(
-            start.min(rect.x1 - pad - search_room).max(rect.x0 + pad),
-            y,
-            rect.x1 - pad,
-            y + row,
-        );
+        let search = if self.addressed {
+            Rect::new(start, y, start, y + row)
+        } else {
+            Rect::new(
+                start.min(rect.x1 - pad - search_room).max(rect.x0 + pad),
+                y,
+                rect.x1 - pad,
+                y + row,
+            )
+        };
         y += row + if self.rows.is_empty() { 0.0 } else { gap };
         let mut rows = Vec::with_capacity(self.rows.len().min(MAX_ROWS));
         for _ in self.rows.iter().take(MAX_ROWS) {
@@ -508,8 +583,9 @@ impl SendToBox {
             y + row,
         );
         y += row + gap;
-        let message = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row * 2.0);
-        y += row * 2.0 + gap;
+        let message_height = self.message_height();
+        let message = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + message_height);
+        y += message_height + gap;
         let send_width = (row * 3.0).min(rect.width() - pad * 2.0);
         let send = Rect::new(rect.x1 - pad - send_width, y, rect.x1 - pad, y + row);
         Layout {
@@ -533,11 +609,22 @@ impl SendToBox {
         self.rows.clear();
         self.hovered = None;
         self.dirty = true;
-        if self.search.trim().is_empty() {
+        // A box opened to the one place it sends to has nobody to look for.
+        if self.addressed || self.search.trim().is_empty() {
             self.layout = self.build_layout();
             return;
         }
         self.request = crate::shared_selection::search_recipients(&self.search);
+    }
+
+    /// What the box is called: a report, when it was opened to the one place
+    /// reports go, and a message it sends anywhere else.
+    fn name(&self) -> String {
+        crate::i18n::I18nManager::lookup_plain(if self.addressed {
+            "send-to-report-name"
+        } else {
+            "send-to-name"
+        })
     }
 
     /// What the box paints has changed, so the window draws another frame.
@@ -599,7 +686,9 @@ impl SendToBox {
                         return true;
                     }
                     Key::Named(NamedKey::Backspace)
-                        if self.focus == SendToFocus::Recipients && self.search.is_empty() =>
+                        if self.focus == SendToFocus::Recipients
+                            && self.search.is_empty()
+                            && !self.addressed =>
                     {
                         if self.to.len() > 1 {
                             self.to.pop();
@@ -673,7 +762,11 @@ impl SendToBox {
         if let Some(index) = self.layout.chips.iter().position(|chip| chip.contains(at)) {
             // The × takes a chip off; a recipient the person picked goes on a
             // press anywhere on it, and the agent a message makes stays until
-            // it is taken off by its own ×.
+            // it is taken off by its own ×. A box the session addressed keeps
+            // the one place it sends to.
+            if self.addressed {
+                return true;
+            }
             let remove = self
                 .layout
                 .removes
@@ -745,7 +838,11 @@ impl SendToBox {
     pub fn focus_first(&mut self) {
         if self.open {
             self.focused = true;
-            self.focus = SendToFocus::Recipients;
+            self.focus = if self.addressed {
+                SendToFocus::Message
+            } else {
+                SendToFocus::Recipients
+            };
             self.changed();
         }
     }
@@ -944,7 +1041,7 @@ impl SendToBox {
 
         // The quiet line that names the box: whose message this is.
         let caption = theme.text(TextRole::Caption);
-        let header_label = crate::i18n::I18nManager::lookup_plain("send-to-name");
+        let header_label = self.name();
         let (_, header_height) = text_renderer.measure_style(&header_label, None, &caption);
         text_renderer.draw_style(
             scene,
@@ -1035,30 +1132,33 @@ impl SendToBox {
                 );
             }
         }
-        // The search field: what is typed, or what typing searches.
+        // The search field: what is typed, or what typing searches. A box
+        // opened to the one place it sends to has none.
         let placeholder = crate::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(
+        if !self.addressed {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(
+                    self.layout.search,
+                    radius.min(self.layout.search.height() / 2.0),
+                ),
+            );
+            self.search_composition.draw(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &self.search,
+                    selection: &self.search_selection,
+                    placeholder: &placeholder,
+                    show_caret: self.open && self.focused && self.focus == SendToFocus::Recipients,
+                },
                 self.layout.search,
-                radius.min(self.layout.search.height() / 2.0),
-            ),
-        );
-        self.search_composition.draw(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            QueryView {
-                text: &self.search,
-                selection: &self.search_selection,
-                placeholder: &placeholder,
-                show_caret: self.open && self.focused && self.focus == SendToFocus::Recipients,
-            },
-            self.layout.search,
-            &style,
-            QueryInk::of(&tokens.colors),
-        );
+                &style,
+                QueryInk::of(&tokens.colors),
+            );
+        }
 
         // What the search found, the row the keyboard is on armed.
         for (index, row) in self.layout.rows.iter().enumerate() {
@@ -1188,7 +1288,8 @@ impl SendToBox {
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
 
-        // The message: two rows of air and its first line.
+        // The message: air enough to write in, its words wrapped inside it and
+        // room made for them as they wrap.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1196,9 +1297,12 @@ impl SendToBox {
             None,
             &RoundedRect::from_rect(self.layout.message, radius * 0.75),
         );
-        let message_placeholder =
-            crate::i18n::I18nManager::lookup_plain("send-to-message-placeholder");
-        self.text_composition.draw(
+        let message_placeholder = crate::i18n::I18nManager::lookup_plain(if self.addressed {
+            "send-to-report-placeholder"
+        } else {
+            "send-to-message-placeholder"
+        });
+        self.text_composition.draw_wrapped(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             QueryView {
                 text: &self.text,
@@ -1210,7 +1314,7 @@ impl SendToBox {
                 self.layout.message.x0 + inset,
                 self.layout.message.y0,
                 self.layout.message.x1 - inset,
-                self.layout.message.y0 + self.row_height(),
+                self.layout.message.y1,
             ),
             &style,
             QueryInk::of(&tokens.colors),
@@ -1353,7 +1457,7 @@ impl SendToBox {
         ));
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(crate::i18n::I18nManager::lookup_plain("send-to-name"))
+                .with_name(self.name())
                 .with_bounds(self.rect)
                 .with_children(children),
         )

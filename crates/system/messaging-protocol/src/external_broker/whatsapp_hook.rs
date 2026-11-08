@@ -42,8 +42,6 @@ impl WhatsappInboxHook {
     /// Bind once to this exact account and SDK, on the supervisor's worker.
     /// The supervisor must keep its Arc alive while receiving and retain current
     /// grant custody. Relinking requires a new hook/client/broker assembly.
-    /// # Errors
-    /// Refuses wrong account/link/source and any attempt to replace a binding.
     pub async fn bind(
         &self,
         broker: &Arc<ExternalBroker>,

@@ -5,9 +5,6 @@ use std::time::Duration;
 use tilo_dav::{Credentials, DavClient, Depth, Limits, Options, PropName, Redirects};
 
 /// Normalize a user-entered DAV server with the same validation as connection setup.
-///
-/// # Errors
-/// Refuses unsafe or invalid server URLs.
 pub fn normalize_server(value: &str) -> Result<String, ConnectionError> {
     account_custody::nextcloud::server_url(value)
         .map(|url| url.to_string())
@@ -15,9 +12,6 @@ pub fn normalize_server(value: &str) -> Result<String, ConnectionError> {
 }
 
 /// Verify that the configured DAV root is a reachable collection with these credentials.
-///
-/// # Errors
-/// Refuses invalid configuration, unavailable endpoints, failed authentication or invalid DAV data.
 pub fn verify(account: &Account, username: &str, password: &str) -> Result<(), ConnectionError> {
     // This is the same configuration-to-root conversion used by the real mount.
     let (config, _) =

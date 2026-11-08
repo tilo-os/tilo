@@ -1,8 +1,6 @@
 //! Outputs: the screens the compositor shows the desktop on.
-//!
-//! An output has a mode in physical pixels and a scale; its place in the
-//! logical layout is its mode over its scale, which is what clients see
-//! (`wl_output`, `xdg_output`) and the pointer moves in.
+//! An output has a mode in physical pixels and a scale; its place in the logical layout is its mode
+//! over its scale, which is what clients see (`wl_output`, `xdg_output` ) and the pointer moves in.
 
 use std::time::Duration;
 
@@ -18,8 +16,7 @@ use crate::state::State;
 /// The refresh interval assumed when a mode reports none (60 Hz).
 const FALLBACK_INTERVAL: Duration = Duration::from_micros(16_667);
 
-/// The time between frames at `refresh_mhz` millihertz; 60 Hz when the
-/// mode reports no rate.
+/// The time between frames at `refresh_mhz` millihertz; 60 Hz when the mode reports no rate.
 pub(crate) fn refresh_interval(refresh_mhz: i32) -> Duration {
     u64::try_from(refresh_mhz)
         .ok()
@@ -27,23 +24,21 @@ pub(crate) fn refresh_interval(refresh_mhz: i32) -> Duration {
         .map_or(FALLBACK_INTERVAL, Duration::from_nanos)
 }
 
-/// An output as a hosted surface is told of it: its logical rectangle and
-/// the scale it draws at. The two travel together so a surface placing
-/// itself on an output cannot take the rectangle without the scale it is to
-/// draw at — which would leave it drawing at a scale the display does not
-/// show, stretched.
+/// An output as a hosted surface is told of it: its logical rectangle and the scale it draws at.
+/// The two travel together so a surface placing itself on an output cannot take the rectangle
+/// without the scale it is to draw at — which would leave it drawing at a scale the display does
+/// not show, stretched.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HostedOutput {
-    /// Its logical rectangle `(x, y, w, h)`.
+    /// Its logical rectangle `(x, y, w, h)` .
     pub rect: (i32, i32, i32, i32),
     /// Physical pixels per logical pixel it draws at.
     pub scale: f64,
 }
 
 impl HostedOutput {
-    /// The scale of the output holding `point` in the logical layout, else
-    /// of the first output there is (and 1 when there is none): the scale a
-    /// surface covering that point draws at.
+    /// The scale of the output holding `point` in the logical layout, else of the first output
+    /// there is (and 1 when there is none): the scale a surface covering that point draws at.
     #[must_use]
     pub fn scale_at(outputs: &[Self], point: (f64, f64)) -> f64 {
         let holds = |output: &&Self| {
@@ -78,8 +73,7 @@ pub struct OutputInfo {
     /// The monitor on it, as a layout follows it between ports: make,
     /// model and serial from its EDID, else the connector name.
     pub monitor: String,
-    /// The monitor as a person knows it (`Dell U2720Q`), else the
-    /// connector name.
+    /// The monitor as a person knows it (`Dell U2720Q`), else the connector name.
     pub label: String,
     /// Whether it is on.
     pub enabled: bool,
@@ -89,13 +83,13 @@ pub struct OutputInfo {
     pub scale: f64,
     /// What the panel calls itself (`Tilo 27"`), when it says.
     pub description: Option<String>,
-    /// The colour it shows: what its sink accepts and what it is being
-    /// driven with, from its EDID and the signal the backend sends.
+    /// The colour it shows: what its sink accepts and what it is being driven with, from its EDID
+    /// and the signal the backend sends.
     pub colour: DisplayCapabilities,
 }
 
-/// How a configuration (a display tool, Settings) changes one output.
-/// Unset fields keep what the output has.
+/// How a configuration (a display tool, Settings) changes one output. Unset fields keep what the
+/// output has.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputChange {
     /// The output's connector name.
@@ -131,9 +125,9 @@ impl OutputChange {
     }
 }
 
-/// Why a configuration cannot be applied, before any backend looks at it:
-/// an unknown output, an unusable scale, or every output turned off.
-/// `outputs` are every known output's name and whether it is on now.
+/// Why a configuration cannot be applied, before any backend looks at it: an unknown output, an
+/// unusable scale, or every output turned off. `outputs` are every known output's name and whether
+/// it is on now.
 pub(crate) fn check_changes(
     changes: &[OutputChange],
     outputs: &[(String, bool)],
@@ -161,8 +155,8 @@ pub(crate) fn check_changes(
     Ok(())
 }
 
-/// The mode of `modes` a request names: that size at that refresh (within
-/// half a hertz), or the fastest at that size when it names no refresh.
+/// The mode of `modes` a request names: that size at that refresh (within half a hertz), or the
+/// fastest at that size when it names no refresh.
 pub(crate) fn find_mode(modes: &[Mode], request: ModeRequest) -> Option<Mode> {
     let at_size = modes
         .iter()
@@ -176,9 +170,8 @@ pub(crate) fn find_mode(modes: &[Mode], request: ModeRequest) -> Option<Mode> {
     }
 }
 
-/// Apply the scale, rotation and place of `change` to `output` (the mode is
-/// the backend's), moving it in the layout. The caller re-arranges windows
-/// once every output is done.
+/// Apply the scale, rotation and place of `change` to `output` (the mode is the backend's), moving
+/// it in the layout. The caller re-arranges windows once every output is done.
 pub(crate) fn apply_placement(state: &mut State, output: &Output, change: &OutputChange) {
     let position = change.position.map(Point::<i32, Logical>::from);
     output.change_current_state(
@@ -205,10 +198,9 @@ pub(crate) fn logical_width(output: &Output) -> i32 {
         .w
 }
 
-/// Where outputs go in the logical layout, in the order given: an output
-/// named in `fixed` at its place, the others packed left to right (top
-/// edge at 0) after every fixed one, so outputs that come and go leave no
-/// holes. `outputs` are `(name, logical width)`.
+/// Where outputs go in the logical layout, in the order given: an output named in `fixed` at its
+/// place, the others packed left to right (top edge at 0) after every fixed one, so outputs that
+/// come and go leave no holes. `outputs` are `(name, logical width)` .
 pub(crate) fn arrange(
     outputs: &[(String, i32)],
     fixed: &std::collections::HashMap<String, (i32, i32)>,
@@ -247,19 +239,19 @@ pub fn panel_scale(size: (u32, u32), physical_mm: Option<(u32, u32)>) -> f64 {
 /// One output as a backend describes it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputConfig {
-    /// The connector name (`eDP-1`, `HEADLESS-1`), unique per session.
+    /// The connector name (`eDP-1`, `HEADLESS-1` ), unique per session.
     pub name: String,
     /// The mode, in physical pixels.
     pub size: (i32, i32),
-    /// The scale clients render at (`1.0`, `1.5`, `2.0`).
+    /// The scale clients render at (`1.0`, `1.5` , `2.0` ).
     pub scale: f64,
-    /// The top-left corner in the logical layout, when the caller places
-    /// it; `None` puts it beside the outputs already there.
+    /// The top-left corner in the logical layout, when the caller places it; `None` puts it beside
+    /// the outputs already there.
     pub position: Option<(i32, i32)>,
     /// The refresh rate in millihertz.
     pub refresh_mhz: i32,
-    /// The colour the panel on it shows: what a real sink's EDID and the
-    /// signal it is sent would declare.
+    /// The colour the panel on it shows: what a real sink's EDID and the signal it is sent would
+    /// declare.
     pub colour: DisplayCapabilities,
 }
 
@@ -296,8 +288,8 @@ impl OutputConfig {
         self
     }
 
-    /// The same output showing `colour`: a simulated panel that says what
-    /// a real one's EDID and signal would.
+    /// The same output showing `colour` : a simulated panel that says what a real one's EDID and
+    /// signal would.
     #[must_use]
     pub const fn showing(mut self, colour: DisplayCapabilities) -> Self {
         self.colour = colour;
@@ -311,8 +303,7 @@ impl OutputConfig {
         self
     }
 
-    /// The output, advertised to clients, at `location` until the layout
-    /// places it.
+    /// The output, advertised to clients, at `location` until the layout places it.
     pub(crate) fn create(
         &self,
         display: &DisplayHandle,
@@ -371,12 +362,12 @@ pub(crate) fn withdraw(output: &Output, display: &DisplayHandle) {
     }
 }
 
-/// The EDID identity of the monitor on an output, kept in its user data
-/// by the backend that read it.
+/// The EDID identity of the monitor on an output, kept in its user data by the backend that read
+/// it.
 pub(crate) struct Monitor(pub(crate) settings_store::hardware::MonitorIdentity);
 
-/// The monitor on `output`: the key a layout follows it by and the name a
-/// person knows it by; the connector name for both without an EDID.
+/// The monitor on `output` : the key a layout follows it by and the name a person knows it by; the
+/// connector name for both without an EDID.
 pub(crate) fn monitor_of(output: &Output) -> (String, String) {
     output.user_data().get::<Monitor>().map_or_else(
         || (output.name(), output.name()),

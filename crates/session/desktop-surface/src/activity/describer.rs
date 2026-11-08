@@ -1,19 +1,13 @@
-//! What a run of changes was, said in one line: descriptions of single
-//! changes and names over the runs a person would recognise as one piece of
-//! work ("Overhauled Q3 financial report").
-//!
-//! Both land in the document the changes belong to, as history metadata
-//! beside them (`ui::history_source::{descriptions, groups}`), so every member
-//! reads the same words and no device asks a model again. What a person wrote
-//! is never replaced: a name this describer wrote is marked
-//! [`ui::history_source::GENERATED_BY`], and only such a name is ever rewritten
-//! by it.
-//!
-//! Nothing here holds a model or reaches the network: [`Describer::next`]
-//! hands the host one [`Job`] at a time and [`Describer::apply`] writes its
-//! answer, so a session asks through the model gateway off the desk's thread
-//! and the portable host asks whatever its page injects. Without a model no
-//! job is asked at all, and the history keeps its deterministic digest.
+//! What a run of changes was, said in one line: descriptions of single changes and names over the
+//! runs a person would recognise as one piece of work ("Overhauled Q3 financial report").
+//! Both land in the document the changes belong to, as history metadata beside them
+//! (`ui::history_source::{descriptions, groups}`), so every member reads the same words and no
+//! device asks a model again. What a person wrote is never replaced: a name this describer wrote is
+//! marked [`ui::history_source::GENERATED_BY`], and only such a name is ever rewritten by it.
+//! Nothing here holds a model or reaches the network: [`Describer::next`] hands the host one
+//! [`Job`] at a time and [`Describer::apply`] writes its answer, so a session asks through the
+//! model gateway off the desk's thread and the portable host asks whatever its page injects.
+//! Without a model no job is asked at all, and the history keeps its deterministic digest.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,8 +19,8 @@ use ui::widget::HistoryEntryId;
 use ui::widget::history::HistoryEntry;
 use ui::widget::history_group::{GroupingConfig, NamedRange, from_hex16, group_entries, hex16};
 
-/// How many changes one description request asks about: enough to spend a
-/// request's latency on, few enough that one failure loses little.
+/// How many changes one description request asks about: enough to spend a request's latency on, few
+/// enough that one failure loses little.
 pub const BATCH: usize = 12;
 
 /// Past a few changes a run is a thing someone did rather than a keystroke;
@@ -41,7 +35,7 @@ const MAX_TITLE_TOKENS: u32 = 40;
 pub enum Job {
     /// One line per change, for changes nobody has described.
     Describe(Vec<Fact>),
-    /// One name over the run of changes from `start` to `end`.
+    /// One name over the run of changes from `start` to `end` .
     Title {
         start: HistoryEntryId,
         end: HistoryEntryId,
@@ -49,8 +43,7 @@ pub enum Job {
     },
 }
 
-/// What one change looks like to a model: the change itself, never who made
-/// it.
+/// What one change looks like to a model: the change itself, never who made it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fact {
     pub change: String,
@@ -61,8 +54,7 @@ pub struct Fact {
 }
 
 impl Job {
-    /// What this job asks, as its content: the same work is never asked
-    /// twice.
+    /// What this job asks, as its content: the same work is never asked twice.
     #[must_use]
     pub fn key(&self) -> String {
         let mut hasher = blake3::Hasher::new();
@@ -163,9 +155,8 @@ pub fn answer_text(response: &ui::models::ModelResponse) -> String {
         .collect()
 }
 
-/// Descriptions the document carries, with what a model wrote standing in
-/// place of the change's own summary. One history row per change, read
-/// exactly as the pane would read it otherwise.
+/// Descriptions the document carries, with what a model wrote standing in place of the change's own
+/// summary. One history row per change, read exactly as the pane would read it otherwise.
 pub fn shown(entries: &mut [HistoryEntry], doc: &AutoCommit) {
     let described = descriptions::read_descriptions(doc);
     for entry in entries {
@@ -177,9 +168,8 @@ pub fn shown(entries: &mut [HistoryEntry], doc: &AutoCommit) {
 
 /// What this device has asked for, and what it wrote.
 pub struct Describer {
-    /// Whether a model may be asked at all: the host's answer to whether one
-    /// is configured, here and now. A page or a session without one asks
-    /// nothing and keeps the deterministic digest.
+    /// Whether a model may be asked at all: the host's answer to whether one is configured, here
+    /// and now. A page or a session without one asks nothing and keeps the deterministic digest.
     enabled: bool,
     /// Job keys already sent, so a failure is not asked again.
     asked: HashSet<String>,
@@ -196,8 +186,7 @@ impl Default for Describer {
 }
 
 impl Describer {
-    /// A describer that asks `enabled`'s model, or, when nothing is
-    /// configured, none at all.
+    /// A describer that asks `enabled` 's model, or, when nothing is configured, none at all.
     #[must_use]
     pub fn new(enabled: bool) -> Self {
         Self {
@@ -208,19 +197,17 @@ impl Describer {
         }
     }
 
-    /// Whether a model is configured now: the person may configure one while
-    /// a session runs, and one may go away.
+    /// Whether a model is configured now: the person may configure one while a session runs, and
+    /// one may go away.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 
-    /// What the document asks for that nothing has asked yet: one batch of
-    /// descriptions, else one name. `None` when every change is described and
-    /// every run of this device's own changes is named, or when there is no
-    /// model to ask.
-    ///
-    /// Only this device's own changes are named: a title says what the person
-    /// here did, and another device names its own work.
+    /// What the document asks for that nothing has asked yet: one batch of descriptions, else one
+    /// name. `None` when every change is described and every run of this device's own changes is
+    /// named, or when there is no model to ask.
+    /// Only this device's own changes are named: a title says what the person here did, and another
+    /// device names its own work.
     pub fn next(&mut self, doc: &mut AutoCommit) -> Option<Job> {
         if !self.enabled {
             return None;
@@ -271,8 +258,8 @@ impl Describer {
         Some(job)
     }
 
-    /// The longest run of this device's own unnamed changes worth naming: the
-    /// newest one, so what the person just did is what gets a name.
+    /// The longest run of this device's own unnamed changes worth naming: the newest one, so what
+    /// the person just did is what gets a name.
     fn next_title(
         &mut self,
         doc: &mut AutoCommit,
@@ -312,8 +299,8 @@ impl Describer {
         Some(job)
     }
 
-    /// Write what a model answered for `job`. `false` when the answer wrote
-    /// nothing — a refused or unreadable answer never retries forever.
+    /// Write what a model answered for `job` . `false` when the answer wrote nothing — a refused or
+    /// unreadable answer never retries forever.
     pub fn apply(&mut self, doc: &mut AutoCommit, job: &Job, answer: &str) -> bool {
         match job {
             Job::Describe(facts) => {
@@ -329,8 +316,8 @@ impl Describer {
                 let Some(title) = parse_title(answer) else {
                     return false;
                 };
-                // A person's name over this range always wins; a range nobody
-                // named, or that this describer named, is the model's to name.
+                // A person's name over this range always wins; a range nobody named, or that this
+                // describer named, is the model's to name.
                 let key = group_key(start);
                 let taken = doc.get(automerge::ROOT, &key).ok().flatten().is_some()
                     && !groups::name_is_generated(doc, &key);
@@ -343,8 +330,8 @@ impl Describer {
         }
     }
 
-    /// Forget `job`: no model could be asked, or the answer never came.
-    /// Nothing is retried for it and no description is invented instead.
+    /// Forget `job` : no model could be asked, or the answer never came. Nothing is retried for it
+    /// and no description is invented instead.
     pub fn failed(&mut self, job: &Job) {
         self.asked.insert(job.key());
         match job {
@@ -362,8 +349,8 @@ impl Describer {
     }
 }
 
-/// The changes a named range covers, so a run that is already part of one is
-/// never named again as a whole.
+/// The changes a named range covers, so a run that is already part of one is never named again as a
+/// whole.
 fn covered_entries(entries: &[HistoryEntry], named: &[NamedRange]) -> HashSet<HistoryEntryId> {
     let index: HashMap<HistoryEntryId, usize> = entries
         .iter()
@@ -426,8 +413,8 @@ fn id_of(change: &str) -> Option<HistoryEntryId> {
     from_hex16(change)
 }
 
-/// One line per asked change, from a JSON answer: only the changes asked
-/// about, each once, each a sentence History accepts.
+/// One line per asked change, from a JSON answer: only the changes asked about, each once, each a
+/// sentence History accepts.
 fn parse_descriptions(answer: &str, asked: &[Fact]) -> Vec<(HistoryEntryId, String)> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(answer.trim()) else {
         return Vec::new();
@@ -460,8 +447,7 @@ fn parse_descriptions(answer: &str, asked: &[Fact]) -> Vec<(HistoryEntryId, Stri
     described
 }
 
-/// A name, from a JSON answer: one line, within the length a history band
-/// has room for.
+/// A name, from a JSON answer: one line, within the length a history band has room for.
 fn parse_title(answer: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(answer.trim()).ok()?;
     let title = value.get("title")?.as_str()?.trim().trim_end_matches('.');
@@ -487,8 +473,8 @@ mod tests {
         1_760_000_000_i64.saturating_add(offset)
     }
 
-    /// A document of `changes` typing commits by this device, all in one
-    /// sitting, as the Q3 report is filled in.
+    /// A document of `changes` typing commits by this device, all in one sitting, as the Q3 report
+    /// is filled in.
     fn typed(changes: usize) -> AutoCommit {
         let mut doc = AutoCommit::new();
         let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
@@ -522,8 +508,8 @@ mod tests {
         }
     }
 
-    /// Run the describer until it has nothing left to ask, answering every
-    /// job as a model would. The jobs it asked, in order.
+    /// Run the describer until it has nothing left to ask, answering every job as a model would.
+    /// The jobs it asked, in order.
     fn run(describer: &mut Describer, doc: &mut AutoCommit) -> Vec<Job> {
         let mut asked = Vec::new();
         while let Some(job) = describer.next(doc) {
@@ -608,8 +594,8 @@ mod tests {
         let named = groups::read_named_ranges(&doc, &ui::AuthorDirectory::new());
         assert_eq!(named[0].label, "Q3 report");
 
-        // A model naming the same range again is refused, by the answer that
-        // arrives after the person's.
+        // A model naming the same range again is refused, by the answer that arrives after the
+        // person's.
         let mut later = Describer::new(true);
         let job = Job::Title {
             start: range.start,

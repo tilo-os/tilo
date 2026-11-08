@@ -1,13 +1,11 @@
-//! The XDND protocol (version 5) as plain data: its client messages, the
-//! version both sides speak, the actions and the names formats go by.
-//!
-//! X11 clients drag and drop with XDND among themselves; the X11 window
-//! manager does not take part. To let a drag cross between X11 and Wayland
-//! windows (and hosted surface apps) the compositor speaks it too, through
-//! [`crate::xdnd_bridge`]: as the target, with a window it raises over
-//! everything that is not an X11 window while an X11 drag runs, and as the
-//! source when a Wayland or hosted drag enters an X11 window. What travels
-//! is encoded and decoded here, free of any connection.
+//! The XDND protocol (version 5) as plain data: its client messages, the version both sides speak,
+//! the actions and the names formats go by.
+//! X11 clients drag and drop with XDND among themselves; the X11 window manager does not take part.
+//! To let a drag cross between X11 and Wayland windows (and hosted surface apps) the compositor
+//! speaks it too, through [`crate::xdnd_bridge`]: as the target, with a window it raises over
+//! everything that is not an X11 window while an X11 drag runs, and as the source when a Wayland or
+//! hosted drag enters an X11 window. What travels is encoded and decoded here, free of any
+//! connection.
 
 use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
 
@@ -23,8 +21,7 @@ pub(crate) fn negotiate(theirs: u32) -> Option<u32> {
     (theirs >= MIN_VERSION).then(|| theirs.min(VERSION))
 }
 
-/// The atoms XDND's messages and actions are named by, interned on the
-/// connection the bridge holds.
+/// The atoms XDND's messages and actions are named by, interned on the connection the bridge holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct XdndAtoms {
     pub(crate) enter: u32,
@@ -63,8 +60,7 @@ impl Action {
         }
     }
 
-    /// The action an atom names; a private action is a copy to us, an
-    /// unknown one no action.
+    /// The action an atom names; a private action is a copy to us, an unknown one no action.
     pub(crate) fn of_atom(atom: u32, atoms: &XdndAtoms) -> Self {
         if atom == 0 {
             Self::None
@@ -89,8 +85,8 @@ impl Action {
         }
     }
 
-    /// One action out of a set Wayland offers: copy when allowed, as the
-    /// safe default, then move, then ask.
+    /// One action out of a set Wayland offers: copy when allowed, as the safe default, then move,
+    /// then ask.
     pub(crate) fn preferred(actions: DndAction) -> Self {
         if actions.contains(DndAction::Copy) {
             Self::Copy
@@ -115,7 +111,7 @@ pub(crate) enum Message {
         more_types: bool,
         types: Vec<u32>,
     },
-    /// The pointer is at this root position, asking for `action`.
+    /// The pointer is at this root position, asking for `action` .
     Position {
         source: u32,
         x: i16,
@@ -123,8 +119,8 @@ pub(crate) enum Message {
         time: u32,
         action: u32,
     },
-    /// The target's answer to a position: whether it would take a drop
-    /// there, and with which action.
+    /// The target's answer to a position: whether it would take a drop there, and with which
+    /// action.
     Status {
         target: u32,
         accept: bool,
@@ -173,9 +169,8 @@ impl Message {
                 accept,
                 action,
             } => {
-                // Bit 1 asks for every position, not only ones that leave
-                // an empty rectangle: the target behind the proxy changes
-                // anywhere.
+                // Bit 1 asks for every position, not only ones that leave an empty rectangle: the
+                // target behind the proxy changes anywhere.
                 let flags = u32::from(*accept) | 0b10;
                 (atoms.status, [*target, flags, 0, 0, *action])
             }
@@ -281,9 +276,8 @@ const META_TARGETS: [&str; 7] = [
     "XdndDirectSave0",
 ];
 
-/// The formats an X11 drag's types are offered as to Wayland clients and
-/// hosted apps: format names pass through as they are (`text/uri-list`
-/// above all), text also under its Wayland names.
+/// The formats an X11 drag's types are offered as to Wayland clients and hosted apps: format names
+/// pass through as they are (`text/uri-list` above all), text also under its Wayland names.
 pub(crate) fn mimes_of_targets(targets: &[String]) -> Vec<String> {
     normalized_mimes(
         targets
@@ -293,18 +287,17 @@ pub(crate) fn mimes_of_targets(targets: &[String]) -> Vec<String> {
     )
 }
 
-/// The types a Wayland or hosted drag's formats are offered as to an X11
-/// target: the same names, text also under its X11 names.
+/// The types a Wayland or hosted drag's formats are offered as to an X11 target: the same names,
+/// text also under its X11 names.
 pub(crate) fn targets_of_mimes(mimes: &[String]) -> Vec<String> {
     normalized_mimes(mimes.iter().cloned())
 }
 
-/// Text's names, best first: UTF-8 under either protocol's name, then
-/// the ambiguous ones.
+/// Text's names, best first: UTF-8 under either protocol's name, then the ambiguous ones.
 const TEXT_PREFERENCE: [&str; 5] = [TEXT_MIME, "UTF8_STRING", "text/plain", "STRING", "TEXT"];
 
-/// Which of `available` serves a request for `wanted`: the same name, or
-/// for text whichever text name is there, UTF-8 first.
+/// Which of `available` serves a request for `wanted` : the same name, or for text whichever text
+/// name is there, UTF-8 first.
 pub(crate) fn pick_format(wanted: &str, available: &[String]) -> Option<String> {
     if available.iter().any(|name| name == wanted) {
         return Some(wanted.to_owned());
@@ -318,13 +311,13 @@ pub(crate) fn pick_format(wanted: &str, available: &[String]) -> Option<String> 
         .map(|name| (*name).to_owned())
 }
 
-/// Files dragged out of a sandbox through the document portal: a key the
-/// receiving app redeems with the portal. It passes through as any format.
+/// Files dragged out of a sandbox through the document portal: a key the receiving app redeems with
+/// the portal. It passes through as any format.
 pub(crate) const PORTAL_FILES_MIME: &str = "application/vnd.portal.filetransfer";
 
-/// Formats read ahead from a Wayland drag dropped on an X11 window, best
-/// first, at most four: the source is told the drop is over as the button
-/// comes up, so what the X11 target will ask for must be read before.
+/// Formats read ahead from a Wayland drag dropped on an X11 window, best first, at most four: the
+/// source is told the drop is over as the button comes up, so what the X11 target will ask for must
+/// be read before.
 pub(crate) fn read_ahead(mimes: &[String]) -> Vec<String> {
     let mut chosen: Vec<String> = Vec::new();
     for wanted in ["text/uri-list", PORTAL_FILES_MIME, TEXT_MIME] {

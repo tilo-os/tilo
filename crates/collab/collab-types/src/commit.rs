@@ -114,9 +114,9 @@ pub struct UnitMutation<'a> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceCommit {
-    /// [`COMMIT_RECORD_KIND`]: what this record is.
+    /// [`COMMIT_RECORD_KIND`] — what this record is.
     pub kind: String,
-    /// [`COMMIT_VERSION`]: how to read it.
+    /// [`COMMIT_VERSION`] — how to read it.
     pub version: u16,
     /// The workspace whose units the action wrote.
     pub workspace: String,

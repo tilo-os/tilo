@@ -2,8 +2,8 @@
 //! passes before it becomes an instruction.
 //!
 //! What an instruction may ask for is exactly what the workspace's apps currently
-//! publish, through
-//! [`Instruction::Perform`]: surveyed through [`crate::surface`] and checked
+//! publish,
+//! through [`Instruction::Perform`]: surveyed through [`crate::surface`] and checked
 //! against it again at dispatch, never against a remembered list. There are
 //! no agent-only recipes: a table, a caption or a heading is whatever the
 //! applications' own published operations do, the same ones a person reaches

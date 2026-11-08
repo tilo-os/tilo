@@ -27,9 +27,6 @@ impl TaskRunControl {
     pub const MAX_BYTES: usize = 64 * 1024;
     pub const MAX_DIRECTIONS: usize = 8;
     /// Validate a bounded, contiguous instruction page from the retained frontier.
-    ///
-    /// # Errors
-    /// Rejects an invalid identity, revision gap, incomplete marker or oversized page.
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1
             || self.run_epoch == 0

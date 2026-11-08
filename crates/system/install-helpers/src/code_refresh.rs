@@ -157,10 +157,6 @@ fn metadata_ok(packet: &Value) -> bool {
 }
 
 /// `validate(raw)`: the files and the receipt binding them.
-///
-/// # Errors
-/// An oversized packet, malformed or duplicated JSON, wrong metadata, an
-/// unlisted or repeated path, or content that differs from its hash.
 pub fn validate(raw: &[u8]) -> Result<(Files, Value)> {
     require(
         !raw.is_empty() && raw.len() <= LIMIT,
@@ -255,9 +251,6 @@ pub fn receive(stream: &mut dyn Read) -> Result<(Files, Value)> {
 }
 
 /// `write_all`: every byte, then a flush.
-///
-/// # Errors
-/// The stream refusing data or failing.
 pub fn write_all(stream: &mut dyn Write, data: &[u8]) -> Result<()> {
     let mut remaining = data;
     while !remaining.is_empty() {
@@ -345,9 +338,6 @@ pub trait Guest {
     }
 
     /// A tool's stripped standard output: 30 s, nonzero exit refused.
-    ///
-    /// # Errors
-    /// The tool failing, missing or timing out.
     fn command(&self, argv: &[&str]) -> Result<String> {
         let name = crate::process::name(argv.first().copied().unwrap_or_default());
         let output = match crate::process::run(argv, None, TIMEOUT) {
@@ -370,9 +360,6 @@ pub trait Guest {
 
     /// `gate`: only the opted-in development scenario VM, in PID 1's mount
     /// namespace.
-    ///
-    /// # Errors
-    /// Anywhere else.
     fn gate(&self) -> Result<()> {
         let regular = |path: &str| {
             let path = Path::new(path);
@@ -427,9 +414,6 @@ pub trait Guest {
     }
 
     /// Copies `from`'s `SELinux` label, if it has one, to `to`.
-    ///
-    /// # Errors
-    /// The label cannot be read or set.
     fn copy_label(&self, from: &Path, to: &Path) -> Result<()> {
         let mut names = vec![0u8; 65536];
         let length = rustix::fs::listxattr(from, &mut names)?;
@@ -452,9 +436,6 @@ pub trait Guest {
     }
 
     /// Runs the refreshed backend's execution probe with empty input.
-    ///
-    /// # Errors
-    /// The backend missing or timing out.
     fn run_probe(&self, argv: &[&str]) -> Result<crate::process::Output> {
         crate::process::run(argv, Some(b""), TIMEOUT)
     }
@@ -465,9 +446,6 @@ pub trait Guest {
     }
 
     /// Opens the host channel.
-    ///
-    /// # Errors
-    /// The port cannot be opened.
     fn open_port(&self) -> Result<Box<dyn Stream>> {
         let port = File::options()
             .read(true)
@@ -477,9 +455,6 @@ pub trait Guest {
     }
 
     /// Tells systemd the first refresh is in place.
-    ///
-    /// # Errors
-    /// The notification socket refuses it.
     fn ready(&self) -> Result<()> {
         notify_ready()
     }
@@ -612,10 +587,6 @@ fn is_generation(name: &OsStr) -> bool {
 
 /// `apply`: stage every file, then bind each over its helper read-only,
 /// recording the transaction so a backend never runs on a partial view.
-///
-/// # Errors
-/// A gate, lock or idleness refusal, an earlier incomplete or repeated
-/// generation, an unsafe destination, or a failed mount (rolled back).
 pub fn apply(guest: &dyn Guest, files: &Files, receipt: &Value) -> Result<Value> {
     guest.gate()?;
     // Held until this returns, so the backend's own flock waits for the
@@ -774,9 +745,6 @@ fn byte_lines(bytes: &[u8]) -> Vec<&[u8]> {
 /// `backend_probe`: when the refreshed backend carries the probe, run it
 /// through its real transient, enforcing path and require its row to name
 /// the exact helper bytes; otherwise `None`.
-///
-/// # Errors
-/// The probe failing, or a row that does not match.
 pub fn backend_probe(guest: &dyn Guest, files: &Files) -> Result<Value> {
     let helper = files
         .iter()

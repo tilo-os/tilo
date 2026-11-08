@@ -1,7 +1,6 @@
-//! What search reads of the session, fed every pass: who is here, the
-//! workspaces and the tabs they show, where each window was, and the history
-//! the person typed and kept. Search is the session's own, so this is the one
-//! place that hands it what only the host knows.
+//! What search reads of the session, fed every pass: who is here, the workspaces and the tabs they
+//! show, where each window was, and the history the person typed and kept. Search is the session's
+//! own, so this is the one place that hands it what only the host knows.
 
 use std::rc::Rc;
 
@@ -11,8 +10,8 @@ use crate::search;
 use tilo_desktop_search::providers::places::Place;
 
 impl Shared {
-    /// Hand search what the session publishes when it changed: read after
-    /// a frame, as the desk cannot read its own tree while it opens search.
+    /// Hand search what the session publishes when it changed: read after a frame, as the desk
+    /// cannot read its own tree while it opens search.
     pub(crate) fn observe(&self) {
         // Who is here changes faster than what is published: people and
         // calls come and go between two door revisions, so the empty
@@ -29,21 +28,19 @@ impl Shared {
             self.here_seen.set(people);
             self.search.set_here(self.here_now());
         }
-        // The workspaces as this frame shows them, before the door revision
-        // decides whether the rest is worth reading again: a record held by
-        // another workspace is offered under that workspace's name.
+        // The workspaces as this frame shows them, before the door revision decides whether the
+        // rest is worth reading again: a record held by another workspace is offered under that
+        // workspace's name.
         self.search.set_workspaces(self.handle.read(|tree| {
             tree.workspaces
                 .iter()
                 .map(|held| (held.id().to_string(), held.name.clone()))
                 .collect()
         }));
-        // A held pointer drags or resizes a window, and every frame of it
-        // moves the desk — a change of how the desk shows a window, not of
-        // what search offers, and the palette cannot open while the pointer
-        // is held. The revision this read last is left as it was, so the
-        // survey reads the desk once, in the first pass after the person
-        // lets go.
+        // A held pointer drags or resizes a window, and every frame of it moves the desk — a change
+        // of how the desk shows a window, not of what search offers, and the palette cannot open
+        // while the pointer is held. The revision this read last is left as it was, so the survey
+        // reads the desk once, in the first pass after the person lets go.
         if self.underway.get().gesture {
             return;
         }
@@ -74,13 +71,13 @@ impl Shared {
         });
         self.record_places(&tabs);
         let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
-        // The downloaded programs, as their registry publishes them: search
-        // lists them from the one registry the app sheets read too, so a
-        // registry that does not read back is said once, in one place.
+        // The downloaded programs, as their registry publishes them: search lists them from the one
+        // registry the app sheets read too, so a registry that does not read back is said once, in
+        // one place.
         let downloaded = self.downloaded_apps();
         let resources = self.doors.resources();
-        // What a place made from a resource reads its app and views from:
-        // the same tree search and the palette read.
+        // What a place made from a resource reads its app and views from: the same tree search and
+        // the palette read.
         self.arrangement
             .borrow()
             .targets()
@@ -90,8 +87,8 @@ impl Shared {
         self.keep_history();
     }
 
-    /// Where each app's window is now, for search's Continue: a window
-    /// whose title changed since it was last seen was at a new place.
+    /// Where each app's window is now, for search's Continue: a window whose title changed since it
+    /// was last seen was at a new place.
     pub(crate) fn record_places(&self, tabs: &[(u64, String, Option<String>, String)]) {
         let mut seen = self.places_seen.borrow_mut();
         seen.retain(|tab, _| tabs.iter().any(|(open, ..)| open == tab));
@@ -132,8 +129,7 @@ impl Shared {
         }
     }
 
-    /// Host the desktop's search, with its kept history and what the
-    /// session publishes.
+    /// Host the desktop's search, with its kept history and what the session publishes.
     pub(crate) fn start_search(&self) {
         self.handle
             .set_search_host(Rc::clone(&self.search) as Rc<dyn tilo_desktop_surface::SearchHost>);

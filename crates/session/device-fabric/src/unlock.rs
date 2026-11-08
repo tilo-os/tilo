@@ -1,32 +1,15 @@
 //! The sibling side of unlocking an encrypted disk after a reboot.
-//!
 //! Every device of the person holds the sibling halves of the others, as
-//! [`UnlockEnrolment`]s in the enrolled device's personal-fabric snapshot:
-//! sealed to the person's root-derived secret-sync key, so only a device that
-//! holds the root can open one. Early boot of an enrolled device asks over
-//! [`tilo_unlock_protocol::UNLOCK_ALPN`]; [`UnlockSibling`] answers.
-//!
-//! A sibling releases a half only when all of these hold:
-//!
-//! * the boot key certificate is signed by the person's root, names a device
-//!   the fleet still certifies (a removed device is refused), and matches an
-//!   enrolment this sibling holds;
-//! * the request answers a challenge this sibling issued, unexpired and
-//!   never answered before, signed by the certified boot key and bound to
-//!   the device, this boot's id, the slot and a per-request ephemeral key;
-//! * this boot was not served before, and the device is within its rate
-//!   limit;
-//! * the owner approved the typed `device.unlock` action, or the owner turned
-//!   on auto-approval for exactly this device and the request carries a TPM
-//!   quote of a boot chain the owner accepted.
-//!
-//! The half then travels sealed to the request's ephemeral key. The owner's
-//! answer itself is a fact ([`UnlockDecisionRecord`]): the device that
-//! answered keeps it in its own fabric snapshot for as long as it holds
-//! ([`DECISION_LIFETIME_NS`]), so a boot whose stream went away before the
-//! answer reached it hears the same answer from any of the person's devices
-//! instead of asking them all over again. Those signed answers are what the
-//! owner's activity history shows, on every one of their devices.
+//! [`UnlockEnrolment`]s sealed to the person's root-derived secret-sync key, so
+//! only a device that holds the root can open one. Early boot of an enrolled device
+//! asks over [`tilo_unlock_protocol::UNLOCK_ALPN`]; [`UnlockSibling`] answers.
+//! A sibling releases a half only when the boot key is signed by the person's root
+//! and matches an enrolment, the request answers a challenge this sibling issued,
+//! this boot was not served before and the device is within its rate limit, and the
+//! owner approved `device.unlock` or turned on auto-approval for exactly this
+//! device. The half then travels sealed to the request's ephemeral key, and the
+//! owner's answer is a fact every one of their devices keeps
+//! ([`UnlockDecisionRecord`]), so a boot that lost its stream hears it again.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 

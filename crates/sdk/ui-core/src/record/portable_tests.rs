@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn portable_owner_preserves_reservation_identity_actor_and_durability() {
+fn portable_owner_preserves_reservation_identity_custody_and_durability() {
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let mut owners = RecordOwners::portable(cache.clone());
     let store = owners.open("so.tilo.test", "workspace").unwrap();
@@ -34,11 +34,24 @@ fn portable_owner_preserves_reservation_identity_actor_and_durability() {
     drop(store);
     let reopened = owners.open("so.tilo.test", "workspace").unwrap();
     reopened.try_open_record(&checkout).unwrap();
-    assert_eq!(
+    assert_ne!(
         reopened
             .read(&checkout.id, |doc| doc.get_actor().clone())
             .unwrap(),
-        actor
+        actor,
+        "a page writes the record under a writer it mints, never the one a saved row carries"
+    );
+    let title = reopened
+        .read(&checkout.id, |doc| {
+            doc.get(automerge::ROOT, "title")
+                .unwrap()
+                .map(|(value, _)| value.to_string())
+        })
+        .unwrap();
+    assert_eq!(
+        title.as_deref(),
+        Some("\"Hello\""),
+        "what the first page wrote"
     );
     let wrong_kind = RecordCheckout::new(checkout.id.clone(), RecordKind::new("other"));
     assert!(matches!(

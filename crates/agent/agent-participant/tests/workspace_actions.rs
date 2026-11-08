@@ -41,6 +41,7 @@ mod governed_agent;
 #[cfg(test)]
 #[path = "workspace_actions/governed_sealed.rs"]
 mod governed_sealed;
+mod harness;
 #[cfg(test)]
 #[path = "workspace_actions/member_own.rs"]
 mod member_own;
@@ -61,28 +62,29 @@ tilo_agent_participant::app_worker!();
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::InvocationId;
 use tilo_actions::door::ActionAddress;
-use tilo_actions::remote::{
-    ActionHostError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
-    InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
-};
+use tilo_actions::remote::{CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget};
 #[cfg(test)]
 use tilo_actions::{
     ConfirmationPolicy,
-    remote::{Confirmation, ReceiptStatus},
+    remote::{ActionHostError, Confirmation, ReceiptStatus, RemoteActionMessage},
 };
-use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed, record_provider};
-use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_agent_participant::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
+use tilo_browser_peer::Host;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use support::{Device, WORKSPACE, enrol, ready, start_peer};
+use harness::hosted::{Hosted, Options};
+use harness::page::Page;
+#[cfg(test)]
+use support::WORKSPACE;
+use support::{Device, enrol, ready, start_peer};
 
 const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
@@ -112,12 +114,11 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .unwrap();
     let mut browser =
         Browser::open_workspace(&hosted, &browser_device, &host, &workspace.workspace).await;
-    let mut source = Replica::open(
-        &common::catalogue(),
-        "so.tilo.chat",
+    let mut source = common::open_in(
         &workspace.workspace,
+        "so.tilo.chat",
         "ada",
-        tilo_agent_participant::ReplicaActor::Owner,
+        ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
@@ -511,16 +512,12 @@ impl tilo_agent_participant::workspace_actions::WorkspaceRecordsLink for Deliver
     }
 }
 
-struct Hosted {
-    relay: Relay,
-    web: WebHandle,
-    agents: AgentHost,
-}
-
+/// The host with its agent supervisor, offering every app and no page.
 async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
     start_browser(root, host, state, None).await
 }
 
+/// The host serving the page at `page`, when it serves one.
 async fn start_browser(
     root: &SigningKey,
     host: &Device,
@@ -538,211 +535,23 @@ async fn start_lending(
     page: Option<&str>,
     feedback_reviewer: Option<Arc<dyn tilo_agent_participant::FeedbackReviewer>>,
 ) -> Hosted {
-    let user = root.verifying_key().to_bytes();
-    let cfg = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
-        web_entry: page.map(|origin| format!("{origin}/")),
-        ..Default::default()
+    let options = Options {
+        feedback_reviewer,
+        ..Options::offering(common::catalogue, ModelChoice::Scripted)
     };
-    let (relay, agents) = tilo_relay::agents::start(
-        cfg,
-        RelayIdentity {
-            user_public_key: user,
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        tilo_relay::agents::AgentOptions {
-            state_dir: state.join("agents"),
-            model: ModelChoice::Scripted,
-            catalogue: Some(Arc::new(common::catalogue)),
-            feedback_reviewer,
-        },
-    )
-    .await
-    .unwrap();
-    let web = relay
-        .serve_web(WebConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
-                hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                store: Some(state.join("web-dev-identity")),
-            },
-            allowed_origins: page.into_iter().map(str::to_owned).collect(),
-            plain_listen: None,
-            public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
-            country: None,
-            fetch_proxy: None,
-            live: LiveConfig::default(),
-        })
-        .await
-        .unwrap();
-    Hosted { relay, web, agents }
+    let options = match page {
+        Some(origin) => options.serving(origin),
+        None => options,
+    };
+    harness::hosted::start(root, host, state, options).await
 }
 
-/// A document checkpoint: its hash and its bytes.
-type Checkpoint = ([u8; 32], Vec<u8>);
+/// A page speaking the remote-action vocabulary to the host.
+pub use harness::page::Page as Browser;
 
-/// A browser session speaking the remote-action vocabulary to the host.
-struct Browser {
-    peer: PeerHandle,
-    events: PeerEvents,
-    host_key: [u8; 32],
-    documents: BTreeMap<DocumentRoute, Vec<Checkpoint>>,
-    answers: Vec<RemoteActionMessage>,
-    correlation: u64,
-    workspace: u64,
-    cluster_id: String,
-}
-
-impl Browser {
-    async fn open(hosted: &Hosted, device: &Device, host: &Device) -> Self {
-        Self::open_workspace(hosted, device, host, WORKSPACE).await
-    }
-
-    async fn open_workspace(
-        hosted: &Hosted,
-        device: &Device,
-        host: &Device,
-        cluster_id: &str,
-    ) -> Self {
-        let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
-        let https = support::https::DevHttps::new(
-            hosted.web.addr,
-            hosted.web.certificate_sha256.as_ref().unwrap(),
-        );
-        let peer = start_peer(
-            Host::Https(https),
-            device.cert.clone(),
-            host.cert.clone(),
-            device.key.clone(),
-        );
-        let events = peer.events();
-        if cluster_id == WORKSPACE {
-            // The page asks its host to govern its person's workspace and
-            // admit it, as every page does before joining one.
-            peer.join_placed(cluster_id, "Workspace").unwrap();
-        } else {
-            ready(&[&peer]).await;
-            let (reply, answer) = tokio::sync::oneshot::channel();
-            peer.rooms_then(
-                tilo_relay_protocol::workspaces::WorkspacesRequest::Enter {
-                    workspace: cluster_id.into(),
-                },
-                Box::new(move |result| {
-                    let _ = reply.send(result);
-                }),
-            )
-            .unwrap();
-            assert!(matches!(
-                tilo_test_env::within("the node enters the governed fixture", answer)
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                tilo_relay_protocol::workspaces::WorkspacesReply::Workspace(_)
-            ));
-            peer.join(workspace).unwrap();
-        }
-        ready(&[&peer]).await;
-        Self {
-            peer,
-            events,
-            host_key: host.cert.device_public_key,
-            documents: BTreeMap::new(),
-            answers: Vec::new(),
-            correlation: 0,
-            workspace,
-            cluster_id: cluster_id.to_owned(),
-        }
-    }
-
-    fn pump(&mut self) {
-        for event in self.events.drain() {
-            match event {
-                PeerEvent::Document(document) => {
-                    if let Some(mutation) = document.mutation() {
-                        let bytes = match mutation {
-                            collab_types::DocumentMutation::Snapshot(bytes)
-                            | collab_types::DocumentMutation::Incremental(bytes) => bytes,
-                        };
-                        self.documents
-                            .entry(document.route.clone())
-                            .or_default()
-                            .push((document.author, bytes));
-                    }
-                }
-                PeerEvent::RemoteAction { from, frame, .. } if from == self.host_key => {
-                    self.answers
-                        .push(RemoteActionFrame::decode(&frame).unwrap().message);
-                }
-                PeerEvent::RemoteActionUndeliverable { reason, .. } => {
-                    panic!("undeliverable: {reason}")
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn send(&self, message: RemoteActionMessage) {
-        let frame = RemoteActionFrame::new(message).encode().unwrap();
-        self.peer
-            .send_remote_action(self.workspace, self.host_key, frame)
-            .unwrap();
-    }
-
-    /// Wait for the first answer `pick` accepts, removing it.
-    async fn answer<T>(
-        &mut self,
-        what: &str,
-        pick: impl Fn(&RemoteActionMessage) -> Option<T>,
-    ) -> T {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            self.pump();
-            if let Some(index) = self
-                .answers
-                .iter()
-                .position(|answer| pick(answer).is_some())
-            {
-                let answer = self.answers.remove(index);
-                return pick(&answer).unwrap();
-            }
-            assert!(Instant::now() < deadline, "no answer: {what}");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
-    async fn catalogue(&mut self, query: CatalogueQuery) -> Result<CataloguePage, ActionHostError> {
-        self.correlation = self.correlation.checked_add(1).unwrap();
-        let correlation = self.correlation;
-        self.send(RemoteActionMessage::CatalogueRequest { correlation, query });
-        self.answer("catalogue", |answer| match answer {
-            RemoteActionMessage::CatalogueResponse {
-                correlation: got,
-                result,
-            } if *got == correlation => Some(result.clone()),
-            _ => None,
-        })
-        .await
-    }
-
-    async fn receipt(&mut self, invocation: InvocationId) -> InvocationReceipt {
-        self.answer("receipt", |answer| match answer {
-            RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
-                Some(receipt.clone())
-            }
-            _ => None,
-        })
-        .await
-    }
-
-    async fn invoke(&mut self, request: InvokeRequest) -> InvocationReceipt {
-        let invocation = request.invocation;
-        self.send(RemoteActionMessage::Invoke(request));
-        self.receipt(invocation).await
-    }
-
+/// What a page does with the records it holds: it creates them whole, and
+/// mounts them from the changes it received.
+impl Page {
     /// Create `app`'s record the way a page does, then close it: nobody has
     /// it open afterwards.
     fn create(&mut self, app: &str) -> DocumentRoute {
@@ -754,15 +563,8 @@ impl Browser {
         app: &str,
         before_publish: impl FnOnce(&DocumentRoute),
     ) -> DocumentRoute {
-        let mut page = Replica::open(
-            &common::catalogue(),
-            app,
-            &self.cluster_id,
-            "ada",
-            tilo_agent_participant::ReplicaActor::Owner,
-            Seed::New,
-        )
-        .unwrap();
+        let mut page =
+            common::open_in(&self.cluster_id, app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: self.cluster_id.clone(),
@@ -787,22 +589,26 @@ impl Browser {
     fn mount(&mut self, route: &DocumentRoute) -> Replica {
         self.pump();
         let changes = self.documents.get(route).cloned().unwrap_or_default();
-        Replica::open(
-            &common::catalogue(),
-            &route.app_id,
+        common::open_in(
             &self.cluster_id,
+            &route.app_id,
             "ada",
-            tilo_agent_participant::ReplicaActor::Owner,
+            ReplicaActor::Owner,
             Seed::Existing {
-                record: if route.record.is_empty() {
-                    ui::record::RecordId::package_primary()
-                } else {
-                    ui::record::RecordId::parse(&route.record).unwrap()
-                },
+                record: route_record(&route.record),
                 changes: changes.into_iter().map(|(_, bytes)| bytes).collect(),
             },
         )
         .unwrap()
+    }
+}
+
+/// The record a route names.
+pub fn route_record(record: &str) -> ui::record::RecordId {
+    if record.is_empty() {
+        ui::record::RecordId::package_primary()
+    } else {
+        ui::record::RecordId::parse(record).unwrap()
     }
 }
 

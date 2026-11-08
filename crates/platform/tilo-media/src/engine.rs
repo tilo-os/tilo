@@ -1281,6 +1281,16 @@ impl SynthState {
 mod tests {
     use super::*;
 
+    /// A synthesized engine with the same remote source opened: the prologue
+    /// every transport phase below starts from.
+    fn opened() -> MediaEngine {
+        let mut engine = MediaEngine::new_synthesized();
+        engine.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        engine
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1292,20 +1302,14 @@ mod tests {
             // `Duration::MAX`. Turning that into a deadline overflows `Instant`,
             // and `Instant + Duration` panics rather than saturating — so the one
             // caller who asked hardest to be patient was the one who got killed.
-            let mut e = MediaEngine::new_synthesized();
-            e.open(Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
+            let mut e = opened();
             assert!(
                 e.seek_and_wait(1_000, tilo_clock::Duration::MAX).is_ok(),
                 "an unbounded wait still returns the frame it waited for"
             );
         }
         {
-            let mut e = MediaEngine::new_synthesized();
-            e.open(Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
+            let mut e = opened();
             e.play();
 
             // First poll: DurationKnown must precede any Position.
@@ -1331,10 +1335,7 @@ mod tests {
             );
         }
         {
-            let mut e = MediaEngine::new_synthesized();
-            e.open(Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
+            let mut e = opened();
             e.play();
             e.poll_at(0); // baseline
             e.poll_at(1_000);
@@ -1349,10 +1350,7 @@ mod tests {
             assert_eq!(e.position_ms(), 1_000, "paused playhead does not advance");
         }
         {
-            let mut engine = MediaEngine::new_synthesized();
-            engine.open(Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
+            let mut engine = opened();
             engine.set_rate(2.0);
             engine.play();
             engine.poll_at(0);
@@ -1363,10 +1361,7 @@ mod tests {
             assert!((engine.rate() - 4.0).abs() < f32::EPSILON);
         }
         {
-            let mut e = MediaEngine::new_synthesized();
-            e.open(Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
+            let mut e = opened();
             e.seek_ms(e.duration_ms().unwrap() - 10);
             e.play();
             e.poll_at(0); // baseline
@@ -1384,10 +1379,7 @@ mod tests {
             assert_eq!(e.position_ms(), e.duration_ms().unwrap());
         }
         {
-            let mut e = MediaEngine::new_synthesized();
-            e.open(Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
+            let mut e = opened();
             e.poll_at(0);
             // Host is playing, well ahead of us — a corrective seek must fire.
             let host = TransportState {
@@ -1414,10 +1406,7 @@ mod tests {
             );
         }
         {
-            let mut e = MediaEngine::new_synthesized();
-            e.open(Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
+            let mut e = opened();
             e.seek_ms(5_000);
             e.play();
             let ts = e.transport_state(1_234);
@@ -1430,10 +1419,7 @@ mod tests {
     #[test]
     fn synthesized_engine_produces_frames_only_once_opened() {
         {
-            let mut e = MediaEngine::new_synthesized();
-            e.open(Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
+            let e = opened();
             let f = e.latest_frame().expect("a seed frame exists after open");
             assert_eq!((f.width, f.height), (SYNTH_W, SYNTH_H));
             assert_eq!(f.rgba.len(), (SYNTH_W * SYNTH_H * 4) as usize);

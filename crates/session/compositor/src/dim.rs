@@ -1,30 +1,27 @@
 //! The idle dim that precedes a blank ([`crate::idle::SessionTransition::Dimmed`]).
-//!
-//! With a backlight the panel is lowered to [`DIM_FRACTION`] of whatever the
-//! person had and put back exactly on input. Desktops and most VMs have no
-//! backlight to lower, so there the scene is darkened by an overlay instead
-//! ([`ScreenDimmer::overlay_alpha`]); either way the person sees the same
-//! warning. The session supplies the backlight ([`Backlight`]); the
-//! compositor knows no brightness device.
+//! With a backlight the panel is lowered to [`DIM_FRACTION`] of whatever the person had and put
+//! back exactly on input. Desktops and most VMs have no backlight to lower, so there the scene is
+//! darkened by an overlay instead ([`ScreenDimmer::overlay_alpha`]); either way the person sees the
+//! same warning. The session supplies the backlight ([`Backlight`]); the compositor knows no
+//! brightness device.
 
 use crate::idle::SessionManager;
 
 /// The dimmed brightness as a fraction of the brightness before dimming.
 pub const DIM_FRACTION: f32 = 0.3;
 
-/// Opacity of the black overlay that stands in for a backlight: leaving `DIM_FRACTION` of the
-/// light through looks like the same dim a backlight would give.
+/// Opacity of the black overlay that stands in for a backlight: leaving `DIM_FRACTION` of the light
+/// through looks like the same dim a backlight would give.
 pub const OVERLAY_ALPHA: f32 = 1.0 - DIM_FRACTION;
 
-/// The display's backlight, as far as dimming needs it. Fractions are `0.0..=1.0`.
+/// The display's backlight, as far as dimming needs it. Fractions are `0.0..=1.0` .
 pub trait Backlight {
     /// The current brightness, or `None` when there is no controllable backlight.
     fn brightness(&self) -> Option<f32>;
     /// Set the brightness. Returns whether the write took effect.
     fn set_brightness(&self, fraction: f32) -> bool;
-    /// Whether the panel's backlight is powered (`bl_power` 0), as the
-    /// kernel holds it; `None` when it says nothing. A wake that leaves it
-    /// blanked has not lit the panel.
+    /// Whether the panel's backlight is powered (`bl_power` 0), as the kernel holds it; `None` when
+    /// it says nothing. A wake that leaves it blanked has not lit the panel.
     fn powered(&self) -> Option<bool> {
         None
     }
@@ -97,7 +94,7 @@ impl std::fmt::Debug for dyn Backlight {
 }
 
 impl<B: Backlight> ScreenDimmer<B> {
-    /// A dimmer driving `backlight`, starting at full brightness.
+    /// A dimmer driving `backlight` , starting at full brightness.
     pub fn new(backlight: B) -> Self {
         Self {
             backlight,
@@ -119,9 +116,8 @@ impl<B: Backlight> ScreenDimmer<B> {
         };
     }
 
-    /// Put the display back to the brightness it had before [`Self::dim`].
-    /// A failed write keeps the saved level for the next restore, so the
-    /// dimmed level is never taken for the user's own.
+    /// Put the display back to the brightness it had before [`Self::dim`]. A failed write keeps the
+    /// saved level for the next restore, so the dimmed level is never taken for the user's own.
     pub fn restore(&mut self) {
         if let Dim::Backlight(saved) = self.dim
             && !self.backlight.set_brightness(saved)
@@ -131,9 +127,9 @@ impl<B: Backlight> ScreenDimmer<B> {
         self.dim = Dim::Off;
     }
 
-    /// Keep the session's dim state what the panel shows. A restore the
-    /// driver refused leaves the panel dimmed, so the session must not take
-    /// it for lifted: the next input then lifts it again.
+    /// Keep the session's dim state what the panel shows. A restore the driver refused leaves the
+    /// panel dimmed, so the session must not take it for lifted: the next input then lifts it
+    /// again.
     pub fn keep_session_truthful(&self, session: &mut SessionManager) {
         if matches!(self.dim, Dim::Backlight(_)) {
             session.keep_dimmed();
@@ -145,8 +141,8 @@ impl<B: Backlight> ScreenDimmer<B> {
         &self.backlight
     }
 
-    /// Whether the dim holds the backlight lowered, so nothing else (an
-    /// ambient-light loop) should raise it behind the person's back.
+    /// Whether the dim holds the backlight lowered, so nothing else (an ambient-light loop) should
+    /// raise it behind the person's back.
     pub fn holds_backlight(&self) -> bool {
         matches!(self.dim, Dim::Backlight(_))
     }

@@ -111,11 +111,6 @@ impl SessionResource {
 
     /// Invoke `action` of the resource with `arguments` (none for an action
     /// that takes nothing). Blocking, bounded: call it off the frame thread.
-    ///
-    /// # Errors
-    ///
-    /// No session is connected, it does not answer in time, or the door
-    /// refused the action, with what it said.
     pub fn invoke(
         &self,
         action: &str,

@@ -123,8 +123,6 @@ impl FsSession {
     }
     /// Bind only the immutable root-created derivative of the independently
     /// authenticated original source record. Byte arrays cannot admit owners.
-    /// # Errors
-    /// Refuses unsealed, non-root, malformed keys or unrelated live custody.
     #[cfg(target_os = "linux")]
     pub fn bind_retained_source_owner(
         &self,
@@ -168,8 +166,6 @@ impl FsSession {
         Ok(())
     }
     /// Bind retained source authority only on supported hosts.
-    /// # Errors
-    /// Always returns an unsupported-platform error outside Linux.
     #[cfg(not(target_os = "linux"))]
     pub fn bind_retained_source_owner(
         &self,
@@ -181,8 +177,6 @@ impl FsSession {
         ))
     }
     /// Metadata identifier of the actual admitted source, never an admission.
-    /// # Errors
-    /// Requires its live original root/custody and independently sealed key.
     pub fn retained_source_owner_key(&self) -> Result<[u8; 32], FsError> {
         let table = self.call()?;
         let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
@@ -251,8 +245,6 @@ impl FsSession {
         Ok(())
     }
     /// Bind retained history authority only on supported hosts.
-    /// # Errors
-    /// Always returns an unsupported-platform error outside Linux.
     #[cfg(not(target_os = "linux"))]
     pub fn bind_retained_history_verifier(
         &self,

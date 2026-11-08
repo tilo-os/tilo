@@ -38,6 +38,28 @@ pub fn text(secs: i64) -> String {
     format!("{sign}{amount}{unit}")
 }
 
+/// The seconds `text` reads as, one part or several: `90m`, `2h 30m`, `1d 2h`; `None` when a
+/// part is not an amount of a unit. The parts add up, and a leading `-` or `+` signs them all.
+#[must_use]
+pub fn secs(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let (sign, rest) = match text.strip_prefix('-') {
+        Some(rest) => (-1, rest),
+        None => (1, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let mut total: i64 = 0;
+    let mut parts = 0usize;
+    for part in rest.split_whitespace() {
+        let (amount, unit) = parse(part)?;
+        total = total.checked_add(seconds(amount, unit)?)?;
+        parts += 1;
+    }
+    if parts == 0 {
+        return None;
+    }
+    total.checked_mul(sign)
+}
+
 /// `-7d` as `(-7, "d")`; `None` when `text` is not a duration.
 #[must_use]
 pub fn parse(text: &str) -> Option<(i64, &'static str)> {
@@ -72,6 +94,18 @@ mod tests {
         assert_eq!(super::parse("d"), None);
         assert_eq!(super::parse("7x"), None);
         assert_eq!(super::seconds(-7, "d"), Some(-604_800));
+    }
+
+    #[test]
+    fn a_length_of_time_reads_as_the_parts_it_is_written_in() {
+        assert_eq!(super::secs("90m"), Some(5400));
+        assert_eq!(super::secs("2h 30m"), Some(9000));
+        assert_eq!(super::secs("1d 2h"), Some(93_600));
+        assert_eq!(super::secs("-2h 30m"), Some(-9000));
+        assert_eq!(super::secs("+2h 30m"), Some(9000));
+        assert_eq!(super::secs("45 m"), None);
+        assert_eq!(super::secs("hour"), None);
+        assert_eq!(super::secs(""), None);
     }
 
     #[test]

@@ -1,12 +1,9 @@
-//! The peek: a small picture of someone's screen beside the people
-//! overlay, and Follow.
-//!
-//! Nothing of their screen is streamed. The picture is built from what
-//! their presence says: where their windows stand, which app each is, and
-//! which one is in front. A window on something shared with this person
-//! shows as their own copy of it (its live picture, or its title); any
-//! other shows its app and nothing more. Someone who keeps where they are
-//! to themselves shows no picture at all.
+//! The peek: a small picture of someone's screen beside the people overlay, and Follow.
+//! Nothing of their screen is streamed. The picture is built from what their presence says: where
+//! their windows stand, which app each is, and which one is in front. A window on something shared
+//! with this person shows as their own copy of it (its live picture, or its title); any other shows
+//! its app and nothing more. Someone who keeps where they are to themselves shows no picture at
+//! all.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -51,8 +48,7 @@ pub(super) struct Peek {
     follow: Rect,
 }
 
-/// The gap between the panel and the peek, and the peek and its message
-/// box.
+/// The gap between the panel and the peek, and the peek and its message box.
 pub(super) fn gap(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
@@ -64,8 +60,7 @@ impl Peek {
 
     pub(super) fn open(&mut self, id: &str, motion: EffectiveMotion, now: Instant) {
         if self.person.as_deref() != Some(id) || !self.shown.is_open() {
-            // Another person's peek replaces this one in place: it does not
-            // close and open again.
+            // Another person's peek replaces this one in place: it does not close and open again.
             if self.person.is_none() || !self.shown.is_visible(now) {
                 self.shown = Presence::closed();
             }
@@ -225,8 +220,8 @@ impl Peek {
     }
 }
 
-/// The peek's header: their face, name and what they are doing (with
-/// where they are), software's line marked as such.
+/// The peek's header: their face, name and what they are doing (with where they are), software's
+/// line marked as such.
 fn paint_header(ctx: &mut ui::paint::PaintCtx<'_>, header: Rect, row: &RosterRow) {
     let line = row_line(row);
     let fallback = t("people-overlay-doing-nothing");
@@ -305,8 +300,8 @@ fn paint_follow(ctx: &mut ui::paint::PaintCtx<'_>, slot: Rect, model: &PeekModel
     follow
 }
 
-/// Where the card of `size` goes: beside the panel, away from the edge it
-/// rests on, level with the row it opened from, kept on screen.
+/// Where the card of `size` goes: beside the panel, away from the edge it rests on, level with the
+/// row it opened from, kept on screen.
 fn place(model: &PeekModel<'_>, (width, height): (f64, f64), theme: &Theme) -> Rect {
     let gap = gap(theme);
     let margin = f64::from(theme.tokens.spacing.s3);
@@ -340,8 +335,8 @@ fn place(model: &PeekModel<'_>, (width, height): (f64, f64), theme: &Theme) -> R
     Rect::new(x, y, x + width, y + height)
 }
 
-/// Paint their screen into `rect`: their windows where they stand, or, when
-/// they keep where they are to themselves, a line saying so.
+/// Paint their screen into `rect` : their windows where they stand, or, when they keep where they
+/// are to themselves, a line saying so.
 fn paint_screen(
     scene: &mut Scene,
     transform: Affine,
@@ -363,8 +358,7 @@ fn paint_screen(
     );
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &ground);
     if let Some(screen) = screen.filter(|screen| !screen.windows.is_empty()) {
-        // The window in front last, so it stands over the others as on
-        // their screen.
+        // The window in front last, so it stands over the others as on their screen.
         let mut order: Vec<&PeerWindow> = screen.windows.iter().collect();
         order.sort_by_key(|window| window.focused);
         for window in order {
@@ -444,8 +438,8 @@ fn paint_last_seen(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Re
     Icon::Clock.draw_with_stroke(scene, transform, badge.inset(-2.0), colors.text_dim, 1.25);
 }
 
-/// One of their windows inside their screen `screen`: their copy of it
-/// when shared and pictured, else its app (and title, when shared).
+/// One of their windows inside their screen `screen` : their copy of it when shared and pictured,
+/// else its app (and title, when shared).
 fn paint_window(
     scene: &mut Scene,
     transform: Affine,
@@ -472,8 +466,7 @@ fn paint_window(
     let ground = if window.shared() {
         colors.surfaces.content
     } else {
-        // Not shared with this person: a plain tile, quieter than a window
-        // they can see.
+        // Not shared with this person: a plain tile, quieter than a window they can see.
         colors.surfaces.raised
     };
     scene.fill(Fill::NonZero, transform, ground, None, &shape);

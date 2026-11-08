@@ -29,8 +29,6 @@ pub struct SelectedReplacementAuthority {
 }
 impl SelectedReplacementAuthority {
     /// Prepare only the selected current victim using genuine created custody.
-    /// # Errors
-    /// Refuses stale original lineage, arbitrary temporaries and absent authority.
     pub fn prepare_atomic_save(
         &self,
         temporary: &crate::operations::NativeCreatedTemporary,
@@ -60,9 +58,6 @@ impl SelectedReplacementAuthority {
 impl FsSession {
     /// Bind only a sealed, anonymous root-produced permit delivered through the
     /// existing signed source admission. No parsed record or path is authority.
-    /// # Errors
-    /// Refuses malformed/nonroot/unsealed files, mismatched owner/root/current
-    /// native locus, revoked original scope or a second binding.
     #[cfg(target_os = "linux")]
     pub fn bind_selected_replace_authority(
         &self,
@@ -166,8 +161,6 @@ impl FsSession {
         Ok(authority)
     }
     /// Bind selected replacement authority only on supported hosts.
-    /// # Errors
-    /// Always returns an unsupported-platform error outside Linux.
     #[cfg(not(target_os = "linux"))]
     pub fn bind_selected_replace_authority(
         &self,

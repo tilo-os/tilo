@@ -102,10 +102,6 @@ impl ShareLinks {
     }
 
     /// Start minting the link `payload` asks for.
-    ///
-    /// # Errors
-    /// Why no link can be made: bad arguments, no invite grant, or an
-    /// invitation this device cannot create.
     pub(crate) fn start(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -341,10 +337,6 @@ fn render(minting: &Minting, page: &tilo_actions::remote::CataloguePage) -> Resu
 /// The link to the resource `request` names in `app`'s `record`, for a
 /// workspace's host that answers `share-link` itself on the records it runs
 /// headless: the link an app's root mints, under the host's own `locator`.
-///
-/// # Errors
-/// Why there is no link: the request's arguments, an invitation (made from
-/// the members list), or a host that serves no web page.
 pub fn host_link(
     request: &ShareRequest,
     app: &str,

@@ -234,10 +234,6 @@ impl BlockList {
     }
 
     /// Write the person's own blocks to `path` (see [`person_list_path`]).
-    ///
-    /// # Errors
-    ///
-    /// The file or its directory cannot be written.
     pub fn save_person(&self, path: &Path) -> std::io::Result<()> {
         let file = PersonFile {
             blocked: self
@@ -272,15 +268,6 @@ pub fn stamp(person: Option<&Path>, device: Option<&Path>) -> u64 {
         }
     }
     hasher.finish()
-}
-
-/// The usual files' [`stamp`].
-#[must_use]
-pub fn current_stamp() -> u64 {
-    stamp(
-        person_list_path().as_deref(),
-        Some(Path::new(DEVICE_POLICY_PATH)),
-    )
 }
 
 /// Block files are a few kilobytes; a larger one is not one.

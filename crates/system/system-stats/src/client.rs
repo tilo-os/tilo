@@ -131,10 +131,6 @@ impl Drop for ClientSubscription {
 
 impl Client {
     /// Speak the protocol on `stream`, whose handoff was already written.
-    ///
-    /// # Errors
-    /// The stream cannot be duplicated for the reader, or its thread cannot
-    /// start.
     pub fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
         let mut reader = stream.try_clone()?;
         let client = Self {
@@ -285,9 +281,6 @@ impl Client {
     }
 
     /// End the process `pid` of the lifetime `started_at`.
-    ///
-    /// # Errors
-    /// The service's refusal.
     pub fn end_process(&self, pid: u32, started_at: u64, force: bool) -> Result<u32, Refusal> {
         ended(self.call(|request| Request::EndProcess {
             request,
@@ -298,9 +291,6 @@ impl Client {
     }
 
     /// End every process of `app` the person may end.
-    ///
-    /// # Errors
-    /// The service's refusal.
     pub fn end_app(&self, app: &str, force: bool) -> Result<u32, Refusal> {
         ended(self.call(|request| Request::EndApp {
             request,
@@ -311,9 +301,6 @@ impl Client {
 
     /// The machine's storage: every block device, its partitions,
     /// filesystems and encryption, and each drive's health.
-    ///
-    /// # Errors
-    /// The service's refusal.
     pub fn storage(&self) -> Result<Storage, Refusal> {
         match self.call(|request| Request::Storage { request })? {
             Reply::Storage { storage, .. } => Ok(*storage),

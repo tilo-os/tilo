@@ -263,7 +263,6 @@ fn gated_widget_fires_only_when_its_scope_is_granted() {
 #[test]
 fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
     let terminal = TreePath::root().app(AppKind::Terminal.app_id());
-    // Case `a_context_built_from_a_role_and_a_grant`.
     {
         let ctx = PermissionContext::member("alice", Role::Editor).with_grant(policy::Grant::new(
             "terminal",
@@ -291,7 +290,6 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
         );
     }
 
-    // Case `a_lapsed_grant_stops_granting`.
     {
         let grant = policy::Grant::new(
             "terminal",
@@ -313,7 +311,6 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
         );
     }
 
-    // Case `permissive_is_an_owner_with_one_real_workspace_wide_capability`.
     {
         let ctx = PermissionContext::permissive();
         // Not a bypass flag — inspectable capabilities and a structural owner.

@@ -1,25 +1,19 @@
 //! Keys for hosted surfaces: which surface a key goes to, and its repeat.
-//!
-//! A key reaches a hosted surface in one of two ways. A surface that wants
-//! the keyboard (an open launcher, menu or panel) takes every key from the
-//! focused window. Any surface may also claim a single press
-//! ([`SurfaceHost::claim_key`]) whatever has the keyboard: the desktop's
-//! chords, the volume and brightness keys. A claimed press's release goes
-//! to the same surface, and the window never sees either.
-//!
-//! Clients repeat held keys themselves from the seat's repeat info; hosted
-//! surfaces get their repeats from here, at the same delay and rate, while
-//! the key that started it stays held.
-//!
+//! A key reaches a hosted surface in one of two ways. A surface that wants the keyboard (an open
+//! launcher, menu or panel) takes every key from the focused window. Any surface may also claim a
+//! single press ([`SurfaceHost::claim_key`]) whatever has the keyboard: the desktop's chords, the
+//! volume and brightness keys. A claimed press's release goes to the same surface, and the window
+//! never sees either.
+//! Clients repeat held keys themselves from the seat's repeat info; hosted surfaces get their
+//! repeats from here, at the same delay and rate, while the key that started it stays held.
 //! A client may also ask for the keys the desktop answers itself
-//! (`zwp_keyboard_shortcuts_inhibit_manager_v1`): virtual machines, remote
-//! desktops and game streaming want the machine they show to behave like the
-//! one in front. The inhibitor is granted only to the surface holding
-//! keyboard focus while no hosted surface is taking input and the session is
-//! unlocked, follows focus, and stays off for the surface Ctrl+Alt+Escape
-//! took it from until focus moves on. It suspends only the desktop's own
-//! chords: hardware keys, the release chord and locking the session are
-//! decided before any client sees a key and stay with the compositor.
+//! (`zwp_keyboard_shortcuts_inhibit_manager_v1`): virtual machines, remote desktops and game
+//! streaming want the machine they show to behave like the one in front. The inhibitor is granted
+//! only to the surface holding keyboard focus while no hosted surface is taking input and the
+//! session is unlocked, follows focus, and stays off for the surface Ctrl+Alt+Escape took it from
+//! until focus moves on. It suspends only the desktop's own chords: hardware keys, the release
+//! chord and locking the session are decided before any client sees a key and stay with the
+//! compositor.
 
 use std::time::{Duration, Instant};
 
@@ -39,12 +33,12 @@ pub enum KeyClaim {
     Pass,
     /// The surface takes the press and its release.
     Take,
-    /// The surface takes the press, repeats while it is held, and its
-    /// release (volume up held down ramps the volume).
+    /// The surface takes the press, repeats while it is held, and its release (volume up held down
+    /// ramps the volume).
     TakeRepeating,
 }
 
-/// How held keys repeat: after `delay`, `rate` times a second.
+/// How held keys repeat: after `delay` , `rate` times a second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyRepeat {
     pub delay: Duration,
@@ -78,16 +72,15 @@ struct Repeating {
 /// The keys hosted surfaces hold, and the one repeating.
 #[derive(Debug, Default)]
 pub(crate) struct HostKeys {
-    /// Each key whose press went to a hosted surface, by evdev code, and
-    /// that surface: its release goes there too.
+    /// Each key whose press went to a hosted surface, by evdev code, and that surface: its release
+    /// goes there too.
     held: Vec<(u32, usize)>,
     repeating: Option<Repeating>,
     pub(crate) repeat: KeyRepeat,
 }
 
 impl HostKeys {
-    /// The surface `keycode`'s press went to, forgetting it: the key was
-    /// released.
+    /// The surface `keycode` 's press went to, forgetting it: the key was released.
     pub(crate) fn release(&mut self, keycode: u32) -> Option<usize> {
         if self
             .repeating
@@ -100,9 +93,8 @@ impl HostKeys {
         Some(self.held.remove(index).1)
     }
 
-    /// `key`'s press went to surface `host`; it repeats there when
-    /// `repeats`. Another key pressed stops what repeated before, as on
-    /// every keyboard.
+    /// `key` 's press went to surface `host` ; it repeats there when `repeats` . Another key
+    /// pressed stops what repeated before, as on every keyboard.
     pub(crate) fn press(&mut self, host: usize, key: &HostKey, repeats: bool, now: Instant) {
         self.held.retain(|(held, _)| *held != key.keycode);
         self.held.push((key.keycode, host));
@@ -121,12 +113,10 @@ impl HostKeys {
         self.repeating.as_ref().map(|repeating| repeating.due)
     }
 
-    /// The repeat due by `now`: the surface and the key, or nothing.
-    ///
-    /// A beat the loop came to more than an interval late is gone, not owed:
-    /// the person's press and its release may both be behind the stall, and
-    /// a burst of catch-up repeats would type the key again for a press they
-    /// already let go. The next repeat comes an interval from now, so a key
+    /// The repeat due by `now` : the surface and the key, or nothing.
+    /// A beat the loop came to more than an interval late is gone, not owed: the person's press and
+    /// its release may both be behind the stall, and a burst of catch-up repeats would type the key
+    /// again for a press they already let go. The next repeat comes an interval from now, so a key
     /// still held carries on repeating once the loop is keeping time.
     pub(crate) fn due(&mut self, now: Instant) -> Vec<(usize, HostKey)> {
         let Some(interval) = self.repeat.interval() else {
@@ -147,14 +137,13 @@ impl HostKeys {
     }
 }
 
-/// Whose shortcuts the desktop is holding back, and whose it took them from
-/// with the release chord.
+/// Whose shortcuts the desktop is holding back, and whose it took them from with the release chord.
 #[derive(Debug, Default)]
 pub(crate) struct ShortcutInhibit {
     /// The surface whose inhibitor is active.
     active: Option<WlSurface>,
-    /// The surface the person took the shortcuts back from; not granted
-    /// again until keyboard focus moves elsewhere.
+    /// The surface the person took the shortcuts back from; not granted again until keyboard focus
+    /// moves elsewhere.
     suspended: Option<WlSurface>,
 }
 
@@ -166,9 +155,8 @@ impl ShortcutInhibit {
 }
 
 impl State {
-    /// Grant or withdraw shortcut inhibition for this moment: only the
-    /// focused surface, and only while the session is unlocked and no hosted
-    /// surface is taking input.
+    /// Grant or withdraw shortcut inhibition for this moment: only the focused surface, and only
+    /// while the session is unlocked and no hosted surface is taking input.
     pub(crate) fn sync_shortcut_inhibit(&mut self) {
         let allowed = !self.locked() && !self.hosts.iter().any(|host| host.wants_keyboard());
         let focus = self
@@ -198,8 +186,7 @@ impl State {
         }
     }
 
-    /// The release chord: give the desktop's shortcuts back now. `false`
-    /// when no client held them.
+    /// The release chord: give the desktop's shortcuts back now. `false` when no client held them.
     pub(crate) fn suspend_shortcut_inhibit(&mut self) -> bool {
         let Some(surface) = self.shortcut_inhibit.active.take() else {
             return false;
@@ -211,8 +198,7 @@ impl State {
         true
     }
 
-    /// A client's inhibitor object is gone: whatever it held, it no longer
-    /// holds.
+    /// A client's inhibitor object is gone: whatever it held, it no longer holds.
     pub(crate) fn inhibitor_gone(&mut self, surface: &WlSurface) {
         if self.shortcut_inhibit.active.as_ref() == Some(surface) {
             self.shortcut_inhibit.active = None;
@@ -222,7 +208,7 @@ impl State {
         }
     }
 
-    /// The client's inhibitor on `surface`, if it asked for one.
+    /// The client's inhibitor on `surface` , if it asked for one.
     fn inhibitor_for(
         seat: &smithay::input::Seat<Self>,
         surface: &WlSurface,
@@ -269,8 +255,8 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].0, 2);
         assert!(first[0].1.repeat && first[0].1.pressed);
-        // One interval on, the key repeats again; the next one is due a beat
-        // after it, not at the beat the first repeat kept.
+        // One interval on, the key repeats again; the next one is due a beat after it, not at the
+        // beat the first repeat kept.
         assert_eq!(keys.due(start + Duration::from_millis(200)).len(), 1);
         assert_eq!(keys.due(start + Duration::from_millis(300)).len(), 1);
         assert_eq!(keys.release(30), Some(2));
@@ -295,9 +281,9 @@ mod tests {
         let mut keys = HostKeys::default();
         let now = Instant::now();
         keys.press(0, &key(30), true, now);
-        // The press and the release are both behind the stall: nothing of
-        // the beat the loop missed is typed, and the key is not left owing
-        // a burst of repeats when the loop keeps time again.
+        // The press and the release are both behind the stall: nothing of the beat the loop missed
+        // is typed, and the key is not left owing a burst of repeats when the loop keeps time
+        // again.
         assert!(keys.due(now + Duration::from_secs(1)).is_empty());
         assert!(
             keys.next_due()

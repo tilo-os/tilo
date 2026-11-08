@@ -3,6 +3,7 @@ use super::{
     Arc, AsRawFd, File, FromRawFd, MetadataExt, OpenOptionsExt, OwnedFd, Read,
     TargetProjectionEndpoint, TargetProjectionMode, io, mount_id, refused, root,
 };
+use crate::fd::identity;
 use crate::ordinary_namespace::NamespaceWitness;
 use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::ExecutingPeer;
@@ -106,10 +107,6 @@ pub(super) fn clone_view(view: &File) -> io::Result<File> {
 }
 fn namespace() -> io::Result<File> {
     File::open("/proc/self/ns/mnt")
-}
-fn identity(file: &File) -> io::Result<(u64, u64)> {
-    let m = file.metadata()?;
-    Ok((m.dev(), m.ino()))
 }
 fn protected_directory(path: &std::path::Path) -> io::Result<File> {
     let file = std::fs::OpenOptions::new()
@@ -331,9 +328,6 @@ impl HeldViewExposure {
     }
     /// The original source owner stays in its own namespace. The actual managed
     /// consuming helper owns the separate staging namespace and launcher child.
-    /// # Errors
-    /// Returns an error if endpoint or launcher validation fails, the managed
-    /// helper cannot establish private namespace custody, or its lock is poisoned.
     pub fn prepare_remote(
         endpoint: Arc<TargetProjectionEndpoint>,
         peer: Arc<ExecutingPeer>,
@@ -354,9 +348,6 @@ impl HeldViewExposure {
         })
     }
     /// Install in the persistent root owner before any control exchange.
-    /// # Errors
-    /// Returns an error if authority has expired, placement fails, or the measured
-    /// mount identity, topology or security restrictions do not match.
     pub fn place(&mut self) -> io::Result<()> {
         self.endpoint.check()?;
         match &mut self.placement {

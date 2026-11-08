@@ -399,11 +399,6 @@ pub struct Source {
 impl Source {
     /// Bind the source endpoint. The returned identity is written to the
     /// medium by the package producer; no private source data is exposed.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an invalid operation id or identity key, or an endpoint that
-    /// cannot bind.
     pub fn bind(operation_id: String, identity_public_key: [u8; 32]) -> io::Result<Self> {
         Self::bind_inner(operation_id, identity_public_key, None)
     }
@@ -475,11 +470,6 @@ impl Source {
 
     /// Make the exact ciphertext available. The password stays in this
     /// process and is only sealed to the approved receiver.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an empty or oversized package, a digest that does not match the
-    /// bytes, or a stopped worker.
     pub fn serve(
         &self,
         ciphertext: Vec<u8>,
@@ -503,10 +493,6 @@ impl Source {
 
     /// Approve the exact request a person saw. The token comes from
     /// [`SourceState::Requested`]; a later request never inherits it.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a malformed approval token or a stopped worker.
     pub fn approve(&self, approval: &str) -> io::Result<()> {
         if !valid_operation(approval) {
             return Err(invalid("Invalid handoff approval"));
@@ -1073,11 +1059,6 @@ impl Receiver {
     /// Connect to the source named by `handoff` and wait for approval. The
     /// descriptor is validated against this computer's clock and the active
     /// person identity before any frame is sent.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an expired descriptor, a missing or non-private identity, and a
-    /// descriptor that names another person's prepared package.
     pub fn open(
         handoff: PublicHandoff,
         identity: ReceiverIdentity,
@@ -1221,10 +1202,6 @@ impl Receiver {
     /// Confirm that the canonical importer verified and acknowledged this
     /// exact package. The source reports completion only after this frame and
     /// only for a receipt naming this package digest.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a receipt for another package or a stopped worker.
     pub fn acknowledge(&self, received: &Received) -> io::Result<()> {
         if received.package_sha256 != self.expected || received.package_sha256 == [0; 32] {
             return Err(invalid("Import receipt is for another package"));

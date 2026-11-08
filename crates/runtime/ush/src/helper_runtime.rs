@@ -59,9 +59,6 @@ impl HelperRuntime {
 
     /// Command shims run after confinement. Keep their original `argv[0]` for
     /// typed broker dispatch; this library path belongs only to this exec.
-    ///
-    /// # Errors
-    /// Returns an error if the private wrapper cannot be written.
     pub fn write_wrapper(&self, path: &Path) -> io::Result<()> {
         std::fs::write(
             path,

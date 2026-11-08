@@ -33,9 +33,6 @@ pub use runtime_fs_fuse;
 /// The engine's check binary calls it, so a release proves the library loads
 /// and runs against the runtime it ships with; release smoke checks that
 /// Imager's start loads it itself.
-///
-/// # Errors
-/// Names the failure that mapped to the wrong errno.
 #[cfg(all(feature = "thin", target_os = "linux"))]
 pub fn self_check() -> Result<String, String> {
     use runtime_fs_fuse::directory_fuse::kernel_errno;

@@ -62,9 +62,6 @@ impl PeopleScanProgress {
     }
 
     /// Keep the scan's progress on this device.
-    ///
-    /// # Errors
-    /// The state location cannot be opened or the file cannot be written.
     pub(super) fn save(&self) -> Result<(), String> {
         let file = Self::file().ok_or_else(|| "no state location".to_owned())?;
         file.write_json(self)

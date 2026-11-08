@@ -1,36 +1,25 @@
-//! The one password prompt: every secret Tilo asks for — a Wi-Fi
-//! passphrase, a polkit password, a VPN login, an unlock, a SIM PIN — is
-//! asked by this component, drawn the same by the shell and by apps.
+//! The one password prompt: every secret Tilo asks for — a Wi-Fi passphrase, a polkit password, a
+//! VPN login, an unlock, a SIM PIN — is asked by this component, drawn the same by the shell and by
+//! apps.
 //!
-//! It shows an icon and a title naming who asks and why ("Connect to
-//! TruffleBoys2026"), the resource line, the field or fields the kind asks
-//! for (each a secret [`TextInput`] with its own show/hide button), one
-//! notice line under them (an inline error after a wrong secret, Caps Lock,
-//! the PIN length or the attempts a SIM has left), a numeric keypad for the
-//! PIN kinds while touch is the input in use, and Cancel plus a primary
-//! button labelled by the action (Connect, Unlock, Allow).
+//! It shows an icon and a title naming who asks and why ("Connect to TruffleBoys2026"), the
+//! resource line, the fields the kind asks for (each a secret [`TextInput`] with its own show/hide
+//! button), one notice line under them (an inline error after a wrong secret, Caps Lock, the PIN
+//! length or the attempts a SIM has left), a numeric keypad for the PIN kinds while touch is the
+//! input in use, and Cancel plus a primary button labelled by the action.
 //!
-//! Three presentations of the same body:
+//! Three presentations of the same body: [`Presentation::Sheet`], the modal sheet a painted host
+//! draws itself through the one modal chrome ([`super::modal_dialog`]) — Enter answers, Escape
+//! cancels, and it keeps the field clear of an on-screen keyboard
+//! ([`SecretPrompt::set_keyboard_inset`]); [`Presentation::Inline`], inside another surface, with
+//! no title or sheet; and [`Presentation::DialogBody`], the body of a retained [`ModalDialog`],
+//! which draws the title and actions ([`SecretPrompt::into_dialog`] wires them).
 //!
-//! - [`Presentation::Sheet`]: the modal sheet a painted host (the shell)
-//!   draws itself, through the one modal chrome ([`super::modal_dialog`]):
-//!   floating on a roomy display, a full-window page on a phone. Enter
-//!   answers, Escape cancels, and the sheet keeps the field clear of an
-//!   on-screen keyboard ([`SecretPrompt::set_keyboard_inset`]).
-//! - [`Presentation::Inline`]: inside another surface (Quick Settings):
-//!   the resource line, fields, notice and its own Cancel and primary
-//!   buttons, no title or sheet.
-//! - [`Presentation::DialogBody`]: the body of a retained
-//!   [`ModalDialog`], which draws the title and the
-//!   actions; [`SecretPrompt::into_dialog`] wires them.
-//!
-//! The secret lives only in the fields' zeroizing buffers and in the
-//! [`SecretAnswer`] handed out on submit, which zeroes itself on drop. It is
-//! never in the accessibility tree (fields report `protected`), a log (the
-//! answer's `Debug` is redacted), a document or replicated state (fields are
-//! local, with no binding), or a screenshot (a painted secret marks the
-//! frame through [`crate::secret_paint`], so hosts withhold it).
-//!
+//! The secret lives only in the fields' zeroizing buffers and in the [`SecretAnswer`] handed out on
+//! submit, which zeroes itself on drop. It is never in the accessibility tree (fields report
+//! `protected`), a log (the answer's `Debug` is redacted), a document or replicated state (fields
+//! are local, with no binding), or a screenshot (a painted secret marks the frame through
+//! [`crate::secret_paint`], so hosts withhold it).
 //! ```ignore
 //! // A painted host:
 //! let mut prompt = SecretPrompt::new(SecretKind::Secret)
@@ -68,6 +57,7 @@ use crate::a11y::{AccessNode, AccessState, Politeness, Role};
 use crate::caps_lock::CapsLockEstimate;
 use crate::icons::Icon;
 use crate::interaction::{InputModality, InteractionEnvironment, PointerPrecision};
+use crate::passcode_keyboard::{KeyFace, PasscodeInput, PasscodeKey, PasscodeKeyboard};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -291,48 +281,6 @@ enum Decision {
     Cancel,
 }
 
-/// A key of the numeric keypad.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeypadKey {
-    Digit(u8),
-    Delete,
-    Enter,
-}
-
-impl KeypadKey {
-    /// Phone order: 1 2 3 / 4 5 6 / 7 8 9 / delete 0 enter.
-    const ALL: [Self; 12] = [
-        Self::Digit(1),
-        Self::Digit(2),
-        Self::Digit(3),
-        Self::Digit(4),
-        Self::Digit(5),
-        Self::Digit(6),
-        Self::Digit(7),
-        Self::Digit(8),
-        Self::Digit(9),
-        Self::Delete,
-        Self::Digit(0),
-        Self::Enter,
-    ];
-
-    fn key(self) -> u64 {
-        match self {
-            Self::Digit(digit) => KEYPAD_KEY.saturating_add(u64::from(digit)),
-            Self::Delete => KEYPAD_KEY.saturating_add(10),
-            Self::Enter => KEYPAD_KEY.saturating_add(11),
-        }
-    }
-
-    fn name(self) -> String {
-        match self {
-            Self::Digit(digit) => digit.to_string(),
-            Self::Delete => crate::i18n!("secret-prompt-keypad-delete"),
-            Self::Enter => crate::i18n!("secret-prompt-keypad-enter"),
-        }
-    }
-}
-
 /// Where keyboard focus is inside the prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stop {
@@ -348,7 +296,7 @@ enum Stop {
 enum Target {
     Cancel,
     Primary,
-    Key(KeypadKey),
+    Key(PasscodeKey),
     Choice(usize),
     Option,
 }
@@ -391,8 +339,9 @@ pub struct PromptLayout {
     pub notice: Rect,
     /// The option's check row.
     pub option: Option<Rect>,
-    /// The numeric keypad's keys, while it shows.
-    pub keypad: Vec<(KeypadKey, Rect)>,
+    /// The keypad's keys, while it shows, and the room they are laid out in.
+    pub keypad: Vec<(PasscodeKey, Rect)>,
+    pub keypad_area: Rect,
     /// Cancel and the primary button (in a sheet, the chrome's actions).
     pub cancel: Rect,
     pub primary: Rect,
@@ -449,6 +398,10 @@ pub struct SecretPrompt {
     notice_lines: usize,
     /// Whether the keypad showed when the body was last measured.
     measured_keypad: bool,
+    /// Whether the pad was the layer shown when the body was last measured.
+    measured_pad: bool,
+    /// The keypad's state: the pad or the letters, its one-shot shift.
+    keyboard: PasscodeKeyboard,
     layout: PromptLayout,
     cursor: Option<Point>,
     pressed: Option<Target>,
@@ -484,6 +437,7 @@ struct Chrome {
     choice: usize,
     option: Option<bool>,
     keypad: bool,
+    keypad_pad: bool,
     can_submit: bool,
 }
 
@@ -520,6 +474,8 @@ impl SecretPrompt {
             measured_notice: None,
             notice_lines: 1,
             measured_keypad: false,
+            measured_pad: kind.is_pin(),
+            keyboard: PasscodeKeyboard::for_secret(kind.is_pin()),
             layout: PromptLayout::default(),
             cursor: None,
             pressed: None,
@@ -661,24 +617,6 @@ impl SecretPrompt {
                     .with_initial_value(username);
             }
             self.focus = Stop::Field(self.first_empty_field());
-        }
-        self
-    }
-
-    /// The secret is shown as typed: the asker said it is no secret (PAM's
-    /// echo-on prompt for a one-time code).
-    #[must_use]
-    pub fn with_echo(mut self, echo: bool) -> Self {
-        if let Some(index) = self.index_of(FieldRole::Secret) {
-            let label = self.fields.get(index).map(|field| field.label.clone());
-            let mut field = self.new_field(index, FieldRole::Secret, echo);
-            if let Some(label) = label {
-                field.input = field.input.with_accessible_name(label.clone());
-                field.label = label;
-            }
-            if let Some(slot) = self.fields.get_mut(index) {
-                *slot = field;
-            }
         }
         self
     }
@@ -902,16 +840,6 @@ impl SecretPrompt {
         &self.resource
     }
 
-    /// The SIM's attempts left changed (after a wrong PIN).
-    pub fn set_attempts_left(&mut self, attempts: Option<u32>) {
-        match &mut self.kind {
-            SecretKind::SimPin { attempts_left } | SecretKind::SimPuk { attempts_left } => {
-                *attempts_left = attempts;
-            }
-            _ => {}
-        }
-    }
-
     /// The field holding `role`.
     pub fn field(&self, role: FieldRole) -> Option<&TextInput> {
         self.fields
@@ -971,6 +899,27 @@ impl SecretPrompt {
     /// Whether the numeric keypad shows.
     pub fn shows_keypad(&self) -> bool {
         self.kind.is_pin() && self.touch_mode && self.presentation != Presentation::Inline
+    }
+
+    /// A keypad key's identity, for a reader: its place in the keypad's
+    /// row order, so it changes only when the keypad's keys do.
+    fn key_id(index: usize) -> u64 {
+        KEYPAD_KEY.saturating_add(u64::try_from(index).unwrap_or(u64::MAX))
+    }
+
+    /// What a keypad key says to a reader: the character it types, or what
+    /// it does.
+    fn key_name(&self, key: PasscodeKey) -> String {
+        match key {
+            PasscodeKey::Backspace => crate::i18n!("secret-prompt-keypad-delete"),
+            PasscodeKey::Enter => crate::i18n!("secret-prompt-keypad-enter"),
+            PasscodeKey::Shift => crate::i18n!("secret-prompt-keypad-shift"),
+            PasscodeKey::Space => crate::i18n!("secret-prompt-keypad-space"),
+            other => match self.keyboard.face(other) {
+                KeyFace::Text(label) => label,
+                KeyFace::Icon(_) => String::new(),
+            },
+        }
     }
 
     /// Whether Caps Lock seems on while a secret is being typed.
@@ -1336,7 +1285,7 @@ impl SecretPrompt {
     }
 
     fn keypad_height(theme: &Theme) -> f64 {
-        Self::keypad_key_height(theme) * 4.0 + Self::gap(theme) * 3.0
+        PasscodeKeyboard::height(Self::keypad_key_height(theme), Self::gap(theme))
     }
 
     fn button_height(theme: &Theme) -> f64 {
@@ -1347,6 +1296,7 @@ impl SecretPrompt {
     /// return the body's height.
     fn measure_body(&mut self, width: f64, text: &mut TextRenderer, theme: &Theme) -> f64 {
         self.measured_keypad = self.shows_keypad();
+        self.measured_pad = self.keyboard.shows_pad();
         self.resource_h = if self.resource.is_empty() || width <= 0.0 {
             0.0
         } else {
@@ -1434,17 +1384,14 @@ impl SecretPrompt {
             row
         });
         let mut keypad = Vec::new();
+        let mut keypad_area = Rect::ZERO;
         if self.shows_keypad() {
             y += f64::from(spacing.s4);
-            let key_h = Self::keypad_key_height(theme);
-            let key_w = ((rect.width() - gap * 2.0) / 3.0).max(0.0);
-            for (index, key) in KeypadKey::ALL.iter().enumerate() {
-                let column = crate::num::f64_of_usize(index % 3);
-                let row = crate::num::f64_of_usize(index / 3);
-                let x0 = rect.x0 + column * (key_w + gap);
-                let y0 = y + row * (key_h + gap);
-                keypad.push((*key, Rect::new(x0, y0, x0 + key_w, y0 + key_h)));
-            }
+            let pad = Rect::new(rect.x0, y, rect.x1, y + Self::keypad_height(theme));
+            keypad_area = pad;
+            keypad = self
+                .keyboard
+                .layout(pad, Self::keypad_key_height(theme), gap);
             y += Self::keypad_height(theme);
         }
         let (cancel, primary) = if self.presentation == Presentation::Inline {
@@ -1469,6 +1416,7 @@ impl SecretPrompt {
             notice,
             option,
             keypad,
+            keypad_area,
             cancel,
             primary,
         }
@@ -1524,7 +1472,7 @@ impl SecretPrompt {
                 let body_h = self.measure_body(width, text, &theme);
                 let actions = self.modal_actions();
                 let spec = self.modal_spec(&actions, body_h);
-                let modal = modal_dialog::layout(room, &spec, text, &theme);
+                let modal = modal_dialog::layout_for(room, &spec, text, &theme, self.environment);
                 let mut layout = self.layout_body(modal.body, &theme);
                 layout.cancel = modal.actions.first().copied().unwrap_or(Rect::ZERO);
                 layout.primary = modal.actions.get(1).copied().unwrap_or(Rect::ZERO);
@@ -1591,6 +1539,7 @@ impl SecretPrompt {
             choice: self.choice,
             option: self.option_checked(),
             keypad: self.shows_keypad(),
+            keypad_pad: self.keyboard.shows_pad(),
             can_submit: self.can_submit(),
         }
     }
@@ -1642,8 +1591,26 @@ impl SecretPrompt {
                     *checked = !*checked;
                 }
             }
-            Target::Key(KeypadKey::Enter) => self.enter_in_field(),
-            Target::Key(KeypadKey::Delete) => {
+            Target::Key(key) => self.press_keypad(key),
+        }
+    }
+
+    /// Press a keypad key: a character goes into the field, backspace takes
+    /// one back, enter moves on or answers; a layer key changes what the
+    /// keypad shows and nothing else.
+    fn press_keypad(&mut self, key: PasscodeKey) {
+        match self.keyboard.press(key) {
+            Some(PasscodeInput::Text(text)) => {
+                if !matches!(self.focus, Stop::Field(_)) {
+                    self.focus = Stop::Field(self.first_empty_field());
+                    self.sync_focus();
+                }
+                if let Some(input) = self.focused_input_mut() {
+                    input.insert_at_cursor(&text);
+                }
+                self.after_edit(true);
+            }
+            Some(PasscodeInput::Backspace) => {
                 if let Some(input) = self.focused_input_mut() {
                     if input.selection_range_public().is_some() {
                         input.delete_local_selection();
@@ -1655,17 +1622,18 @@ impl SecretPrompt {
                 }
                 self.after_edit(true);
             }
-            Target::Key(KeypadKey::Digit(digit)) => {
-                if !matches!(self.focus, Stop::Field(_)) {
-                    self.focus = Stop::Field(self.first_empty_field());
-                    self.sync_focus();
-                }
-                if let Some(input) = self.focused_input_mut() {
-                    input.insert_at_cursor(&digit.to_string());
-                }
-                self.after_edit(true);
-            }
+            Some(PasscodeInput::Enter) => self.enter_in_field(),
+            None => self.relayout_keypad(),
         }
+    }
+
+    /// The keypad's layer changed under the same room: place its keys again.
+    fn relayout_keypad(&mut self) {
+        let theme = self.theme.clone();
+        let area = self.layout.keypad_area;
+        self.layout.keypad =
+            self.keyboard
+                .layout(area, Self::keypad_key_height(&theme), Self::gap(&theme));
     }
 
     /// Enter in a field: on to the next field, or answer from the last.
@@ -2250,24 +2218,17 @@ impl SecretPrompt {
                 &style,
             );
         }
-        for (key, rect) in self.layout.keypad.clone() {
-            let name = key.name();
-            let face = match key {
-                KeypadKey::Digit(_) => ButtonFace::new(rect, &name).role(ButtonRole::Key),
-                KeypadKey::Delete => {
-                    ButtonFace::icon_only(rect, Icon::Delete, &name).role(ButtonRole::Key)
-                }
-                KeypadKey::Enter => ButtonFace::icon_only(rect, Icon::CornerDownLeft, &name)
-                    .role(ButtonRole::Primary)
-                    .disabled(!self.can_submit()),
-            };
-            let target = Target::Key(key);
-            let face = face
-                .control_size(ControlSize::Large)
-                .hovered(self.cursor.is_some_and(|point| rect.contains(point)))
-                .pressed(self.pressed == Some(target));
-            Button::paint(scene, transform, text, theme, &face);
-        }
+        self.keyboard.paint(
+            scene,
+            transform,
+            text,
+            theme,
+            (
+                self.layout.keypad_area,
+                Self::keypad_key_height(theme),
+                Self::gap(theme),
+            ),
+        );
         if self.presentation == Presentation::Inline {
             let [cancel, primary] = self.modal_actions();
             for (action, rect, role) in [
@@ -2398,11 +2359,11 @@ impl SecretPrompt {
                     .with_bounds(rect),
             );
         }
-        for (key, rect) in &self.layout.keypad {
+        for (index, (key, rect)) in self.layout.keypad.iter().enumerate() {
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(key.name())
-                    .with_key(key.key())
+                    .with_name(self.key_name(*key))
+                    .with_key(Self::key_id(index))
                     .with_bounds(*rect),
             );
         }
@@ -2513,10 +2474,16 @@ impl SecretPrompt {
             CANCEL_KEY => Target::Cancel,
             PRIMARY_KEY => Target::Primary,
             OPTION_KEY if self.option.is_some() => Target::Option,
-            other => match (choice, KeypadKey::ALL.iter().find(|k| k.key() == other)) {
-                (Some(index), _) => Target::Choice(index),
-                (None, Some(k)) => Target::Key(*k),
-                (None, None) => return false,
+            other => match choice {
+                Some(index) => Target::Choice(index),
+                None => match other
+                    .checked_sub(KEYPAD_KEY)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| self.layout.keypad.get(index))
+                {
+                    Some((key, _)) => Target::Key(*key),
+                    None => return false,
+                },
             },
         };
         match action {
@@ -2686,6 +2653,7 @@ impl Widget for SecretPrompt {
     fn layout_needs_measure(&self) -> bool {
         self.rect == Rect::ZERO
             || self.measured_keypad != self.shows_keypad()
+            || self.measured_pad != self.keyboard.shows_pad()
             || self.measured_notice != self.notice_line().map(|(line, _)| line)
     }
 

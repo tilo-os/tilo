@@ -144,7 +144,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
         }
     }
 
-    /// [`crate::widget::Widget::remount_children`]: mount the rows now near the view and
+    /// [`crate::widget::Widget::remount_children`] — mount the rows now near the view and
     /// let go of the others, building only the new rows' layouts, and
     /// place the rows; the rows that stay carry out their own changes.
     /// `false` when the list has no node of the last build to mount under.

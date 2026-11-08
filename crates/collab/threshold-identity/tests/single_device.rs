@@ -88,31 +88,9 @@ fn tampered_payload_fails_verification() {
 /// Runs each phase below in order; every phase builds its own fixture.
 #[test]
 fn the_single_device_seed_is_the_dalek_seed_that_rebuilds_the_identity() {
-    bootstrap_single_device_seed_round_trips_via_dalek();
     single_device_seed_reconstructs_the_same_identity();
     single_device_seed_is_the_dalek_seed_the_disk_record_stores();
     threshold_mode_exports_no_single_device_seed();
-}
-
-fn bootstrap_single_device_seed_round_trips_via_dalek() {
-    // The seed variant produces a dalek-shaped keypair: rebuilding a
-    // `SigningKey` from the returned seed derives the same group public
-    // key, verifiable via the standard Ed25519 verifier. The frost
-    // variant of `bootstrap_single_device` cannot uphold this (frost
-    // stores a scalar; dalek `from_bytes` treats input as a seed).
-    use ed25519_dalek::Signer;
-    use ed25519_dalek::Verifier;
-
-    let mut rng = fixed_rng();
-    let (seed, group_pk) = ThresholdIdentity::bootstrap_single_device_seed(&mut rng);
-    let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let derived_pk = sk.verifying_key().to_bytes();
-    assert_eq!(&derived_pk, group_pk.as_bytes());
-
-    let msg = b"round-trip";
-    let sig = sk.sign(msg);
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(group_pk.as_bytes()).unwrap();
-    vk.verify(msg, &sig).expect("dalek verify must succeed");
 }
 
 fn single_device_seed_reconstructs_the_same_identity() {

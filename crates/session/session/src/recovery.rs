@@ -85,8 +85,8 @@ impl Recovery {
             Err(error) if error.kind() == io::ErrorKind::NotFound => true,
             Err(error) => return Err(error),
         };
-        // Armed before the session admits anyone or shows a frame: whatever
-        // ends it from here on comes back locked until it ends in order.
+        // Armed before the session admits anyone or shows a frame: whatever ends it from here on
+        // comes back locked until it ends in order.
         tilo_files::native::private::write_atomic(&path, LOCKED)?;
         Ok(Self {
             path,
@@ -94,8 +94,7 @@ impl Recovery {
         })
     }
 
-    /// Whether the session this record belongs to was left locked, and so
-    /// starts locked.
+    /// Whether the session this record belongs to was left locked, and so starts locked.
     #[must_use]
     pub fn starts_locked(&self) -> bool {
         self.starts_locked
@@ -120,8 +119,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
 
-    /// A private directory to keep a login's record in, as the wrapper makes
-    /// one.
+    /// A private directory to keep a login's record in, as the wrapper makes one.
     fn channel() -> tempfile::TempDir {
         let directory = tempfile::tempdir().expect("a channel");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))

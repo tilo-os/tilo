@@ -35,10 +35,6 @@ pub mod conflict_merge;
 pub mod content;
 #[cfg(feature = "filesystem")]
 pub mod content_kind;
-#[cfg(feature = "filesystem")]
-pub mod control;
-#[cfg(feature = "filesystem")]
-pub mod docstore;
 #[cfg(feature = "document-media")]
 pub mod document_media;
 #[cfg(feature = "filesystem")]
@@ -167,8 +163,6 @@ pub use authenticated_transport::{
 pub use availability::AvailabilityRegistry;
 #[cfg(feature = "filesystem")]
 pub use caps_file::{CapabilityFile, CapsError, Refresh};
-#[cfg(feature = "filesystem")]
-pub use docstore::{DocStore, VersionManifest, VersionRef};
 #[cfg(feature = "filesystem")]
 pub use fs::QuickFS;
 #[cfg(feature = "filesystem")]

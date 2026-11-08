@@ -1,13 +1,10 @@
-//! The device VPN: a `NetworkManager` VPN profile the person set a kill
-//! switch on, which is set to connect, drops — nothing leaves this device
-//! while it is down, and what Settings shows next to the profile's switch
-//! says so — and the route through another of their devices, which carries
-//! the networks that device is on and comes down when they choose it off.
-//!
-//! The profile, the helper and the other device are a test's:
-//! `NetworkManager` hands the reading in, the root helper is a socket that
-//! records what it was asked and answers as the real one does, and the exit
-//! is an endpoint on this machine's loopback whose tunnel is in memory.
+//! The device VPN: a `NetworkManager` VPN profile the person set a kill switch on, which is set to
+//! connect, drops — nothing leaves this device while it is down, and what Settings shows next to
+//! the profile's switch says so — and the route through another of their devices, which carries the
+//! networks that device is on and comes down when they choose it off.
+//! The profile, the helper and the other device are a test's: `NetworkManager` hands the reading
+//! in, the root helper is a socket that records what it was asked and answers as the real one does,
+//! and the exit is an endpoint on this machine's loopback whose tunnel is in memory.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -18,6 +15,8 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
+
+mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -65,8 +64,8 @@ const HOME: &str = "192.168.1.0/24";
 const WIDTH: i32 = 1024;
 const HEIGHT: i32 = 700;
 
-/// The helper as a test knows it: the requests it was asked, in order, and
-/// this device's end of each tunnel it opened.
+/// The helper as a test knows it: the requests it was asked, in order, and this device's end of
+/// each tunnel it opened.
 #[derive(Clone, Default)]
 struct Helper {
     asked: Arc<Mutex<Vec<Request>>>,
@@ -74,8 +73,7 @@ struct Helper {
 }
 
 impl Helper {
-    /// A helper listening at `socket`, answering every request as carried
-    /// out.
+    /// A helper listening at `socket` , answering every request as carried out.
     fn at(socket: &Path) -> Self {
         let listener = UnixListener::bind(socket).expect("the helper listens");
         let helper = Self::default();
@@ -92,8 +90,8 @@ impl Helper {
                 let envelope: Envelope = serde_json::from_str(&line).expect("a request");
                 assert_eq!(envelope.protocol, PROTOCOL_VERSION);
                 match envelope.request {
-                    // A tunnel: the helper holds one end and hands the
-                    // other over with the answer, as it hands over a TUN.
+                    // A tunnel: the helper holds one end and hands the other over with the answer,
+                    // as it hands over a TUN.
                     Request::OpenClient { link } => {
                         let (ours, theirs) = UnixDatagram::pair().expect("a tunnel");
                         tuns.lock().unwrap().push(ours);
@@ -113,8 +111,8 @@ impl Helper {
                         )
                         .expect("the opened answer");
                     }
-                    // This device's exit: the same, for the other end of a
-                    // tunnel one of the person's devices opens here.
+                    // This device's exit: the same, for the other end of a tunnel one of the
+                    // person's devices opens here.
                     Request::OpenExit { link } => {
                         let (ours, theirs) = UnixDatagram::pair().expect("an exit tunnel");
                         tuns.lock().unwrap().push(ours);
@@ -146,8 +144,7 @@ impl Helper {
         helper
     }
 
-    /// Whether a block was asked for that keeps the traffic that is not the
-    /// profile's own in.
+    /// Whether a block was asked for that keeps the traffic that is not the profile's own in.
     fn holds_a_block(&self) -> Option<bool> {
         self.asked
             .lock()
@@ -197,8 +194,8 @@ impl Helper {
             .any(|request| matches!(request, Request::CloseExit))
     }
 
-    /// This device's stack, as the helper left it open: what is written here
-    /// leaves through the tunnel.
+    /// This device's stack, as the helper left it open: what is written here leaves through the
+    /// tunnel.
     fn tun(&self) -> UnixDatagram {
         let tuns = self.tuns.lock().unwrap();
         tuns.first()
@@ -232,14 +229,13 @@ fn reading(state: Option<ActiveState>) -> VpnReading {
     }
 }
 
-/// Wait for `condition`, or fail saying what was waited for.
+/// Wait for `condition` , or fail saying what was waited for.
 fn wait_for(what: &str, condition: impl Fn() -> bool) {
     tilo_test_env::wait_until(what, condition);
 }
 
-/// What Settings reads: the status a running session published, read as the
-/// VPN pane reads it, so a status Settings would take for a dead session's
-/// is one this does not see either.
+/// What Settings reads: the status a running session published, read as the VPN pane reads it, so a
+/// status Settings would take for a dead session's is one this does not see either.
 fn published_status() -> Option<DeviceVpnStatus> {
     DeviceVpnStatus::load()
 }
@@ -249,9 +245,9 @@ fn published() -> Option<ProfileBlockStatus> {
     published_status().map(|status| status.profile_block)
 }
 
-/// The person turned the profile's kill switch on and it drops: the helper
-/// is told to block everything but the profile's servers, and what Settings
-/// shows says the profile blocks until it is back.
+/// The person turned the profile's kill switch on and it drops: the helper is told to block
+/// everything but the profile's servers, and what Settings shows says the profile blocks until it
+/// is back.
 #[test]
 fn a_profile_that_drops_blocks_traffic_and_says_so() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -266,9 +262,9 @@ fn a_profile_that_drops_blocks_traffic_and_says_so() {
     let helper = Helper::at(&socket);
 
     let (sender, receiver) = tokio::sync::watch::channel(reading(Some(ActiveState::Activated)));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             vpn: Some(Vpn::with(Sources {
                 helper: socket,
@@ -276,9 +272,7 @@ fn a_profile_that_drops_blocks_traffic_and_says_so() {
             })),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("a frame");
     assert!(status_path().is_some(), "this session can publish");
     wait_for("the session to publish its status", || {
@@ -291,8 +285,7 @@ fn a_profile_that_drops_blocks_traffic_and_says_so() {
     );
     assert_eq!(helper.holds_a_block(), None, "so the helper is not asked");
 
-    // It drops: `NetworkManager` says it is gone, and the person did not
-    // turn it off.
+    // It drops: `NetworkManager` says it is gone, and the person did not turn it off.
     sender.send(reading(None)).expect("the reading");
 
     wait_for("the helper to hold the block", || {
@@ -312,8 +305,7 @@ fn a_profile_that_drops_blocks_traffic_and_says_so() {
         "the helper holds it, so the device is not left open: {block:?}"
     );
 
-    // The profile comes back: the block lifts and Settings stops saying it
-    // blocks.
+    // The profile comes back: the block lifts and Settings stops saying it blocks.
     sender
         .send(reading(Some(ActiveState::Activated)))
         .expect("the reading");
@@ -330,9 +322,8 @@ fn a_profile_that_drops_blocks_traffic_and_says_so() {
     });
 }
 
-/// The person's other device, as far as this session sees it: an endpoint on
-/// this machine's loopback offering its home network, whose tunnel is an
-/// in-memory device the test holds.
+/// The person's other device, as far as this session sees it: an endpoint on this machine's
+/// loopback offering its home network, whose tunnel is an in-memory device the test holds.
 struct ExitFixture {
     exit: Exit<Everyones, Devices>,
     stacks: tokio::sync::mpsc::UnboundedReceiver<Stack>,
@@ -436,17 +427,16 @@ impl ExitDevices for Devices {
     async fn close(&self) {}
 }
 
-/// The person's devices as this session's fabric names them: what this
-/// session hears of them, since a test runs no fabric of its own.
+/// The person's devices as this session's fabric names them: what this session hears of them, since
+/// a test runs no fabric of its own.
 #[derive(Clone, Default)]
 struct KnownDevices {
-    /// Each device by the endpoint id it is dialled and reached by, and what
-    /// the person calls it.
+    /// Each device by the endpoint id it is dialled and reached by, and what the person calls it.
     named: Vec<(DeviceId, String)>,
 }
 
 impl KnownDevices {
-    /// The person's devices `named`, as the fabric carries them.
+    /// The person's devices `named` , as the fabric carries them.
     fn of(named: Vec<(DeviceId, String)>) -> Self {
         Self { named }
     }
@@ -529,10 +519,9 @@ fn step_until(session: &mut Session, what: &str, done: impl Fn() -> bool) {
     });
 }
 
-/// The person chooses to route their home network through their other
-/// device: the tunnel comes up for the networks that device is on, carries
-/// their traffic there, and Settings says which device carries what. They
-/// turn it off, and the tunnel goes.
+/// The person chooses to route their home network through their other device: the tunnel comes up
+/// for the networks that device is on, carries their traffic there, and Settings says which device
+/// carries what. They turn it off, and the tunnel goes.
 #[test]
 fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -549,8 +538,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
     let mut exit = ExitFixture::start(&rt);
     let exit_id = exit.id();
 
-    // What the person chose in Settings: this device's home network, through
-    // that device.
+    // What the person chose in Settings: this device's home network, through that device.
     THROUGH
         .set(Some(Through {
             routes: Routes::HomeNetwork,
@@ -577,9 +565,9 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
     let fabric: SharedLink = Arc::new(KnownDevices::default());
 
     let (sender, receiver) = tokio::sync::watch::channel(reading(None));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             sync: Some(Rc::new(sync)),
             fabric: Some(fabric),
@@ -589,9 +577,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
             })),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     let _sender = sender;
 
     step_until(&mut session, "the tunnel to come up", || {
@@ -658,8 +644,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
         "the other device has this one's tunnel"
     );
 
-    // The person turns the route off: the tunnel goes and Settings stops
-    // saying it routes.
+    // The person turns the route off: the tunnel goes and Settings stops saying it routes.
     THROUGH.set(None).expect("the route is off");
     step_until(&mut session, "the helper to undo the tunnel", || {
         helper.closed()
@@ -672,8 +657,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
     rt.block_on(router.shutdown()).expect("the exit stops");
 }
 
-/// Who sits at both devices: the person's id, as the settings document
-/// records what they changed.
+/// Who sits at both devices: the person's id, as the settings document records what they changed.
 const PERSON: &str = "ada";
 /// What the person calls the laptop they take with them.
 const LAPTOP: &str = "Laptop";
@@ -682,8 +666,8 @@ const DESK: &str = "Desk";
 /// And the phone they carry.
 const PHONE: &str = "Phone";
 
-/// Step both sessions until `done` holds, or fail saying what was waited
-/// for: two of the person's devices, each with its own pass.
+/// Step both sessions until `done` holds, or fail saying what was waited for: two of the person's
+/// devices, each with its own pass.
 fn step_both_until(one: &mut Session, other: &mut Session, what: &str, done: impl Fn() -> bool) {
     tilo_test_env::wait_for(what, || {
         one.step(Duration::from_millis(10)).expect("a frame");
@@ -692,14 +676,12 @@ fn step_both_until(one: &mut Session, other: &mut Session, what: &str, done: imp
     });
 }
 
-/// This device is an exit while the person turns it on, and only for their
-/// own devices: the laptop they take with them routes through it and its
-/// traffic comes out here; a device that is not theirs dialling the tunnel
-/// is turned away; Settings says who routes through this one, the person
+/// This device is an exit while the person turns it on, and only for their own devices: the laptop
+/// they take with them routes through it and its traffic comes out here; a device that is not
+/// theirs dialling the tunnel is turned away; Settings says who routes through this one, the person
 /// stops them from here, and the laptop's choice comes off with it.
-///
-/// Both ends are this process's: the two sessions meet on this machine's
-/// loopback, as two of the person's devices meet on their fabric.
+/// Both ends are this process's: the two sessions meet on this machine's loopback, as two of the
+/// person's devices meet on their fabric.
 #[test]
 fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -714,8 +696,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         .build()
         .expect("a runtime");
 
-    // This device's endpoint, with the exit on it: what answers another of
-    // the person's devices asking to route through this one.
+    // This device's endpoint, with the exit on it: what answers another of the person's devices
+    // asking to route through this one.
     let (_desk_reading, desk_vpns) = tokio::sync::watch::channel(reading(None));
     let desk_vpn = Vpn::with(Sources {
         helper: desk_socket,
@@ -735,8 +717,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         None,
     )
     .expect("this device's endpoint binds");
-    // The laptop's endpoint, serving nothing but its own planes: the route
-    // it carries is not one of them.
+    // The laptop's endpoint, serving nothing but its own planes: the route it carries is not one of
+    // them.
     let (_laptop_reading, laptop_vpns) = tokio::sync::watch::channel(reading(None));
     let laptop_sync = Client::start(
         Entry {
@@ -752,8 +734,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         None,
     )
     .expect("the laptop's endpoint binds");
-    // The person's phone: an endpoint that proves which of their devices it
-    // is by the key it reaches this one with, as their devices do.
+    // The person's phone: an endpoint that proves which of their devices it is by the key it
+    // reaches this one with, as their devices do.
     let phone = rt.block_on(async {
         Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
@@ -769,13 +751,12 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         DeviceId::new(hex::encode(desk_sync.publisher().as_bytes())).expect("this device's id");
     let laptop_id = laptop_sync.publisher();
     let laptop_device = DeviceId::new(hex::encode(laptop_id.as_bytes())).expect("the laptop's id");
-    // The laptop was told where this device is: its route dials the tunnel
-    // by the same id.
+    // The laptop was told where this device is: its route dials the tunnel by the same id.
     laptop_sync.connect(desk_addr.clone());
 
-    let mut laptop = Session::headless(
+    let mut laptop = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             user: PERSON.to_owned(),
             services: vec![Box::new(SettingsService::new())],
@@ -790,12 +771,10 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             })),
             ..Options::default()
         },
+    );
+    let mut desk = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("the laptop's session");
-    let mut desk = Session::headless(
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             user: PERSON.to_owned(),
             services: vec![Box::new(SettingsService::new())],
@@ -807,19 +786,16 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             vpn: Some(desk_vpn),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("this device's session");
+    );
 
-    // This device can carry an exit: its helper is installed and its
-    // endpoint answers the tunnel. Settings here says so, and that the
-    // person has not turned it on.
+    // This device can carry an exit: its helper is installed and its endpoint answers the tunnel.
+    // Settings here says so, and that the person has not turned it on.
     step_until(&mut desk, "this device to say it can carry an exit", || {
         published_status().is_some_and(|status| status.exit_available && !status.exit_on)
     });
 
-    // The person chooses the laptop's route before they turn their exit on:
-    // a route asked for here is refused for that reason.
+    // The person chooses the laptop's route before they turn their exit on: a route asked for here
+    // is refused for that reason.
     THROUGH
         .set(Some(Through::device(desk_device.as_str())))
         .expect("the laptop routes through this device");
@@ -841,8 +817,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         "the laptop's route says which of the person's devices it goes to"
     );
 
-    // A device that is nobody's: it reaches this device's endpoint, since
-    // anyone may dial it, and the tunnel turns it away.
+    // A device that is nobody's: it reaches this device's endpoint, since anyone may dial it, and
+    // the tunnel turns it away.
     let stranger = rt.block_on(async {
         Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
@@ -860,8 +836,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     );
     rt.block_on(stranger.close());
 
-    // The person turns their exit on, and chooses the route again: the
-    // laptop's tunnel comes up, through this device.
+    // The person turns their exit on, and chooses the route again: the laptop's tunnel comes up,
+    // through this device.
     EXIT.set(true).expect("the exit is on");
     step_until(&mut desk, "this device to say its exit is on", || {
         published_status().is_some_and(|status| status.exit_available && status.exit_on)
@@ -933,8 +909,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         "the packet leaves through this device as the laptop sent it"
     );
 
-    // The person's phone routes through this device as well: Settings here
-    // says both of their devices do, by the names they gave them.
+    // The person's phone routes through this device as well: Settings here says both of their
+    // devices do, by the names they gave them.
     let phone_tunnel = rt
         .block_on(async { client::connect(&phone, desk_addr.clone()).await })
         .expect("the phone routes through this device");
@@ -990,8 +966,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         "this device told the phone that the person stopped it"
     );
 
-    // They stop the laptop too: its tunnel goes, and its choice comes off
-    // through the same action they made it with, not behind Settings' back.
+    // They stop the laptop too: its tunnel goes, and its choice comes off through the same action
+    // they made it with, not behind Settings' back.
     let stopped = StopRequest::after(STOP.get().as_ref(), laptop_device.as_str());
     STOP.set(Some(stopped))
         .expect("the person stops the laptop routing through this device too");

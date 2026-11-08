@@ -1,13 +1,12 @@
-//! Who follows whom: each person's page says whose view it follows on its
-//! live presence ([`super::LiveMember::following`]), so every roster can
-//! say "Following Ada" on a row, and "Following you" on the row of someone
-//! following this person.
+//! Who follows whom: each person's page says whose view it follows on its live presence
+//! ([`super::LiveMember::following`]), so every roster can say "Following Ada" on a row, and
+//! "Following you" on the row of someone following this person.
 
 use super::{HereState, Person};
 
 impl HereState {
-    /// Follow the member `publisher` from now on (`None`: stop), for this
-    /// page's presence to say. Returns whether that changed.
+    /// Follow the member `publisher` from now on (`None`: stop), for this page's presence to say.
+    /// Returns whether that changed.
     pub fn set_following(&mut self, publisher: Option<String>) -> bool {
         if self.following == publisher {
             return false;
@@ -23,10 +22,9 @@ impl HereState {
         self.following.as_deref()
     }
 
-    /// Who follows whom here, `(follower, followed)`, each as the roster
-    /// names them: a row of `people`, or this page's own publisher for this
-    /// person. A device of someone counts as them; a pair naming anyone not
-    /// here is left out.
+    /// Who follows whom here, `(follower, followed)` , each as the roster names them: a row of
+    /// `people` , or this page's own publisher for this person. A device of someone counts as them;
+    /// a pair naming anyone not here is left out.
     #[must_use]
     pub fn following_pairs(&self, people: &[Person]) -> Vec<(String, String)> {
         let own = self.own_id();
@@ -102,10 +100,9 @@ mod tests {
         }
     }
 
-    /// Ben follows Ada, Cy follows this page's person, and this page
-    /// follows Ben: each pair names rows of the roster, this person by
-    /// their own publisher; someone following a person not here says
-    /// nothing.
+    /// Ben follows Ada, Cy follows this page's person, and this page follows Ben: each pair names
+    /// rows of the roster, this person by their own publisher; someone following a person not here
+    /// says nothing.
     #[test]
     fn every_roster_says_who_follows_whom() {
         let mut here = HereState::default();

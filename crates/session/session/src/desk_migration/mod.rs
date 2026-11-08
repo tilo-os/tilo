@@ -1,26 +1,19 @@
 //! The desks older Tilos kept, read once into the desk's one document.
-//!
-//! A session used to keep the desk twice: as a tree file
-//! (`tilo/desk.json`), and beside it as a log of whole-desk snapshots, one per
-//! change, whose changes the activity pane listed
-//! (`tilo/desk-history.automerge`). Both are the desk this device had. The
-//! first start on this build reads them into the document that replaces them
-//! ([`crate::desk_doc`]): every change in the log becomes a change of the
-//! document, keeping the author and the time it was made, and the tree file's
-//! desk becomes the newest change, since it holds what the log never did — how
-//! wide each window is, which one is in front, which display it is on. The old
-//! files are then removed.
-//!
+//! A session used to keep the desk twice: as a tree file (`tilo/desk.json`), and beside it as a log
+//! of whole-desk snapshots, one per change, whose changes the activity pane listed
+//! (`tilo/desk-history.automerge`). Both are the desk this device had. The first start on this
+//! build reads them into the document that replaces them ([`crate::desk_doc`]): every change in the
+//! log becomes a change of the document, keeping the author and the time it was made, and the tree
+//! file's desk becomes the newest change, since it holds what the log never did — how wide each
+//! window is, which one is in front, which display it is on. The old files are then removed.
 //! The shell before these sessions kept its desk in a file of its own
-//! (`~/.config/tilo/state.json`), which [`shell`] brings over the same way for
-//! a device that upgraded from it. A session also kept the person's arrangement
-//! in a document beside the desk (`tilo/arrangement.automerge`), whose windows
-//! [`arrangement`] opens on the desk the first time this build reads it.
-//!
-//! Nothing is lost: the desk a person left is the desk they come back to, and
-//! who changed what before is still in its history. A tree file a newer build
-//! wrote is not read at all: it stays where it is, nothing is written beside
-//! it, and the session says where it is ([`StateNotice`]).
+//! (`~/.config/tilo/state.json`), which [`shell`] brings over the same way for a device that
+//! upgraded from it. A session also kept the person's arrangement in a document beside the desk
+//! (`tilo/arrangement.automerge`), whose windows [`arrangement`] opens on the desk the first time
+//! this build reads it.
+//! Nothing is lost: the desk a person left is the desk they come back to, and who changed what
+//! before is still in its history. A tree file a newer build wrote is not read at all: it stays
+//! where it is, nothing is written beside it, and the session says where it is ([`StateNotice`]).
 
 pub(crate) mod arrangement;
 pub(crate) mod shell;
@@ -55,14 +48,12 @@ pub(crate) enum Adopted {
     Document(Box<AutoCommit>),
     /// This device kept no desk before.
     Nothing,
-    /// The desk is there and this build does not open it, with what the
-    /// person is told about it.
+    /// The desk is there and this build does not open it, with what the person is told about it.
     Refused(StateNotice),
 }
 
-/// The desk the older files under `state` hold, as the one document `state`
-/// now keeps at `document`, written by `actor`; `Nothing` when this device
-/// has neither file.
+/// The desk the older files under `state` hold, as the one document `state` now keeps at `document`
+/// , written by `actor` ; `Nothing` when this device has neither file.
 pub(crate) fn adopt(state: &Path, document: &Path, actor: automerge::ActorId) -> Adopted {
     let mut log = read_log(state);
     let tree = match read_tree(state) {
@@ -76,8 +67,8 @@ pub(crate) fn adopt(state: &Path, document: &Path, actor: automerge::ActorId) ->
     let mut doc = AutoCommit::new();
     crate::desk_doc::stamp_schema(&mut doc);
     if let Some(log) = &mut log {
-        // Who the changes are by, in the one change that opens the document:
-        // a name written later would be a change of the desk of its own.
+        // Who the changes are by, in the one change that opens the document: a name written later
+        // would be a change of the desk of its own.
         let names = names_in(log);
         if !names.is_empty() {
             desktop_doc::set_author_names(&mut doc, &names);
@@ -92,9 +83,9 @@ pub(crate) fn adopt(state: &Path, document: &Path, actor: automerge::ActorId) ->
         }
     }
     if let Some(tree) = tree {
-        // What the tree file holds that the log never did — how wide a window
-        // is, which is in front, which display it is on — is what the person
-        // here last left, so the newest change is theirs.
+        // What the tree file holds that the log never did — how wide a window is, which is in
+        // front, which display it is on — is what the person here last left, so the newest change
+        // is theirs.
         doc.set_actor(actor);
         desktop_doc::seed(&mut doc, &crate::desk_doc::relaunchable(&tree));
         if doc.pending_ops() > 0 {
@@ -104,8 +95,8 @@ pub(crate) fn adopt(state: &Path, document: &Path, actor: automerge::ActorId) ->
     if doc.pending_ops() > 0 {
         doc.commit_with(CommitOptions::default().with_time(now_seconds()));
     }
-    // The desk moves into its one document before the files it came from go:
-    // a session that dies before the write lands migrates again.
+    // The desk moves into its one document before the files it came from go: a session that dies
+    // before the write lands migrates again.
     let bytes = doc.save();
     if let Err(error) = tilo_files::native::atomic::write_private(document, &bytes) {
         tracing::warn!(%error, "the desk is not kept");
@@ -115,9 +106,9 @@ pub(crate) fn adopt(state: &Path, document: &Path, actor: automerge::ActorId) ->
     Adopted::Document(Box::new(doc))
 }
 
-/// Stop keeping the files the desk came from: it is in its one document now.
-/// A log this build could not read stays: nothing was read out of it, and a
-/// build that can read it may still find the person's history there.
+/// Stop keeping the files the desk came from: it is in its one document now. A log this build could
+/// not read stays: nothing was read out of it, and a build that can read it may still find the
+/// person's history there.
 pub(crate) fn forget(state: &Path, log_read: bool) {
     let mut gone = vec![tree_at(state)];
     if log_read {
@@ -134,10 +125,9 @@ pub(crate) fn forget(state: &Path, log_read: bool) {
     }
 }
 
-/// The actor a change of the old log is attributed to in the document: the
-/// author it named, under one actor per author — the log wrote every change
-/// under one actor and named the author in the change itself, and the pane
-/// names an actor by the identity it reads.
+/// The actor a change of the old log is attributed to in the document: the author it named, under
+/// one actor per author — the log wrote every change under one actor and named the author in the
+/// change itself, and the pane names an actor by the identity it reads.
 fn actor_of(change: &automerge::Change) -> automerge::ActorId {
     history_log::change_author(change.message()).map_or_else(
         || change.actor_id().clone(),
@@ -178,8 +168,7 @@ enum Tree {
     Refused(StateNotice),
 }
 
-/// The desk the tree file under `state` holds, if there is one this build
-/// understands.
+/// The desk the tree file under `state` holds, if there is one this build understands.
 fn read_tree(state: &Path) -> Tree {
     let path = tree_at(state);
     let refused = |error: String| {
@@ -196,8 +185,8 @@ fn read_tree(state: &Path) -> Tree {
     let tree: DesktopTree = match serde_json::from_str(&text) {
         Ok(tree) => tree,
         Err(error) => {
-            // A newer layout means the desk is intact and this build is the
-            // wrong one; a file that does not parse at all may be damage.
+            // A newer layout means the desk is intact and this build is the wrong one; a file that
+            // does not parse at all may be damage.
             return Tree::Refused(match version_in(&text) {
                 Some(found) if found > STATE_SCHEMA_VERSION => StateNotice::NewerSchema {
                     path,
@@ -218,13 +207,13 @@ fn read_tree(state: &Path) -> Tree {
             understood: STATE_SCHEMA_VERSION,
         });
     }
-    // A desk an older build wrote has the shape this one reads, and the
-    // document being written brings it up to date.
+    // A desk an older build wrote has the shape this one reads, and the document being written
+    // brings it up to date.
     Tree::Desk(Box::new(tree))
 }
 
-/// The version `text` says it was written by, read without the desk having to
-/// be deserialized: what tells a newer build's desk from a damaged one.
+/// The version `text` says it was written by, read without the desk having to be deserialized: what
+/// tells a newer build's desk from a damaged one.
 fn version_in(text: &str) -> Option<u32> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
     u32::try_from(value.get("schema_version")?.as_u64()?).ok()
@@ -232,8 +221,8 @@ fn version_in(text: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    //! A desk older sessions kept still opens, and the files it came from give
-    //! way to the one document.
+    //! A desk older sessions kept still opens, and the files it came from give way to the one
+    //! document.
 
     use super::*;
     use tilo_desktop_model::{IdMinter, Tab, TileContent};
@@ -247,9 +236,8 @@ mod tests {
     const FIRST_TIME: i64 = 1_700_000_000;
     const LAST_TIME: i64 = 1_700_000_100;
 
-    /// The desk two older sessions left under `state`: the tree file the last
-    /// session wrote, and the log of the changes that made it, each named by
-    /// who made it.
+    /// The desk two older sessions left under `state` : the tree file the last session wrote, and
+    /// the log of the changes that made it, each named by who made it.
     fn older_sessions(state: &Path) -> DesktopTree {
         let mut minter = IdMinter::new(7);
         let notes = Tab {
@@ -286,9 +274,8 @@ mod tests {
         plans
     }
 
-    /// The desk an older session left opens as the one document, with every
-    /// window it held, the way it was shown, and who changed it before; the
-    /// files it came from are gone.
+    /// The desk an older session left opens as the one document, with every window it held, the way
+    /// it was shown, and who changed it before; the files it came from are gone.
     #[test]
     fn an_old_desk_opens_as_the_one_document() {
         let state = tempfile::tempdir().expect("a state directory");
@@ -302,8 +289,8 @@ mod tests {
             opened.workspaces[0].strips[0].window_groups[0].tabs[0].title,
             "Notes"
         );
-        // How the desk is shown came with the tree file, which the log never
-        // recorded: no window is moved to where neither file said it was.
+        // How the desk is shown came with the tree file, which the log never recorded: no window is
+        // moved to where neither file said it was.
         assert_eq!(opened.active, left.active);
         assert_eq!(opened.active_group, left.active_group);
         assert_eq!(opened.outputs, left.outputs);
@@ -324,9 +311,8 @@ mod tests {
         assert!(dir.join(crate::desk_doc::FILE).exists());
     }
 
-    /// The desk the document holds opens on the next start, with the change
-    /// made here as its newest, by the person here, and the view it was left
-    /// in.
+    /// The desk the document holds opens on the next start, with the change made here as its
+    /// newest, by the person here, and the view it was left in.
     #[test]
     fn the_desk_kept_in_its_document_opens_on_the_next_start() {
         let state = tempfile::tempdir().expect("a state directory");
@@ -362,8 +348,8 @@ mod tests {
         );
     }
 
-    /// A desk a newer build wrote is not read into the document, not written
-    /// over and not moved: the person is told where it still is.
+    /// A desk a newer build wrote is not read into the document, not written over and not moved:
+    /// the person is told where it still is.
     #[test]
     fn an_old_desk_a_newer_build_wrote_is_left_alone_and_says_where_it_is() {
         let state = tempfile::tempdir().expect("a state directory");

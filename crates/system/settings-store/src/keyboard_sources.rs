@@ -78,9 +78,6 @@ impl KeyboardProfile {
 }
 
 /// Decode profiles individually: one obsolete assignment cannot erase its siblings.
-///
-/// # Errors
-/// Returns the deserializer error when the surrounding value cannot be read.
 pub fn lenient_profiles<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<String, KeyboardProfile>, D::Error>
@@ -299,11 +296,6 @@ pub const LAYOUTS: crate::Key<Vec<String>> =
 /// The shared sources with `wanted` active: a source already in the list is
 /// switched to; a new one joins the list first, under the same limits
 /// Settings applies ([`RichInputConfig::can_add_source`]).
-///
-/// # Errors
-///
-/// `wanted` is not an XKB layout (`layout` or `layout:variant`) or an
-/// input-method engine, or the list has no room for it.
 pub fn plan_active_source(
     input: &RichInputConfig,
     wanted: &str,

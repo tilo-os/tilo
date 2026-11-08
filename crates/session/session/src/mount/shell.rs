@@ -44,16 +44,14 @@ pub const WINDOW_MENU_KIND: &str = "desktop.window-menu";
 /// The slot the window menu is drawn in, as the settings reading names it.
 pub const WINDOW_MENU_SLOT: &str = "window-menu";
 
-/// The app a tilolang view of the menu reads it as: the first part of its
-/// kind, which is what a package names in `use desktop as desktop`.
+/// The app a tilolang view of the menu reads it as: the first part of its kind, which is what a
+/// package names in `use desktop as desktop` .
 pub const WINDOW_MENU_APP: &str = "desktop";
 
-/// The window menu's surface, as a tilolang package drawing it is compiled
-/// against: the fields [`WINDOW_MENU`] reads and the verbs that change it, in
-/// the vocabulary a surface file declares
-/// (`tilo_actions::surface`, see `docs/developers/slot-views.md`). A view
-/// reads the menu through this and invokes it through this; the session
-/// publishes the same fields and verbs on its door.
+/// The window menu's surface, as a tilolang package drawing it is compiled against: the fields
+/// [`WINDOW_MENU`] reads and the verbs that change it, in the vocabulary a surface file declares
+/// (`tilo_actions::surface`, see `docs/developers/slot-views.md` ). A view reads the menu through
+/// this and invokes it through this; the session publishes the same fields and verbs on its door.
 pub const WINDOW_MENU_SURFACE: &str = r#"
 [[resources]]
 kind = "desktop.window-menu"
@@ -114,8 +112,7 @@ kind = "outside"
 params = [{ name = "row", required = true, type = "text" }]
 "#;
 
-/// What stands over the windows, and in what order, in the session's
-/// catalogue: the surface stack.
+/// What stands over the windows, and in what order, in the session's catalogue: the surface stack.
 pub const OVERLAYS: &str = "desktop:overlays";
 
 /// What kind of resource [`OVERLAYS`] is.
@@ -128,13 +125,11 @@ pub const FOCUS: &str = "desktop:focus";
 /// What kind of resource [`FOCUS`] is.
 pub const FOCUS_KIND: &str = "desktop.focus";
 
-/// The window menu's state, as the session holds it: the rest of the shell's
-/// presentation — focus, the surface stack, which strip each display shows —
-/// is in the stack beside it.
+/// The window menu's state, as the session holds it: the rest of the shell's presentation — focus,
+/// the surface stack, which strip each display shows — is in the stack beside it.
 #[derive(Debug, Default)]
 pub struct ShellState {
-    /// The window whose menu is up, and where it stands: `None` while no
-    /// menu is up.
+    /// The window whose menu is up, and where it stands: `None` while no menu is up.
     menu: Option<OpenMenu>,
 }
 
@@ -143,8 +138,8 @@ pub struct ShellState {
 struct OpenMenu {
     /// The tab whose rows the menu shows.
     tab: TabId,
-    /// Where the person put it, as `x,y` in the desk's coordinates; the
-    /// window's own corner when the verb named none.
+    /// Where the person put it, as `x,y` in the desk's coordinates; the window's own corner when
+    /// the verb named none.
     anchor: Option<(f64, f64)>,
 }
 
@@ -162,9 +157,8 @@ impl ShellState {
 #[effect(operation = "so.tilo.desktop.window-menu")]
 pub enum ShellEffect {
     /// Open the window menu
-    ///
-    /// The window in front's, or the one named; the same verb closes a menu
-    /// it finds open for that window.
+    /// The window in front's, or the one named; the same verb closes a menu it finds open for that
+    /// window.
     #[effect(own_device, icon = "menu")]
     Open {
         /// The window to open the menu for, by its tab's id.
@@ -178,7 +172,6 @@ pub enum ShellEffect {
     #[effect(own_device, idempotent)]
     Close,
     /// Choose a row
-    ///
     /// Sends the command the row means, as the desk sends it from anywhere.
     #[effect(own_device)]
     Choose {
@@ -193,17 +186,15 @@ pub enum ShellEffect {
 #[effect(operation = "so.tilo.desktop.overlays")]
 pub enum OverlayEffect {
     /// Open a surface
-    ///
-    /// Named as the reading names it; the session's own surfaces only. A
-    /// surface already up moves to where it is asked to stand.
+    /// Named as the reading names it; the session's own surfaces only. A surface already up moves
+    /// to where it is asked to stand.
     #[effect(own_device, icon = "layers")]
     Open {
         /// The surface, as the reading names it.
         #[param("The surface to open, as the reading names it")]
         slot: String,
-        /// Where to hang it, as the reading gives it back: `at:x,y` over the
-        /// thing it acts on, `beside:x0,y0,x1,y1,gap` clear of it. Its own
-        /// place by default.
+        /// Where to hang it, as the reading gives it back: `at:x,y` over the thing it acts on,
+        /// `beside:x0,y0,x1,y1,gap` clear of it. Its own place by default.
         #[param("Where to hang it, as \"at:x,y\" or \"beside:x0,y0,x1,y1,gap\"")]
         anchor: Option<String>,
     },
@@ -216,14 +207,14 @@ pub enum OverlayEffect {
     },
 }
 
-/// The window menu as it reads: the window it is for, where it stands, and
-/// what that window offers now.
+/// The window menu as it reads: the window it is for, where it stands, and what that window offers
+/// now.
 #[derive(Debug, Serialize)]
 struct Reading {
     tab: Option<String>,
     anchor: Option<Anchor>,
-    /// What the menu is on, when it is up: the window, named as the person
-    /// knows it, so typing into the menu can be about it.
+    /// What the menu is on, when it is up: the window, named as the person knows it, so typing into
+    /// the menu can be about it.
     #[serde(skip_serializing_if = "Option::is_none")]
     subject: Option<Subject>,
     rows: Vec<Row>,
@@ -252,12 +243,12 @@ struct Row {
     enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
-    /// The chord that does the same thing, as the desktop's table binds it
-    /// now: what a person sees at the row's end.
+    /// The chord that does the same thing, as the desktop's table binds it now: what a person sees
+    /// at the row's end.
     #[serde(skip_serializing_if = "Option::is_none")]
     shortcut: Option<String>,
-    /// The picture of the command the row runs, by its Lucide name, as the
-    /// window's own controls draw it.
+    /// The picture of the command the row runs, by its Lucide name, as the window's own controls
+    /// draw it.
     #[serde(skip_serializing_if = "Option::is_none")]
     icon: Option<String>,
     /// The rows a row that opens a submenu offers: none for a plain row,
@@ -268,8 +259,7 @@ struct Row {
     separator: bool,
 }
 
-/// The surface stack as it reads: what stands over the windows, topmost
-/// first.
+/// The surface stack as it reads: what stands over the windows, topmost first.
 #[derive(Debug, Serialize)]
 struct Stack {
     stack: Vec<Surface>,
@@ -285,8 +275,8 @@ struct Surface {
     owner: String,
     lifecycle: &'static str,
     size: Extent,
-    /// Where the host places it, for a surface whose anchor and size settle a
-    /// rect. A surface its own view places has none.
+    /// Where the host places it, for a surface whose anchor and size settle a rect. A surface its
+    /// own view places has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     place: Option<Area>,
 }
@@ -312,7 +302,7 @@ struct Area {
 /// What holds the keyboard.
 #[derive(Debug, Serialize)]
 struct Focus {
-    /// `window`, or `overlay:<slot>`.
+    /// `window` , or `overlay:<slot>` .
     target: String,
     /// The surface, while one holds it.
     surface: Option<&'static str>,
@@ -326,21 +316,20 @@ fn named(text: &str) -> Result<Slot, DoorError> {
     })
 }
 
-/// The shell's resources, read from the desk and from the state the session
-/// keeps beside it.
+/// The shell's resources, read from the desk and from the state the session keeps beside it.
 pub struct Shell {
     handle: DesktopHandle,
     state: ShellState,
-    /// The surfaces over the desk: what stands where, which holds the
-    /// keyboard, and what a press outside one closes.
+    /// The surfaces over the desk: what stands where, which holds the keyboard, and what a press
+    /// outside one closes.
     overlays: Overlays,
-    /// The desktop's one shortcut table, so a menu row shows the chord a
-    /// press doing the same thing would be, as the person binds it now.
+    /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
+    /// would be, as the person binds it now.
     shortcuts: crate::mount::panels::Shortcuts,
 }
 
 impl Shell {
-    /// The shell over `handle`, publishing the surfaces in `overlays`.
+    /// The shell over `handle` , publishing the surfaces in `overlays` .
     #[must_use]
     pub(crate) fn new(
         handle: DesktopHandle,
@@ -355,8 +344,7 @@ impl Shell {
         }
     }
 
-    /// Mount it as one of the session's services, publishing the surfaces in
-    /// `overlays`.
+    /// Mount it as one of the session's services, publishing the surfaces in `overlays` .
     pub(crate) fn mount(
         services: &Rc<std::cell::RefCell<tilo_service::Services>>,
         handle: &DesktopHandle,
@@ -368,15 +356,15 @@ impl Shell {
             .add(Box::new(Self::new(handle.clone(), overlays, shortcuts)));
     }
 
-    /// The tab of the window in front: the active group's, in the strip on
-    /// the display the person works on.
+    /// The tab of the window in front: the active group's, in the strip on the display the person
+    /// works on.
     fn focused(&self) -> Option<TabId> {
         self.handle
             .read(|tree| active_route(tree).map(|ids| ids.tab))
     }
 
-    /// Where the menu of `tab` stands: where the person put it, or the
-    /// corner of its window as last laid out.
+    /// Where the menu of `tab` stands: where the person put it, or the corner of its window as last
+    /// laid out.
     fn anchor(&self, tab: TabId, named: Option<(f64, f64)>) -> Option<Anchor> {
         let corner = named.or_else(|| {
             self.handle
@@ -395,8 +383,8 @@ impl Shell {
         Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
     }
 
-    /// Open the menu of `tab` (or of the window in front), or close it when
-    /// it is already up for that window.
+    /// Open the menu of `tab` (or of the window in front), or close it when it is already up for
+    /// that window.
     fn open(&mut self, tab: Option<&str>, anchor: Option<&str>) -> Result<(), DoorError> {
         let tab = match tab.map(str::trim) {
             Some(text) if !text.is_empty() => text.parse().map_err(|_| DoorError::Unavailable {
@@ -491,8 +479,7 @@ impl Shell {
             });
         }
         if slot == Slot::WindowMenu {
-            // The menu keeps its window and place beside the stack; both go
-            // together.
+            // The menu keeps its window and place beside the stack; both go together.
             self.close();
         }
         self.overlays.close(slot);
@@ -625,9 +612,8 @@ impl Shell {
         }
     }
 
-    /// The rows the window showing `tab` offers, each carrying the chord that
-    /// does the same thing and the picture of the command behind it, its
-    /// submenu's rows with them.
+    /// The rows the window showing `tab` offers, each carrying the chord that does the same thing
+    /// and the picture of the command behind it, its submenu's rows with them.
     fn rows(&self, tab: TabId) -> Vec<Row> {
         let mut rows: Vec<Row> = self
             .handle
@@ -635,9 +621,9 @@ impl Shell {
             .into_iter()
             .map(|row| self.reading_row(row))
             .collect();
-        // A window of one tab is its tab: the chord that closes the tab closes
-        // it, so its Close row says that chord. A window of several offers the
-        // tab's close beside the window's, and the chord does only the tab's.
+        // A window of one tab is its tab: the chord that closes the tab closes it, so its Close row
+        // says that chord. A window of several offers the tab's close beside the window's, and the
+        // chord does only the tab's.
         if !rows.iter().any(|row| row.id == window_menu::CLOSE) {
             let close = fixed_chord("fixed-close-tab");
             for row in rows
@@ -676,10 +662,9 @@ impl Shell {
         }
     }
 
-    /// The chord a press doing what row `id` does would be, as the desktop's
-    /// table binds it now: the person sees the key they would press. A row no
-    /// shortcut runs says nothing, rather than a key that would do something
-    /// else.
+    /// The chord a press doing what row `id` does would be, as the desktop's table binds it now:
+    /// the person sees the key they would press. A row no shortcut runs says nothing, rather than a
+    /// key that would do something else.
     fn row_shortcut(&self, id: &str) -> Option<String> {
         if let Some(fixed) = fixed_row_shortcut(id) {
             return fixed_chord(fixed);
@@ -690,6 +675,7 @@ impl Shell {
             }
             window_menu::MAXIMIZE => ShortcutAction::MaximizeWindow,
             window_menu::RESTORE => ShortcutAction::RestoreWindow,
+            window_menu::FLOAT | window_menu::SNAP_BACK => ShortcutAction::ToggleFloat,
             window_menu::SPLIT_RIGHT => ShortcutAction::DetachTab,
             window_menu::WIDER => ShortcutAction::ResizeWider,
             window_menu::NARROWER => ShortcutAction::ResizeNarrower,
@@ -703,9 +689,9 @@ impl Shell {
     }
 }
 
-/// The chord the catalogue fixes for `id`, in the system's own spelling: its
-/// Super form where the catalogue binds one, so a row reads the key the desk
-/// advertises rather than every alternative at once.
+/// The chord the catalogue fixes for `id` , in the system's own spelling: its Super form where the
+/// catalogue binds one, so a row reads the key the desk advertises rather than every alternative at
+/// once.
 fn fixed_chord(id: &str) -> Option<String> {
     let chords = ui::shortcut_table::fixed_shortcut(id)?.chords();
     let chord = chords
@@ -720,8 +706,8 @@ fn fixed_chord(id: &str) -> Option<String> {
     Some(chord.display())
 }
 
-/// The fixed shortcut whose chord does what row `id` does, for the rows a
-/// chord that Settings cannot rebind carries.
+/// The fixed shortcut whose chord does what row `id` does, for the rows a chord that Settings
+/// cannot rebind carries.
 fn fixed_row_shortcut(id: &str) -> Option<&'static str> {
     Some(match id {
         window_menu::CLOSE => "fixed-close-tab",

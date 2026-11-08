@@ -1,7 +1,6 @@
-//! The shell on the native session: the tilolang shell package
-//! (`apps/tl/shell`) shown by a [`ShellPart`] per display — the whole screen
-//! under the windows, which stand in its wells — kept in step with the
-//! session's desk (`crate::desk`) and asking the session's door for what the
+//! The shell on the native session: the tilolang shell package (`apps/tl/shell`) shown by a
+//! [`ShellPart`] per display — the whole screen under the windows, which stand in its wells — kept
+//! in step with the session's desk (`crate::desk`) and asking the session's door for what the
 //! person presses.
 
 use std::cell::RefCell;
@@ -45,8 +44,8 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
     ]
 }
 
-/// The height of the bar's band, logical pixels: what a bar or a dock that shows only at an
-/// edge takes, so the screen's views can tell the pointer is at that edge.
+/// The height of the bar's band, logical pixels: what a bar or a dock that shows only at an edge
+/// takes, so the screen's views can tell the pointer is at that edge.
 fn band() -> u32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -67,45 +66,45 @@ pub(crate) struct Shell {
     seen: Option<crate::desk_resource::DeskKey>,
     /// The services' revision and the arrangement the places' readings were last followed at.
     followed: Option<(u64, ArrangementReading)>,
-    /// The resources whose readings the shell holds for its places, by id, each with its type
-    /// as the shell's runtime names another app's (`<app>#<Type>`): what a place names, and
-    /// what the views composed there read.
+    /// The resources whose readings the shell holds for its places, by id, each with its type as
+    /// the shell's runtime names another app's (`<app>#<Type>`): what a place names, and what the
+    /// views composed there read.
     reading: std::collections::BTreeMap<String, String>,
     /// How often each was read for the shell.
     reads: std::collections::BTreeMap<String, u64>,
-    /// The apps whose packages a view composed in a place read a type of before it was
-    /// loaded, by app id: published with the packages the places show, and kept for the rest
-    /// of the session (a view keeps drawing what it read once the card is there).
+    /// The apps whose packages a view composed in a place read a type of before it was loaded, by
+    /// app id: published with the packages the places show, and kept for the rest of the session (a
+    /// view keeps drawing what it read once the card is there).
     needed: std::collections::BTreeSet<String>,
-    /// How many of the session's turns read some of them: what the views composed in places
-    /// waited on comes in one turn for everything one run of them read, not one per resource.
+    /// How many of the session's turns read some of them: what the views composed in places waited
+    /// on comes in one turn for everything one run of them read, not one per resource.
     rounds: u64,
-    /// The shell's record, shared by every part: one display draws what another wrote, so a
-    /// change any part commits is the whole shell's.
+    /// The shell's record, shared by every part: one display draws what another wrote, so a change
+    /// any part commits is the whole shell's.
     record: Rc<RefCell<tilo_resource::Doc>>,
-    /// One part per output, in the order the outputs are known: each stands on its own
-    /// display, and a display added (or taken away) has its part made (or dropped) to follow.
+    /// One part per output, in the order the outputs are known: each stands on its own display, and
+    /// a display added (or taken away) has its part made (or dropped) to follow.
     parts: Vec<(String, Rc<RefCell<ShellPart>>)>,
     /// The packages the shell's parts are made from, kept to make each new display's part.
     packages: Vec<tilolang_tilo::tilolang::Compiled>,
     app: String,
     person: String,
-    /// The height of the bar's band, logical pixels: a window reaching into the top band
-    /// covers a bar there.
+    /// The height of the bar's band, logical pixels: a window reaching into the top band covers a
+    /// bar there.
     band: u32,
     /// The wells the screen's views report, which the desktop places the windows at.
     wells: Option<ui::widget::Wells>,
-    /// The services' revision the platform readings were last read at: they are read again
-    /// only when it moved.
+    /// The services' revision the platform readings were last read at: they are read again only
+    /// when it moved.
     services_seen: Option<u64>,
-    /// The theme the person's appearance settings make: every part draws in it, and a part
-    /// made for a display plugged in later starts in it.
+    /// The theme the person's appearance settings make: every part draws in it, and a part made for
+    /// a display plugged in later starts in it.
     theme: ui::Theme,
 }
 
 impl Shell {
-    /// The shell over every output of `compositor`, published on `doors`. The screen's views
-    /// report their wells to `wells`, the handle the window policy places every window by
+    /// The shell over every output of `compositor` , published on `doors` . The screen's views
+    /// report their wells to `wells` , the handle the window policy places every window by
     /// ([`tilo_surface_host::WellPolicy`]).
     pub(crate) fn mount(
         compositor: &mut Compositor,
@@ -146,8 +145,8 @@ impl Shell {
         Ok(shell)
     }
 
-    /// A timer Clocks says came due that the bar has not announced: its id, and what to say
-    /// in the app's own words. Each id is announced once.
+    /// A timer Clocks says came due that the bar has not announced: its id, and what to say in the
+    /// app's own words. Each id is announced once.
     pub(crate) fn new_due_timer(&self) -> Option<(String, String, String)> {
         let (id, title, body) = self.desk.due_timer()?;
         let mut announced = self.announced.borrow_mut();
@@ -155,11 +154,11 @@ impl Shell {
     }
 
     /// Make a part for each output `compositor` shows that has none, stand each part on its
-    /// output's rectangle, and stand the parts of outputs it no longer shows nowhere: one part
-    /// per display, following a display plugged in, moved or taken away. A part whose display
-    /// went keeps its place with the compositor and the door, drawing and offering nothing, and
-    /// stands again when that display comes back, so unplugging and replugging makes no new
-    /// part. Cheap when nothing changed, which is what every frame runs.
+    /// output's rectangle, and stand the parts of outputs it no longer shows nowhere: one part per
+    /// display, following a display plugged in, moved or taken away. A part whose display went
+    /// keeps its place with the compositor and the door, drawing and offering nothing, and stands
+    /// again when that display comes back, so unplugging and replugging makes no new part. Cheap
+    /// when nothing changed, which is what every frame runs.
     fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
         let outputs = displays::placed(&compositor.outputs());
         for (name, part) in &self.parts {
@@ -192,8 +191,8 @@ impl Shell {
         }
     }
 
-    /// Make the shell's part on `output` (its connector name and logical rectangle), sharing
-    /// the shell's record with every other part, and hand it to `compositor` and its doors.
+    /// Make the shell's part on `output` (its connector name and logical rectangle), sharing the
+    /// shell's record with every other part, and hand it to `compositor` and its doors.
     fn mount_part(
         &mut self,
         compositor: &mut Compositor,
@@ -211,8 +210,8 @@ impl Shell {
                 person: &self.person,
                 link: Rc::clone(&self.link),
                 record: Rc::clone(&self.record),
-                // The first part of the shell makes the shell's record and seeds it; every
-                // other display's part draws the one the shell already has.
+                // The first part of the shell makes the shell's record and seeds it; every other
+                // display's part draws the one the shell already has.
                 seed: self.parts.is_empty(),
             },
             scale,
@@ -222,9 +221,9 @@ impl Shell {
         part.set_theme(self.theme.clone());
         part.set_display(Some((output.to_owned(), rect)), scale);
         part.set_fullscreen(fullscreen.to_vec());
-        // The windows the views picture, each display's own: the reading's window keys stand
-        // for the tabs of the workspace in front, and a window whose app holds secrets is left
-        // out, so its view shows the app's mark instead of its pixels.
+        // The windows the views picture, each display's own: the reading's window keys stand for
+        // the tabs of the workspace in front, and a window whose app holds secrets is left out, so
+        // its view shows the app's mark instead of its pixels.
         let handle = self.desk.handle.clone();
         part.show_pictures(
             ui::widget::Previews::new(),
@@ -232,15 +231,15 @@ impl Shell {
         );
         let part = Rc::new(RefCell::new(part));
         compositor.add_host(Box::new(Held(Rc::clone(&part))));
-        // Each display's part is its own surface on the door: what the person, a script or an
-        // agent drives the shell through, and what reads its labels.
+        // Each display's part is its own surface on the door: what the person, a script or an agent
+        // drives the shell through, and what reads its labels.
         doors.add(Rc::clone(&part) as tilo_surface_host::Shared);
         self.parts.push((output.to_owned(), part));
     }
 
-    /// Hand the shell the desk when what it is made from changed, and what the screen says of
-    /// its edges either way: a bar or dock that hides until reached for follows the pointer and
-    /// the windows, which move without the desk changing. Whether anything was published.
+    /// Hand the shell the desk when what it is made from changed, and what the screen says of its
+    /// edges either way: a bar or dock that hides until reached for follows the pointer and the
+    /// windows, which move without the desk changing. Whether anything was published.
     pub(crate) fn publish(&mut self) -> bool {
         let key = self.desk.key();
         let was = self.seen.replace(key.clone());
@@ -248,8 +247,8 @@ impl Shell {
         if desk_changed && !self.link.publish(self.desk.reading()) {
             return false;
         }
-        // What the desk has to draw at an instant of its own (the switcher's panel coming up
-        // while Alt is held) wakes every part then, so nothing draws or polls in between.
+        // What the desk has to draw at an instant of its own (the switcher's panel coming up while
+        // Alt is held) wakes every part then, so nothing draws or polls in between.
         let deadline = self.desk.next_deadline();
         for (_, part) in &self.parts {
             part.borrow_mut().set_deadline(deadline);
@@ -290,15 +289,15 @@ impl Shell {
         self.link.publish_edges(edges);
     }
 
-    /// Follow the displays as they come and go, and a window taking one for itself: a part is
-    /// made or dropped per output, and a part on a display a fullscreen window owns steps
-    /// aside. Cheap when nothing changed, which is what every frame runs.
+    /// Follow the displays as they come and go, and a window taking one for itself: a part is made
+    /// or dropped per output, and a part on a display a fullscreen window owns steps aside. Cheap
+    /// when nothing changed, which is what every frame runs.
     pub(crate) fn follow_displays(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
         self.follow_outputs(compositor, doors);
     }
 
-    /// The outputs' bounding box `(x, y, w, h)`, as a screen-edge reading names them: every
-    /// output that is on.
+    /// The outputs' bounding box `(x, y, w, h)` , as a screen-edge reading names them: every output
+    /// that is on.
     fn outputs(compositor: &Compositor) -> Option<(i32, i32, u32, u32)> {
         let (x0, y0, x1, y1) = compositor
             .outputs()
@@ -312,16 +311,16 @@ impl Shell {
     }
 
     /// Hand the shell the readings of the platform's resources its views read (the sound, the
-    /// battery, the appearance setting), as `services` publish them, whenever what they
-    /// publish may have moved.
+    /// battery, the appearance setting), as `services` publish them, whenever what they publish may
+    /// have moved.
     pub(crate) fn publish_readings(&mut self, services: &Services) {
         let revision = services.revision();
         if self.services_seen.replace(revision) == Some(revision) {
             return;
         }
         // A resource no service of this device serves (no Bluetooth, no battery) is published
-        // empty: the device has none of it, so a view reads its fields as absent (off, empty)
-        // and shows the device without it.
+        // empty: the device has none of it, so a view reads its fields as absent (off, empty) and
+        // shows the device without it.
         for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
             let reading = services
                 .read(resource)
@@ -330,12 +329,12 @@ impl Shell {
         }
     }
 
-    /// Hand the shell what its places show, from what `services` publish: the package of each
-    /// app a place shows a resource of, so the place draws it through that app's own views
-    /// (and none of an app no place shows); the reading of each resource a place names; and
-    /// the reading of each resource those views read, as they read it (an item of a
-    /// collection a reading lists by id). Each reading is read again only when its service
-    /// says it moved, so a change costs the shell only the resources it touched.
+    /// Hand the shell what its places show, from what `services` publish: the package of each app a
+    /// place shows a resource of, so the place draws it through that app's own views (and none of
+    /// an app no place shows); the reading of each resource a place names; and the reading of each
+    /// resource those views read, as they read it (an item of a collection a reading lists by id).
+    /// Each reading is read again only when its service says it moved, so a change costs the shell
+    /// only the resources it touched.
     pub(crate) fn follow_places(
         &mut self,
         arrangement: &ArrangementReading,
@@ -343,8 +342,8 @@ impl Shell {
     ) {
         let wanted = self.link.take_wanted();
         // A view composed in a place read a resource of a type no loaded package declared: its
-        // app's package is published like those a place shows, so the place draws it through
-        // that app's own views.
+        // app's package is published like those a place shows, so the place draws it through that
+        // app's own views.
         let mut asked = false;
         for app in self.link.take_wanted_packages().into_keys() {
             asked |= self.needed.insert(app);
@@ -356,9 +355,8 @@ impl Shell {
         }
         let mut fresh: Vec<(String, String)> = Vec::new();
         if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
-            // Every app a place shows is published with this pass, however this pass was
-            // asked for: a package a view asked for arrives beside them, and none of them
-            // goes with it.
+            // Every app a place shows is published with this pass, however this pass was asked for:
+            // a package a view asked for arrives beside them, and none of them goes with it.
             let placed = tilo_surface_host::shell_part::readings::placed_records(
                 arrangement,
                 &services.resources(),
@@ -374,8 +372,8 @@ impl Shell {
                 }
             }
             // A resource of an app no package is published of any more is followed no more, and
-            // neither is one of an app whose views draw it as a Rust app when none of its views
-            // is linked here any more.
+            // neither is one of an app whose views draw it as a Rust app when none of its views is
+            // linked here any more.
             let rust_views = tilo_surface_host::shell_part::readings::rust_view_apps();
             self.reading.retain(|_, ty| {
                 app_of(ty).is_some_and(|app| {
@@ -427,8 +425,8 @@ impl Shell {
         self.followed = Some(key);
     }
 
-    /// How often the shell read each resource its places show, by id, since it started: what
-    /// a test proves a change re-reads only what it touched by.
+    /// How often the shell read each resource its places show, by id, since it started: what a test
+    /// proves a change re-reads only what it touched by.
     pub(crate) fn reads(&self) -> std::collections::BTreeMap<String, u64> {
         self.reads.clone()
     }
@@ -438,8 +436,8 @@ impl Shell {
         self.rounds
     }
 
-    /// The apps whose packages the shell's runtime holds loaded now, because a place shows
-    /// them: every display's part loads the same.
+    /// The apps whose packages the shell's runtime holds loaded now, because a place shows them:
+    /// every display's part loads the same.
     pub(crate) fn loaded_apps(&self) -> Vec<String> {
         self.parts
             .first()
@@ -452,21 +450,21 @@ impl Shell {
         self.link.publish_arrangement(reading);
     }
 
-    /// The link the session publishes the desk on and the shell asks through: what a test
-    /// stages a reading on.
+    /// The link the session publishes the desk on and the shell asks through: what a test stages a
+    /// reading on.
     pub(crate) fn link(&self) -> Rc<SessionLink> {
         Rc::clone(&self.link)
     }
 
-    /// The surface the desk shows over its windows, by the name the views read (`d.here`):
-    /// `none` at rest.
+    /// The surface the desk shows over its windows, by the name the views read (`d.here`): `none`
+    /// at rest.
     pub(crate) fn surface(&self) -> String {
         self.link.surface()
     }
 
     /// The windows the shell's views picture, each with the rect its picture rests at, logical
-    /// `(x, y, width, height)`: what the compositor draws of them, its own buffers scaled into
-    /// the place a view gives them. Empty while no view pictures a window.
+    /// `(x, y, width, height)` : what the compositor draws of them, its own buffers scaled into the
+    /// place a view gives them. Empty while no view pictures a window.
     pub(crate) fn pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
         self.parts
             .iter()
@@ -484,16 +482,16 @@ impl Shell {
         self.link.has_asks()
     }
 
-    /// The shell's own record (`root shell: Shell`, `root viewing: Viewing`, `root
-    /// arrangement: Arrangement`), as the shell's parts keep it: the document every part
-    /// commits into and draws from, shared by them. It exists as soon as the shell does, before
-    /// any display's part is made.
+    /// The shell's own record (`root shell: Shell`, `root viewing: Viewing` ,
+    /// `root arrangement: Arrangement` ), as the shell's parts keep it: the document every part
+    /// commits into and draws from, shared by them. It exists as soon as the shell does, before any
+    /// display's part is made.
     pub(crate) fn records(&self) -> Rc<RefCell<tilo_resource::Doc>> {
         Rc::clone(&self.record)
     }
 
-    /// The shell's package as the session runs it, its compiled module and description: what
-    /// its records are published by, the way an app's are.
+    /// The shell's package as the session runs it, its compiled module and description: what its
+    /// records are published by, the way an app's are.
     pub(crate) fn package(&self) -> Option<tilolang_tilo::tilolang::Compiled> {
         self.packages.last().cloned()
     }
@@ -521,11 +519,11 @@ impl Shell {
     }
 
     /// Run what the shell asked through `invoke` (the session's door).
-    ///
-    /// The shell's calls of the session's actions (`session.close_place(place: 3)`) reach the
-    /// door with every argument as text, so each is typed here by the type the action itself declares for it: a workspace's key
-    /// is text even when it reads as digits, and a count is a number. `types` answers with the
-    /// declared type of `(resource, action)`'s argument `name`, when the door publishes it.
+    /// The shell's calls of the session's actions (`session.close_place(place: 3)`) reach the door
+    /// with every argument as text, so each is typed here by the type the action itself declares
+    /// for it: a workspace's key is text even when it reads as digits, and a count is a number.
+    /// `types` answers with the declared type of `(resource, action)` 's argument `name` , when the
+    /// door publishes it.
     pub(crate) fn serve(
         &self,
         types: impl Fn(&str, &str, &str) -> Option<tilo_actions::params::ParamType>,
@@ -562,8 +560,8 @@ impl Shell {
         part.borrow_mut().run_setting(setting, arguments)
     }
 
-    /// How much work the shell did since the session started, over every display: its view
-    /// turns and frames summed, since a part on each display does the same work on each.
+    /// How much work the shell did since the session started, over every display: its view turns
+    /// and frames summed, since a part on each display does the same work on each.
     pub(crate) fn work(&self) -> ShellWork {
         let mut work = ShellWork::default();
         let mut seen_event = false;
@@ -578,8 +576,8 @@ impl Shell {
             work.receiving = work.receiving.saturating_add(part.receiving);
             work.laying_out = work.laying_out.saturating_add(part.laying_out);
             work.syncing = work.syncing.saturating_add(part.syncing);
-            // The effects handed and served are the link's, shared by every part: the last
-            // part's reading holds the whole count, so it is not summed.
+            // The effects handed and served are the link's, shared by every part: the last part's
+            // reading holds the whole count, so it is not summed.
             if !seen_event {
                 work.handed = part.handed;
                 work.served = part.served;
@@ -589,7 +587,7 @@ impl Shell {
         work
     }
 
-    /// Draw every part in `theme`: the person changed their appearance.
+    /// Draw every part in `theme` : the person changed their appearance.
     pub(crate) fn set_theme(&mut self, theme: &ui::Theme) {
         self.theme = theme.clone();
         for (_, part) in &self.parts {
@@ -597,8 +595,8 @@ impl Shell {
         }
     }
 
-    /// What the shell refused since the session started, in its words: every display's, and
-    /// what the door refused of what it asked.
+    /// What the shell refused since the session started, in its words: every display's, and what
+    /// the door refused of what it asked.
     pub(crate) fn refusals(&self) -> Vec<String> {
         self.parts
             .iter()
@@ -607,9 +605,8 @@ impl Shell {
             .collect()
     }
 
-    /// Where the shell's control named `name` stands, logical `(x, y, w, h)`: the first part
-    /// that shows it, since a name is the shell's one control and every display carries the
-    /// same.
+    /// Where the shell's control named `name` stands, logical `(x, y, w, h)` : the first part that
+    /// shows it, since a name is the shell's one control and every display carries the same.
     pub(crate) fn control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.parts
             .iter()
@@ -617,8 +614,8 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().control_bounds(name))
     }
 
-    /// Where every shown part lays out the control `name`: a strip's row is a chip on the bar
-    /// and an item of a place's move menu, and both are pressed.
+    /// Where every shown part lays out the control `name` : a strip's row is a chip on the bar and
+    /// an item of a place's move menu, and both are pressed.
     pub(crate) fn controls(&self, name: &str) -> Vec<(f64, f64, f64, f64)> {
         self.parts
             .iter()
@@ -643,8 +640,8 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().text_bounds(text))
     }
 
-    /// Where each display's part stands now, by connector name: what a test reads to prove a
-    /// part on every display, and none on one a fullscreen window owns.
+    /// Where each display's part stands now, by connector name: what a test reads to prove a part
+    /// on every display, and none on one a fullscreen window owns.
     pub(crate) fn parts(&self) -> Vec<PartPlace> {
         self.parts
             .iter()
@@ -669,7 +666,7 @@ impl Shell {
 pub struct PartPlace {
     /// The output's connector name (`HEADLESS-1`).
     pub output: String,
-    /// Where the part stands, logical `(x, y, w, h)`.
+    /// Where the part stands, logical `(x, y, w, h)` .
     pub rect: (i32, i32, u32, u32),
     /// The scale the part draws at: its display's, so what it paints is as crisp as the panel.
     pub scale: f64,
@@ -677,10 +674,10 @@ pub struct PartPlace {
     pub aside: bool,
 }
 
-/// The compositor's window for the reading's window `key` (its tab's id), when it may be
-/// pictured: this device draws the window and its app shows no secrets. A window this device
-/// does not draw, or one whose app holds secrets, is pictured by nothing, and its view shows
-/// the app's mark instead.
+/// The compositor's window for the reading's window `key` (its tab's id), when it may be pictured:
+/// this device draws the window and its app shows no secrets. A window this device does not draw,
+/// or one whose app holds secrets, is pictured by nothing, and its view shows the app's mark
+/// instead.
 fn pictured(handle: &tilo_desktop_surface::DesktopHandle, key: &str) -> Option<u64> {
     use tilo_desktop_model::TileContent;
     let (app, surface) = handle.read(|tree| {
@@ -698,11 +695,11 @@ fn pictured(handle: &tilo_desktop_surface::DesktopHandle, key: &str) -> Option<u
     (!handle.withholds(&app)).then_some(surface)
 }
 
-/// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type
-/// the action declares for that argument. Text stays text however it reads: a workspace's
-/// key is `"281474976710657"`, not a number. A flag is written as the integer a tilolang flag
-/// travels as (`1`, `0`), and reads as true and false. An undeclared argument keeps the text
-/// it came as, and the door refuses it by name.
+/// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type the
+/// action declares for that argument. Text stays text however it reads: a workspace's key is
+/// `"281474976710657"` , not a number. A flag is written as the integer a tilolang flag travels as
+/// (`1`, `0` ), and reads as true and false. An undeclared argument keeps the text it came as, and
+/// the door refuses it by name.
 fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     use tilo_actions::params::ParamType;
     match ty {
@@ -732,11 +729,11 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
-/// `host`, the desktop's bar or desk, as the desk stands under the shell: the shell draws the
-/// bar and the desk itself (its strips, their frames and the places in them, around the wells
-/// the windows stand in), so the desktop's own step aside ([`Aside`]) rather than drawing a
-/// second set of either. It still keeps the windows' model the wells place them by.
-/// Without a shell, the desktop is the shell and stands as itself.
+/// `host` , the desktop's bar or desk, as the desk stands under the shell: the shell draws the bar
+/// and the desk itself (its strips, their frames and the places in them, around the wells the
+/// windows stand in), so the desktop's own step aside ([`Aside`]) rather than drawing a second set
+/// of either. It still keeps the windows' model the wells place them by. Without a shell, the
+/// desktop is the shell and stands as itself.
 pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Box<dyn SurfaceHost> {
     if shell {
         Box::new(Aside(host))
@@ -745,10 +742,10 @@ pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Box<dyn Su
     }
 }
 
-/// The chrome's published side as the desk stands under the shell: the shell draws the
-/// surfaces, so each action of the chrome's that opens one opens the shell's view of it on
-/// `surfaces` — the overview, the notifications, the quick settings and the workspaces —
-/// while the chrome's own draws nothing. Every other action is the chrome's.
+/// The chrome's published side as the desk stands under the shell: the shell draws the surfaces, so
+/// each action of the chrome's that opens one opens the shell's view of it on `surfaces` — the
+/// overview, the notifications, the quick settings and the workspaces — while the chrome's own
+/// draws nothing. Every other action is the chrome's.
 pub(crate) fn chrome_door<T: tilo_surface_host::Published + 'static>(
     shell: bool,
     chrome: &Rc<RefCell<T>>,
@@ -762,10 +759,10 @@ pub(crate) fn chrome_door<T: tilo_surface_host::Published + 'static>(
     }
 }
 
-/// The desk's published side as the desk stands under the shell: its `search` opens the
-/// shell's launcher (on what the person asked for, when a query comes with it), as the
-/// desktop's own search draws nothing under the shell; a search with a query still runs, its
-/// rows published for the palette and the agents.
+/// The desk's published side as the desk stands under the shell: its `search` opens the shell's
+/// launcher (on what the person asked for, when a query comes with it), as the desktop's own search
+/// draws nothing under the shell; a search with a query still runs, its rows published for the
+/// palette and the agents.
 pub(crate) fn desk_door<T: tilo_surface_host::Published + 'static>(
     shell: bool,
     desk: T,
@@ -786,8 +783,8 @@ struct ShellChrome {
 }
 
 impl ShellChrome {
-    /// The surface `address` opens or closes on the shell, when it is one of the chrome's ways
-    /// of showing one: `Ok(None)` for every other action.
+    /// The surface `address` opens or closes on the shell, when it is one of the chrome's ways of
+    /// showing one: `Ok(None)` for every other action.
     fn show_surface(
         &self,
         address: &ActionAddress,
@@ -823,8 +820,8 @@ impl ShellChrome {
                     .toggle(crate::overlays::Overlay::QuickSettings.name());
                 true
             }
-            // The workspaces are the shell's one workspace surface: the desk's menu, the
-            // workspaces a person switches between and the actions on them.
+            // The workspaces are the shell's one workspace surface: the desk's menu, the workspaces
+            // a person switches between and the actions on them.
             "workspace-menu" => {
                 self.surfaces
                     .toggle(crate::overlays::Overlay::Workspaces.name());
@@ -850,8 +847,8 @@ impl ShellChrome {
     }
 }
 
-/// Whether the chrome's action at `address` opens its surface, given whether it is up
-/// (`here`): an action that names `open` says so, and one that does not toggles.
+/// Whether the chrome's action at `address` opens its surface, given whether it is up (`here`): an
+/// action that names `open` says so, and one that does not toggles.
 fn opens(
     address: &ActionAddress,
     arguments: &Map<String, Value>,
@@ -959,11 +956,10 @@ impl tilo_surface_host::Published for ShellDesk {
                 tilo_actions::ActionOutput::default(),
             ));
         }
-        // The platform search door (a window's search control, its toolbar's
-        // magnifier, Ctrl+K) asks for the desk's search under the shell too:
-        // the shell draws that search, so the request opens the launcher, and
-        // its query runs the desk's search as the desk's own `search` verb
-        // does, its rows published for whoever reads them.
+        // The platform search door (a window's search control, its toolbar's magnifier, Ctrl+K)
+        // asks for the desk's search under the shell too: the shell draws that search, so the
+        // request opens the launcher, and its query runs the desk's search as the desk's own
+        // `search` verb does, its rows published for whoever reads them.
         if ui::search::is_search_address(address) {
             let query = ui::search::SearchRequest::from_arguments(arguments)
                 .query
@@ -1036,13 +1032,13 @@ impl tilo_surface_host::Published for ShellDesk {
     }
 }
 
-/// A surface of the session's own the shell stands in for: the desktop's bar, which the
-/// shell's bar replaces, and the desktop's desk, whose strips the shell draws. It draws nothing
-/// and takes no pointer and no key: every chord the person presses is the shell's to answer or
-/// the session's own. What it holds still moves with what is asked of it
-/// ([`SurfaceHost::advance`]), so a workspace switched or a window closed is the shell's to
-/// draw, and it still hears the outputs change, so what it holds follows the displays the shell
-/// stands on. Left alone it asks for no frame, as none of it shows.
+/// A surface of the session's own the shell stands in for: the desktop's bar, which the shell's bar
+/// replaces, and the desktop's desk, whose strips the shell draws. It draws nothing and takes no
+/// pointer and no key: every chord the person presses is the shell's to answer or the session's
+/// own. What it holds still moves with what is asked of it ([`SurfaceHost::advance`]), so a
+/// workspace switched or a window closed is the shell's to draw, and it still hears the outputs
+/// change, so what it holds follows the displays the shell stands on. Left alone it asks for no
+/// frame, as none of it shows.
 pub(crate) struct Aside<T>(pub(crate) T);
 
 impl<T: SurfaceHost> SurfaceHost for Aside<T> {
@@ -1073,26 +1069,26 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
     }
 
     fn prepare_frame(&mut self) -> bool {
-        // Nothing of it shows, but what it holds still moves with what the
-        // person and the session command of it — a workspace switched, a window
-        // closed — so it takes up its own pass without drawing any of it.
+        // Nothing of it shows, but what it holds still moves with what the person and the session
+        // command of it — a workspace switched, a window closed — so it takes up its own pass
+        // without drawing any of it.
         self.0.advance()
     }
 }
 
 impl crate::Session {
-    /// Hand the shell the desk when it changed, and run what it
-    /// asked through the door, as any caller of the action protocol does.
+    /// Hand the shell the desk when it changed, and run what it asked through the door, as any
+    /// caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
         let Some(shell) = self.shell.as_ref() else {
             return Ok(());
         };
-        // The shell's views draw the centre over the desk, so while it is up the person is
-        // looking at what the notices say: they are read, as they are while the panel's own
-        // centre shows them. The bell's count, the centre's header and its rows read the one
-        // set, so they never disagree. It is the same surface the views read (`d.here`), and
-        // the one place that knows when it closes: however the person left it, the next
-        // arrival is a banner on the desk again rather than a row behind a page that is gone.
+        // The shell's views draw the centre over the desk, so while it is up the person is looking
+        // at what the notices say: they are read, as they are while the panel's own centre shows
+        // them. The bell's count, the centre's header and its rows read the one set, so they never
+        // disagree. It is the same surface the views read (`d.here`), and the one place that knows
+        // when it closes: however the person left it, the next arrival is a banner on the desk
+        // again rather than a row behind a page that is gone.
         let centre = shell.surface() == crate::overlays::Overlay::Centre.name();
         self.shared.notices.set_shell_centre(centre);
         if centre {
@@ -1137,8 +1133,8 @@ impl crate::Session {
                     .map(|param| param.ty)
             },
             |resource, action, arguments| {
-                // An app's own `open` (`session.open(app)`) starts it in the workspace in
-                // front, as the launcher's row of it does.
+                // An app's own `open` (`session.open(app)`) starts it in the workspace in front, as
+                // the launcher's row of it does.
                 if let Some(app) = resource
                     .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
                     .filter(|_| action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
@@ -1180,50 +1176,50 @@ impl crate::Session {
         Ok(())
     }
 
-    /// What the shell reads the desk through: a test stages a reading on it, as a
-    /// collaborating session's presence would arrive.
+    /// What the shell reads the desk through: a test stages a reading on it, as a collaborating
+    /// session's presence would arrive.
     #[must_use]
     pub fn shell_link(&self) -> Option<Rc<tilo_surface_host::SessionLink>> {
         self.shell.as_ref().map(Shell::link)
     }
 
-    /// The collaboration plane this session takes part in, when it does: what a test hands it
-    /// is who is here.
+    /// The collaboration plane this session takes part in, when it does: what a test hands it is
+    /// who is here.
     #[must_use]
     pub fn sync(&self) -> Option<&Rc<crate::sync::Client>> {
         self.shared.sync.as_ref()
     }
 
-    /// The notifications the desk keeps: what apps sent, and what the centre shows. A test
-    /// posts into it as an app's arrival would land.
+    /// The notifications the desk keeps: what apps sent, and what the centre shows. A test posts
+    /// into it as an app's arrival would land.
     #[must_use]
     pub fn notices(&self) -> &tilo_desktop_surface::DesktopNotifications {
         &self.shared.notices
     }
 
-    /// How much work the shell's views did since the session started:
-    /// `None` when its package did not start.
+    /// How much work the shell's views did since the session started: `None` when its package did
+    /// not start.
     #[must_use]
     pub fn shell_work(&self) -> Option<tilo_surface_host::ShellWork> {
         self.shell.as_ref().map(Shell::work)
     }
 
-    /// What the shell refused since the session started, in its own words: a
-    /// press whose action could not run.
+    /// What the shell refused since the session started, in its own words: a press whose action
+    /// could not run.
     #[must_use]
     pub fn shell_refusals(&self) -> Vec<String> {
         self.shell.as_ref().map(Shell::refusals).unwrap_or_default()
     }
 
-    /// Where the shell's control named `name` (as assistive technology hears
-    /// it) stands, logical `(x, y, w, h)`: what a test presses it by.
+    /// Where the shell's control named `name` (as assistive technology hears it) stands, logical
+    /// `(x, y, w, h)` : what a test presses it by.
     #[must_use]
     pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.control(name)
     }
 
-    /// Where every control the shell shows by `name` stands, logical `(x, y, w, h)`: a menu
-    /// item and a chip elsewhere may both be named for the row they name.
+    /// Where every control the shell shows by `name` stands, logical `(x, y, w, h)` : a menu item
+    /// and a chip elsewhere may both be named for the row they name.
     #[must_use]
     pub fn shell_controls(&self, name: &str) -> Vec<(f64, f64, f64, f64)> {
         self.shell
@@ -1232,15 +1228,15 @@ impl crate::Session {
             .unwrap_or_default()
     }
 
-    /// Whether the shell lays out `text` for assistive technology anywhere on screen: a
-    /// label, a description or a value holding it. What a test reads a composed view by.
+    /// Whether the shell lays out `text` for assistive technology anywhere on screen: a label, a
+    /// description or a value holding it. What a test reads a composed view by.
     #[must_use]
     pub fn shell_says(&self, text: &str) -> bool {
         self.shell.as_ref().is_some_and(|shell| shell.says(text))
     }
 
-    /// Where the shell lays out `text` for assistive technology, logical `(x, y, w, h)`: the
-    /// first node whose label, description or value holds it, on any shown part.
+    /// Where the shell lays out `text` for assistive technology, logical `(x, y, w, h)` : the first
+    /// node whose label, description or value holds it, on any shown part.
     #[must_use]
     pub fn shell_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.text_bounds(text)
@@ -1255,15 +1251,15 @@ impl crate::Session {
             .unwrap_or_default()
     }
 
-    /// How many of the session's turns read readings for the shell's places: each hands the
-    /// shell everything the views composed there read in one run of them.
+    /// How many of the session's turns read readings for the shell's places: each hands the shell
+    /// everything the views composed there read in one run of them.
     #[must_use]
     pub fn shell_reading_rounds(&self) -> u64 {
         self.shell.as_ref().map_or(0, Shell::reading_rounds)
     }
 
-    /// How often the session read each resource the shell's places show, by id, for the
-    /// shell: a reading is read again only when its service says it moved.
+    /// How often the session read each resource the shell's places show, by id, for the shell: a
+    /// reading is read again only when its service says it moved.
     #[must_use]
     pub fn shell_reads(&self) -> std::collections::BTreeMap<String, u64> {
         self.shell.as_ref().map(Shell::reads).unwrap_or_default()
@@ -1293,9 +1289,9 @@ impl crate::Session {
 
 #[cfg(test)]
 mod tests {
-    /// What the shell runs — its views and the session's and the platform's descriptions, with
-    /// no scenarios, which are fixtures for its shots and tests — compiles, and every id it
-    /// declares is in the lock. What it shows.
+    /// What the shell runs — its views and the session's and the platform's descriptions, with no
+    /// scenarios, which are fixtures for its shots and tests — compiles, and every id it declares
+    /// is in the lock. What it shows.
     #[test]
     fn the_shell_the_session_runs_compiles() {
         super::compile().unwrap_or_else(|why| panic!("{why}"));
@@ -1303,8 +1299,8 @@ mod tests {
 
     /// `apps/tl/shell/app.ids` is the lock of the *whole* shell package, scenarios included:
     /// `tilolang check` (which layout-check and the shots compile the package with) holds, and a
-    /// declaration the session's compile leaves out — a scenario's, its helpers' — keeps its id
-    /// in the lock, because a lock names every declaration the package has ever had.
+    /// declaration the session's compile leaves out — a scenario's, its helpers' — keeps its id in
+    /// the lock, because a lock names every declaration the package has ever had.
     #[test]
     fn the_shells_ids_lock_holds_every_declaration_the_whole_package_has() {
         use tilolang_tilo::tilolang::ids::IdsLock;
@@ -1331,8 +1327,8 @@ mod tests {
             "apps/tl/shell/app.ids is not the lock the whole package (scenarios included) \
              compiles to; write:\n{lock}"
         );
-        // Every scenario the package declares keeps the id the lock gives it, in the lock's
-        // live entries and never among the retired: a scenario's id is as real as a type's.
+        // Every scenario the package declares keeps the id the lock gives it, in the lock's live
+        // entries and never among the retired: a scenario's id is as real as a type's.
         let parsed = IdsLock::parse(&on_disk).expect("the lock parses");
         let retired: std::collections::BTreeSet<(&str, &str)> = parsed.retired().collect();
         let scenarios = &compiled.compiled.meta.scenarios;

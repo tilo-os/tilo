@@ -26,6 +26,7 @@ registry::scenario_modules! {
     quick_tile_shots, "quick_tile_shots.rs", "Quick Settings tiles in every state, dark and light, wide and compact";
     scrollbar_shots, "scrollbar_shots.rs", "scrollbar states";
     search_showcase, "search_showcase.rs", "search-field states and results";
+    send_to_shots, "send_to_shots.rs", "the send-to box a menu opens and the one a report opens";
     soft_shadow_shots, "soft_shadow_shots.rs", "soft-shadow rendering";
     table_shots, "table_shots.rs", "editable table insertion and deletion";
     text_shots, "text_shots.rs", "typography rendering";

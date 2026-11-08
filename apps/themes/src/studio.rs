@@ -526,9 +526,6 @@ fn base_document(studio: &Studio, base: &str) -> Result<ThemeDocument, Refusal> 
 impl Studio {
     /// The theme a new one starting from `base` (a preset id or a theme id)
     /// is before anything changes it: the base's roles, named as its copy.
-    ///
-    /// # Errors
-    /// Refuses a base that is no preset and no theme.
     pub fn draft(&self, base: &str) -> Result<Theme, Refusal> {
         let mut theme = Theme::from_document(&base_document(self, base)?);
         theme.name = format!("{} copy", theme.name);

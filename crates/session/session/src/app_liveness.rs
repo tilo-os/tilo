@@ -17,8 +17,8 @@ use tilo_desktop_model::TabId;
 use tilo_desktop_surface::LivenessChoice;
 
 impl crate::Session {
-    /// Tell the desk which apps stopped answering, and carry out what the
-    /// person chose on their windows.
+    /// Tell the desk which apps stopped answering, and carry out what the person chose on their
+    /// windows.
     pub(crate) fn follow_app_liveness(&mut self) {
         self.publish_app_liveness();
         for (tab, choice) in self.handle().take_liveness_choices() {
@@ -26,18 +26,18 @@ impl crate::Session {
         }
     }
 
-    /// The windows that say "Not responding", as the compositor judges them
-    /// now: the same set the overview, the bar and an agent read.
+    /// The windows that say "Not responding", as the compositor judges them now: the same set the
+    /// overview, the bar and an agent read.
     fn publish_app_liveness(&self) {
         self.handle()
             .set_unresponsive_windows(self.compositor.not_responding_windows().to_vec());
     }
 
-    /// The person chose `choice` on the window of `tab`.
+    /// The person chose `choice` on the window of `tab` .
     fn answer_app_liveness(&mut self, tab: TabId, choice: LivenessChoice) {
         let Some(window) = self.handle().window_of_tab(tab) else {
-            // The window went between the press and this pass: nothing is
-            // left to wait for or to quit.
+            // The window went between the press and this pass: nothing is left to wait for or to
+            // quit.
             return;
         };
         match choice {
@@ -54,13 +54,12 @@ impl crate::Session {
     }
 }
 
-/// End the app whose process is `pid`: its whole app cgroup — the launcher
-/// and everything it started — when the launcher put it in a scope of its
-/// own, and the process itself otherwise. A hung app acts on no polite
-/// signal, so this one cannot be caught.
+/// End the app whose process is `pid` : its whole app cgroup — the launcher and everything it
+/// started — when the launcher put it in a scope of its own, and the process itself otherwise. A
+/// hung app acts on no polite signal, so this one cannot be caught.
 fn end_app(pid: u32) {
-    // An app the session runs is never the session itself: a client in this
-    // process is a fixture, and the compositor's disconnect has ended it.
+    // An app the session runs is never the session itself: a client in this process is a fixture,
+    // and the compositor's disconnect has ended it.
     if pid == std::process::id() {
         return;
     }

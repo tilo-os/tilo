@@ -362,10 +362,6 @@ impl Core {
 
 /// Register every object the store has today, and the two collections and
 /// aliases that must answer even while it is locked.
-///
-/// # Errors
-///
-/// Any failure of the object server.
 pub async fn publish(connection: &Connection, core: &Arc<Core>) -> zbus::Result<()> {
     let server = connection.object_server();
     server

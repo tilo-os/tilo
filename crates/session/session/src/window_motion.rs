@@ -1,8 +1,7 @@
-//! Windows coming and going: a window the compositor maps fades in and
-//! grows into place, and one that closes shrinks and fades from its last
-//! frame, on the toolkit's window motion ([`WindowMotion::OPEN`]), the
-//! curve and pace a window's tile runs inside the desk. The compositor
-//! draws them through window effects; input lands where a window stands.
+//! Windows coming and going: a window the compositor maps fades in and grows into place, and one
+//! that closes shrinks and fades from its last frame, on the toolkit's window motion
+//! ([`WindowMotion::OPEN`]), the curve and pace a window's tile runs inside the desk. The
+//! compositor draws them through window effects; input lands where a window stands.
 
 use std::collections::BTreeMap;
 use std::time::Instant;

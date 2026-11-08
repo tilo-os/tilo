@@ -1,18 +1,14 @@
-//! What the workspace settings sheet reads and writes: the words for a
-//! workspace's roles, scopes and grants; the draft a permission is composed
-//! from and the mutation it becomes; a member's role and removal; admitting
-//! and summarising the agents and services that work in the workspace; who
+//! What the workspace settings sheet reads and writes: the words for a workspace's roles, scopes
+//! and grants; the draft a permission is composed from and the mutation it becomes; a member's role
+//! and removal; admitting and summarising the agents and services that work in the workspace; who
 //! owns it; its emoji and its default apps.
-//!
-//! Members and permissions are both views of [`Workspace::policy`] — the
-//! single list `decide_capability` consults, the sandbox turns into
-//! bwrap/Landlock rules, and the workspace replicates. A member's role *is*
-//! the verb on their membership capability ([`Workspace::role_of`]); nothing
-//! here keeps a parallel vocabulary that could drift from what is enforced.
-//!
-//! Every mutation routes through [`Workspace::grant_as`] /
-//! [`Workspace::revoke_as`] / [`Workspace::govern_as_at`], which refuse
-//! callers failing [`Workspace::may_administer`].
+//! Members and permissions are both views of [`Workspace::policy`] — the single list
+//! `decide_capability` consults, the sandbox turns into bwrap/Landlock rules, and the workspace
+//! replicates. A member's role *is* the verb on their membership capability
+//! ([`Workspace::role_of`]); nothing here keeps a parallel vocabulary that could drift from what is
+//! enforced.
+//! Every mutation routes through [`Workspace::grant_as`] / [`Workspace::revoke_as`] /
+//! [`Workspace::govern_as_at`], which refuse callers failing [`Workspace::may_administer`].
 
 use crate::i18n::{t, t_args};
 use tilo_action_policy::Refusal;
@@ -35,8 +31,8 @@ mod people_pane;
 
 pub use people_pane::member_row_offers;
 
-/// The host's application catalogue, as workspace settings name apps and
-/// offer them as default openers.
+/// The host's application catalogue, as workspace settings name apps and offer them as default
+/// openers.
 pub trait AppDirectory {
     /// The name a person knows `app_id` by, when the host knows the app.
     fn app_display_name(&self, app_id: &str) -> Option<String>;
@@ -44,26 +40,24 @@ pub trait AppDirectory {
     fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
         Vec::new()
     }
-    /// The name a person knows the resource at `address` by, as the
-    /// resource itself publishes it (a page or an issue by its title), when
-    /// the host has it.
+    /// The name a person knows the resource at `address` by, as the resource itself publishes it (a
+    /// page or an issue by its title), when the host has it.
     fn resource_label(&self, _address: &str) -> Option<String> {
         None
     }
-    /// The workspace's resources the host knows, each with the app that
-    /// publishes it: what a grant may name.
+    /// The workspace's resources the host knows, each with the app that publishes it: what a grant
+    /// may name.
     fn resources(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-    /// The workspace's resources the host knows, each by the title its app
-    /// publishes for it: what a person picks an existing resource from.
+    /// The workspace's resources the host knows, each by the title its app publishes for it: what a
+    /// person picks an existing resource from.
     fn titled_resources(&self) -> Vec<TitledResource> {
         Vec::new()
     }
 }
 
-/// A resource of the workspace by the title its app publishes for it, as a
-/// search finds it.
+/// A resource of the workspace by the title its app publishes for it, as a search finds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TitledResource {
     /// The app that keeps it.
@@ -75,8 +69,8 @@ pub struct TitledResource {
     pub title: String,
 }
 
-/// A host with no application catalogue: an app is named by its id written
-/// as words, never shown as an id.
+/// A host with no application catalogue: an app is named by its id written as words, never shown as
+/// an id.
 pub struct NoAppDirectory;
 
 impl AppDirectory for NoAppDirectory {
@@ -105,9 +99,9 @@ pub fn role_label(role: CapRole) -> String {
     })
 }
 
-/// Plain-language consequences shown before changing a person's workspace
-/// role. Keeping this next to the role vocabulary makes the chooser describe
-/// the same authority that `role_verb` ultimately writes.
+/// Plain-language consequences shown before changing a person's workspace role. Keeping this next
+/// to the role vocabulary makes the chooser describe the same authority that `role_verb` ultimately
+/// writes.
 pub fn role_capability_preview(role: CapRole) -> String {
     t(match role {
         CapRole::Owner => "workspace-settings-role-owner-preview",
@@ -118,8 +112,8 @@ pub fn role_capability_preview(role: CapRole) -> String {
     })
 }
 
-/// The catalogue message for a device-scoped capability, or `None` for a
-/// device the catalogue has no name for (shown by its id).
+/// The catalogue message for a device-scoped capability, or `None` for a device the catalogue has
+/// no name for (shown by its id).
 fn device_scope_key(device: &str) -> Option<&'static str> {
     match device {
         "camera" => Some("workspace-settings-scope-camera"),
@@ -135,9 +129,8 @@ pub fn scope_label(scope: &Scope, apps: &dyn AppDirectory) -> String {
     scope_phrase(scope, false, apps)
 }
 
-/// What a capability covers, phrased as the object of the sentence saying
-/// what it allows; languages that inflect the object pick their own form
-/// through the `-object` messages.
+/// What a capability covers, phrased as the object of the sentence saying what it allows; languages
+/// that inflect the object pick their own form through the `-object` messages.
 fn scope_object_label(scope: &Scope, apps: &dyn AppDirectory) -> String {
     scope_phrase(scope, true, apps)
 }
@@ -163,10 +156,9 @@ fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String
     }
 }
 
-/// A filesystem scope, phrased the way a person would say it. The
-/// [`WORKSPACE_FILES_PATH`] mount point never appears in the label — it's
-/// a fact about where the OS keeps the bytes, not what the user is
-/// agreeing to (HIG §4).
+/// A filesystem scope, phrased the way a person would say it. The [`WORKSPACE_FILES_PATH`] mount
+/// point never appears in the label — it's a fact about where the OS keeps the bytes, not what the
+/// user is agreeing to (HIG §4).
 fn fs_scope_phrase(path: &str) -> (&'static str, Vec<(&'static str, ui::i18n::ArgValue)>) {
     // Trailing slash: `/var/workspace/` is the root, not an unnamed child.
     let trimmed = path.trim_end_matches('/');
@@ -195,9 +187,8 @@ pub fn short_id(id: &str) -> String {
     format!("{head}…")
 }
 
-/// One line describing what a capability allows, built per scope kind
-/// rather than concatenated — "verb · scope" would read "View · the
-/// microphone" instead of "Use the microphone".
+/// One line describing what a capability allows, built per scope kind rather than concatenated —
+/// "verb · scope" would read "View · the microphone" instead of "Use the microphone".
 pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
     let key = match (&cap.scope, cap.access) {
         (Scope::Device(_), Access::Write) => "workspace-settings-allows-control",
@@ -212,16 +203,15 @@ pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
     )
 }
 
-/// What one grant means, said as a person reads it: "Notes: reading and
-/// undoable changes allowed, outside effects ask first". Where it says
-/// "everything", the grant covers every kind.
+/// What one grant means, said as a person reads it: "Notes: reading and undoable changes allowed,
+/// outside effects ask first". Where it says "everything", the grant covers every kind.
 pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) -> String {
     grant_set_sentence(std::slice::from_ref(grant), apps)
 }
 
-/// A grant set as people and agents talk about it: one sentence per grant —
-/// where it applies, then what it answers for each kind of action it covers
-/// — from the most specific node to the least. An empty set grants nothing.
+/// A grant set as people and agents talk about it: one sentence per grant — where it applies, then
+/// what it answers for each kind of action it covers — from the most specific node to the least. An
+/// empty set grants nothing.
 pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDirectory) -> String {
     struct Named<'a>(&'a dyn AppDirectory);
     impl tilo_action_policy::Labels for Named<'_> {
@@ -237,9 +227,8 @@ pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDi
     tilo_action_policy::sentences(grants, &Named(apps))
 }
 
-/// Where a grant applies, named the way people know the workspace's parts: the
-/// app by its name, a resource or item by its own, then the rest of the
-/// path.
+/// Where a grant applies, named the way people know the workspace's parts: the app by its name, a
+/// resource or item by its own, then the rest of the path.
 pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory) -> String {
     struct Named<'a>(&'a dyn AppDirectory);
     impl tilo_action_policy::Labels for Named<'_> {
@@ -268,9 +257,8 @@ pub fn expiry_label(expiry: Expiry) -> String {
     })
 }
 
-/// Who granted a capability, as a user-facing phrase, or `None` for a
-/// capability with no recorded grantor. People and agents are named as the
-/// People pane names them; the viewer is "you".
+/// Who granted a capability, as a user-facing phrase, or `None` for a capability with no recorded
+/// grantor. People and agents are named as the People pane names them; the viewer is "you".
 pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> Option<String> {
     cap.granted_by.as_ref().map(|p| match p {
         Principal::Person(id) | Principal::Agent(id) if id == local_user => {
@@ -336,20 +324,18 @@ pub fn grant_given_by_label(
 
 // Grant composer
 
-/// A subject the grant composer can target, and the subject axis the
-/// Permissions list groups by.
+/// A subject the grant composer can target, and the subject axis the Permissions list groups by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubjectKind {
     App,
-    /// An app granted another app's action: its own section, so what apps
-    /// may do to each other is never lost among device and file access.
+    /// An app granted another app's action: its own section, so what apps may do to each other is
+    /// never lost among device and file access.
     AppAction,
     Member,
     Agent,
     Role,
-    /// Bearer token, workspace, or the work on a resource (an issue's runs, a
-    /// shortcut) — surfaced so no live capability is invisible in the
-    /// panel, even though the composer can't mint one.
+    /// Bearer token, workspace, or the work on a resource (an issue's runs, a shortcut) — surfaced
+    /// so no live capability is invisible in the panel, even though the composer can't mint one.
     Other,
 }
 
@@ -385,17 +371,6 @@ impl GrantSubject {
         }
     }
 
-    /// Who a grant of the workspace's tree for this subject names.
-    pub fn to_grantee(&self) -> Option<tilo_action_policy::Subject> {
-        use tilo_action_policy::Subject as Who;
-        match self.kind {
-            SubjectKind::App | SubjectKind::AppAction => Some(Who::App(self.id.clone())),
-            SubjectKind::Member => Some(Who::Person(self.id.clone())),
-            SubjectKind::Agent => Some(Who::Agent(self.id.clone())),
-            SubjectKind::Role | SubjectKind::Other => None,
-        }
-    }
-
     pub fn display(&self, ws: &Workspace, local_user: &str, apps: &dyn AppDirectory) -> String {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => person_name(ws, local_user, &self.id),
@@ -408,8 +383,8 @@ impl GrantSubject {
     }
 }
 
-/// What the composer's scope picker maps to. Kept as a small enum
-/// rather than a pre-built `Scope` so the table can stay `const`.
+/// What the composer's scope picker maps to. Kept as a small enum rather than a pre-built `Scope`
+/// so the table can stay `const` .
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GrantTarget {
     Device(&'static str),
@@ -417,10 +392,9 @@ enum GrantTarget {
     WorkspaceFiles,
 }
 
-/// One entry in the composer's "what does this allow" picker. Every
-/// entry produces a capability an enforcement point actually reads
-/// (devices gate the portal, `NetHost` gates egress, `FsPath` gates the
-/// sandbox binds and the filesystem, `Workspace` gates administration).
+/// One entry in the composer's "what does this allow" picker. Every entry produces a capability an
+/// enforcement point actually reads (devices gate the portal, `NetHost` gates egress, `FsPath`
+/// gates the sandbox binds and the filesystem, `Workspace` gates administration).
 pub struct GrantChoice {
     /// What the choice is named by: the same key every host uses.
     pub key: &'static str,
@@ -481,9 +455,9 @@ static GRANT_CHOICES: &[GrantChoice] = &[
     },
 ];
 
-/// Fallback for [`GrantDraft::choice`] if the index and [`GRANT_CHOICES`]'s
-/// length ever disagree — unreachable in practice since the index is
-/// always taken modulo the live length, but a real value beats a panic.
+/// Fallback for [`GrantDraft::choice`] if the index and [`GRANT_CHOICES`]'s length ever disagree —
+/// unreachable in practice since the index is always taken modulo the live length, but a real value
+/// beats a panic.
 const FALLBACK_CHOICE: GrantChoice = GrantChoice {
     key: "edit-files",
     label_key: "workspace-settings-grant-edit-files",
@@ -491,16 +465,15 @@ const FALLBACK_CHOICE: GrantChoice = GrantChoice {
     access: Access::Write,
 };
 
-/// The path workspace files are projected at. A capability scoped here
-/// is enforced by the sandbox's binds and by the filesystem alike.
+/// The path workspace files are projected at. A capability scoped here is enforced by the sandbox's
+/// binds and by the filesystem alike.
 const WORKSPACE_FILES_PATH: &str = "/var/workspace";
 
 pub const EXPIRY_CHOICES: [Expiry; 3] = [Expiry::Never, Expiry::EndOfSession, Expiry::AfterUse];
 
-/// The in-flight grant the Permissions tab's composer is composing.
-/// Holds indices rather than resolved values so a subject leaving the
-/// workspace can't leave a dangling reference — [`grant_subjects`] is
-/// re-derived every frame and the index taken modulo its length.
+/// The in-flight grant the Permissions tab's composer is composing. Holds indices rather than
+/// resolved values so a subject leaving the workspace can't leave a dangling reference —
+/// [`grant_subjects`] is re-derived every frame and the index taken modulo its length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrantDraft {
     pub subject_index: usize,
@@ -519,17 +492,6 @@ impl Default for GrantDraft {
 }
 
 impl GrantDraft {
-    /// Advances to the next subject, wrapping at `len`. `len == 0` (an
-    /// empty subject list) lands back on index 0 via `checked_rem`'s
-    /// `None` fallback, same as the guard this replaced.
-    pub fn cycle_subject(&mut self, len: usize) {
-        self.subject_index = self
-            .subject_index
-            .wrapping_add(1)
-            .checked_rem(len)
-            .unwrap_or(0);
-    }
-
     pub fn cycle_choice(&mut self) {
         self.choice_index = self
             .choice_index
@@ -547,9 +509,9 @@ impl GrantDraft {
     }
 }
 
-/// What a subject of the composer, a permission and an expiry are named by
-/// where a view asks for the grant: `member:…`, `agent:…` or `app:…`, the
-/// permission's key, and `never`, `session` or `once`.
+/// What a subject of the composer, a permission and an expiry are named by where a view asks for
+/// the grant: `member:…` , `agent:…` or `app:…` , the permission's key, and `never` , `session` or
+/// `once` .
 #[must_use]
 pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
     let kind = match entry.kind {
@@ -589,10 +551,9 @@ pub fn expiry_choices() -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// The draft a view asked for: the subject `subject` (`member:…`, `agent:…`
-/// or `app:…`), the permission `permission` and the expiry `expiry`, as the
-/// composer stands. `None` when the workspace holds no such subject, so a
-/// grant for someone who left is never made for someone else.
+/// The draft a view asked for: the subject `subject` (`member:…`, `agent:…` or `app:…` ), the
+/// permission `permission` and the expiry `expiry` , as the composer stands. `None` when the
+/// workspace holds no such subject, so a grant for someone who left is never made for someone else.
 #[must_use]
 pub fn draft_for(
     ws: &Workspace,
@@ -618,10 +579,9 @@ pub fn draft_for(
     })
 }
 
-/// The subjects the composer can target, in picker order: the
-/// workspace's people first, then admitted agents, then every app running in the workspace or
-/// already holding a capability — without running apps, a host could
-/// only grant to an app already granted something.
+/// The subjects the composer can target, in picker order: the workspace's people first, then
+/// admitted agents, then every app running in the workspace or already holding a capability —
+/// without running apps, a host could only grant to an app already granted something.
 pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     let mut out: Vec<GrantSubject> = ws
         .roster()
@@ -671,9 +631,8 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     out
 }
 
-/// The capability `draft` names against `ws`, or `None` when the draft has
-/// no addressable subject (an empty workspace) or names a subject this panel
-/// cannot grant to.
+/// The capability `draft` names against `ws` , or `None` when the draft has no addressable subject
+/// (an empty workspace) or names a subject this panel cannot grant to.
 pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverride> {
     let subjects = grant_subjects(ws);
     if subjects.is_empty() {
@@ -691,8 +650,8 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverrid
     Some(CapOverride::grant(subject, scope, choice.access).expiring(draft.expiry))
 }
 
-/// What a panel mutation changed, for the caller that applies it to the
-/// desktop. Empty means there was nothing to change.
+/// What a panel mutation changed, for the caller that applies it to the desktop. Empty means there
+/// was nothing to change.
 pub use tilo_desktop_model::grants::PolicyEdit;
 
 /// Grant what `draft` names, as `actor`, through the workspace's governance:
@@ -775,8 +734,8 @@ pub fn remove_member(
     actor: &UserId,
     member: &UserId,
 ) -> Result<PolicyEdit, Refusal> {
-    // The owner is the workspace's root of trust; removing them would leave a
-    // workspace nobody governs.
+    // The owner is the workspace's root of trust; removing them would leave a workspace nobody
+    // governs.
     if ws.is_owner(member) {
         return Err(Refusal::Owner);
     }
@@ -820,7 +779,7 @@ fn subject_is_person(subject: &Subject, user: &UserId) -> bool {
     }
 }
 
-/// Revoke every grant naming `agent`, as `actor`.
+/// Revoke every grant naming `agent` , as `actor` .
 pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> PolicyEdit {
     let subject = tilo_action_policy::Subject::agent(agent);
     let revokes = ws
@@ -871,9 +830,8 @@ fn member_name_or_short_id(ws: &Workspace, user: &str) -> String {
         )
 }
 
-/// A member as the People pane names them: as the roster does, the viewer
-/// by their own name; only someone the roster has never seen falls back to
-/// the workspace's record of them.
+/// A member as the People pane names them: as the roster does, the viewer by their own name; only
+/// someone the roster has never seen falls back to the workspace's record of them.
 #[must_use]
 pub fn member_row_name(
     names: &crate::collaborators::PeopleNames,
@@ -886,9 +844,9 @@ pub fn member_row_name(
         .map_or_else(|| person_name(ws, local_user, id), str::to_owned)
 }
 
-/// A person or agent as every workspace-settings pane names them: their
-/// collaborator name, the viewer included; the viewer by the name this
-/// device knows them by when the workspace has none; else a shortened id.
+/// A person or agent as every workspace-settings pane names them: their collaborator name, the
+/// viewer included; the viewer by the name this device knows them by when the workspace has none;
+/// else a shortened id.
 fn person_name(ws: &Workspace, local_user: &str, id: &str) -> String {
     let known = ws
         .collaborators
@@ -910,8 +868,8 @@ pub fn members_authority_note(is_owner: bool) -> Option<String> {
     (!is_owner).then(|| t("workspace-settings-owner-only"))
 }
 
-/// What a bot says under its name: whether it runs yet, and from which
-/// version. One fact per line, never joined.
+/// What a bot says under its name: whether it runs yet, and from which version. One fact per line,
+/// never joined.
 pub fn bot_detail(bot: &tilo_desktop_model::WorkspaceBot) -> String {
     if bot.installation.is_none() {
         t("workspace-settings-bot-starting")
@@ -984,8 +942,8 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
     }
 }
 
-/// The section a grant is listed in: its subject's, except that an app
-/// granted another app's action is listed under App actions.
+/// The section a grant is listed in: its subject's, except that an app granted another app's action
+/// is listed under App actions.
 fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
     use tilo_action_policy::Subject as Who;
     let names_action = grant
@@ -1123,8 +1081,8 @@ pub fn listed_permissions(
 
 #[cfg(test)]
 mod members_tests {
-    //! A member's role and removal rewrite the membership capability the
-    //! model decides with, and only within owner authority.
+    //! A member's role and removal rewrite the membership capability the model decides with, and
+    //! only within owner authority.
 
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
@@ -1170,8 +1128,7 @@ mod members_tests {
             set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor)
                 .is_ok_and(|edit| !edit.is_empty())
         );
-        // The roster knows Ada from presence; the workspace's own record of
-        // her has no name.
+        // The roster knows Ada from presence; the workspace's own record of her has no name.
         let desktop = tilo_desktop_model::DesktopTree {
             active: ws.slot,
             workspaces: vec![ws.clone()],
@@ -1366,8 +1323,8 @@ mod members_tests {
 
 #[cfg(test)]
 mod agents_tests {
-    //! An agent is a permission subject like any other: what it may do reads
-    //! back from the workspace's grants naming it, per subject.
+    //! An agent is a permission subject like any other: what it may do reads back from the
+    //! workspace's grants naming it, per subject.
 
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
@@ -1481,7 +1438,11 @@ mod agents_tests {
         {
             let mut ws = ws_with_agent();
             let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
-            assert_eq!(edit.revoked.len(), 2, "its workspace grant and its app grant");
+            assert_eq!(
+                edit.revoked.len(),
+                2,
+                "its workspace grant and its app grant"
+            );
             assert!(ws.agent_members_at(tilo_clock::unix_now()).is_empty());
             assert_eq!(
                 agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
@@ -1531,8 +1492,8 @@ mod agents_tests {
 
 #[cfg(test)]
 mod permissions_tests {
-    //! The Permissions tab lists the workspace's grants in the viewer's
-    //! words, and its composer writes one through the owner's authority.
+    //! The Permissions tab lists the workspace's grants in the viewer's words, and its composer
+    //! writes one through the owner's authority.
 
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
@@ -1649,8 +1610,8 @@ mod permissions_tests {
         }
 
         {
-            // A 64-hex person key is what the model records; the row names the
-            // collaborator, and the viewer's own grant reads "you".
+            // A 64-hex person key is what the model records; the row names the collaborator, and
+            // the viewer's own grant reads "you".
             let ada = "ad".repeat(32);
             let bea = "be".repeat(32);
             let mut ws = Workspace::new(WorkspaceSlot::from(5), "names");
@@ -1715,9 +1676,9 @@ mod permissions_tests {
             );
         }
 
-        // No capability line may name the mount point workspace files are
-        // projected at (HIG §4). Swept over every scope kind, not just the
-        // two the panel shows today, so a new scope can't reintroduce the leak.
+        // No capability line may name the mount point workspace files are projected at (HIG §4).
+        // Swept over every scope kind, not just the two the panel shows today, so a new scope can't
+        // reintroduce the leak.
         {
             let scopes = vec![
                 Scope::FsPath(WORKSPACE_FILES_PATH.into()),
@@ -1746,8 +1707,8 @@ mod permissions_tests {
             }
         }
 
-        // The projection root and a path inside it must read as different
-        // things, so a row never understates what is being granted.
+        // The projection root and a path inside it must read as different things, so a row never
+        // understates what is being granted.
         {
             let root = CapOverride::grant(
                 Subject::app("a"),
@@ -1839,8 +1800,8 @@ mod permissions_tests {
                 .iter()
                 .position(|s| s.id == "firefox")
                 .unwrap();
-            // Re-granting an existing capability merges expiries, so pick
-            // something the app doesn't already hold to observe this one.
+            // Re-granting an existing capability merges expiries, so pick something the app doesn't
+            // already hold to observe this one.
             let mut draft = GrantDraft {
                 subject_index: firefox,
                 choice_index: 0,
@@ -1865,8 +1826,8 @@ mod permissions_tests {
         }
 
         {
-            // `grant_capability` keeps the longer expiry for the same
-            // (subject, scope, effect, verb).
+            // `grant_capability` keeps the longer expiry for the same (subject, scope, effect,
+            // verb).
             let mut ws = ws_with_grants();
             let firefox = grant_subjects(&ws)
                 .iter()

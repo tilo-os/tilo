@@ -1,35 +1,12 @@
-//! Pasting files copied to the clipboard into a folder, on a thread of its
-//! own.
-//!
-//! A paste is not a wish: its copies are staged beside the names they will
-//! take (`.tilo-transfer-<id>` inside the receiving folder), synced to the
-//! disk, written down in a receipt before anything else is touched, and only
-//! then renamed into place. So a power cut never shows a partly copied file
-//! under a real name, and a cut never loses its source: a cut's source goes
-//! into hiding only once its copy is whole and recorded, and is taken away
-//! only once the copy stands under its own name.
-//!
-//! Copying runs here, never on the session's loop: the person keeps their
-//! desktop while a folder of many gigabytes is pasted.
-//!
-//! # The receipt
-//!
-//! The receipt (`paste.json` in the session's state directory, written
-//! atomically and synced) holds the whole paste: every item, the name it
-//! takes, the staging folder, and how far each item got. It is written once
-//! per batch of items before their copies are published, so a paste of many
-//! small files does not pay a durable write per file, and its removal is the
-//! last thing a finished paste does.
-//!
-//! # Recovery
-//!
-//! [`Paste::unfinished`] takes a receipt a session that stopped left behind
-//! and undoes it on a worker of the same kind: an item whose copy is not
-//! under its name is rolled back (a cut's source comes out of hiding, a
-//! replaced name comes back out of the staging folder), an item whose copy
-//! did stand is kept whole (a cut's source goes, a replaced name goes to the
-//! Trash). Every item ends as either its source, untouched, or its copy,
-//! complete: never half of either.
+//! Pasting files copied to the clipboard into a folder, on a thread of its own. A paste is not a
+//! wish: its copies are staged beside the names they will take (`.tilo-transfer-<id>` inside the
+//! receiving folder), synced, written down in a receipt, and only then renamed into place, so a
+//! power cut never shows a partly copied file under a real name and a cut never loses its source.
+//! Copying runs here, never on the session's loop. The receipt (`paste.json` in the session's state
+//! directory, written atomically and synced) holds the whole paste and how far each item got; it is
+//! written once per batch, and its removal is the last thing a finished paste does.
+//! [`Paste::unfinished`] undoes what a session that stopped left behind: every item ends as either
+//! its source, untouched, or its copy, complete.
 
 use std::fs;
 use std::io;
@@ -52,8 +29,7 @@ const MAX_ITEMS: usize = 4096;
 const BATCH_ITEMS: usize = 256;
 /// The most names one item's publication tries before it gives up.
 const MAX_NAME_TRIES: usize = 4;
-/// The environment names a moment of a paste a crash test dies at (see
-/// [`crash_point`]).
+/// The environment names a moment of a paste a crash test dies at (see [`crash_point`]).
 const CRASH_POINT_ENV: &str = "TILO_FILE_PASTE_CRASH_POINT";
 /// The receipt this writes and reads.
 const RECEIPT_FILE: &str = "paste.json";
@@ -73,8 +49,8 @@ pub(crate) enum Conflict {
 }
 
 impl Conflict {
-    /// What the caller's word for it means; `None` for a word this does not
-    /// know, and for none at all.
+    /// What the caller's word for it means; `None` for a word this does not know, and for none at
+    /// all.
     pub(crate) fn parse(text: Option<&str>) -> Option<Self> {
         match text {
             None | Some("keep-both") => Some(Self::KeepBoth),
@@ -88,8 +64,7 @@ impl Conflict {
 /// Why a paste did nothing at all.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Refused {
-    /// There was nothing to paste: every name is taken, or the files already
-    /// sit in that folder.
+    /// There was nothing to paste: every name is taken, or the files already sit in that folder.
     Nothing,
     /// `path` is not a folder that can hold a paste.
     NotAFolder(PathBuf),
@@ -142,9 +117,8 @@ struct Item {
     /// The name it takes in the receiving folder.
     target: PathBuf,
     state: State,
-    /// Where a cut's source hides while its copy is published: written down
-    /// before the source is moved, so a session that stops knows where to
-    /// look for it.
+    /// Where a cut's source hides while its copy is published: written down before the source is
+    /// moved, so a session that stops knows where to look for it.
     #[serde(default)]
     held: Option<PathBuf>,
 }
@@ -171,14 +145,12 @@ struct Progress {
     failed: Vec<(String, String)>,
     /// Why nothing landed at all.
     refusal: Option<Refused>,
-    /// Whether this undid a paste a session that stopped was in the middle
-    /// of.
+    /// Whether this undid a paste a session that stopped was in the middle of.
     undone: bool,
     finished: bool,
 }
 
-/// A paste running on a thread of its own: what it has done, and whether it
-/// is over.
+/// A paste running on a thread of its own: what it has done, and whether it is over.
 pub(crate) struct Paste {
     progress: Arc<Mutex<Progress>>,
     worker: Option<thread::JoinHandle<()>>,
@@ -195,8 +167,7 @@ pub(crate) struct Outcome {
     pub failed: Vec<(String, String)>,
     /// Why nothing was pasted at all.
     pub refusal: Option<Refused>,
-    /// Whether this undid a paste a session that stopped was in the middle
-    /// of.
+    /// Whether this undid a paste a session that stopped was in the middle of.
     pub undone: bool,
 }
 
@@ -225,8 +196,8 @@ impl Paste {
         )
     }
 
-    /// The paste a session that stopped was in the middle of, to be undone.
-    /// `None` when it left nothing behind.
+    /// The paste a session that stopped was in the middle of, to be undone. `None` when it left
+    /// nothing behind.
     pub(crate) fn unfinished(wake: &tilo_service::Wake) -> Option<Self> {
         let receipt = read_receipt()?;
         Self::spawn(Job::Undo(receipt), wake)
@@ -266,14 +237,14 @@ impl Paste {
         self.progress.lock_recover().finished
     }
 
-    /// What the worker did, once it is over: it is waited for here, which is
-    /// no wait at all by then.
+    /// What the worker did, once it is over: it is waited for here, which is no wait at all by
+    /// then.
     pub(crate) fn outcome(&mut self) -> Outcome {
         if let Some(worker) = self.worker.take()
             && worker.join().is_err()
         {
-            // Its progress is all the outcome says; a worker that panicked
-            // leaves the paste half-done with no reason.
+            // Its progress is all the outcome says; a worker that panicked leaves the paste
+            // half-done with no reason.
             tracing::warn!("the paste worker stopped before it finished");
         }
         let state = std::mem::take(&mut *self.progress.lock_recover());
@@ -287,8 +258,8 @@ impl Paste {
     }
 }
 
-/// The one paste a session carries at a time: the receipt is one file, so a
-/// second paste written down beside the first would leave neither whole.
+/// The one paste a session carries at a time: the receipt is one file, so a second paste written
+/// down beside the first would leave neither whole.
 static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The running paste's claim on the receipt, held until its worker is done.
@@ -340,8 +311,8 @@ fn run(job: &Job, progress: &Mutex<Progress>, wake: &tilo_service::Wake) {
     wake();
 }
 
-/// Carry out a new paste: what it means is written down before its first
-/// item is touched, and its receipt is the last thing to go.
+/// Carry out a new paste: what it means is written down before its first item is touched, and its
+/// receipt is the last thing to go.
 fn paste(
     files: &CopiedFiles,
     destination: &Path,
@@ -365,8 +336,8 @@ fn paste(
         }
     };
     if let Err(error) = transfer(&mut receipt, &staging, progress) {
-        // Nothing of a paste that could not be recorded is left standing:
-        // what landed stays whole and the rest goes back where it was.
+        // Nothing of a paste that could not be recorded is left standing: what landed stays whole
+        // and the rest goes back where it was.
         if let Err(kept) = undo(&receipt, progress) {
             staging.keep();
             tracing::warn!(
@@ -386,17 +357,17 @@ fn paste(
     Ok(())
 }
 
-/// Send every name this paste replaced to the Trash, once the copies that
-/// replaced them are published and synced.
+/// Send every name this paste replaced to the Trash, once the copies that replaced them are
+/// published and synced.
 fn trash_asides(receipt: &Receipt) {
     for index in 0..receipt.items.len() {
         trash(&replaced_path(&receipt.staging, index));
     }
 }
 
-/// Plan the paste of `files` into `destination`: what lands where, and the
-/// private folder their copies are staged in. Nothing is touched on the disk
-/// here: the paste is written down before its staging folder exists.
+/// Plan the paste of `files` into `destination` : what lands where, and the private folder their
+/// copies are staged in. Nothing is touched on the disk here: the paste is written down before its
+/// staging folder exists.
 fn plan(
     files: &CopiedFiles,
     destination: &Path,
@@ -428,8 +399,7 @@ fn plan(
             }
             Conflict::Replace => Some(destination.join(name)),
         };
-        // Pasted into the folder it already sits in, a file has no second
-        // name to take.
+        // Pasted into the folder it already sits in, a file has no second name to take.
         let Some(target) = target.filter(|target| target != source) else {
             continue;
         };
@@ -462,7 +432,7 @@ fn plan(
     })
 }
 
-/// The staged path of the item at `index`.
+/// The staged path of the item at `index` .
 fn staged_path(staging: &Path, index: usize) -> PathBuf {
     staging.join(index.to_string())
 }
@@ -485,9 +455,8 @@ fn transfer(
         for index in start..end {
             stage(receipt, staging, index, progress);
         }
-        // Every staged copy is flushed and whole; the receipt now names
-        // them, so a session that stops can tell a published copy from a
-        // stray one.
+        // Every staged copy is flushed and whole; the receipt now names them, so a session that
+        // stops can tell a published copy from a stray one.
         staging.sync().map_err(|error| {
             format!("{} could not be synced: {error}", receipt.staging.display())
         })?;
@@ -513,15 +482,15 @@ fn transfer(
         save(receipt)?;
         start = end;
     }
-    // What the paste replaced is out of the way for good, and goes where the
-    // person can get it back from.
+    // What the paste replaced is out of the way for good, and goes where the person can get it back
+    // from.
     trash_asides(receipt);
     Ok(())
 }
 
-/// End the process at `stage` of a paste when a crash test asks for it: a
-/// test that kills a session mid-paste names the moment to die at rather than
-/// sampling the disk for it, so it dies at that moment and no other.
+/// End the process at `stage` of a paste when a crash test asks for it: a test that kills a session
+/// mid-paste names the moment to die at rather than sampling the disk for it, so it dies at that
+/// moment and no other.
 fn crash_point(stage: &str) {
     let dying = cfg!(debug_assertions)
         && std::env::var_os(CRASH_POINT_ENV).as_deref() == Some(std::ffi::OsStr::new(stage));
@@ -533,8 +502,7 @@ fn crash_point(stage: &str) {
     }
 }
 
-/// Stage the item at `index`: its whole copy, synced, under the paste's
-/// staging folder.
+/// Stage the item at `index` : its whole copy, synced, under the paste's staging folder.
 fn stage(receipt: &mut Receipt, staging: &Staging, index: usize, progress: &Mutex<Progress>) {
     let Some(item) = receipt.items.get(index) else {
         return;
@@ -570,9 +538,8 @@ fn stage(receipt: &mut Receipt, staging: &Staging, index: usize, progress: &Mute
     }
 }
 
-/// Move the name this paste replaces out of the way, into the staging folder
-/// until the paste is over and the Trash after that. False when the item could
-/// not be published at all.
+/// Move the name this paste replaces out of the way, into the staging folder until the paste is
+/// over and the Trash after that. False when the item could not be published at all.
 fn set_aside(
     receipt: &mut Receipt,
     index: usize,
@@ -597,8 +564,7 @@ fn set_aside(
         );
         return false;
     }
-    // A clash this paste already put aside goes to the Trash: only the last
-    // one is ever put back.
+    // A clash this paste already put aside goes to the Trash: only the last one is ever put back.
     if fs::symlink_metadata(&aside).is_ok() {
         trash(&aside);
     }
@@ -620,9 +586,9 @@ fn set_aside(
     true
 }
 
-/// A cut's source goes into hiding: its copy stands under its name only once
-/// its source has a hidden name the receipt records, so a session that stops
-/// either has the copy or can put the source back.
+/// A cut's source goes into hiding: its copy stands under its name only once its source has a
+/// hidden name the receipt records, so a session that stops either has the copy or can put the
+/// source back.
 fn hide_source(
     receipt: &mut Receipt,
     index: usize,
@@ -652,8 +618,7 @@ fn hide_source(
     true
 }
 
-/// Publish the item at `index` under its name, after what it replaces has
-/// gone out of the way.
+/// Publish the item at `index` under its name, after what it replaces has gone out of the way.
 fn publish(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
     let Some(item) = receipt.items.get(index) else {
         return;
@@ -800,8 +765,8 @@ fn fail(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>, name: &
         .push((name.to_owned(), reason.to_owned()));
 }
 
-/// Undo a paste, item by item: what stood is kept whole, what did not is put
-/// back where it was. The staging folder and the receipt go last.
+/// Undo a paste, item by item: what stood is kept whole, what did not is put back where it was. The
+/// staging folder and the receipt go last.
 fn undo(receipt: &Receipt, progress: &Mutex<Progress>) -> Result<(), String> {
     let mut trouble: Option<String> = None;
     for index in (0..receipt.items.len()).rev() {
@@ -845,10 +810,9 @@ fn undo(receipt: &Receipt, progress: &Mutex<Progress>) -> Result<(), String> {
         }
     }
     if let Some(reason) = trouble {
-        // Something could not be put back — a drive that was unplugged, a
-        // folder that was taken away. The receipt stays, staging folder and
-        // all, so the next session tries again rather than leaving a source
-        // hidden under a name nothing remembers.
+        // Something could not be put back — a drive that was unplugged, a folder that was taken
+        // away. The receipt stays, staging folder and all, so the next session tries again rather
+        // than leaving a source hidden under a name nothing remembers.
         return Err(reason);
     }
     remove_staging(&receipt.staging)
@@ -912,14 +876,13 @@ fn remove_staging(staging: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The receipt's file: this session's own state, never the shared settings
-/// document, which the person's devices keep in step.
+/// The receipt's file: this session's own state, never the shared settings document, which the
+/// person's devices keep in step.
 fn receipt_path() -> Option<PathBuf> {
     tilo_paths::state_dir().map(|root| root.join("tilo/file-paste").join(RECEIPT_FILE))
 }
 
-/// Write the paste down durably, so a session that stops knows what it was
-/// doing.
+/// Write the paste down durably, so a session that stops knows what it was doing.
 fn save(receipt: &Receipt) -> Result<(), String> {
     let Some(path) = receipt_path() else {
         return Err("there is nowhere to write a paste down".to_owned());
@@ -1001,8 +964,7 @@ mod tests {
         transfer(receipt, staging, progress).expect("the paste was carried out");
     }
 
-    /// What the paste has to say about itself, taken without holding on to
-    /// the paste's own lock.
+    /// What the paste has to say about itself, taken without holding on to the paste's own lock.
     fn reported(progress: &Mutex<Progress>) -> (usize, Vec<(String, String)>) {
         let state = progress.lock_recover();
         (state.landed, state.failed.clone())
@@ -1028,8 +990,7 @@ mod tests {
         assert!(!receipt.moving);
         assert_eq!(receipt.started_ms, 7);
 
-        // Pasted into the folder the files already sit in, a kept copy takes
-        // a second name.
+        // Pasted into the folder the files already sit in, a kept copy takes a second name.
         let beside = plan(&files(&[&note], false), &source, Conflict::KeepBoth, 7)
             .expect("a paste into its own folder");
         assert_eq!(
@@ -1217,9 +1178,8 @@ mod tests {
         )
         .expect("a paste");
         let progress = Mutex::new(Progress::default());
-        // The first item went all the way; the second is only staged; the
-        // third was written down and never touched, as a session that
-        // stopped partway leaves them.
+        // The first item went all the way; the second is only staged; the third was written down
+        // and never touched, as a session that stopped partway leaves them.
         let (first, second) = (0usize, 1usize);
         let staging = take_staging(&receipt);
         stage(&mut receipt, &staging, first, &progress);

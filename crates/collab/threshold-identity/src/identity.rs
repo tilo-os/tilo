@@ -44,8 +44,6 @@
 //! Each DKG transition rotates the group public key; the UX propagates
 //! the new key into the user's identity record.
 
-use std::collections::BTreeMap;
-
 use frost_ed25519::keys::KeyPackage;
 use frost_ed25519::keys::PublicKeyPackage;
 use rand_core::CryptoRng;
@@ -55,7 +53,7 @@ use collab_types::{Ed25519PublicKey, Signature, canonical_bytes};
 
 use crate::dkg::{DkgSession, EnrolmentRound1};
 use crate::errors::ThresholdError;
-use crate::shares::{RecoveryShare, SecretShare};
+use crate::shares::SecretShare;
 use crate::signing::{
     SigningRound1, SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces,
     sign_round1 as low_sign_round1, sign_round2 as low_sign_round2,
@@ -273,20 +271,6 @@ impl ThresholdIdentity {
         matches!(self.inner, InnerKey::SingleDevice(_))
     }
 
-    /// First-device bootstrap returning the raw key material as
-    /// `(seed_bytes, group_public_key)`. Equivalent to
-    /// [`Self::bootstrap_single_device`] followed by
-    /// [`Self::single_device_seed`]; kept standalone for callers (the
-    /// compositor's first-boot hook) that only want bytes to write.
-    pub fn bootstrap_single_device_seed<R: CryptoRng + ?Sized>(
-        rng: &mut R,
-    ) -> ([u8; 32], Ed25519PublicKey) {
-        let sk = ed25519_dalek::SigningKey::generate(rng);
-        let seed = *sk.as_bytes();
-        let pk = sk.verifying_key().to_bytes();
-        (seed, Ed25519PublicKey::from_bytes(pk))
-    }
-
     /// First-device bootstrap: 1-of-1 mode. Generates a fresh Ed25519
     /// keypair and stores the secret in seed form so
     /// [`Self::single_device_seed`] can hand it back for persistence.
@@ -496,111 +480,6 @@ impl ThresholdIdentity {
             ));
         }
         crate::signing::aggregate_signature(&self.group_public_key, partials, self.threshold)
-    }
-
-    /// Generate the paper-recovery share. **Only valid in threshold mode** —
-    /// in 1-of-1 mode the "recovery share" would be the device's full key,
-    /// defeating the purpose. Caller must enrol a second share first.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ThresholdError::DkgStateMisuse`] if this identity is
-    /// still in single-device mode.
-    pub fn export_recovery_share(&self) -> Result<RecoveryShare, ThresholdError> {
-        match &self.inner {
-            InnerKey::Threshold { secret_share, .. } => {
-                RecoveryShare::from_key_package(secret_share.key_package(), self.total_shares)
-            }
-            InnerKey::SingleDevice(_) => Err(ThresholdError::DkgStateMisuse(
-                "recovery share export requires threshold mode (run DKG first)",
-            )),
-        }
-    }
-
-    /// Decode a BIP39 mnemonic into a `SecretShare`. The spec's literal
-    /// signature is `(words: &str) -> Result<SecretShare>`, but a mnemonic
-    /// alone lacks the metadata (identifier, verifying share, group VK,
-    /// threshold) to rebuild a `KeyPackage` — surfaces a clear error
-    /// pointing at [`Self::import_recovery_share_full`].
-    ///
-    /// # Errors
-    ///
-    /// Always returns [`ThresholdError::BadRecoveryMnemonic`] — see
-    /// [`Self::import_recovery_share_full`].
-    pub fn import_recovery_share(words: &str) -> Result<SecretShare, ThresholdError> {
-        let _ = words;
-        Err(ThresholdError::BadRecoveryMnemonic(
-            "use import_recovery_share_full(&RecoveryShare) — the mnemonic alone \
-             lacks the verifying-share/group metadata needed to rebuild a KeyPackage"
-                .to_string(),
-        ))
-    }
-
-    /// Decode a `RecoveryShare` (mnemonic + public metadata)
-    /// back into a `SecretShare`.
-    pub fn import_recovery_share_full(rs: RecoveryShare) -> Result<SecretShare, ThresholdError> {
-        rs.into_secret_share()
-    }
-
-    /// Adopt a recovery-share `SecretShare` as this device's own — disaster
-    /// recovery when physical devices are lost but a paper share + one
-    /// surviving device remain. Requires threshold mode (an existing
-    /// `PublicKeyPackage` to extend); the recovery share must belong to the
-    /// same group.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ThresholdError::RecoveryMismatch`] if `share` belongs
-    /// to a different group or carries a different threshold,
-    /// [`ThresholdError::DkgStateMisuse`] if this identity is still in
-    /// single-device mode, or a FROST-internal error if `share`'s
-    /// group verifying key does not deserialize.
-    pub fn adopt_recovery_share(&mut self, share: &SecretShare) -> Result<(), ThresholdError> {
-        let kp = share.key_package();
-        let kp_group_vec = kp.verifying_key().serialize()?;
-        let kp_group: [u8; 32] = kp_group_vec.as_slice().try_into().map_err(|_| {
-            ThresholdError::FrostInternal(
-                "key package group VK serialise produced non-32-byte output".to_string(),
-            )
-        })?;
-        if &kp_group != self.group_public_key.as_bytes() {
-            return Err(ThresholdError::RecoveryMismatch(
-                "recovery share belongs to a different group",
-            ));
-        }
-        if *kp.min_signers() != self.threshold {
-            return Err(ThresholdError::RecoveryMismatch(
-                "recovery share carries a different threshold",
-            ));
-        }
-        match &mut self.inner {
-            InnerKey::SingleDevice(_) => Err(ThresholdError::DkgStateMisuse(
-                "adopt_recovery_share requires threshold mode",
-            )),
-            InnerKey::Threshold {
-                secret_share,
-                public_key_package,
-            } => {
-                // Insert this share's verifying share into the PublicKeyPackage so
-                // aggregate has it.
-                let mut verifying_shares: BTreeMap<frost_ed25519::Identifier, _> =
-                    public_key_package.verifying_shares().clone();
-                let id = crate::shares::u16_to_identifier(crate::shares::identifier_to_u16(
-                    kp.identifier(),
-                ))?;
-                verifying_shares.insert(id, *kp.verifying_share());
-                let group_vk =
-                    frost_ed25519::VerifyingKey::deserialize(self.group_public_key.as_bytes())?;
-                *public_key_package =
-                    PublicKeyPackage::new(verifying_shares, group_vk, Some(self.threshold));
-                // Replace this device's share with the recovery share — the
-                // previous secret is zeroized via SecretShare's drop chain.
-                let kp_owned: frost_ed25519::keys::KeyPackage = kp.clone();
-                self.this_share_index = crate::shares::identifier_to_u16(kp_owned.identifier());
-                *secret_share = SecretShare::from_key_package(kp_owned);
-                Ok(())
-            }
-        }
     }
 
     /// Crate-internal: borrow this device's `SecretShare`. Errors

@@ -14,6 +14,7 @@
 
 pub mod evidence;
 pub mod ratchet;
+pub mod render;
 #[cfg(unix)]
 pub mod typed_collab;
 

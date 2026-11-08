@@ -23,7 +23,6 @@
 //! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/live` ([`LIVE_INFO_PATH`]) | [`LiveRequest`] | [`LiveInfo`]; `403` when the page's device is not admitted |
-//! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
 //! `/fetch` is the host's fetch proxy, offered when the session grant
@@ -161,6 +160,8 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::RetiredLive { frame, .. }
         | Envelope::RemoteAction { frame, .. }
         | Envelope::HostAction { frame }
+        | Envelope::WorkspacesRequest { frame, .. }
+        | Envelope::WorkspacesReply { frame, .. }
         | Envelope::RecordContentWant { frame, .. }
         | Envelope::RecordContent { frame, .. } => frame.len(),
         Envelope::WorkspaceBootstrap { bootstrap, .. } => bootstrap.len(),
@@ -192,6 +193,20 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
 pub struct HostInfo {
     /// The host's device certificate (pin its device key).
     pub host_cert: tilo_user_identity::DeviceCert,
+    /// Where the host listens on iroh, which is how a page reaches it for
+    /// everything a session and its planes carry. `None` in a host that serves
+    /// no iroh endpoint.
+    pub address: Option<HostAddress>,
+}
+
+/// Where a host's iroh endpoint is dialled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAddress {
+    /// The endpoint's key and the addresses it answers at.
+    pub endpoint_addr: iroh_base::EndpointAddr,
+    /// The packet relay it is reached through, when it names one; a page dials
+    /// the endpoint through it rather than over the network's own relays.
+    pub relay_url: Option<String>,
 }
 
 /// What a node runs beside its relay, for a member's session.
@@ -345,9 +360,6 @@ pub struct EventsPage {
     /// The envelopes the relay stream would have delivered.
     pub envelopes: Vec<Envelope>,
 }
-
-/// The route of the host's workspace join exchange over HTTPS.
-pub const WORKSPACE_JOIN_PATH: &str = "/workspace-join";
 
 /// Route of the live plane: how a page learns where the relay's WebTransport
 /// listener is and which certificate to pin for it.

@@ -1,79 +1,44 @@
-//! "Open With" — which applications can open a file, and opening it with one.
+//! "Open with" — which applications can open a file, and opening it with one.
 //!
-//! Files decides none of this. The desktop owns the answer: which Tilo
-//! packages and host applications claim a type, which one is the person's
-//! default, and whether an application may be handed the file at all. The
-//! host installs an [`OpenWithRoute`] (the compositor's resolver, over the
-//! same candidates it uses to open a file on activation); Files only lists
-//! what it is told and asks for what the person picked.
+//! Files decides none of this. The session owns the answer: which Tilo
+//! packages and host applications claim a type, and which one opens it today
+//! ([`runtime_portal::tools`], the same door every app opens a resource
+//! through). Files only lists what it is told and asks for what the person
+//! picked.
 
-use std::cell::RefCell;
+use runtime_portal::tools::{self, DocumentApp};
 use std::path::Path;
-use std::rc::Rc;
 
-/// One application that claims the file's type.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OpenWithApp {
-    /// Opaque application id: a Tilo package id or a host desktop file id.
-    pub id: String,
-    /// Human name, as the desktop shows it elsewhere.
-    pub name: String,
-    /// Whether activating the file opens it with this application today.
-    pub is_default: bool,
+/// Asks the session to open a file in an app: `None` opens it in the app this
+/// device opens its type with. [`request`] in an app, a recorder in tests.
+pub(crate) type OpenRequest = fn(&Path, Option<&str>) -> Result<(), String>;
+
+/// Lists the apps that open a file's type. [`candidates`] in an app, a
+/// recorder in tests.
+pub(crate) type CandidateList = fn(&Path) -> Result<Vec<DocumentApp>, String>;
+
+/// The answers to opens asked off the window's thread, each with the path it
+/// was asked for, shared with the thread that asks.
+pub(crate) type OpenReplies =
+    std::sync::Arc<std::sync::Mutex<Vec<(std::path::PathBuf, Result<(), String>)>>>;
+
+/// Ask the session to open `path` in `app`, or in the app that opens its type.
+pub(crate) fn request(path: &Path, app: Option<&str>) -> Result<(), String> {
+    tools::open_document(named(path)?, app)
 }
 
-/// Every application that can open a file, default first.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct OpenWithCandidates {
-    /// The type as the person reads it (".pdf files", "PDF documents"), used
-    /// to label "Always use for …".
-    pub type_label: String,
-    pub apps: Vec<OpenWithApp>,
+/// The apps that open the document at `path`, the one it opens with today
+/// first.
+///
+/// # Errors
+///
+/// As [`request`], or the session did not answer the listing.
+pub(crate) fn candidates(path: &Path) -> Result<Vec<DocumentApp>, String> {
+    tools::list_document_apps(named(path)?)
 }
 
-impl OpenWithCandidates {
-    pub fn find(&self, id: &str) -> Option<&OpenWithApp> {
-        self.apps.iter().find(|app| app.id == id)
-    }
-}
-
-/// The host's answer to "what opens this, and open it with that".
-pub trait OpenWithRoute {
-    /// True only when this host has linked normal target launch for retained
-    /// selections. A collaboration descriptor alone is not availability.
-    fn retained_selected_open_available(&self) -> bool {
-        false
-    }
-
-    /// Applications that claim `path`'s type, the current default first.
-    fn candidates(&self, path: &Path) -> OpenWithCandidates;
-
-    /// Open `path` with exactly `app_id`, once.
-    fn open_with(&self, path: &Path, app_id: &str) -> Result<(), String>;
-
-    /// Make `app_id` the person's default for `path`'s type.
-    fn set_default(&self, path: &Path, app_id: &str) -> Result<(), String>;
-}
-
-pub type SharedOpenWithRoute = Rc<dyn OpenWithRoute>;
-
-thread_local! {
-    static ROUTE: RefCell<Option<SharedOpenWithRoute>> = const { RefCell::new(None) };
-}
-
-/// Install the route every Files view on this thread uses to list and launch
-/// "Open With" applications. The compositor installs its resolver here, next
-/// to the document opener.
-pub fn set_open_with_route(route: SharedOpenWithRoute) {
-    ROUTE.with(|slot| *slot.borrow_mut() = Some(route));
-}
-
-/// Remove the installed route. Used by tests, which share the thread-local.
-#[cfg(test)]
-pub(crate) fn clear_open_with_route() {
-    ROUTE.with(|slot| *slot.borrow_mut() = None);
-}
-
-pub(crate) fn installed_route() -> Option<SharedOpenWithRoute> {
-    ROUTE.with(|slot| slot.borrow().clone())
+/// `path` as the shell is told it: a document's name on the wire is text.
+fn named(path: &Path) -> Result<&str, String> {
+    path.to_str()
+        .ok_or_else(|| "this file's name cannot be passed to the session".to_string())
 }

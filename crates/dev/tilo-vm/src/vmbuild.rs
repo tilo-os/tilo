@@ -165,9 +165,6 @@ pub fn daemon_command(configured: Option<&str>, subcommand: &str) -> Vec<String>
 
 /// Run a streaming job: `job` goes to the remote stdin, the remote stderr
 /// streams to ours, and the job line comes back on stdout.
-///
-/// # Errors
-/// ssh failures, a missing daemon, and a job that printed no result.
 pub fn run_job(
     vm: &str,
     endpoint: &SshEndpoint,

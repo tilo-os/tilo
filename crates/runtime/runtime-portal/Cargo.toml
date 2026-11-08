@@ -6,35 +6,23 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Service discovery and connected-transport RPC plumbing for Tilo runtime services."
+description = "Service discovery and connected-transport plumbing for Tilo runtime services."
 
-# Tilo runtime — portal foundation: env-driven service discovery and a
-# thin wrapper that lifts a connected Unix-socket file descriptor into
-# a tokio-backed Cap'n Proto RPC client. All higher-level service
-# clients (collab, fs, identity) sit on top of this crate.
+# Tilo runtime — portal foundation: env-driven service discovery and the
+# connected streams a launcher hands its children, with the descriptor
+# lane that rides them. All higher-level service clients (collab, fs,
+# identity) sit on top of this crate.
 
 [lib]
 name = "runtime_portal"
 path = "src/lib.rs"
 
-[features]
-default = ["rpc"]
-# `CapnpClient` and the service-opening helpers. Without it the crate is the
-# discovery half only — `service_fd`, `is_tilo_native`, `NotAvailable` and the
-# native attachment metadata — for callers such as `cli` that never speak RPC.
-rpc = ["dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:tokio-util"]
-
 [dependencies]
 sha2.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-# Pinned: capnp 0.26 ships with capnp-rpc 0.26 and capnpc 0.26. The
-# whole 0.26 line shares a generator + RPC ABI.
-capnp = { workspace = true, optional = true }
-capnp-rpc = { workspace = true, optional = true }
 # tokio 1.x. We use the runtime + net + io + macros features only;
 # heavy features like `signal` or `full` belong in the binary.
-tokio = { workspace = true, optional = true, features = ["rt", "io-util", "macros", "sync"] }
-tokio-util = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "io-util", "macros", "sync"] }
 thiserror.workspace = true
 # The `tools` service speaks newline-delimited JSON.
 serde.workspace = true
@@ -53,7 +41,7 @@ rustix = { workspace = true, features = ["net", "process"] }
 # Whether the process runs inside a Tilo login, to pick the host to attach to.
 tilo-paths.workspace = true
 # Service descriptors are Unix sockets; other hosts report `NotAvailable`.
-tokio = { workspace = true, optional = true, features = ["net"] }
+tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
@@ -63,7 +51,6 @@ tempfile.workspace = true
 [[test]]
 name = "native"
 path = "tests/native.rs"
-required-features = ["rpc"]
 
 [lints]
 workspace = true

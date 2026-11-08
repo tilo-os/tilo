@@ -526,9 +526,6 @@ impl SourceReadContext {
     }
     /// Reviewed nested Home exclusions from the protected plan. Shape is checked
     /// against the plan; existence is checked under the held source by the claim.
-    ///
-    /// # Errors
-    /// Refuses changed protected facts and an unrepresentable plan.
     pub fn original_exclusions(
         &self,
     ) -> io::Result<Vec<crate::setup::migration_store::NativePath>> {

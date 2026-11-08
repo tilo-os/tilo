@@ -250,7 +250,7 @@ impl TabBar {
         seen
     }
 
-    /// [`Widget::needs_redraw`]: the bar is clean only while the drawing it
+    /// [`Widget::needs_redraw`] — the bar is clean only while the drawing it
     /// holds is the drawing it would make now — its own state unmoved
     /// ([`TabBar::touch`]), still at rest, and the same people on its tabs.
     pub(super) fn painted_bar_needs_redraw(&self) -> bool {
@@ -291,7 +291,7 @@ impl TabBar {
         same && at + shared == seen.len()
     }
 
-    /// [`Widget::draw`]: a bar at rest whose own state, theme, placement
+    /// [`Widget::draw`] — a bar at rest whose own state, theme, placement
     /// and the people on its tabs are as when it was last drawn shows that
     /// drawing again ([`TabBar::replays`]); anything else draws it afresh.
     pub(super) fn paint_or_replay(

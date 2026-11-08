@@ -1,5 +1,5 @@
-//! An app's window opened beside one of its own tabs: it lands in that tab's
-//! window group, right after it.
+//! An app's window opened beside one of its own tabs: it lands in that tab's window group, right
+//! after it.
 
 use super::tests::desk_with;
 use super::*;
@@ -34,8 +34,7 @@ impl TileSource for Apps {
     }
 }
 
-/// The shown strip's window groups, each as its tab titles and the title of
-/// its tab in front.
+/// The shown strip's window groups, each as its tab titles and the title of its tab in front.
 fn group_titles(handle: &DesktopHandle) -> Vec<(Vec<String>, String)> {
     handle.read(|tree| {
         let strip = tree

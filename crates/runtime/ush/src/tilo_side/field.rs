@@ -112,10 +112,6 @@ fn monotonic_ns() -> u64 {
 impl SessionField {
     /// Serve `socket`, the capability Terminal holds the other end of,
     /// until it closes or sends something that is not a request.
-    ///
-    /// # Errors
-    ///
-    /// The wake pipe, the identity or the reading thread could not be made.
     pub fn serve(socket: Arc<editor::Socket>) -> io::Result<Arc<Self>> {
         let mut incarnation = [0_u8; 16];
         while incarnation == [0; 16] {

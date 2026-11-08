@@ -86,9 +86,6 @@ impl Joined {
     /// device's host and enroll in it, unless this profile holds it
     /// already: the workspace is held when this returns, and synced once its
     /// session is held ([`Self::hold_session`]).
-    ///
-    /// # Errors
-    /// No host runs, it refused the workspace, or the enrollment failed.
     pub(in crate::standalone) async fn place(
         &self,
         workspace: WorkspaceId,
@@ -125,7 +122,6 @@ impl Joined {
     pub(super) fn reach(&self) -> Reach {
         Reach {
             endpoint: self.endpoint.clone(),
-            https: None,
             own_host: self
                 .room_host()
                 .map(|host| Arc::clone(host) as Arc<dyn tilo_peer_state::owner::session::OwnHost>),

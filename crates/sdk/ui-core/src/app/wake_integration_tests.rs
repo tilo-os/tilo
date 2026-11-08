@@ -77,7 +77,6 @@ impl crate::view::capability::ViewState for CaptureRoot {
 
 #[test]
 fn factory_and_callbacks_keep_their_owner_and_restore_parent_context() {
-    // Case `factory_state_stays_owned_before_binding_and_after_return`.
     {
         let mut captured = None;
         let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
@@ -104,7 +103,6 @@ fn factory_and_callbacks_keep_their_owner_and_restore_parent_context() {
         assert!(!state.writer().try_set(2));
     }
 
-    // Case `transfer_preserves_the_exact_owner_and_rejects_foreign_events`.
     {
         let (scope, rx) = bound_scope();
         let (other, other_rx) = bound_scope();
@@ -132,7 +130,6 @@ fn factory_and_callbacks_keep_their_owner_and_restore_parent_context() {
         assert!(!app.needs_sync);
     }
 
-    // Case `collaboration_queue_wake_does_not_force_document_sync`.
     {
         let (scope, rx) = bound_scope();
         let handle = scope.handle();
@@ -154,7 +151,6 @@ fn factory_and_callbacks_keep_their_owner_and_restore_parent_context() {
         );
     }
 
-    // Case `fallible_factory_error_closes_captures_and_restores_parent_context`.
     {
         let (outer, rx) = bound_scope();
         let _outer = outer.enter();
@@ -169,7 +165,6 @@ fn factory_and_callbacks_keep_their_owner_and_restore_parent_context() {
         assert!(outer.accepts(&rx.try_recv().unwrap()));
     }
 
-    // Case `factory_unwind_closes_captures_and_restores_parent_context`.
     {
         let (outer, rx) = bound_scope();
         let _outer = outer.enter();
@@ -186,7 +181,6 @@ fn factory_and_callbacks_keep_their_owner_and_restore_parent_context() {
         assert!(outer.accepts(&rx.try_recv().unwrap()));
     }
 
-    // Case `callback_created_requests_keep_app_owner_when_begun_elsewhere`.
     {
         let (scope, rx) = bound_scope();
         let (other, other_rx) = bound_scope();
@@ -235,7 +229,6 @@ fn factory_and_callbacks_keep_their_owner_and_restore_parent_context() {
         assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
     }
 
-    // Case `detached_app_callbacks_mask_an_ambient_host`.
     {
         let (outer, rx) = bound_scope();
         let _outer = outer.enter();

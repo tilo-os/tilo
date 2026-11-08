@@ -430,7 +430,7 @@ async fn live(token: String, guild_id: String) -> usize {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let _ = AppCatalogue::native();
-    tilo_relay::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
+    tilo_relay::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
     let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
         tilo_relay::RelayConfig {
             state_root: scratch.path().join("relay"),

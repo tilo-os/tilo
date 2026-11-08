@@ -51,6 +51,8 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use launcher::netgate::{EgressDecision, EgressPolicy, NetGate, reply};
 use launcher::sandbox::NetGateBind;
 
+use crate::support::bwrap;
+
 /// Sandbox-side path of the bind-mounted gate socket. Absent when the
 /// launch has no gate.
 const ENV_SOCKET: &str = "TILO_NETGATE_PROBE_SOCKET";
@@ -390,20 +392,6 @@ fn runtime_scratch_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).expect("create runtime scratch dir");
     dir
-}
-
-fn which(bin: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|d| d.join(bin))
-        .find(|p| p.is_file())
-}
-
-fn bwrap() -> PathBuf {
-    which("bwrap").expect(
-        "bwrap is a hard runtime dependency of the launcher — a host without it cannot run a \
-         sandboxed app at all, so this is a failure and not a reason to skip",
-    )
 }
 
 /// What one probe run reported.
@@ -910,8 +898,8 @@ const ENV_LOCAL_LAN: &str = "TILO_NETGATE_LOCAL_LAN";
 /// Name to ask the gate for, when a gate is present.
 const ENV_LOCAL_NAME: &str = "TILO_NETGATE_LOCAL_NAME";
 
-/// The in-sandbox half of the device-local tests. Same dispatcher shape as
-/// [`netns_probe`]: a no-op unless the outer test selected it.
+/// The in-sandbox half of the device-local tests. Same dispatcher shape
+/// as [`netns_probe`]: a no-op unless the outer test selected it.
 #[test]
 fn device_local_probe() {
     let Ok(loopback) = std::env::var(ENV_LOCAL_LOOPBACK) else {

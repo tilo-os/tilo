@@ -16,6 +16,22 @@ use crate::support::{
     clippy::unnecessary_wraps,
     reason = "the store's admission callback returns a Result; this one never refuses"
 )]
+/// Installs `packed` with nothing held back.
+fn install(store: &PackageStore, packed: &Packed) -> package_store::Installed {
+    store
+        .install(full_tapp(packed).as_slice(), admit_all, None)
+        .unwrap()
+}
+
+/// The store's installed row for the app `id`.
+fn installed(store: &PackageStore, id: &str) -> package_store::InstalledPackage {
+    store.registry().unwrap().find(id).cloned().unwrap()
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the store takes an admission callback that may refuse"
+)]
 fn admit_all(_meta: &tilo_app_package::PackageMeta) -> Result<Admission, String> {
     Ok(Admission::default())
 }
@@ -72,9 +88,7 @@ fn installs_materialise_the_tree_and_share_unchanged_blobs() {
         let root = scratch();
         let store = PackageStore::at(root.path());
 
-        let installed = store
-            .install(full_tapp(&packed).as_slice(), admit_all, None)
-            .unwrap();
+        let installed = install(&store, &packed);
         let row = &installed.package;
         assert_eq!(row.id, "so.tilo.demo");
         assert_eq!(row.version, "1.0.0");
@@ -126,15 +140,11 @@ fn installs_materialise_the_tree_and_share_unchanged_blobs() {
         let root = scratch();
         let store = PackageStore::at(root.path());
 
-        let first = store
-            .install(full_tapp(&v1).as_slice(), admit_all, None)
-            .unwrap();
+        let first = install(&store, &v1);
         assert_eq!(first.blobs, 3);
         assert_eq!(first.blobs_already_stored, 0);
 
-        let second = store
-            .install(full_tapp(&v2).as_slice(), admit_all, None)
-            .unwrap();
+        let second = install(&store, &v2);
         assert_eq!(second.blobs, 4);
         assert_eq!(
             second.blobs_already_stored, 2,
@@ -182,14 +192,10 @@ fn installs_materialise_the_tree_and_share_unchanged_blobs() {
         let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
         let root = scratch();
         let store = PackageStore::at(root.path());
-        let first = store
-            .install(full_tapp(&packed).as_slice(), admit_all, None)
-            .unwrap();
+        let first = install(&store, &packed);
         let damaged = first.package.payload_root.join("share/strings.ftl");
         std::fs::remove_file(&damaged).unwrap();
-        let again = store
-            .install(full_tapp(&packed).as_slice(), admit_all, None)
-            .unwrap();
+        let again = install(&store, &packed);
         assert_eq!(again.blobs_already_stored, 3);
         assert!(damaged.exists());
         assert!(
@@ -209,9 +215,7 @@ fn thin_packages_fetch_only_missing_blobs_and_verify_them() {
         let (_p2, v2) = package(&identity, "so.tilo.demo", "1.1.0", &v2_files());
         let root = scratch();
         let store = PackageStore::at(root.path());
-        store
-            .install(full_tapp(&v1).as_slice(), admit_all, None)
-            .unwrap();
+        install(&store, &v1);
 
         let thin = thin_tapp(&v2);
         assert!(
@@ -318,12 +322,8 @@ fn removal_evicts_unreferenced_blobs_and_honours_pins() {
         let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &b_files);
         let root = scratch();
         let store = PackageStore::at(root.path());
-        store
-            .install(full_tapp(&a).as_slice(), admit_all, None)
-            .unwrap();
-        let installed_b = store
-            .install(full_tapp(&b).as_slice(), admit_all, None)
-            .unwrap();
+        install(&store, &a);
+        let installed_b = install(&store, &b);
         assert_eq!(
             installed_b.blobs_already_stored, 1,
             "the library both apps ship is stored once"
@@ -341,12 +341,7 @@ fn removal_evicts_unreferenced_blobs_and_honours_pins() {
                 == shared_hex)
         );
         assert!(!store.layout().payload(a.id()).exists());
-        let row_b = store
-            .registry()
-            .unwrap()
-            .find("so.tilo.b")
-            .cloned()
-            .unwrap();
+        let row_b = installed(&store, "so.tilo.b");
         assert!(
             package_store::integrity::verify(&row_b, &row_b.payload_root)
                 .unwrap()
@@ -375,9 +370,7 @@ fn removal_evicts_unreferenced_blobs_and_honours_pins() {
                 None,
             )
             .unwrap();
-        store
-            .install(full_tapp(&b).as_slice(), admit_all, None)
-            .unwrap();
+        install(&store, &b);
         assert!(matches!(
             store.remove("so.tilo.a", false),
             Err(StoreError::Pinned(_))
@@ -396,9 +389,7 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
     let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
     let root = scratch();
     let store = PackageStore::at(root.path());
-    store
-        .install(full_tapp(&a).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &a);
     // Trees a crash between a commit and retiring the replaced version left,
     // one of them still mounted by the app that ran it.
     let packages = store.layout().packages();
@@ -429,12 +420,7 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
         packages.join("not-a-package").exists(),
         "only package trees"
     );
-    let row = store
-        .registry()
-        .unwrap()
-        .find("so.tilo.a")
-        .cloned()
-        .unwrap();
+    let row = installed(&store, "so.tilo.a");
     assert!(
         package_store::integrity::verify(&row, &row.payload_root)
             .unwrap()
@@ -467,22 +453,13 @@ fn a_leased_payload_outlives_its_update_and_goes_after_release() {
     let (_p2, v2) = package(&identity, "so.tilo.a", "2.0.0", &v2_files());
     let root = scratch();
     let store = PackageStore::at(root.path());
-    store
-        .install(full_tapp(&v1).as_slice(), admit_all, None)
-        .unwrap();
-    let old = store
-        .registry()
-        .unwrap()
-        .find("so.tilo.a")
-        .cloned()
-        .unwrap();
+    install(&store, &v1);
+    let old = installed(&store, "so.tilo.a");
     // A launch chose v1 and has not mounted it yet when the update lands.
     let launch = package_store::lease::hold_payload_in(store.layout(), &old.payload_root)
         .unwrap()
         .expect("a tree of this store is leased");
-    store
-        .install(full_tapp(&v2).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &v2);
     assert!(
         package_store::integrity::verify(&old, &old.payload_root)
             .unwrap()
@@ -511,12 +488,7 @@ fn a_leased_payload_outlives_its_update_and_goes_after_release() {
             .is_none(),
         "nothing is left in staging"
     );
-    let current = store
-        .registry()
-        .unwrap()
-        .find("so.tilo.a")
-        .cloned()
-        .unwrap();
+    let current = installed(&store, "so.tilo.a");
     assert!(
         package_store::integrity::verify(&current, &current.payload_root)
             .unwrap()
@@ -531,20 +503,11 @@ fn an_unheld_update_retires_the_old_tree_at_once() {
     let (_p2, v2) = package(&identity, "so.tilo.a", "2.0.0", &v2_files());
     let root = scratch();
     let store = PackageStore::at(root.path());
-    store
-        .install(full_tapp(&v1).as_slice(), admit_all, None)
-        .unwrap();
-    let old = store
-        .registry()
-        .unwrap()
-        .find("so.tilo.a")
-        .cloned()
-        .unwrap();
+    install(&store, &v1);
+    let old = installed(&store, "so.tilo.a");
     // A launch that came and went leaves its lease file behind.
     drop(package_store::lease::hold_payload_in(store.layout(), &old.payload_root).unwrap());
-    store
-        .install(full_tapp(&v2).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &v2);
     assert!(!old.payload_root.exists());
     assert!(!old.manifest_path.exists());
 }
@@ -555,15 +518,8 @@ fn abandoned_staging_is_swept_and_held_replaced_trees_stay() {
     let (_p1, v1) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
     let root = scratch();
     let store = PackageStore::at(root.path());
-    store
-        .install(full_tapp(&v1).as_slice(), admit_all, None)
-        .unwrap();
-    let row = store
-        .registry()
-        .unwrap()
-        .find("so.tilo.a")
-        .cloned()
-        .unwrap();
+    install(&store, &v1);
+    let row = installed(&store, "so.tilo.a");
     let tmp = store.layout().tmp();
     // What an install killed midway leaves: a half-written tree and a
     // content-store temporary.
@@ -764,22 +720,16 @@ fn an_update_keeps_the_apps_last_use_for_eviction() {
     let (_daily, daily) = package(&identity, "so.tilo.daily", "1.0.0", &v1_files());
     let root = scratch();
     let store = PackageStore::at(root.path());
-    store
-        .install(full_tapp(&old).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &old);
     store
         .update_row("so.tilo.unused", |row| row.last_used = 10)
         .unwrap();
-    store
-        .install(full_tapp(&daily).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &daily);
     store
         .update_row("so.tilo.daily", |row| row.last_used = 20)
         .unwrap();
 
-    let updated = store
-        .install(full_tapp(&new).as_slice(), admit_all, None)
-        .unwrap();
+    let updated = install(&store, &new);
     assert_eq!(updated.package.version, "2.0.0");
     assert_eq!(
         updated.package.last_used, 10,
@@ -820,9 +770,7 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
     // under that id stays.
     let root = scratch();
     let store = PackageStore::at(root.path());
-    store
-        .install(full_tapp(&todo).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &todo);
     let (_claim, claim) = renamed(&stranger, "so.tilo.tasks", "so.tilo.todo");
     let refused = store
         .install(full_tapp(&claim).as_slice(), admit_all, None)
@@ -834,9 +782,7 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
 
     // The same publisher's renamed app takes its place: one app, under the new id.
     let (_tasks, tasks) = renamed(&publisher, "so.tilo.tasks", "so.tilo.todo");
-    store
-        .install(full_tapp(&tasks).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &tasks);
     let registry = store.registry().unwrap();
     assert!(registry.find("so.tilo.todo").is_none());
     assert_eq!(
@@ -855,9 +801,7 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
     assert!(matches!(again, StoreError::Refused(_)), "{again:?}");
     assert!(store.registry().unwrap().find("so.tilo.todo").is_none());
     // An update of the renamed app keeps what it took over.
-    store
-        .install(full_tapp(&tasks).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &tasks);
     assert_eq!(
         store.registry().unwrap().taken_over_by("so.tilo.todo"),
         Some("so.tilo.tasks")
@@ -866,9 +810,7 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
     // Where the earlier id was never installed there is nothing to check against.
     let fresh = scratch();
     let store = PackageStore::at(fresh.path());
-    store
-        .install(full_tapp(&tasks).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &tasks);
 }
 
 #[test]
@@ -885,9 +827,7 @@ fn disk_usage_does_not_verify_signatures() {
     let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
     let root = scratch();
     let store = PackageStore::at(root.path());
-    store
-        .install(full_tapp(&a).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &a);
     let before = store.disk_usage().unwrap();
     assert!(before.total_bytes > 0);
 
@@ -903,12 +843,7 @@ fn disk_usage_does_not_verify_signatures() {
     // Accounting reads the collection; it never replays the signature.
     assert_eq!(store.disk_usage().unwrap(), before);
     // Verification, the explicit operation, still sees the damage.
-    let row = store
-        .registry()
-        .unwrap()
-        .find("so.tilo.a")
-        .cloned()
-        .unwrap();
+    let row = installed(&store, "so.tilo.a");
     assert!(matches!(
         package_store::integrity::verify(&row, &row.payload_root),
         Err(package_store::integrity::IntegrityError::RootIdMismatch)
@@ -925,12 +860,8 @@ fn gc_refuses_when_a_collection_is_unreadable() {
     let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &v2_files());
     let root = scratch();
     let store = PackageStore::at(root.path());
-    store
-        .install(full_tapp(&a).as_slice(), admit_all, None)
-        .unwrap();
-    store
-        .install(full_tapp(&b).as_slice(), admit_all, None)
-        .unwrap();
+    install(&store, &a);
+    install(&store, &b);
     let stored = content_files(root.path()).len();
 
     std::fs::remove_file(
@@ -1003,9 +934,7 @@ fn only_the_developer_sessions_own_builds_install_above_the_distribution_limit()
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
         let store = PackageStore::at(root.path().join("session"));
-        let installed = store
-            .install(full_tapp(&own).as_slice(), admit_all, None)
-            .unwrap();
+        let installed = install(&store, &own);
         assert_eq!(installed.package.id, "so.tilo.big");
     }
     // phase: a_shipped_build_reads_no_publisher_list

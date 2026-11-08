@@ -34,10 +34,6 @@ pub struct Key {
 }
 
 /// Every model, by name.
-///
-/// # Errors
-/// Says the published outlines do not read, which a test of this crate rules
-/// out for the data it ships.
 pub fn models() -> Result<&'static BTreeMap<String, Geometry>, &'static str> {
     static MODELS: LazyLock<Result<BTreeMap<String, Geometry>, serde_json::Error>> =
         LazyLock::new(|| serde_json::from_str(SOURCE));

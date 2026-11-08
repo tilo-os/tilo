@@ -122,9 +122,6 @@ mod unsupported_tests {
 
 /// Resolve the home of the account running the installer. Merely resolving
 /// this path does not scan it or authorize a transfer.
-///
-/// # Errors
-/// Refuses unsupported hosts, a missing or invalid home, and unsafe root resolution.
 pub fn current_home() -> Result<std::path::PathBuf, String> {
     if !cfg!(target_os = "linux") {
         return Err("Whole-home transfer is currently supported on Linux only.".into());
@@ -142,9 +139,6 @@ pub fn current_home() -> Result<std::path::PathBuf, String> {
 /// Resolve only an explicitly granted root, such as Fedora's /home alias.
 /// Members beneath the returned directory still use the no-follow migration
 /// guards; this is not permission to resolve arbitrary inventory entries.
-///
-/// # Errors
-/// Refuses relative or filesystem-root paths, non-directories, changed namespaces and I/O failures.
 pub fn granted_root(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     if !path.is_absolute() || path.parent().is_none() {
         return Err(std::io::Error::new(

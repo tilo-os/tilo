@@ -1,10 +1,8 @@
-//! Screen capture against a headless compositor: a trusted tool copies a
-//! whole output and a region of it into shared memory through
-//! `wlr-screencopy`, waits for damage when it asks to, and copies through
-//! `ext-image-copy-capture`, and picks a window from the toplevel list and
-//! copies only it, with the pointer when asked; a cursor session carries
-//! the pointer as its own image and says where it is; ordinary clients see
-//! none of these globals.
+//! Screen capture against a headless compositor: a trusted tool copies a whole output and a region
+//! of it into shared memory through `wlr-screencopy` , waits for damage when it asks to, and copies
+//! through `ext-image-copy-capture` , and picks a window from the toplevel list and copies only it,
+//! with the pointer when asked; a cursor session carries the pointer as its own image and says
+//! where it is; ordinary clients see none of these globals.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -133,8 +131,7 @@ impl Tool {
         self.connection.flush().expect("flush");
     }
 
-    /// A shared-memory buffer of `width` x `height` XRGB8888 pixels and
-    /// the memory behind it.
+    /// A shared-memory buffer of `width` x `height` XRGB8888 pixels and the memory behind it.
     fn buffer(&self, width: i32, height: i32) -> (WlBuffer, OwnedFd) {
         self.buffer_of(width, height, wl_shm::Format::Xrgb8888)
     }
@@ -156,7 +153,7 @@ impl Tool {
     }
 }
 
-/// The B, G, R of the pixel at `x`, `y` of an XRGB8888 image `width` wide.
+/// The B, G, R of the pixel at `x` , `y` of an XRGB8888 image `width` wide.
 fn pixel(fd: &OwnedFd, width: usize, x: usize, y: usize) -> [u8; 3] {
     let mut bytes = [0_u8; 3];
     let offset = u64::try_from((y * width + x) * 4).unwrap();
@@ -170,8 +167,8 @@ fn near(got: [u8; 3], want: [u8; 3]) -> bool {
         .all(|(got, want)| got.abs_diff(want) <= 1)
 }
 
-/// Let compositor and tool talk, drawing a frame each round, until `done`
-/// holds; false when it never does.
+/// Let compositor and tool talk, drawing a frame each round, until `done` holds; false when it
+/// never does.
 fn pump_until(
     compositor: &mut Compositor,
     tool: &mut Tool,
@@ -255,8 +252,8 @@ fn compositor() -> Compositor {
     compositor
 }
 
-/// Open a window of `width` x `height` in one colour (B, G, R) and wait
-/// until it is configured and shown.
+/// Open a window of `width` x `height` in one colour (B, G, R) and wait until it is configured and
+/// shown.
 fn open_window(
     compositor: &mut Compositor,
     tool: &mut Tool,
@@ -520,8 +517,8 @@ fn a_trusted_tool_picks_a_window_from_the_list_and_copies_only_it() {
     assert!(near(pixel(&memory, 20, 19, 9), GREEN));
 }
 
-/// Every pixel of the window the toplevel list shows first, copied through
-/// `ext-image-copy-capture` into shared memory.
+/// Every pixel of the window the toplevel list shows first, copied through `ext-image-copy-capture`
+/// into shared memory.
 fn copy_listed_window(
     compositor: &mut Compositor,
     tool: &mut Tool,
@@ -726,8 +723,8 @@ fn a_cursor_session_carries_the_pointer_image_and_where_it_is() {
     assert_eq!(tool.seen.cursor, vec!["position 40 10".to_owned()]);
 }
 
-/// The pointer's image size as a cursor session copies it, from a
-/// compositor showing it at `size` logical pixels.
+/// The pointer's image size as a cursor session copies it, from a compositor showing it at `size`
+/// logical pixels.
 fn pointer_image_size(compositor: &mut Compositor, size: u32) -> (u32, u32) {
     let mut a11y = compositor.a11y().clone();
     a11y.cursor.size = size;

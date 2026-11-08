@@ -793,7 +793,6 @@ fn activate_bound_button(app: &mut App) {
 
 #[test]
 fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
-    // Case `lazy_resource_fallback_invokes_after_retained_cache_snapshot`.
     {
         let resource = lazy_resource("test.lazy");
         let mut app = lazy_app(resource);
@@ -818,7 +817,6 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         assert_eq!(counter(&app), 1);
     }
 
-    // Case `lazy_resource_fallback_respects_local_permissions`.
     {
         let mut app = lazy_app(lazy_resource("test.lazy"));
         app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
@@ -840,7 +838,6 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         assert_eq!(counter(&app), 1);
     }
 
-    // Case `recursive_lazy_resource_remains_discoverable_and_invocable`.
     {
         let child = lazy_resource("test.lazy.child");
         let tree =
@@ -868,7 +865,6 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         assert_eq!(counter(&app), 1);
     }
 
-    // Case `refresh_populates_the_tree_from_app_resources`.
     {
         let mut app = app();
         app.refresh_semantic_tree();
@@ -887,7 +883,6 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         assert!(root.children.contains(&SemanticId("r:test.counter".into())));
     }
 
-    // Case `identity_is_stable_across_refreshes`.
     {
         let mut app = app();
         app.refresh_semantic_tree();
@@ -905,7 +900,6 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
 
 #[test]
 fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
-    // Case `action_bound_control_uses_fresh_door_and_records_history`.
     {
         let mut app = app();
         activate_bound_button(&mut app);
@@ -919,7 +913,6 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         );
     }
 
-    // Case `a11y_activation_drains_an_action_bound_control_before_returning`.
     {
         let mut app = app();
         let button = app.focusable_order[0];
@@ -940,7 +933,6 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert!(app.state.peek_last_undo().is_some());
     }
 
-    // Case `permission_revocation_and_restore_refresh_bound_control_presentation`.
     {
         let mut app = app();
         let node = app.focusable_order[0];
@@ -964,7 +956,6 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert!(unsafe { (*pointer).is_enabled() });
     }
 
-    // Case `action_bound_control_never_auto_confirms_destructive_action`.
     {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
@@ -988,7 +979,6 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert_eq!(counter(&app), 1, "the confirmed destructive action applied");
     }
 
-    // Case `confirmed_control_preserves_captured_arguments_through_palette_dispatch`.
     {
         let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
         probe.confirmation = true;
@@ -1020,7 +1010,6 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
 
 #[test]
 fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
-    // Case `local_document_action_cannot_claim_an_admitted_source_invocation`.
     {
         let mut app = app();
         let claimed = tilo_actions::InvocationId::new();
@@ -1044,7 +1033,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(context.source_invocation, None);
     }
 
-    // Case `directed_task_context_survives_into_action_history`.
     {
         let mut app = app();
         let resources = app.collect_resources();
@@ -1097,7 +1085,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
-    // Case `broker_invocation_republishes_a_document_dependent_action_surface`.
     {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
@@ -1139,7 +1126,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
-    // Case `accepted_broker_invocation_republishes_when_its_terminal_update_arrives`.
     {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
@@ -1194,7 +1180,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
-    // Case `undecodable_document_action_preserves_pending_edit`.
     {
         let resource = ResourceSpec::new("test.invalid", "test.invalid", "Invalid action")
             .with_action(
@@ -1223,7 +1208,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert!(app.state.peek_last_undo().is_none());
     }
 
-    // Case `refused_and_routed_actions_preserve_pending_edit`.
     {
         let mut app = app();
         let before = app.state.doc.get_heads();
@@ -1264,7 +1248,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
-    // Case `host_required_document_action_runs_only_after_broker_admission`.
     {
         let mut app = app();
         let address = tilo_actions::ActionAddress::new("test.counter", "host-bump");
@@ -1287,7 +1270,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
-    // Case `directed_view_action_cannot_steal_the_local_view`.
     {
         let mut app = app();
         let invocation = tilo_actions::InvocationId::new();
@@ -1313,7 +1295,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
-    // Case `an_own_device_effect_runs_for_the_person_at_the_device_alone`.
     {
         /// A typed effect vocabulary as an app declares it.
         #[derive(Clone, Debug, tilo_resource::Effect)]
@@ -1355,7 +1336,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
 
 #[test]
 fn local_control_results_stay_local_and_report_refusal_or_success() {
-    // Case `local_control_result_does_not_broadcast_into_component_siblings`.
     {
         use crate::application_test_support::ProbeHost;
         use crate::widget::{Column, TileHost};
@@ -1382,7 +1362,6 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         }
     }
 
-    // Case `bound_local_control_result_targets_only_the_emitting_instance`.
     {
         use crate::application_test_support::ProbeHost;
         use crate::widget::{Column, TileHost};
@@ -1402,7 +1381,6 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         assert_eq!(second_seen.calls.get(), 0);
     }
 
-    // Case `bound_local_control_result_reports_permission_refusal_and_success`.
     {
         use crate::application_test_support::{ProbeHost, runner_inputs};
         for accepted in [false, true] {
@@ -1447,7 +1425,6 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         }
     }
 
-    // Case `local_control_result_keeps_confirmation_as_refusal`.
     {
         let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
         probe.confirmation = true;
@@ -1462,7 +1439,6 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         assert!(host.action_palette().is_some());
     }
 
-    // Case `local_control_result_reports_completed_and_accepted`.
     {
         use crate::widget::control_result_probe::Probe;
         for accepted in [false, true] {
@@ -1494,7 +1470,6 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         }
     }
 
-    // Case `local_control_result_reports_fresh_permission_refusal_without_mutation`.
     {
         use crate::widget::control_result_probe::Probe;
         let (probe, observed) = Probe::new(false);
@@ -1520,7 +1495,6 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         assert!(observed.pending.borrow().is_empty());
     }
 
-    // Case `local_effect_completion_does_not_mutate_the_app_document`.
     {
         let mut app = app();
         let before = app.state.doc.get_heads();
@@ -1548,7 +1522,6 @@ fn label(app: &App) -> String {
 
 #[test]
 fn semantic_invocation_matches_the_affordance_dispatch() {
-    // Case `semantic_action_carries_the_same_encoded_action_the_affordance_dispatches`.
     {
         let mut app = app();
         app.refresh_semantic_tree();
@@ -1569,7 +1542,6 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
         }
     }
 
-    // Case `invoking_an_immediate_action_dispatches_it_through_the_action_model`.
     {
         let mut app = app();
         app.refresh_semantic_tree();
@@ -1590,7 +1562,6 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
         assert_eq!(counter(&app), 2);
     }
 
-    // Case `invoking_a_prompted_action_uses_the_supplied_argument`.
     {
         let mut app = app();
         app.refresh_semantic_tree();
@@ -1606,7 +1577,6 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
         );
     }
 
-    // Case `invoke_matches_a_direct_affordance_dispatch_byte_for_byte`.
     {
         let mut app = app();
         app.refresh_semantic_tree();
@@ -1657,7 +1627,6 @@ fn items_tree(id: &str, open: bool) -> Box<dyn Widget> {
 
 #[test]
 fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
-    // Case `virtual_tree_rows_dispatch_through_platform_and_semantic_routes`.
     {
         let mut app = App::new(State::new(), items_tree("items-tree", true));
         app.init_layout();
@@ -1739,7 +1708,6 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
         assert!(rows[0].1.supports_action(accesskit::Action::Expand));
     }
 
-    // Case `nav_shell_accessible_autocomplete_edits_and_selects_through_host_dispatch`.
     {
         let search = crate::widget::Autocomplete::new()
             .with_id("city-search")
@@ -1788,7 +1756,6 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
         );
     }
 
-    // Case `synthetic_drawn_control_dispatches_through_retained_semantic_tree`.
     {
         let changed = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
         let captured = std::rc::Rc::clone(&changed);
@@ -1816,7 +1783,6 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
         assert_eq!(changed.get(), 1);
     }
 
-    // Case `effectful_control_is_not_exported_without_a_domain_contract`.
     {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let captured = std::rc::Rc::clone(&presses);
@@ -2069,7 +2035,6 @@ fn directory_query(
 
 #[test]
 fn action_directory_pages_caps_and_cursors_fail_closed() {
-    // Case `directory_pages_parent_actions_and_refuses_stale_resolution`.
     {
         let mut app = app();
         let root = app.action_directory_page(directory_query("", "", 8, 8_192, 8));
@@ -2088,7 +2053,6 @@ fn action_directory_pages_caps_and_cursors_fail_closed() {
         ));
     }
 
-    // Case `broker_request_ids_use_the_final_value_then_fail_closed`.
     {
         let mut app = app();
         app.actions.next_broker_request_id = Some(u64::MAX);
@@ -2100,7 +2064,6 @@ fn action_directory_pages_caps_and_cursors_fail_closed() {
         ));
     }
 
-    // Case `action_directory_cursor_keys_do_not_reuse_a_process_counter`.
     {
         let mut app = app();
         let first = app.action_directory_cursor_key();
@@ -2110,7 +2073,6 @@ fn action_directory_pages_caps_and_cursors_fail_closed() {
         assert!(second.starts_with("tilo-dir-"));
     }
 
-    // Case `directory_hard_caps_never_materialize_an_oversized_row`.
     {
         let mut app = app();
         let page = app.action_directory_page(directory_query("", "", 1, 1, 1));
@@ -2122,7 +2084,6 @@ fn action_directory_pages_caps_and_cursors_fail_closed() {
         assert!(!page.exhausted);
     }
 
-    // Case `directory_pages_the_129th_widget_root_without_hiding_it`.
     {
         let mut app = App::new(
             State::new(),

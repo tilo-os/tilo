@@ -234,7 +234,15 @@ impl Replica {
     }
 }
 
-/// The id of the field `field` of the type `ty` of `meta`.
+/// The id of the type `ty` of `meta`.
+pub fn type_id(meta: &Meta, ty: &str) -> String {
+    meta.types
+        .iter()
+        .find(|declared| declared.name == ty)
+        .map(|declared| declared.id.clone())
+        .unwrap()
+}
+
 pub fn field_id(meta: &Meta, ty: &str, field: &str) -> String {
     meta.types
         .iter()

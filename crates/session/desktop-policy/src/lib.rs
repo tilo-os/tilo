@@ -1,24 +1,14 @@
-//! The desktop's window policy: a compositor's windows as tabs of the
-//! portable desktop surface.
-//!
-//! A compositor knows windows as toplevels; where they go, which has focus
-//! and which the person closed is the desktop's answer. [`DesktopPolicy`]
-//! gives each window a tab of the [`DesktopSurface`]'s strips
-//! ([`TileContent::Foreign`], keyed by the window's id), so windows open
-//! beside the focused one, group into tabs, pan with their strip, resize
-//! and move between strips and workspaces through the same widgets and
-//! model the browser desktop runs. The compositor hosts the surface under
-//! its windows, as it hosts any surface app, and after each layout pass
-//! reads [`DesktopPolicy::layout`]: the windows to show and where, and those
-//! to hide (background tabs, other strips and workspaces).
-//!
-//! Dialogs float over the window they belong to instead of taking a tab
-//! ([`floating`]), and across several displays each display holds its own
-//! windows ([`DesktopPolicy::set_displays`]).
-//!
-//! Nothing here knows Wayland: windows are plain ids, places are rects in
-//! the surface's logical coordinates.
-
+//! The desktop's window policy: a compositor's windows as tabs of the portable
+//! desktop surface.
+//! A compositor knows windows as toplevels; where they go, which has focus and which
+//! the person closed is the desktop's answer. [`DesktopPolicy`] gives each window a
+//! tab of the [`DesktopSurface`]'s strips ([`TileContent::Foreign`], keyed by the
+//! window's id), so windows open beside the focused one, group into tabs, pan with
+//! their strip and move between strips and workspaces through the same widgets and
+//! model the browser desktop runs. After each layout pass the compositor
+//! reads [`DesktopPolicy::layout`]: the windows to show and where, and those to hide.
+//! Dialogs float over the window they belong to ([`floating`]), and across several
+//! displays each display holds its own windows. Nothing here knows Wayland.
 pub mod cards;
 pub mod displays;
 pub mod floating;
@@ -168,11 +158,10 @@ struct Beside {
     background: bool,
 }
 
-/// The tile source behind the policy's surface: a window's tab is opened
-/// from the window waiting under its launch id, and its tile is the
-/// arriving placeholder, which the window's own buffer covers. Every other
-/// launch is not this surface's to open — the session starts the app — so it
-/// is queued for the session and opens no tab here.
+/// The tile source behind the policy's surface: a window's tab is opened from the
+/// window waiting under its launch id, and its tile is the arriving placeholder the
+/// window's own buffer covers. Every other launch is the session's to start, so it
+/// opens no tab here.
 struct Windows {
     arriving: Arriving,
     launches: Launches,
@@ -281,11 +270,10 @@ impl TileSource for Windows {
                 pinned: false,
             })
         } else {
-            // A Tilo package or one of the machine's apps: this session starts
-            // it, and its window takes the tab the desk holds for it from this
-            // frame. The tab is what the window is known by — an app's
-            // continuation reports are addressed by its id — so the launch
-            // names it.
+            // A Tilo package or one of the machine's apps: this session starts it, and its
+            // window takes the tab the desk holds for it. The tab is what the window is known
+            // by — an app's continuation reports are addressed by its id — so the launch names
+            // it.
             self.held
                 .borrow_mut()
                 .entry(app.to_owned())
@@ -480,11 +468,9 @@ impl DesktopPolicy {
         *self.names.borrow_mut() = Some(names);
     }
 
-    /// Show that the app `asked` names stopped, for `closed`, in a tab of its
-    /// own with its button asking for `asked` again: the window it had is
-    /// already gone, and this is what the person finds in its place instead
-    /// of nothing.
-    ///
+    /// Show that the app `asked` names stopped, in a tab of its own with its button
+    /// asking for `asked` again: the window it had is gone, and this is what the person
+    /// finds in its place.
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
     pub fn stopped(&mut self, asked: &str, title: &str, closed: Closed) -> Result<(), String> {
@@ -504,13 +490,10 @@ impl DesktopPolicy {
         self.handle.dispatch(launch)
     }
 
-    /// What the person asked for in `tab` did not happen, for `asked`, and
-    /// `answer` says what and why: the tab keeps its place, and shows the
-    /// answer instead of a window that is not coming. Trying again opens the
-    /// app's window in that same tab.
-    ///
-    /// The tab may not be on the desk yet — the answer waits in the maps the
-    /// tile source reads.
+    /// What the person asked for in `tab` did not happen, and `answer` says what and
+    /// why: the tab keeps its place, shows the answer instead of a window that is not
+    /// coming, and trying again opens the window in that same tab. The tab may not be on
+    /// the desk yet: the answer waits in the maps the tile source reads.
     pub fn failed_at(&mut self, tab: TabId, asked: &str, answer: Outcome) {
         self.crashed.borrow_mut().insert(tab, asked.to_owned());
         self.answers.borrow_mut().insert(asked.to_owned(), answer);
@@ -556,11 +539,9 @@ impl DesktopPolicy {
         self.handle.set_viewport_width(width);
     }
 
-    /// The outputs the desktop spreads over, primary first, in the
-    /// surface's coordinates: a mirror set is one display
-    /// ([`displays::distinct`]), and with several each display holds its
-    /// own windows, laid out on the surface's next pass. Whether anything
-    /// changed.
+    /// The outputs the desktop spreads over, primary first: a mirror set is one display
+    /// ([`displays::distinct`]), and with several each display holds its own windows.
+    /// Whether anything changed.
     pub fn set_displays(&mut self, outputs: &[displays::Output]) -> bool {
         let displays = displays::distinct(outputs);
         let changed = self.displays != displays;
@@ -654,12 +635,10 @@ impl DesktopPolicy {
         })
     }
 
-    /// Give `window` its place: a dialog ([`floating::floats`]) floats over
-    /// the window it belongs to; any other window gets a tab beside the
-    /// focused window of the shown strip, on the surface's next update
-    /// pass, where it takes focus. One whose app asked to open beside a tab
-    /// of its own takes its place right after that tab instead.
-    ///
+    /// Give `window` its place: a dialog ([`floating::floats`]) floats over the window it
+    /// belongs to; any other gets a tab beside the focused window of the shown strip,
+    /// where it takes focus. One whose app asked to open beside a tab of its own takes
+    /// its place right after that tab instead.
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
     pub fn map(&mut self, window: Window) -> Result<(), String> {
@@ -797,11 +776,8 @@ impl DesktopPolicy {
     }
 
     /// Hold a tab for the next window of `app`, right after `anchor` (the tab
-    /// [`Self::anchor_for`] finds when none is named), taking focus there
-    /// unless `background`: the window takes the tab's place when it maps, so
-    /// the person sees it at once instead of when a launch is through.
-    /// False when the desktop holds no tab of `app` to open beside: the
-    /// window then lands wherever a launch lands.
+    /// [`Self::anchor_for`] finds when none is named), taking focus there unless
+    /// `background`. False when the desktop holds no tab of `app` to open beside.
     pub fn hold_beside(&mut self, app: &str, anchor: Option<TabId>, background: bool) -> bool {
         let Some(tab) = anchor.or_else(|| self.anchor_for(app).map(|(tab, ..)| tab)) else {
             return false;
@@ -890,14 +866,9 @@ impl DesktopPolicy {
         released
     }
 
-    /// Hold `tab` for the next window `app` opens, in the background: the
-    /// window takes the tab the person left it in — its place, its width,
-    /// the strip it was in — instead of a new one beside it, and does not
-    /// take focus from the window they had in front.
-    ///
-    /// `app` is the app as its windows announce themselves, which is what the
-    /// tab holds it as when the desk is saved. False when `tab` is not on the
-    /// desk any more.
+    /// Hold `tab` for the next window `app` opens, in the background: the window takes
+    /// the tab the person left it in — its place, its width, the strip it was in — and
+    /// does not take focus. False when `tab` is not on the desk any more.
     pub fn adopt(&mut self, app: &str, tab: TabId) -> bool {
         self.hold_tab(app.to_owned(), tab, true)
     }
@@ -933,12 +904,10 @@ impl DesktopPolicy {
         std::mem::take(&mut *self.carried.borrow_mut())
     }
 
-    /// Carry tab `tab` into the workspace at `to`, with a window of its own:
-    /// where the session puts a tab whose app it started again there.
-    ///
+    /// Carry tab `tab` into the workspace at `to`, with a window of its own.
     /// # Errors
-    /// The tab is not on the desk, it is already in that workspace, or there
-    /// is no such workspace.
+    /// The tab is not on the desk, it is already in that workspace, or there is no such
+    /// workspace.
     pub fn carry(&mut self, tab: TabId, to: WorkspaceSlot) -> Result<(), String> {
         let mut tree = self.handle.read(Clone::clone);
         let mut mint = || Ok(self.handle.mint_id());
@@ -1038,10 +1007,8 @@ impl DesktopPolicy {
     }
 
     /// The next window `app` maps lands right after `anchor` (`None`: the tab
-    /// [`Self::anchor_for`] finds), in front unless `background`. Queued per
-    /// app, oldest first, so a burst of opens keeps each window's place.
-    /// False when the desktop holds no tab of `app` to open beside: the
-    /// window then lands wherever a launch lands.
+    /// [`Self::anchor_for`] finds), in front unless `background`. Queued per app, oldest
+    /// first, so a burst of opens keeps each window's place.
     pub fn place_next_beside(
         &mut self,
         app: &str,
@@ -1101,14 +1068,11 @@ impl DesktopPolicy {
         }
     }
 
-    /// A window's title changed. A window is named by what it shows: while
-    /// its app names that (a note's title, a folder's path, in its bar's
-    /// location), that name stands and the window's own title is what shows
-    /// once it names nothing. A window's own title that is only its app's
-    /// name under another spelling — the toolkit labels a window with the
-    /// app's unlocalised name — shows the app's name as this desk says it.
-    /// The person's own name for the tab, when they gave one, stands in
-    /// front of both.
+    /// A window's title changed. A window is named by what it shows: while its app names
+    /// that, that name stands and the window's own title shows once it names nothing. A
+    /// window's own title that is only its app's name under another spelling shows the
+    /// app's name as this desk says it. The person's own name for the tab stands in front
+    /// of both.
     pub fn retitle(&mut self, window: u64, title: &str) {
         let mut tree = self.handle.read(Clone::clone);
         let Some(tab) = tab_mut(&mut tree, window) else {
@@ -1127,11 +1091,9 @@ impl DesktopPolicy {
         }
     }
 
-    /// The app `window` says it belongs to changed: its X11 class was renamed,
-    /// or its client set an id after the window opened. Its tab is that app's
-    /// from here on, so the desk names the window by the program its client
-    /// claims. An id the client clears says nothing and leaves the tab as it
-    /// is.
+    /// The app `window` says it belongs to changed. Its tab is that app's from here on,
+    /// so the desk names the window by the program its client claims; an id the client
+    /// clears leaves the tab as it is.
     pub fn set_app_id(&mut self, window: u64, app_id: &str) {
         if app_id.trim().is_empty() {
             return;
@@ -1238,16 +1200,13 @@ impl DesktopPolicy {
         self.handle.read(|tree| tab_of(tree, window))
     }
 
-    /// The tabs the desk has for apps on the workspace in front whose window
-    /// is there or on its way, each with the id its app announces itself by:
-    /// what a launch of an app that may already be running is decided
-    /// against. A window that mapped is here, and so is the tab a launch
-    /// holds the place of until its window fills it — so a launch of an app
-    /// that is starting raises the window it will have instead of starting
-    /// the app a second time. A tab that already answered for its app is not
-    /// one, and neither is one a saved window waits in that nothing has asked
-    /// for yet: there is no window behind either
-    /// ([`Self::waiting_tab`] is what a launch starts into).
+    /// The tabs the desk has for apps on the workspace in front whose window is there or
+    /// on its way, each with the id its app announces itself by: what a launch of an app
+    /// that may already be running is decided against. A window that mapped is here, and
+    /// so is the tab a launch holds until its window fills it, so a launch of an app that
+    /// is starting raises the window it will have. A tab a saved window waits in, that
+    /// nothing has asked for again, is not ([`Self::waiting_tab`] is what a launch starts
+    /// into).
     #[must_use]
     pub fn app_tabs_in_front(&self) -> Vec<(TabId, String)> {
         let held = self.held.borrow();
@@ -1271,11 +1230,9 @@ impl DesktopPolicy {
         })
     }
 
-    /// The tab a saved window of `app` waits in, nothing having asked for it
-    /// again yet: what a launch of the app starts into, so the window the
-    /// person left open takes its own tab instead of a second one opening
-    /// beside it. `None` when the app has no such tab here — nothing was left
-    /// open, or the window has come.
+    /// The tab a saved window of `app` waits in, nothing having asked for it again: what
+    /// a launch of the app starts into, so the window the person left open takes its own
+    /// tab instead of a second one beside it.
     #[must_use]
     pub fn waiting_tab(&self, app: &str) -> Option<TabId> {
         let held = self.held.borrow();

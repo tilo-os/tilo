@@ -242,9 +242,6 @@ pub trait DurableStore {
 
     /// The key's current value, including accepted writes not yet durable.
     /// `None` when nothing has ever been stored.
-    ///
-    /// # Errors
-    /// Reports an invalid key or a failure reading the backing storage.
     fn read(&self, key: &StorageKey) -> Result<Option<Stored>, StoreError>;
 
     /// Accept a write without waiting for it to commit. `writer`, when given,
@@ -333,8 +330,8 @@ pub trait DurableStore {
     /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
 
-    /// Whether a lease or read the calling thread makes may answer
-    /// [`StoreError::Opening`]: on a thread that must not wait on storage
+    /// Whether a lease or read the calling thread makes may
+    /// answer [`StoreError::Opening`]: on a thread that must not wait on storage
     /// ([`waiting`], a frame loop), [`Self::lease`], [`Self::lease_shared`]
     /// and [`Self::read`] of a key the store has not opened for this thread
     /// answer it while the store's own thread opens or reads the key, and
@@ -363,9 +360,6 @@ pub trait DurableStore {
     /// records it can no longer name: an app that used to keep a record per
     /// window and now keeps one per workspace adopts its windows' records. A
     /// store that cannot enumerate its keys answers with none.
-    ///
-    /// # Errors
-    /// Invalid identifiers or a failure reading the backing storage.
     fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
         let _ = (package, workspace);
         Ok(Vec::new())
@@ -375,9 +369,6 @@ pub trait DurableStore {
     /// `workspace` components, sorted. Lets a host read which records the
     /// workspaces on this device keep without knowing their names first. A
     /// store that cannot enumerate its keys answers with none.
-    ///
-    /// # Errors
-    /// A failure reading the backing storage.
     fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
         Ok(Vec::new())
     }
@@ -394,9 +385,6 @@ pub trait DurableStore {
     /// device and may be dropped at any time, so the caller must recognise
     /// the value it was made for itself; a store that keeps none drops it.
     /// The key must be leased, as for [`Self::write`].
-    ///
-    /// # Errors
-    /// An unleased key, or a failure writing the hint.
     fn write_hint(&self, _key: &StorageKey, _hint: &[u8]) -> Result<(), StoreError> {
         Ok(())
     }

@@ -20,6 +20,7 @@ use automerge::AutoCommit;
 use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
 use serde_json::json;
 use tilo_actions::ActionInvoker;
+use tilo_automerge::ApplyIncoming as _;
 use tilo_render_protocol::patch::local::{End, pair};
 use tilo_resource::{Edit, EditOp, Model as _, Segment};
 use tilolang_runtime::meta::{FieldKind, Meta};
@@ -700,6 +701,53 @@ fn a_record_written_before_chunks_opens_as_one_chunk_and_is_not_rewritten() {
     assert_eq!(left(&ada.instance.host().unwrap(), &root, &field), inserted);
 }
 
+/// Two replicas that each placed the first resource into a chunk before they met made a manifest
+/// of their own: the record keeps one of the two, and what the other places is placed just the
+/// same. The next write folds them into the one the record keeps, on both.
+#[test]
+fn a_manifest_two_replicas_wrote_places_every_chunk_on_both() {
+    let (_host, mut docs, _meta, _root, _ids) = board();
+    docs.doc(chunk::FIRST).commit();
+    let manifests = |doc: &AutoCommit| {
+        use automerge::ReadDoc as _;
+        tilolang_tilo::containers::maps(doc, &automerge::ROOT, chunk::CHUNKS_KEY)
+            .into_iter()
+            .filter(|manifest| doc.keys(manifest).next().is_some())
+            .count()
+    };
+    assert_eq!(
+        manifests(docs.doc(chunk::FIRST)),
+        0,
+        "the record written before chunks has no manifest"
+    );
+    let mut ada = docs.doc(chunk::FIRST).fork();
+    let mut grace = ada.fork();
+    chunk::place(&mut ada, "card-ada", 1).expect("ada places its chunk");
+    ada.commit();
+    chunk::place(&mut grace, "card-grace", 2).expect("grace places its chunk");
+    grace.commit();
+    ada.merge_incoming(&mut grace)
+        .expect("ada takes grace's manifest");
+    assert_eq!(manifests(&ada), 2, "the record holds two manifests");
+    let placement = chunk::Placement::read(&ada);
+    assert_eq!(placement.chunk("card-ada"), 1);
+    assert_eq!(placement.chunk("card-grace"), 2, "both are placed");
+
+    // A write folds the two into the one the record keeps, and every placement stays.
+    chunk::place(&mut ada, "card-later", 3).expect("ada places another");
+    ada.commit();
+    assert_eq!(manifests(&ada), 1, "the record keeps one manifest");
+    let placement = chunk::Placement::read(&ada);
+    for (id, chunk) in [("card-ada", 1), ("card-grace", 2), ("card-later", 3)] {
+        assert_eq!(placement.chunk(id), chunk, "{id}");
+    }
+    grace
+        .merge_incoming(&mut ada)
+        .expect("grace takes ada's manifest");
+    assert_eq!(manifests(&grace), 1, "one manifest on grace as well");
+    assert_eq!(chunk::Placement::read(&grace), placement);
+}
+
 #[test]
 fn a_replica_that_joins_gets_the_manifest_and_every_chunk() {
     let (_host, mut docs, meta, root, ids) = board();
@@ -957,6 +1005,7 @@ fn opened(docs: &mut Docs, dir: &Path, ids: &str, sent: bool) -> (Host, Rc<RefCe
     let host = Host::open(
         Opening {
             record: Some(&record),
+            chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
         },

@@ -1,12 +1,9 @@
-//! The community site this computer is configured with, and the desk's own
-//! way into the workspace directory: which person a join is made as, and what
-//! the sheet shows of it.
-//!
-//! What a site lists and what its door grants is
-//! [`tilo_workspace_directory`]'s: one implementation for this session and
-//! for a browser page. Here is what is this computer's own — the
-//! administrator's or the vendor's `community.toml`, the identity a join is
-//! made as, and the workspaces the desk already holds.
+//! The community site this computer is configured with, and the desk's own way into the workspace
+//! directory: which person a join is made as, and what the sheet shows of it.
+//! What a site lists and what its door grants is [`tilo_workspace_directory`]'s: one implementation
+//! for this session and for a browser page. Here is what is this computer's own — the
+//! administrator's or the vendor's `community.toml` , the identity a join is made as, and the
+//! workspaces the desk already holds.
 
 use std::path::{Path, PathBuf};
 
@@ -27,24 +24,48 @@ pub(crate) const CONFIG_ENV: &str = "TILO_COMMUNITY_CONFIG";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommunityToml {
-    /// The site whose home workspace a computer is in by default; empty for
-    /// none.
+    /// The site whose home workspace a computer is in by default; empty for none.
     #[serde(default)]
     site: String,
+    /// Where a report about Tilo itself goes, when this computer offers one.
+    #[serde(default)]
+    feedback: Option<crate::feedback::Destination>,
+}
+
+/// What this computer is told: the community site, and where reports go.
+#[derive(Default)]
+struct Configured {
+    site: Option<url::Url>,
+    feedback: Option<crate::feedback::Destination>,
 }
 
 /// The community site configured for this computer, if any.
 pub(crate) fn community_site() -> Option<url::Url> {
-    let paths: Vec<PathBuf> = match std::env::var_os(CONFIG_ENV) {
-        Some(path) => vec![PathBuf::from(path)],
-        None => vec![PathBuf::from(SYSTEM_CONFIG), PathBuf::from(VENDOR_CONFIG)],
-    };
-    site_from(paths.iter().map(PathBuf::as_path))
+    configured().site
 }
 
-/// The site the first readable file of `paths` names. A file that does not
-/// parse is reported and skipped.
-fn site_from<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<url::Url> {
+/// Where a report about Tilo itself goes, if this computer is told.
+pub(crate) fn feedback() -> Option<crate::feedback::Destination> {
+    configured().feedback
+}
+
+/// The paths this computer's configuration is read from, in the order they answer: the
+/// administrator's file, else the vendor's, unless the environment names the one file to read.
+fn config_paths() -> Vec<PathBuf> {
+    match std::env::var_os(CONFIG_ENV) {
+        Some(path) => vec![PathBuf::from(path)],
+        None => vec![PathBuf::from(SYSTEM_CONFIG), PathBuf::from(VENDOR_CONFIG)],
+    }
+}
+
+/// What this computer's configuration says.
+fn configured() -> Configured {
+    configured_from(config_paths().iter().map(PathBuf::as_path))
+}
+
+/// What the first readable file of `paths` says. A file that does not parse is reported and
+/// skipped.
+fn configured_from<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Configured {
     for path in paths {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
@@ -56,22 +77,26 @@ fn site_from<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Option<url::Url> 
                 continue;
             }
         };
-        if config.site.trim().is_empty() {
-            return None;
-        }
-        return match tilo_workspace_directory::site_entry(&config.site) {
-            Ok(site) => Some(site),
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "community site is not a web address");
-                None
+        let site = if config.site.trim().is_empty() {
+            None
+        } else {
+            match tilo_workspace_directory::site_entry(&config.site) {
+                Ok(site) => Some(site),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "community site is not a web address");
+                    None
+                }
             }
         };
+        return Configured {
+            site,
+            feedback: config.feedback,
+        };
     }
-    None
+    Configured::default()
 }
 
-/// Read the directories again: the community site's, and `site`'s when the
-/// person named one.
+/// Read the directories again: the community site's, and `site` 's when the person named one.
 pub(crate) fn ask(store: &Store, site: Option<String>) {
     store.read(community_site(), site);
 }
@@ -139,18 +164,16 @@ fn person() -> Result<Person, String> {
     })
 }
 
-/// The name this person goes by in a workspace: the one they chose, else their
-/// login account's. A workspace, a public one above all, learns nothing of this
-/// person's devices.
+/// The name this person goes by in a workspace: the one they chose, else their login account's. A
+/// workspace, a public one above all, learns nothing of this person's devices.
 pub(crate) fn own_person_name(chosen: Option<String>) -> String {
     chosen_name(chosen).unwrap_or_else(tilo_identity_host::provisioning::login_account_display_name)
 }
 
-/// The name this person goes by at their own desk: the one they chose, else
-/// the name the session already knows them by. A computer with no identity
-/// of its own goes by the login account, which is the session's person
-/// there, so the desk and its bar name them alike; a computer whose identity
-/// is in is named by its key, which is never shown as a name.
+/// The name this person goes by at their own desk: the one they chose, else the name the session
+/// already knows them by. A computer with no identity of its own goes by the login account, which
+/// is the session's person there, so the desk and its bar name them alike; a computer whose
+/// identity is in is named by its key, which is never shown as a name.
 pub(crate) fn desk_person_name(chosen: Option<String>, person: &str) -> String {
     chosen_name(chosen).unwrap_or_else(|| {
         let known = person.trim();
@@ -162,8 +185,8 @@ pub(crate) fn desk_person_name(chosen: Option<String>, person: &str) -> String {
     })
 }
 
-/// The display name `chosen` is, where it is one they gave: not blank, not
-/// the placeholder an unnamed identity carries, and one a room may take.
+/// The display name `chosen` is, where it is one they gave: not blank, not the placeholder an
+/// unnamed identity carries, and one a room may take.
 fn chosen_name(chosen: Option<String>) -> Option<String> {
     chosen
         .filter(|name| runtime_identity::is_chosen_display_name(name))
@@ -174,14 +197,13 @@ fn chosen_name(chosen: Option<String>) -> Option<String> {
         })
 }
 
-/// Whether `person` is a key rather than a name to read: the root key hex a
-/// computer's identity names them by.
+/// Whether `person` is a key rather than a name to read: the root key hex a computer's identity
+/// names them by.
 fn is_identity_key(person: &str) -> bool {
     person.len() == 64 && person.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// What the sheet shows: the workspaces this computer holds, and what the
-/// sites' directories list.
+/// What the sheet shows: the workspaces this computer holds, and what the sites' directories list.
 pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
     let held = handle.read(|tree| {
         tree.workspaces
@@ -200,8 +222,8 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
 mod tests {
     use super::*;
 
-    /// A site named is a community to join; an empty one is none, and a file
-    /// that is not there or does not parse leaves the next one to answer.
+    /// A site named is a community to join; an empty one is none, and a file that is not there or
+    /// does not parse leaves the next one to answer.
     #[test]
     fn an_empty_site_is_no_community() {
         let dir = tempfile::tempdir().expect("a directory for the configurations");
@@ -215,7 +237,7 @@ mod tests {
         let broken = write("broken.toml", "site = \n");
         let named = write("named.toml", "site = \"tilo.coffee\"\n");
         let missing = dir.path().join("missing.toml");
-        let site_of = |paths: &[&Path]| site_from(paths.iter().copied());
+        let site_of = |paths: &[&Path]| configured_from(paths.iter().copied()).site;
         assert_eq!(
             site_of(&[named.as_path()]).map(|site| site.to_string()),
             Some("https://tilo.coffee/".to_owned()),
@@ -237,6 +259,44 @@ mod tests {
                 .map(|site| site.to_string()),
             Some("https://tilo.coffee/".to_owned()),
             "a file that is not there or does not parse leaves the next one to answer"
+        );
+    }
+
+    /// A computer told where reports go names the workspace and the conversation, and one told
+    /// nothing offers no report: a report with nowhere to go is not a report.
+    #[test]
+    fn a_report_goes_where_the_config_names_or_nowhere() {
+        let dir = tempfile::tempdir().expect("a directory for the configurations");
+        let write = |name: &str, text: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).expect("a configuration");
+            path
+        };
+        let told = write(
+            "told.toml",
+            "site = \"tilo.coffee\"\n[feedback]\nworkspace = \"w_tilo\"\nchannel = \"c_feedback\"\n",
+        );
+        let untold = write("untold.toml", "site = \"tilo.coffee\"\n");
+        let only_a_channel = write("half.toml", "[feedback]\nchannel = \"c_feedback\"\n");
+        let configured = configured_from([told.as_path()]);
+        assert_eq!(
+            configured.feedback,
+            Some(crate::feedback::Destination {
+                workspace: "w_tilo".to_owned(),
+                channel: "c_feedback".to_owned(),
+            }),
+            "the report goes to the workspace's conversation the config names"
+        );
+        assert!(configured.site.is_some(), "and the site stands beside it");
+        assert_eq!(
+            configured_from([untold.as_path()]).feedback,
+            None,
+            "a computer told nothing offers no report"
+        );
+        assert_eq!(
+            configured_from([only_a_channel.as_path()]).feedback,
+            None,
+            "a destination with no workspace to keep it is no destination"
         );
     }
 

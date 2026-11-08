@@ -1,4 +1,4 @@
-//! [`Host`]: the tilolang runtime wired to the platform, without any UI.
+//! [`Host`] — the tilolang runtime wired to the platform, without any UI.
 //!
 //! A host owns one [`Runtime`] over a [`TiloStore`] and the platform's [`TiloAuthority`]. It
 //! compiles and loads packages, keeps their record schemas registered, opens a package's root
@@ -183,6 +183,11 @@ pub struct Host {
 pub struct Opening<'a> {
     /// The workspace record; `None` to open over the indexes alone and take it later.
     pub record: Option<&'a tilo_resource::Doc>,
+    /// The record's chunks the caller holds: the store reads and writes the resources the
+    /// record's manifest places in them, and reads the ones it was not sent as it reaches for
+    /// them ([`Host::sync_chunks`]). `None` when the caller holds none, or brings them as the
+    /// workspace moves.
+    pub chunks: Option<&'a crate::chunk::Chunks>,
     /// Where each package's index is kept; `None` keeps them in memory.
     pub index_dir: Option<std::path::PathBuf>,
     /// The device that carries out the outside effects this host queues.
@@ -436,9 +441,6 @@ fn published_roots(meta: &Meta) -> Meta {
 /// it is; a plain enum by its case's name; a principal as the workspace subject it is; an option
 /// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
 /// whole when it holds more than text. `owner` finds the package of an app the type names.
-///
-/// # Errors
-/// A value that is not of `ty`, or names a type no package declares.
 pub fn argument_json(
     owner: &dyn Fn(&str) -> Result<Meta, String>,
     meta: &Meta,
@@ -878,6 +880,7 @@ impl Host {
         Self::open(
             Opening {
                 record: Some(record),
+                chunks: None,
                 index_dir: None,
                 device,
             },
@@ -911,6 +914,17 @@ impl Host {
         if let Some(device) = opening.device {
             store.set_device(device);
         }
+        // The chunks of the record the caller holds: the store reads them as it reaches into
+        // them, and an index over a record whose manifest names chunks it does not hold yet
+        // waits for them rather than build over the record's own chunk alone.
+        let chunks = Rc::new(RefCell::new(opening.chunks.cloned().unwrap_or_default()));
+        if opening.chunks.is_some() {
+            let source = Rc::clone(&chunks);
+            store.set_chunk_loader(Box::new(move |chunk| {
+                source.borrow().mirror(chunk).cloned()
+            }));
+        }
+        let can_load_chunks = opening.chunks.is_some();
         // The host's own record types (`Invocation`) are stored like any other resource.
         let host_meta = tilolang::host_meta();
         let schemas = store.schemas();
@@ -933,18 +947,26 @@ impl Host {
             suspended: RefCell::default(),
             produced: RefCell::default(),
             returned: RefCell::default(),
-            chunks: Rc::default(),
-            chunk_loader: Cell::new(false),
+            chunks,
+            chunk_loader: Cell::new(can_load_chunks),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
     }
 
-    /// Whether every loaded package's index is read from: until then its lists show nothing,
-    /// and the window shows the platform's loading state (see [`TiloStore::index_ready`]).
+    /// Whether every loaded package's index covers the record: none is being built, or waits
+    /// for it (see [`TiloStore::index_ready`]).
     #[must_use]
     pub fn index_ready(&self) -> bool {
         self.inner.store.index_ready()
+    }
+
+    /// Whether every loaded package's index holds rows to read, though they may not be the
+    /// whole record's yet: until then its lists show nothing, and the window shows the
+    /// platform's loading state (see [`TiloStore::index_answers`]).
+    #[must_use]
+    pub fn index_answers(&self) -> bool {
+        self.inner.store.index_answers()
     }
 
     /// Take in indexes built off the frame; whether one was (see [`TiloStore::poll_index`]).
@@ -1142,9 +1164,6 @@ impl Host {
 
     /// Compile `source` against the packages already loaded, register its schemas, load its
     /// module and trust it (a built-in package).
-    ///
-    /// # Errors
-    /// The source does not compile, or the module does not link.
     pub fn load_builtin(&self, source: &str, ids: &str) -> Result<Package, HostError> {
         let lock = IdsLock::parse(ids).map_err(|error| HostError::Compile(error.to_string()))?;
         let imports: Vec<PackageMeta> = self
@@ -1170,9 +1189,6 @@ impl Host {
     /// Load a compiled package and trust it (a built-in package, or the package being developed).
     /// A package of the same app that is already loaded is replaced: its resources keep their
     /// state, and views opened over the old version must be opened again to run the new code.
-    ///
-    /// # Errors
-    /// The module does not link; the loaded version, if any, stays.
     pub fn load_compiled(&self, compiled: &tilolang::Compiled) -> Result<Package, HostError> {
         self.load_module(
             &compiled.wasm,
@@ -1184,9 +1200,6 @@ impl Host {
     /// Load the package an installed app is, after the packages it uses: their views draw and
     /// their actions run on the resources of theirs it holds (a board's todo rows), each
     /// package under its own authority, as if it ran on its own.
-    ///
-    /// # Errors
-    /// A module does not link.
     pub fn load_bundle(&self, bundle: &crate::bundle::Bundle) -> Result<Package, HostError> {
         for import in &bundle.imports {
             self.load_module(&import.wasm, import.meta.clone(), String::new())?;
@@ -1197,9 +1210,6 @@ impl Host {
     /// Load a package from its compiled module alone, with the metadata the module embeds, and
     /// trust it: how a launcher starts a built-in package compiled when Tilo was built, so that
     /// launching compiles no tilolang. The package has no ids lock to write back.
-    ///
-    /// # Errors
-    /// The module embeds no metadata, or does not load.
     pub fn load_wasm(&self, wasm: &[u8]) -> Result<Package, HostError> {
         let meta = PackageMeta::from_wasm(wasm).ok_or_else(|| {
             HostError::Compile("the module embeds no tilolang metadata".to_owned())
@@ -1208,9 +1218,6 @@ impl Host {
     }
 
     /// Load a compiled module with its metadata and trust it; see [`Self::load_compiled`].
-    ///
-    /// # Errors
-    /// The module does not link; the loaded version, if any, stays.
     pub fn load_module(&self, wasm: &[u8], meta: Meta, ids: String) -> Result<Package, HostError> {
         let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
         // The store's table holds this package's schemas, and only this store's: another host on
@@ -1317,18 +1324,25 @@ impl Host {
     /// [`TiloStore::sync_held`]. What a window opens with.
     pub fn sync_chunks(&self, record: &crate::chunk::Chunks) -> bool {
         // What the chunk loader reads from: the chunks the replica holds now, so one that
-        // arrives later is read with the changes it has then.
-        *self.inner.chunks.borrow_mut() = record.clone();
+        // arrives later is read with the changes it has then. A frame that brings no change
+        // keeps the cell as it stands: taking the record in is a copy of its manifest, which
+        // every frame of a large workspace would pay.
+        let moved = {
+            let held = self.inner.chunks.borrow();
+            held.heads() != record.heads()
+        };
+        if moved {
+            *self.inner.chunks.borrow_mut() = record.clone();
+        }
         if !self.inner.chunk_loader.replace(true) {
             let chunks = Rc::clone(&self.inner.chunks);
             self.inner.store.set_chunk_loader(Box::new(move |chunk| {
                 chunks.borrow().mirror(chunk).cloned()
             }));
         }
-        let moved = self.inner.store.sync_held(record);
         // The lists a window opens over must hold every row the workspace does, and an index
         // that reflects fewer chunks than the manifest names cannot say the rows it lacks.
-        moved | self.inner.store.load_short()
+        (moved && self.inner.store.sync_held(record)) | self.inner.store.load_short()
     }
 
     /// Bring the runtime's view of a record kept as one document up to date; see
@@ -1365,18 +1379,12 @@ impl Host {
     /// The package's root resource: the one per-workspace resource of its root type, created the
     /// first time it is wanted: its first root type with a default view, as the launcher opens
     /// an app.
-    ///
-    /// # Errors
-    /// The package declares no root with a default view, or the resource cannot be created.
     pub fn root_of(&self, app: &str) -> Result<ResourceRef, HostError> {
         self.root_of_layer(app, &RootView::default())
     }
 
     /// The root `chosen` names in `app`, created the first time it is wanted
     /// ([`RootView::default`] takes the package's first root).
-    ///
-    /// # Errors
-    /// The package declares no such root, or the resource cannot be created.
     pub fn root_of_layer(&self, app: &str, chosen: &RootView) -> Result<ResourceRef, HostError> {
         let ty = self.root_type_of(app, chosen)?;
         self.root_record(app, &ty)
@@ -1386,9 +1394,6 @@ impl Host {
     /// (`root shell: Shell`) is, by the id the checker gives it, or what
     /// [`Self::root_of_layer`] names. Created the first time it is wanted, as
     /// [`Self::root_of`] does.
-    ///
-    /// # Errors
-    /// The package is not loaded, or the resource cannot be created.
     pub fn root_record(&self, app: &str, ty: &str) -> Result<ResourceRef, HostError> {
         let app_is_loaded = self
             .find_in_packages(|package| (package.meta.app == app).then_some(()))
@@ -1518,9 +1523,6 @@ impl Host {
 
     /// Open the window of `app`'s root resource, through the default view of its type: its
     /// first root type with a default view, as the launcher opens an app.
-    ///
-    /// # Errors
-    /// The package has no root with a default view, or the view does not run.
     pub fn open_main(&self, app: &str) -> Result<ViewInstance, HostError> {
         self.open_layer(app, &RootView::default())
     }
@@ -1528,10 +1530,6 @@ impl Host {
     /// Open the window of the layer `chosen` names in `app`: the root it names and the view it
     /// names ([`RootView::default`] takes the package's first root and that type's default
     /// view).
-    ///
-    /// # Errors
-    /// The package has no such root, the view it names does not exist or does not run, or the
-    /// root's type has no default view when none is named.
     pub fn open_layer(&self, app: &str, chosen: &RootView) -> Result<ViewInstance, HostError> {
         let package = self
             .package(app)
@@ -1556,9 +1554,6 @@ impl Host {
 
     /// Open the window of `resource`, as `open(r)` in a view asks: through `view`, or the default
     /// view of its type.
-    ///
-    /// # Errors
-    /// The type has no default view and none is given, or the view does not run.
     pub fn open_resource(
         &self,
         resource: &ResourceRef,
@@ -1644,9 +1639,6 @@ impl Host {
     /// The argument of the type `ty` (as metadata writes it) of an action of `meta` that
     /// `json` gives, read as the door reads an invocation's arguments: a resource by its id, a
     /// case by its name, a person as the workspace subject they are.
-    ///
-    /// # Errors
-    /// `json` does not read as a value of `ty`, with why.
     pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
         value_of(&self.inner, meta, json, ty)
     }

@@ -25,25 +25,6 @@ fn name<A: ResourceApp>(state: &dyn std::any::Any) -> Option<String> {
         .map(A::label)
 }
 
-/// Every kind `A` declares, hosted by `A`: its resource, and the parts of the
-/// chains it keeps beside its record.
-///
-/// The same set [`register`] hosts for the process, built without depending on
-/// a definition having been created: a host that reads a record of an app that
-/// is not running ([`super::record_index`]) reads it by these.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn kinds_of<A: ResourceApp>() -> Kinds {
-    let mut declared = super::Records::declaring();
-    A::records(&mut declared);
-    let mut kinds = Kinds::new();
-    kinds.insert(resource_kind::<A>());
-    for chain in declared.into_chains() {
-        kinds.insert(chain.hosted_by(A::ID, A::TITLE));
-    }
-    kinds
-}
-
 /// Applies an app's seed to a new record, created by `me` on `device`.
 type Seed = fn(&mut Doc, &str, &str, Option<&str>) -> Result<(), String>;
 /// Every framework app's kind whose definition this process created, and

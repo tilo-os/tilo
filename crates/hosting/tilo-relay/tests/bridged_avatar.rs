@@ -24,17 +24,9 @@ use tilo_relay::workspaces::WorkspaceSummary;
 use tilo_relay::{Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::TestDevice;
+use crate::common::{TestDevice, device_endpoint};
 
 const CHAT: &str = "so.tilo.chat";
-
-async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
-}
 
 /// A room on `relay` that `member` entered as its owner's, and the member's
 /// live session in it.

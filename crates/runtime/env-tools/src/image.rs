@@ -17,10 +17,6 @@ pub const TOOL_VERSION: &str = "1.0.0";
 
 /// The architecture this process's binaries — and so the runtime it builds
 /// on — run on.
-///
-/// # Errors
-///
-/// On an architecture images aren't built for.
 pub fn host_arch() -> anyhow::Result<Arch> {
     match std::env::consts::ARCH {
         "x86_64" => Ok(Arch::X86_64),
@@ -83,10 +79,6 @@ pub fn seal_tool(
 
 /// Write `packed` as a full `.tapp` at `path` (via a temporary file beside
 /// it, renamed into place).
-///
-/// # Errors
-///
-/// Creating, writing or renaming the file.
 pub fn write_tapp(path: &Path, packed: &Packed) -> anyhow::Result<()> {
     let temp = path.with_extension(format!("tapp.{}.tmp", std::process::id()));
     let result = (|| -> anyhow::Result<()> {

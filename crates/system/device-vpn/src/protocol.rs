@@ -234,10 +234,6 @@ pub enum Response {
 
 /// Send one request to the helper at `socket` and wait for its answer, with
 /// the descriptor an [`Response::Opened`] carries.
-///
-/// # Errors
-///
-/// The socket cannot be reached, or the answer is not one the helper sends.
 #[cfg(target_os = "linux")]
 pub fn call(
     socket: &Path,

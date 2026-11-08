@@ -175,8 +175,8 @@ impl Delta {
 /// without asking the document (see [`Resource::locate`](crate::Resource::locate)).
 pub type ObjPath = Vec<(ObjId, Prop)>;
 
-/// Above this many new changes, or operations in them, a delta is
-/// [`Delta::everything`]: reading the change would cost about as much as
+/// Above this many new changes, or operations in them, a delta
+/// is [`Delta::everything`]: reading the change would cost about as much as
 /// reading the resource.
 const MAX_CHANGES: usize = 4_096;
 const MAX_OPS: u64 = 200_000;

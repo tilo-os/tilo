@@ -468,10 +468,10 @@ pub(crate) struct BrowserShell {
     pinned: people::PagePeople,
     /// The workspace directory, over the page while it is up: the session's
     /// own sheet, with this page's site, person and workspaces.
-    directory: crate::directory::PageDirectory,
+    directory: crate::over_page::OverPage<crate::directory::PageDirectory>,
     /// The invite sheet, over the page while it is up: the session's own,
     /// made and listed through the workspace's host.
-    invite: crate::invite::PageInvite,
+    invite: crate::over_page::OverPage<crate::invite::PageInvite>,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -626,21 +626,21 @@ impl BrowserShell {
         );
         // The page's directory: over the desk, from this page's own site,
         // person and workspaces (`mountDesktop({directory})`).
-        let directory = crate::directory::PageDirectory::new(
+        let directory = crate::over_page::OverPage::new(crate::directory::PageDirectory::new(
             Rc::clone(&requests),
             offers.directory.as_ref(),
             &chrome.wake,
-        );
+        ));
         // The page's invite sheet, over everything: the session's own, made
         // through the peer's workspace host (`mountDesktop({invite})`).
-        let invite = crate::invite::PageInvite::new(
+        let invite = crate::over_page::OverPage::new(crate::invite::PageInvite::new(
             Rc::clone(&requests),
             offers.invite.as_ref(),
             shared,
             Rc::clone(&chrome.here),
             peer,
             &chrome.wake,
-        );
+        ));
         Self {
             desk,
             top,
@@ -1037,7 +1037,7 @@ impl BrowserShell {
         self.top.activity_by(None);
     }
 
-    fn invite(&mut self) {
+    fn invite(&self) {
         if self.offers.invite.is_some() {
             self.invite.open();
         }
@@ -1579,7 +1579,7 @@ impl BrowserShell {
     /// A verb of the empty desk's launchpad, as its card, its host action
     /// and its resource action all ask for it: the app action the verb
     /// declares, what only the page can do, and else the app itself.
-    fn launchpad(&mut self, action: LaunchpadAction) {
+    fn launchpad(&self, action: LaunchpadAction) {
         match action {
             LaunchpadAction::Invite => self.invite(),
             LaunchpadAction::Activity => self.activity(),
@@ -1912,8 +1912,8 @@ impl Widget for BrowserShell {
         }
     }
 
-    /// The page asks for animation frames by this, not by
-    /// [`Self::needs_redraw`]: a hint drawn by the shell itself, not by a
+    /// The page asks for animation frames by this, not
+    /// by [`Self::needs_redraw`]: a hint drawn by the shell itself, not by a
     /// child, says here that it moves.
     fn needs_animation_frame(&self) -> bool {
         self.hints.needs_animation_frame(ui::time::now())

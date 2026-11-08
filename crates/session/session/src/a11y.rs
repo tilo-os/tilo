@@ -38,21 +38,19 @@ use crate::Session;
 
 /// What an assistive client asks of the loop.
 enum Request {
-    /// Assistive technology became active on the surface at `place`: it needs
-    /// that surface's complete tree.
+    /// Assistive technology became active on the surface at `place` : it needs that surface's
+    /// complete tree.
     Tree(usize),
-    /// A client invoked an action on one exported node of the surface at
-    /// `place`.
+    /// A client invoked an action on one exported node of the surface at `place` .
     Action(usize, ActionRequest),
     /// The surface's last assistive client disconnected.
     Deactivated(usize),
 }
 
-/// One surface's road from the adapter's thread to the loop: the place the
-/// adapter publishes, the channel, and the wake that ends the loop's wait.
-///
-/// Waking is part of what an endpoint owes: an idle desktop must answer an
-/// activation or an action without waiting for unrelated input.
+/// One surface's road from the adapter's thread to the loop: the place the adapter publishes, the
+/// channel, and the wake that ends the loop's wait.
+/// Waking is part of what an endpoint owes: an idle desktop must answer an activation or an action
+/// without waiting for unrelated input.
 #[derive(Clone)]
 struct Mailbox {
     place: usize,
@@ -70,8 +68,8 @@ impl Mailbox {
     }
 }
 
-/// The client activated the surface: its tree is the loop's to build, so the
-/// documented asynchronous path is taken here.
+/// The client activated the surface: its tree is the loop's to build, so the documented
+/// asynchronous path is taken here.
 struct Activation {
     mailbox: Mailbox,
 }
@@ -118,8 +116,8 @@ struct Exported {
 }
 
 impl Exported {
-    /// Tell the adapter whether its window holds the keyboard, as it just
-    /// changed, so a screen reader reads the window the keys go to as focused.
+    /// Tell the adapter whether its window holds the keyboard, as it just changed, so a screen
+    /// reader reads the window the keys go to as focused.
     fn focus(&mut self, focused: bool) {
         if self.focused != focused {
             self.adapter.update_window_focus_state(focused);
@@ -131,21 +129,20 @@ impl Exported {
 /// Every hosted surface published to assistive technology, one adapter each.
 pub(crate) struct Accessibility {
     requests: Receiver<Request>,
-    /// What each adapter sends through; the loop keeps one to reach itself
-    /// from a surface's own handlers.
+    /// What each adapter sends through; the loop keeps one to reach itself from a surface's own
+    /// handlers.
     sender: Sender<Request>,
     wake: Wake,
-    /// The surfaces the shell's own screen stands in for: they draw nothing
-    /// while it draws, so they read as nothing too, and the screen's parts are
-    /// the windows a client finds.
+    /// The surfaces the shell's own screen stands in for: they draw nothing while it draws, so they
+    /// read as nothing too, and the screen's parts are the windows a client finds.
     aside: Vec<Shared>,
     /// The adapters by the place of the surface they publish in the door.
     windows: BTreeMap<usize, Exported>,
 }
 
 impl Accessibility {
-    /// The export of a session whose loop `wake` ends the wait of, and whose
-    /// `aside` surfaces the shell's screen stands in for.
+    /// The export of a session whose loop `wake` ends the wait of, and whose `aside` surfaces the
+    /// shell's screen stands in for.
     pub(crate) fn new(wake: Wake, aside: Vec<Shared>) -> Self {
         let (sender, requests) = mpsc::channel();
         Self {
@@ -157,8 +154,8 @@ impl Accessibility {
         }
     }
 
-    /// Answer what assistive clients asked, publish every surface offering
-    /// now whose tree moved, and mark the window holding the keyboard focused.
+    /// Answer what assistive clients asked, publish every surface offering now whose tree moved,
+    /// and mark the window holding the keyboard focused.
     pub(crate) fn step(&mut self, doors: &Doors) {
         let asked = {
             let mut asked = Vec::new();
@@ -175,9 +172,8 @@ impl Accessibility {
             .into_iter()
             .filter(|(_, surface)| !self.aside.iter().any(|aside| Rc::ptr_eq(aside, surface)))
             .collect();
-        // The surface holding the keyboard is its focused window, as the
-        // compositor routes that key: the topmost one, when several would
-        // take it.
+        // The surface holding the keyboard is its focused window, as the compositor routes that
+        // key: the topmost one, when several would take it.
         let focused = offering
             .iter()
             .rev()
@@ -202,8 +198,8 @@ impl Accessibility {
                 };
                 Self::perform(doors, place, request.target_node, &action);
                 if let Some(window) = self.windows.get_mut(&place) {
-                    // What the action changed is published this pass, whatever
-                    // the surface says of its revision.
+                    // What the action changed is published this pass, whatever the surface says of
+                    // its revision.
                     window.wanted = true;
                 }
             }
@@ -216,9 +212,8 @@ impl Accessibility {
         }
     }
 
-    /// Perform `action` on `target` of the surface at `place`, on the loop
-    /// that owns it: the one road a client's request takes. Answers whether
-    /// the surface took it.
+    /// Perform `action` on `target` of the surface at `place` , on the loop that owns it: the one
+    /// road a client's request takes. Answers whether the surface took it.
     pub(crate) fn perform(
         doors: &Doors,
         place: usize,
@@ -230,9 +225,8 @@ impl Accessibility {
             .is_some_and(|surface| surface.borrow_mut().a11y_action(target, action))
     }
 
-    /// The window the surface at `place` shows now, as an assistive client
-    /// reads it: the name its window carries, and its tree. `None` while it
-    /// shows nothing to read.
+    /// The window the surface at `place` shows now, as an assistive client reads it: the name its
+    /// window carries, and its tree. `None` while it shows nothing to read.
     pub(crate) fn window_at(doors: &Doors, place: usize) -> Option<(String, TreeUpdate)> {
         Self::window_of(&doors.surface(place)?)
     }
@@ -245,9 +239,8 @@ impl Accessibility {
         Some((name, tree))
     }
 
-    /// Publish what the offering surfaces show now: a window appears with a
-    /// surface that has a tree a client asked for, and goes with one that has
-    /// none.
+    /// Publish what the offering surfaces show now: a window appears with a surface that has a tree
+    /// a client asked for, and goes with one that has none.
     fn publish(&mut self, offering: Vec<(usize, Shared)>, focused: Option<usize>) {
         if !self.windows.is_empty() {
             self.windows
@@ -260,8 +253,8 @@ impl Accessibility {
             if let Some(window) = self.windows.get_mut(&place) {
                 window.focus(hosts_keyboard);
             }
-            // A surface with no name is no window of its own: a door over
-            // services or commands publishes actions, nothing to read.
+            // A surface with no name is no window of its own: a door over services or commands
+            // publishes actions, nothing to read.
             if surface.borrow().a11y_name().is_none() {
                 continue;
             }
@@ -300,8 +293,8 @@ impl Accessibility {
                 }
             });
             window.focus(hosts_keyboard);
-            // Only a client attached to the window makes this build anything:
-            // an adapter nobody activated keeps the closure unrun.
+            // Only a client attached to the window makes this build anything: an adapter nobody
+            // activated keeps the closure unrun.
             window.adapter.update_if_active(|| tree);
             window.seen = revision;
             window.wanted = false;
@@ -309,12 +302,11 @@ impl Accessibility {
     }
 }
 
-/// The controls of the windows the session shows, by name and place, for
-/// anything that reads the desk as an assistive technology does.
+/// The controls of the windows the session shows, by name and place, for anything that reads the
+/// desk as an assistive technology does.
 impl Session {
-    /// Every control the session shows by name, each with where it stands on
-    /// the desk: the desk's own chrome, and the controls the apps that draw
-    /// the windows describe of their content
+    /// Every control the session shows by name, each with where it stands on the desk: the desk's
+    /// own chrome, and the controls the apps that draw the windows describe of their content
     /// ([`ui::window_targets`]).
     #[must_use]
     pub fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
@@ -339,8 +331,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use ui::accesskit::{Action, Node, NodeId, Role, TreeId, TreeInfo};
 
-    /// A surface standing in for one the session paints: the window name it
-    /// carries, and whether it would take the keys.
+    /// A surface standing in for one the session paints: the window name it carries, and whether it
+    /// would take the keys.
     struct Face {
         name: &'static str,
         keyboard: bool,
@@ -385,7 +377,7 @@ mod tests {
         }
     }
 
-    /// A surface `name` that would take the keys when `keyboard`.
+    /// A surface `name` that would take the keys when `keyboard` .
     fn face(name: &'static str, keyboard: bool) -> Shared {
         Rc::new(RefCell::new(Face { name, keyboard }))
     }
@@ -395,9 +387,8 @@ mod tests {
         Accessibility::new(Arc::new(|| {}), aside)
     }
 
-    /// What the shell's own screen stands in for draws nothing, so it reads
-    /// as nothing: a client finds the window that draws, not the one behind
-    /// it.
+    /// What the shell's own screen stands in for draws nothing, so it reads as nothing: a client
+    /// finds the window that draws, not the one behind it.
     #[test]
     fn a_surface_the_shells_screen_stands_in_for_reads_as_nothing() {
         let mut doors = Doors::default();
@@ -419,8 +410,8 @@ mod tests {
         );
     }
 
-    /// The topmost surface that would take the keys is the window a screen
-    /// reader reads as focused, as the compositor routes a key to it.
+    /// The topmost surface that would take the keys is the window a screen reader reads as focused,
+    /// as the compositor routes a key to it.
     #[test]
     fn the_window_the_keys_go_to_reads_as_focused() {
         let mut doors = Doors::default();
@@ -440,9 +431,9 @@ mod tests {
         );
     }
 
-    /// Every callback the adapter makes from its own thread leaves its request
-    /// for the loop and wakes it: an idle desktop answers assistive technology
-    /// without waiting for the next unrelated input.
+    /// Every callback the adapter makes from its own thread leaves its request for the loop and
+    /// wakes it: an idle desktop answers assistive technology without waiting for the next
+    /// unrelated input.
     #[test]
     fn every_adapter_callback_leaves_its_request_and_wakes_the_loop() {
         let (sender, requests) = mpsc::channel();

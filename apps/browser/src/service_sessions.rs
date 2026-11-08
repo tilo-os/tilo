@@ -617,8 +617,6 @@ fn cleanup_after_native_exit(
 
 /// Exercise the consumer's actual private-secret and public-action codecs.
 /// Native engine persistence is qualified separately against its signed host.
-/// # Errors
-/// Custody, public resource/action, or native SDK codec qualification failed.
 pub fn service_session_capability() -> Result<serde_json::Value, String> {
     let failure = || "Selected account consumer contract failed".to_owned();
     for selection in tilo_browser_sessions::probe_service_session_codecs()? {

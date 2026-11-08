@@ -120,9 +120,6 @@ pub trait MailConnector {
     /// Search the account's server.
     fn search(&mut self, account: &str, text: &str) -> Option<Request>;
     /// Send a message from the account.
-    ///
-    /// # Errors
-    /// Why the send was not made: no such account here, or the engine is gone.
     fn send(&mut self, account: &str, message: Outgoing) -> Result<Request, Unmade>;
     /// Keep told of new mail in the account's inbox.
     fn watch(&mut self, account: &str);

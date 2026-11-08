@@ -1,39 +1,16 @@
 //! What the session itself tells the person, through their notifications.
-//!
-//! Eight things the desktop knows and the person should: that storage is
-//! running out, that the battery is too, that the media codecs they asked for
-//! finished or failed, that the session or the computer stopped and started
-//! again, that an update waits for a restart, that a deployment it tried did
-//! not start and this computer went back to the one that worked, that the
-//! machine's graphics stopped and every frame is drawn in software from now
-//! on, and that a drive they plugged in is ready to open or eject. Each
-//! becomes an ordinary notification ([`tilo_notifications_service::Notification`])
-//! published by the notifications service: the banners and the centre read it
-//! from the same resource any app's notification is read from, the person
-//! closes or acts on it as they would on any other, and nothing here draws.
-//!
-//! Two more say what this computer could not read of the person's own state —
-//! the list of their workspaces, and how far its last update got — so a list
-//! that starts empty or an update that does nothing is not unexplained. The
-//! same goes for what it kept of the agents they let work here, and of the
-//! programs they added to their apps: each is asked about again, or missing
-//! from the launcher, and they are told once why. Each of these keeps its
-//! operator's own warning in the log beside the person's notice.
-//!
-//! They are the whole machine's news, so they are shown on every display
-//! ([`Notification::machine_wide`]).
-//!
-//! The one about the desk this device saved is the desktop's own: the person
-//! sees it in the centre of the desk they are looking at, which is not the one
-//! they left.
-//!
-//! Nothing is polled hard: storage is one `statvfs` per filesystem every two
-//! minutes (every twenty seconds while one of them is low), the codecs are a
-//! watch on the helper's status file, the crash records are read once at
-//! start, and the graphics fallback is a read of what the renderers recorded,
-//! once per pass of the session's loop. The one about an update waiting for a
-//! restart, and the one about a deployment the machine went back from, are
-//! raised by the clock that finishes the update ([`crate::update_finish`]).
+//! The desktop knows things the person should: storage and battery running out,
+//! the media codecs they asked for, a session or computer that stopped and started
+//! again, an update waiting for a restart, a deployment it went back from, graphics
+//! that fell back to software, a drive ready to open, and the state of their own
+//! workspaces, agents and apps it could not read. Each becomes an ordinary
+//! notification ([`tilo_notifications_service::Notification`]) published by the
+//! notifications service, so the banners and the centre show it as any app's, and
+//! nothing here draws. They are the whole machine's news and show on every display
+//! ([`Notification::machine_wide`]); the one about the saved desk belongs to the
+//! desk the person is looking at. Nothing is polled hard: storage is one `statvfs`
+//! per filesystem every two minutes (twenty seconds while one is low), codecs are a
+//! watch on the helper's status file, and the rest is read once per session pass.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,20 +33,17 @@ use crate::desk_doc::StateNotice;
 use crate::i18n::{t, t_args};
 use crate::mount::drives::Medium;
 
-/// The action the update notice offers: restart the machine into the staged
-/// update.
+/// The action the update notice offers: restart the machine into the staged update.
 pub const RESTART_ACTION: &str = update::RESTART_TO_UPDATE;
 
-/// The action a plugged-in drive's notice offers: open it in Files on its
-/// mount point.
+/// The action a plugged-in drive's notice offers: open it in Files on its mount point.
 pub const OPEN_MEDIUM_ACTION: &str = "open-medium";
 
-/// The action a plugged-in drive's notice offers: eject it, so it can be
-/// pulled out.
+/// The action a plugged-in drive's notice offers: eject it, so it can be pulled out.
 pub const EJECT_MEDIUM_ACTION: &str = "eject-medium";
 
-/// How often storage is looked at, and how often while one filesystem is low:
-/// it is when it changes fastest.
+/// How often storage is looked at, and how often while one filesystem is low: it is when it changes
+/// fastest.
 const STORAGE_EVERY: Duration = Duration::from_secs(120);
 const STORAGE_LOW_EVERY: Duration = Duration::from_secs(20);
 
@@ -81,28 +55,25 @@ const MIB: u64 = 1024 * 1024;
 pub struct Notice {
     /// The name the person sees it came from ("Storage").
     pub app: String,
-    /// `0` low, `1` normal, `2` critical: what the banner and the centre
-    /// order it by.
+    /// `0` low, `1` normal, `2` critical: what the banner and the centre order it by.
     pub urgency: u8,
     pub title: String,
     pub body: String,
     /// `(key, label)` pairs, as a notification's actions.
     pub actions: Vec<(String, String)>,
-    /// How long it stays on screen; `None` leaves that to the person's own
-    /// notification settings.
+    /// How long it stays on screen; `None` leaves that to the person's own notification settings.
     pub expires_after: Option<Duration>,
-    /// Whether every display shows it: the whole machine's news, or, for a
-    /// heads-up about the pack, the display the person is using.
+    /// Whether every display shows it: the whole machine's news, or, for a heads-up about the pack,
+    /// the display the person is using.
     pub machine_wide: bool,
-    /// The event sound the notice makes, played by the session itself: a
-    /// sender's category never reaches the one an app may not ask for
-    /// ([`SystemSoundEvent::LowBattery`]), so the notice that needs it plays
-    /// it here and tells the service no sound is owed.
+    /// The event sound the notice makes, played by the session itself: a sender's category never
+    /// reaches the one an app may not ask for ([`SystemSoundEvent::LowBattery`]), so the notice
+    /// that needs it plays it here and tells the service no sound is owed.
     pub sound: Option<SystemSoundEvent>,
 }
 
 impl Notice {
-    /// A notice `app` tells the person, at `urgency`.
+    /// A notice `app` tells the person, at `urgency` .
     pub(crate) fn new(app: String, urgency: u8, title: String, body: String) -> Self {
         Self {
             app,
@@ -130,8 +101,8 @@ impl Notice {
             urgency: self.urgency,
             machine_wide: self.machine_wide,
             suppress_sound: self.sound.is_some(),
-            // The session raises its own notice: it is the system's word
-            // about the machine, not a sender's.
+            // The session raises its own notice: it is the system's word about the machine, not a
+            // sender's.
             system: true,
             ..Notification::new(0)
         }
@@ -142,20 +113,19 @@ impl Notice {
         notifications.push(self.into_notification(notifications));
     }
 
-    /// Show it on the desk this session draws, for a session with no
-    /// notifications service: what the session raises is kept there rather
-    /// than lost, and it stays until the person lets it go. What the notice
-    /// offers the person it offers there too, so a question keeps its
-    /// answers. Says which notification went out: the notice whose answer the
-    /// session waits on finds it by that id.
+    /// Show it on the desk this session draws, for a session with no notifications service: what
+    /// the session raises is kept there rather than lost, and it stays until the person lets it go.
+    /// What the notice offers the person it offers there too, so a question keeps its answers. Says
+    /// which notification went out: the notice whose answer the session waits on finds it by that
+    /// id.
     pub(crate) fn tell_desk(self, desk: &DesktopNotifications) -> u64 {
         let severity = match self.urgency {
             0 => NotificationSeverity::Info,
             1 => NotificationSeverity::Warning,
             _ => NotificationSeverity::Error,
         };
-        // The notice's own timing, as the notifications service would apply
-        // it: nothing asks to stay, or asks for no time at all, stays.
+        // The notice's own timing, as the notifications service would apply it: nothing asks to
+        // stay, or asks for no time at all, stays.
         let dismiss_after = self
             .expires_after
             .filter(|after| !after.is_zero())
@@ -173,8 +143,8 @@ impl Notice {
         })
     }
 
-    /// Show it to the person, and say which notification went out: a producer
-    /// whose notice the person acts on needs its id to know what they meant.
+    /// Show it to the person, and say which notification went out: a producer whose notice the
+    /// person acts on needs its id to know what they meant.
     pub(crate) fn tell_as(self, notifications: &Notifications) -> u32 {
         let notification = self.into_notification(notifications);
         let id = notification.id;
@@ -198,9 +168,9 @@ pub struct Workspace {
     pub available: u64,
 }
 
-/// The level `room` is at, given the level it was at before. Recovering needs
-/// half as much room again as falling takes, so a filesystem hovering at a
-/// limit does not announce itself over and over.
+/// The level `room` is at, given the level it was at before. Recovering needs half as much room
+/// again as falling takes, so a filesystem hovering at a limit does not announce itself over and
+/// over.
 #[must_use]
 pub fn level(room: Workspace, before: Level) -> Level {
     let low_limit = (room.capacity / 20).clamp(2 * GIB, 10 * GIB);
@@ -228,8 +198,8 @@ pub enum Volume {
     System,
 }
 
-/// The notice for a move from `before` to `after`, if it is worth one: only
-/// getting worse is announced.
+/// The notice for a move from `before` to `after` , if it is worth one: only getting worse is
+/// announced.
 #[must_use]
 pub fn storage_notice(
     volume: Volume,
@@ -263,9 +233,8 @@ pub fn storage_notice(
     })
 }
 
-/// The notice that the battery is running out: a heads-up at low charge, and
-/// at critical charge one that stays until the person acts and, when the
-/// policy sleeps the machine for it, says so.
+/// The notice that the battery is running out: a heads-up at low charge, and at critical charge one
+/// that stays until the person acts and, when the policy sleeps the machine for it, says so.
 #[must_use]
 pub fn battery_notice(percent: u8, critical: bool, suspending: bool) -> Notice {
     let percent = percent.to_string();
@@ -286,16 +255,16 @@ pub fn battery_notice(percent: u8, critical: bool, suspending: bool) -> Notice {
         title,
         body,
         actions: Vec::new(),
-        // The critical warning stays until the person lets it go; the
-        // heads-up leaves on the person's own notification timing.
+        // The critical warning stays until the person lets it go; the heads-up leaves on the
+        // person's own notification timing.
         expires_after: critical.then_some(Duration::ZERO),
         machine_wide: critical,
         sound: Some(SystemSoundEvent::LowBattery),
     }
 }
 
-/// The notice for the medium a person just plugged in: what it is called and
-/// how much it holds, and the two things they want done with it.
+/// The notice for the medium a person just plugged in: what it is called and how much it holds, and
+/// the two things they want done with it.
 #[must_use]
 pub fn medium_notice(medium: &Medium) -> Notice {
     let name = medium.label.clone().unwrap_or_else(|| t("drives-unnamed"));
@@ -314,8 +283,8 @@ pub fn medium_notice(medium: &Medium) -> Notice {
     notice
 }
 
-/// Tell the person what they just plugged in, and return the notification's
-/// id, so what they ask of it can be carried out.
+/// Tell the person what they just plugged in, and return the notification's id, so what they ask of
+/// it can be carried out.
 #[must_use]
 pub fn announce_medium(notifications: &Notifications, medium: &Medium) -> u32 {
     medium_notice(medium).tell_as(notifications)
@@ -346,10 +315,9 @@ pub fn wake_notice(event: &tilo_device_fabric::wake::WakeEvent) -> Option<Notice
     Some(Notice::new(t("device-wake-app-name"), 1, title, body))
 }
 
-/// Tell the person the desk this device saved was not opened: it is still on
-/// disk and untouched, and this session starts on an empty desk and keeps
-/// nothing, so it cannot be written over. It stays until they let it go — a
-/// desk that is not theirs looks exactly like theirs.
+/// Tell the person the desk this device saved was not opened: it is still on disk and untouched,
+/// and this session starts on an empty desk and keeps nothing, so it cannot be written over. It
+/// stays until they let it go — a desk that is not theirs looks exactly like theirs.
 pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &StateNotice) {
     notices.post(
         DeskNotification::new(refusal.title(), refusal.explains())
@@ -359,15 +327,13 @@ pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &Sta
     );
 }
 
-/// What a paste of files has to tell the person, or `None` when it went
-/// through: the files it could not paste and why, what stopped it before it
-/// began, or that a paste the last session was in the middle of was taken
-/// back.
+/// What a paste of files has to tell the person, or `None` when it went through: the files it could
+/// not paste and why, what stopped it before it began, or that a paste the last session was in the
+/// middle of was taken back.
 pub(crate) fn paste_notice(outcome: &crate::mount::clipboard_files::Outcome) -> Option<Notice> {
     use crate::mount::clipboard_files::Refused;
-    // A paste a stopped session was in the middle of is answered for on its
-    // own: what it kept is right, and what it could not put back is said
-    // plainly, because the next session tries again.
+    // A paste a stopped session was in the middle of is answered for on its own: what it kept is
+    // right, and what it could not put back is said plainly, because the next session tries again.
     if outcome.undone {
         let body = match &outcome.refusal {
             Some(Refused::Stopped(reason)) => t_args(
@@ -432,7 +398,7 @@ pub(crate) fn paste_notice(outcome: &crate::mount::clipboard_files::Outcome) -> 
     None
 }
 
-/// Room `path`'s filesystem has left, when the path exists.
+/// Room `path` 's filesystem has left, when the path exists.
 fn room(path: &Path) -> Option<Workspace> {
     let stat = rustix::fs::statvfs(path).ok()?;
     Some(Workspace {
@@ -441,8 +407,8 @@ fn room(path: &Path) -> Option<Workspace> {
     })
 }
 
-/// The filesystems to watch: the person's files, and the system's own when it
-/// is a different filesystem.
+/// The filesystems to watch: the person's files, and the system's own when it is a different
+/// filesystem.
 fn volumes() -> Vec<(Volume, PathBuf)> {
     use std::os::unix::fs::MetadataExt as _;
     let mut volumes = Vec::new();
@@ -463,9 +429,9 @@ fn volumes() -> Vec<(Volume, PathBuf)> {
     volumes
 }
 
-/// One look at the watched filesystems, each level carried from `levels` to
-/// what it is now; `tell` gets the notices that are due. Returns whether any
-/// filesystem is low or full, which decides how soon to look again.
+/// One look at the watched filesystems, each level carried from `levels` to what it is now; `tell`
+/// gets the notices that are due. Returns whether any filesystem is low or full, which decides how
+/// soon to look again.
 pub fn sweep_rooms(
     watched: &[(Volume, Option<Workspace>)],
     levels: &mut [Level],
@@ -484,10 +450,9 @@ pub fn sweep_rooms(
     low
 }
 
-/// The codecs notice for the status moving from `before` to `after`: the
-/// install finishing (with or without the hardware part), the hardware part
-/// arriving later, and the install failing. Routine refreshes and the
-/// person's own removal say nothing.
+/// The codecs notice for the status moving from `before` to `after` : the install finishing (with
+/// or without the hardware part), the hardware part arriving later, and the install failing.
+/// Routine refreshes and the person's own removal say nothing.
 #[must_use]
 pub fn codec_notice(
     before: &os_actions::codec_pack::CodecPackStatus,
@@ -531,9 +496,9 @@ pub fn codec_notice(
     }
 }
 
-/// The notice for `news`: a session or a computer that stopped and started
-/// again since the last start. `today` is the local date now: a record from
-/// today names the time of day, an older one its date as well.
+/// The notice for `news` : a session or a computer that stopped and started again since the last
+/// start. `today` is the local date now: a record from today names the time of day, an older one
+/// its date as well.
 #[must_use]
 pub fn news_notice(news: &tilo_crash_records::News, today: NaiveDate) -> Notice {
     let time = if news.at.date() == today {
@@ -561,9 +526,9 @@ pub fn news_notice(news: &tilo_crash_records::News, today: NaiveDate) -> Notice 
     Notice::new(t("crash-notice-app-name"), urgency, title, body)
 }
 
-/// The notice that this machine's graphics stopped: the renderers could not
-/// bring the GPU back, so every frame is drawn in software from now on and
-/// only a restart of the computer brings the speed back.
+/// The notice that this machine's graphics stopped: the renderers could not bring the GPU back, so
+/// every frame is drawn in software from now on and only a restart of the computer brings the speed
+/// back.
 fn graphics_notice() -> Notice {
     Notice::new(
         t("graphics-app-name"),
@@ -576,12 +541,10 @@ fn graphics_notice() -> Notice {
 /// Whether the person was already told that this machine's graphics stopped.
 static GRAPHICS_TOLD: AtomicBool = AtomicBool::new(false);
 
-/// Tell the person, once, that the graphics stopped and everything keeps
-/// working, only slower. The renderers of this process record that fallback
-/// where the shared rendering code decides it (`ui::gpu::recover`), so each
-/// pass of the session's loop reads one record and says nothing until it is
-/// set: a GPU that stops between two frames is told on the next pass, and
-/// never twice.
+/// Tell the person, once, that the graphics stopped and everything keeps working, only slower. The
+/// renderers of this process record that fallback where the shared rendering code decides it
+/// (`ui::gpu::recover`), so each pass of the session's loop reads one record and says nothing until
+/// it is set: a GPU that stops between two frames is told on the next pass, and never twice.
 pub fn tell_graphics_fallback(notifications: &Notifications) {
     if TELLING.get().is_none() || GRAPHICS_TOLD.load(Ordering::Relaxed) {
         return;
@@ -593,9 +556,8 @@ pub fn tell_graphics_fallback(notifications: &Notifications) {
     graphics_notice().tell(notifications);
 }
 
-/// The notice that an update waits for a restart of the machine, offering
-/// the action that takes it: raised by the update's own clock
-/// ([`crate::update_finish`]), at most every two days.
+/// The notice that an update waits for a restart of the machine, offering the action that takes it:
+/// raised by the update's own clock ([`crate::update_finish`]), at most every two days.
 pub(crate) fn update_notice() -> Notice {
     Notice {
         app: t("system-update-app-name"),
@@ -603,18 +565,18 @@ pub(crate) fn update_notice() -> Notice {
         title: t("system-update-restart-title"),
         body: t("system-update-restart-body"),
         actions: vec![(RESTART_ACTION.to_owned(), t("power-restart"))],
-        // It waits in the notification centre; the banner goes after the
-        // person has had time to read it.
+        // It waits in the notification centre; the banner goes after the person has had time to
+        // read it.
         expires_after: Some(Duration::from_secs(30)),
         machine_wide: true,
         sound: None,
     }
 }
 
-/// The notice that the update state the services last published does not read
-/// back: this machine cannot tell how far its last update got, so it acts on
-/// nothing it could not read and says so once. Raised by the update's own
-/// clock ([`crate::update_finish`]), which keeps the warning for operators.
+/// The notice that the update state the services last published does not read back: this machine
+/// cannot tell how far its last update got, so it acts on nothing it could not read and says so
+/// once. Raised by the update's own clock ([`crate::update_finish`]), which keeps the warning for
+/// operators.
 pub(crate) fn update_state_notice() -> Notice {
     Notice {
         app: t("system-update-app-name"),
@@ -628,13 +590,11 @@ pub(crate) fn update_state_notice() -> Notice {
     }
 }
 
-/// The notice that a collaborator's device speaks another peer protocol
-/// version, so the two cannot work together until one of them updates: this
-/// device fetches the newest system when theirs is the newer one, and
-/// otherwise theirs is the one to update. `device` is the person's name for
-/// it, when the fabric holds the endpoint it was heard at. Raised once per
-/// device and version by the clock that finishes the update
-/// ([`crate::update_finish`]).
+/// The notice that a collaborator's device speaks another peer protocol version, so the two cannot
+/// work together until one of them updates: this device fetches the newest system when theirs is
+/// the newer one, and otherwise theirs is the one to update. `device` is the person's name for it,
+/// when the fabric holds the endpoint it was heard at. Raised once per device and version by the
+/// clock that finishes the update ([`crate::update_finish`]).
 pub(crate) fn version_mismatch_notice(
     mismatch: &crate::network::VersionMismatch,
     device: Option<&str>,
@@ -660,9 +620,8 @@ pub(crate) fn version_mismatch_notice(
                 &[("device", device.into())],
             ),
         ),
-        // The device was never met on the person's fabric, so its endpoint is
-        // all this device knows of it: said plainly rather than as a hex
-        // string nobody reads.
+        // The device was never met on the person's fabric, so its endpoint is all this device knows
+        // of it: said plainly rather than as a hex string nobody reads.
         (true, None) => (
             t("version-mismatch-unknown-updating-title"),
             t("version-mismatch-unknown-updating-body"),
@@ -684,11 +643,10 @@ pub(crate) fn version_mismatch_notice(
     }
 }
 
-/// The notice of a deployment this machine went back from: what did not
-/// start, how many tries it spent, what runs instead, and where the failed
-/// tries left what they found. Raised once per fallback by the update's own
-/// clock ([`crate::update_finish`]), and it stays until the person dismisses
-/// it: a computer that went back from an update is not news to lose.
+/// The notice of a deployment this machine went back from: what did not start, how many tries it
+/// spent, what runs instead, and where the failed tries left what they found. Raised once per
+/// fallback by the update's own clock ([`crate::update_finish`]), and it stays until the person
+/// dismisses it: a computer that went back from an update is not news to lose.
 pub(crate) fn went_back_notice(fallback: &update::Fallback) -> Notice {
     let what = fallback
         .version
@@ -721,11 +679,10 @@ pub(crate) fn went_back_notice(fallback: &update::Fallback) -> Notice {
     }
 }
 
-/// The notice that the workspaces this computer remembered do not read back:
-/// the list starts empty, so it says why rather than letting an empty list
-/// look like workspaces that are gone. Raised once, by the pass that opens the
-/// list ([`crate::workspaces::Personal::open`]), which keeps the warning for
-/// operators.
+/// The notice that the workspaces this computer remembered do not read back: the list starts empty,
+/// so it says why rather than letting an empty list look like workspaces that are gone. Raised
+/// once, by the pass that opens the list ([`crate::workspaces::Personal::open`]), which keeps the
+/// warning for operators.
 pub(crate) fn workspaces_notice() -> Notice {
     Notice {
         app: t("workspaces-app-name"),
@@ -739,13 +696,11 @@ pub(crate) fn workspaces_notice() -> Notice {
     }
 }
 
-/// The notice that the "Always allow" answers this computer kept for the
-/// agents at its door do not read back: `agent` is the one the answer was
-/// given to, as far as the kept file still says, and `None` when it does not
-/// say even that. Raised by the door's own mount
-/// ([`crate::agent_door::mount_named`]), which keeps the warning for
-/// operators; each answer is asked for again the next time its agent
-/// connects.
+/// The notice that the "Always allow" answers this computer kept for the agents at its door do not
+/// read back: `agent` is the one the answer was given to, as far as the kept file still says, and
+/// `None` when it does not say even that. Raised by the door's own mount
+/// ([`crate::agent_door::mount_named`]), which keeps the warning for operators; each answer is
+/// asked for again the next time its agent connects.
 pub(crate) fn agent_bindings_notice(agent: Option<&str>) -> Notice {
     let (title, body) = match agent {
         Some(agent) => (
@@ -769,11 +724,10 @@ pub(crate) fn agent_bindings_notice(agent: Option<&str>) -> Notice {
     }
 }
 
-/// The notice that the registry of the programs the person downloaded does
-/// not read back: none of their apps is listed until it does, so it says why
-/// rather than letting them look gone. Raised once, by the pass that reads it
-/// ([`crate::Shared::downloaded_apps`]), which keeps the warning for
-/// operators.
+/// The notice that the registry of the programs the person downloaded does not read back: none of
+/// their apps is listed until it does, so it says why rather than letting them look gone. Raised
+/// once, by the pass that reads it ([`crate::Shared::downloaded_apps`]), which keeps the warning
+/// for operators.
 pub(crate) fn downloaded_apps_notice() -> Notice {
     Notice {
         app: t("downloaded-apps-app-name"),
@@ -787,8 +741,8 @@ pub(crate) fn downloaded_apps_notice() -> Notice {
     }
 }
 
-/// Why a device or a workspace did not take a change, in the person's own
-/// words: the rest of the sentence that says the change stays here.
+/// Why a device or a workspace did not take a change, in the person's own words: the rest of the
+/// sentence that says the change stays here.
 #[must_use]
 pub(crate) fn reason_in_words(reason: neighbour_wire::RefusalReason) -> String {
     use neighbour_wire::RefusalReason;
@@ -805,10 +759,9 @@ pub(crate) fn reason_in_words(reason: neighbour_wire::RefusalReason) -> String {
     })
 }
 
-/// The notice that a device stopped taking one of this device's writes, and
-/// why: waiting changes nothing, so the change stays on the devices that took
-/// it and the person hears it once. Raised by the pass that serves the
-/// activity ([`crate::Shared::serve_activity`]).
+/// The notice that a device stopped taking one of this device's writes, and why: waiting changes
+/// nothing, so the change stays on the devices that took it and the person hears it once. Raised by
+/// the pass that serves the activity ([`crate::Shared::serve_activity`]).
 pub(crate) fn refused_write_notice(device: &str, reason: neighbour_wire::RefusalReason) -> Notice {
     Notice {
         app: t("refused-write-app"),
@@ -825,8 +778,8 @@ pub(crate) fn refused_write_notice(device: &str, reason: neighbour_wire::Refusal
     }
 }
 
-/// The workspace did not take what the person changed on its shared desk: what
-/// they changed stays here.
+/// The workspace did not take what the person changed on its shared desk: what they changed stays
+/// here.
 pub(crate) fn desk_not_shared_notice(
     workspace: &str,
     reason: neighbour_wire::RefusalReason,
@@ -846,8 +799,8 @@ pub(crate) fn desk_not_shared_notice(
     }
 }
 
-/// Tell the person what the workspace did not take of their shared desk: it
-/// is on the desk they used, once, naming the workspace and why.
+/// Tell the person what the workspace did not take of their shared desk: it is on the desk they
+/// used, once, naming the workspace and why.
 pub(crate) fn tell_desk_not_taken(
     notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
     tree: &tilo_desktop_model::DesktopTree,
@@ -864,9 +817,9 @@ pub(crate) fn tell_desk_not_taken(
         .tell(desk_not_shared_notice(&workspace, reason));
 }
 
-/// Tell the person what the crash records in `dir` say happened before this
-/// start: a session that stopped responding, one that panicked, a computer
-/// that stopped. The records decide it, so nothing is said twice.
+/// Tell the person what the crash records in `dir` say happened before this start: a session that
+/// stopped responding, one that panicked, a computer that stopped. The records decide it, so
+/// nothing is said twice.
 pub fn tell_crash_news(notifications: &Notifications, dir: &Path) {
     let Some(news) = tilo_crash_records::take_news(dir) else {
         return;
@@ -880,8 +833,8 @@ static CODECS: Mutex<Option<os_actions::codec_pack::CodecPackStatus>> = Mutex::n
 /// The watch itself, held for the life of the process.
 static CODECS_WATCH: Mutex<Option<ChangeWatch>> = Mutex::new(None);
 
-/// Follow the codecs helper's status file, once per process, and tell the
-/// person of each transition worth telling.
+/// Follow the codecs helper's status file, once per process, and tell the person of each transition
+/// worth telling.
 fn follow_codecs(notifications: &Notifications) {
     if !os_actions::codec_pack::available() {
         return;
@@ -956,15 +909,14 @@ impl tilo_compositor::LoopTurns for Turns {
 /// leaves that machine's news to the session that owns it.
 static TELLING: OnceLock<()> = OnceLock::new();
 
-/// Start telling the person what this desktop knows about its machine: the
-/// crash records of the last start now, then storage and the codecs as they
-/// change. Once per process.
+/// Start telling the person what this desktop knows about its machine: the crash records of the
+/// last start now, then storage and the codecs as they change. Once per process.
 pub fn start(notifications: &Notifications) {
     if TELLING.set(()).is_err() {
         return;
     }
-    // The records are files, and the kernel's are read through commands: the
-    // main thread walks no path.
+    // The records are files, and the kernel's are read through commands: the main thread walks no
+    // path.
     let news = notifications.clone();
     let crash_news = std::thread::Builder::new()
         .name("crash-news".into())
@@ -972,8 +924,8 @@ pub fn start(notifications: &Notifications) {
             let Some(dir) = tilo_crash_records::directory() else {
                 return;
             };
-            // What the kernel kept of the computer stopping becomes a record
-            // first, so it is news like the session's own.
+            // What the kernel kept of the computer stopping becomes a record first, so it is news
+            // like the session's own.
             tilo_crash_records::stopped::take_in(&dir);
             tell_crash_news(&news, &dir);
         });
@@ -991,8 +943,7 @@ pub fn start(notifications: &Notifications) {
     }
 }
 
-/// Watch the free space of the person's filesystems, announcing each one that
-/// gets worse.
+/// Watch the free space of the person's filesystems, announcing each one that gets worse.
 fn watch_storage(notifications: &Notifications) {
     let watched = volumes();
     let mut levels = vec![Level::Plenty; watched.len()];
@@ -1057,9 +1008,8 @@ mod tests {
         assert!(storage_notice(Volume::Home, Level::Low, Level::Low, full).is_none());
     }
 
-    /// The battery running out reaches the person as an ordinary
-    /// notification: an early heads-up, then one that names what happens if
-    /// the machine sleeps for it and stays until they act.
+    /// The battery running out reaches the person as an ordinary notification: an early heads-up,
+    /// then one that names what happens if the machine sleeps for it and stays until they act.
     #[test]
     fn a_battery_running_out_reaches_the_person_as_a_notification() {
         let notifications = Notifications::new();
@@ -1104,9 +1054,9 @@ mod tests {
         );
     }
 
-    /// A full filesystem reaches the person as an ordinary notification: it is
-    /// published as a resource like any app's, reads as its copy, and the
-    /// person closes it through the resource's own action.
+    /// A full filesystem reaches the person as an ordinary notification: it is published as a
+    /// resource like any app's, reads as its copy, and the person closes it through the resource's
+    /// own action.
     #[test]
     fn a_filesystem_running_out_reaches_the_person_as_a_notification() {
         let notifications = Notifications::new();
@@ -1139,14 +1089,14 @@ mod tests {
         assert!(notifications.live().is_empty());
     }
 
-    /// A medium a person plugs in is announced by what it is called and how
-    /// much it holds, and ejecting it from the notice reaches the eject.
+    /// A medium a person plugs in is announced by what it is called and how much it holds, and
+    /// ejecting it from the notice reaches the eject.
     #[test]
     fn a_plugged_in_drive_is_announced_with_its_contents() {
         use crate::mount::drives::{Drives, Media, Medium};
 
-        /// The udisks of a machine with one drive plugged into it, which
-        /// remembers what it was asked to eject.
+        /// The udisks of a machine with one drive plugged into it, which remembers what it was
+        /// asked to eject.
         #[derive(Default)]
         struct FakeUdisks {
             plugged_in: std::cell::RefCell<Vec<Medium>>,
@@ -1206,8 +1156,8 @@ mod tests {
         assert_eq!(*udisks.ejected.borrow(), [photos]);
     }
 
-    /// A filesystem that cannot be read says nothing, and keeps the level it
-    /// had for when it is back.
+    /// A filesystem that cannot be read says nothing, and keeps the level it had for when it is
+    /// back.
     #[test]
     fn an_unreadable_filesystem_is_quiet() {
         let mut levels = [Level::Low];
@@ -1300,8 +1250,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         tilo_files::native::private::directory(dir.path()).unwrap();
         let notifications = Notifications::new();
-        // The first look marks where the history ends: what is already there
-        // is not news.
+        // The first look marks where the history ends: what is already there is not news.
         tell_crash_news(&notifications, dir.path());
         assert!(notifications.live().is_empty());
 
@@ -1335,8 +1284,8 @@ mod tests {
     #[test]
     fn a_gpu_given_up_is_told_once() {
         use ui::vello::wgpu::{AdapterInfo, Backend, DeviceType};
-        // The notice sources speak only in the session that owns the machine
-        // (`start`); a test tells as that session does.
+        // The notice sources speak only in the session that owns the machine (`start`); a test
+        // tells as that session does.
         TELLING.get_or_init(|| ());
         ui::gpu::reset_software_fallback_for_test();
         let notifications = Notifications::new();
@@ -1348,9 +1297,8 @@ mod tests {
             "a working GPU says nothing"
         );
 
-        // What the renderers decide for a device lost before it finished a
-        // frame: that GPU cannot be brought back, and every frame after is
-        // drawn in software.
+        // What the renderers decide for a device lost before it finished a frame: that GPU cannot
+        // be brought back, and every frame after is drawn in software.
         let adapter = AdapterInfo {
             name: "Adreno X1-85".to_owned(),
             vendor: 0,
@@ -1462,8 +1410,8 @@ mod tests {
         );
     }
 
-    /// The compositor's hook marks the loop's turns as the watchdog counts
-    /// them, so a loop that waits for events is never judged.
+    /// The compositor's hook marks the loop's turns as the watchdog counts them, so a loop that
+    /// waits for events is never judged.
     #[test]
     fn the_compositor_hook_marks_the_loops_turns() {
         let watchdog = Watchdog::watch_this_thread(
@@ -1518,10 +1466,9 @@ mod tests {
         assert_eq!(*tapped.lock().unwrap(), [(id, RESTART_ACTION.to_owned())]);
     }
 
-    /// A collaborator's device at another protocol version reaches the person
-    /// as a calm notice naming the device and what to do about it; one this
-    /// device only knows by its endpoint is said plainly rather than spelled
-    /// out. It waits until it is read.
+    /// A collaborator's device at another protocol version reaches the person as a calm notice
+    /// naming the device and what to do about it; one this device only knows by its endpoint is
+    /// said plainly rather than spelled out. It waits until it is read.
     #[test]
     fn a_device_on_another_version_is_named_and_told_what_to_do() {
         let ours: u32 = 30;
@@ -1574,9 +1521,8 @@ mod tests {
         }
     }
 
-    /// A desk with no notifications service to show a notice still shows it
-    /// as the system's: its own name and the system's mark, never a
-    /// sender's claim and a generic window.
+    /// A desk with no notifications service to show a notice still shows it as the system's: its
+    /// own name and the system's mark, never a sender's claim and a generic window.
     #[test]
     fn a_notice_with_no_service_to_show_it_is_still_the_systems() {
         let desks = DesktopNotifications::default();
@@ -1591,9 +1537,9 @@ mod tests {
         assert_eq!(banner.mark().icon, Some(ui::icons::Icon::Bell));
     }
 
-    /// The banner a person reads: the title names the device on one line and
-    /// the body says what happens here in one sentence. Both are painted
-    /// whole at the banner's own width, never cut with an ellipsis.
+    /// The banner a person reads: the title names the device on one line and the body says what
+    /// happens here in one sentence. Both are painted whole at the banner's own width, never cut
+    /// with an ellipsis.
     #[test]
     fn a_version_mismatch_notice_reads_whole_on_its_banner() {
         let ours: u32 = 30;
@@ -1621,10 +1567,9 @@ mod tests {
                         width,
                     )
                 };
-                // A banner card is 360 points wide; at 2000 points nothing
-                // needs eliding or clamping. A line break may drop the space
-                // that ended it, so the banner may paint exactly one glyph
-                // fewer per extra line and not one more.
+                // A banner card is 360 points wide; at 2000 points nothing needs eliding or
+                // clamping. A line break may drop the space that ended it, so the banner may paint
+                // exactly one glyph fewer per extra line and not one more.
                 let (banner_glyphs, banner_lines) = words(&mut text, 360.0);
                 let (whole_glyphs, whole_lines) = words(&mut text, 2000.0);
                 assert_eq!(

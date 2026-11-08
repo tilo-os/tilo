@@ -399,7 +399,6 @@ async fn finish_replay_cleanup(
     let checking_source = source.clone();
     let cleanup_handle = handle.clone();
     let cleanup = run.owner.submit_replay_resumable_wait(
-        false,
         1,
         async move {
             authorize_replay(&workspace, &source, &authority).await?;
@@ -444,7 +443,6 @@ async fn cut_replay_boundary(
     let boundary_authority = authority.clone();
     let mut finished = false;
     let boundary = run.owner.submit_replay_resumable_wait(
-        true,
         1,
         async move {
             authorize_replay(&workspace, &source, &authority).await?;

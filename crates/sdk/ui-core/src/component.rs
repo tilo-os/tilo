@@ -1,20 +1,18 @@
 //! Components: the toolkit's widgets as described, composable data.
 //!
-//! A described widget has **props**: a plain struct an instance is made of, with
-//! `#[derive(Component)]`. The derive generates the widget's [`Description`] from that struct
-//! (its props, slots, events, bindings, state and semantics, each with its doc text), so the
-//! description cannot drift from the widget: a field whose type has no description does not
-//! compile, and an event is an [`Event`], data, never a closure.
+//! A described widget has **props**: a plain struct with `#[derive(Component)]`, and the derive
+//! generates its [`Description`] from it (props, slots, events, bindings, state and semantics, each
+//! with its doc text), so the description cannot drift from the widget: a prop or an event whose
+//! type has no description does not compile, and an event is an [`Event`], data, never a closure.
 //!
-//! The widget takes its props through [`Described`]: it is built from them, and takes changed
-//! props in place. Its Rust builder is the same widget; the props are the declarative form of
-//! it, which the generic host adapter, tilolang (the package `ui`) and serialized graphs use.
-//! Each widget takes its props apart field by field, so a prop added to a widget's props that
-//! the widget does not take does not compile either.
+//! The widget takes its props through [`Described`]: built from them, and takes changed props in
+//! place. Its Rust builder is the same widget; the props are the declarative form, which the
+//! generic host adapter, tilolang (the package `ui`) and serialized graphs use. Each widget takes
+//! its props apart field by field, so a prop it does not take does not compile either.
 //!
-//! The [`catalogue`] of every described widget is versioned with the toolkit and shipped as
-//! data (`tilo_ui_graph::component::SHIPPED`), so tools that do not link the toolkit read it;
-//! a test fails while the shipped one is not the one the toolkit generates.
+//! The [`catalogue`] of every described widget ships as data
+//! (`tilo_ui_graph::component::SHIPPED`), so tools that do not link the toolkit read it; a test
+//! fails while the shipped one is not the one the toolkit generates.
 //!
 //! ```
 //! use tilo_ui::component::{Component, Type};
@@ -430,6 +428,10 @@ fn moment_of(at: &str) -> Option<Moment> {
 /// The day a moment's text names: its date, or the day an instant falls on.
 #[must_use]
 pub fn moment_day(text: &str) -> Option<chrono::NaiveDate> {
+    // An instant falls on the day it is in the person's zone, which is the day they picked.
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Some(at.with_timezone(&chrono::Local).date_naive());
+    }
     chrono::NaiveDate::parse_from_str(text.get(..10).unwrap_or(text), "%Y-%m-%d").ok()
 }
 
@@ -1229,6 +1231,9 @@ pub fn catalogue() -> Catalogue {
 }
 
 pub mod gallery;
+
+#[cfg(test)]
+mod testing;
 
 #[cfg(test)]
 mod tests;

@@ -15,11 +15,28 @@
 
 use std::io::{Read as _, Write as _};
 
-use tilo_resource::Doc;
+use tilo_resource::{Doc, Kinds};
 use ui_core::search::index_publication::IndexEntry;
 
 use super::app::ResourceApp;
-use super::kinds::kinds_of;
+use super::kinds::resource_kind;
+
+/// Every kind `A` declares, hosted by `A`: its resource, and the parts of the
+/// chains it keeps beside its record.
+///
+/// The same set [`super::kinds::register`] hosts for the process, built
+/// without depending on a definition having been created: a host that reads a
+/// record of an app that is not running reads it by these.
+fn kinds_of<A: ResourceApp>() -> Kinds {
+    let mut declared = super::Records::declaring();
+    A::records(&mut declared);
+    let mut kinds = Kinds::new();
+    kinds.insert(resource_kind::<A>());
+    for chain in declared.into_chains() {
+        kinds.insert(chain.hosted_by(A::ID, A::TITLE));
+    }
+    kinds
+}
 
 /// The flag that makes an app's binary print what a record holds for search
 /// instead of running: its document is read from standard input.

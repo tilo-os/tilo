@@ -257,7 +257,6 @@ members = [
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
     "crates/hosting/tilo-relay-session",
-    "crates/hosting/tilo-relay-shell",
     "crates/hosting/tilo-relay-store",
     "crates/hosting/tilo-room-host",
     "crates/hosting/tilo-store-node",
@@ -279,14 +278,12 @@ members = [
     "crates/packaging/oci-images",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
-    "crates/packaging/installed-apps",
     "crates/packaging/launcher",
     "crates/packaging/launcher-macos",
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
     "crates/packaging/bot-directory",
-    "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/runtime-bundle",
@@ -327,7 +324,6 @@ members = [
     "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
-    "crates/platform/tilo-agent-models",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-workspace-agent",
     "crates/platform/tilo-workspace-emoji",
@@ -727,8 +723,6 @@ postcard = "1.1.3"
 toml = "1.0"
 quick-xml = "0.41.0"
 roxmltree = "0.21"
-capnp = "0.26"
-capnp-rpc = "0.26"
 base64 = "0.22.1"
 data-encoding = "2.10"
 data-encoding-macro = "0.1.19"

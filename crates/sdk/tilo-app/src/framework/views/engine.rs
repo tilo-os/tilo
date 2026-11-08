@@ -111,10 +111,6 @@ pub trait RemoteSource: Send + Sync + 'static {
     /// Answer `query`, handing each page of items to `page` as it arrives,
     /// best first. Runs off the UI thread; stop early when `cancel` says
     /// so.
-    ///
-    /// # Errors
-    ///
-    /// The source cannot be reached, or refused the query.
     fn search(
         &self,
         query: &QuerySpec,

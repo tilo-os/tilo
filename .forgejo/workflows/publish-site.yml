@@ -52,7 +52,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 1
+          # The Lounge's image publishes every version of its apps' surfaces
+          # from their history, so this checkout carries it.
+          fetch-depth: 0
           persist-credentials: false
       - name: Trust the checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -136,10 +138,9 @@ jobs:
 
       - name: Run the Lounge with people in it
         # The gate before publishing: the image the deployment runs starts on
-        # a fresh volume and on the previous release's state, lists itself in
-        # its directory, and hosts two people's browsers in the shared desk —
-        # chat, windows and presence — with the same programs and entry the
-        # deployment uses.
+        # a fresh volume, lists itself in its directory, and hosts two
+        # people's browsers in the shared desk — chat, windows and presence —
+        # with the same programs and entry the deployment uses.
         run: bash os/containers/tilo-lounge/test-integration.sh "$OUT/lounge/image.oci.tar" "$OUT/web-desktop/bundle" "$OUT/lounge-gate"
 
       - name: Keep the gate's diagnostics

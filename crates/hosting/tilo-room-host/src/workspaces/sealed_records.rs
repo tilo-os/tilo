@@ -22,7 +22,6 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 #[cfg(feature = "agents")]
 use tilo_peer_state::StatePeer;
-use tilo_peer_state::UnmergedReason;
 
 use super::{GovernedWorkspace, SystemTime, Workspaces};
 
@@ -162,32 +161,17 @@ impl GovernedWorkspace {
             return Ok(None);
         };
         if !opened.unmerged.is_empty() {
-            // One writer wrote a sequence twice: the record keeps the change
-            // that reached it first, nothing is lost, and no operator has to
-            // act. A write left out for any other reason is a loss.
-            let forked = opened
-                .unmerged
-                .iter()
-                .all(|write| matches!(write.reason, UnmergedReason::AlreadyHeld { .. }));
+            // A write left out for any reason is a loss: nothing reads it, and
+            // it is kept for an operator rather than dropped.
             let writes: Vec<String> = opened.unmerged.iter().map(ToString::to_string).collect();
-            if forked {
-                tracing::info!(
-                    workspace = %self.workspace(),
-                    %app,
-                    %record,
-                    writes = ?writes,
-                    "a sealed record keeps the change that reached it first of a writer's sequence"
-                );
-            } else {
-                tracing::warn!(
-                    workspace = %self.workspace(),
-                    %app,
-                    %record,
-                    left_out = writes.len(),
-                    writes = ?writes,
-                    "a sealed record is read without writes of its history that do not merge; they are kept"
-                );
-            }
+            tracing::warn!(
+                workspace = %self.workspace(),
+                %app,
+                %record,
+                left_out = writes.len(),
+                writes = ?writes,
+                "a sealed record is read without writes of its history that do not merge; they are kept"
+            );
         }
         Ok(Some(opened.document))
     }
@@ -405,80 +389,6 @@ impl Workspaces {
             }
             drop(workspace);
         }
-    }
-
-    /// What each record channel of the workspaces this relay takes part in retains,
-    /// read with the channel's keys where it has a channel: per record, its
-    /// workspace, store channel and `(app, record)`.
-    #[cfg(feature = "agents")]
-    pub async fn own_channels(
-        &self,
-    ) -> Vec<(u64, [u8; 32], (String, String), crate::compaction::Retained)> {
-        let payloads = self.inner.host.access.shell_payloads().clone();
-        let workspaces: Vec<_> = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect();
-        let mut out = Vec::new();
-        let device = self.device_keys();
-        for state in workspaces {
-            let (name, workspace_id, routes) = {
-                let workspace = state.lock().await;
-                if !workspace.seals() {
-                    continue;
-                }
-                let mut routes = workspace.peer().plaintext_routes();
-                routes.extend(workspace.peer().sealed_routes());
-                (
-                    workspace.workspace().to_owned(),
-                    workspace.workspace_id(),
-                    routes,
-                )
-            };
-            let Some(workspace) = self
-                .inner
-                .host
-                .workspaces
-                .lock()
-                .await
-                .get(&workspace_id)
-                .cloned()
-            else {
-                continue;
-            };
-            let store = workspace.lock().await.store.clone();
-            drop(workspace);
-            for (app, record) in routes {
-                let keys = match &device {
-                    Some(device) => device
-                        .channel_keys(
-                            &name,
-                            &collab_types::ChannelRoute::new(&app, &record),
-                            false,
-                        )
-                        .await
-                        .and_then(Result::ok),
-                    None => None,
-                };
-                let open = |op: &SignedOp| {
-                    let keys = keys.as_ref()?;
-                    let metadata = op.encryption?;
-                    let ciphertext = collab_types::sealed_ciphertext(op).ok()?;
-                    keys.open_content(op.artifact, &metadata, &ciphertext)
-                        .ok()
-                        .map(|plaintext| plaintext.to_vec())
-                };
-                let channel = neighbour_wire::app_document_channel(&app, &record);
-                let entries = store.channel_entries(&channel).unwrap_or_default();
-                let retained = crate::compaction::retained(payloads.clone(), &entries, Some(&open));
-                out.push((workspace_id, channel, (app, record), retained));
-            }
-        }
-        out
     }
 
     /// The keys the governor writes `record` of `app` with: in a workspace whose

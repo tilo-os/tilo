@@ -13,9 +13,6 @@ use super::{Failure, Staging, TransferObserver, copy, publish, sync_parent};
 const QUARANTINE_PREFIX: &str = ".tilo-transfer-source-";
 
 /// Hide `source` under a free hidden name of its own folder.
-///
-/// # Errors
-/// Returns what the filesystem says, or the refusal of an admission hook.
 pub(crate) fn quarantine(
     source: &Path,
     observer: &mut impl TransferObserver,
@@ -36,9 +33,6 @@ pub(crate) fn quarantine(
 
 /// A hidden name beside `source`, for a caller that must write it down
 /// before the source is hidden.
-///
-/// # Errors
-/// Returns why the source's folder cannot be named in.
 pub fn quarantine_path(source: &Path) -> io::Result<std::path::PathBuf> {
     let parent = source
         .parent()
@@ -48,10 +42,6 @@ pub fn quarantine_path(source: &Path) -> io::Result<std::path::PathBuf> {
 
 /// [`quarantine`] to the hidden name `hidden`, which the caller chose and
 /// wrote down before any destructive step.
-///
-/// # Errors
-/// Refuses a hidden name outside the source's own folder, and returns what
-/// the filesystem or an admission hook says.
 pub fn quarantine_at(
     source: &Path,
     hidden: &Path,
@@ -70,9 +60,6 @@ pub fn quarantine_at(
 /// Put a hidden source back where it was: under its name, or beside a name
 /// something took again meanwhile, so neither is lost. A source that is no
 /// longer hidden is nothing to put back.
-///
-/// # Errors
-/// Returns the refusal of an admission hook, and what the filesystem says.
 pub fn restore_source(
     hidden: &Path,
     source: &Path,

@@ -14,11 +14,10 @@
 
 use std::cell::Cell;
 
-/// The language the session's surfaces are drawn in, followed from the
-/// person's settings.
+/// The language the session's surfaces are drawn in, followed from the person's settings.
 pub(crate) struct Language {
-    /// The settings version the language was last followed at, so the
-    /// document is read again only when it changed.
+    /// The settings version the language was last followed at, so the document is read again only
+    /// when it changed.
     seen: Cell<Option<settings_store::SettingsStamp>>,
 }
 
@@ -29,9 +28,9 @@ impl Language {
         }
     }
 
-    /// Follow the person's language when their settings changed since the
-    /// last pass. Returns whether the words on screen are now resolved in
-    /// another language: the caller lays out what it keeps between frames.
+    /// Follow the person's language when their settings changed since the last pass. Returns
+    /// whether the words on screen are now resolved in another language: the caller lays out what
+    /// it keeps between frames.
     pub(crate) fn follow(&self) -> bool {
         let stamp = settings_store::stamp();
         if !settings_store::document_changed(self.seen.get().is_some(), self.seen.get(), stamp) {
@@ -45,10 +44,9 @@ impl Language {
 }
 
 impl crate::Session {
-    /// Speak the person's language in the session's own surfaces: the
-    /// manager's selection follows their settings (see [`Language`]), and
-    /// what the chrome keeps between frames is laid out again, so its words
-    /// are resolved in the language now selected.
+    /// Speak the person's language in the session's own surfaces: the manager's selection follows
+    /// their settings (see [`Language`]), and what the chrome keeps between frames is laid out
+    /// again, so its words are resolved in the language now selected.
     pub(crate) fn follow_language(&self) {
         if self.language.follow() {
             self.shared.chrome.borrow_mut().relayout();

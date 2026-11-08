@@ -248,8 +248,8 @@ impl GenerationGc {
             removed: false,
         })
     }
-    /// Collect after this process just wrote the lineage's CURRENT with
-    /// [`durable_write`]: the first quantum needs no barrier of its own.
+    /// Collect after this process just wrote the lineage's CURRENT
+    /// with [`durable_write`]: the first quantum needs no barrier of its own.
     ///
     /// # Errors
     ///
@@ -281,20 +281,7 @@ impl GenerationGc {
                 }
                 if let Some(entry) = entries.peek()? {
                     let name = entry.file_name();
-                    if (known_record(&name)
-                        || (self
-                            .lineage
-                            .file_name()
-                            .is_some_and(|v| v == crate::shell::DIRECTORY)
-                            && (name == "basis.manifest"
-                                || name == "live.manifest"
-                                || name == "gc.manifest"
-                                || name
-                                    .to_str()
-                                    .and_then(|s| s.strip_prefix("gc-"))
-                                    .is_some_and(|s| known_record(std::ffi::OsStr::new(s))))))
-                        && entry.file_type()?.is_file()
-                    {
+                    if known_record(&name) && entry.file_type()?.is_file() {
                         fs::remove_file(entry.path())?;
                         unsettled().remove(&entry.path());
                         self.removed = true;

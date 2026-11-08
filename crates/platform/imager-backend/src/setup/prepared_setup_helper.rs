@@ -22,18 +22,11 @@ pub mod original_reattest;
 /// The driver isolates this child before any worker or runtime starts, then
 /// authenticates the actual owned parent and ordinary Shell launch context.
 /// The original source actor remains in its original namespace.
-///
-/// # Errors
-/// Refuses malformed routing, an uninstalled helper, unrelated kernel peers or
-/// incomplete owned consumer and namespace retirement.
 pub fn retained_consumer_bootstrap(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     super::retained_consumer_driver::run_consuming_bootstrap(args)
 }
 
 /// Fixed installed ordinary-app retained Home consumer.
-/// # Errors
-/// Refuses uninstalled helpers, unrelated callers, stale certified selection,
-/// invalid source authority and incomplete native namespace retirement.
 pub fn retained_home_consumer(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     super::retained_consumer_driver::run(args)
 }
@@ -380,8 +373,6 @@ pub fn run_with_home_admission(
 
 /// Read-only image-build probe of this packaged executable and GNU tar.
 /// Password input, destination custody, and application startup are unused.
-/// # Errors
-/// Refuses extra arguments, mutable namespace edges, non-ELF helpers, and old tar.
 pub fn home_consumer_capability(
     args: impl IntoIterator<Item = OsString>,
     output: &mut impl Write,
@@ -547,8 +538,6 @@ fn validate_tar_version(bytes: &[u8]) -> io::Result<()> {
 mod tests;
 
 /// Fixed installed Copy controller on the existing authenticated helper channel.
-/// # Errors
-/// Refuses stale source or person custody and unobserved worker/importer retirement.
 pub fn installed_original_copy_controller(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     super::retained_consumer_driver::run_original_copy(args)
 }

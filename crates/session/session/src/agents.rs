@@ -1,17 +1,13 @@
 //! The agents each workspace keeps, as its own record names them.
-//!
-//! An agent works in a workspace because Chat's record of the workspace's
-//! agents ([`tilo_app::tilo_workspace_agent`]) names it and names the person
-//! who keeps it. That record is the agent's admission: the session reads it
-//! every pass, as the person sitting here, and the broker admits an agent's
-//! session only for the keeper the record names
-//! ([`tilo_action_broker::services::AgentRoster`]). Nothing here keeps state
-//! of its own beyond the record this device has open: who works here is the
-//! record's.
-//!
-//! The person who keeps an agent runs it: the pass hands the agents kept
-//! here to the session's launches ([`Kept`]), which start each one's
-//! process — the record is who works, and whose device runs them.
+//! An agent works in a workspace because Chat's record of the workspace's agents
+//! ([`tilo_app::tilo_workspace_agent`]) names it and names the person who keeps it. That record is
+//! the agent's admission: the session reads it every pass, as the person sitting here, and the
+//! broker admits an agent's session only for the keeper the record names
+//! ([`tilo_action_broker::services::AgentRoster`]). Nothing here keeps state of its own beyond the
+//! record this device has open: who works here is the record's.
+//! The person who keeps an agent runs it: the pass hands the agents kept here to the session's
+//! launches ([`Kept`]), which start each one's process — the record is who works, and whose device
+//! runs them.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -25,11 +21,10 @@ use tilo_app::tilo_workspace_agent::{
 };
 use tilo_resource::Id;
 use ui::permissions::{LivePermissions, PermissionContext};
+use ui::record::RecordOwners;
 use ui::record::workspace::WorkspaceRecords;
-use ui::record::{RecordId, RecordOwners};
 
-/// How this session names a record it opened, where the record's history is
-/// told.
+/// How this session names a record it opened, where the record's history is told.
 const SESSION_APP: (&str, &str) = ("tilo-session", "Workspace settings");
 
 /// An agent this device runs because the person sitting here keeps it.
@@ -41,8 +36,8 @@ pub(crate) struct Kept {
     pub id: String,
     /// Its name, as people read it.
     pub name: String,
-    /// The model its keeper chose for it, as `provider/model`; `None`
-    /// follows the keeper's default here.
+    /// The model its keeper chose for it, as `provider/model` ; `None` follows the keeper's default
+    /// here.
     pub model: Option<String>,
 }
 
@@ -51,8 +46,8 @@ pub(crate) struct Kept {
 #[derive(Default)]
 pub(crate) struct Roster {
     keepers: Mutex<BTreeMap<(String, String), String>>,
-    /// What each agent may spend today and has, by workspace and agent: what a
-    /// run of its is admitted with.
+    /// What each agent may spend today and has, by workspace and agent: what a run of its is
+    /// admitted with.
     spend: Mutex<BTreeMap<(String, String), runtime_collab::TaskRunSpend>>,
 }
 
@@ -81,14 +76,14 @@ pub(crate) struct Agents {
     owners: RecordOwners,
     /// Wakes the session's loop when a change to a record lands.
     wake: ui::WakeScope,
-    /// Each workspace's records and its agents record, opened here and kept
-    /// at the grants they were opened with.
+    /// Each workspace's records and its agents record, opened here and kept at the grants they were
+    /// opened with.
     open: RefCell<BTreeMap<String, Opened>>,
 }
 
 struct Opened {
-    /// The grants the record was opened with: a workspace whose grants
-    /// changed has it opened again, so its people's reads follow.
+    /// The grants the record was opened with: a workspace whose grants changed has it opened again,
+    /// so its people's reads follow.
     policy: WorkspacePolicy,
     records: WorkspaceRecords,
     /// `None` where the workspace holds no agents record: this reads one,
@@ -97,8 +92,8 @@ struct Opened {
 }
 
 impl Agents {
-    /// The workspaces' agents over the store at `root`, waking the session's
-    /// loop through `wake` when a change lands.
+    /// The workspaces' agents over the store at `root` , waking the session's loop through `wake`
+    /// when a change lands.
     pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
@@ -117,16 +112,15 @@ impl Agents {
         Arc::clone(&self.roster)
     }
 
-    /// Read each workspace's agents record as `person`, hand who keeps each
-    /// agent to the broker, and answer the agents kept here: this device runs
-    /// those.
+    /// Read each workspace's agents record as `person` , hand who keeps each agent to the broker,
+    /// and answer the agents kept here: this device runs those.
     pub(crate) fn feed(&self, person: &str, workspaces: &[(String, WorkspacePolicy)]) -> Vec<Kept> {
         let day = ui::clock::today().to_string();
         let mut keepers = BTreeMap::new();
         let mut spend = BTreeMap::new();
         let mut kept = Vec::new();
         for (workspace, policy) in workspaces {
-            let Some(record) = self.record(workspace, policy, person) else {
+            let Some(record) = self.record(workspace, policy, person, false) else {
                 continue;
             };
             let state = record.get();
@@ -162,9 +156,8 @@ impl Agents {
         kept
     }
 
-    /// Charge what the runs' agents spent to their day, on each workspace's
-    /// record of its agents, as the person sitting here: a keeper's device
-    /// counts what the agents it runs spend.
+    /// Charge what the runs' agents spent to their day, on each workspace's record of its agents,
+    /// as the person sitting here: a keeper's device counts what the agents it runs spend.
     pub(crate) fn charge(
         &self,
         workspaces: &[(String, WorkspacePolicy)],
@@ -179,7 +172,7 @@ impl Agents {
             let Some((_, policy)) = workspaces.iter().find(|(held, _)| held == workspace) else {
                 continue;
             };
-            let Some(record) = self.record(workspace, policy, person) else {
+            let Some(record) = self.record(workspace, policy, person, false) else {
                 continue;
             };
             let counted =
@@ -194,13 +187,63 @@ impl Agents {
         }
     }
 
-    /// The workspace's agents record, opened here where it is not, at the
-    /// grants the pass read.
+    /// The agent this workspace's person asks: the one the session keeps for
+    /// them here — whoever the record lists first, by its own order — and,
+    /// where the record lists none, an agent made in it first (shell.md §8.1,
+    /// "Asking from the canvas": "the workspace's kept agent kept with
+    /// `WorkspaceAgents` when it has none"). The agent made is named for its
+    /// keeper and kept by them, so this device starts it and answers its
+    /// turns.
+    ///
+    /// Returns the agent's id, or `None` when the workspace keeps no record
+    /// of its agents to name one, or when the record refused the agent it
+    /// was asked to make.
+    pub(crate) fn keep_one(
+        &self,
+        workspace: &str,
+        policy: &WorkspacePolicy,
+        person: &str,
+    ) -> Option<String> {
+        let record = self.record(workspace, policy, person, true)?;
+        let state = record.get();
+        if let Some(held) = state
+            .active()
+            .find(|agent| same_person(&agent.keeper, person))
+        {
+            return Some(held.id.0.clone());
+        }
+        let name = state.free_id(&crate::i18n::t_args(
+            "session-agent-name",
+            &[("number", 1i64.into())],
+        ));
+        let name = tilo_resource::NonBlank::parse(&name)?;
+        let id = record.get().free_id(name.as_str());
+        let made = record.invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
+            name,
+            keeper: Some(person.to_owned()),
+            id: Some(id.clone()),
+            model: None,
+            colour: None,
+        }));
+        match made {
+            Ok(()) => Some(id),
+            Err(error) => {
+                tracing::warn!(%error, %workspace, "an agent for the person was not made");
+                None
+            }
+        }
+    }
+
+    /// The workspace's agents record, opened here where it is not, at the grants the pass read.
+    /// `create` says whether a workspace that keeps none is given one: asking does — a person with
+    /// no agent yet is one ask away from having one (shell.md §8.1) — and the pass's reading never
+    /// does, so a workspace nobody set an agent up in costs no record.
     fn record(
         &self,
         workspace: &str,
         policy: &WorkspacePolicy,
         person: &str,
+        create: bool,
     ) -> Option<WorkspaceRecord<Record>> {
         let mut open = self.open.borrow_mut();
         if open
@@ -219,12 +262,12 @@ impl Agents {
             record: None,
         });
         if opened.record.is_none() {
-            let id = RecordId::package_primary();
+            let id = collab_types::workspace_record_id(KIND);
             let held = opened
                 .records
-                .holds_record(OWNER, id.as_str(), KIND)
+                .holds_record(OWNER, &id, KIND)
                 .unwrap_or(false);
-            if !held {
+            if !held && !create {
                 return None;
             }
             let permissions = PermissionContext::from_standing(
@@ -232,10 +275,9 @@ impl Agents {
                 Standing::person(policy.clone(), person.to_owned()),
             )
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-            opened.record = WorkspaceRecord::<Record>::open_at(
+            opened.record = WorkspaceRecord::<Record>::open(
                 &opened.records,
                 OWNER,
-                id.as_str(),
                 SESSION_APP,
                 Some(LivePermissions::fixed(permissions)),
                 Some(self.wake.handle()),

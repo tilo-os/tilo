@@ -20,6 +20,9 @@ pub struct DateFieldProps {
     pub label: Option<String>,
     /// The date may be cleared: the calendar offers "Clear date".
     pub optional: bool,
+    /// The field stands beside the entry that tells its day (a moment's field, whose hour the
+    /// entry types): the chip shows the calendar icon alone, opening the calendar and the time.
+    pub compact: bool,
     /// The control that picks the time of day the day is due at: `ui.TimeField(bind: t.at)`.
     #[component(slot)]
     pub time: Vec<crate::widget::Element>,
@@ -36,15 +39,11 @@ impl Default for DateFieldProps {
             at: None,
             label: None,
             optional: false,
+            compact: false,
             time: Vec::new(),
             change: Event::None,
         }
     }
-}
-
-/// A picked day as the moment a bound field holds: its ISO text, empty for none.
-fn moment(day: Option<chrono::NaiveDate>) -> String {
-    day.map_or_else(String::new, |day| day.format("%Y-%m-%d").to_string())
 }
 
 impl Described for DateField {
@@ -56,10 +55,12 @@ impl Described for DateField {
             at,
             label,
             optional,
+            compact,
             time,
             ..
         } = props;
         let shown = value.clone();
+        let held = value.state.clone();
         Self::from_state(
             key,
             &value.state,
@@ -67,8 +68,14 @@ impl Described for DateField {
             at.as_deref(),
             time,
             label.as_deref(),
+            compact,
         )
-        .on_change(move |day| shown.edited(crate::component::Value::Text(moment(day))))
+        .on_change(move |day| {
+            // The day changes, the time of day it is due at stays: a moment whose day is
+            // picked keeps its time, and a day alone stays a day.
+            let moment = super::with_day(&held.get(), day);
+            shown.edited(crate::component::Value::Text(moment));
+        })
     }
 
     /// A day or time set elsewhere shows in place through the binding; whether it may be

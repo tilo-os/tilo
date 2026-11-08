@@ -545,9 +545,6 @@ pub enum ToolEffect {
 
 impl Tools {
     /// Take up what `effect` chooses.
-    ///
-    /// # Errors
-    /// Returns why a brush preset is not one there is.
     pub fn answer(&self, effect: ToolEffect) -> ui::framework::EffectAnswer {
         match effect {
             ToolEffect::UseBrush { preset } => {

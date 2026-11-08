@@ -1245,11 +1245,6 @@ fn translation_catalog_template(locale: &str, source: &str) -> String {
 /// replacing translated values. Missing messages, terms, attributes, and
 /// values are copied from the source. Stale structure and variable-mismatched
 /// patterns change only when their explicit options are enabled.
-///
-/// # Errors
-///
-/// Returns an error when the app or requested locale cannot be resolved, any
-/// catalog is malformed, or the atomic publication fails.
 pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOutcome> {
     let app_dir = resolve_app_dir(&request.start)?;
     if !app_dir.join("tilo-app.toml").is_file() {
@@ -2799,10 +2794,6 @@ pub fn {module_name}(id: &str, props: &{type_name}Props) -> ui::widget::Column {
 }}
 
 /// Build this component from a serialized UI graph node.
-///
-/// # Errors
-///
-/// Returns a field-specific error when `title` or `detail` is not a string.
 pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {{
     let string = |key| {{
         request
@@ -2965,10 +2956,6 @@ pub fn {module_name}_in_graph(
 ///
 /// Each graph instance receives explicit `value_path` and `enabled_path` props.
 /// Paths may be unique per instance or deliberately shared across views.
-///
-/// # Errors
-///
-/// Returns a field-specific error when either binding path is missing or empty.
 pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {{
     let path = |key| {{
         request
@@ -3764,11 +3751,6 @@ mod tests {{
 /// This is the same validated source used by `tilo-app add component`; build
 /// fixtures can type-check the generator output directly instead of carrying a
 /// copy that may drift.
-///
-/// # Errors
-///
-/// Returns an error when `name` cannot safely become Rust module and type
-/// identifiers or when the generated source does not parse.
 pub fn render_component_source(name: &str, template: ComponentTemplate) -> Result<String> {
     let (module_name, type_name) = component_rust_names(name)?;
     let (source, _) = component_source(name, &module_name, &type_name, template);
@@ -3914,10 +3896,6 @@ fn shell_display_path(path: &Path) -> String {
 }
 
 /// Parse and validate a serialized UI graph with the toolkit's own schema.
-///
-/// # Errors
-///
-/// Returns a filesystem, JSON, or graph-validation error.
 pub fn load_ui_graph(path: &Path) -> Result<tilo_ui_graph::UiDocument> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("reading UI graph {}", path.display()))?;
@@ -3948,11 +3926,6 @@ pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
 
 /// Insert an app-owned component with a unique default id and append-by-default
 /// placement, then atomically publish the validated graph.
-///
-/// # Errors
-///
-/// Returns an error when props are not a JSON object, the parent cannot accept
-/// children, an explicit id is invalid or duplicated, or publication fails.
 pub fn insert_ui_component(path: &Path, request: UiComponentInsert) -> Result<String> {
     let mut document = load_ui_graph(path)?;
     let id = apply_ui_component(&mut document, request)?;
@@ -4019,11 +3992,6 @@ fn unique_ui_node_id(document: &tilo_ui_graph::UiDocument, base: &str) -> Result
 
 /// Parse a JSON array of tagged graph edits suitable for
 /// [`edit_ui_graph_batch`].
-///
-/// # Errors
-///
-/// Returns an error when the source is not a non-empty array of supported,
-/// structurally valid edit objects.
 pub fn parse_ui_graph_edits(source: &str) -> Result<Vec<UiGraphEdit>> {
     tilo_ui_graph::parse_ui_graph_edits(source).context("parsing UI graph edit batch")
 }
@@ -4050,20 +4018,12 @@ pub fn edit_ui_graph_batch(path: &Path, edits: Vec<UiGraphEdit>) -> Result<()> {
 }
 
 /// Rewrite a valid graph in the canonical pretty-printed form.
-///
-/// # Errors
-///
-/// Returns a load, validation, or atomic-write error.
 pub fn format_ui_graph(path: &Path) -> Result<()> {
     let document = load_ui_graph(path)?;
     write_ui_graph(path, &document)
 }
 
 /// A compact hierarchy suitable for a terminal builder or code review.
-///
-/// # Errors
-///
-/// Returns a load or validation error.
 pub fn ui_graph_tree(path: &Path) -> Result<String> {
     let document = load_ui_graph(path)?;
     let mut output = String::new();
@@ -4076,11 +4036,6 @@ pub fn ui_graph_tree(path: &Path) -> Result<String> {
 /// An explicit program wins, followed by `TILO_UI_BUILDER`, a
 /// `tilo-ui-builder` executable beside `tilo-app`, the source workspace's
 /// builder package, and finally `PATH`.
-///
-/// # Errors
-///
-/// Returns an error if the current executable cannot be inspected while
-/// looking for a sibling builder.
 pub fn ui_builder_plan(path: &Path, explicit: Option<OsString>) -> Result<UiBuilderPlan> {
     let graph_arg = path.as_os_str().to_owned();
     let (program, args) = if let Some(program) = explicit {
@@ -4137,10 +4092,6 @@ fn find_ui_builder_manifest(path: &Path, current_exe: &Path) -> Result<Option<Pa
 
 impl UiBuilderPlan {
     /// Open the graph in the native builder and wait until its window closes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the builder cannot start or exits unsuccessfully.
     pub fn execute(&self) -> Result<()> {
         let status = ProcessCommand::new(&self.program)
             .args(&self.args)
@@ -4214,10 +4165,6 @@ fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
 impl CargoPlan {
     /// Run with inherited stdin/stdout/stderr so window startup, compiler
     /// diagnostics, and test output behave exactly like invoking Cargo.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when Cargo cannot start or exits unsuccessfully.
     pub fn execute(&self) -> Result<()> {
         let mut command = ProcessCommand::new(&self.program);
         command.args(&self.args).current_dir(&self.app_dir);
@@ -4268,11 +4215,6 @@ impl DoctorReport {
 }
 
 /// Run the `portability` lint on the app containing `start`.
-///
-/// # Errors
-///
-/// Returns an error when the app directory cannot be resolved or its
-/// manifests or reachable sources cannot be read or parsed.
 pub fn lint_portability(start: &Path) -> Result<portability::PortabilityReport> {
     portability::lint_app(&resolve_app_dir(start)?)
 }
@@ -4282,10 +4224,6 @@ pub fn lint_portability(start: &Path) -> Result<portability::PortabilityReport> 
 /// `start` may be the app directory or any descendant. All expected app
 /// problems are accumulated in the report so one run can fix more than one
 /// issue; only filesystem access failures are returned as `Err`.
-///
-/// # Errors
-///
-/// Returns an error when the selected app directory cannot be resolved.
 pub fn doctor_app(start: &Path) -> Result<DoctorReport> {
     Ok(doctor_resolved_app(resolve_app_dir(start)?))
 }
@@ -4688,10 +4626,6 @@ pub(crate) fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
 /// Resolve an app, require a clean doctor preflight, and construct the Cargo
 /// command used by [`AppTask::Run`] or [`AppTask::Test`]. Arguments after the
 /// Tilo command's `--` are forwarded after Cargo's own `--`.
-///
-/// # Errors
-///
-/// Returns an error when no app can be resolved or its doctor checks fail.
 pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Result<CargoPlan> {
     let app_dir = resolve_app_dir(start)?;
     let report = doctor_resolved_app(app_dir.clone());
@@ -4774,11 +4708,6 @@ pub fn plan_platform_clippy(
 /// commands. `format_mode` controls whether formatting drift is rejected or
 /// repaired. Clippy checks every app target with warnings denied while
 /// excluding dependency lint debt.
-///
-/// # Errors
-///
-/// Returns an error when no ready app can be resolved or its Cargo package
-/// name cannot be read.
 pub fn plan_app_quality(
     start: &Path,
     forwarded: &[OsString],
@@ -4846,10 +4775,6 @@ pub fn plan_app_quality(
 
 /// Construct a preflighted screenshot invocation using the app's standard
 /// launch lifecycle.
-///
-/// # Errors
-///
-/// Returns an error when the app cannot be resolved or its preflight fails.
 pub fn plan_app_shot(start: &Path, request: ShotRequest) -> Result<CargoPlan> {
     let mut app_args = vec![OsString::from("--shots"), request.output.into_os_string()];
     if let Some((width, height)) = request.viewport {
@@ -4937,11 +4862,6 @@ fn read_actions(path: &Path) -> Result<serde_json::Value> {
 ///
 /// Every action file is parsed before the returned plan can start the app, so
 /// an invalid later scenario never leaves a partially executed suite.
-///
-/// # Errors
-///
-/// Returns an error when the app cannot be resolved, its structural preflight
-/// fails, a requested scenario is absent, or any action file is malformed.
 pub fn plan_scenario_suite(request: &ScenarioRunRequest) -> Result<ScenarioSuitePlan> {
     let app_dir = resolve_app_dir(&request.start)?;
     let artifact_dir = request.artifacts.as_ref().map(|path| {
@@ -5698,10 +5618,12 @@ fn signing_identity(
     path: Option<&Path>,
 ) -> Result<tilo_app_package::SigningIdentity> {
     let Some(path) = path else {
-        if let Some(key) = registry_client::key::discover(&registry_client::key::machine_store())? {
+        if let Some(key) =
+            app_registry::publisher::key::discover(&app_registry::publisher::key::machine_store())?
+        {
             eprintln!(
                 "[tilo-app] signing with publisher key {}",
-                registry_client::key::public_hex(&key)
+                app_registry::publisher::key::public_hex(&key)
             );
             return Ok(tilo_app_package::SigningIdentity::from_seed(
                 &key.to_bytes(),
@@ -8820,11 +8742,6 @@ enum AppSdk {
 
 /// Create an app, prompting for missing identity, title, and template fields
 /// when attached to a terminal.
-///
-/// # Errors
-///
-/// Returns an error for invalid input, a non-interactive missing name, an
-/// occupied destination, or any failed filesystem operation.
 pub fn create_app_interactive(request: NewAppRequest) -> Result<CreateOutcome> {
     let interactive = io::stdin().is_terminal();
     let stdin = io::stdin();
@@ -8983,11 +8900,6 @@ fn create_app_interactive_from(
 }
 
 /// Validate, render, and write a new app without prompting.
-///
-/// # Errors
-///
-/// Returns an error for invalid input, an occupied destination, or any failed
-/// filesystem/workspace-manifest operation.
 pub fn create_app(request: NewAppRequest) -> Result<CreateOutcome> {
     let current_dir = std::env::current_dir().context("reading current directory")?;
     create_app_from(&current_dir, request)

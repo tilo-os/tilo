@@ -105,8 +105,9 @@ pub struct Core {
     /// The words packages and the platform show, in the reader's language: the source words
     /// until the host says (`Runtime::set_words`).
     pub words: RefCell<Box<dyn crate::words::Words>>,
-    /// Every loaded package's catalogues, handed to the words the host sets later too.
-    pub catalogues: RefCell<Vec<(String, String)>>,
+    /// Every loaded package's catalogues and which package of the window they belong to,
+    /// handed to the words the host sets later too.
+    pub catalogues: RefCell<Vec<crate::words::LoadedCatalogues>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The view state of every view, and the platform's own readings.
@@ -356,36 +357,36 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActMadeFrom, ActMany, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions,
-            AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollEmpty, CollInsert,
-            CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRelatives, CollRemove, CollWhere,
-            CollWhereWith, CountBy, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
-            Delivery, Describe, DescribeRef, DurationText, EditField, EntryParts, EnumGetF,
-            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
-            EventValue, FieldChanged, FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatCeil,
-            FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin, FloatRound,
-            FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs, IntClamp,
-            IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoker, IsError,
-            IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg, ListEnd,
-            ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF,
-            ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH,
-            MapGetValue, MapKeys, MapKeysValue, MapPut, MapRemove, MapSetAdd, MapSetRemove,
-            MatchGroup, Me, Members, Mentions, MetaOf, ModelCall, NoneV, Notify, Now, OfType,
-            Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
-            PrincipalRole, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
-            RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF,
-            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel,
-            RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF,
-            ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty, RichNew, RichPart, RichTime,
-            RunChanges, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers,
-            StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind,
-            StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
-            StrStartsWith, StrToInt, StrTrim, StrUpper, Suggest, Take, TimeDay, TimeOfDay,
-            TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
-            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind,
-            UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen,
-            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody,
-            WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
-            WorkspaceMembers,
+            AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty,
+            CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRelatives,
+            CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart, DayShift,
+            DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
+            EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
+            EnumSetI, EventPart, EventValue, FieldChanged, FilterLit, Filters, Find, FirstUnseen,
+            FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax,
+            FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart,
+            IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke,
+            Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links,
+            ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
+            ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF,
+            ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapPut, MapRemove, MapSetAdd,
+            MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf, ModelCall, NoneV, Notify, Now,
+            OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName,
+            PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query, QueueBlock,
+            RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith,
+            RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt,
+            ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF,
+            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty,
+            RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF, SomeH,
+            SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
+            StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
+            StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
+            Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
+            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
+            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
+            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -396,11 +397,11 @@ impl Core {
             IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
             | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
             | ListSumI | ListSumF | ListAvg => self.num_import(imp, a),
-            ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | CollEmpty
-            | ListGetI | ListGetF | ListSortByKey | ListReverse | ListGetH | ListEnd
-            | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF | TupleSetH
-            | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome
-            | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
+            ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | CollCounted
+            | CollEmpty | ListGetI | ListGetF | ListSortByKey | ListReverse | ListGetH
+            | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF
+            | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV
+            | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
             CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
             CollRelatives => {

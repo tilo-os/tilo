@@ -1,41 +1,15 @@
-//! The session's `xdg-desktop-portal` backend.
-//!
-//! Sandboxed and Flatpak apps ask `xdg-desktop-portal` (the frontend) for
-//! what their sandbox blocks: a file, a screenshot, the desktop's
-//! appearance, keeping the screen awake. The frontend forwards each request
-//! to a backend; this crate is Tilo's, served under [`BUS_NAME`]:
-//!
-//! - `org.freedesktop.impl.portal.FileChooser` ([`file_chooser`])
-//! - `org.freedesktop.impl.portal.Screenshot` ([`screenshot`])
-//! - `org.freedesktop.impl.portal.Settings` ([`settings`], projecting the
-//!   person's appearance for legacy toolkits, [`appearance`])
-//! - `org.freedesktop.impl.portal.Access` ([`access`])
-//! - `org.freedesktop.impl.portal.Inhibit` ([`inhibit`])
-//! - `org.freedesktop.impl.portal.Lockdown` ([`lockdown`])
-//! - `org.freedesktop.impl.portal.ScreenCast` ([`screencast`], streams of
-//!   the session's [`CaptureStreams`])
-//! - `org.freedesktop.impl.portal.RemoteDesktop` ([`remote_desktop`],
-//!   driving the session's [`InputInjector`])
-//! - `org.freedesktop.impl.portal.InputCapture` ([`input_capture`])
-//! - `org.freedesktop.impl.portal.GlobalShortcuts` ([`global_shortcuts`])
-//! - `org.freedesktop.impl.portal.Clipboard` ([`clipboard`], the session's
-//!   [`clipboard::Clipboard`] for remote desktops)
-//! - `org.freedesktop.impl.portal.PermissionStore` ([`permission_store`], the
-//!   frontend's own permission and restore-data database)
-//!
-//! The session-based ones live as `org.freedesktop.impl.portal.Session`
-//! objects ([`session`]).
-//!
-//! The backend has no UI. What needs the person's answer (which file,
-//! whether an app may take a screenshot) is asked through the session's
-//! [`Questions`], which the session's sheet presents; what the backend
-//! holds that the person may act on (the inhibitions in force, the access
-//! they allowed for good) is published as resources with actions
-//! ([`Portal`] is a [`Service`]).
-//!
-//! Only the frontend may call the backend: every call is authenticated as
-//! coming from the owner of `org.freedesktop.portal.Desktop` ([`auth`]),
-//! which has already derived the app id from the app's credentials.
+//! The session's `xdg-desktop-portal` backend, served under [`BUS_NAME`]: what
+//! sandboxed and Flatpak apps ask the frontend for and their sandbox blocks — a
+//! file, a screenshot, the appearance, keeping the screen awake, screen capture,
+//! a remote desktop, global shortcuts, the clipboard and the frontend's own
+//! permission store. The session-based ones live as
+//! `org.freedesktop.impl.portal.Session` objects ([`session`]).
+//! The backend has no UI: what needs the person's answer (which file, whether an
+//! app may take a screenshot) is asked through the session's [`Questions`], and
+//! what the person may act on is published as resources with actions ([`Portal`]).
+//! Only the frontend may call the backend: every call is authenticated as coming
+//! from the owner of `org.freedesktop.portal.Desktop` ([`auth`]), which has already
+//! derived the app id from the app's credentials.
 
 #![allow(
     clippy::unused_self,

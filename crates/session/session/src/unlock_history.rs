@@ -1,30 +1,15 @@
-//! The person's own record of what their devices answered when one of them
-//! asked to be unlocked after a reboot.
-//!
-//! An answer is a fact the answering device signs and publishes in its own
-//! part of the person's device fabric ([`tilo_device_fabric::unlock`]): every
-//! one of their devices carries it, and a boot that lost its stream hears the
-//! same answer from any of them. What the person reads is the record here —
-//! `member:<person>:device.unlock`, one document whose changes are those
-//! answers, each naming the boot that asked, the device that answered and
-//! when — so the activity history lists them beside everything else that
-//! happened, on every one of their devices.
-//!
-//! The record is a projection of the fabric, and the fabric is what carries
-//! the answers between devices: each device writes the answers it hears into
-//! its own copy of the person's record, under the answering device's actor
-//! and at the time it decided, so the change is theirs and reads the same
-//! here as on the device that made it.
-//!
-//! Nothing is invented: an answer enters the record only if it validates
-//! against the snapshot that carries it ([`UnlockDecisionRecord::validate`]),
-//! which the fabric authenticates as that device's own. A document this build
-//! cannot read is never written over.
-//!
-//! An answer stands for [`tilo_device_fabric::unlock::DECISION_LIFETIME_NS`]
-//! and the fabric keeps the newest of them, so a device that was away longer
-//! than that learns of an answer only while one of its siblings still holds
-//! it.
+//! The person's own record of what their devices answered when one of them asked to
+//! be unlocked after a reboot.
+//! An answer is a fact the answering device signs and publishes in its own part of
+//! the person's device fabric ([`tilo_device_fabric::unlock`]); every one of their
+//! devices carries it. What the person reads is `member:<person>:device.unlock`,
+//! one document whose changes are those answers, so the activity history lists them
+//! beside everything else that happened.
+//! The record is a projection of the fabric: each device writes the answers it
+//! hears under the answering device's actor, at the time it decided.
+//! Nothing is invented: an answer enters only if it validates
+//! ([`UnlockDecisionRecord::validate`]), and a document this build cannot read is
+//! never written over.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,21 +30,21 @@ use crate::network::slot_name;
 /// The document beside the rest of this device's state.
 const FILE: &str = "device-unlock.automerge";
 
-/// The package the answers are listed under in the activity history: this
-/// session's own, not one an app is. The words of a row come from the
-/// session's catalogue (`unlock-approved`, `unlock-denied`).
+/// The package the answers are listed under in the activity history: this session's own, not one an
+/// app is. The words of a row come from the session's catalogue (`unlock-approved`, `unlock-denied`
+/// ).
 const APP: &str = "so.tilo.unlock";
 
 /// The kind of the person's own record of those answers.
 const KIND: &str = tilo_device_fabric::unlock::DEVICE_UNLOCK_ACTION;
 
-/// Where the document lives under `state`, this device's state directory.
+/// Where the document lives under `state` , this device's state directory.
 fn path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
 }
 
-/// The document kept at `at`, and where it is kept: `None` there for one
-/// this build did not open, which is then never written over.
+/// The document kept at `at` , and where it is kept: `None` there for one this build did not open,
+/// which is then never written over.
 fn open(at: &Path) -> (AutoCommit, Option<PathBuf>) {
     let bytes = match std::fs::read(at) {
         Ok(bytes) => bytes,
@@ -86,8 +71,8 @@ pub(crate) struct UnlockHistory {
     /// Where the document is kept: `None` on a session that keeps no state,
     /// and on one that did not open the document on disk.
     path: Option<PathBuf>,
-    /// The person's own record the answers belong to. `None` on a session
-    /// with no certified person: it is on no fabric, so nothing answers.
+    /// The person's own record the answers belong to. `None` on a session with no certified person:
+    /// it is on no fabric, so nothing answers.
     record: Option<RecordCheckout>,
     /// The person's fabric, while this session takes part in one.
     link: RefCell<Option<SharedLink>>,
@@ -96,10 +81,9 @@ pub(crate) struct UnlockHistory {
 }
 
 impl UnlockHistory {
-    /// The record under `state`, read into from what an earlier session kept
-    /// there, and holding nothing on a device that answered nothing yet.
-    /// `person` is who sits here: the record is theirs, on every one of
-    /// their devices.
+    /// The record under `state` , read into from what an earlier session kept there, and holding
+    /// nothing on a device that answered nothing yet. `person` is who sits here: the record is
+    /// theirs, on every one of their devices.
     pub(crate) fn new(state: Option<&Path>, person: &str) -> Self {
         let record = RecordId::of_member(person, KIND)
             .map(|id| RecordCheckout::new(id, RecordKind::new(KIND)));
@@ -117,16 +101,15 @@ impl UnlockHistory {
         }
     }
 
-    /// Take part in `link`'s fabric: the answers it carries are written into
-    /// the person's record.
+    /// Take part in `link` 's fabric: the answers it carries are written into the person's record.
     pub(crate) fn watch(&self, link: SharedLink) {
         *self.link.borrow_mut() = Some(link);
     }
 
-    /// Write what the person's fabric holds now into the record: every answer
-    /// that validates against the device that published it and is not in the
-    /// document yet, as one change by the device that answered and at the
-    /// time it did. Whether the record holds an answer it did not before.
+    /// Write what the person's fabric holds now into the record: every answer that validates
+    /// against the device that published it and is not in the document yet, as one change by the
+    /// device that answered and at the time it did. Whether the record holds an answer it did not
+    /// before.
     pub(crate) fn absorb(&self) -> bool {
         if self.record.is_none() {
             return false;
@@ -138,8 +121,8 @@ impl UnlockHistory {
         let fabric = link.device_fabric();
         for (owner, snapshot) in fabric.snapshots() {
             for answer in &snapshot.unlock.decisions {
-                // Only the device whose snapshot carries it signed it: another
-                // device's answer is in that device's own snapshot.
+                // Only the device whose snapshot carries it signed it: another device's answer is
+                // in that device's own snapshot.
                 if answer.validate(owner).is_err() {
                     continue;
                 }
@@ -174,9 +157,8 @@ impl UnlockHistory {
         wrote
     }
 
-    /// The person's record, for a reader that lists what happened: `None`
-    /// until one of their devices answered something, and on a session with
-    /// no certified person.
+    /// The person's record, for a reader that lists what happened: `None` until one of their
+    /// devices answered something, and on a session with no certified person.
     pub(crate) fn history(&self) -> Option<DetachedRecordHistory> {
         let checkout = self.record.clone()?;
         let doc = self.doc.borrow();
@@ -192,8 +174,7 @@ impl UnlockHistory {
         self.doc.borrow().base_heads()
     }
 
-    /// How the devices that answered are known: each by the name its own
-    /// snapshot gives it.
+    /// How the devices that answered are known: each by the name its own snapshot gives it.
     pub(crate) fn authors(&self) -> BTreeMap<String, String> {
         let Some(link) = self.link.borrow().clone() else {
             return BTreeMap::new();
@@ -207,8 +188,8 @@ impl UnlockHistory {
             .collect()
     }
 
-    /// This device, as its own answers are written here: `None` until the
-    /// session takes part in a fabric as a certified device.
+    /// This device, as its own answers are written here: `None` until the session takes part in a
+    /// fabric as a certified device.
     pub(crate) fn local_actor(&self) -> Option<String> {
         let link = self.link.borrow().clone()?;
         link.local_device_fabric_identity()
@@ -225,13 +206,13 @@ impl UnlockHistory {
 
 /// The device a boot belongs to, as the person's fabric names it.
 struct Boot {
-    /// The enrolled device's key (hex), empty while no device of the
-    /// person's publishes the enrolment any more.
+    /// The enrolled device's key (hex), empty while no device of the person's publishes the
+    /// enrolment any more.
     device: String,
     label: String,
 }
 
-/// The device `answer`'s boot belongs to, by the enrolment it names.
+/// The device `answer` 's boot belongs to, by the enrolment it names.
 fn boot_of(fabric: &DeviceFabric, answer: &UnlockDecisionRecord) -> Boot {
     for snapshot in fabric.snapshots().values() {
         for enrolment in &snapshot.unlock.enrolments {
@@ -256,9 +237,9 @@ fn boot_of(fabric: &DeviceFabric, answer: &UnlockDecisionRecord) -> Boot {
     }
 }
 
-/// The key an answer is kept under: when it was made, which device made it
-/// and which boot it answers. The same device answering the same boot again —
-/// after its answer ran out — is another answer, and another entry.
+/// The key an answer is kept under: when it was made, which device made it and which boot it
+/// answers. The same device answering the same boot again — after its answer ran out — is another
+/// answer, and another entry.
 fn key_of(answer: &UnlockDecisionRecord) -> String {
     format!(
         "{}-{}-{}",
@@ -276,9 +257,8 @@ const fn outcome(answer: DecisionOutcome) -> &'static str {
     }
 }
 
-/// How the change `answer` makes reads in the history: "Disk unlock:
-/// Approved unlocking The phone", by the device that answered, about the boot
-/// that asked and the disk it asked for.
+/// How the change `answer` makes reads in the history: "Disk unlock: Approved unlocking The phone",
+/// by the device that answered, about the boot that asked and the disk it asked for.
 fn context_of(answer: &UnlockDecisionRecord, boot: &Boot) -> ActionContext {
     let outcome = outcome(answer.outcome);
     ActionContext {
@@ -308,8 +288,8 @@ fn context_of(answer: &UnlockDecisionRecord, boot: &Boot) -> ActionContext {
     }
 }
 
-/// Write `answer` into `doc` as the entry `key` names: the facts a reader of
-/// the person's record asks for, as plain values. Whether it was written.
+/// Write `answer` into `doc` as the entry `key` names: the facts a reader of the person's record
+/// asks for, as plain values. Whether it was written.
 fn write_entry(
     doc: &mut AutoCommit,
     key: &str,

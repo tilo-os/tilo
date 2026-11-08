@@ -12,11 +12,6 @@ impl NativeWorkspaceOwner {
     /// ([`crate::workspace::proven_saver`]), then the workspace change every
     /// receiver admits. A change the workspace already reflects commits nothing
     /// and answers the current generation.
-    ///
-    /// # Errors
-    /// Refuses another family, a caller or key that is not this device's, a
-    /// caller the workspace does not admit to change it, a saver without proof,
-    /// or failed publication.
     pub fn commit_shortcut_change(
         &self,
         request: &OwnerCommitRequest,

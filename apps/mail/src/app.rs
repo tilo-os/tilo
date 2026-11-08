@@ -4733,10 +4733,6 @@ impl Mailroom {
     /// once; a refresh answers once the server replied, through
     /// [`Self::take_effect_result`]. Saving an attachment is the view's,
     /// which asks the host where to put it.
-    ///
-    /// # Errors
-    /// Why the effect does not apply to what this window has loaded now: a
-    /// message, folder or account that is gone, no connected account.
     #[allow(
         clippy::too_many_lines,
         reason = "one ordered match over every effect a mail window publishes, kept together so a new effect cannot be left unhandled"
@@ -5018,10 +5014,6 @@ impl Mailroom {
 
     /// The attachment `index` of the loaded `message`, as the name to suggest
     /// and the bytes to save.
-    ///
-    /// # Errors
-    /// Why it cannot be saved: gone, not downloaded yet, too large, or its
-    /// metadata no longer matching its bytes.
     pub(crate) fn attachment_to_save(
         &self,
         message: &str,

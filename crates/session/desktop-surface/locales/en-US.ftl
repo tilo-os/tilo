@@ -1066,25 +1066,6 @@ launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what y
 launchpad-subtitle-private = Pick a way to start. Only you see what you make here until you invite someone.
 launchpad-subtitle-public = Pick a way to start. This workspace is public: anyone who joins sees what you make here.
 
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Search emoji
-emoji-picker-groups = Emoji categories
-emoji-picker-recent = Recently used
-emoji-picker-results = Matching emoji
-emoji-picker-no-results = No emoji found
-emoji-picker-tones = Skin tones
-emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
-emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
-
-# An emoji in a skin tone: "thumbs up, medium skin tone".
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = light skin tone
-emoji-picker-tone-medium-light = medium-light skin tone
-emoji-picker-tone-medium = medium skin tone
-emoji-picker-tone-medium-dark = medium-dark skin tone
-emoji-picker-tone-dark = dark skin tone
-
 # The Alt+Tab window switcher.
 window-switcher-title = Switch windows
 window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
@@ -1189,13 +1170,8 @@ tilo-about-link-community = Community
 notification-preview-hidden = Notification preview hidden
 activity-acknowledge-viewed = Mark as seen
 activity-acknowledge-description = Marks the changes shown here as seen. Waiting tasks stay open.
-notification-alarm-snoozed = Snoozed for 5 minutes. Dismiss this entry to cancel the pending snooze.
 notification-alarm-dismiss = Dismiss
 notification-alarm-snooze = Snooze for 5 minutes
-notification-alarm-action-failed = Could not change this alarm
-notification-alarm-action-title = { $action }: { $title }
-notification-alarm-action-subtitle = For this alarm occurrence
-notification-alarm-action-retry = Keep this notification and try again.
 notification-sender-claims = App says: { $name }
 notification-open = Open
 notification-quiet-do-not-disturb = Do Not Disturb
@@ -1225,8 +1201,6 @@ activity-morning-command-refused = Request refused
 activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
 
 activity-morning-next = Next chosen source
-
-emoji-picker-hint-tone = Pick a skin tone
 
 workspace-settings-hint-close = Close
 workspace-settings-hint-save = Save
@@ -1331,6 +1305,9 @@ session-host-lock = Lock
 session-host-log-out = Log out
 session-host-restart = Restart
 session-host-shut-down = Shut down
+session-host-report-problem = Report a problem
+session-host-report-problem-description = Send what went wrong to Tilo
+session-feedback-destination = Tilo feedback
 session-left-workspace = You left { $name }
 session-left-workspace-body = Its windows are gone from this computer. You can join it again from the workspace directory.
 session-deleted-workspace = { $name } is deleted
@@ -1441,6 +1418,8 @@ window-menu-full-screen = Full screen
 window-menu-exit-full-screen = Exit full screen
 window-menu-maximize = Fill the strip
 window-menu-restore = Give the strip back
+window-menu-float = Float this window
+window-menu-snap-back = Snap back into the strip
 window-menu-move-to-strip = Move to strip
 window-menu-move-to-workspace = Move to workspace
 window-menu-move-to-display = Move to display

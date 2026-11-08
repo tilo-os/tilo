@@ -68,9 +68,6 @@ impl Identity {
 
     /// The revocations this side has verified for its identity. A missing
     /// list is empty; a damaged one is an error rather than an empty list.
-    ///
-    /// # Errors
-    /// An unreadable list, or an entry whose root signature does not verify.
     pub fn revocations(&self) -> anyhow::Result<RevocationList> {
         load_revocations(&revocations_path(&self.paths))
     }
@@ -118,9 +115,6 @@ pub fn load_revocations(path: &Path) -> anyhow::Result<RevocationList> {
 
 /// Make the dialing machine's device key under `root` if it has none, and
 /// return its public half.
-///
-/// # Errors
-/// An existing key that cannot be read, or one that cannot be written.
 pub fn ensure_key(root: &Path) -> anyhow::Result<[u8; 32]> {
     let paths = IdentityPaths::under(root);
     let (key, _) = persist::load_or_create_device_key(&paths)
@@ -130,10 +124,6 @@ pub fn ensure_key(root: &Path) -> anyhow::Result<[u8; 32]> {
 
 /// Install a root-signed certificate for the dialing machine's key: it must
 /// name this machine's key, verify, and grant administration.
-///
-/// # Errors
-/// A certificate that is not this machine's, does not verify, or does not
-/// grant administration; or a write failure.
 pub fn install_cert(root: &Path, cert_path: &Path) -> anyhow::Result<DeviceCert> {
     let paths = IdentityPaths::under(root);
     let key = persist::read_device_key(&paths.device_privkey).with_context(|| {

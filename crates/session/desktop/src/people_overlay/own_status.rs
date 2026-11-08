@@ -1,11 +1,9 @@
-//! The person's own row at the top of the overlay: their face beside a
-//! field saying, in their own words, what they are doing.
-//!
-//! It shows what they said; a press takes the keyboard to change it.
-//! Enter keeps the words (the host publishes them, and they lead what
-//! everyone here reads of them), Escape puts back what was there, and the
-//! clear button takes their words away, so an automatic description shows
-//! again. It holds the keyboard only once pressed.
+//! The person's own row at the top of the overlay: their face beside a field saying, in their own
+//! words, what they are doing.
+//! It shows what they said; a press takes the keyboard to change it. Enter keeps the words (the
+//! host publishes them, and they lead what everyone here reads of them), Escape puts back what was
+//! there, and the clear button takes their words away, so an automatic description shows again. It
+//! holds the keyboard only once pressed.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -38,7 +36,7 @@ pub(super) enum Keyed {
 pub(super) struct OwnStatus {
     /// What the person said, as the host last gave it.
     said: String,
-    /// The words in the field: `said`, or what is being typed.
+    /// The words in the field: `said` , or what is being typed.
     text: String,
     selection: Selection,
     focused: bool,
@@ -47,14 +45,13 @@ pub(super) struct OwnStatus {
     clear: Rect,
 }
 
-/// The field's height in `theme`.
+/// The field's height in `theme` .
 pub(super) fn height(theme: &Theme) -> f64 {
     FieldFace::height(ControlSize::Regular, theme)
 }
 
 impl OwnStatus {
-    /// What the person said, as the host has it now: shown unless they
-    /// are changing it.
+    /// What the person said, as the host has it now: shown unless they are changing it.
     pub(super) fn sync(&mut self, said: &str) {
         if self.said != said {
             said.clone_into(&mut self.said);
@@ -148,13 +145,13 @@ impl OwnStatus {
                 self.bound();
                 Keyed::Consumed
             }
-            // The field holds the keyboard: a key it does not use still
-            // must not reach the window behind.
+            // The field holds the keyboard: a key it does not use still must not reach the window
+            // behind.
             Edit::ConsumedQuiet | Edit::Ignored => Keyed::Consumed,
         }
     }
 
-    /// Paint the field in `field`.
+    /// Paint the field in `field` .
     pub(super) fn draw(
         &mut self,
         scene: &mut Scene,

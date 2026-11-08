@@ -1,24 +1,21 @@
 //! `EditCore` — the shared headless text-editing model.
 //!
-//! Caret + selection state (byte offsets), the in-progress IME composition,
-//! an optional per-character admission filter, and the motion / edit
-//! vocabulary every editable surface needs, built on the shared
-//! [`text_selection`](crate::text_selection) boundary walkers. Edits come back
-//! as byte-space [`Edit`] splices the host applies to its mirror
-//! ([`Edit::apply`]) and its Automerge `Text` ([`Edit::splice_automerge`],
-//! char-addressed). It is deliberately UI-free: no rendering, no CRDT handle.
+//! Caret and selection state (byte offsets), the in-progress IME composition, an optional
+//! per-character admission filter, and the motion and edit vocabulary every editable surface needs,
+//! built on the shared [`text_selection`](crate::text_selection) boundary walkers. Edits come back
+//! as byte-space [`Edit`] splices the host applies to its mirror ([`Edit::apply`]) and its Automerge
+//! `Text` ([`Edit::splice_automerge`], char-addressed). It is deliberately UI-free: no rendering,
+//! no CRDT handle.
 //!
-//! Every text field uses it: [`TextInput`] (and through it every form field,
-//! `RichTextLine` and `BlockEditor`), the transient query fields of palettes
-//! and menus ([`QueryComposition`]), [`NameField`], and the app-specific
-//! editors. Laid-out geometry — visual/bidi arrow motion, wrapped
-//! Up/Down, Home/End of a soft-wrapped row — stays in the widget, which feeds
-//! the resolved position back through [`EditCore::motion_to`] or
-//! [`EditCore::place_position`]; the core owns everything logical, which is
-//! exactly what unit tests can pin without a GPU.
+//! Every text field uses it: [`TextInput`] (and through it every form field, `RichTextLine` and
+//! `BlockEditor`), the transient query fields of palettes and menus ([`QueryComposition`]),
+//! [`NameField`], and the app-specific editors. Laid-out geometry — visual/bidi arrow motion,
+//! wrapped Up/Down, Home/End of a soft-wrapped row — stays in the widget, which feeds the resolved
+//! position back through [`EditCore::motion_to`] or [`EditCore::place_position`]; the core owns
+//! everything logical, exactly what unit tests can pin without a GPU.
 //!
-//! [`TypingRun`] notes when the user last typed, so a word being typed is
-//! not checked before it settles.
+//! [`TypingRun`] notes when the user last typed, so a word being typed is not checked before it
+//! settles.
 //!
 //! [`NameField`]: crate::widget::name_field::NameField
 //! [`QueryComposition`]: crate::query_text::QueryComposition

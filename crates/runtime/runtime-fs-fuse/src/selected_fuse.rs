@@ -26,8 +26,6 @@ impl SelectedFilesystem {
     /// Construct a presentation adapter, never source or mount authority.
     /// The worker's native admission remains responsible for actual credentials,
     /// the FUSE channel, namespace confinement and complete mount retirement.
-    /// # Errors
-    /// Refuses root presentation and names the kernel cannot represent.
     pub fn new(
         source: SelectedFileConnection,
         name: OsString,

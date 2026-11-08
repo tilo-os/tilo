@@ -1,14 +1,13 @@
-use capnp::capability::Promise;
-use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 pub use tilo_fs_client::blobs::*;
+use tilo_fs_client::connection::{Capabilities, ServeObject, serve_connected};
+use tilo_fs_client::wire::{FsReply, FsRequest};
 
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -75,10 +74,6 @@ impl BlobChunks {
 impl BlobChunkSender {
     /// Hand on one piece, waiting while [`BlobChunks::channel`]'s pieces are
     /// all in flight.
-    ///
-    /// # Errors
-    ///
-    /// Returns a refusal when the backend stopped reading.
     pub async fn send(&self, piece: Vec<u8>) -> Result<(), BlobError> {
         self.pieces
             .send(Some(piece))
@@ -87,10 +82,6 @@ impl BlobChunkSender {
     }
 
     /// End the content cleanly; dropping every sender without this abandons it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a refusal when the backend stopped reading.
     pub async fn finish(self) -> Result<(), BlobError> {
         self.pieces
             .send(None)
@@ -173,10 +164,6 @@ pub trait BlobBackend: Send + Sync + 'static {
     /// The session names the agent behind this device's next writes to some
     /// paths ([`BlobClient::attribute_writes`]). Only a session connection
     /// reaches this; a backend without write attribution refuses it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the backend's refusal.
     fn attribute_writes(&self, attribution: WriteAttribution) -> Result<(), BlobError> {
         let _ = attribution;
         Err(BlobError::Refused("write attribution unsupported".into()))
@@ -188,13 +175,7 @@ fn no_public_content() -> BlobError {
     BlobError::Refused("this device keeps no public content".into())
 }
 
-/// Serve `listener` on a dedicated thread. Cap'n Proto servers are `!Send`,
-/// so connections are driven by a single-threaded `LocalSet`; backend work
-/// runs on `runtime`, where the content store and transport live.
-///
-/// # Errors
-///
-/// Returns an I/O error if the thread cannot be started.
+/// Serve `listener` on a dedicated thread.
 pub fn spawn_blob_server(
     listener: std::os::unix::net::UnixListener,
     backend: Arc<dyn BlobBackend>,
@@ -214,8 +195,7 @@ pub fn spawn_blob_server(
                     return;
                 }
             };
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&local_runtime, async move {
+            local_runtime.block_on(async move {
                 let listener = match tokio::net::UnixListener::from_std(listener) {
                     Ok(listener) => listener,
                     Err(error) => {
@@ -234,7 +214,7 @@ pub fn spawn_blob_server(
                     };
                     let backend = Arc::clone(&backend);
                     let runtime = runtime.clone();
-                    tokio::task::spawn_local(async move {
+                    tokio::spawn(async move {
                         if let Err(error) = serve_connection(stream, backend, runtime).await {
                             eprintln!("document media connection closed: {error}");
                         }
@@ -245,15 +225,7 @@ pub fn spawn_blob_server(
 }
 
 /// Serve one already-accepted connection: read its handoff, then answer
-/// Cap'n Proto until the peer goes away. Must run inside a `LocalSet`.
-///
-/// # Errors
-///
-/// Returns an error for a missing or invalid handoff, or a failed RPC system.
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc servers are Rc-based and run on a LocalSet by construction"
-)]
+/// frames until the peer goes away.
 pub async fn serve_connection(
     mut stream: tokio::net::UnixStream,
     backend: Arc<dyn BlobBackend>,
@@ -262,54 +234,33 @@ pub async fn serve_connection(
     let principal = tokio::time::timeout(HANDOFF_TIMEOUT, read_handoff(&mut stream))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "handoff timed out"))??;
-    let bootstrap: capnp::capability::Client = match principal {
-        BlobPrincipal::App(scope) => {
-            let client: document_blobs::Client = capnp_rpc::new_client(ScopedBlobs {
-                scope,
-                backend,
-                runtime,
-            });
-            client.client
-        }
-        BlobPrincipal::Session => {
-            let client: session_blobs::Client =
-                capnp_rpc::new_client(SessionServer { backend, runtime });
-            client.client
-        }
+    let root: Arc<dyn ServeObject> = match principal {
+        BlobPrincipal::App(scope) => Arc::new(ScopedBlobs {
+            scope,
+            backend,
+            runtime,
+        }),
+        BlobPrincipal::Session => Arc::new(SessionServer { backend, runtime }),
     };
-    runtime_portal::serve_connected_io(stream, bootstrap)
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))
+    serve_connected(stream, root).await
 }
 
 async fn on_runtime<T: Send + 'static>(
     runtime: &tokio::runtime::Handle,
     future: BlobFuture<T>,
-) -> Result<T, capnp::Error> {
+) -> Result<T, String> {
     runtime
         .spawn(future)
         .await
-        .map_err(|error| capnp::Error::failed(format!("document media backend failed: {error}")))
+        .map_err(|error| format!("document media backend failed: {error}"))
 }
 
-fn text_param(value: capnp::Result<capnp::text::Reader<'_>>) -> Result<String, capnp::Error> {
-    value?
-        .to_str()
-        .map(str::to_owned)
-        .map_err(|error| capnp::Error::failed(error.to_string()))
-}
-
-fn checked_hash(value: capnp::Result<capnp::text::Reader<'_>>) -> Result<String, capnp::Error> {
-    let hash = text_param(value)?;
+fn checked_hash(hash: String) -> Result<String, String> {
     if valid_hash(&hash) {
         Ok(hash)
     } else {
-        Err(capnp::Error::failed(BlobError::InvalidHash.to_string()))
+        Err(BlobError::InvalidHash.to_string())
     }
-}
-
-fn refuse(error: &BlobError) -> capnp::Error {
-    capnp::Error::failed(error.to_string())
 }
 
 struct ScopedBlobs {
@@ -318,146 +269,98 @@ struct ScopedBlobs {
     runtime: tokio::runtime::Handle,
 }
 
-#[allow(
-    refining_impl_trait,
-    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
-)]
-impl document_blobs::Server for ScopedBlobs {
-    fn put(
-        self: Rc<Self>,
-        params: document_blobs::PutParams,
-        mut results: document_blobs::PutResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let request = params.get()?;
-            let bytes = request.get_bytes()?;
-            if bytes.len() > MAX_PUT_CHUNK {
-                return Err(refuse(&BlobError::TooLarge {
-                    len: bytes.len() as u64,
-                    limit: MAX_PUT_CHUNK as u64,
-                }));
-            }
-            let bytes = bytes.to_vec();
-            let mime = text_param(request.get_mime())?;
-            let stored = on_runtime(
-                &self.runtime,
-                Arc::clone(&self.backend).put(self.scope.clone(), bytes, mime),
-            )
-            .await?
-            .map_err(|error| refuse(&error))?;
-            write_ref(results.get().init_ref(), &stored);
-            Ok(())
-        })
-    }
-
-    fn upload(
-        self: Rc<Self>,
-        params: document_blobs::UploadParams,
-        mut results: document_blobs::UploadResults,
-    ) -> Promise<(), capnp::Error> {
-        let mime = match params
-            .get()
-            .and_then(|request| text_param(request.get_mime()))
-        {
-            Ok(mime) => mime,
-            Err(error) => return Promise::err(error),
-        };
-        // The backend consumes the upload as it is written, so the store
-        // hashes and imports it piece by piece and nothing here ever holds
-        // the whole payload.
-        let (pieces, chunks) = BlobChunks::channel(UPLOAD_PIECES_IN_FLIGHT);
-        let stored = self.runtime.spawn(Arc::clone(&self.backend).put_stream(
-            self.scope.clone(),
-            chunks,
-            mime,
-        ));
-        results.get().set_upload(capnp_rpc::new_client(Upload {
-            pieces: RefCell::new(Some(pieces)),
-            stored: RefCell::new(Some(stored)),
-            len: Cell::new(0),
-            writing: Rc::new(Cell::new(false)),
-        }));
-        Promise::ok(())
-    }
-
-    fn get(
-        self: Rc<Self>,
-        params: document_blobs::GetParams,
-        mut results: document_blobs::GetResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let request = params.get()?;
-            let hash = checked_hash(request.get_hash())?;
-            let offset = request.get_offset();
-            let max_len = request.get_max_len().min(MAX_READ_CHUNK);
-            let outcome = on_runtime(
-                &self.runtime,
-                Arc::clone(&self.backend).read(self.scope.clone(), hash, offset, max_len),
-            )
-            .await?;
-            write_read(results.get().init_read(), &outcome);
-            Ok(())
-        })
-    }
-
-    fn has(
-        self: Rc<Self>,
-        params: document_blobs::HasParams,
-        mut results: document_blobs::HasResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let hash = checked_hash(params.get()?.get_hash())?;
-            let present = on_runtime(
-                &self.runtime,
-                Arc::clone(&self.backend).has(self.scope.clone(), hash),
-            )
-            .await?;
-            results.get().set_present(present);
-            Ok(())
-        })
-    }
-
-    fn size(
-        self: Rc<Self>,
-        params: document_blobs::SizeParams,
-        mut results: document_blobs::SizeResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let hash = checked_hash(params.get()?.get_hash())?;
-            let size = on_runtime(
-                &self.runtime,
-                Arc::clone(&self.backend).size(self.scope.clone(), hash),
-            )
-            .await?;
-            let mut reply = results.get();
-            reply.set_known(size.is_some());
-            reply.set_len(size.unwrap_or(0));
-            Ok(())
-        })
-    }
-
-    fn public_content(
-        self: Rc<Self>,
-        params: document_blobs::PublicContentParams,
-        mut results: document_blobs::PublicContentResults,
-    ) -> Promise<(), capnp::Error> {
-        match params
-            .get()
-            .and_then(|request| text_param(request.get_name()))
-        {
-            Ok(name) => {
-                results
-                    .get()
-                    .set_content(capnp_rpc::new_client(PublicContentServer {
-                        scope: self.scope.clone(),
+impl ServeObject for ScopedBlobs {
+    fn dispatch(
+        self: Arc<Self>,
+        capabilities: &Capabilities,
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
+        let capabilities = capabilities.clone();
+        Box::pin(async move {
+            let scope = &self.scope;
+            match request {
+                FsRequest::Put { bytes, mime } => {
+                    if bytes.len() > MAX_PUT_CHUNK {
+                        return Err(BlobError::TooLarge {
+                            len: bytes.len() as u64,
+                            limit: MAX_PUT_CHUNK as u64,
+                        }
+                        .to_string());
+                    }
+                    let stored = on_runtime(
+                        &self.runtime,
+                        Arc::clone(&self.backend).put(scope.clone(), bytes, mime),
+                    )
+                    .await?
+                    .map_err(|error| error.to_string())?;
+                    Ok(FsReply::Blob(stored))
+                }
+                FsRequest::Upload { mime } => {
+                    // The backend consumes the upload as it is written, so the
+                    // store hashes and imports it piece by piece and nothing
+                    // here ever holds the whole payload.
+                    let (pieces, chunks) = BlobChunks::channel(UPLOAD_PIECES_IN_FLIGHT);
+                    let stored = self.runtime.spawn(Arc::clone(&self.backend).put_stream(
+                        scope.clone(),
+                        chunks,
+                        mime,
+                    ));
+                    let (ended, writing) = tokio::sync::watch::channel(false);
+                    let upload = Arc::new(Upload {
+                        state: tokio::sync::Mutex::new(Some(Uploading {
+                            pieces,
+                            stored,
+                            len: 0,
+                            writing,
+                        })),
+                        ended,
+                    });
+                    Ok(FsReply::Handle(Some(capabilities.register(upload))))
+                }
+                FsRequest::Get {
+                    hash,
+                    offset,
+                    max_len,
+                } => {
+                    let hash = checked_hash(hash)?;
+                    let max_len = max_len.min(MAX_READ_CHUNK);
+                    let outcome = on_runtime(
+                        &self.runtime,
+                        Arc::clone(&self.backend).read(scope.clone(), hash, offset, max_len),
+                    )
+                    .await?;
+                    Ok(FsReply::BlobRead(outcome))
+                }
+                FsRequest::Has { hash } => {
+                    let hash = checked_hash(hash)?;
+                    let present = on_runtime(
+                        &self.runtime,
+                        Arc::clone(&self.backend).has(scope.clone(), hash),
+                    )
+                    .await?;
+                    Ok(FsReply::Present(present))
+                }
+                FsRequest::Size { hash } => {
+                    let hash = checked_hash(hash)?;
+                    let size = on_runtime(
+                        &self.runtime,
+                        Arc::clone(&self.backend).size(scope.clone(), hash),
+                    )
+                    .await?;
+                    Ok(FsReply::Size(size))
+                }
+                FsRequest::PublicContent { name } => {
+                    let copy = Arc::new(PublicContentServer {
+                        scope: scope.clone(),
                         name,
                         backend: Arc::clone(&self.backend),
                         runtime: self.runtime.clone(),
-                    }));
-                Promise::ok(())
+                    });
+                    Ok(FsReply::Handle(Some(capabilities.register(copy))))
+                }
+                _ => Err("unexpected document media request".into()),
             }
-            Err(error) => Promise::err(error),
-        }
+        })
     }
 }
 
@@ -469,80 +372,56 @@ struct PublicContentServer {
     runtime: tokio::runtime::Handle,
 }
 
-fn write_read(mut read: crate::blobs_capnp::blob_read::Builder<'_>, outcome: &ReadOutcome) {
-    match outcome {
-        ReadOutcome::Ready { bytes, total_len } => {
-            read.set_status(WireReadStatus::Ready);
-            read.set_bytes(bytes);
-            read.set_total_len(*total_len);
-        }
-        ReadOutcome::Pending => read.set_status(WireReadStatus::Pending),
-        ReadOutcome::Unavailable => read.set_status(WireReadStatus::Unavailable),
-    }
-}
-
-#[allow(
-    refining_impl_trait,
-    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
-)]
-impl public_content::Server for PublicContentServer {
-    fn keep(
-        self: Rc<Self>,
-        _params: public_content::KeepParams,
-        _results: public_content::KeepResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            on_runtime(
-                &self.runtime,
-                Arc::clone(&self.backend).public_keep(self.scope.clone(), self.name.clone()),
-            )
-            .await?
-            .map_err(|error| refuse(&error))
-        })
-    }
-
-    fn release(
-        self: Rc<Self>,
-        _params: public_content::ReleaseParams,
-        _results: public_content::ReleaseResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            on_runtime(
-                &self.runtime,
-                Arc::clone(&self.backend).public_release(self.scope.clone(), self.name.clone()),
-            )
-            .await?
-            .map_err(|error| refuse(&error))
-        })
-    }
-
-    fn read(
-        self: Rc<Self>,
-        params: public_content::ReadParams,
-        mut results: public_content::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let request = params.get()?;
-            let offset = request.get_offset();
-            let max_len = request.get_max_len().min(MAX_READ_CHUNK);
-            let read = on_runtime(
-                &self.runtime,
-                Arc::clone(&self.backend).public_read(self.name.clone(), offset, max_len),
-            )
-            .await?
-            .map_err(|error| refuse(&error))?;
-            let mut reply = results.get();
-            write_read(reply.reborrow().init_read(), &read.outcome);
-            reply.set_hash(read.hash.as_deref().unwrap_or_default());
-            Ok(())
+impl ServeObject for PublicContentServer {
+    fn dispatch(
+        self: Arc<Self>,
+        _: &Capabilities,
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
+        Box::pin(async move {
+            match request {
+                FsRequest::PublicKeep => on_runtime(
+                    &self.runtime,
+                    Arc::clone(&self.backend).public_keep(self.scope.clone(), self.name.clone()),
+                )
+                .await?
+                .map_err(|error| error.to_string())
+                .map(|()| FsReply::Empty),
+                FsRequest::PublicRelease => on_runtime(
+                    &self.runtime,
+                    Arc::clone(&self.backend).public_release(self.scope.clone(), self.name.clone()),
+                )
+                .await?
+                .map_err(|error| error.to_string())
+                .map(|()| FsReply::Empty),
+                FsRequest::PublicRead { offset, max_len } => {
+                    let max_len = max_len.min(MAX_READ_CHUNK);
+                    let read = on_runtime(
+                        &self.runtime,
+                        Arc::clone(&self.backend).public_read(self.name.clone(), offset, max_len),
+                    )
+                    .await?
+                    .map_err(|error| error.to_string())?;
+                    Ok(FsReply::PublicRead {
+                        read: read.outcome,
+                        hash: read.hash.unwrap_or_default(),
+                    })
+                }
+                _ => Err("unexpected public content request".into()),
+            }
         })
     }
 }
 
-fn write_ref(mut target: crate::blobs_capnp::blob_ref::Builder<'_>, stored: &BlobRef) {
-    target.set_hash(stored.hash.as_str());
-    target.set_len(stored.len);
-    target.set_mime(stored.mime.as_str());
+struct Uploading {
+    /// The backend's end of the stream; dropped unfinished when refused.
+    pieces: BlobChunkSender,
+    /// The backend storing the stream; it answers once the stream ends.
+    stored: tokio::task::JoinHandle<Result<BlobRef, BlobError>>,
+    /// Bytes written so far.
+    len: u64,
+    /// Set when the upload is refused while this write holds it.
+    writing: tokio::sync::watch::Receiver<bool>,
 }
 
 /// One upload in progress. Each `write` is passed on to the backend in
@@ -552,111 +431,88 @@ fn write_ref(mut target: crate::blobs_capnp::blob_ref::Builder<'_>, stored: &Blo
 /// pipelined behind another is refused, so what waits here stays bounded by
 /// one message whatever the peer sends.
 struct Upload {
-    /// The backend's end of the stream; `None` once finished or refused.
-    pieces: RefCell<Option<BlobChunkSender>>,
-    /// The backend storing the stream; it answers once the stream ends.
-    stored: RefCell<Option<tokio::task::JoinHandle<Result<BlobRef, BlobError>>>>,
-    /// Bytes written so far.
-    len: Cell<u64>,
-    /// A write is being passed on.
-    writing: Rc<Cell<bool>>,
+    /// `None` once finished or refused.
+    state: tokio::sync::Mutex<Option<Uploading>>,
+    /// Ends the write in flight when a call is refused behind it.
+    ended: tokio::sync::watch::Sender<bool>,
 }
 
 impl Upload {
-    /// Stop the upload: the backend sees it end without finishing and
-    /// stores nothing.
-    fn refuse(&self, error: &BlobError) -> capnp::Error {
-        self.pieces.borrow_mut().take();
-        refuse(error)
+    fn busy(message: &str) -> String {
+        message.into()
+    }
+
+    /// Refuse a call that arrived while a write holds the upload: that write
+    /// stops, and the backend sees the stream end without finishing, so the
+    /// upload stores nothing.
+    fn refuse(&self, message: &str) -> String {
+        self.ended.send_replace(true);
+        message.into()
     }
 }
 
-/// Clears [`Upload::writing`] however the write it guards ends.
-struct Writing(Rc<Cell<bool>>);
-
-impl Drop for Writing {
-    fn drop(&mut self) {
-        self.0.set(false);
-    }
-}
-
-#[allow(
-    refining_impl_trait,
-    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
-)]
-impl blob_upload::Server for Upload {
-    fn write(
-        self: Rc<Self>,
-        params: blob_upload::WriteParams,
-        _results: blob_upload::WriteResults,
-    ) -> Promise<(), capnp::Error> {
-        let Some(pieces) = self.pieces.borrow().clone() else {
-            return Promise::err(capnp::Error::failed("upload already finished".into()));
-        };
-        if self.writing.get() {
-            return Promise::err(self.refuse(&BlobError::Refused(
-                "an upload takes one write at a time".into(),
-            )));
-        }
-        let written = match params
-            .get()
-            .and_then(crate::blobs_capnp::blob_upload::write_params::Reader::get_bytes)
-        {
-            Ok(bytes) => bytes.len(),
-            Err(error) => return Promise::err(error),
-        };
-        let len = self.len.get().saturating_add(written as u64);
-        if written > MAX_PUT_CHUNK || len > MAX_BLOB_BYTES {
-            return Promise::err(self.refuse(&BlobError::TooLarge {
-                len,
-                limit: MAX_BLOB_BYTES,
-            }));
-        }
-        self.len.set(len);
-        self.writing.set(true);
-        let writing = Writing(Rc::clone(&self.writing));
-        Promise::from_future(async move {
-            let _writing = writing;
-            // The message stays where the connection read it; only the
-            // pieces in flight are copies.
-            let bytes = params.get()?.get_bytes()?;
-            for piece in bytes.chunks(UPLOAD_PIECE) {
-                if let Err(error) = pieces.send(piece.to_vec()).await {
-                    return Err(self.refuse(&error));
+impl ServeObject for Upload {
+    fn dispatch(
+        self: Arc<Self>,
+        _: &Capabilities,
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
+        Box::pin(async move {
+            match request {
+                FsRequest::UploadWrite { bytes } => {
+                    let Ok(mut state) = self.state.try_lock() else {
+                        return Err(self.refuse("an upload takes one write at a time"));
+                    };
+                    let Some(upload) = state.as_mut() else {
+                        return Err(Self::busy("upload already finished"));
+                    };
+                    let len = upload.len.saturating_add(bytes.len() as u64);
+                    if bytes.len() > MAX_PUT_CHUNK || len > MAX_BLOB_BYTES {
+                        *state = None;
+                        return Err(BlobError::TooLarge {
+                            len,
+                            limit: MAX_BLOB_BYTES,
+                        }
+                        .to_string());
+                    }
+                    upload.len = len;
+                    for piece in bytes.chunks(UPLOAD_PIECE) {
+                        if *upload.writing.borrow_and_update() {
+                            *state = None;
+                            return Err(Self::busy("upload already finished"));
+                        }
+                        let sent = tokio::select! {
+                            biased;
+                            _ = upload.writing.changed() => false,
+                            sent = upload.pieces.send(piece.to_vec()) => sent.is_ok(),
+                        };
+                        if !sent {
+                            *state = None;
+                            return Err(Self::busy("upload already finished"));
+                        }
+                    }
+                    Ok(FsReply::Empty)
                 }
+                FsRequest::UploadFinish => {
+                    let Ok(mut state) = self.state.try_lock() else {
+                        return Err(self.refuse("an upload finishes after its last write"));
+                    };
+                    let Some(upload) = state.take() else {
+                        return Err(Self::busy("upload already finished"));
+                    };
+                    drop(state);
+                    // A backend that stopped reading answers why below.
+                    let ended = upload.pieces.finish().await;
+                    let stored = upload
+                        .stored
+                        .await
+                        .map_err(|error| format!("document media backend failed: {error}"))?
+                        .and_then(|stored| ended.map(|()| stored))
+                        .map_err(|error| error.to_string())?;
+                    Ok(FsReply::Blob(stored))
+                }
+                _ => Err("unexpected upload request".into()),
             }
-            Ok(())
-        })
-    }
-
-    fn finish(
-        self: Rc<Self>,
-        _params: blob_upload::FinishParams,
-        mut results: blob_upload::FinishResults,
-    ) -> Promise<(), capnp::Error> {
-        if self.writing.get() {
-            return Promise::err(self.refuse(&BlobError::Refused(
-                "an upload finishes after its last write".into(),
-            )));
-        }
-        let (Some(pieces), Some(stored)) = (
-            self.pieces.borrow_mut().take(),
-            self.stored.borrow_mut().take(),
-        ) else {
-            return Promise::err(capnp::Error::failed("upload already finished".into()));
-        };
-        Promise::from_future(async move {
-            // A backend that stopped reading answers why below.
-            let ended = pieces.finish().await;
-            let stored = stored
-                .await
-                .map_err(|error| {
-                    capnp::Error::failed(format!("document media backend failed: {error}"))
-                })?
-                .and_then(|stored| ended.map(|()| stored))
-                .map_err(|error| refuse(&error))?;
-            write_ref(results.get().init_ref(), &stored);
-            Ok(())
         })
     }
 }
@@ -666,74 +522,56 @@ struct SessionServer {
     runtime: tokio::runtime::Handle,
 }
 
-#[allow(
-    refining_impl_trait,
-    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
-)]
-impl session_blobs::Server for SessionServer {
-    fn scope(
-        self: Rc<Self>,
-        params: session_blobs::ScopeParams,
-        mut results: session_blobs::ScopeResults,
-    ) -> Promise<(), capnp::Error> {
-        let scope = params.get().and_then(|request| {
-            let room = text_param(request.get_room())?;
-            let app = text_param(request.get_app())?;
-            BlobScope::new(room, app).map_err(|error| refuse(&error))
-        });
-        match scope {
-            Ok(scope) => {
-                results.get().set_blobs(capnp_rpc::new_client(ScopedBlobs {
-                    scope,
-                    backend: Arc::clone(&self.backend),
-                    runtime: self.runtime.clone(),
-                }));
-                Promise::ok(())
+impl ServeObject for SessionServer {
+    fn dispatch(
+        self: Arc<Self>,
+        capabilities: &Capabilities,
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
+        let capabilities = capabilities.clone();
+        Box::pin(async move {
+            match request {
+                FsRequest::SessionScope { workspace, app } => {
+                    let scope =
+                        BlobScope::new(workspace, app).map_err(|error| error.to_string())?;
+                    let blobs = Arc::new(ScopedBlobs {
+                        scope,
+                        backend: Arc::clone(&self.backend),
+                        runtime: self.runtime.clone(),
+                    });
+                    Ok(FsReply::Scope(capabilities.register(blobs)))
+                }
+                FsRequest::SessionRefreshPublic => {
+                    let refreshed =
+                        on_runtime(&self.runtime, Arc::clone(&self.backend).refresh_public())
+                            .await?;
+                    Ok(FsReply::Refreshed(refreshed))
+                }
+                FsRequest::SessionAttributeWrites {
+                    paths,
+                    actor,
+                    label,
+                    color,
+                    ttl_ms,
+                } => {
+                    if paths.len() > MAX_ATTRIBUTION_PATHS {
+                        return Err("too many attributed paths".into());
+                    }
+                    let attribution = WriteAttribution {
+                        paths,
+                        actor,
+                        label,
+                        color,
+                        ttl: Duration::from_millis(u64::from(ttl_ms)),
+                    };
+                    self.backend
+                        .attribute_writes(attribution)
+                        .map_err(|error| error.to_string())?;
+                    Ok(FsReply::Empty)
+                }
+                _ => Err("unexpected session media request".into()),
             }
-            Err(error) => Promise::err(error),
-        }
-    }
-
-    fn refresh_public_content(
-        self: Rc<Self>,
-        _params: session_blobs::RefreshPublicContentParams,
-        mut results: session_blobs::RefreshPublicContentResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let refreshed =
-                on_runtime(&self.runtime, Arc::clone(&self.backend).refresh_public()).await?;
-            results.get().set_refreshed(refreshed);
-            Ok(())
         })
-    }
-
-    fn attribute_writes(
-        self: Rc<Self>,
-        params: session_blobs::AttributeWritesParams,
-        _results: session_blobs::AttributeWritesResults,
-    ) -> Promise<(), capnp::Error> {
-        let attribution = params.get().and_then(|request| {
-            let rows = request.get_paths()?;
-            if rows.len() as usize > MAX_ATTRIBUTION_PATHS {
-                return Err(capnp::Error::failed("too many attributed paths".into()));
-            }
-            let paths = rows.iter().map(text_param).collect::<Result<Vec<_>, _>>()?;
-            let [_, red, green, blue] = request.get_color().to_be_bytes();
-            Ok(WriteAttribution {
-                paths,
-                actor: text_param(request.get_actor())?,
-                label: text_param(request.get_label())?,
-                color: [red, green, blue],
-                ttl: Duration::from_millis(u64::from(request.get_ttl_ms())),
-            })
-        });
-        match attribution {
-            Ok(attribution) => match self.backend.attribute_writes(attribution) {
-                Ok(()) => Promise::ok(()),
-                Err(error) => Promise::err(refuse(&error)),
-            },
-            Err(error) => Promise::err(error),
-        }
     }
 }
 

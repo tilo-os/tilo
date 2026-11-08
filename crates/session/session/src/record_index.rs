@@ -28,8 +28,8 @@ use tilo_desktop_search::content_index::{AppContentIndex, SlotKey};
 use tilo_lock::MutexRecover as _;
 use ui::search::index_publication::{IndexEntry, IndexState, Publisher};
 
-/// What the indexer reads: the workspaces this device holds, and the records
-/// within them, as the owner last admitted them.
+/// What the indexer reads: the workspaces this device holds, and the records within them, as the
+/// owner last admitted them.
 pub(crate) trait RecordSource: Send + Sync + 'static {
     /// The workspaces this device holds.
     fn workspaces(&self) -> Vec<String>;
@@ -65,8 +65,8 @@ impl RecordSource for crate::engine::Engine {
     }
 }
 
-/// What an app answers search about one of its records: the app's own model
-/// types, read from the document, as its window reads them.
+/// What an app answers search about one of its records: the app's own model types, read from the
+/// document, as its window reads them.
 pub(crate) trait RecordReader: Send + Sync + 'static {
     /// What `app`'s record `doc` holds for search.
     ///
@@ -75,8 +75,8 @@ pub(crate) trait RecordReader: Send + Sync + 'static {
     fn entries(&self, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, String>;
 }
 
-/// The reader this device asks: the app's own binary in its record mode, as
-/// every app of a workspace starts, through the launcher.
+/// The reader this device asks: the app's own binary in its record mode, as every app of a
+/// workspace starts, through the launcher.
 pub(crate) struct AppReader {
     launcher: Option<std::path::PathBuf>,
 }
@@ -100,7 +100,7 @@ impl RecordReader for AppReader {
             .launcher
             .as_deref()
             .ok_or("no tilo-launcher is installed, so no app's records are read")?;
-        let installed = tilo_installed_apps::read_one_from_env(app)
+        let installed = app_catalogue::apps::read_one_from_env(app)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{app} is not installed here"))?;
         let mut child = Command::new(launcher)
@@ -153,8 +153,8 @@ pub(crate) struct RecordIndex {
 }
 
 impl RecordIndex {
-    /// Index what `source` holds, reading each record through `reader` and
-    /// publishing to `content`, and follow every later change.
+    /// Index what `source` holds, reading each record through `reader` and publishing to `content`
+    /// , and follow every later change.
     pub(crate) fn start(
         source: Arc<dyn RecordSource>,
         reader: Arc<dyn RecordReader>,
@@ -168,9 +168,8 @@ impl RecordIndex {
             queued: Mutex::new(BTreeSet::new()),
             wake,
         });
-        // The worker reads the owner and the app's reader, neither of which
-        // may hold up the session's frame: it wakes only when a record is
-        // waiting, and reads each one once.
+        // The worker reads the owner and the app's reader, neither of which may hold up the
+        // session's frame: it wakes only when a record is waiting, and reads each one once.
         let worker = Arc::downgrade(&index);
         let started = std::thread::Builder::new()
             .name("tilo-record-index".into())
@@ -189,8 +188,8 @@ impl RecordIndex {
         index
     }
 
-    /// Read what this device already holds, once: the records of every
-    /// workspace it keeps, so search finds them before anything changes.
+    /// Read what this device already holds, once: the records of every workspace it keeps, so
+    /// search finds them before anything changes.
     pub(crate) fn sweep(&self) {
         for workspace in self.source.workspaces() {
             match self.source.records(&workspace) {
@@ -221,8 +220,7 @@ impl RecordIndex {
         let _ = self.wake.send(());
     }
 
-    /// Read every record queued since the last pass, each once, and publish
-    /// what it now holds.
+    /// Read every record queued since the last pass, each once, and publish what it now holds.
     pub(crate) fn pass(&self) {
         let Some(content) = &self.content else {
             self.queued.lock_recover().clear();
@@ -235,8 +233,8 @@ impl RecordIndex {
         for (workspace, app, record) in queued {
             let doc = match self.source.record(&workspace, &app, &record) {
                 Ok(Some(doc)) => doc,
-                // Unchanged since it was last read, or nothing this device
-                // holds: what search keeps of it is what it holds.
+                // Unchanged since it was last read, or nothing this device holds: what search keeps
+                // of it is what it holds.
                 Ok(None) => continue,
                 Err(error) => {
                     tracing::warn!(%error, %workspace, %app, %record, "a record is not indexed");
@@ -250,8 +248,8 @@ impl RecordIndex {
                     continue;
                 }
             };
-            // The record is the whole of what its app publishes from it: what
-            // it no longer holds, deleted messages included, goes with it.
+            // The record is the whole of what its app publishes from it: what it no longer holds,
+            // deleted messages included, goes with it.
             let mut publisher = Publisher::default();
             let deltas = publisher.publish(
                 IndexState {
@@ -267,8 +265,8 @@ impl RecordIndex {
         }
     }
 
-    /// The records waiting for the next pass: what a test reads to see that
-    /// a change that reads nothing new waits for none.
+    /// The records waiting for the next pass: what a test reads to see that a change that reads
+    /// nothing new waits for none.
     #[cfg(test)]
     pub(crate) fn waiting(&self) -> usize {
         self.queued.lock_recover().len()

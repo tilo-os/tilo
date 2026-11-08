@@ -1,17 +1,14 @@
 //! What a running app may still capture.
-//!
-//! The broker hands out a stream when the person allows one; taking the
-//! permission back ends the stream it handed out and stops answering the
-//! app's next ask. Neither closes the app: it loses the stream, not its
-//! window.
+//! The broker hands out a stream when the person allows one; taking the permission back ends the
+//! stream it handed out and stops answering the app's next ask. Neither closes the app: it loses
+//! the stream, not its window.
 
 use tilo_desktop_model::DesktopTree;
 use tilo_portal::capture_broker::CaptureKind;
 
-/// The device a workspace capability names for a capture kind, or `None` for
-/// a kind no workspace grants: a screen share is the person's answer to a
-/// portal question, and it ends with the session, the lock, or the person
-/// stopping it, never with a workspace's capability list.
+/// The device a workspace capability names for a capture kind, or `None` for a kind no workspace
+/// grants: a screen share is the person's answer to a portal question, and it ends with the
+/// session, the lock, or the person stopping it, never with a workspace's capability list.
 #[must_use]
 pub(crate) fn device_scope(kind: CaptureKind) -> Option<&'static str> {
     match kind {
@@ -21,8 +18,8 @@ pub(crate) fn device_scope(kind: CaptureKind) -> Option<&'static str> {
     }
 }
 
-/// Whether app `app_id`, running in workspace `workspace` (named by its room
-/// id, as the portal names it), may still capture `kind` at `now`.
+/// Whether app `app_id` , running in workspace `workspace` (named by its room id, as the portal
+/// names it), may still capture `kind` at `now` .
 #[must_use]
 pub(crate) fn still_allowed(
     tree: &DesktopTree,

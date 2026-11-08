@@ -715,10 +715,6 @@ impl Netfilter {
     /// Create the table, its sets and the chain with [`rules`], in one
     /// transaction. Before this returns, nothing leaves the namespace that
     /// the rules do not allow; if it fails, nothing was installed.
-    ///
-    /// # Errors
-    /// The kernel's refusal (no `nf_tables`, not permitted, a rule it does
-    /// not understand), or no answer.
     pub fn install(&mut self) -> io::Result<()> {
         if self.installed {
             return Ok(());
@@ -731,9 +727,6 @@ impl Netfilter {
     }
 
     /// Delete the table: egress is unrestricted afterwards.
-    ///
-    /// # Errors
-    /// The kernel's refusal, or no answer.
     pub fn remove(&mut self) -> io::Result<()> {
         if !self.installed {
             return Ok(());
@@ -747,9 +740,6 @@ impl Netfilter {
 
     /// Put addresses in the allowed sets: `add` are new, `refresh` are there
     /// already and get the new timeout (replaced in the same transaction).
-    ///
-    /// # Errors
-    /// The kernel's refusal, or no answer.
     pub fn admit(
         &mut self,
         add: &[(IpAddr, Duration)],
@@ -778,9 +768,6 @@ impl Netfilter {
     }
 
     /// Empty both sets: every address must be answered again.
-    ///
-    /// # Errors
-    /// The kernel's refusal, or no answer.
     pub fn flush(&mut self) -> io::Result<()> {
         if !self.installed {
             return Ok(());

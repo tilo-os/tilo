@@ -617,10 +617,6 @@ impl PortableStorage {
     /// page that opens a row writes it under an actor it minted itself, and
     /// claims the row here, so a save, its acknowledgement and the next
     /// hydration all see that actor.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a key the cache does not hold.
     pub fn claim(&self, key: &StorageKey, actor: Vec<u8>) -> Result<(), String> {
         key.validate()?;
         let mut cache = self.cache.borrow_mut();

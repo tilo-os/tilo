@@ -367,9 +367,6 @@ impl Firmware {
     }
 
     /// Seed the working variable store (see [`Self::varstore_path`]).
-    ///
-    /// # Errors
-    /// The template could not be copied.
     pub fn seed_varstore(&self, run: &Path, keep: bool) -> Result<PathBuf, QemuError> {
         let out = self.varstore_path(run);
         std::fs::create_dir_all(run).map_err(QemuError::io(run))?;

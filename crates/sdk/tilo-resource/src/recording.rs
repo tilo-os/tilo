@@ -638,10 +638,6 @@ fn entry(
 /// Whether `left` at `left_at` and `right` at `right_at` hold the same
 /// keys, values, sequences, text and marks, whatever their objects' ids,
 /// leaving out the root keys a recording leaves out.
-///
-/// # Errors
-///
-/// A read Automerge refuses.
 pub fn same_state(
     left: &Automerge,
     left_at: &[ChangeHash],

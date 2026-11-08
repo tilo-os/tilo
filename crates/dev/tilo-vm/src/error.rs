@@ -238,6 +238,8 @@ pub enum CliError {
     VmRunning { vm: String },
     #[error("the VM disk {path} already exists")]
     DiskExists { path: String },
+    #[error("cannot branch {what}")]
+    Branch { what: String, fix: String },
     #[error("not enough space on {place}: {what} needs {needed}, {free} is free")]
     NoSpace {
         place: String,
@@ -543,7 +545,7 @@ impl CliError {
             Self::KernelNotRunning { vm, .. } => format!(
                 "the VM fell back to its default boot entry. Watch the new kernel boot on the console: tilo-vm vm serial {vm}   (tilo-vm vm shot {vm} for the screen); fix it and swap again, or go back: tilo-vm rollback --slot vm"
             ),
-            Self::ImageRefused { fix, .. } => fix.clone(),
+            Self::ImageRefused { fix, .. } | Self::Branch { fix, .. } => fix.clone(),
             Self::BaseOlder { .. } => {
                 "rebuild the base from this worktree: tilo-vm vm upgrade --from local --rebuild-base   |   or rebase onto a newer commit   |   or, to go back on purpose: add --allow-older-base".into()
             }
@@ -589,7 +591,7 @@ impl CliError {
             | Self::WakeTimeout { .. }
             | Self::PeerRoute { .. }
             | Self::NotEnrolledAdmin { .. } => "devices",
-            Self::NotInWorktree | Self::SlotName { .. } => "concepts",
+            Self::NotInWorktree | Self::SlotName { .. } | Self::Branch { .. } => "concepts",
             Self::Remote(error) => return error.see.clone(),
             Self::NoManifest { .. }
             | Self::UnknownComponent { .. }
@@ -868,6 +870,10 @@ mod tests {
             },
             CliError::VmRunning { vm: "try1".into() },
             CliError::DiskExists { path: "x".into() },
+            CliError::Branch {
+                what: "dev: it is running".into(),
+                fix: "tilo-vm vm branch dev a --stop".into(),
+            },
             CliError::NoSpace {
                 place: "p".into(),
                 free: "1 GB".into(),
@@ -1024,6 +1030,7 @@ mod tests {
                 | CliError::ImageFormat { .. }
                 | CliError::VmRunning { .. }
                 | CliError::DiskExists { .. }
+                | CliError::Branch { .. }
                 | CliError::NoSpace { .. }
                 | CliError::ForgeAuth { .. }
                 | CliError::ChecksumMismatch { .. }

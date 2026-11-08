@@ -22,8 +22,8 @@ app registered from its manifest, under the same module name, plus
 host modules and `index.html`, `fonts/` and `fonts.json`, `data/` and
 `data.json` (application data fetched on request) and `build.json`
 (revision, tools, profile and output hashes). `--profile release` compiles
-with Cargo's `wasm-release` profile and runs `wasm-opt` unless
-`--no-wasm-opt`. `--profile assert` is the same release optimisation with
+with Cargo's `wasm-release` profile and runs `wasm-opt` with the arguments in
+`tools/web/wasm-opt-flags` unless `--no-wasm-opt`. `--profile assert` is the same release optimisation with
 the assertions a development build has (`wasm-assert`: `debug_assertions`
 and overflow checks), for qualification and performance measurement: a
 bundle that drops the qualification checks is faster for the wrong reason.

@@ -415,9 +415,6 @@ impl Index {
     /// package's schema `schema`; else the file emptied (or made anew when it cannot be read
     /// at all) for a build. An index whose file needs repairing (the process ended in the
     /// middle of a commit) is built anew too: repairing reads the whole file.
-    ///
-    /// # Errors
-    /// The directory or file cannot be made.
     pub fn open(path: &Path, app: &str, schema: &str) -> Result<Opened, IndexError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| IndexError::Io(e.to_string()))?;
@@ -457,9 +454,6 @@ impl Index {
     }
 
     /// An empty index of `app` in memory, for a workspace that is not kept on disk.
-    ///
-    /// # Errors
-    /// Memory cannot be had for it.
     pub fn in_memory(app: &str, schema: &str) -> Result<Self, IndexError> {
         let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
         let index = Self::with(app, schema, db, None);
@@ -551,17 +545,11 @@ impl Index {
 
     /// Empty the index for a build from the record: until the build commits it reflects no
     /// heads, so a process that ends in the middle of it finds nothing to trust.
-    ///
-    /// # Errors
-    /// The index cannot be written.
     pub fn clear_for_build(&self) -> Result<(), IndexError> {
         self.clear(&self.schema)
     }
 
     /// The index as the last commit left it, to read: what later commits do not change.
-    ///
-    /// # Errors
-    /// The index cannot be read.
     pub fn snapshot(&self) -> Result<Arc<Snapshot>, IndexError> {
         let txn = self.db.begin_read()?;
         Ok(Arc::new(Snapshot {
@@ -578,9 +566,6 @@ impl Index {
     /// Change the index in one commit: what `f` writes, all of it or none. The commit is not
     /// waited on to reach the disk ([`Self::persist`] does); the index is derived, and one that
     /// lost its last commits reflects older heads and catches up.
-    ///
-    /// # Errors
-    /// What `f` returns, or the commit fails.
     pub fn write<T>(
         &self,
         f: impl FnOnce(&mut Writer<'_>) -> Result<T, IndexError>,
@@ -598,9 +583,6 @@ impl Index {
     }
 
     /// Wait for the commits so far to reach the disk.
-    ///
-    /// # Errors
-    /// The disk refuses the write.
     pub fn persist(&self) -> Result<(), IndexError> {
         let mut txn = self.db.begin_write()?;
         txn.set_durability(Durability::Immediate)?;
@@ -678,9 +660,6 @@ impl Snapshot {
     }
 
     /// The value of `field` of the resource `resource`, if the index holds one.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn field(&self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
         self.stats.count_field();
         let read = (|| {
@@ -693,9 +672,6 @@ impl Snapshot {
     }
 
     /// The type (`$type`) or order key (`$key`) of the resource `resource`.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn text(&self, resource: &str, key: &str) -> Result<Option<String>, IndexError> {
         let read = (|| {
             let Some(value) = self.fields.get((resource, key))? else {
@@ -709,9 +685,6 @@ impl Snapshot {
     /// Every resource the index holds (records and items, in path order), with its type and
     /// the text values of its fields by field id: one pass over the fields, what lists every
     /// resource search finds.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn texted(&self) -> Result<Vec<Texted>, IndexError> {
         let read = (|| {
             let mut out: Vec<Texted> = Vec::new();
@@ -742,9 +715,6 @@ impl Snapshot {
     }
 
     /// The package's records, their types, and the chunk that holds each.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn docs(&self) -> Result<Vec<(String, String, ChunkNo)>, IndexError> {
         let read = (|| {
             let mut out = Vec::new();
@@ -760,9 +730,6 @@ impl Snapshot {
 
     /// Every field the index holds of the resource `resource`, by field id (`$type` and
     /// `$key` apart).
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn fields_of(&self, resource: &str) -> Result<Vec<(String, FieldValue)>, IndexError> {
         let read = (|| {
             let mut out = Vec::new();
@@ -783,9 +750,6 @@ impl Snapshot {
     }
 
     /// The resources inside the resource `path` (its items, theirs, and so on), in path order.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn inside(&self, path: &str) -> Result<Vec<String>, IndexError> {
         let read = (|| {
             let start = format!("{path}/");
@@ -808,9 +772,6 @@ impl Snapshot {
 
     /// The newest version the index holds of `resource`, else `None`: what a mark of it says,
     /// read without the resource's log.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn newest(&self, resource: &str) -> Result<Option<Version>, IndexError> {
         let read = (|| {
             let Some(value) = self.newest.get(resource)? else {
@@ -829,9 +790,6 @@ impl Snapshot {
     /// items a collection of one of them had removed), in path order, at most `page` of them,
     /// and whether the document holds more: what a window's mark counts the unseen changes of,
     /// reading no log and no more of the document than the page.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn newest_page(
         &self,
         path: &str,
@@ -861,18 +819,12 @@ impl Snapshot {
     }
 
     /// The list `list`, read page by page.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn pages(self: &Arc<Self>, list: &str) -> Result<Pages<Self>, IndexError> {
         let read = Pages::open(Arc::clone(self), list, Arc::clone(&self.stats));
         self.checked(read)
     }
 
     /// The lists whose names start with `prefix`, with their directories.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn lists_from(&self, prefix: &str) -> Result<Vec<(String, Dir)>, IndexError> {
         let read = (|| {
             let mut out = Vec::new();
@@ -892,9 +844,6 @@ impl Snapshot {
 
     /// How many entries of the list `list` hold each value, for a column that counts them
     /// ([`COUNTS`]), in the values' order: one read, counted as one field's.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn counts(&self, list: &str) -> Result<Vec<(String, u64)>, IndexError> {
         self.stats.count_field();
         let read = (|| {
@@ -929,9 +878,6 @@ pub struct Contents {
 impl Snapshot {
     /// Everything it holds: what tests compare an index kept change by change with one built
     /// from the record whole.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn contents(&self) -> Result<Contents, IndexError> {
         let mut out = Contents::default();
         for (doc, ty, chunk) in self.docs()? {
@@ -1068,9 +1014,6 @@ impl<'t> Writer<'t> {
     }
 
     /// Stamp the index with the heads it reflects of each chunk, once this commit is in.
-    ///
-    /// # Errors
-    /// The index cannot be written.
     pub fn set_heads(&mut self, heads: &Stamps) -> Result<(), IndexError> {
         let stale: Vec<String> = self
             .tables
@@ -1143,9 +1086,6 @@ impl<'t> Writer<'t> {
     /// Keep `stamp`'s version as the newest version of `resource`, unless one it holds comes
     /// after it: what a mark of it, or of the document holding it, reads without the resource's
     /// log.
-    ///
-    /// # Errors
-    /// The index cannot be read or written.
     pub fn put_newest(&mut self, resource: &str, stamp: &reflect::Stamp) -> Result<(), IndexError> {
         if let Some(held) = self.tables.newest.get(resource)? {
             let held = reflect::Stamp::of_value(&codec::get_value(held.value())?)
@@ -1170,9 +1110,6 @@ impl<'t> Writer<'t> {
     }
 
     /// Every field of `resource` and of the resources inside it, with what each holds.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn subtree(&self, resource: &str) -> Result<Vec<(String, String, Vec<u8>)>, IndexError> {
         let mut out = Vec::new();
         for entry in self
@@ -1199,9 +1136,6 @@ impl<'t> Writer<'t> {
     }
 
     /// Drop the field `field` of `resource`.
-    ///
-    /// # Errors
-    /// The index cannot be written.
     pub fn remove_field(&mut self, resource: &str, field: &str) -> Result<(), IndexError> {
         self.tables.fields.remove((resource, field))?;
         Ok(())
@@ -1226,9 +1160,6 @@ impl<'t> Writer<'t> {
     }
 
     /// How many entries `list` holds, as this commit leaves it.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn list_len(&mut self, list: &str) -> Result<usize, IndexError> {
         Ok(self.lists.read(&self.tables, list)?.len())
     }
@@ -1240,9 +1171,6 @@ impl<'t> Writer<'t> {
     }
 
     /// Drop every list whose name starts with `prefix`, and its counts.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError> {
         for name in self.lists_from(prefix)? {
             self.lists.drop_list(&self.tables, &name)?;
@@ -1263,9 +1191,6 @@ impl<'t> Writer<'t> {
     }
 
     /// Add `delta` to how many entries of `list` hold `value`.
-    ///
-    /// # Errors
-    /// The index cannot be read or written.
     pub fn count(&mut self, list: &str, value: &str, delta: i64) -> Result<(), IndexError> {
         let held = self
             .tables
@@ -1282,9 +1207,6 @@ impl<'t> Writer<'t> {
     }
 
     /// The names of the lists starting with `prefix`, as this commit leaves them.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
     pub fn lists_from(&mut self, prefix: &str) -> Result<Vec<String>, IndexError> {
         let mut names = std::collections::BTreeSet::new();
         for entry in self.tables.dirs.range(prefix..)? {

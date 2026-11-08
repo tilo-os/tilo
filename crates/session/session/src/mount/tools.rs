@@ -1,45 +1,31 @@
 //! The tools service: the typed opens an app asks this session for.
-//!
 //! An app the launcher starts is handed the `tools` socket
-//! ([`runtime_portal::tools`]) and asks on it for what only the session can
-//! do: open one of its tools at a typed context (a terminal at a folder, a
-//! settings route, a workspace settings tab), list the drives the person
-//! plugged in and open one in Files, list the person's apps and open or
-//! uninstall one. Nothing on the wire names a program or arguments:
-//! [`ToolIntent`] is the whole vocabulary, and this module maps it onto what
-//! the session already has.
-//!
-//! Who asks is read from the connection's peer credentials — the process at
-//! the other end, while this session's launch of it still runs — and the
-//! request must belong to the workspace that launch recorded. Never what the
-//! request says of itself.
-//!
-//! Everything that starts a process goes through [`crate::Launches::ask`]: the
-//! launch waits for the pass that starts it and is made on the path the
-//! desk's own launches take, so a tool opened here is the same launch as one
-//! opened from the desk. What only a sheet on the session's loop can show
-//! (workspace settings, an uninstall question) is left for that pass here
-//! and answered by it.
-//!
-//! The drives and apps lists are kept by the loop
-//! ([`Handle::saw_media`], [`Handle::saw_apps`]), and their revisions are what
-//! Files' waits for a change are served from: the broker's `drives` and
-//! `applications` seams.
+//! ([`runtime_portal::tools`]) and asks on it for what only the session can do:
+//! open one of its tools at a typed context, list the drives the person plugged in
+//! and open one in Files, list the person's apps and open or uninstall one. Nothing
+//! on the wire names a program or arguments: [`ToolIntent`] is the whole vocabulary.
+//! Who asks is read from the connection's peer credentials, and the request must
+//! belong to the workspace that launch recorded, never what the request says of
+//! itself. Everything that starts a process goes through [`crate::Launches::ask`],
+//! so a tool opened here is the same launch as one opened from the desk.
 
 use std::io::{BufRead, BufReader, ErrorKind, Read as _, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use runtime_portal::tools::{
-    AppEntry, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, MAX_WIRE_BYTES,
-    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, WorkspaceSettingsRoute,
+    AppEntry, DocumentApp, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES,
+    MAX_WIRE_BYTES, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
+    WorkspaceSettingsRoute,
 };
 use tilo_action_broker::services::{
     ApplicationChange, ApplicationServices, DriveChange, DriveServices, LaunchPlace,
 };
 use tilo_app_launch::Launch;
+use tilo_app_launch::routing;
 use tilo_desktop_model::app::AppKind as Builtin;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
@@ -47,31 +33,27 @@ use tilo_service::Wake;
 use crate::Launches;
 use crate::mount::drives::{Medium, files_on};
 
-/// The app the person's own app list is answered to. Every other app is told
-/// nothing of it.
+/// The app the person's own app list is answered to. Every other app is told nothing of it.
 fn files() -> String {
     Builtin::FileExplorer.app_id()
 }
 
-/// The `tools` socket's name: the launcher hands an app its number as
-/// `TILO_SVC_TOOLS_FD`.
+/// The `tools` socket's name: the launcher hands an app its number as `TILO_SVC_TOOLS_FD` .
 pub(crate) const SERVICE: &str = "tools";
 
-/// How long a request that only a sheet on the loop can answer waits for
-/// that pass.
+/// How long a request that only a sheet on the loop can answer waits for that pass.
 const ANSWER_WAIT: Duration = Duration::from_secs(2);
 
-/// A question the tools service leaves for the session's loop: only a pass of
-/// the loop can put a sheet up.
+/// A question the tools service leaves for the session's loop: only a pass of the loop can put a
+/// sheet up.
 pub(crate) enum Ask {
-    /// Show workspace settings for `workspace`, on `route`'s tab.
+    /// Show workspace settings for `workspace` , on `route` 's tab.
     WorkspaceSettings {
         workspace: String,
         route: WorkspaceSettingsRoute,
         reply: SyncSender<Result<(), String>>,
     },
-    /// Ask the person whether to uninstall `app`, in the sheet that owns that
-    /// question.
+    /// Ask the person whether to uninstall `app` , in the sheet that owns that question.
     Uninstall {
         app: String,
         reply: SyncSender<Result<(), String>>,
@@ -98,8 +80,7 @@ struct Inner {
     launches: Arc<Launches>,
     /// What wakes the loop when a sheet is left for it.
     wake: Wake,
-    /// The sheets the service left for the loop, until its next pass takes
-    /// them.
+    /// The sheets the service left for the loop, until its next pass takes them.
     asks: std::sync::Mutex<Vec<Ask>>,
     /// The drives and the apps as they were last told.
     now: std::sync::Mutex<Now>,
@@ -120,8 +101,8 @@ pub(crate) struct Tools {
 }
 
 impl Handle {
-    /// A handle whose lists the loop keeps: nothing is served until
-    /// [`Tools::serve`] binds the socket.
+    /// A handle whose lists the loop keeps: nothing is served until [`Tools::serve`] binds the
+    /// socket.
     pub(crate) fn new(launches: Arc<Launches>, wake: Wake) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -129,8 +110,8 @@ impl Handle {
                 wake,
                 asks: std::sync::Mutex::new(Vec::new()),
                 now: std::sync::Mutex::new(Now::default()),
-                // One before the first wait (which asks from 0), so a first
-                // ask is answered at once rather than waited on.
+                // One before the first wait (which asks from 0), so a first ask is answered at once
+                // rather than waited on.
                 drives_changed: tokio::sync::watch::channel(1).0,
                 apps_changed: tokio::sync::watch::channel(1).0,
             }),
@@ -220,8 +201,8 @@ fn bump(revision: &tokio::sync::watch::Sender<u64>) {
     revision.send_modify(|revision| *revision = revision.wrapping_add(1).max(1));
 }
 
-/// Resolves once `revision` is past `after`, with the revision to wait from
-/// next. Subscribed now, so a change in between is still seen.
+/// Resolves once `revision` is past `after` , with the revision to wait from next. Subscribed now,
+/// so a change in between is still seen.
 fn wait(revision: &tokio::sync::watch::Sender<u64>, after: u64) -> DriveChange {
     let mut changes = revision.subscribe();
     Box::pin(async move {
@@ -264,8 +245,8 @@ fn accept(listener: &UnixListener, handle: &Handle) {
     }
 }
 
-/// Who asked: the app this session launched, and the workspace its launch
-/// recorded. Read from the connection, never from the request.
+/// Who asked: the app this session launched, and the workspace its launch recorded. Read from the
+/// connection, never from the request.
 struct Caller {
     app: String,
     workspace: String,
@@ -321,14 +302,14 @@ enum Line {
     Request(ToolRequest),
     /// A line that does not decode, with what to tell the app.
     Refused(&'static str),
-    /// A line past the wire's bound: the app is told so and its connection
-    /// ends, since the next byte read is still that line.
+    /// A line past the wire's bound: the app is told so and its connection ends, since the next
+    /// byte read is still that line.
     TooLarge,
     /// The app closed its end.
     Done,
 }
 
-/// One request line from `reading`.
+/// One request line from `reading` .
 fn read_request(reading: &mut BufReader<UnixStream>) -> Line {
     let mut line = Vec::new();
     let read = {
@@ -362,7 +343,7 @@ fn caller_of(inner: &Inner, stream: &UnixStream) -> Option<Caller> {
     Some(Caller { app, workspace })
 }
 
-/// The pid of the process at the other end of `stream`.
+/// The pid of the process at the other end of `stream` .
 #[cfg(target_os = "linux")]
 fn peer_pid(stream: &UnixStream) -> Option<u32> {
     use std::os::fd::AsRawFd as _;
@@ -406,9 +387,8 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
         return refused("the request belongs to another workspace");
     }
     if request.on_behalf_of.is_some() {
-        // An open made for a broker invocation is the broker's to admit, and
-        // it delivers that open itself; nothing hands an app an invocation
-        // to name here yet.
+        // An open made for a broker invocation is the broker's to admit, and it delivers that open
+        // itself; nothing hands an app an invocation to name here yet.
         return refused("an open made for an invocation does not come over this socket");
     }
     match &request.intent {
@@ -429,6 +409,10 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
                 applications: applications(inner),
                 ..ToolReply::default()
             }
+        }
+        ToolIntent::DocumentApps { path } => document_apps(caller, path),
+        ToolIntent::OpenDocument { path, app } => {
+            open_document(inner, caller, path, app.as_deref())
         }
         ToolIntent::OpenApplication { app } => open_application(inner, caller, app),
         ToolIntent::UninstallApplication { app } => uninstall(inner, caller, app),
@@ -454,8 +438,8 @@ fn drives(inner: &Inner) -> Vec<DriveEntry> {
             id: drive_id(medium),
             label: medium.label.clone().unwrap_or_default(),
             size_bytes: medium.size,
-            // The session announces the media a person plugs in, not the
-            // disks the machine was built with.
+            // The session announces the media a person plugs in, not the disks the machine was
+            // built with.
             internal: false,
             open_at: medium
                 .mount
@@ -465,8 +449,8 @@ fn drives(inner: &Inner) -> Vec<DriveEntry> {
         .collect()
 }
 
-/// What [`ToolIntent::OpenDrive`] names a medium by: its block device's own
-/// name, which the wire's drive ids allow.
+/// What [`ToolIntent::OpenDrive`] names a medium by: its block device's own name, which the wire's
+/// drive ids allow.
 fn drive_id(medium: &Medium) -> String {
     medium
         .device
@@ -489,8 +473,8 @@ fn applications(inner: &Inner) -> Vec<AppEntry> {
         .collect()
 }
 
-/// Open the drive `drive` in Files, where it is mounted: the folder is what
-/// the person asked to see.
+/// Open the drive `drive` in Files, where it is mounted: the folder is what the person asked to
+/// see.
 fn open_drive(inner: &Inner, caller: &Caller, drive: &str) -> ToolReply {
     if caller.app != files() {
         return refused("a drive is opened from Files alone");
@@ -516,8 +500,99 @@ fn open_drive(inner: &Inner, caller: &Caller, drive: &str) -> ToolReply {
     }
 }
 
-/// Open an app from the person's list, by a Tilo package id or the machine's
-/// own desktop id.
+/// The apps that open the document at `path` on this device, with the app lists they were read
+/// from.
+fn documents_of(
+    path: &Path,
+) -> (
+    Vec<Launch>,
+    Vec<app_catalogue::apps::InstalledApp>,
+    desktop_entry::Scan,
+) {
+    let (installed, entries) = super::apps::routes();
+    let launches = routing::documents(path, &installed, &entries);
+    (launches, installed, entries)
+}
+
+/// The app a document launch names: a Tilo package's id, or the machine's desktop id.
+fn document_id(launch: &Launch) -> Option<&str> {
+    match launch {
+        Launch::Package { app, .. } => Some(app),
+        Launch::Host { desktop_id, .. } => Some(desktop_id),
+        _ => None,
+    }
+}
+
+/// The apps that open the document at `path` , the one this device opens it with today first: what
+/// Files' "Open with" lists.
+fn document_apps(caller: &Caller, path: &str) -> ToolReply {
+    if caller.app != files() {
+        return refused("the apps that open a document are listed for Files alone");
+    }
+    let (launches, installed, entries) = documents_of(Path::new(path));
+    let locales = crate::app_names::entry_locales();
+    let documents = launches
+        .iter()
+        .take(MAX_LISTED_APPS)
+        .enumerate()
+        .filter_map(|(index, launch)| {
+            let id = document_id(launch)?.to_owned();
+            let name = match launch {
+                Launch::Package { .. } => installed
+                    .iter()
+                    .find(|listed| listed.package_id == id)
+                    .map_or_else(|| id.clone(), |listed| listed.name_in(&locales).to_owned()),
+                _ => entries
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .map_or_else(|| id.clone(), |entry| entry.name.clone()),
+            };
+            Some(DocumentApp {
+                id,
+                name,
+                is_default: index == 0,
+            })
+        })
+        .collect();
+    ToolReply {
+        accepted: true,
+        message: "listed".into(),
+        documents,
+        ..ToolReply::default()
+    }
+}
+
+/// Open the document at `path` in `app`, one of the apps that open its type,
+/// or in the app this device opens the type with today.
+fn open_document(inner: &Inner, caller: &Caller, path: &str, app: Option<&str>) -> ToolReply {
+    if caller.app != files() {
+        return refused("a document is opened from Files alone");
+    }
+    let (launches, _, _) = documents_of(Path::new(path));
+    let launch = match app {
+        Some(app) => launches
+            .into_iter()
+            .find(|launch| document_id(launch) == Some(app)),
+        None => launches.into_iter().next(),
+    };
+    let Some(launch) = launch else {
+        return refused(if app.is_some() {
+            "no such app opens this document"
+        } else {
+            "nothing on this device opens this document"
+        });
+    };
+    match inner
+        .launches
+        .ask(launch, &caller.workspace, LaunchPlace::Focus, None)
+    {
+        Ok(()) => accepted("opened"),
+        Err(message) => refused(&message),
+    }
+}
+
+/// Open an app from the person's list, by a Tilo package id or the machine's own desktop id.
 fn open_application(inner: &Inner, caller: &Caller, app: &str) -> ToolReply {
     if caller.app != files() {
         return refused("an app is opened from Files alone");
@@ -548,8 +623,8 @@ fn open_application(inner: &Inner, caller: &Caller, app: &str) -> ToolReply {
     }
 }
 
-/// Open the package `request` names at the context it asks for: a terminal at
-/// a folder, a settings route, a container shell.
+/// Open the package `request` names at the context it asks for: a terminal at a folder, a settings
+/// route, a container shell.
 fn open_tool(inner: &Inner, caller: &Caller, request: &ToolRequest) -> ToolReply {
     let Some(package) = request.intent.package_id() else {
         return refused("this request opens no app");
@@ -557,8 +632,8 @@ fn open_tool(inner: &Inner, caller: &Caller, request: &ToolRequest) -> ToolReply
     let Some(launch) = Launch::parse(package) else {
         return refused("this request opens no app");
     };
-    // The tool reads what it was opened for from its own process: the
-    // launcher hands it on as `TILO_TOOL_CONTEXT`.
+    // The tool reads what it was opened for from its own process: the launcher hands it on as
+    // `TILO_TOOL_CONTEXT` .
     let context = serde_json::to_string(&request.intent).ok();
     match inner
         .launches
@@ -569,8 +644,8 @@ fn open_tool(inner: &Inner, caller: &Caller, request: &ToolRequest) -> ToolReply
     }
 }
 
-/// Ask the person whether to uninstall `app`, in the sheet that owns that
-/// question: the loop puts it up on its next pass.
+/// Ask the person whether to uninstall `app` , in the sheet that owns that question: the loop puts
+/// it up on its next pass.
 fn uninstall(inner: &Inner, caller: &Caller, app: &str) -> ToolReply {
     if caller.app != files() {
         return refused("an app is uninstalled from Files alone");
@@ -588,9 +663,9 @@ fn uninstall(inner: &Inner, caller: &Caller, app: &str) -> ToolReply {
     }
 }
 
-/// Show workspace settings for the caller's workspace, on `route`'s tab: the
-/// loop puts the sheet up on its next pass, and only where that workspace is
-/// the one in front, so a request never switches what the person sees.
+/// Show workspace settings for the caller's workspace, on `route` 's tab: the loop puts the sheet
+/// up on its next pass, and only where that workspace is the one in front, so a request never
+/// switches what the person sees.
 fn workspace_settings(inner: &Inner, caller: &Caller, route: WorkspaceSettingsRoute) -> ToolReply {
     let (reply, answered) = std::sync::mpsc::sync_channel(1);
     inner.asks.lock_recover().push(Ask::WorkspaceSettings {
@@ -650,6 +725,17 @@ mod tests {
             listed[0].open_at.is_none(),
             "a mount the machine does not have is not open"
         );
+    }
+
+    #[test]
+    fn the_apps_that_open_a_document_are_answered_to_files_alone() {
+        let caller = Caller {
+            app: "so.tilo.notes".into(),
+            workspace: "ws".into(),
+        };
+        let reply = document_apps(&caller, "/home/you/notes.pdf");
+        assert!(!reply.accepted);
+        assert!(reply.documents.is_empty());
     }
 
     #[test]

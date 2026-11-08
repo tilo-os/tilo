@@ -1,11 +1,11 @@
-//! The lock the session has, and whose it is: the person's own, which their
-//! other devices follow, or the idle timer's, which stays on this device; and
-//! how the person using a device beside this one counts here.
+//! The lock the session has, and whose it is: the person's own, which their other devices follow,
+//! or the idle timer's, which stays on this device; and how the person using a device beside this
+//! one counts here.
 
 use super::*;
 
-/// Whose lock the session has: the person's own, which their other devices
-/// follow, or the idle timer's, which stays on this device.
+/// Whose lock the session has: the person's own, which their other devices follow, or the idle
+/// timer's, which stays on this device.
 #[test]
 fn the_person_s_lock_and_the_idle_timer_s_are_told_apart() {
     let mut compositor = headless(Box::new(Columns { placed: 0 }));
@@ -44,9 +44,8 @@ fn the_person_s_lock_and_the_idle_timer_s_are_told_apart() {
     assert!(!compositor.lock_by_idle());
 }
 
-/// The person touching another of their devices nearby counts here: their
-/// idle time begins there, so this device does not lock while they are on
-/// the other.
+/// The person touching another of their devices nearby counts here: their idle time begins there,
+/// so this device does not lock while they are on the other.
 #[test]
 fn a_device_used_nearby_keeps_this_one_awake() {
     let mut compositor = headless(Box::new(Columns { placed: 0 }));
@@ -54,8 +53,8 @@ fn a_device_used_nearby_keeps_this_one_awake() {
         compositor.in_use(),
         "the person just started using this device"
     );
-    // A minute without touching anything here, then the person uses the
-    // device beside it: this one is in use again.
+    // A minute without touching anything here, then the person uses the device beside it: this one
+    // is in use again.
     compositor.set_idle_config(
         tilo_compositor::IdleConfig::never().with_lock(Some(Duration::from_secs(1))),
     );

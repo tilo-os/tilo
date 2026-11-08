@@ -1,11 +1,9 @@
-//! Files' clipboard, as the session serves it to the app: the person copies a
-//! file in Files and pastes it into another folder, the copy also lands on the
-//! desktop's clipboard so any other app can take it, and a cut moves the file
-//! out of the folder it came from.
-//!
-//! The app speaks exactly as Files does: one launcher-attested connection to
-//! the session's plane, its selected objects handed over on that connection's
-//! descriptor lane, and the commands it sends naming them by lane number.
+//! Files' clipboard, as the session serves it to the app: the person copies a file in Files and
+//! pastes it into another folder, the copy also lands on the desktop's clipboard so any other app
+//! can take it, and a cut moves the file out of the folder it came from.
+//! The app speaks exactly as Files does: one launcher-attested connection to the session's plane,
+//! its selected objects handed over on that connection's descriptor lane, and the commands it sends
+//! naming them by lane number.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -17,6 +15,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session \
               lives until the app it serves is done"
 )]
+
+mod common;
 
 use std::os::fd::AsRawFd as _;
 use std::os::unix::ffi::OsStrExt as _;
@@ -31,7 +31,7 @@ use runtime_collab::file_clipboard::{
     Command, Conflict, ObjectIdentity, Offer, Reply, SelectedDescriptor,
 };
 use runtime_portal::DescriptorStreamSource as _;
-use tilo_compositor::{OutputConfig, Selection};
+use tilo_compositor::Selection;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
@@ -41,12 +41,10 @@ use tilo_session::{ActionPlane, Launches, Lists, Options, SearchOptions, Session
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 use ui::dnd::COPIED_FILES_MIME;
 
-// A host admits its members' records through an Automerge worker: this
-// binary is that worker, as it is the session's own.
+// A host admits its members' records through an Automerge worker: this binary is that worker, as it
+// is the session's own.
 tilo_automerge_isolate::test_worker!();
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 /// The app whose clipboard this is.
 const FILES: &str = "so.tilo.file-explorer";
 /// The workspace the session holds, as the desk names it.
@@ -56,15 +54,14 @@ const NAME: &str = "notes.txt";
 /// Files' record in the workspace: the resource its folder actions name.
 const RESOURCE: &str = "files.folder";
 const BODY: &[u8] = b"the file the person copied";
-/// This device's identity and the workspace it hosts, where the session reads
-/// them.
+/// This device's identity and the workspace it hosts, where the session reads them.
 struct Fixture {
     device: ed25519_dalek::SigningKey,
     cert: DeviceCert,
     /// The state directory the session keeps its workspaces under.
     state: PathBuf,
-    // The identity's environment and files, restored and removed last: the
-    // session and the app read them while they run.
+    // The identity's environment and files, restored and removed last: the session and the app read
+    // them while they run.
     _env: tilo_test_env::ScopedEnv,
     root: tempfile::TempDir,
 }
@@ -102,8 +99,8 @@ fn fixture() -> Fixture {
     }
 }
 
-/// The workspace's owner, as this device holds it in `state`: what the session
-/// opens when it starts, with this device the one governing the workspace.
+/// The workspace's owner, as this device holds it in `state` : what the session opens when it
+/// starts, with this device the one governing the workspace.
 fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &DeviceCert) {
     let record = state.join("tilo").join("rooms.json");
     std::fs::create_dir_all(record.parent().expect("the state's workspace directory"))
@@ -113,8 +110,8 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let governor = testing::enroll_interactive_governor_in(&owner, device, cert, WORKSPACE)
         .expect("this device governs the workspace it hosts");
-    // The governor's checkpoint now names this device: the host admits it as
-    // the publication a host's own workspace makes.
+    // The governor's checkpoint now names this device: the host admits it as the publication a
+    // host's own workspace makes.
     let host = governor.workspace_host().device_public_key;
     let frames: Vec<Vec<u8>> = governor
         .outgoing()
@@ -156,8 +153,8 @@ fn desk(fixture: &Fixture) -> DesktopTree {
     }
 }
 
-/// What the app presents to join the workspace's channel: the certificate, and
-/// the device's proof that it is the certificate's.
+/// What the app presents to join the workspace's channel: the certificate, and the device's proof
+/// that it is the certificate's.
 fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
     runtime_collab::CertifiedJoinIdentity {
         workspace_id: WORKSPACE.to_owned(),
@@ -173,31 +170,26 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
     .expect("a presentation encodes")
 }
 
-/// The session serving the apps it starts on `socket`, holding the fixture's
-/// workspace from its state and showing its desk.
+/// The session serving the apps it starts on `socket` , holding the fixture's workspace from its
+/// state and showing its desk.
 fn session(socket: &Path, fixture: &Fixture) -> Session {
-    // The app speaks from this test's own process, so the launch the session
-    // would have recorded for it names that process.
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process.
     let launches = std::sync::Arc::new(Launches::default());
     launches.started(std::process::id(), FILES, WORKSPACE, true);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            wake: LoopWake::default(),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: "Ada".to_owned(),
-            launches,
-            state: Some(fixture.state.clone()),
-            search: SearchOptions {
-                lists: Lists::default(),
-                ..SearchOptions::default()
-            },
-            ..Options::default()
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: "Ada".to_owned(),
+        launches,
+        state: Some(fixture.state.clone()),
+        search: SearchOptions {
+            lists: Lists::default(),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(fixture));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
@@ -205,19 +197,8 @@ fn session(socket: &Path, fixture: &Fixture) -> Session {
     session
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
-}
-
-/// A connection to the session's plane as Files in the workspace, as the
-/// launcher hands an app one: its writes carry the descriptors of the objects
-/// it selected.
+/// A connection to the session's plane as Files in the workspace, as the launcher hands an app one:
+/// its writes carry the descriptors of the objects it selected.
 fn connect(socket: &Path) -> CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
     launcher::services::write_collab_handoff(&mut stream, FILES, WORKSPACE)
@@ -238,8 +219,8 @@ fn channel() -> String {
     tilo_action_broker::route::CrdtRoute::app(FILES, WORKSPACE).channel_key()
 }
 
-/// What a person selected in Files, as the app hands it over: the path it is
-/// shown at, the descriptor open in this process, and the object both name.
+/// What a person selected in Files, as the app hands it over: the path it is shown at, the
+/// descriptor open in this process, and the object both name.
 fn selected(path: &Path) -> (SelectedDescriptor, std::fs::File) {
     let file = std::fs::File::open(path).expect("the shown object");
     let metadata = std::fs::symlink_metadata(path).expect("the shown object's identity");
@@ -254,8 +235,8 @@ fn selected(path: &Path) -> (SelectedDescriptor, std::fs::File) {
     (descriptor, file)
 }
 
-/// The app as the session knows it: its channel into the workspace, and the
-/// invocations the session addresses back to it.
+/// The app as the session knows it: its channel into the workspace, and the invocations the session
+/// addresses back to it.
 struct Files {
     mine: ChannelHandle,
     invocations: runtime_collab::InvocationStream,
@@ -278,8 +259,8 @@ impl Files {
         Self { mine, invocations }
     }
 
-    /// Ask the session for `command`, under the invocation it runs for: what
-    /// Files passes on every clipboard command it makes.
+    /// Ask the session for `command` , under the invocation it runs for: what Files passes on every
+    /// clipboard command it makes.
     async fn command(&self, command: &Command, invocation: [u8; 16]) -> Reply {
         self.mine
             .local_file_clipboard_command(command, Some(invocation))
@@ -287,9 +268,8 @@ impl Files {
             .expect("the session serves Files' clipboard")
     }
 
-    /// Have the session admit `action` of Files' own surface, as Files asks
-    /// for every effect before it runs it: the invocation whose run the
-    /// clipboard commands then continue.
+    /// Have the session admit `action` of Files' own surface, as Files asks for every effect before
+    /// it runs it: the invocation whose run the clipboard commands then continue.
     async fn admit(&self, action: &str) -> [u8; 16] {
         use tilo_actions::remote::{
             InvokeArgument, InvokeRequest, OWN_PROVIDER, ReceiptStatus, RemoteActionFrame,
@@ -327,8 +307,8 @@ impl Files {
             "the session admits the action Files runs: {:?}",
             receipt.status
         );
-        // The session hands the app the run to carry out; it stays running
-        // while the app reports what it does as that invocation.
+        // The session hands the app the run to carry out; it stays running while the app reports
+        // what it does as that invocation.
         let run = self
             .invocations
             .read()
@@ -339,8 +319,8 @@ impl Files {
     }
 }
 
-/// The surface Files publishes: the three actions whose effects paste and
-/// copy, each with the reach its kind carries.
+/// The surface Files publishes: the three actions whose effects paste and copy, each with the reach
+/// its kind carries.
 fn surface() -> Vec<runtime_collab::ExportedAction> {
     use runtime_collab::{ExportedAction, ExportedInput};
     use tilo_actions::{ActionContract, ActionKind, OperationKind};
@@ -375,8 +355,8 @@ fn read(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
-/// Copy or cut the file in `source`, as Files publishes what the person
-/// selected: capture it, publish the tickets, release them.
+/// Copy or cut the file in `source` , as Files publishes what the person selected: capture it,
+/// publish the tickets, release them.
 async fn publish(files: &Files, source: &Path, cut: bool) -> Offer {
     let invocation = files
         .admit(if cut {
@@ -424,8 +404,8 @@ async fn publish(files: &Files, source: &Path, cut: bool) -> Offer {
     offer
 }
 
-/// Paste the offer `offer` into `folder`, as Files does: ask what the
-/// clipboard holds, hold the folder, paste, and read the receipt.
+/// Paste the offer `offer` into `folder` , as Files does: ask what the clipboard holds, hold the
+/// folder, paste, and read the receipt.
 async fn paste(files: &Files, offer: &str, folder: &Path) -> (usize, Option<String>) {
     let invocation = files.admit("paste").await;
     let snapshot = files.command(&Command::Snapshot, invocation).await;
@@ -536,11 +516,10 @@ struct Proof {
     source_after_cut: bool,
 }
 
-/// What the app reports while it works: a copy it published (so the session
-/// can be asked what the desktop's clipboard then holds), or everything it
-/// saw.
+/// What the app reports while it works: a copy it published (so the session can be asked what the
+/// desktop's clipboard then holds), or everything it saw.
 enum Note {
-    /// A copy or cut went on the desktop's clipboard, naming `path`.
+    /// A copy or cut went on the desktop's clipboard, naming `path` .
     Published {
         path: PathBuf,
         cut: bool,
@@ -548,8 +527,8 @@ enum Note {
     Done(Proof),
 }
 
-/// Files' own calls: copy the file and paste it into another folder, then cut
-/// it and paste it into a third.
+/// Files' own calls: copy the file and paste it into another folder, then cut it and paste it into
+/// a third.
 fn files_calls(
     socket: &Path,
     device: &ed25519_dalek::SigningKey,
@@ -573,8 +552,8 @@ fn files_calls(
             path: source.clone(),
             cut: false,
         });
-        // The next copy replaces this one on the clipboard: only once the
-        // session has read it does the app go on.
+        // The next copy replaces this one on the clipboard: only once the session has read it does
+        // the app go on.
         wait_for_check(checked);
         let pasted = paste(&files, &offer.id, copied_folder).await;
         let copied = read(&copied_folder.join(NAME));
@@ -610,8 +589,8 @@ fn wait_for_check(check: &std::sync::mpsc::Receiver<()>) {
         .expect("the session read the clipboard the app put on it");
 }
 
-/// What another app reading the desktop's clipboard gets: the files the copy
-/// put there, read back through the same clipboard it would read.
+/// What another app reading the desktop's clipboard gets: the files the copy put there, read back
+/// through the same clipboard it would read.
 fn read_clipboard(session: &mut Session) -> ui::dnd::CopiedFiles {
     let mime = COPIED_FILES_MIME.to_owned();
     let mut pull = session
@@ -639,8 +618,8 @@ fn read_clipboard(session: &mut Session) -> ui::dnd::CopiedFiles {
     }
 }
 
-/// The session's pass until the app is done, as the session runs its loop:
-/// what it proved, or the app's own ending tells why it left.
+/// The session's pass until the app is done, as the session runs its loop: what it proved, or the
+/// app's own ending tells why it left.
 fn until_the_app_is_done(
     session: &mut Session,
     notes: &std::sync::mpsc::Receiver<Note>,
@@ -653,8 +632,8 @@ fn until_the_app_is_done(
         session.step(Duration::from_millis(1)).expect("step");
         match notes.try_recv() {
             Ok(Note::Published { path, cut }) => {
-                // The copy reaches the desktop's clipboard on the session's
-                // next passes: what any other app pastes from.
+                // The copy reaches the desktop's clipboard on the session's next passes: what any
+                // other app pastes from.
                 for _ in 0..4 {
                     session.step(Duration::from_millis(1)).expect("step");
                 }
@@ -686,7 +665,7 @@ fn until_the_app_is_done(
 
 #[test]
 fn files_copies_and_cuts_through_the_session_and_pastes_into_another_folder() {
-    let home = private_home();
+    let home = common::private_home();
     let socket = home.path().join("collab.sock");
     let fixture = fixture();
     let mut session = session(&socket, &fixture);
@@ -738,8 +717,7 @@ fn files_copies_and_cuts_through_the_session_and_pastes_into_another_folder() {
     assert_eq!(proof.cut_offer.count, 1);
 }
 
-/// The folders a person works in: where the file is, and the two folders they
-/// paste it into.
+/// The folders a person works in: where the file is, and the two folders they paste it into.
 fn folders(fixture: &Fixture) -> (PathBuf, PathBuf, PathBuf) {
     let root = fixture.root.path().join("files");
     let source = root.join("documents");

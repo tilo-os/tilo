@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-tasks = Tasks
+
 d-75ojxgs3 = Task
     .doc = Something to do: what, by when, by whom, and in which project.
     .noun = { $count ->
@@ -38,6 +40,26 @@ d-4sriymst = Priority
 d-3pf74ifm = Parent
     .doc = The task it is a subtask of; none for a task of its own.
 
+d-75ojxgs3-filter-inbox = Inbox
+
+d-75ojxgs3-filter-today = Today
+
+d-75ojxgs3-filter-upcoming = Upcoming
+
+d-75ojxgs3-filter-done = Done
+
+d-75ojxgs3-filter-assigned_to_me = Assigned to me
+
+d-75ojxgs3-filter-due = Due
+
+d-75ojxgs3-filter-project = Project
+
+d-75ojxgs3-filter-priority = Priority
+
+d-75ojxgs3-filter-parent = Parent
+
+d-75ojxgs3-filter-assignee = Assignee
+
 d-bfqi332m = Project
     .doc = A project: tasks that work towards one outcome.
     .noun = { $count ->
@@ -61,6 +83,8 @@ d-yfd266wj = Name
 
 d-ohbjjsu7 = Project
     .doc = The project it is a section of.
+
+d-5wdrqcpl-filter-project = Project
 
 d-fjqi4yze = Tasks
     .doc = The workspace's tasks and projects.
@@ -134,7 +158,10 @@ d-x5xnqddo = No date
     .doc = Clears the day a task is due by: it waits in the inbox, undated.
 
 d-3qq23ybf = Remind me
-    .doc = Sets when to remind whoever is doing a task of it, counted from now, or clears the reminder.
+    .doc = Sets the moment whoever is doing a task is reminded of it.
+
+d-vjsjvx7u = No reminder
+    .doc = Clears a task's reminder: it is not told of again.
 
 d-7vjyuy7c = Remind
     .doc = Tells whoever is doing a task, or the one who made it, what the task is and when it is due or which project it is in, and opens the task when they choose the notice.
@@ -213,6 +240,8 @@ d-fym3mxqc = Due next week~present
 
 d-ohw2ks6t = Due clear~present
 
+d-g7kx77ng = Remind clear~present
+
 d-dpworviv = Set priority none~present
 
 d-vh3rraia = Set priority low~present
@@ -235,15 +264,15 @@ d-i2mhsb3h = Home
     .w-tasks = Tasks
     .w-projects = Projects
     .w-no-tasks-here = No tasks here
-    .w-no-task-selected = No task selected
 
 d-6a6pf4ok = Task list
 
 d-7froalwb = Project list
+    .w-new-task-in = New task in { $name }
     .w-no-tasks-yet = No tasks yet
-    .w-no-task-selected = No task selected
 
 d-gu3twlv2 = Project board
+    .w-new-task = New task
 
 d-hc5ndp4x = Task card
     .w-remove-from-section = Remove from section
@@ -261,9 +290,8 @@ d-mtmufg3w = Task page
     .w-inbox = Inbox
     .w-remind = Remind
     .w-reminder-set = Reminder set
-    .w-in-10-minutes = In 10 minutes
-    .w-in-an-hour = In an hour
-    .w-tomorrow-at-this-time = Tomorrow at this time
+    .w-remind-me = Remind me…
     .w-no-reminder = No reminder
     .w-subtasks = Subtasks
+    .w-no-subtasks-yet = No subtasks yet
     .w-add-a-subtask = Add a subtask

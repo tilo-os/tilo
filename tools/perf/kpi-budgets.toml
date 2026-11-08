@@ -1446,16 +1446,23 @@ source = "navigation to the desktop's first presented frame, fresh browser conte
 # Resource Timing API's encodedBodySize (what came over the wire, compressed)
 # and its entry count. Transfer bytes and requests are deterministic counters,
 # so their rule is the default one: a regression is a rise over the median of
-# the stored runs, not a night's noise. The ceilings are the live entry's
-# first load (tilo.coffee, measured 2026-10-27: 1 HTML page, the start module
-# 23,078,266 B raw / 5,715,416 B brotli, 67 entry-page modules and the
-# startup fonts, about 8.4 MB over the wire) with a tenth of
-# headroom; t's perf-browser check serves the same bundle unversioned from
-# loopback, so its numbers are the bundle's, not the edge's.
+# the stored runs, not a night's noise.
+#
+# Two series measure it. The live entry (tilo.coffee, 2026-10-27: 1 HTML page,
+# the start module 23,078,266 B raw / 5,715,416 B brotli, 67 entry-page
+# modules and the startup fonts, about 8.4 MB over the wire) sets the request
+# ceiling with a tenth of headroom. t's perf-browser check serves the same
+# bundle unversioned from loopback, so it measures the bundle alone and comes
+# out higher; the transfer ceiling has to cover that series, and is its first
+# load (9,537,404 B, median of 3; 9,659,030 B at its worst, 2026-11-07) plus
+# the 1% headroom the size budgets keep, rounded up to 64 KiB. Both ceilings
+# are enforced: a first visit that adds a resource it did not need fails here
+# instead of only drifting through the medians.
 
 [kpi."browser.load.transfer_bytes"]
 unit = "bytes"
-max = 9300000.0
+max = 9764864.0
+enforce = true
 baseline_min_runs = 1
 source = "summed encodedBodySize of every resource that started before the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
 
@@ -1464,6 +1471,27 @@ unit = "count"
 max = 90.0
 baseline_min_runs = 1
 source = "resource entries that started before the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
+
+# The start module is what every visitor downloads before the page can present
+# anything, so its size is the first visit's floor: a counter, not a timing, so
+# a rise is a regression at once. Measured at 8,757,874 B on 2026-11-07 (the
+# module 28,535,482 B raw), the ceiling is that plus the 1% headroom the
+# build-time budget keeps, rounded up to 64 KiB.
+#
+# It is the only budget on the bytes the page serves: tools/web/wasm-size-budget
+# holds the raw bytes of the desktop bundle the app-sdk lane builds
+# (`tilo-app build --target web`), a different and smaller program than the
+# runtime's own `build.sh --bundle desktop` output that ships (19.4 MB of
+# start-module function bodies against 26.4 MB: the SDK lane's desktop mount
+# carries no peer, MoQ transport or shader translation). Both are optimized
+# with the same arguments (tools/web/wasm-opt-flags). A cut that moves either
+# one lowers this ceiling too.
+[kpi."browser.load.start_module_bytes"]
+unit = "bytes"
+max = 8847360.0
+enforce = true
+baseline_min_runs = 1
+source = "encoded bytes of pkg/tilo_browser_runtime_bg.wasm in the desktop bundle's first load, fresh browser context (headless, SwiftShader)"
 
 [kpi."browser.open.first_frame"]
 unit = "ms"
@@ -1489,6 +1517,24 @@ max = 2.0
 min_delta = 0.5
 baseline_min_runs = 1
 source = "frames an idle desktop of the demo windows presents per second (headless, SwiftShader)"
+
+# A fast typist's keys into a note (--typing-keys), each timed from the page's
+# key event to the first presented frame after it. The ceiling is the
+# runtime's goal: a key on screen within three frames at 60 Hz. The nightly
+# run types on SwiftShader, where a frame is the software rasterizer's, so
+# what its records hold for comparison is the runtime's own CPU per frame
+# beside it, against the display's 16.7 ms frame.
+[kpi."browser.typing.key_to_frame"]
+unit = "ms"
+p95 = 50.0
+baseline_min_runs = 3
+source = "page key event to the first presented frame after it, a fast typist's keys into a note (headless, SwiftShader)"
+
+[kpi."browser.typing.frame_work"]
+unit = "ms"
+p95 = 16.7
+baseline_min_runs = 3
+source = "the runtime's CPU for each frame a typed key presented (headless, SwiftShader)"
 
 # Session startup and frame budgets, per device class, read by
 # tools/perf/check_kpi.py (the [kpi.*] tables above stay compare.py's).

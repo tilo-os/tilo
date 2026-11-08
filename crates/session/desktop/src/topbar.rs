@@ -58,8 +58,8 @@ use sharing::{FaceLook, roster_colors};
 pub use space::BarSpace;
 pub use workspace::paint_tilo_mark;
 
-/// Where a layout stood the bar: in the column above the windows, or over
-/// it, hidden by the person and shown while reached for.
+/// Where a layout stood the bar: in the column above the windows, or over it, hidden by the person
+/// and shown while reached for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BarStanding {
     InColumn,
@@ -87,9 +87,9 @@ impl BarStanding {
 /// is in hand.
 pub const TOPBAR_HEIGHT_PX: f32 = BAR_CONTROL_LOGICAL + 2.0 * ui::tokens::Spacing::BASE.s1;
 
-/// The bar's height under `theme`: [`TOPBAR_HEIGHT_PX`], grown with a large
-/// text size so the time's line still fits with air above and below. At the
-/// default size the line is a little over 20 px and the bar stays 24.
+/// The bar's height under `theme` : [`TOPBAR_HEIGHT_PX`], grown with a large text size so the
+/// time's line still fits with air above and below. At the default size the line is a little over
+/// 20 px and the bar stays 24.
 #[must_use]
 pub fn topbar_height(theme: &Theme) -> f32 {
     let line = ui::tokens::Typography::default()
@@ -99,9 +99,8 @@ pub fn topbar_height(theme: &Theme) -> f32 {
     TOPBAR_HEIGHT_PX.max((line + 2.0 * ui::tokens::Spacing::BASE.s1).ceil())
 }
 
-/// How the bar stands in the desktop's column: across its top at
-/// [`topbar_height`] while docked, out of it and over the window covering
-/// the display while shown or hidden there.
+/// How the bar stands in the desktop's column: across its top at [`topbar_height`] while docked,
+/// out of it and over the window covering the display while shown or hidden there.
 fn bar_style(presence: TopBarPresence, theme: &Theme) -> Style {
     let overlays = presence.overlays();
     Style {
@@ -134,35 +133,31 @@ fn bar_style(presence: TopBarPresence, theme: &Theme) -> Style {
 /// leaving the rest to the workspace name and the people beside it.
 const NARROW_MENU_BAR_PX: f64 = 720.0;
 
-/// Height of every control in the bar — the Tilo mark, the workspace
-/// pill, the centre widget, the tray pill and the media indicator — so they
-/// share one top and bottom edge: the toolkit's bar control height less one
-/// `s1` step, a label line with air above and below.
+/// Height of every control in the bar — the Tilo mark, the workspace pill, the centre widget, the
+/// tray pill and the media indicator — so they share one top and bottom edge: the toolkit's bar
+/// control height less one `s1` step, a label line with air above and below.
 const BAR_CONTROL_LOGICAL: f32 =
     ui::tokens::Metrics::BASE.bar_control_height - ui::tokens::Spacing::BASE.s1;
 const BAR_CONTROL_PX: f64 = BAR_CONTROL_LOGICAL as f64;
 
-/// Inset of a lane-filling centre widget (the system monitor, the
-/// calendar, a live activity) from its pill's ends, the same each side so
-/// the content is centred in the band.
+/// Inset of a lane-filling centre widget (the system monitor, the calendar, a live activity) from
+/// its pill's ends, the same each side so the content is centred in the band.
 const CENTER_INSET_PX: f64 = 12.0;
 
-/// Diameter of the Lucide glyph beside the workspace name (the chevron
-/// opening its menu): a control's 16.
+/// Diameter of the Lucide glyph beside the workspace name (the chevron opening its menu): a
+/// control's 16.
 const SMALL_GLYPH_PX: f64 = 16.0;
 
-/// Compared field-for-field to decide whether [`TopBarChrome::cached`] can
-/// be reused. Time fields split by mode since each variant consumes a
-/// different grain of the host clock.
+/// Compared field-for-field to decide whether [`TopBarChrome::cached`] can be reused. Time fields
+/// split by mode since each variant consumes a different grain of the host clock.
 #[derive(Default, Clone, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag independently invalidates retained top-bar paint and hit-test data; combining them would hide cache dependencies"
 )]
 struct CacheFingerprint {
-    /// Full rect, not just size — the per-frame draw repopulates hit
-    /// rects from `self.rect`'s corners, so a hit must imply those are
-    /// still valid.
+    /// Full rect, not just size — the per-frame draw repopulates hit rects from `self.rect` 's
+    /// corners, so a hit must imply those are still valid.
     rect_px: (i64, i64, u64, u64),
     presence: TopBarPresence,
     workspace_name: String,
@@ -172,9 +167,8 @@ struct CacheFingerprint {
     collaborator_names: Vec<String>,
     collaborator_agents: Vec<bool>,
     collaborator_overflow: usize,
-    /// Each face's live look: dimmed, its call ring's level and its
-    /// bounce, quantised, so presence repaints the bar only when a face
-    /// changes.
+    /// Each face's live look: dimmed, its call ring's level and its bounce, quantised, so presence
+    /// repaints the bar only when a face changes.
     faces: Vec<(bool, Option<u8>, u16)>,
     watching: u32,
     sharing: (usize, usize, usize),
@@ -182,8 +176,8 @@ struct CacheFingerprint {
     activity_unread: usize,
     activity_visible: bool,
     time_bucket: u64,
-    /// Quantised, not [`SystemStatus`] itself — it carries an `f32`
-    /// volume that would never match frame to frame at full precision.
+    /// Quantised, not [`SystemStatus`] itself — it carries an `f32` volume that would never match
+    /// frame to frame at full precision.
     status_key: StatusKey,
     media_key: Vec<(u32, u8, String)>,
     media_expanded: bool,
@@ -194,14 +188,14 @@ struct CacheFingerprint {
     focused: bool,
     focused_control: Option<String>,
 
-    /// Every activity the pill names, in the bar's own order: another one
-    /// appearing, changing its reading or ending repaints it.
+    /// Every activity the pill names, in the bar's own order: another one appearing, changing its
+    /// reading or ending repaints it.
     activities: ui::floating_layer::Pill,
-    /// How far the centre's cross-fade between the time and a live activity
-    /// has come, in thousandths; `None` at rest.
+    /// How far the centre's cross-fade between the time and a live activity has come, in
+    /// thousandths; `None` at rest.
     center_fade: Option<u16>,
-    /// The centre selector's width while it morphs between the time and a
-    /// live activity, in quarter pixels; `None` at rest.
+    /// The centre selector's width while it morphs between the time and a live activity, in quarter
+    /// pixels; `None` at rest.
     center_width: Option<u32>,
     app_tray_revision: u64,
     continuity: Option<String>,
@@ -219,16 +213,14 @@ struct CacheFingerprint {
     arrival: Option<(String, bool, u16, u16)>,
 }
 
-/// One application tray icon as last painted: where, and what a click on
-/// it addresses.
+/// One application tray icon as last painted: where, and what a click on it addresses.
 #[derive(Clone, Debug)]
 struct AppTraySlot {
     key: String,
     id: String,
     /// The application proven to own the item, when one was.
     owner_app: Option<String>,
-    /// What the item is called: the application's own title for it, else
-    /// its id.
+    /// What the item is called: the application's own title for it, else its id.
     title: String,
     item_is_menu: bool,
     rect: Rect,
@@ -274,8 +266,8 @@ fn pointer_coordinates(point: Point) -> (i32, i32) {
     (i32_of_f64(point.x.round()), i32_of_f64(point.y.round()))
 }
 
-/// Free function so [`TopBarChrome::needs_redraw`] can key on the
-/// chrome's status without first copying it onto the widget.
+/// Free function so [`TopBarChrome::needs_redraw`] can key on the chrome's status without first
+/// copying it onto the widget.
 fn status_key_of(s: &crate::chrome::SystemStatus) -> StatusKey {
     StatusKey {
         battery_percent: s.battery_percent(),
@@ -338,23 +330,19 @@ pub struct BarPlace {
 pub struct Placement {
     /// One per display. Empty: one full bar along the bar's own area.
     pub bars: Vec<BarPlace>,
-    /// The bars a window covers, by the same key as [`Self::bars`]: `None`
-    /// for the one bar of a desk that needs no placing, a display's id for
-    /// a display's own. Each takes no room there until it is reached for.
+    /// The bars a window covers, by the same key as [`Self::bars`]: `None` for the one bar of a
+    /// desk that needs no placing, a display's id for a display's own. Each takes no room there
+    /// until it is reached for.
     pub fullscreen: Vec<Option<u32>>,
 }
 
 impl Placement {
-    /// The bars a desk of `tree` carries: one per display, the display in
-    /// use full and the others compact, each on its own display's
-    /// rectangle. `fullscreen` names the monitors of the displays a
-    /// fullscreen window owns; a window the desk itself took full screen
-    /// covers its display too, as the compositor never saw that one asked
-    /// for.
-    ///
-    /// A desk showing a single display carries no bars here: one bar
-    /// across the desk needs no placing, and the bar's own layout already
-    /// stands it there.
+    /// The bars a desk of `tree` carries: one per display, the display in use full and the others
+    /// compact, each on its own display's rectangle. `fullscreen` names the monitors of the
+    /// displays a fullscreen window owns; a window the desk itself took full screen covers its
+    /// display too, as the compositor never saw that one asked for.
+    /// A desk showing a single display carries no bars here: one bar across the desk needs no
+    /// placing, and the bar's own layout already stands it there.
     #[must_use]
     pub fn of(tree: &DesktopTree, fullscreen: &[String]) -> Self {
         let displays = &tree.outputs.displays;
@@ -371,8 +359,7 @@ impl Placement {
                 .collect()
         };
         if !tree.is_partitioned() {
-            // The desk has one display, and any monitor the compositor
-            // names is that one.
+            // The desk has one display, and any monitor the compositor names is that one.
             let covered = tree.fullscreen_group().is_some() || !fullscreen.is_empty();
             return Self {
                 bars: Vec::new(),
@@ -399,9 +386,8 @@ impl Placement {
     }
 }
 
-/// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
-/// function of the tree and avoids a circular borrow against the
-/// shell's owned logical `TopBar`.
+/// `DesktopTree` , not `TopBar` , lets `build_tilo_root` stay a pure function of the tree and
+/// avoids a circular borrow against the shell's owned logical `TopBar` .
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag says a different thing about one bar: whether it is focused, whether it shows the person's face, and whether a fullscreen window owns its display"
@@ -411,28 +397,28 @@ pub struct TopBarChrome {
     rect: Rect,
     /// Where the last layout stood the bar.
     laid_out: BarStanding,
-    /// The compact bar a display other than the primary carries: workspace
-    /// navigation and the centre widget only. Session controls, the tray
-    /// and collaborators live on the primary display's full bar.
+    /// The compact bar a display other than the primary carries: workspace navigation and the
+    /// centre widget only. Session controls, the tray and collaborators live on the primary
+    /// display's full bar.
     variant: BarVariant,
-    /// The display a compact bar stands on, as [`Placement`] names it; the
-    /// full bar carries none, standing on the display in use.
+    /// The display a compact bar stands on, as [`Placement`] names it; the full bar carries none,
+    /// standing on the display in use.
     display: Option<u32>,
-    /// Docked in the column, hidden, or shown over the window covering the
-    /// display, as the host says.
+    /// Docked in the column, hidden, or shown over the window covering the display, as the host
+    /// says.
     presence: TopBarPresence,
-    /// Where the bar sits when that is not where layout put it: the
-    /// primary display's top edge for the full bar, or its own display's
-    /// top edge for a compact one. Height still comes from layout.
+    /// Where the bar sits when that is not where layout put it: the primary display's top edge for
+    /// the full bar, or its own display's top edge for a compact one. Height still comes from
+    /// layout.
     placement: Option<Rect>,
     workspace_name: String,
     workspace_index: usize,
     workspace_total: usize,
-    /// Most of the bar is stable across frames, so caching cuts the
-    /// draw budget at rest by an order of magnitude.
+    /// Most of the bar is stable across frames, so caching cuts the draw budget at rest by an order
+    /// of magnitude.
     cached: Scene,
-    /// The parts [`Self::cached`] was drawn with, carried into the bar's
-    /// section each time it is appended: a change damages its part only.
+    /// The parts [`Self::cached`] was drawn with, carried into the bar's section each time it is
+    /// appended: a change damages its part only.
     cached_parts: Option<ui::scene_parts::SectionParts>,
     cache_theme: Option<Theme>,
     /// Reused iff every field matches `self.*` at draw time. See
@@ -440,59 +426,54 @@ pub struct TopBarChrome {
     cache_fp: CacheFingerprint,
     collaborator_initials: Vec<char>,
     collaborator_names: Vec<String>,
-    /// Same index as `collaborator_initials`. Resolved from
-    /// `cursor_color` when present, else [`ui::presence::user_color`].
+    /// Same index as `collaborator_initials` . Resolved from `cursor_color` when present, else
+    /// [`ui::presence::user_color`].
     collaborator_colors: Vec<Color>,
-    /// Same index as `collaborator_initials`: drawn with the agent mark.
+    /// Same index as `collaborator_initials` : drawn with the agent mark.
     collaborator_agents: Vec<bool>,
-    /// Same index as `collaborator_initials`: the roster id presence knows
-    /// them by (idle, in a call, a wave's bounce).
+    /// Same index as `collaborator_initials` : the roster id presence knows them by (idle, in a
+    /// call, a wave's bounce).
     collaborator_ids: Vec<String>,
-    /// Same index as `collaborator_initials`: how available each face said
-    /// they are and whether they are in a call, as the roster they were read
-    /// from says. `None` for a face the roster says nothing of, which the
-    /// presence beside the bar answers instead.
+    /// Same index as `collaborator_initials` : how available each face said they are and whether
+    /// they are in a call, as the roster they were read from says. `None` for a face the roster
+    /// says nothing of, which the presence beside the bar answers instead.
     collaborator_presence: Vec<Option<(ui::Availability, bool)>>,
-    /// Same index as `collaborator_initials`: how each face looks now, read
-    /// from presence at each draw.
+    /// Same index as `collaborator_initials` : how each face looks now, read from presence at each
+    /// draw.
     face_looks: Vec<FaceLook>,
     /// Where each face was painted, same index.
     face_rects: Vec<Rect>,
-    /// When someone here was first seen in a call, so their ring breathes
-    /// from its start.
+    /// When someone here was first seen in a call, so their ring breathes from its start.
     call_since: Option<Instant>,
     /// Collaborators beyond the three avatars; nonzero paints a "+N" chip.
     collaborator_overflow: usize,
-    /// Copied off the chrome on each revision bump. Empty until
-    /// something polls — an empty reading paints no indicator rather
-    /// than a plausible default.
+    /// Copied off the chrome on each revision bump. Empty until something polls — an empty reading
+    /// paints no indicator rather than a plausible default.
     status: crate::chrome::SystemStatus,
     chrome: Option<Chrome>,
     /// Last clock reading, for a bar drawn without a chrome.
     clock: ClockSnapshot,
     synced_revision: u64,
-    /// `Some(menu open)` when the bar leads with the Tilo mark
-    /// ([`TopBarChrome::with_tilo_mark`]).
+    /// `Some(menu open)` when the bar leads with the Tilo mark ([`TopBarChrome::with_tilo_mark`]).
     tilo_mark: Option<bool>,
     /// The person's own avatar, as last painted.
     own_avatar_rect: Rect,
     // Click geometry — recomputed every frame so it tracks DPI/resize.
     tilo_mark_rect: Rect,
     ws_pill_rect: Rect,
-    /// The current strip's name after the workspace pill, when the bar
-    /// names it: a click there opens the strip switcher.
+    /// The current strip's name after the workspace pill, when the bar names it: a click there
+    /// opens the strip switcher.
     ws_strip_rect: Rect,
-    /// The chevron inside the workspace pill, kept so a test can
-    /// prove the pill's trailing padding equals its leading padding.
+    /// The chevron inside the workspace pill, kept so a test can prove the pill's trailing padding
+    /// equals its leading padding.
     ws_chevron_rect: Rect,
     tray_pill_rect: Rect,
     /// Application tray icons, right to left, as last painted.
     app_tray: Vec<AppTraySlot>,
-    /// Uploaded icon images by item key, reused while the item's pixels
-    /// are the same allocation.
+    /// Uploaded icon images by item key, reused while the item's pixels are the same allocation.
     app_tray_images: HashMap<String, (usize, vello::peniko::ImageData)>,
-    /// Interaction geometry is deliberately larger than the painted pill:
-    /// the screen's top-right edge must remain an easy Quick Settings target.
+    /// Interaction geometry is deliberately larger than the painted pill: the screen's top-right
+    /// edge must remain an easy Quick Settings target.
     tray_hit_rect: Rect,
     /// Where the bell's unread count was painted, `Rect::ZERO` without one.
     bell_badge_rect: Rect,
@@ -500,14 +481,14 @@ pub struct TopBarChrome {
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
     media_expanded: bool,
-    /// The bell in the status cluster: the unread count beside it, and
-    /// whether fresh banners are held (silenced).
+    /// The bell in the status cluster: the unread count beside it, and whether fresh banners are
+    /// held (silenced).
     bell: TrayBell,
-    /// The others' faces (and the "+N" badge): each face opens that
-    /// person's card, the badge everyone.
+    /// The others' faces (and the "+N" badge): each face opens that person's card, the badge
+    /// everyone.
     avatar_stack_rect: Rect,
-    /// The people button beside the faces, which opens everyone here (the
-    /// panel and its pin); zero when nobody else is here.
+    /// The people button beside the faces, which opens everyone here (the panel and its pin); zero
+    /// when nobody else is here.
     people_button_rect: Rect,
     /// The invite button beside the faces; zero when not offered.
     invite_rect: Rect,
@@ -528,44 +509,39 @@ pub struct TopBarChrome {
     activity_unread: usize,
     activity_pulse: u64,
     activity_started: Option<Instant>,
-    /// The centre swapping the time for a live activity and back: a
-    /// cross-fade (`ui::motion::CrossFade`, `true` is the activity).
+    /// The centre swapping the time for a live activity and back: a cross-fade
+    /// (`ui::motion::CrossFade`, `true` is the activity).
     center_fade: ui::motion::CrossFade<bool>,
-    /// The bar leaving with a window maximizing over it (sliding up as the
-    /// window's frame grows to the top), and coming back with its restore.
-    /// Open at rest; [`Self::move_with_window`] drives it.
+    /// The bar leaving with a window maximizing over it (sliding up as the window's frame grows to
+    /// the top), and coming back with its restore. Open at rest; [`Self::move_with_window`] drives
+    /// it.
     with_window: ui::motion::Presence,
-    /// The centre selector's width following its content (the time, or a
-    /// live activity filling the lane) on the standard expand/collapse
-    /// motion (`ui::motion::Extent`), so the selector grows into the lane
-    /// and shrinks back to the time rather than jumping.
+    /// The centre selector's width following its content (the time, or a live activity filling the
+    /// lane) on the standard expand/collapse motion (`ui::motion::Extent`), so the selector grows
+    /// into the lane and shrinks back to the time rather than jumping.
     center_width: ui::motion::Extent,
-    /// The centre selector as painted and hit-tested: as wide as its
-    /// content needs, never wider than [`Self::center_lane`].
+    /// The centre selector as painted and hit-tested: as wide as its content needs, never wider
+    /// than [`Self::center_lane`].
     center_rect: Rect,
-    /// The centre lane the bar reserves for the selector (see
-    /// [`Self::center_band_width`]). Its neighbours lay out against the
-    /// lane, so they hold still while the selector changes widget.
+    /// The centre lane the bar reserves for the selector (see [`Self::center_band_width`]). Its
+    /// neighbours lay out against the lane, so they hold still while the selector changes widget.
     center_lane: Rect,
     /// winit delivers position with `CursorMoved` but not `MouseInput`,
     /// so it's cached here for click hit-testing.
     last_cursor: Option<Point>,
-    /// The bar is one retained focus stop; this names the synthetic child
-    /// currently selected inside it for keyboard and accessibility input.
+    /// The bar is one retained focus stop; this names the synthetic child currently selected inside
+    /// it for keyboard and accessibility input.
     focused: bool,
     focused_control: Option<String>,
-    /// Whether the bar's focus came from (or was last touched by) the
-    /// pointer. Its ring is for keyboard focus only: a click on the bar used
-    /// to light its first control in your colour, which says nothing to a
-    /// pointer user.
+    /// Whether the bar's focus came from (or was last touched by) the pointer. Its ring is for
+    /// keyboard focus only: a click on the bar used to light its first control in your colour,
+    /// which says nothing to a pointer user.
     focus_origin: FocusOrigin,
-    /// When the time the bar shows next goes stale: the end of the current
-    /// minute for the clock, the second while a live activity counts.
-    /// Set when the bar draws and advanced by `update` once reached, so an
-    /// idle desktop still wakes to repaint the clock.
+    /// When the time the bar shows next goes stale: the end of the current minute for the clock,
+    /// the second while a live activity counts. Set when the bar draws and advanced by `update`
+    /// once reached, so an idle desktop still wakes to repaint the clock.
     time_wake: Option<Instant>,
-    /// The active workspace's strips as named places, when the host
-    /// reports who is where.
+    /// The active workspace's strips as named places, when the host reports who is where.
     strips: strips::BarStrips,
 }
 
@@ -655,8 +631,8 @@ impl TopBarChrome {
     }
 
     fn current_fingerprint(&self) -> CacheFingerprint {
-        // Rounded to integer keys so the fingerprint stays stable
-        // against benign float noise from fractional-DPI taffy layout.
+        // Rounded to integer keys so the fingerprint stays stable against benign float noise from
+        // fractional-DPI taffy layout.
         let x0 = fingerprint_i64(self.rect.x0);
         let y0 = fingerprint_i64(self.rect.y0);
         let w = fingerprint_u64(self.rect.width());
@@ -729,9 +705,9 @@ impl TopBarChrome {
         self.time_wake = ui::time::now().checked_add(until_next_time_bucket(since_epoch, bucket));
     }
 
-    /// Whether the time reading went stale since the bar last drew. Moves
-    /// the wake on, so a bar that is not drawn (hidden under fullscreen, a
-    /// locked session) never holds an overdue deadline.
+    /// Whether the time reading went stale since the bar last drew. Moves the wake on, so a bar
+    /// that is not drawn (hidden under fullscreen, a locked session) never holds an overdue
+    /// deadline.
     fn take_time_wake(&mut self) -> bool {
         if self.time_wake.is_none_or(|at| ui::time::now() < at) {
             return false;
@@ -740,9 +716,9 @@ impl TopBarChrome {
         self.rect.height() > 0.0 && self.rect.width() > 0.0
     }
 
-    /// The full bar's session side: the tray, application tray, media and
-    /// sharing indicators, collaborators and the continuity offer. A compact
-    /// bar on another display carries none of these.
+    /// The full bar's session side: the tray, application tray, media and sharing indicators,
+    /// collaborators and the continuity offer. A compact bar on another display carries none of
+    /// these.
     fn draw_session_clusters(
         &mut self,
         scene: &mut Scene,
@@ -753,16 +729,14 @@ impl TopBarChrome {
         let transform = Affine::IDENTITY;
         // The status cluster paints the pill and its glyphs in one pass.
         let tray_w = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
-        // s3/s4 match the pad_x/gap used when this pill was sized and
-        // placed in `draw_tray_pill_body` (s4 = 16, ≥ 8 px after avatar
-        // radius).
+        // s3/s4 match the pad_x/gap used when this pill was sized and placed in
+        // `draw_tray_pill_body` (s4 = 16, ≥ 8 px after avatar radius).
         let stack_right_x = self.rect.x1
             - f64::from(theme.tokens.spacing.s3)
             - tray_w
             - f64::from(theme.tokens.spacing.s4);
-        // The ask hangs left of the avatar, so it is laid out before it: the
-        // dot the avatar draws knows whether the ask's words stand beside it
-        // this frame.
+        // The ask hangs left of the avatar, so it is laid out before it: the dot the avatar draws
+        // knows whether the ask's words stand beside it this frame.
         let avatar_left_x = stack_right_x - BAR_CONTROL_PX - f64::from(theme.tokens.spacing.s3);
         self.draw_avatar_ask(
             scene,
@@ -788,8 +762,8 @@ impl TopBarChrome {
             center_y,
             stack_right_x,
         );
-        // Snapshotted before drawing, so `avatar_stack_rect` can be
-        // populated once the drawn circle count (incl. overflow) is known.
+        // Snapshotted before drawing, so `avatar_stack_rect` can be populated once the drawn circle
+        // count (incl. overflow) is known.
         let stack_right_x = self.draw_media_indicator(
             scene,
             transform,
@@ -814,9 +788,9 @@ impl TopBarChrome {
             text_renderer,
             (center_y, stack_right_x),
         );
-        // The notices beside the faces come and go on their own clock, and
-        // what stands left of one moves with it: one part of the bar, so
-        // that change damages where they are painted, not the whole bar.
+        // The notices beside the faces come and go on their own clock, and what stands left of one
+        // moves with it: one part of the bar, so that change damages where they are painted, not
+        // the whole bar.
         ui::scene_parts::part_drawn(
             scene,
             ui::scene_parts::PartKey::new("desktop.topbar.notices", ()),
@@ -849,9 +823,8 @@ impl TopBarChrome {
         );
     }
 
-    /// Where the notices left of the faces that start at `faces_x` are
-    /// painted: the arrival and wave notices and the continuity offer, the
-    /// bar's height across.
+    /// Where the notices left of the faces that start at `faces_x` are painted: the arrival and
+    /// wave notices and the continuity offer, the bar's height across.
     fn notices_painted(&self, faces_x: f64) -> Vec<Rect> {
         let left = if self.continuity_rect.is_zero_area() {
             self.people_left_x
@@ -882,25 +855,23 @@ impl TopBarChrome {
         self.variant == BarVariant::Compact
     }
 
-    /// Stand this bar on `display`, the display its place in a
-    /// [`Placement`] is found on: the bar reads where its display is from
-    /// there, so it follows its own display rather than the one in use.
+    /// Stand this bar on `display` , the display its place in a [`Placement`] is found on: the bar
+    /// reads where its display is from there, so it follows its own display rather than the one in
+    /// use.
     #[must_use]
     pub fn on_display(mut self, display: u32) -> Self {
         self.display = Some(display);
         self
     }
 
-    /// The display this bar stands on; `None` for the full bar, which
-    /// stands on the display in use.
+    /// The display this bar stands on; `None` for the full bar, which stands on the display in use.
     #[must_use]
     pub const fn display(&self) -> Option<u32> {
         self.display
     }
 
-    /// Whether the bar is docked in the column, hidden, or shown over the
-    /// window covering its display: hidden, it paints nothing and takes no
-    /// pointer.
+    /// Whether the bar is docked in the column, hidden, or shown over the window covering its
+    /// display: hidden, it paints nothing and takes no pointer.
     pub fn set_presence(&mut self, presence: TopBarPresence) {
         if self.presence != presence {
             self.presence = presence;
@@ -911,8 +882,8 @@ impl TopBarChrome {
         }
     }
 
-    /// Sit the bar at `rect`'s top edge, `rect`'s width across, instead of
-    /// where layout places it; `None` returns it to layout.
+    /// Sit the bar at `rect` 's top edge, `rect` 's width across, instead of where layout places
+    /// it; `None` returns it to layout.
     pub fn set_placement(&mut self, rect: Option<Rect>) {
         if self.placement != rect {
             self.placement = rect;
@@ -936,9 +907,8 @@ impl TopBarChrome {
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.snapshot().revision;
-        // Declares this widget synced at the current revision, so
-        // `update`'s sync branch won't re-run until it moves — status
-        // must be seeded now.
+        // Declares this widget synced at the current revision, so `update` 's sync branch won't
+        // re-run until it moves — status must be seeded now.
         self.status = chrome.snapshot().status;
         self.chrome = Some(chrome);
         self.synced_revision = rev;
@@ -965,13 +935,12 @@ impl TopBarChrome {
             );
         self.workspace_index = idx;
         self.workspace_name = name;
-        // Presence is workspace-scoped. The legacy tree-level cache can
-        // contain people active elsewhere and must not leak them into this bar.
+        // Presence is workspace-scoped. The legacy tree-level cache can contain people active
+        // elsewhere and must not leak them into this bar.
         let roster: &[tilo_desktop_model::Collaborator] =
             active_ws.map_or(&[], |workspace| workspace.collaborators.as_slice());
-        // An invited-but-not-arrived peer doesn't count as present.
-        // This person is their own avatar beside the stack, never a face in
-        // it, and so are their other devices.
+        // An invited-but-not-arrived peer doesn't count as present. This person is their own avatar
+        // beside the stack, never a face in it, and so are their other devices.
         let local = self.explicit_local_user.as_deref();
         let present = |c: &&tilo_desktop_model::Collaborator| {
             c.id != "me" && Some(c.id.as_str()) != local && !c.invited && !c.own_device
@@ -983,11 +952,11 @@ impl TopBarChrome {
         self.collaborator_ids.clear();
         self.collaborator_presence.clear();
         let now = tilo_clock::unix_now();
-        // Counted with the same `present` filter as the avatars, so the
-        // overflow chip agrees with the row.
+        // Counted with the same `present` filter as the avatars, so the overflow chip agrees with
+        // the row.
         let peer_count = roster.iter().filter(present).count();
-        // Settled over the whole workspace, so a peer's avatar matches the
-        // colour their cursor is drawn in elsewhere on the desktop.
+        // Settled over the whole workspace, so a peer's avatar matches the colour their cursor is
+        // drawn in elsewhere on the desktop.
         let colors = roster_colors(roster, local.unwrap_or(""));
         let (shown, _) = ui::presence::FaceStack::BAR.split(peer_count);
         for c in roster.iter().filter(present).take(shown) {
@@ -1039,18 +1008,17 @@ impl TopBarChrome {
     const CONTROL_MEDIA: &'static str = "topbar:media";
     const CONTROL_CONTINUITY: &'static str = "topbar:continuity";
     const CONTROL_CONTINUITY_DISMISS: &'static str = "topbar:continuity-dismiss";
-    /// A running application's tray item stands on the bar as its own
-    /// control: `tray:<key>` names the one the host addresses.
+    /// A running application's tray item stands on the bar as its own control: `tray:<key>` names
+    /// the one the host addresses.
     const APP_TRAY_TARGET: &'static str = "tray:";
 
-    /// Whether the last layout stood the bar in or over the column other
-    /// than it stands now.
+    /// Whether the last layout stood the bar in or over the column other than it stands now.
     fn overlay_layout_stale(&self) -> bool {
         self.laid_out != BarStanding::of(self.presence().overlays())
     }
 
-    /// Whether the bar, hidden by the person, must stay shown for its own
-    /// sake: the keyboard is in it.
+    /// Whether the bar, hidden by the person, must stay shown for its own sake: the keyboard is in
+    /// it.
     pub fn holds_itself_shown(&self) -> bool {
         self.focused && self.focus_origin == FocusOrigin::Keyboard
     }
@@ -1060,9 +1028,8 @@ impl TopBarChrome {
         self.presence
     }
 
-    /// The bar shown over the windows stands on a surface of its own, the
-    /// width of the display with the bar's hairline under it, so its
-    /// controls read over whatever the windows show there.
+    /// The bar shown over the windows stands on a surface of its own, the width of the display with
+    /// the bar's hairline under it, so its controls read over whatever the windows show there.
     fn draw_overlay_surface(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         scene.fill(
             Fill::NonZero,
@@ -1091,13 +1058,11 @@ impl TopBarChrome {
     /// which would otherwise show as a line of light along the display's top
     /// and ends a pixel inside the bezel.
     fn draw_bar_body(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        // The bar's body is the shared `Chrome` body: the theme's bar finish
-        // over the desktop, in the panel ground it falls back to, and its
-        // foot's edge from the theme — never geometry or a finish of its own.
-        // The bar spans its display edge to edge, so the sides at the
-        // screen's own edges (the top and both ends) are flush: the body
-        // draws no rim there, or it would show as a line of light a pixel
-        // inside the bezel.
+        // The bar's body is the shared `Chrome` body: the theme's bar finish over the desktop, in
+        // the panel ground it falls back to, and its foot's edge from the theme — never geometry or
+        // a finish of its own. The bar spans its display edge to edge, so the sides at the screen's
+        // own edges (the top and both ends) are flush: the body draws no rim there, or it would
+        // show as a line of light a pixel inside the bezel.
         let ground = ui::widget::SurfaceLevel::Floating.color(theme);
         let flush = ui::part_paint::Sides::TOP
             .union(ui::part_paint::Sides::LEADING)
@@ -1105,9 +1070,9 @@ impl TopBarChrome {
         ui::widget::paint_bar_body(scene, transform, self.rect, theme, ground, flush);
     }
 
-    /// A window maximizing over the bar's display (`shown` false) or
-    /// restoring (`shown` true), moved by `source`: the bar leaves or comes
-    /// back with it, over the window's own motion. A key's lands.
+    /// A window maximizing over the bar's display (`shown` false) or restoring (`shown` true),
+    /// moved by `source` : the bar leaves or comes back with it, over the window's own motion. A
+    /// key's lands.
     pub fn move_with_window(
         &mut self,
         shown: bool,
@@ -1137,14 +1102,14 @@ impl Widget for TopBarChrome {
     }
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        // The time is read when drawing, so nothing else marks the bar
-        // dirty when the minute turns over on an idle desktop.
+        // The time is read when drawing, so nothing else marks the bar dirty when the minute turns
+        // over on an idle desktop.
         let time_changed = self.take_time_wake();
         if let Some(chrome) = self.chrome.clone() {
             let rev = chrome.snapshot().revision;
             if rev != self.synced_revision {
-                // Clone the tree to avoid re-borrowing chrome while
-                // `sync_from_tree` borrows &self mut.
+                // Clone the tree to avoid re-borrowing chrome while `sync_from_tree` borrows &self
+                // mut.
                 let tree_snap = chrome.tree();
                 self.sync_from_tree(&tree_snap);
                 // The status poller bumps the same revision.
@@ -1156,11 +1121,10 @@ impl Widget for TopBarChrome {
         time_changed
     }
 
-    /// The end of the time reading on screen. Once it passes it stays
-    /// reported as due, so the host runs a frame; that frame's `update`
-    /// reports the bar dirty and schedules the next one. Hiding a passed
-    /// deadline let the loop sleep through the minute until unrelated input
-    /// woke it, and the clock read the minute before.
+    /// The end of the time reading on screen. Once it passes it stays reported as due, so the host
+    /// runs a frame; that frame's `update` reports the bar dirty and schedules the next one. Hiding
+    /// a passed deadline let the loop sleep through the minute until unrelated input woke it, and
+    /// the clock read the minute before.
     fn next_wake_deadline(&self) -> Option<Instant> {
         // A hidden bar shows no clock to turn over.
         if self.presence() == TopBarPresence::Hidden {
@@ -1203,8 +1167,8 @@ impl Widget for TopBarChrome {
         let node = match taffy.new_leaf(style) {
             Ok(node) => node,
             Err(err) => {
-                // Keep the session alive if a future Taffy change rejects
-                // this fresh leaf (production uses panic = "abort").
+                // Keep the session alive if a future Taffy change rejects this fresh leaf
+                // (production uses panic = "abort").
                 tracing::error!("topbar: leaf allocation failed: {err}");
                 NodeId::from(0u64)
             }
@@ -1215,9 +1179,8 @@ impl Widget for TopBarChrome {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(l) = taffy.layout(node) else {
-            // A missing layout means this node fell out of the tree
-            // between `build_layout` and this pass; keep the last known
-            // rect rather than crash the session over a stale node.
+            // A missing layout means this node fell out of the tree between `build_layout` and this
+            // pass; keep the last known rect rather than crash the session over a stale node.
             tracing::warn!("topbar: layout lookup failed for node {node:?}");
             return;
         };
@@ -1235,8 +1198,8 @@ impl Widget for TopBarChrome {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Leaving with a maximizing window, or coming back with its
-        // restore: the whole bar slides up off its display as it fades.
+        // Leaving with a maximizing window, or coming back with its restore: the whole bar slides
+        // up off its display as it fades.
         if self.with_window_moving() {
             let open = self.with_window.progress(ui::motion::frame_now());
             let shown = ui::motion::unit_opacity(open);
@@ -1276,8 +1239,8 @@ impl Widget for TopBarChrome {
         {
             self.focus_origin = FocusOrigin::Keyboard;
         }
-        // A hidden bar is not there: whatever is under its strip gets the
-        // input. The host shows it first when it is reached for.
+        // A hidden bar is not there: whatever is under its strip gets the input. The host shows it
+        // first when it is reached for.
         if self.presence() == TopBarPresence::Hidden {
             return;
         }
@@ -1286,10 +1249,9 @@ impl Widget for TopBarChrome {
                 state: winit::event::ElementState::Pressed,
                 ..
             } => self.focus_origin = FocusOrigin::Pointer,
-            // Moving through the focused bar with the keyboard is reading it
-            // with the keyboard; focus the shell merely placed here, or a
-            // click left, is not, until such a key arrives. Any other key
-            // (Escape closing a menu, a shortcut) moves nothing and lights
+            // Moving through the focused bar with the keyboard is reading it with the keyboard;
+            // focus the shell merely placed here, or a click left, is not, until such a key
+            // arrives. Any other key (Escape closing a menu, a shortcut) moves nothing and lights
             // nothing: focus-visible follows keyboard navigation only.
             WindowEvent::KeyboardInput { event, .. }
                 if self.focused
@@ -1351,8 +1313,7 @@ impl Widget for TopBarChrome {
         self.rect
     }
 
-    /// So a harness clicks the pill the renderer painted instead of a
-    /// guessed coordinate.
+    /// So a harness clicks the pill the renderer painted instead of a guessed coordinate.
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let app_tray = self
             .app_tray
@@ -1435,8 +1396,8 @@ impl Widget for TopBarChrome {
                         .with_description(bell.clone())
                         .with_children(vec![AccessNode::new(Role::Image).with_name(bell)]);
                 }
-                // An icon carrying unread notifications says how many: the
-                // bell's total alone never said whose they were.
+                // An icon carrying unread notifications says how many: the bell's total alone never
+                // said whose they were.
                 if let Some(key) = TopBarChrome::tray_target_key(&target)
                     && let Some(unread) = self
                         .app_tray
@@ -1455,10 +1416,9 @@ impl Widget for TopBarChrome {
                 if target == Self::CONTROL_COLLABORATORS {
                     node = node.with_children(self.face_accessibility());
                 }
-                // An ask waiting on their own avatar: beside it as the pill
-                // when the bar has room, and as the dot on the avatar when
-                // it has none or the person folded it. Folded, the dot says
-                // here what a sighted person sees.
+                // An ask waiting on their own avatar: beside it as the pill when the bar has room,
+                // and as the dot on the avatar when it has none or the person folded it. Folded,
+                // the dot says here what a sighted person sees.
                 if target == Self::CONTROL_PROFILE
                     && self.ask.pill.is_zero_area()
                     && let Some(ask) = self.chrome_avatar_ask()
@@ -1468,8 +1428,8 @@ impl Widget for TopBarChrome {
                         .with_description(asking.clone())
                         .with_children(vec![AccessNode::new(Role::StaticText).with_name(asking)]);
                 }
-                // The pill names the workspace; where it stands among the
-                // others is said to a reader, as the menu lists them.
+                // The pill names the workspace; where it stands among the others is said to a
+                // reader, as the menu lists them.
                 if target == Self::CONTROL_WORKSPACE_SETTINGS && self.workspace_total > 1 {
                     node = node.with_description(t_args(
                         "topbar-workspace-position",
@@ -1562,8 +1522,8 @@ impl Widget for TopBarChrome {
     }
 
     fn is_focusable(&self) -> bool {
-        // Keyboard traversal reaches the primary display's full bar; a
-        // compact bar repeats a subset of it.
+        // Keyboard traversal reaches the primary display's full bar; a compact bar repeats a subset
+        // of it.
         !self.is_compact()
     }
 
@@ -1584,8 +1544,8 @@ impl Widget for TopBarChrome {
         self.focused
     }
 
-    /// Must keep returning `true` until the first successful draw
-    /// fills the cache, or the first frame after layout never paints.
+    /// Must keep returning `true` until the first successful draw fills the cache, or the first
+    /// frame after layout never paints.
     fn needs_animation_frame(&self) -> bool {
         // A hidden bar paints nothing, so nothing on it moves either.
         self.presence() != TopBarPresence::Hidden
@@ -1596,15 +1556,14 @@ impl Widget for TopBarChrome {
     }
 
     fn needs_redraw(&self) -> bool {
-        // Chrome state (who is here, what was asked, the app tray) only
-        // reaches the bar through `update`; ask for the frame that runs it.
+        // Chrome state (who is here, what was asked, the app tray) only reaches the bar through
+        // `update` ; ask for the frame that runs it.
         if let Some(chrome) = self.chrome.clone()
             && chrome.snapshot().revision != self.synced_revision
         {
             return true;
         }
-        // Hiding and showing each repaint; nothing else on a hidden bar can
-        // show.
+        // Hiding and showing each repaint; nothing else on a hidden bar can show.
         if self.presence() != self.cache_fp.presence {
             return true;
         }
@@ -1625,8 +1584,8 @@ impl Widget for TopBarChrome {
         if self.cache_fp.rect_px.2 == 0 {
             return true;
         }
-        // A status change must reach the screen without waiting for an
-        // unrelated event — ancestors only rebuild on a dirty descendant.
+        // A status change must reach the screen without waiting for an unrelated event — ancestors
+        // only rebuild on a dirty descendant.
         let live = self.live_status();
         if status_key_of(&live) != self.cache_fp.status_key
             || live
@@ -1663,14 +1622,13 @@ impl Widget for TopBarChrome {
 
     fn mark_drawn(&mut self) {}
 
-    /// Fixed intrinsic size, so the taffy node never needs recomputing
-    /// after the first pass.
+    /// Fixed intrinsic size, so the taffy node never needs recomputing after the first pass.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.overlay_layout_stale()
     }
 
-    /// Docking or hiding the bar moves the windows, so the tree it was laid
-    /// out in is rebuilt; showing a hidden bar over them does not.
+    /// Docking or hiding the bar moves the windows, so the tree it was laid out in is rebuilt;
+    /// showing a hidden bar over them does not.
     fn take_structure_dirty(&mut self) -> bool {
         let stale = self.overlay_layout_stale();
         let mut children = false;
@@ -1690,20 +1648,19 @@ impl TopBarChrome {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Zero-height (fullscreen) paints nothing; without this guard
-        // the encode below still runs at intrinsic size, overflowing
-        // into a stray fragment over the fullscreen window.
+        // Zero-height (fullscreen) paints nothing; without this guard the encode below still runs
+        // at intrinsic size, overflowing into a stray fragment over the fullscreen window.
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
             return;
         }
-        // A hidden bar paints nothing until it is reached for, unless it
-        // is leaving with a maximizing window.
+        // A hidden bar paints nothing until it is reached for, unless it is leaving with a
+        // maximizing window.
         if self.presence() == TopBarPresence::Hidden && !self.with_window_moving() {
             self.cache_fp.presence = TopBarPresence::Hidden;
             return;
         }
-        // Pulled here, not pushed by update, so a just-dropped battery
-        // percent is drawn and counted as a change in the same pass.
+        // Pulled here, not pushed by update, so a just-dropped battery percent is drawn and counted
+        // as a change in the same pass.
         self.refresh_status_and_media_state();
         self.schedule_time_wake();
         let showing_activity = self.activity_is_visible();
@@ -1729,7 +1686,7 @@ impl TopBarChrome {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
 
-        // Cache miss — encode at IDENTITY, then splice with `out_transform`.
+        // Cache miss — encode at IDENTITY, then splice with `out_transform` .
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
         let ((), parts) = ui::scene_parts::record(&mut local, |scene| {
@@ -1741,8 +1698,8 @@ impl TopBarChrome {
                 self.draw_bar_body(scene, transform, theme);
             }
 
-            // The workspace's name leads, after the mark when there is one:
-            // where its label starts, past its capsule's `s2` leading pad.
+            // The workspace's name leads, after the mark when there is one: where its label starts,
+            // past its capsule's `s2` leading pad.
             let label_x = self.draw_tilo_mark(
                 scene,
                 transform,
@@ -1753,9 +1710,8 @@ impl TopBarChrome {
             self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
             let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
                 - self.center_band_width(theme, text_renderer) / 2.0;
-            // The strip shown changes as the person moves between strips: it
-            // is one part of the bar, so that change damages where it is
-            // painted rather than the whole bar.
+            // The strip shown changes as the person moves between strips: it is one part of the
+            // bar, so that change damages where it is painted rather than the whole bar.
             let strip_span = (
                 self.ws_pill_rect.x1,
                 center_left - f64::from(theme.tokens.spacing.s4),
@@ -1764,8 +1720,8 @@ impl TopBarChrome {
                 scene,
                 ui::scene_parts::PartKey::new("desktop.topbar.strips", ()),
                 |scene| {
-                    // The strip shown, named after the workspace it is in: the
-                    // frequent level, where the person looks for "where am I".
+                    // The strip shown, named after the workspace it is in: the frequent level,
+                    // where the person looks for "where am I".
                     self.draw_strip_name(
                         scene,
                         transform,

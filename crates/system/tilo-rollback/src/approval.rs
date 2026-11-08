@@ -345,11 +345,6 @@ pub fn issue(
 }
 
 /// Write approvals into a directory.
-///
-/// # Errors
-///
-/// Returns an error if the directory cannot be created, or if any approval fails to
-/// serialise or write.
 pub fn store(dir: &Path, approvals: &[Approval]) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut paths = Vec::new();

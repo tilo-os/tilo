@@ -1,9 +1,8 @@
 //! What the person configured, as the compositor takes it.
-//!
-//! The compositor reads no settings store. The session reads the person's
-//! settings, fills a [`Settings`] and hands it over at start and whenever
-//! they change ([`crate::Compositor::apply_settings`]); every part applies
-//! live. Each part can also be set on its own.
+//! The compositor reads no settings store. The session reads the person's settings, fills a
+//! [`Settings`] and hands it over at start and whenever they change
+//! ([`crate::Compositor::apply_settings`]); every part applies live. Each part can also be set on
+//! its own.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -52,34 +51,29 @@ pub struct DisplayConfig {
     pub transforms: HashMap<String, Transform>,
     /// Connectors the person turned off; they stay off when plugged in.
     pub disabled: HashSet<String>,
-    /// Connectors that run at a variable refresh rate where the display
-    /// can.
+    /// Connectors that run at a variable refresh rate where the display can.
     pub variable_refresh: HashSet<String>,
     /// An ICC profile per connector, applied to everything it shows.
     pub color_profiles: HashMap<String, PathBuf>,
     /// Connectors driven in HDR, with what their displays report.
     pub hdr: HashMap<String, Hdr>,
     /// Night light's colour temperature in kelvin while it is on (see
-    /// [`crate::Compositor::set_night_light`]); the session decides when
-    /// (a switch, a schedule).
+    /// [`crate::Compositor::set_night_light`]); the session decides when (a switch, a schedule).
     pub night_light: Option<u32>,
-    /// The connector the person made primary (`DP-2`): the display their
-    /// desk's full bar, their new windows and the sheets they open go to
-    /// while it is lit. A connector that is not lit, or not connected at
-    /// all, names no primary and the first display stands in, so the
-    /// choice waits for the monitor to come back instead of being lost.
+    /// The connector the person made primary (`DP-2`): the display their desk's full bar, their new
+    /// windows and the sheets they open go to while it is lit. A connector that is not lit, or not
+    /// connected at all, names no primary and the first display stands in, so the choice waits for
+    /// the monitor to come back instead of being lost.
     pub primary: Option<String>,
 }
 
-/// An output driven in HDR (a PQ BT.2020 signal): where SDR white sits and
-/// what the display reports in its EDID, sent to it as the mastering
-/// display. Zero luminances are "unknown".
+/// An output driven in HDR (a PQ BT.2020 signal): where SDR white sits and what the display reports
+/// in its EDID, sent to it as the mastering display. Zero luminances are "unknown".
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hdr {
-    /// The luminance SDR white (sRGB 1.0) is shown at; 203 is the BT.2408
-    /// reference.
+    /// The luminance SDR white (sRGB 1.0) is shown at; 203 is the BT.2408 reference.
     pub sdr_white_nits: f32,
-    /// Red, green, blue chromaticities, in millionths (`x`, `y`).
+    /// Red, green, blue chromaticities, in millionths (`x`, `y` ).
     pub primaries: [(u32, u32); 3],
     pub white_point: (u32, u32),
     pub max_nits: u16,
@@ -103,8 +97,8 @@ impl Default for Hdr {
 }
 
 impl DisplayConfig {
-    /// The changes that bring `outputs` (name, on now) in line with this
-    /// configuration. Outputs it says nothing about are left as they are.
+    /// The changes that bring `outputs` (name, on now) in line with this configuration. Outputs it
+    /// says nothing about are left as they are.
     pub(crate) fn changes(&self, outputs: &[(String, bool)]) -> Vec<OutputChange> {
         outputs
             .iter()

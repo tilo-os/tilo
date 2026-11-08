@@ -102,10 +102,6 @@ pub fn read_content(
 /// `path` is called (content travels under any name, "Sofia details" for a
 /// Word file); the name's only when they are text, whose kinds (Markdown,
 /// plain) only a name tells apart.
-///
-/// # Errors
-///
-/// A PDF, or a document Writer does not read, named with what opens it.
 fn read_as(path: &Path, bytes: &[u8]) -> Result<String, String> {
     match tilo_content::document_format(bytes) {
         Some(format) if format.extension == "pdf" => Err(format!(

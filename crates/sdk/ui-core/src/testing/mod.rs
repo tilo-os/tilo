@@ -26,4 +26,6 @@ pub(crate) use owned_text::OwnedText;
 /// environment's own crate.
 pub use tilo_test_env::{hang_bound, hang_deadline, wait_for, wait_until};
 #[cfg(test)]
-pub(crate) use widgets::{delegate_widget_methods, inert_widget_methods, test_app_widget};
+pub(crate) use widgets::{
+    TwoWindows, delegate_widget_methods, inert_widget_methods, test_app_widget,
+};

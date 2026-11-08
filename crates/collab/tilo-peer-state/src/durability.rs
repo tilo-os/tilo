@@ -152,10 +152,6 @@ pub(crate) fn encode_all(
         .collect()
 }
 /// Replace the receipt set with `receipts`, writing only changed routes.
-///
-/// # Errors
-///
-/// Returns an error if a receipt cannot be encoded or written.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "public API: callers hand over the complete replacement receipt set"

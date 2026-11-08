@@ -221,6 +221,11 @@ session-notifications-hand-to-agent = Hand the notification to an agent
 ## came from and the device that showed it first.
 notification-from-device = { $app } from { $device }
 notification-from-device-only = From { $device }
+## The person asked to report a problem and this computer has nowhere to
+## send one: the report box says so where they asked, rather than opening
+## on an address that would never carry it.
+session-feedback-nowhere = Report a problem
+session-feedback-nowhere-body = This computer is not set up to send reports about Tilo.
 session-apps = Apps
 session-apps-uninstall = Uninstall an app
 session-param-app = The app's name
@@ -382,3 +387,10 @@ capture-failed-dismiss = Done
 capture-target-display = The whole desktop
 capture-target-window = A window
 capture-target-region = An area of the desktop
+
+# The agent the session makes in a workspace that keeps none, when a person
+# asks from the canvas (shell.md §8.1).
+session-agent-name = Assistant
+# The conversation a person asks in, made with Chat's own actions on the
+# first ask (shell.md §8.1).
+session-ask-conversation = Assistant

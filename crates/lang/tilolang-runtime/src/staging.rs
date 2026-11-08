@@ -9,10 +9,6 @@ use crate::value::Value;
 
 /// The state of `app` named `state`, as its view declares it; `view.state` names the view where
 /// more than one declares one name.
-///
-/// # Errors
-///
-/// A message when no view of the app declares it, or more than one does and none is named.
 pub fn declared_state(
     meta: &Meta,
     app: &str,
@@ -68,11 +64,6 @@ pub fn declared_state(
 /// The value `text` names as the app's own code writes it, read against the declared type `ty`:
 /// a filter of the type it queries (`Task.today`), a case of an enum (`Side.right`), or the
 /// literal a day, a time, a number, a truth or a text takes.
-///
-/// # Errors
-///
-/// A message when the type takes no such value, or the app declares neither the type the filter
-/// queries nor the enum of the case.
 pub fn state_value(
     reg: &Registry,
     app: &str,
@@ -103,9 +94,13 @@ pub fn state_value(
             .iter()
             .find(|t| t.name == queried)
             .ok_or_else(|| format!("`{app}` declares no type `{queried}`"))?;
-        let filter = filters_of(declared, &meta.enums).into_iter().find(
-            |f| matches!(f, Value::Tuple(parts) if parts.first() == Some(&Value::text(name))),
-        );
+        // A staged value is the query a check asks a view to start from, not words a window
+        // shows: it keeps the words the app wrote.
+        let filter = filters_of(declared, &meta.enums, &|_, source| source.to_owned())
+            .into_iter()
+            .find(
+                |f| matches!(f, Value::Tuple(parts) if parts.first() == Some(&Value::text(name))),
+            );
         return filter.ok_or_else(|| {
             let keys: Vec<&str> = declared
                 .search

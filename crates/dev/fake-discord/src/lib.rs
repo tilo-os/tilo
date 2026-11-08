@@ -381,18 +381,12 @@ impl Drop for FakeDiscord {
 
 impl FakeDiscord {
     /// Start the REST and gateway servers on loopback, with the seeded guild.
-    ///
-    /// # Errors
-    /// A loopback port could not be bound.
     pub async fn start() -> std::io::Result<Self> {
         Self::start_with_channels(seed_channels()).await
     }
 
     /// [`Self::start`] with the guild holding `channels` (Discord's channel
     /// objects, `guild_id` filled in when absent) instead of the seeded ones.
-    ///
-    /// # Errors
-    /// A loopback port could not be bound.
     pub async fn start_with_channels(channels: Vec<Value>) -> std::io::Result<Self> {
         let fake = Self::start_on(
             "127.0.0.1:0".parse().map_err(std::io::Error::other)?,
@@ -415,9 +409,6 @@ impl FakeDiscord {
     }
 
     /// [`Self::start`] on the given addresses.
-    ///
-    /// # Errors
-    /// An address could not be bound.
     pub async fn start_on(rest: SocketAddr, gateway: SocketAddr) -> std::io::Result<Self> {
         let rest_listener = tokio::net::TcpListener::bind(rest).await?;
         let gateway_listener = tokio::net::TcpListener::bind(gateway).await?;

@@ -207,12 +207,16 @@ assembler() {
 }
 
 # A step in a mirrored image (buildah, skopeo): its store and scratch in DIR, not in the
-# container's /tmp, so a rerun takes the packages and layers it fetched before.
+# container's /tmp, so a rerun takes the packages and layers it fetched before. What the step
+# needs from here it is given, as container() gives it: a value it reads for itself instead is
+# read from its own side of the mount, where the tree it builds from need not be wholly there.
 mirrored() {
+  local image=$1 script=$2
+  shift 2
   step podman run --rm --privileged --security-opt label=disable --workdir /src \
     -v "$repo:/src" -v "$target:/target" -v "$target/buildah-scratch:/scratch" \
-    -v "$work/var-tmp:/var/tmp" -e HOME=/root -e TMPDIR=/scratch \
-    --entrypoint bash "$(mirror_ref "$1")" -eo pipefail -c "$2"
+    -v "$work/var-tmp:/var/tmp" -e HOME=/root -e TMPDIR=/scratch "$@" \
+    --entrypoint bash "$(mirror_ref "$image")" -eo pipefail -c "$script"
 }
 
 # A cargo build of a tool in the project's builder image, with cargo's home and the build
@@ -229,10 +233,13 @@ tool_build() {
 }
 
 # The RPM snapshot the layers install from when the registry has none published for this package
-# set (tools/ci/publish/rpms-build.sh), in the buildah image.
+# set (tools/ci/publish/rpms-build.sh), in the buildah image. It dates what it builds by the
+# tree's date, which is this machine's: oci-build.sh takes it from the environment, and reads
+# Git only where there is none.
 build_rpms() {
   say "the RPM snapshot"
-  mirrored buildah "bash tools/ci/publish/rpms-build.sh $arch /target/publish/rpms/$arch"
+  mirrored buildah "bash tools/ci/publish/rpms-build.sh $arch /target/publish/rpms/$arch" \
+    -e "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}"
 }
 
 build_os_image() {

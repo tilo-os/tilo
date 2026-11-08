@@ -40,8 +40,7 @@ const UNAVAILABLE: &str = "Selected website session unavailable";
 const BROWSER: &str = "so.tilo.browser";
 const MAX_STORE: u64 = 2 * 1024 * 1024;
 
-/// The person's account custody, as the apps it serves reach it on the
-/// action door.
+/// The person's account custody, as the apps it serves reach it on the action door.
 pub(crate) struct ServiceSessions {
     engine: Arc<Engine>,
 }
@@ -51,9 +50,8 @@ impl ServiceSessions {
         Self { engine }
     }
 
-    /// The certified person's own route of `app`, readable on that app's
-    /// record in the workspace (and, for `admin`, administered by this
-    /// workspace), now and rechecked after.
+    /// The certified person's own route of `app` , readable on that app's record in the workspace
+    /// (and, for `admin` , administered by this workspace), now and rechecked after.
     fn authorize_selection(&self, context: &Context, admin: bool, app: &str) -> Result<(), String> {
         context.revalidate()?;
         let person = collab_types::caps::Principal::person_from_key(
@@ -82,8 +80,8 @@ impl ServiceSessions {
             if member.person != context.person() {
                 return Err("This person left the workspace".into());
             }
-            // Reading the app's own record here is what the broker itself
-            // asks of a join: the person's grants on the workspace decide it.
+            // Reading the app's own record here is what the broker itself asks of a join: the
+            // person's grants on the workspace decide it.
             let route = context.read_context().route();
             let node = collab_types::validator::document_node(
                 &route.cluster_id,
@@ -115,9 +113,8 @@ impl BrowserServiceSessionServices for ServiceSessions {
             Command::StoreAccountSecret { .. } => {
                 self.authorize_selection(context, false, accounts::person::ACCOUNTS_OWNER)
             }
-            // Which app keeps the account is read from the person's
-            // accounts when it is resolved; here, only that the route is
-            // the person's own, with Read on its app.
+            // Which app keeps the account is read from the person's accounts when it is resolved;
+            // here, only that the route is the person's own, with Read on its app.
             Command::ReleaseAccountSecret { .. } => {
                 self.authorize_selection(context, false, context.app_id())
             }
@@ -147,8 +144,7 @@ impl BrowserServiceSessionServices for ServiceSessions {
     fn disconnect(&self, _peer_id: u64) {}
 }
 
-/// One website session's selection, as the vault and the person's accounts
-/// answer for it.
+/// One website session's selection, as the vault and the person's accounts answer for it.
 fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, String> {
     let store = read_store(root).map_err(|_| UNAVAILABLE)?;
     let custodian = account_custody::Custodian::for_root(Some(root.to_owned()));
@@ -170,7 +166,7 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
         return Ok(Reply::Forgotten { id, setup_binding });
     }
     let reply = match command {
-        Command::List => {
+        Command::List {} => {
             let mut sessions = Vec::new();
             for account in store.all().iter().filter(|account| {
                 account.type_id.as_str() == account_custody::service_sessions::SERVICE_SESSION_TYPE
@@ -209,8 +205,8 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
                 .map_err(|_| UNAVAILABLE)?;
             Reply::Resolved { session }
         }
-        // Forget is handled before the read snapshot is validated; account
-        // secrets are not website sessions.
+        // Forget is handled before the read snapshot is validated; account secrets are not website
+        // sessions.
         Command::Forget { .. }
         | Command::StoreAccountSecret { .. }
         | Command::ReleaseAccountSecret { .. } => return Err(UNAVAILABLE.into()),
@@ -224,9 +220,8 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
     Ok(reply)
 }
 
-/// Seal or release one account's secret under `root` for the app `app`
-/// ([`accounts::custody`] decides). The secret never enters the person's
-/// accounts record or a log.
+/// Seal or release one account's secret under `root` for the app `app` ([`accounts::custody`]
+/// decides). The secret never enters the person's accounts record or a log.
 fn account_secret(root: &Path, app: &str, command: Command) -> Result<Reply, String> {
     match command {
         Command::StoreAccountSecret { account, password } => {
@@ -246,8 +241,8 @@ fn account_secret(root: &Path, app: &str, command: Command) -> Result<Reply, Str
     }
 }
 
-/// Traverse only held directory descriptors; neither missing custody nor
-/// metadata discovery creates, chmods, or follows a redirected namespace.
+/// Traverse only held directory descriptors; neither missing custody nor metadata discovery
+/// creates, chmods, or follows a redirected namespace.
 fn directory(path: &Path) -> io::Result<File> {
     if !path.is_absolute() {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -315,10 +310,9 @@ fn read_store(root: &Path) -> io::Result<AccountStore> {
 mod tests {
     use super::*;
 
-    /// Settings seals an email account's password, which Settings is never
-    /// released; Mail, which keeps email accounts, is released it while the
-    /// account is enabled; no other app is, and no other type of account
-    /// is released to Mail.
+    /// Settings seals an email account's password, which Settings is never released; Mail, which
+    /// keeps email accounts, is released it while the account is enabled; no other app is, and no
+    /// other type of account is released to Mail.
     #[test]
     fn custody_seals_for_settings_and_releases_only_to_the_accounts_keeper() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -431,7 +425,8 @@ mod tests {
         );
         vault.try_save().unwrap();
         let before = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
-        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List).unwrap() else {
+        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List {}).unwrap()
+        else {
             panic!("Expected list");
         };
         assert_eq!(sessions.len(), 1);
@@ -506,7 +501,8 @@ mod tests {
                 .unwrap()
                 .matches(&forget)
         );
-        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List).unwrap() else {
+        let Reply::List { sessions } = resolve(root.path(), [7; 32], Command::List {}).unwrap()
+        else {
             panic!("Expected list after revocation");
         };
         assert!(sessions.is_empty());
@@ -517,7 +513,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(resolve(root.path(), [7; 32], Command::List).is_err());
+        assert!(resolve(root.path(), [7; 32], Command::List {}).is_err());
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
         let external = tempfile::tempdir().unwrap();
         AccountStore::new().save_in(external.path()).unwrap();

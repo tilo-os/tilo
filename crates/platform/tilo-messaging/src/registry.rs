@@ -34,8 +34,6 @@ struct Registry {
     observers: Mutex<Vec<Weak<Observer>>>,
 }
 /// Start empty; no accounts, grants or resources are synthesized.
-/// # Errors
-/// Refuses an invalid principal.
 pub fn messaging_registry(
     principal: &str,
 ) -> Result<Arc<dyn MessagingRegistry>, RegistrationError> {

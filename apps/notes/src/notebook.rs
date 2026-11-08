@@ -1177,9 +1177,6 @@ pub const MAX_MARKDOWN_IMPORT_BYTES: usize = 1024 * 1024;
 pub const MAX_MARKDOWN_IMPORT_BLOCKS: usize = 10_000;
 
 /// Whether `markdown` is small enough for one import.
-///
-/// # Errors
-/// Says which limit it exceeds.
 pub fn check_markdown_import(markdown: &str) -> Result<(), String> {
     if markdown.len() > MAX_MARKDOWN_IMPORT_BYTES {
         return Err(ui::i18n!("notes-import-too-big"));

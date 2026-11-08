@@ -803,10 +803,6 @@ impl Store {
     /// Remember that the person declined to add the program at `path`, so
     /// that file is not asked about again. Another file (a new version, a
     /// copy) is. Files that are gone are forgotten on the way.
-    ///
-    /// # Errors
-    ///
-    /// The list could not be written.
     pub fn decline(&self, path: &Path) -> io::Result<()> {
         let mut declined: Vec<Declined> = self
             .declined_files()
@@ -891,10 +887,6 @@ impl Store {
 
     /// Add `program` to the person's apps as `identity`, or point the existing
     /// entry for `identity` at it. Returns the entry's desktop id.
-    ///
-    /// # Errors
-    ///
-    /// The entry or its icon could not be written.
     pub fn add(&self, identity: &Identity, program: &Program) -> io::Result<String> {
         let desktop_id = Self::desktop_id(&identity.key);
         let path = self
@@ -932,10 +924,6 @@ impl Store {
     /// names another file. Running an app from a new path (a new version, a
     /// second download) updates its entry rather than adding a second one.
     /// Returns the desktop id when it changed something.
-    ///
-    /// # Errors
-    ///
-    /// The entry could not be rewritten.
     pub fn update_location(
         &self,
         identity: &Identity,
@@ -979,11 +967,6 @@ impl Store {
     /// Point the entry `desktop_id` at `program`, the file the person found
     /// when it went missing, keeping the name it has in the language `locales`
     /// names ([`crate::locale::language_candidates`]).
-    ///
-    /// # Errors
-    ///
-    /// No such entry, `program` is not a runnable file, or the entry could
-    /// not be rewritten.
     pub fn locate(&self, desktop_id: &str, program: &Path, locales: &[String]) -> io::Result<()> {
         let path = self
             .entry_path(desktop_id)
@@ -1037,10 +1020,6 @@ impl Store {
     /// When the file the entry `desktop_id` starts is gone, make the newest
     /// other copy still there the one it starts. Returns that copy, or
     /// `None` when the file is there or no other copy is.
-    ///
-    /// # Errors
-    ///
-    /// The entry could not be rewritten.
     pub fn fall_back(&self, desktop_id: &str, locales: &[String]) -> io::Result<Option<PathBuf>> {
         let Some(recorded) = self.entry(desktop_id) else {
             return Ok(None);
@@ -1148,10 +1127,6 @@ impl Store {
     /// answer where: what an offer to add the app shows, and the file its
     /// entry will name once it is added. `None` when the app brings none,
     /// and its entry names the system's generic application icon instead.
-    ///
-    /// # Errors
-    ///
-    /// The artwork could not be written.
     pub fn keep_icon(&self, identity: &Identity) -> io::Result<Option<PathBuf>> {
         match &identity.icon {
             Some(icon) => self.write_icon(&slug(&identity.key), icon).map(Some),
@@ -1161,10 +1136,6 @@ impl Store {
 
     /// Forget the artwork kept for `identity`: nothing the person has names
     /// it any more.
-    ///
-    /// # Errors
-    ///
-    /// An icon file could not be removed.
     pub fn discard_icon(&self, identity: &Identity) -> io::Result<()> {
         let slug = slug(&identity.key);
         for format in [IconFormat::Png, IconFormat::Svg] {

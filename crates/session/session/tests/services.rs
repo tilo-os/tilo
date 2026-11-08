@@ -1,8 +1,7 @@
-//! The headless session hosting its system services: their resources are
-//! published beside the desktop's, and their actions are invoked through
-//! the session's door by address, as quick settings, Settings, a script or
-//! an agent invokes them. The audio service is reached over the lines a
-//! `tilo-audio --serve` speaks.
+//! The headless session hosting its system services: their resources are published beside the
+//! desktop's, and their actions are invoked through the session's door by address, as quick
+//! settings, Settings, a script or an agent invokes them. The audio service is reached over the
+//! lines a `tilo-audio --serve` speaks.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -17,14 +16,15 @@
 
 mod common;
 
+use common::audio::Card;
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
-use media::audio::{AudioDevice, AudioGraph, GraphControl};
+use media::audio::{AudioDevice, AudioGraph};
 use runtime_collab::{SpeakerCommand, SpeakerMemberSpec, SpeakerReply, SpeakerRoleSpec};
 use serde_json::{Map, Value, json};
 use tilo_actions::DoorError;
-use tilo_audio_service::sound::{self, Graph, Read, SoundService};
+use tilo_audio_service::sound::{self, Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::Connectivity;
 use tilo_connectivity_service::device::{Change, Device, Readings};
@@ -62,11 +62,7 @@ impl Device for Radios {
     }
 }
 
-/// A sound card in memory: two outputs, the speakers in use.
-struct Card {
-    graph: Mutex<AudioGraph>,
-}
-
+/// A device the card reports, as the audio service reads one.
 fn output(id: u32, label: &str, default: bool) -> AudioDevice {
     AudioDevice {
         id,
@@ -81,69 +77,16 @@ fn output(id: u32, label: &str, default: bool) -> AudioDevice {
     }
 }
 
-impl Graph for Card {
-    fn read(&self) -> Read {
-        Read {
-            graph: self.graph.lock().unwrap().clone(),
-            uses: Vec::new(),
-        }
-    }
-
-    fn control(&self) -> &dyn GraphControl {
-        self
-    }
-}
-
-impl GraphControl for Card {
-    fn set_default_sink(&self, node_id: u32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            sink.is_default = sink.id == node_id;
-        }
-        Ok(())
-    }
-
-    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            if sink.id == node_id {
-                sink.volume = Some(perceptual);
-            }
-        }
-        Ok(())
-    }
-
-    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 /// The sound service served over lines on a thread, as `tilo-audio
 /// --serve` serves it on its pipes; the session's end of the lines.
 fn audio_over_lines() -> Remote {
-    let card: Arc<dyn Graph> = Arc::new(Card {
-        graph: Mutex::new(AudioGraph {
-            sinks: vec![
-                output(40, "Speakers", true),
-                output(41, "Headphones", false),
-            ],
-            ..AudioGraph::default()
-        }),
-    });
+    let card: Arc<dyn Graph> = Arc::new(Card::new(AudioGraph {
+        sinks: vec![
+            output(40, "Speakers", true),
+            output(41, "Headphones", false),
+        ],
+        ..AudioGraph::default()
+    }));
     let (requests_in, requests_out) = std::io::pipe().unwrap();
     let (events_in, events_out) = std::io::pipe().unwrap();
     let (sender, incoming, wake) = lines::incoming();
@@ -171,16 +114,14 @@ fn session() -> Session {
     connectivity.settle();
     let services: Vec<Box<dyn Service>> =
         vec![Box::new(connectivity), Box::new(audio_over_lines())];
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
 fn arguments(value: Value) -> Map<String, Value> {
@@ -190,8 +131,8 @@ fn arguments(value: Value) -> Map<String, Value> {
     }
 }
 
-/// Wait until `resource` reads as `done` says, taking in what the services
-/// report as the session's loop does.
+/// Wait until `resource` reads as `done` says, taking in what the services report as the session's
+/// loop does.
 fn until(session: &mut Session, resource: &str, done: impl Fn(&Value) -> bool) -> Value {
     common::wait_for(
         session,
@@ -222,8 +163,8 @@ fn turning_wifi_on_is_an_action_of_the_published_network() {
         network["wifi"]["on"] == json!(true)
     });
 
-    // What the device refuses is the resource's problem, and an action this
-    // laptop cannot do is refused before it reaches the device.
+    // What the device refuses is the resource's problem, and an action this laptop cannot do is
+    // refused before it reaches the device.
     session
         .invoke("network", "scan-wifi", &Map::new())
         .expect("Wi-Fi is on now, so it scans");
@@ -263,9 +204,8 @@ fn choosing_headphones_is_an_action_of_the_published_sound() {
     ));
 }
 
-/// The person's device fabric as a stand-in transport keeps it: which of
-/// their devices are on it, each publishing one output speaker groups can be
-/// made of.
+/// The person's device fabric as a stand-in transport keeps it: which of their devices are on it,
+/// each publishing one output speaker groups can be made of.
 #[derive(Clone)]
 struct Fabric {
     converged: Arc<Mutex<DeviceFabric>>,
@@ -343,8 +283,8 @@ impl Fabric {
         self.publish(device, label);
     }
 
-    /// Publish this device's speaker records as its snapshot does: the sets
-    /// it leads, as the group core hands them to the snapshot builder.
+    /// Publish this device's speaker records as its snapshot does: the sets it leads, as the group
+    /// core hands them to the snapshot builder.
     fn publishes_its_speaker_sets(&self) {
         let mut converged = self.converged.lock().unwrap();
         let mut snapshot = converged
@@ -431,28 +371,25 @@ impl FabricLink for Fabric {
 }
 
 fn fabric_session(fabric: &Fabric) -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             fabric: Some(fabric.link()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
-/// The speaker service keeps one view and one revision per process, so the
-/// tests that speak to it take turns.
+/// The speaker service keeps one view and one revision per process, so the tests that speak to it
+/// take turns.
 static SPEAKER_SERVICE: Mutex<()> = Mutex::new(());
 
-/// Settings' wait for the next change of the snapshot its Speakers page
-/// shows.
+/// Settings' wait for the next change of the snapshot its Speakers page shows.
 struct Wait(std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send>>);
 
 impl Wait {
-    /// Wait from `after`, on what `fabric` holds now.
+    /// Wait from `after` , on what `fabric` holds now.
     fn from(fabric: &Fabric, after: u64) -> Self {
         Self(Box::pin(tilo_speaker_service::settings::changed(
             &fabric.link(),
@@ -466,8 +403,8 @@ impl Wait {
     }
 }
 
-/// Step the session's passes until Settings hears of the change they see:
-/// a pass is what tells it to read the groups again.
+/// Step the session's passes until Settings hears of the change they see: a pass is what tells it
+/// to read the groups again.
 fn when_settings_hears(session: &mut Session, wait: &mut Wait) -> u64 {
     common::wait_for(
         session,
@@ -482,9 +419,9 @@ fn when_settings_hears(session: &mut Session, wait: &mut Wait) -> u64 {
     )
 }
 
-/// A device arriving on the person's fabric is visible to the next snapshot
-/// Settings takes: the session's passes are what notice it and what resolve
-/// the wait Settings keeps while its Speakers page is open.
+/// A device arriving on the person's fabric is visible to the next snapshot Settings takes: the
+/// session's passes are what notice it and what resolve the wait Settings keeps while its Speakers
+/// page is open.
 #[test]
 fn a_device_arriving_on_the_fabric_reaches_the_next_settings_snapshot() {
     let _turn = SPEAKER_SERVICE.lock().unwrap();
@@ -492,8 +429,8 @@ fn a_device_arriving_on_the_fabric_reaches_the_next_settings_snapshot() {
     let mut session = fabric_session(&fabric);
     assert_eq!(fabric.settings_sees(), ["This laptop"]);
 
-    // Settings' first wait answers at once, with the revision its reads
-    // start from; the next one is for a change that has not happened.
+    // Settings' first wait answers at once, with the revision its reads start from; the next one is
+    // for a change that has not happened.
     let started = when_settings_hears(&mut session, &mut Wait::from(&fabric, 0));
     let mut waiting = Wait::from(&fabric, started);
     for _ in 0..8 {
@@ -511,10 +448,9 @@ fn a_device_arriving_on_the_fabric_reaches_the_next_settings_snapshot() {
     assert_eq!(fabric.settings_sees(), ["Shelf", "This laptop"]);
 }
 
-/// A set saved from Settings' Speakers page reaches the session's speaker
-/// groups and is read back from them: the session admits it against the
-/// devices its fabric carries, and the next snapshot it publishes is what
-/// Settings lists it from.
+/// A set saved from Settings' Speakers page reaches the session's speaker groups and is read back
+/// from them: the session admits it against the devices its fabric carries, and the next snapshot
+/// it publishes is what Settings lists it from.
 #[test]
 fn a_speaker_set_saved_in_settings_is_read_back_from_the_session() {
     let _turn = SPEAKER_SERVICE.lock().unwrap();

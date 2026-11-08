@@ -1,31 +1,13 @@
-//! The composing input method: the engine of the active input source.
-//!
-//! Chinese, Japanese and Korean are composed, not mapped: a program holds the
-//! seat's `input-method-v2`, turns the keys the person types into candidate
-//! characters, and commits what they pick into the focused field. That
-//! program is Fcitx5 (Rime, Anthy, Hangul and the X11 apps' XIM), started by
-//! the session on a display of its own — as a surface app gets one — so only
-//! it, and what it starts, can reach the seat's input method on the display
-//! the person's windows are on.
-//!
-//! The session owns which engine is active and how the person switches it, so
-//! the engine's configuration is generated on every start ([`launch`]): its
-//! own switching chords are cleared (Super+Space is the session's search,
-//! Ctrl+Space belongs to the focused app) and the engine of the active source
-//! is the one it starts with. User dictionaries stay in its ordinary data
-//! directory.
-//!
-//! An engine of the active source means the on-screen keyboard does not run
-//! ([`crate::keyboard`]): one input method owns the seat, and the typing the
-//! person does on the glass is committed text, not keys an engine composes.
-//! Switching back to a keyboard layout brings the on-screen keyboard back.
-//!
-//! The engine also serves X11 clients, one workspace display at a time: for
-//! every display whose Xwayland server runs it opens that display over the
-//! session bus and composes for the XIM windows there. A display it opened
-//! after its server stopped is opened again when a fresh server starts on it.
-//! Nothing else is needed on the X side — the compositor accepts these
-//! clients.
+//! The composing input method: the engine of the active input source. Chinese, Japanese and Korean
+//! are composed, not mapped: a program holds the seat's `input-method-v2` and turns typed keys into
+//! candidate characters. That program is Fcitx5 (Rime, Anthy, Hangul and XIM), started by the
+//! session on a display of its own — as a surface app gets one — so only it and what it starts can
+//! reach the seat's input method on the person's display. The session owns which engine is active,
+//! so the engine's configuration is generated on every start: its own switching chords are cleared
+//! (Super+Space is the session's search, Ctrl+Space belongs to the focused app) and the active
+//! source's engine is the one it starts with. An engine of the active source means the on-screen
+//! keyboard does not run: one input method owns the seat. It also serves X11 clients, one workspace
+//! display at a time.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -36,21 +18,20 @@ use tilo_compositor::Compositor;
 
 use crate::config::Sources;
 
-/// Where the composing input method is installed. Its private display admits
-/// only this program and what it starts.
+/// Where the composing input method is installed. Its private display admits only this program and
+/// what it starts.
 const PROGRAM: &str = "/usr/bin/fcitx5";
 
-/// Addons of the engine that the session does not use. The tray and panel
-/// addons need services the session does not run, the clipboard addon claims
-/// a global chord, and the IBus/Fcitx4 frontends would claim bus names nobody
-/// asked for. XIM stays: it serves X11 apps on the display the session starts.
+/// Addons of the engine that the session does not use. The tray and panel addons need services the
+/// session does not run, the clipboard addon claims a global chord, and the IBus/Fcitx4 frontends
+/// would claim bus names nobody asked for. XIM stays: it serves X11 apps on the display the session
+/// starts.
 const DISABLED_ADDONS: &str =
     "clipboard,kimpanel,notificationitem,ibusfrontend,fcitx4frontend,virtualkeyboard";
 
-/// What the engine needs from the session: its user, locale, session bus, and
-/// the directories its dictionaries and engines live in. Everything else —
-/// the session's own display, the sockets it bound, the X display around a
-/// nested session — stays out of the engine's reach.
+/// What the engine needs from the session: its user, locale, session bus, and the directories its
+/// dictionaries and engines live in. Everything else — the session's own display, the sockets it
+/// bound, the X display around a nested session — stays out of the engine's reach.
 const INHERITED_ENV: &[&str] = &[
     "HOME",
     "USER",
@@ -69,35 +50,32 @@ const INHERITED_ENV: &[&str] = &[
     "DBUS_SESSION_BUS_ADDRESS",
 ];
 
-/// How often the engine is started before it is given up on: one that will
-/// not stay up leaves the person typing their layout plainly, rather than
-/// starting for ever.
+/// How often the engine is started before it is given up on: one that will not stay up leaves the
+/// person typing their layout plainly, rather than starting for ever.
 const TRIES: u32 = 3;
 
-/// How long the engine has to exit when it is stopped, before it is killed
-/// with everything it started.
+/// How long the engine has to exit when it is stopped, before it is killed with everything it
+/// started.
 const STOP_GRACE: Duration = Duration::from_secs(1);
 
-/// The name the engine takes on the session bus, and the controller object
-/// X11 displays are handed to.
+/// The name the engine takes on the session bus, and the controller object X11 displays are handed
+/// to.
 const BUS_NAME: &str = "org.fcitx.Fcitx5";
 const CONTROLLER_PATH: &str = "/controller";
 const CONTROLLER_INTERFACE: &str = "org.fcitx.Fcitx.Controller1";
 
-/// How often, and how far apart, the engine is asked to open an X11 display:
-/// it takes its bus name once its addons are loaded, and the display may
-/// start before that.
+/// How often, and how far apart, the engine is asked to open an X11 display: it takes its bus name
+/// once its addons are loaded, and the display may start before that.
 const XIM_TRIES: u32 = 100;
 const XIM_RETRY: Duration = Duration::from_millis(100);
 
-/// Whether the active source is an engine this image can run, so the seat is
-/// an input method's and not the on-screen keyboard's.
+/// Whether the active source is an engine this image can run, so the seat is an input method's and
+/// not the on-screen keyboard's.
 pub(crate) fn composes(source: &str) -> bool {
     engine(source).is_some()
 }
 
-/// The engine the source `id` names, when this image has both it and the
-/// program that runs it.
+/// The engine the source `id` names, when this image has both it and the program that runs it.
 fn engine(id: &str) -> Option<InputMethodEngine> {
     InputMethodEngine::from_source_id(id).filter(|engine| installed(*engine))
 }
@@ -111,14 +89,14 @@ fn installed(engine: InputMethodEngine) -> bool {
 #[derive(Default)]
 pub(crate) struct InputMethod {
     run: Run,
-    /// The engine the active source last asked for, so a source switch is told
-    /// from an engine that will not stay up.
+    /// The engine the active source last asked for, so a source switch is told from an engine that
+    /// will not stay up.
     aimed: Option<InputMethodEngine>,
-    /// How often the engine was started since the source last wanted it, so
-    /// one that keeps exiting is given up on rather than started for ever.
+    /// How often the engine was started since the source last wanted it, so one that keeps exiting
+    /// is given up on rather than started for ever.
     starts: u32,
-    /// The private display the engine's connections are accepted on, while it
-    /// runs: dropping it stops accepting them.
+    /// The private display the engine's connections are accepted on, while it runs: dropping it
+    /// stops accepting them.
     display: Option<tilo_compositor::SurfaceDisplay>,
     /// The displays whose Xwayland servers run, which the engine serves.
     x11: Vec<String>,
@@ -141,22 +119,20 @@ enum Run {
 }
 
 impl InputMethod {
-    /// The displays whose Xwayland servers run, which the engine serves once
-    /// it runs.
+    /// The displays whose Xwayland servers run, which the engine serves once it runs.
     pub(crate) fn serve_x11(&mut self, displays: Vec<String>) {
         if self.x11 == displays {
             return;
         }
-        // A display whose server stopped is served again when the next client
-        // starts one there, even though the number is the same.
+        // A display whose server stopped is served again when the next client starts one there,
+        // even though the number is the same.
         self.opened.retain(|open| displays.contains(open));
         self.x11 = displays;
     }
 
-    /// Follow the active input source: run the engine it names, on a display
-    /// of the engine's own, and stop it when the person types in a layout
-    /// again. An engine that exits is started again, a bounded number of
-    /// times.
+    /// Follow the active input source: run the engine it names, on a display of the engine's own,
+    /// and stop it when the person types in a layout again. An engine that exits is started again,
+    /// a bounded number of times.
     pub(crate) fn follow(
         &mut self,
         compositor: &mut Compositor,
@@ -174,8 +150,8 @@ impl InputMethod {
         let Some(engine) = wanted else {
             return;
         };
-        // What exited is stopped; the pass below asks for another run, unless
-        // the engine used its tries.
+        // What exited is stopped; the pass below asks for another run, unless the engine used its
+        // tries.
         self.exited();
         if self.running() {
             self.open_x11(runtime);
@@ -221,23 +197,23 @@ impl InputMethod {
     /// Stop the engine, and stop accepting connections on its display.
     fn stop(&mut self) {
         if let Run::Running { mut child, .. } = std::mem::take(&mut self.run) {
-            // Its own group: what the engine started goes with it, and the
-            // display it composed on is nobody's once it is gone.
+            // Its own group: what the engine started goes with it, and the display it composed on
+            // is nobody's once it is gone.
             bounded_command::terminate_tree(&mut child, STOP_GRACE);
         }
         self.run = Run::Down;
         self.display = None;
-        // A started engine serves no display yet: what ran before it is its
-        // own, and XIM goes with it.
+        // A started engine serves no display yet: what ran before it is its own, and XIM goes with
+        // it.
         self.opened.clear();
     }
 
-    /// Start `engine` on a display of its own, typing on the source list's
-    /// layout. A start that cannot be made is what the next pass tries again.
+    /// Start `engine` on a display of its own, typing on the source list's layout. A start that
+    /// cannot be made is what the next pass tries again.
     fn start(&mut self, compositor: &mut Compositor, engine: InputMethodEngine, sources: &Sources) {
         if self.starts >= TRIES {
-            // A start that cannot be made leaves nothing running, so the next
-            // pass would ask again: this is where asking stops.
+            // A start that cannot be made leaves nothing running, so the next pass would ask again:
+            // this is where asking stops.
             tracing::error!(
                 engine = engine.name(),
                 starts = self.starts,
@@ -300,8 +276,8 @@ impl InputMethod {
                 return;
             }
         };
-        // What connects to the engine's display from here on is the engine
-        // and what it starts: the seat's input method is theirs to bind.
+        // What connects to the engine's display from here on is the engine and what it starts: the
+        // seat's input method is theirs to bind.
         match compositor.accept_surface_clients(display, child.id(), None) {
             Ok(display) => self.display = Some(display),
             Err(error) => {
@@ -316,9 +292,8 @@ impl InputMethod {
         self.run = Run::Running { engine, child };
     }
 
-    /// Ask the engine, over the session bus, to serve each X11 display the
-    /// session's X11 apps show on and it does not serve yet. Runs off the
-    /// loop: the engine answers after its X handshake.
+    /// Ask the engine, over the session bus, to serve each X11 display the session's X11 apps show
+    /// on and it does not serve yet. Runs off the loop: the engine answers after its X handshake.
     fn open_x11(&mut self, runtime: &tokio::runtime::Runtime) {
         let pending: Vec<String> = self
             .x11
@@ -341,9 +316,8 @@ impl InputMethod {
 }
 
 impl crate::Session {
-    /// Follow the composing input method of the active input source: run its
-    /// engine while a source names one, and serve every display whose Xwayland
-    /// server runs from it.
+    /// Follow the composing input method of the active input source: run its engine while a source
+    /// names one, and serve every display whose Xwayland server runs from it.
     pub(crate) fn follow_input_method(&mut self) {
         let running = self
             .compositor
@@ -379,8 +353,8 @@ fn config_directory() -> Option<PathBuf> {
     Some(tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?.join("input-method"))
 }
 
-/// The XKB layout the engine's own key symbols stand on: the first layout of
-/// the source list, as engines type on the primary layout.
+/// The XKB layout the engine's own key symbols stand on: the first layout of the source list, as
+/// engines type on the primary layout.
 fn layout(sources: &Sources) -> String {
     sources
         .compiled()
@@ -403,8 +377,8 @@ struct Launch {
     files: Vec<(PathBuf, String)>,
 }
 
-/// Describe the engine's run: `engine` typing on `layout`, connected to
-/// `display` (its own), configured from `directory`.
+/// Describe the engine's run: `engine` typing on `layout` , connected to `display` (its own),
+/// configured from `directory` .
 fn launch(engine: InputMethodEngine, layout: &str, display: &Path, directory: &Path) -> Launch {
     let profile = format!(
         "[Groups/0]\nName=Tilo\nDefault Layout={layout}\nDefaultIM={engine}\n\n\
@@ -413,8 +387,8 @@ fn launch(engine: InputMethodEngine, layout: &str, display: &Path, directory: &P
          [GroupOrder]\n0=Tilo\n",
         engine = engine.name(),
     );
-    // Shift toggles the engine's own Latin mode and the dedicated
-    // Hangul/Zenkaku keys switch it; every enumerate chord is empty.
+    // Shift toggles the engine's own Latin mode and the dedicated Hangul/Zenkaku keys switch it;
+    // every enumerate chord is empty.
     let config = "[Hotkey]\nEnumerateWithTriggerKeys=False\n\n\
          [Hotkey/TriggerKeys]\n0=Zenkaku_Hankaku\n1=Hangul\n\n\
          [Hotkey/AltTriggerKeys]\n0=Shift_L\n\n\
@@ -444,8 +418,8 @@ fn launch(engine: InputMethodEngine, layout: &str, display: &Path, directory: &P
     }
 }
 
-/// Ask the engine, once it has taken its name on the session bus, to become
-/// the input method of `display`.
+/// Ask the engine, once it has taken its name on the session bus, to become the input method of
+/// `display` .
 async fn ask_x11(display: String) -> Result<(), zbus::Error> {
     let bus = zbus::Connection::session().await?;
     let mut tries = 0;

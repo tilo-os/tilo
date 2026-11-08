@@ -1,8 +1,7 @@
-//! Wi-Fi continuity for the person's certified devices: Settings asks here
-//! whether this device's interfaces can wake it, and shares the passphrase it
-//! learned with the person's other devices — or joins with one they shared —
-//! through this session's device fabric. The passphrase is sealed to each of
-//! their devices and never travels or stays in the clear.
+//! Wi-Fi continuity for the person's certified devices: Settings asks here whether this device's
+//! interfaces can wake it, and shares the passphrase it learned with the person's other devices —
+//! or joins with one they shared — through this session's device fabric. The passphrase is sealed
+//! to each of their devices and never travels or stays in the clear.
 
 use zeroize::Zeroizing;
 

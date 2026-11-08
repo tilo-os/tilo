@@ -6,6 +6,10 @@ PartOf=tilo-graphical-session.target
 # a request concern; it must not delay daemon activation or user login.
 
 [Service]
+# Nothing here is a person waiting: the work yields to the desktop while it
+# runs, and is what systemd-oomd takes memory back from first
+# (os/etc/systemd/user/background.slice.d/50-tilo-batch.conf).
+Slice=background.slice
 Type=simple
 # The manager writes under ~/.local/share; a missing path plus ProtectHome
 # is a hard failure and Restart=on-failure crash-loops an unconfigured user.

@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-mail = Mail
+
 d-weesm3yb = Account
     .doc = What the server of one of the workspace's mail accounts holds.
     .noun = { $count ->
@@ -25,6 +27,8 @@ d-ehmoyzk2 = Mailboxes
 
 d-qybqg4dl = Threads
 
+d-weesm3yb-filter-online = Online
+
 d-ecbhcqdr = Mailbox
     .doc = A mailbox of an account.
     .noun = { $count ->
@@ -41,6 +45,10 @@ d-xhiqdk3p = Role
 d-dtd4czyv = Unread
 
 d-rxoe5vzb = Total
+
+d-ecbhcqdr-filter-unread = Unread
+
+d-ecbhcqdr-filter-total = Total
 
 d-xnczt27x = Thread
     .doc = A conversation: messages that answer each other, newest last.
@@ -79,6 +87,26 @@ d-bdoh33hs = Snoozed until
 
 d-z7qxz544 = Muted
     .doc = Muted: the conversation stays out of the inbox while new messages keep coming, as a busy conversation is silenced, and it is still found under Muted and All mail.
+
+d-xnczt27x-filter-inbox = Inbox
+
+d-xnczt27x-filter-snoozed = Snoozed
+
+d-xnczt27x-filter-labels = Labels
+
+d-xnczt27x-filter-flagged = Flagged
+
+d-xnczt27x-filter-muted = Muted
+
+d-xnczt27x-filter-sent = Sent
+
+d-xnczt27x-filter-archive = Archive
+
+d-xnczt27x-filter-junk = Junk
+
+d-xnczt27x-filter-trash = Trash
+
+d-xnczt27x-filter-unread = Unread
 
 d-5ynnrlxh = Label
     .doc = A label the person gave their conversations: their own, never the server's, as Gmail's and Fastmail's are.
@@ -128,6 +156,12 @@ d-vxxb4sqr = Flagged
 
 d-xlejsz5j = Mailbox
 
+d-sshtf3z7-filter-received = Received
+
+d-sshtf3z7-filter-unread = Unread
+
+d-sshtf3z7-filter-flagged = Flagged
+
 d-lidkonvr = Draft
     .doc = A message being written: who it goes to, what it says, what it answers, and how it stands on its way out.
     .noun = { $count ->
@@ -157,6 +191,10 @@ d-lgrwf5yf = Send at
 d-h2nvr2op = Recalled
     .doc = It was taken back before it went: it never leaves, and it is a draft again.
 
+d-lidkonvr-filter-drafts = Drafts
+
+d-lidkonvr-filter-sent = Sent
+
 d-su4h67i5 = Mail
     .doc = The person's mail: the accounts the workspace's settings hold, what they are writing, and the labels they gave their conversations.
     .noun = { $count ->
@@ -172,6 +210,8 @@ d-z3zcztpz = Labels
 
 d-4ow5ydy5 = Hold
     .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and what rules out holding it not at all.
+
+d-su4h67i5-filter-hold = Hold
 
 d-ejo2352x = Signature
     .doc = Sets what the account signs its messages with, or clears it: the person's own, per account.
@@ -342,7 +382,7 @@ d-n2xgxnbw = Message
     .w-to = to { $to }
     .w-hide-quoted-text = Hide quoted text
     .w-show-quoted-text = Show quoted text
-    .w-attached = Attached
+    .w-attached = Attached: { $attachments }
 
 d-oqpazwvc = Editor
     .w-sending = Sending

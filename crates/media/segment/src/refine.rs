@@ -41,10 +41,6 @@ const SPREAD: f32 = 4.0; // a ratio of colour variances, not spacing
 /// only take coverage away: an edge drawn a few pixels out into a plain
 /// background, which a filter cannot see past, comes back to the subject.
 /// Away from the edge the matte is kept whole or empty.
-///
-/// # Errors
-/// Returns why the picture or matte cannot be worked on, or that they
-/// differ in size.
 pub fn refine_edge(picture: &Picture, matte: &Matte, radius: f32) -> Result<Matte, Error> {
     let count = picture.check()?;
     if (matte.width, matte.height) != (picture.width, picture.height) {
@@ -291,10 +287,6 @@ fn box_line(plane: &[f32], width: usize, height: usize, r: usize, rows: bool) ->
 /// the subject's part (Forte and Pitié's blur fusion, a wide pass then a
 /// close one). Pixels wholly in or out are kept as they are; alpha is
 /// never changed.
-///
-/// # Errors
-/// Returns why the picture or matte cannot be worked on, or that they
-/// differ in size.
 pub fn defringe(picture: &Picture, alpha: &Matte) -> Result<Vec<u8>, Error> {
     let count = picture.check()?;
     if (alpha.width, alpha.height) != (picture.width, picture.height) {

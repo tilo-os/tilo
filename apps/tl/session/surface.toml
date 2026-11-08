@@ -366,6 +366,20 @@ required = false
 type = "text"
 
 [[resources.verbs]]
+id = "delete-workspace"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "confirmed"
+required = false
+type = "bool"
+
+[[resources.verbs]]
 id = "workspace-settings"
 kind = "read"
 params = []
@@ -718,6 +732,53 @@ required = false
 
 [resources.verbs.params.type]
 resource = "arrangement.strip"
+
+[[resources.verbs.params]]
+name = "before"
+required = false
+
+[resources.verbs.params.type]
+resource = "arrangement.place"
+
+[[resources.verbs]]
+id = "float"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "corner"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "dx"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "dy"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "width"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "height"
+required = false
+type = "int"
+
+[[resources.verbs]]
+id = "snap-back"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "row"
+required = false
+
+[resources.verbs.params.type]
+resource = "arrangement.row"
 
 [[resources.verbs.params]]
 name = "before"

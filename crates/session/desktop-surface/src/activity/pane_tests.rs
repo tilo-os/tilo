@@ -1,4 +1,10 @@
 use super::*;
+#[allow(
+    unused_imports,
+    reason = "the store-backed history refresh is a method of this trait"
+)]
+use crate::activity::testing::StoreRecords as _;
+use tilo_actions::remote::workspace_activity as wire;
 
 #[cfg(test)]
 #[allow(
@@ -6,12 +12,13 @@ use super::*;
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
-    //! Every fixture mutates the workspace through the *production* mirrors
-    //! and reads the pane back — nothing writes a synthetic `HistoryEntry`.
+    //! Every fixture mutates the workspace through the *production* mirrors and reads the pane back
+    //! — nothing writes a synthetic `HistoryEntry` .
 
     use super::*;
     use crate::activity::testing::TestTree as WorkspaceTree;
     use tilo_desktop_model::WorkspaceSlot;
+    use ui::record::RecordStore;
 
     /// The pane with a device that may mutate the workspace.
     fn native_pane() -> WorkspaceActivityPane {
@@ -30,8 +37,7 @@ mod tests {
         busy_workspace_written_by(None)
     }
 
-    /// [`busy_workspace`], but the half-hour is a collaborator's: what Catch up
-    /// exists to show.
+    /// [`busy_workspace`], but the half-hour is a collaborator's: what Catch up exists to show.
     fn peers_busy_workspace() -> (WorkspaceTree, WorkspaceSlot, String) {
         busy_workspace_written_by(Some(ActorId::from(b"ada-device".as_slice())))
     }
@@ -99,8 +105,8 @@ mod tests {
             let logged = pane.history_log.changes_read();
             pane.refresh(&mut tree);
             let (diffs_after, forks_after) = reads();
-            // The switch's change is read once and passed over: no row to
-            // describe, nothing derived again.
+            // The switch's change is read once and passed over: no row to describe, nothing derived
+            // again.
             assert_eq!(
                 pane.history_log.changes_read() - logged,
                 1,
@@ -112,8 +118,8 @@ mod tests {
                 derived,
                 "switch {n} leaves the rows as they were"
             );
-            // The first visit to "Second" checkpoints the change that
-            // created it, a row of that workspace; nothing else forks.
+            // The first visit to "Second" checkpoints the change that created it, a row of that
+            // workspace; nothing else forks.
             assert!(
                 forks_after - forks <= usize::from(n == 0),
                 "switch {n} forks the document {} times",
@@ -146,9 +152,9 @@ mod tests {
         assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
     }
 
-    /// Switching takes no place in Activity's window: switching back and
-    /// forth 250 times used to fill all 200 places with switches, and the
-    /// rename before them, the one thing anyone did, was gone.
+    /// Switching takes no place in Activity's window: switching back and forth 250 times used to
+    /// fill all 200 places with switches, and the rename before them, the one thing anyone did, was
+    /// gone.
     #[test]
     fn switching_workspaces_never_pushes_what_people_did_out_of_activity() {
         let mut tree = WorkspaceTree::bootstrap_demo();
@@ -186,9 +192,8 @@ mod tests {
         );
     }
 
-    /// A change that switches workspaces and edits a workspace at once does
-    /// show a desktop of its own: replay reads it from the document, as for
-    /// any other change.
+    /// A change that switches workspaces and edits a workspace at once does show a desktop of its
+    /// own: replay reads it from the document, as for any other change.
     #[test]
     fn a_switch_written_with_an_edit_replays_the_edit() {
         let mut tree = WorkspaceTree::bootstrap_demo();
@@ -329,7 +334,7 @@ mod tests {
         let mut pane = native_pane();
         // Legacy timeline tests exercise the granular surface explicitly;
         // production opens on the outcome-first Catch up tab.
-        pane.set_view(ActivityView::Explore);
+        pane.view = ActivityView::Explore;
         pane.refresh(tree);
         pane
     }
@@ -374,7 +379,7 @@ mod tests {
                 );
             }
             let change = ui::latest_run_by(doc, &agent_hex).expect("agent change");
-            ui::record_run_with_details(
+            let key = ui::record_run_with_details(
                 doc,
                 "Rewrite the opening and preserve the pricing table",
                 Some(&agent_hex),
@@ -389,6 +394,7 @@ mod tests {
                 }],
             )
             .expect("task receipt");
+            assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
             tilo_resource::history::commit_stamped_at(doc, 23);
         });
         tree.desktop
@@ -398,7 +404,7 @@ mod tests {
             .insert(record.to_string(), checkout.kind.to_string());
 
         let mut pane = native_pane();
-        pane.set_view(ActivityView::Explore);
+        pane.view = ActivityView::Explore;
         pane.authors_mut().register(
             &agent_hex,
             ui::widget::HistoryAuthor::new("Quill", 210.0, "agent"),
@@ -424,179 +430,9 @@ mod tests {
         (tree, records, pane, record)
     }
 
-    /// An app whose content is the workspace's own document (Notes' notebook)
-    /// keeps it beside its records, announced as none: what was done in it,
-    /// by a person or an agent's task, is still part of the workspace's
-    /// history.
-    #[test]
-    fn an_apps_workspace_document_is_part_of_the_workspace_history() {
-        struct WorkspaceDocuments {
-            workspace: tilo_desktop_model::WorkspaceId,
-            id: RecordId,
-            document: Vec<u8>,
-        }
-        impl crate::activity::index::PersistedRecordHistory for WorkspaceDocuments {
-            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
-                (id == &self.id)
-                    .then(|| automerge::AutoCommit::load(&self.document).ok())
-                    .flatten()
-            }
-            fn workspace_documents(
-                &self,
-                workspace: tilo_desktop_model::WorkspaceId,
-            ) -> Vec<ui::RecordCheckout> {
-                if workspace == self.workspace {
-                    vec![ui::RecordCheckout::new(
-                        self.id.clone(),
-                        ui::RecordKind::new("document"),
-                    )]
-                } else {
-                    Vec::new()
-                }
-            }
-        }
-
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let workspace = tree.desktop.active_workspace().expect("workspace").id();
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "body", "Hallo").unwrap();
-        let context = ui::tilo_actions::ActionContext::for_resource(
-            "notes.notebook/pages/one",
-            "notes.page",
-            "Launch notes",
-        )
-        .with_app("so.tilo.notes", "Notes")
-        .with_group("task:translate", "Translate", "task");
-        doc.commit_with(
-            CommitOptions::default()
-                .with_time(20)
-                .with_message(context.change_message().unwrap()),
-        );
-        let local = WorkspaceDocuments {
-            workspace,
-            id: RecordId::parse("uuid:5f0e9c1a-2b3d-4e5f-8a9b-0c1d2e3f4a5b").unwrap(),
-            document: doc.save(),
-        };
-
-        let mut pane = native_pane();
-        pane.refresh(&mut tree);
-        pane.refresh_records_with_local(&mut tree, &RecordStore::in_memory(), &local);
-        assert!(
-            pane.timeline.entries().iter().any(|entry| {
-                entry
-                    .context
-                    .as_ref()
-                    .and_then(|context| context.group.as_ref())
-                    .is_some_and(|group| group.id == "task:translate")
-            }),
-            "the task's change in the workspace document is in the history"
-        );
-    }
-
-    /// A persisted record that is not open here is read from disk once:
-    /// later refreshes reuse what was read until the record's revision moves.
-    #[test]
-    fn agent_runs_are_not_reloaded_from_disk_when_unchanged() {
-        struct CountingDisk {
-            documents: std::collections::BTreeMap<RecordId, Vec<u8>>,
-            revision: std::cell::Cell<u64>,
-            loads: std::cell::Cell<usize>,
-        }
-        impl crate::activity::index::PersistedRecordHistory for CountingDisk {
-            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
-                self.loads.set(self.loads.get().saturating_add(1));
-                automerge::AutoCommit::load(self.documents.get(id)?).ok()
-            }
-            fn revision(&self, _id: &RecordId) -> Option<u64> {
-                Some(self.revision.get())
-            }
-        }
-
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let workspace = tree.desktop.active_workspace().expect("workspace").id();
-        let record = RecordId::for_file("campaign-brief.tilo-doc");
-        let kind = ui::RecordKind::new("document");
-        let agent = ActorId::from(b"writing-agent".as_slice());
-        let agent_hex = agent.to_hex_string();
-        let mut doc = automerge::AutoCommit::new();
-        ui::record::init(&mut doc, &record, &kind, &workspace.to_string());
-        doc.set_actor(agent);
-        doc.put(automerge::ROOT, "intro", "A concrete opening")
-            .unwrap();
-        let context = ui::tilo_actions::ActionContext::for_resource(
-            record.as_str(),
-            "document",
-            "Campaign brief",
-        )
-        .with_app("org.tilo.Writer", "Writer")
-        .with_group("agent-run:cold", "Rewrite the opening", "agent-run");
-        doc.commit_with(
-            CommitOptions::default()
-                .with_time(20)
-                .with_message(context.change_message().unwrap()),
-        );
-        let change = ui::latest_run_by(&mut doc, &agent_hex).expect("agent change");
-        ui::record_run_with_details(
-            &mut doc,
-            "Rewrite the opening",
-            Some(&agent_hex),
-            None,
-            Some("Rewrite the opening"),
-            None,
-            &[ui::RunStep {
-                app: "org.tilo.Writer".to_string(),
-                record: record.to_string(),
-                run: change,
-                what: vec![crate::activity::testing::verb("rewrite the opening")],
-            }],
-        )
-        .expect("task receipt");
-        tilo_resource::history::commit_stamped_at(&mut doc, 21);
-        tree.desktop
-            .workspace_records_held
-            .entry(workspace)
-            .or_default()
-            .insert(record.to_string(), kind.to_string());
-        let disk = CountingDisk {
-            documents: [(record.clone(), doc.save())].into_iter().collect(),
-            revision: std::cell::Cell::new(1),
-            loads: std::cell::Cell::new(0),
-        };
-        let records = RecordStore::in_memory();
-        let held_run = |pane: &WorkspaceActivityPane| {
-            pane.agent_runs.iter().any(|indexed| {
-                indexed.source_record.as_ref() == Some(&record)
-                    && indexed.run.label == "Rewrite the opening"
-            })
-        };
-
-        let mut pane = native_pane();
-        pane.refresh(&mut tree);
-        pane.refresh_records_with_local(&mut tree, &records, &disk);
-        let first = disk.loads.get();
-        assert!(first > 0, "the record is read from disk");
-        assert!(held_run(&pane), "its run is read from the persisted record");
-
-        for _ in 0..3 {
-            pane.refresh(&mut tree);
-            pane.refresh_records_with_local(&mut tree, &records, &disk);
-        }
-        assert_eq!(
-            disk.loads.get(),
-            first,
-            "an unchanged record is not read from disk again"
-        );
-        assert!(held_run(&pane), "the run is still listed");
-
-        disk.revision.set(2);
-        pane.refresh_records_with_local(&mut tree, &records, &disk);
-        assert!(
-            disk.loads.get() > first,
-            "a record whose revision moved is read again"
-        );
-        assert!(held_run(&pane));
-    }
-
+    /// An app whose content is the workspace's own document (Notes' notebook) keeps it beside its
+    /// records: what was done in it, by a person or an agent's task, is still part of the
+    /// workspace's history.
     #[test]
     fn selecting_agent_work_exposes_the_real_task_receipt_and_named_people() {
         let (_tree, _records, mut pane, _record) = agent_task_fixture();
@@ -609,10 +445,7 @@ mod tests {
                 pane.projected_origins.get(&entry.id).is_some_and(|item| {
                     item.change != run.start
                         && item.change != run.end
-                        && matches!(
-                            item.origin,
-                            crate::activity::index::HistoryOrigin::Record { .. }
-                        )
+                        && item.origin.record().is_some()
                 }) && entry.context.as_ref().is_some_and(|context| {
                     context
                         .group
@@ -622,7 +455,10 @@ mod tests {
             })
             .expect("three-change task has an interior history entry");
         pane.timeline.set_selection(Some((middle, middle)));
-        let task = pane.selected_agent_task().expect("selected task receipt");
+        let task = pane
+            .selected_agent_run()
+            .map(|indexed| &indexed.run)
+            .expect("selected task receipt");
         assert_eq!(
             task.instruction.as_deref(),
             Some("Rewrite the opening and preserve the pricing table")
@@ -640,24 +476,154 @@ mod tests {
 
     #[test]
     fn agent_task_undo_is_one_keyboard_reachable_safe_action() {
-        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        let (mut tree, _records, mut pane, _record) = agent_task_fixture();
+        let host = Rc::new(super::tasks_link_tests::UndoHost::default());
+        pane.set_host(host.clone());
         show_summary(&mut pane);
         assert!(pane.can_undo_agent_run());
-        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree, Some(&records));
-        assert!(outcome.reverted);
-        assert!(!outcome.undo_partial);
+        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree);
+        assert!(outcome.handled);
+        let undo = host
+            .undos
+            .borrow()
+            .last()
+            .cloned()
+            .expect("the pane asks the host to undo the run in the documents it changed");
+        assert_eq!(undo.task_id, pane.agent_runs[0].run.task.clone().unwrap());
+        assert_eq!(undo.steps.len(), 1);
+        assert!(pane.undo_pending.is_some(), "one undo at a time");
+    }
+
+    /// The same record, admitted the way the shell admits it: as an app record read from a detached
+    /// document rather than a mounted store.
+    fn detached_records(
+        records: &RecordStore,
+        record: &RecordId,
+    ) -> Vec<crate::activity::DetachedRecordHistory> {
+        vec![crate::activity::DetachedRecordHistory {
+            app: "org.tilo.Writer".to_string(),
+            checkout: ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document")),
+            document: records.read(record, Clone::clone),
+        }]
+    }
+
+    fn detached_row(pane: &WorkspaceActivityPane, change: HistoryEntryId) -> usize {
+        pane.timeline
+            .entries()
+            .iter()
+            .position(|entry| {
+                pane.projected_origins.get(&entry.id).is_some_and(|origin| {
+                    matches!(
+                        origin.origin,
+                        crate::activity::index::HistoryOrigin::AppRecord { .. }
+                    ) && origin.change == change
+                })
+            })
+            .expect("the app record's row")
+    }
+
+    /// A record's history is its app's to write: the row is selectable and
+    /// its change is readable, but restoring or undoing it here writes
+    /// nothing.
+    #[test]
+    fn an_app_records_rows_are_restored_and_undone_by_its_app() {
+        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
+        let newest = pane.agent_runs[0].run.steps[0].run.end;
+        let row = detached_row(&pane, newest);
+        pane.timeline.set_selection(Some((row, row)));
+        let before = records
+            .with(&record, automerge::AutoCommit::get_heads)
+            .unwrap();
+        let undone = pane.apply_detail_action(DetailAction::Undo, &mut tree);
+        let restored = pane.apply_detail_action(DetailAction::Restore, &mut tree);
+        assert!(!undone.reverted && !restored.reverted);
         assert_eq!(
-            records.read(&record, |doc| doc
-                .get(automerge::ROOT, "body")
-                .ok()
-                .flatten()
-                .is_some()),
-            Some(false)
+            records
+                .with(&record, automerge::AutoCommit::get_heads)
+                .unwrap(),
+            before,
+            "the record's document is untouched"
+        );
+    }
+
+    #[test]
+    fn a_detached_record_row_selects_the_agent_task_receipt() {
+        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
+        assert!(
+            !pane.agent_runs.is_empty(),
+            "the refresh the shell uses reads the runs"
+        );
+        let end = pane.agent_runs[0].run.steps[0].run.end;
+        let row = detached_row(&pane, end);
+        pane.timeline.set_selection(Some((row, row)));
+        let task = pane
+            .selected_agent_run()
+            .map(|indexed| &indexed.run)
+            .expect("the run's receipt");
+        assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
+        assert!(pane.can_undo_agent_run());
+        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree);
+        assert!(
+            !outcome.reverted,
+            "the pane asks the host, it writes no record"
         );
         assert!(
-            pane.agent_undo_notice
-                .as_ref()
-                .is_some_and(|(_, notice)| notice.contains("Whole task undone"))
+            pane.agent_undo_notice.is_some(),
+            "a host with no writer for the record says so"
+        );
+    }
+
+    /// A record the history could not read is counted as missing, never silently left out: the feed
+    /// says it is not complete.
+    #[test]
+    fn detached_record_coverage_counts_what_it_could_not_read() {
+        let workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(9), "Design");
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(
+            automerge::ROOT,
+            tilo_desktop_model::projection::WORKSPACE_ID_KEY,
+            workspace.id().to_string(),
+        )
+        .unwrap();
+        doc.commit();
+        let mut tree = crate::activity::ActivitySnapshot::new(
+            tilo_desktop_model::DesktopTree {
+                active: workspace.slot,
+                workspaces: vec![workspace],
+                ..Default::default()
+            },
+            doc,
+        )
+        .unwrap();
+        let mut record = automerge::AutoCommit::new();
+        record
+            .put(automerge::ROOT, "text", "shared causal hash")
+            .unwrap();
+        record.commit();
+        let checkout = ui::RecordCheckout::new(RecordId::for_tab(1), ui::RecordKind::new("test"));
+        let input = |app: &str, document| crate::activity::DetachedRecordHistory {
+            app: app.into(),
+            checkout: checkout.clone(),
+            document,
+        };
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        pane.refresh_detached_records(
+            &mut tree,
+            vec![
+                input("app-a", Some(record.clone())),
+                input("app-b", Some(record)),
+                input("missing", None),
+            ],
+        );
+        assert_eq!(pane.feed_coverage.referenced_records, 3);
+        assert_eq!(pane.feed_coverage.indexed_records, 2);
+        assert!(
+            !pane.feed_coverage.is_complete(),
+            "a record it could not read leaves the history incomplete"
         );
     }
 
@@ -689,13 +655,9 @@ mod tests {
                 .map(|entry| &entry.summary)
                 .collect::<Vec<_>>()
         );
-        assert_eq!(
-            pane.glance_signal(workspace.raw()).1,
-            0,
-            "opening a window is nobody's news"
-        );
+        assert_eq!(pane.passive_unread, 0, "opening a window is nobody's news");
         pane.begin_view(workspace.raw());
-        assert!(pane.digest().briefs.is_empty());
+        assert!(pane.digest.briefs.is_empty());
     }
 
     #[test]
@@ -706,10 +668,8 @@ mod tests {
         pane.set_host(host.clone());
         pane.load_frontiers();
         pane.refresh(&mut tree);
-        let (headline, unread, _) = pane.glance_signal(workspace.raw());
         assert_eq!(
-            (headline, unread),
-            (None, 0),
+            pane.passive_unread, 0,
             "the history a device arrives to is not news"
         );
 
@@ -728,7 +688,7 @@ mod tests {
         tree.seed_doc_from_cache();
         tree.doc.set_actor(reader);
         pane.refresh(&mut tree);
-        let after_change = pane.glance_signal(workspace.raw()).1;
+        let after_change = pane.passive_unread;
         assert!(after_change > 0, "a change after arriving is");
 
         let mut next_session = WorkspaceActivityPane::new();
@@ -736,8 +696,7 @@ mod tests {
         next_session.load_frontiers();
         next_session.refresh(&mut tree);
         assert_eq!(
-            next_session.glance_signal(workspace.raw()).1,
-            after_change,
+            next_session.passive_unread, after_change,
             "the baseline persists, so the next session still counts only that change"
         );
     }
@@ -747,20 +706,12 @@ mod tests {
         let (mut tree, workspace, _) = peers_busy_workspace();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
-        let unread = pane.glance_signal(workspace.raw()).1;
+        let unread = pane.passive_unread;
         assert!(unread > 0);
-        let other = tree
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.slot != workspace)
-            .unwrap()
-            .slot;
-        assert_eq!(pane.glance_signal(other.raw()), (None, 0, 0));
-        assert!(pane.digest_for_workspace(other.raw()).briefs.is_empty());
         pane.begin_view(workspace.raw());
         pane.finish_view(workspace.raw());
         pane.refresh(&mut tree);
-        assert_eq!(pane.glance_signal(workspace.raw()).1, unread);
+        assert_eq!(pane.passive_unread, unread);
     }
 
     #[test]
@@ -769,16 +720,14 @@ mod tests {
         let before = tree.doc.get_heads();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
-        assert_eq!(pane.view(), ActivityView::CatchUp);
+        assert_eq!(pane.view, ActivityView::CatchUp);
 
-        let (_, unread_before, _) = pane.glance_signal(workspace.raw());
-        assert!(unread_before > 0);
+        assert!(pane.passive_unread > 0);
         pane.begin_view(workspace.raw());
-        assert!(!pane.digest().briefs.is_empty());
+        assert!(!pane.digest.briefs.is_empty());
         show_summary(&mut pane);
         pane.finish_view(workspace.raw());
-        let (_, unread_after, _) = pane.glance_signal(workspace.raw());
-        assert_eq!(unread_after, 0);
+        assert_eq!(pane.passive_unread, 0);
         assert_eq!(
             tree.doc.get_heads(),
             before,
@@ -793,13 +742,13 @@ mod tests {
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
         show_summary(&mut pane);
-        let digest = pane.digest().clone();
+        let digest = pane.digest.clone();
         assert!(
             !digest.briefs.is_empty(),
             "the seeded session leaves work for Catch Up to stand for"
         );
-        // A card is one work session: the evidence it cites is the changes
-        // it opens onto, and the count it states is that many.
+        // A card is one work session: the evidence it cites is the changes it opens onto, and the
+        // count it states is that many.
         for brief in &digest.briefs {
             assert!(
                 !brief.title.trim().is_empty(),
@@ -829,8 +778,8 @@ mod tests {
                 brief.actions
             );
         }
-        // And no change is cited by two cards, so opening one cannot show
-        // work another one already owns.
+        // And no change is cited by two cards, so opening one cannot show work another one already
+        // owns.
         for (at, brief) in digest.briefs.iter().enumerate() {
             for id in &brief.entry_ids {
                 assert_eq!(
@@ -878,7 +827,7 @@ mod tests {
         pane.finish_view(workspace.raw());
         pane.refresh(&mut tree);
         assert!(
-            pane.glance_signal(workspace.raw()).1 > 0,
+            pane.passive_unread > 0,
             "late unpainted work remains unread"
         );
     }
@@ -890,8 +839,8 @@ mod tests {
         pane.load_frontiers();
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
-        assert_eq!(pane.glance_signal(workspace).1, 0);
-        pane.set_view(ActivityView::CatchUp);
+        assert_eq!(pane.passive_unread, 0);
+        pane.view = ActivityView::CatchUp;
         pane.begin_view(workspace);
         records.with(&record, |doc| {
             doc.put(automerge::ROOT, "review", "Check the conclusion")
@@ -909,10 +858,10 @@ mod tests {
         });
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
-        assert_eq!(pane.glance_signal(workspace).1, 1);
+        assert_eq!(pane.passive_unread, 1);
         show_summary(&mut pane);
-        pane.apply_selection_history_action(ACTIVITY_ACKNOWLEDGE, &mut tree, Some(&records));
-        assert_eq!(pane.glance_signal(workspace).1, 0);
+        pane.finish_view(workspace);
+        assert_eq!(pane.passive_unread, 0);
         assert!(
             pane.digest.briefs.is_empty(),
             "old causal heads remain the baseline"
@@ -920,7 +869,7 @@ mod tests {
         pane.begin_view(workspace);
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
-        assert_eq!(pane.glance_signal(workspace).1, 0);
+        assert_eq!(pane.passive_unread, 0);
         assert!(pane.digest.briefs.is_empty());
     }
 
@@ -962,7 +911,7 @@ mod tests {
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         pane.persistent_frontiers = true;
-        let before = pane.glance_signal(workspace.raw()).1;
+        let before = pane.passive_unread;
         assert!(before >= 12);
         // The app said it showed the first session only.
         let first = pane.serve_summary().briefs.remove(0).entries;
@@ -979,10 +928,7 @@ mod tests {
             "the fixture has more than the app showed"
         );
         let heads = tree.doc.get_heads();
-        assert!(
-            pane.apply_selection_history_action(ACTIVITY_ACKNOWLEDGE, &mut tree, Some(&records))
-                .handled
-        );
+        pane.finish_view(workspace.raw());
         assert_eq!(
             tree.doc.get_heads(),
             heads,
@@ -993,7 +939,7 @@ mod tests {
         next.load_frontiers();
         next.refresh(&mut tree);
         next.refresh_records(&mut tree, &records);
-        assert_eq!(next.glance_signal(workspace.raw()).1, before - shown);
+        assert_eq!(next.passive_unread, before - shown);
     }
 
     #[test]
@@ -1013,35 +959,25 @@ mod tests {
         ));
     }
 
+    /// What the recap holds after leaving the view of a workspace and coming back `elapsed` later,
+    /// with the workspace changed meanwhile or not.
     fn away_change_count_after(elapsed: Duration, changed: bool) -> usize {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let records = RecordStore::in_memory();
         let home = tree.desktop.active;
-        let elsewhere = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.slot != home)
-            .expect("demo has another workspace")
-            .slot;
         let departed_at = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(10_000))
             .expect("fixed test timestamp");
         let mut pane = native_pane();
         pane.persistent_frontiers = false;
         pane.set_now_for_test(departed_at);
-        pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
 
-        // Departure follows an actually reviewed page, not an indexed head.
+        // Departure follows the page the person was shown, not an indexed head.
         show_summary(&mut pane);
         pane.finish_view(home.raw());
 
-        pane.observe_workspace(elsewhere.raw());
-        tree.desktop.active = elsewhere;
-        pane.refresh(&mut tree);
-        pane.refresh_records(&mut tree, &records);
         if changed {
             let reader = tree.doc.get_actor().clone();
             tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
@@ -1055,16 +991,19 @@ mod tests {
             tree.doc.set_actor(reader);
         }
 
-        tree.desktop.active = home;
         pane.set_now_for_test(
             departed_at
                 .checked_add(elapsed)
                 .expect("test elapsed time fits SystemTime"),
         );
-        pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
-        pane.away_change_count(home.raw())
+        pane.begin_view(home.raw());
+        if pane.away_workspace == Some(home.raw()) {
+            pane.digest.total_changes
+        } else {
+            0
+        }
     }
 
     #[test]
@@ -1122,38 +1061,54 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_row_publishes_diff_restore_and_undo_as_actions() {
+    fn a_selected_row_publishes_diff_and_restore_as_actions() {
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
         show_summary(&mut pane);
         let idx = (0..pane.timeline.row_count())
             .find(|&i| pane.timeline.row_entry(i).is_some())
             .expect("a change row");
-        pane.timeline.set_selection(Some((
-            pane.timeline.row_entry_index(idx).expect("entry"),
-            pane.timeline.row_entry_index(idx).expect("entry"),
-        )));
-        let ids: Vec<&str> = pane
-            .selection_history_actions()
-            .iter()
-            .map(|(id, _)| *id)
-            .collect();
+        let index = pane.timeline.row_entry_index(idx).expect("entry");
+        pane.timeline.set_selection(Some((index, index)));
+        let entry = pane.timeline.entries()[index].id;
+        let range = wire::Range::one(&wire::entry_hex(entry.as_bytes()));
+        let offers = pane
+            .serve_detail(
+                &wire::DetailQuery {
+                    range: range.clone(),
+                    compare: false,
+                },
+                &mut tree,
+            )
+            .offers;
+        let ids: Vec<wire::DetailAction> = offers.iter().map(|offer| offer.action).collect();
         assert!(
-            ids.contains(&HISTORY_COMPARE) && ids.contains(&HISTORY_RESTORE),
+            ids.contains(&wire::DetailAction::Compare)
+                && ids.contains(&wire::DetailAction::Restore),
             "selected row must offer compare and restore, got {ids:?}"
         );
-        // Compare is an action, not a click-only chip: invoking it
-        // materialises the exact two sides of the selected change, so the
-        // diff the person sees comes from the history layer, not a click.
-        assert!(!pane.has_comparison(), "nothing is compared before Compare");
-        let compared = pane.apply_selection_history_action(HISTORY_COMPARE, &mut tree, None);
-        assert!(compared.compared, "Compare reports the comparison it made");
+        // Compare is an action, not a click-only chip: asking for it materialises the exact two
+        // sides of the selected change, so the diff the person sees comes from the history layer,
+        // not a click.
         assert!(
-            pane.has_comparison(),
-            "the compared row leaves a materialised comparison behind"
+            pane.comparison.is_none(),
+            "nothing is compared before Compare"
         );
-        let comparison = pane.comparison().expect("the comparison Compare made");
+        let compared = pane.serve_detail(
+            &wire::DetailQuery {
+                range,
+                compare: true,
+            },
+            &mut tree,
+        );
+        assert!(
+            matches!(compared.comparison, Some(wire::Comparison::Changes { .. })),
+            "Compare reports the comparison it made"
+        );
+        let comparison = pane
+            .comparison
+            .as_ref()
+            .expect("the comparison Compare made");
         assert_eq!(
             comparison.entries.len(),
             1,
@@ -1168,51 +1123,6 @@ mod tests {
             comparison.before_document, comparison.after_document,
             "a change that changed nothing would compare identical sides"
         );
-    }
-
-    #[test]
-    fn app_native_handoff_focuses_the_exact_version_without_marking_it_unseen() {
-        let (mut tree, workspace, _) = busy_workspace();
-        let mut pane = pane_over(&mut tree);
-        let unread_before = pane.passive_unread;
-        let id = HistoryEntryId::from_bytes([9; 16]);
-        let resource = "signed-file-record".to_string();
-        let context = ui::tilo_actions::ActionContext::for_resource(
-            resource.clone(),
-            "files.entry",
-            "Launch brief.md",
-        )
-        .with_app("org.tilo.Files", "Files");
-        pane.open_external_entry(HistoryEntry {
-            id,
-            author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
-            entry_kind: EntryKind::Compaction,
-            artifact_kind: ArtifactKind::File,
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
-            summary: "Edited · Launch brief.md".into(),
-            text_delta: None,
-            diff_payload: None,
-            redaction: None,
-            context: Some(context),
-        });
-        pane.apply_deep_link(ActivityDeepLink {
-            author: None,
-            group_id: None,
-            entry_id: Some(*id.as_bytes()),
-            resource_id: Some(resource.clone()),
-            resource_version: Some(*id.as_bytes()),
-        });
-
-        assert_eq!(pane.view(), ActivityView::Explore);
-        assert_eq!(pane.lens, LensSelection::Resource(resource));
-        let (selected, _) = pane.timeline.selection().expect("exact version selected");
-        assert_eq!(pane.timeline.entries()[selected].id, id);
-        assert_eq!(
-            pane.timeline.visible_entry(0).map(|entry| entry.id),
-            Some(id)
-        );
-        assert_eq!(pane.passive_unread, unread_before);
-        assert_eq!(pane.glance_signal(workspace.raw()).1, unread_before);
     }
 
     /// A second workspace with its own governance, interleaved in one document.
@@ -1239,7 +1149,7 @@ mod tests {
         let (mut tree, _first, _second) = two_workspace_tree();
         let mut pane = pane_over(&mut tree);
         assert_eq!(
-            pane.scope(),
+            pane.scope,
             WorkspaceScope::ThisWorkspace,
             "scoped by default"
         );
@@ -1346,20 +1256,19 @@ mod tests {
                 .iter()
                 .all(|e| e.author.name != ui::history_source::UNKNOWN_AUTHOR_NAME),
             "local changes resolved to an unknown participant: {:?}",
-            pane.contributors()
+            pane.contributors
         );
         assert_eq!(
-            pane.contributors().len(),
+            pane.contributors.len(),
             1,
             "one person did all of this: {:?}",
-            pane.contributors()
+            pane.contributors
         );
     }
 
     #[test]
     fn every_row_carries_a_real_timestamp() {
-        // The whole date filter rests on this — an epoch row can never be
-        // selected by a date range.
+        // The whole date filter rests on this — an epoch row can never be selected by a date range.
         let (mut tree, _, _) = busy_workspace();
         let pane = pane_over(&mut tree);
         assert!(!pane.entries().is_empty());
@@ -1375,8 +1284,8 @@ mod tests {
 
     #[test]
     fn date_range_filter_partitions_the_real_history() {
-        // One change stamped a week back via `commit_stamped_at`, the rest
-        // at now: "Today" drops the old one, "30 days" keeps everything.
+        // One change stamped a week back via `commit_stamped_at` , the rest at now: "Today" drops
+        // the old one, "30 days" keeps everything.
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
@@ -1433,25 +1342,26 @@ mod tests {
         .expect("owner may grant");
 
         let mut pane = pane_over(&mut tree);
-        let all = pane.visible_len();
+        let all = pane.timeline.visible_len();
         assert!(
             all >= 2,
             "expected last week's grant and today's, got {all}"
         );
 
-        pane.set_period(Period::Today);
-        let today = pane.visible_len();
+        pane.period = Period::Today;
+        pane.reinstall_filter();
+        let today = pane.timeline.visible_len();
         assert!(today > 0, "today's changes must survive the day filter");
         assert!(
             today < all,
             "the week-old change must be filtered out: {today} of {all} survived"
         );
         assert!(
-            !pane.timeline().entries().is_empty(),
+            !pane.timeline.entries().is_empty(),
             "filtering hides rows, it does not discard them"
         );
-        for i in 0..pane.visible_len() {
-            let e = pane.visible_entry(i).unwrap();
+        for i in 0..pane.timeline.visible_len() {
+            let e = pane.timeline.visible_entry(i).unwrap();
             assert!(
                 !e.summary.contains("Last week"),
                 "the week-old row leaked through the day filter: {}",
@@ -1459,9 +1369,10 @@ mod tests {
             );
         }
 
-        pane.set_period(Period::Month);
+        pane.period = Period::Month;
+        pane.reinstall_filter();
         assert_eq!(
-            pane.visible_len(),
+            pane.timeline.visible_len(),
             all,
             "a 30-day window covers a change from seven days ago"
         );
@@ -1500,40 +1411,45 @@ mod tests {
 
         let mut pane = pane_over(&mut tree);
         assert!(
-            pane.contributors().len() >= 2,
+            pane.contributors.len() >= 2,
             "two actors wrote to this workspace; contributors = {:?}",
-            pane.contributors()
+            pane.contributors
         );
-        // bootstrap_demo seeds a Research collaborator id "bob" named "Bob"
-        // with a cursor colour. seed_roster_colours registers that display
-        // name on the handle actor, so history shows "Bob" rather than the
-        // raw handle — same person, roster wins for colour and label.
+        // bootstrap_demo seeds a Research collaborator id "bob" named "Bob" with a cursor colour.
+        // seed_roster_colours registers that display name on the handle actor, so history shows
+        // "Bob" rather than the raw handle — same person, roster wins for colour and label.
         let bob = pane
-            .contributors()
+            .contributors
             .iter()
             .find(|c| c.eq_ignore_ascii_case("bob"))
             .cloned()
             .unwrap_or_else(|| {
                 panic!(
                     "the peer's self-declared handle resolves to a contributor; got {:?}",
-                    pane.contributors()
+                    pane.contributors
                 )
             });
 
-        let everyone = pane.visible_len();
-        pane.set_author_filter(Some(bob.clone()));
-        let just_bob = pane.visible_len();
+        let everyone = pane.timeline.visible_len();
+        pane.author = Some(bob.clone());
+        pane.reinstall_filter();
+        let just_bob = pane.timeline.visible_len();
         assert!(just_bob > 0, "bob authored at least one row");
         assert!(
             just_bob < everyone,
             "filtering to bob must hide the local actor's rows: {just_bob} of {everyone}"
         );
-        for i in 0..pane.visible_len() {
-            assert_eq!(pane.visible_entry(i).unwrap().author.name, bob);
+        for i in 0..pane.timeline.visible_len() {
+            assert_eq!(pane.timeline.visible_entry(i).unwrap().author.name, bob);
         }
 
-        pane.set_author_filter(None);
-        assert_eq!(pane.visible_len(), everyone, "clearing restores every row");
+        pane.author = None;
+        pane.reinstall_filter();
+        assert_eq!(
+            pane.timeline.visible_len(),
+            everyone,
+            "clearing restores every row"
+        );
     }
 
     #[test]
@@ -1541,25 +1457,25 @@ mod tests {
         use ui::widget::activity_timeline::ChipKind;
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
-        let all = pane.visible_len();
+        let all = pane.timeline.visible_len();
 
-        pane.timeline_mut().set_active_chip(ChipKind::Governance);
-        let gov = pane.visible_len();
+        pane.timeline.set_active_chip(ChipKind::Governance);
+        let gov = pane.timeline.visible_len();
         assert!(
             gov > 0,
             "grants and revokes are governance; the workspace has some"
         );
         assert!(gov < all, "governance is a subset: {gov} of {all}");
-        for i in 0..pane.visible_len() {
+        for i in 0..pane.timeline.visible_len() {
             assert_eq!(
-                pane.visible_entry(i).unwrap().entry_kind,
+                pane.timeline.visible_entry(i).unwrap().entry_kind,
                 EntryKind::Access,
                 "the Governance chip must only show governance rows"
             );
         }
 
-        pane.timeline_mut().set_active_chip(ChipKind::All);
-        assert_eq!(pane.visible_len(), all);
+        pane.timeline.set_active_chip(ChipKind::All);
+        assert_eq!(pane.timeline.visible_len(), all);
     }
 
     #[test]
@@ -1625,18 +1541,18 @@ mod tests {
     fn governance_rows_never_offer_revert() {
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
-        pane.timeline_mut()
+        pane.timeline
             .set_active_chip(ui::widget::activity_timeline::ChipKind::Governance);
-        assert!(pane.visible_len() > 0);
-        for i in 0..pane.visible_len() {
-            let e = pane.visible_entry(i).unwrap();
+        assert!(pane.timeline.visible_len() > 0);
+        for i in 0..pane.timeline.visible_len() {
+            let e = pane.timeline.visible_entry(i).unwrap();
             assert!(
                 !e.entry_kind.is_revertible(),
                 "{:?} offered a revert chip",
                 e.summary
             );
             assert!(
-                pane.timeline().revert_chip_rect(i).is_none(),
+                pane.timeline.revert_chip_rect(i).is_none(),
                 "row {i} ({:?}) laid out a revert chip",
                 e.summary
             );
@@ -1666,15 +1582,16 @@ mod tests {
     fn an_empty_workspace_and_a_filtered_one_do_not_read_the_same() {
         let mut empty = WorkspaceTree::default();
         let pane = pane_over(&mut empty);
-        let (title, detail) = pane.timeline().empty_state_lines();
+        let (title, detail) = pane.timeline.empty_state_lines();
         assert_eq!(title, "No activity yet");
         assert!(detail.is_none(), "nothing to explain when nothing happened");
 
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
-        pane.set_author_filter(Some("nobody-by-that-name".to_string()));
-        assert_eq!(pane.visible_len(), 0);
-        let (title, detail) = pane.timeline().empty_state_lines();
+        pane.author = Some("nobody-by-that-name".to_string());
+        pane.reinstall_filter();
+        assert_eq!(pane.timeline.visible_len(), 0);
+        let (title, detail) = pane.timeline.empty_state_lines();
         assert_eq!(title, "No activity matches these filters");
         let detail = detail.expect("a filtered-empty list must explain itself");
         assert!(
@@ -1698,9 +1615,9 @@ mod tests {
             ));
         let pane = pane_over(&mut tree);
         assert!(
-            !pane.contributors().iter().any(|c| c == "Never Edited"),
+            !pane.contributors.iter().any(|c| c == "Never Edited"),
             "a peer who never wrote must not be listed: {:?}",
-            pane.contributors()
+            pane.contributors
         );
     }
 
@@ -1714,9 +1631,9 @@ mod tests {
             .filter(|entry| !author_is_local(&entry.author, &pane.local_user()))
             .count();
         assert!(others > 0, "the fixture is a collaborator's work");
-        assert_eq!(pane.digest().total_changes, others);
-        assert!(!pane.digest().briefs.is_empty());
-        assert!(pane.digest().headline().is_some());
+        assert_eq!(pane.digest.total_changes, others);
+        assert!(!pane.digest.briefs.is_empty());
+        assert!(pane.digest.headline().is_some());
     }
 
     #[test]
@@ -1724,16 +1641,18 @@ mod tests {
         let (mut tree, workspace, _) = busy_workspace();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
-        assert_eq!(pane.view(), ActivityView::CatchUp);
+        assert_eq!(pane.view, ActivityView::CatchUp);
         assert!(
             !pane.entries().is_empty(),
             "the reader's own work stays in the timeline"
         );
-        let (_, unread, _) = pane.glance_signal(workspace.raw());
-        assert_eq!(unread, 0, "your own setup and edits are not news");
+        assert_eq!(
+            pane.passive_unread, 0,
+            "your own setup and edits are not news"
+        );
         pane.begin_view(workspace.raw());
-        assert_eq!(pane.digest().total_changes, 0);
-        assert!(pane.digest().briefs.is_empty());
+        assert_eq!(pane.digest.total_changes, 0);
+        assert!(pane.digest.briefs.is_empty());
     }
 
     #[test]
@@ -1769,7 +1688,7 @@ mod tests {
             tab_counts.windows(2).any(|pair| pair[0] != pair[1]),
             "causal forks must expose a changing real layout: {tab_counts:?}"
         );
-        pane.set_view(ActivityView::Replay);
+        pane.view = ActivityView::Replay;
         assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
 
         let mut presence = PresenceCtx::empty();
@@ -1792,10 +1711,9 @@ mod tests {
 
     #[test]
     fn a_long_lived_workspace_stays_bounded() {
-        // Well past the producer's ceiling, all of it real: each iteration is
-        // the same mirror the drop handler calls when a file is dropped into
-        // a workspace. The pane must show the recent end of the history
-        // rather than growing without limit.
+        // Well past the producer's ceiling, all of it real: each iteration is the same mirror the
+        // drop handler calls when a file is dropped into a workspace. The pane must show the recent
+        // end of the history rather than growing without limit.
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
@@ -1855,19 +1773,19 @@ mod tests {
         let (mut tree, _, _) = busy_workspace();
         let pane = pane_over(&mut tree);
         assert!(pane.entries().len() >= 4);
-        // Bands, not a wall: every rendered line is either a band header or a
-        // change, and there are fewer lines than changes.
-        let bands = (0..pane.timeline().row_count())
-            .filter(|i| pane.timeline().group_at_row(*i).is_some())
+        // Bands, not a wall: every rendered line is either a band header or a change, and there are
+        // fewer lines than changes.
+        let bands = (0..pane.timeline.row_count())
+            .filter(|i| pane.timeline.group_at_row(*i).is_some())
             .count();
         assert!(
             bands >= 1,
             "a workspace with governance, edits and a deletion must produce at least one band"
         );
-        // Every band describes itself without a name, and describes itself
-        // honestly — a count it did not measure would be the failure here.
-        for i in 0..pane.timeline().row_count() {
-            if let Some(title) = pane.timeline().group_title_at_row(i) {
+        // Every band describes itself without a name, and describes itself honestly — a count it
+        // did not measure would be the failure here.
+        for i in 0..pane.timeline.row_count() {
+            if let Some(title) = pane.timeline.group_title_at_row(i) {
                 assert!(!title.is_empty(), "band {i} has no title");
                 assert!(
                     !title.contains("{}"),
@@ -1895,8 +1813,7 @@ mod tests {
         );
         assert!(wrote, "the name went into the document");
 
-        // It is in the document, not in the widget: a fresh pane over the same
-        // tree finds it.
+        // It is in the document, not in the widget: a fresh pane over the same tree finds it.
         let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].label, "Set up the workspace");
@@ -1905,8 +1822,8 @@ mod tests {
 
         let mut fresh = native_pane();
         fresh.refresh(&mut tree);
-        let titles: Vec<&str> = (0..fresh.timeline().row_count())
-            .filter_map(|i| fresh.timeline().group_title_at_row(i))
+        let titles: Vec<&str> = (0..fresh.timeline.row_count())
+            .filter_map(|i| fresh.timeline.group_title_at_row(i))
             .collect();
         assert!(
             titles.contains(&"Set up the workspace"),
@@ -1916,9 +1833,9 @@ mod tests {
 
     #[test]
     fn naming_a_band_does_not_add_a_row_of_its_own() {
-        // The name is already on screen as the band's title. A "1 field" row
-        // directly under it would be noise, so the producer filters the marker
-        // change out — and the change count must not move.
+        // The name is already on screen as the band's title. A "1 field" row directly under it
+        // would be noise, so the producer filters the marker change out — and the change count must
+        // not move.
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let before = pane.entries().len();
@@ -1986,8 +1903,8 @@ mod tests {
         let entries = pane.entries().to_vec();
         let (start, end) = (entries[1].id, entries[3].id);
 
-        // A peer forks the workspace document, names the same run differently, and
-        // syncs back — the shape a remote replica's sync round has.
+        // A peer forks the workspace document, names the same run differently, and syncs back — the
+        // shape a remote replica's sync round has.
         let mut peer = tree.doc.fork();
         peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Ada's pass");
@@ -2003,8 +1920,8 @@ mod tests {
             },
         );
 
-        // Merge each way round and compare. Both sides have to land on the same
-        // single band, whichever order the names arrived in.
+        // Merge each way round and compare. Both sides have to land on the same single band,
+        // whichever order the names arrived in.
         let mut mine = tree.doc.fork();
         mine.merge_incoming(&mut peer.clone()).expect("peers merge");
         let mut theirs = peer.fork();
@@ -2041,10 +1958,10 @@ mod tests {
 
         pane.invalidate();
         pane.refresh(&mut tree);
-        let named = (0..pane.timeline().row_count())
-            .find(|i| pane.timeline().group_title_at_row(*i) == Some("Ada's pass"))
+        let named = (0..pane.timeline.row_count())
+            .find(|i| pane.timeline.group_title_at_row(*i) == Some("Ada's pass"))
             .expect("the peer's band is on screen");
-        let sub = pane.timeline().group_subtitle_at_row(named).unwrap();
+        let sub = pane.timeline.group_subtitle_at_row(named).unwrap();
         assert!(
             sub.contains("named by"),
             "a name someone else wrote must say so: {sub:?}"
@@ -2057,8 +1974,8 @@ mod tests {
 
     #[test]
     fn restoring_to_a_band_boundary_lands_on_the_state_at_that_boundary() {
-        // The band header's [Restore] passes the band's last change, so this is
-        // the production path for "restore to the end of this version".
+        // The band header's [Restore] passes the band's last change, so this is the production path
+        // for "restore to the end of this version".
         let (mut tree, slot, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
 
@@ -2106,8 +2023,8 @@ mod tests {
         );
     }
 
-    /// The app shows what is new and says so ([`wire::MARK_VIEWED`]), to be
-    /// counted seen once the person stops reading.
+    /// The app shows what is new and says so ([`wire::MARK_VIEWED`]), to be counted seen once the
+    /// person stops reading.
     fn show_summary(pane: &mut WorkspaceActivityPane) {
         let Some(workspace) = pane.last_active else {
             return;
@@ -2141,7 +2058,7 @@ mod tests {
                 label: "Investigate".to_string(),
             },
         ));
-        pane.timeline_mut().set_selection(Some((2, 2)));
+        pane.timeline.set_selection(Some((2, 2)));
         assert!(pane.split_selection_group(&mut tree));
         let split = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
         assert_eq!(split.len(), 2);
@@ -2152,7 +2069,7 @@ mod tests {
         );
         assert!(split.iter().any(|range| range.start == entries[2].id));
 
-        pane.timeline_mut().set_selection(Some((1, 3)));
+        pane.timeline.set_selection(Some((1, 3)));
         assert!(pane.merge_selection_groups(&mut tree));
         let merged = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
         assert_eq!(merged.len(), 1);
@@ -2199,7 +2116,7 @@ mod tests {
                 label: "Work on onboarding Sarah".into(),
             },
         ));
-        pane.set_view(ActivityView::CatchUp);
+        pane.view = ActivityView::CatchUp;
 
         let older = pane
             .digest
@@ -2323,7 +2240,7 @@ mod tests {
         }
         let mut pane = native_pane();
         pane.refresh(&mut tree);
-        pane.set_view(ActivityView::CatchUp);
+        pane.view = ActivityView::CatchUp;
         let finance = pane
             .digest
             .briefs
@@ -2414,10 +2331,9 @@ mod tests {
                 .with_described(crate::activity::testing::verb("Export"))
         };
 
-        // Every kind of row the steps make, once, before reads are counted:
-        // the first row of a kind can load a catalogue, which moves the
-        // i18n revision, and the log then rightly reads its window again in
-        // the new words.
+        // Every kind of row the steps make, once, before reads are counted: the first row of a kind
+        // can load a catalogue, which moves the i18n revision, and the log then rightly reads its
+        // window again in the new words.
         let heads = tree.doc.get_heads();
         assert!(peer.append_workspace_effect_receipt(
             home,
@@ -2430,8 +2346,8 @@ mod tests {
             .expect("the peer's change merges");
         pane.refresh(&mut tree);
         native_pane().refresh(&mut tree.clone());
-        // The catalogues those rows loaded were added after this refresh
-        // read the log; the next change reads it under them.
+        // The catalogues those rows loaded were added after this refresh read the log; the next
+        // change reads it under them.
         tree.set_active(second);
         tree.commit_workspace_change();
         pane.refresh(&mut tree);
@@ -2464,8 +2380,8 @@ mod tests {
                     "open a tab"
                 }
                 2 => {
-                    // The peer acts while this device switches back: two
-                    // concurrent changes, merged in either order.
+                    // The peer acts while this device switches back: two concurrent changes, merged
+                    // in either order.
                     assert!(peer.append_workspace_effect_receipt(
                         home,
                         tilo_actions::InvocationId::new(),
@@ -2606,9 +2522,10 @@ mod tasks_link_tests {
     use super::*;
     use crate::activity::TaskRunDocument;
     use crate::activity::testing::TestTree as WorkspaceTree;
+    use ui::record::RecordStore;
     #[derive(Default)]
-    struct UndoHost {
-        undos: RefCell<Vec<TaskRunUndo>>,
+    pub(super) struct UndoHost {
+        pub(super) undos: RefCell<Vec<TaskRunUndo>>,
         ended: RefCell<Option<Result<Vec<TaskRunDocument>, String>>>,
     }
     impl ActivityHost for UndoHost {
@@ -2635,13 +2552,12 @@ mod tasks_link_tests {
         let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host.clone());
         pane.refresh(&mut tree);
-        pane.set_view(ActivityView::Explore);
+        pane.view = ActivityView::Explore;
         (tree, pane, host)
     }
 
-    /// Once an agent's run of a task recorded what it changed under the
-    /// task, undoing it asks the host to undo the run in each changed
-    /// document, and tells how that ended.
+    /// Once an agent's run of a task recorded what it changed under the task, undoing it asks the
+    /// host to undo the run in each changed document, and tells how that ended.
     #[test]
     fn an_agent_runs_task_is_undone_by_the_host_as_one() {
         let (mut tree, mut pane, host) = fixture();
@@ -2698,8 +2614,8 @@ mod tasks_link_tests {
         assert!(pane.unreverted.is_empty(), "every record came back");
     }
 
-    /// Each record of the run can be undone on its own from the task view:
-    /// the host is asked for the task, in that one document only.
+    /// Each record of the run can be undone on its own from the task view: the host is asked for
+    /// the task, in that one document only.
     #[test]
     fn one_record_of_a_run_is_undone_alone() {
         let (mut tree, mut pane, host) = fixture();
@@ -2749,8 +2665,8 @@ mod tasks_link_tests {
         );
     }
 
-    /// The agent composer follows the task, not the history: it names the run by its task, and
-    /// the same one record is undone, nothing else; a task that changed nothing is refused.
+    /// The agent composer follows the task, not the history: it names the run by its task, and the
+    /// same one record is undone, nothing else; a task that changed nothing is refused.
     #[test]
     fn one_record_of_a_run_is_undone_by_its_task() {
         use tilo_actions::remote::workspace_activity as wire;
@@ -2804,7 +2720,6 @@ mod tasks_link_tests {
                 wire::UNDO_RECORD,
                 &query("tasks.tracker/issues/release"),
                 &mut tree,
-                None,
             )
             .unwrap();
         assert!(outcome.handled);
@@ -2819,15 +2734,14 @@ mod tasks_link_tests {
             pane.serve_action(
                 wire::UNDO_RECORD,
                 &query("tasks.tracker/issues/other"),
-                &mut tree,
-                None
+                &mut tree
             )
             .is_err()
         );
     }
 
-    /// A record the host did not undo is named, not dropped: the task view
-    /// says what did not come back.
+    /// A record the host did not undo is named, not dropped: the task view says what did not come
+    /// back.
     #[test]
     fn a_record_undo_did_not_reach_is_reported() {
         let (mut tree, mut pane, host) = fixture();
@@ -2911,12 +2825,12 @@ mod morning_source_tests {
         let mut pane = WorkspaceActivityPane::new();
         pane.set_host(Rc::new(VisitorHost));
         pane.refresh(&mut tree);
-        pane.set_view(ActivityView::CatchUp);
+        pane.view = ActivityView::CatchUp;
         assert!(
-            !pane.digest().briefs.is_empty(),
+            !pane.digest.briefs.is_empty(),
             "the change itself stays visible"
         );
-        for brief in &pane.digest().briefs {
+        for brief in &pane.digest.briefs {
             for shown in [
                 brief.title.clone(),
                 brief.detail.clone(),
@@ -2977,21 +2891,70 @@ mod morning_source_tests {
         (tree, pane)
     }
 
-    // Compatible with the old public pane API: fails before implementation
-    // because the real causal resource selection has no morning-choice action.
+    /// What the selected row offers, as the app reads it.
+    fn selection_offers(
+        pane: &mut WorkspaceActivityPane,
+        tree: &mut TestTree,
+    ) -> Vec<wire::DetailAction> {
+        let (start, end) = pane.timeline.selection().expect("a selected change");
+        let range = wire::Range {
+            from: wire::entry_hex(pane.timeline.entries()[start].id.as_bytes()),
+            to: wire::entry_hex(pane.timeline.entries()[end].id.as_bytes()),
+        };
+        pane.serve_detail(
+            &wire::DetailQuery {
+                range,
+                compare: false,
+            },
+            tree,
+        )
+        .offers
+        .iter()
+        .map(|offer| offer.action)
+        .collect()
+    }
+
+    /// Choose the selected change's resource as this device's morning source.
+    fn choose_source(
+        pane: &mut WorkspaceActivityPane,
+        tree: &mut TestTree,
+    ) -> WorkspaceActivityOutcome {
+        let (start, end) = pane.timeline.selection().expect("a selected change");
+        let range = wire::Range {
+            from: wire::entry_hex(pane.timeline.entries()[start].id.as_bytes()),
+            to: wire::entry_hex(pane.timeline.entries()[end].id.as_bytes()),
+        };
+        let arguments = serde_json::to_value(range)
+            .unwrap()
+            .as_object()
+            .cloned()
+            .expect("a range is an object");
+        pane.serve_action(wire::CHOOSE_SOURCE, &arguments, tree)
+            .expect("the selected change names a source")
+    }
+
     #[test]
     fn morning_source_choice_is_a_semantic_action_on_real_resource_history() {
         let (mut tree, mut pane) = fixture();
+        let entry = pane.timeline.selection().expect("a selected change").0;
+        let entry = pane.timeline.entries()[entry].id;
+        let offers = pane
+            .serve_detail(
+                &wire::DetailQuery {
+                    range: wire::Range::one(&wire::entry_hex(entry.as_bytes())),
+                    compare: false,
+                },
+                &mut tree,
+            )
+            .offers;
         assert!(
-            pane.selection_history_actions()
+            offers
                 .iter()
-                .any(|(id, _)| *id == "room.activity.morning.toggle")
+                .any(|offer| offer.action == wire::DetailAction::ChooseSource),
+            "a resource change offers itself as a source"
         );
         let heads = tree.doc.get_heads();
-        assert!(
-            pane.apply_selection_history_action("room.activity.morning.toggle", &mut tree, None)
-                .handled
-        );
+        assert!(choose_source(&mut pane, &mut tree).handled);
         assert_eq!(
             tree.doc.get_heads(),
             heads,
@@ -3017,12 +2980,13 @@ mod morning_source_tests {
     }
     #[test]
     fn morning_sources_survive_restart_without_crossing_workspaces_or_acknowledging_work() {
+        use tilo_actions::remote::workspace_activity::SourceCommand;
         let (mut tree, mut pane) = fixture();
         let host = Rc::new(Host::default());
         pane.set_host(host.clone());
         assert!(pane.chosen_morning_sources().is_empty());
         let before = pane.seen_frontiers.clone();
-        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        choose_source(&mut pane, &mut tree);
         assert_eq!(pane.chosen_morning_sources().len(), 1);
         assert_eq!(pane.seen_frontiers, before);
         let key = pane.chosen_morning_sources()[0].key();
@@ -3032,11 +2996,7 @@ mod morning_source_tests {
         restarted.load_frontiers();
         restarted.refresh(&mut tree);
         assert_eq!(restarted.chosen_morning_sources().len(), 1);
-        let outcome = restarted.apply_selection_history_action(
-            &format!("{MORNING_OPEN}{workspace}.{key}"),
-            &mut tree,
-            None,
-        );
+        let outcome = run_source(&mut restarted, &mut tree, &key, SourceCommand::Open);
         assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
         tree.workspaces[0] =
             same_id_in(&tree.workspaces[0], tilo_desktop_model::WorkspaceId::new());
@@ -3045,50 +3005,21 @@ mod morning_source_tests {
             restarted.chosen_morning_sources().is_empty(),
             "even the same workspace id cannot borrow another workspace's choices"
         );
-        restarted.apply_selection_history_action(
-            &format!("{MORNING_SOURCE}.{workspace}"),
-            &mut tree,
-            None,
-        );
         assert!(
-            restarted.chosen_morning_sources().is_empty(),
-            "a queued source choice cannot cross the originating workspace"
-        );
-        assert!(
-            restarted
-                .apply_selection_history_action(
-                    &format!("{MORNING_OPEN}{workspace}.{key}"),
-                    &mut tree,
-                    None
-                )
+            run_source(&mut restarted, &mut tree, &key, SourceCommand::Open)
                 .open_target
-                .is_none()
+                .is_none(),
+            "a source of another workspace identity does not open here"
         );
         tree.workspaces[0] = same_id_in(&tree.workspaces[0], workspace);
         restarted.refresh(&mut tree);
         assert_eq!(restarted.chosen_morning_sources().len(), 1);
-        restarted.set_scope(WorkspaceScope::AllWorkspaces, &tree);
-        assert!(
-            restarted
-                .apply_selection_history_action(
-                    &format!("{MORNING_OPEN}{workspace}.{key}"),
-                    &mut tree,
-                    None
-                )
-                .open_target
-                .is_none()
-        );
-        restarted.set_scope(WorkspaceScope::ThisWorkspace, &tree);
         restarted.timeline.set_entries(Vec::new());
         assert!(
             restarted.morning_target(&key).is_none(),
             "missing or revoked resource evidence is unavailable, never fabricated"
         );
-        restarted.apply_selection_history_action(
-            &format!("{MORNING_REMOVE}{workspace}.{key}"),
-            &mut tree,
-            None,
-        );
+        run_source(&mut restarted, &mut tree, &key, SourceCommand::Remove);
         assert!(restarted.chosen_morning_sources().is_empty());
         assert!(host.0.borrow()[&tree.active.raw()].sources.is_empty());
     }
@@ -3130,7 +3061,7 @@ mod morning_source_tests {
             })
             .unwrap();
         pane.timeline.set_selection(Some((target, target)));
-        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        choose_source(&mut pane, &mut tree);
         let key = pane.chosen_morning_sources()[0].key();
         assert_eq!(
             pane.morning_evidence(&key).unwrap().1,
@@ -3170,13 +3101,12 @@ mod morning_source_tests {
             pane.timeline.set_selection(Some((selected, selected)));
             if index == 8 {
                 assert!(
-                    !pane
-                        .selection_history_actions()
-                        .iter()
-                        .any(|(id, _)| *id == MORNING_SOURCE)
+                    !selection_offers(&mut pane, &mut tree)
+                        .contains(&wire::DetailAction::ChooseSource),
+                    "no more sources can be chosen at the bound"
                 );
             }
-            pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+            choose_source(&mut pane, &mut tree);
         }
         assert_eq!(pane.chosen_morning_sources().len(), 8);
     }
@@ -3186,7 +3116,7 @@ mod morning_source_tests {
         tree: &mut TestTree,
         key: &str,
         command: tilo_actions::remote::workspace_activity::SourceCommand,
-    ) {
+    ) -> WorkspaceActivityOutcome {
         let request = tilo_actions::remote::workspace_activity::SourceRequest {
             key: key.into(),
             command,
@@ -3200,16 +3130,15 @@ mod morning_source_tests {
             tilo_actions::remote::workspace_activity::SOURCE,
             &arguments,
             tree,
-            None,
         )
-        .expect("a chosen source runs its command");
+        .expect("a chosen source runs its command")
     }
 
     #[test]
     fn morning_payload_commands_reach_only_this_workspace_and_change_no_history() {
         use tilo_actions::remote::workspace_activity::SourceCommand;
         let (mut tree, mut pane) = fixture();
-        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        choose_source(&mut pane, &mut tree);
         let host = Rc::new(PayloadHost::default());
         pane.set_host(host.clone());
         let key = pane.chosen_morning_sources()[0].key();
@@ -3240,17 +3169,6 @@ mod morning_source_tests {
                 .iter()
                 .all(|(workspace, _, _)| *workspace == pane.workspace)
         );
-        let foreign = uuid::Uuid::new_v4().to_string();
-        pane.apply_selection_history_action(
-            &format!("{}{foreign}.{key}", super::MorningCommand::Refresh.prefix()),
-            &mut tree,
-            None,
-        );
-        assert_eq!(
-            host.commands.borrow().len(),
-            2,
-            "queued foreign command is inert"
-        );
         assert_eq!(tree.doc.get_heads(), heads);
         assert_eq!(pane.seen_frontiers, seen);
     }
@@ -3259,7 +3177,7 @@ mod morning_source_tests {
     fn morning_payload_paging_keeps_large_sources_and_removed_evidence_reachable() {
         use tilo_actions::remote::workspace_activity::SourceCommand;
         let (mut tree, mut pane) = fixture();
-        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        choose_source(&mut pane, &mut tree);
         let host = Rc::new(PayloadHost {
             noisy: true,
             ..Default::default()
@@ -3357,9 +3275,8 @@ mod morning_source_tests {
 mod reader_tests {
     use super::*;
 
-    /// The person's own changes are never news to them, even when the writer
-    /// named them differently from the device's user name: history marks
-    /// them as the reader's.
+    /// The person's own changes are never news to them, even when the writer named them differently
+    /// from the device's user name: history marks them as the reader's.
     #[test]
     fn the_readers_own_changes_never_reach_the_passive_activity() {
         let own = ui::widget::history::HistoryAuthor::new("Workspace setup", 10.0, "a1b2")
@@ -3374,9 +3291,9 @@ mod reader_tests {
     }
 }
 
-/// A workspace with `workspace`'s id in another workspace, with its windows and
-/// its grants rehomed: what a device holds when one id has named two workspaces
-/// (a workspace id never changes its workspace).
+/// A workspace with `workspace` 's id in another workspace, with its windows and its grants
+/// rehomed: what a device holds when one id has named two workspaces (a workspace id never changes
+/// its workspace).
 fn same_id_in(
     workspace: &tilo_desktop_model::Workspace,
     other_workspace: tilo_desktop_model::WorkspaceId,

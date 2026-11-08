@@ -51,6 +51,7 @@ pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
             ui::format::day_fact_today(day, paired_time(node, name)).text
         }),
         "time" => moment_of(&text).map_or(text, |at| ui::format::list_date(&at)),
+        "duration" => duration_of(&text).map_or(text, ui::format::duration),
         _ => text,
     })
 }
@@ -59,6 +60,22 @@ pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
 /// its `<name>_done` companion: the day it happened, not a day it is due by.
 fn done_day(node: &UiNode, name: &str) -> bool {
     crate::reconcile::flag(node, &format!("{name}_done"))
+}
+
+/// A choice's case as a row tells it at its trailing edge, where the choice says what its cases
+/// hold (`case:as`): a moment as a person reads the hour ("15:00", "Sat 09:00"), a length of
+/// time as they read it ("1 hr 30 min"). `None` where the case's value is not of that kind,
+/// so a choice of words shows its labels alone.
+#[must_use]
+pub fn shown_case(node: &UiNode, value: &str) -> Option<String> {
+    let Some(Value::Text(kind)) = node.props.get("case:as") else {
+        return None;
+    };
+    match kind.as_str() {
+        "time" => moment_of(value).map(|at| ui::format::moment_fact(&at)),
+        "duration" => duration_of(value).map(ui::format::duration),
+        _ => None,
+    }
 }
 
 /// How the stored `value` of a day or a time of day (`kind` is `date` or `time`) reads in a
@@ -75,6 +92,7 @@ pub fn shown_text(kind: &str, value: &str) -> String {
         "time" => {
             moment_of(value).map_or_else(|| value.to_owned(), |at| ui::format::list_date(&at))
         }
+        "duration" => duration_of(value).map_or_else(|| value.to_owned(), ui::format::duration),
         _ => value.to_owned(),
     }
 }
@@ -116,6 +134,7 @@ fn formatted(
     Some(match kind.as_str() {
         "date" => day_of(&text).map_or(text, date),
         "time" => moment_of(&text).map_or(text, |at| time(&at)),
+        "duration" => duration_of(&text).map_or(text, ui::format::duration),
         _ => text,
     })
 }
@@ -124,6 +143,15 @@ fn formatted(
 fn day_of(text: &str) -> Option<NaiveDate> {
     // ignored-failure: a value that is not a day is shown as the text it is
     NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
+}
+
+/// A length of time, held as its number of seconds.
+fn duration_of(text: &str) -> Option<std::time::Duration> {
+    // ignored-failure: a value that is no number of seconds is shown as the text it is
+    text.trim()
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
 }
 
 /// The instant `YYYY-MM-DDTHH:MM:SSZ`.

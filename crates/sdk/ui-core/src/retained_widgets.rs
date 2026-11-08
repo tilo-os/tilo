@@ -1,38 +1,29 @@
 //! Whether a retained layout's widget pointers still name live widgets.
 //!
-//! A layout map (each taffy node's `*mut dyn Widget`) is built from the
-//! widget tree and kept across frames while nothing reports a structure
-//! change ([`Widget::take_structure_dirty`]). A widget that replaces its
-//! children without reporting it would leave the map pointing at freed
-//! widgets, and the next frame would call through them: once the allocator
-//! reused that memory the call read a garbage vtable (the web desktop trapped
-//! in an indirect call). Safe code must not be able to cause that, so a
-//! retained map is checked against the live tree before it is trusted again:
-//! every widget it names must still be in the tree, met through
-//! [`Widget::for_each_layout_child`], at the same address and of the same
-//! concrete type. A map that fails is built again, so a widget that forgets
-//! to report gets a fresh layout, never a call into freed memory.
+//! A layout map (each taffy node's `*mut dyn Widget`) is built from the widget tree and kept across
+//! frames while nothing reports a structure change ([`Widget::take_structure_dirty`]). A widget that
+//! replaces its children without reporting it would leave the map pointing at freed widgets, and
+//! the next frame would call through them — once the allocator reused that memory, a garbage
+//! vtable (the web desktop trapped in an indirect call). Safe code must not be able to cause that,
+//! so a retained map is checked against the live tree before it is trusted again: every widget it
+//! names must still be in the tree, met through [`Widget::for_each_layout_child`], at the same
+//! address and of the same concrete type. A map that fails is built again.
 //!
 //! A widget is identified by its data address and concrete type
-//! ([`Widget::concrete_type_name`]), not by trait-object pointer equality:
-//! the same type's vtable can sit at different addresses in different
-//! codegen units, and a wrapper shares its address with its first field. A
-//! live widget of the registered type at the registered address is all the
-//! registered pointer needs to be safe to call through.
+//! ([`Widget::concrete_type_name`]), not trait-object pointer equality: the same type's vtable can
+//! sit at different addresses in different codegen units, and a wrapper shares its address with its
+//! first field.
 //!
-//! A widget that only forwards to a field (a typed facade over its core, an
-//! app over its shell) lays the field out without the walk meeting it. Such
-//! a field is checked through the walked widget whose memory holds it: while
-//! that widget is the same type at the same place, so is its field. Only a
-//! field the walk never meets inside an enum its owner switches without
-//! reporting escapes that, which is why containers list what they lay out.
+//! A widget that only forwards to a field (a typed facade over its core, an app over its shell)
+//! lays the field out without the walk meeting it; the field is checked through the walked widget
+//! whose memory holds it. Only a field the walk never meets inside an enum its owner switches
+//! without reporting escapes that, which is why containers list what they lay out.
 //!
-//! A check compares the walk with the one recorded when the map was built,
-//! widget by widget in walk order: the same sequence means every widget the
-//! map can name is still there. That costs one walk and no lookups, which
-//! keeps it small in the browser bundle. Debug builds also prove, at each
-//! build, that every node of the map is covered by the recorded walk, the
-//! invariant the check relies on, and name any widget that is not.
+//! A check compares the walk with the one recorded when the map was built, widget by widget in walk
+//! order: the same sequence means every widget the map can name is still there. That costs one walk
+//! and no lookups, which keeps it small in the browser bundle. Debug builds also prove, at each
+//! build, that every node of the map is covered by the recorded walk, and name any widget that is
+//! not.
 
 #[cfg(debug_assertions)]
 use std::collections::{HashMap, HashSet};

@@ -381,7 +381,9 @@ impl FilesState {
         }
         for (shown, copy) in read {
             match copy {
-                Ok(copy) => self.open_queue.push_back(copy),
+                Ok(copy) => {
+                    let _ = self.open_target(copy);
+                }
                 Err(error) => self.notify_open_failed(&shown, &error.to_string()),
             }
         }

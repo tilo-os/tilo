@@ -54,8 +54,7 @@ pub(super) struct StripsKey {
 }
 
 impl TopBarChrome {
-    /// Whether the workspace's new name is being typed, in place of its
-    /// name in the bar.
+    /// Whether the workspace's new name is being typed, in place of its name in the bar.
     pub(super) fn renaming_workspace(&self) -> bool {
         self.strips.naming.is_some()
     }
@@ -70,9 +69,8 @@ impl TopBarChrome {
                     .collect()
             })
             .unwrap_or_default();
-        // A bar on a display names the strip that display shows; the full
-        // bar stands on the display the person works on, which shows the
-        // workspace's active strip.
+        // A bar on a display names the strip that display shows; the full bar stands on the display
+        // the person works on, which shows the workspace's active strip.
         self.strips.active = self
             .display
             .and_then(|display| tree.strip_shown_on(display))
@@ -81,8 +79,8 @@ impl TopBarChrome {
             .or_else(|| self.strips.strips.first().map(|(id, _)| *id));
     }
 
-    /// The shown strip's name, which the bar names after the workspace
-    /// (Home, a chevron, Research): only for a strip with a name.
+    /// The shown strip's name, which the bar names after the workspace (Home, a chevron, Research):
+    /// only for a strip with a name.
     pub(super) fn strip_name(&self) -> Option<&str> {
         let active = self.strips.active?;
         self.strips
@@ -98,9 +96,9 @@ impl TopBarChrome {
         f64::from(theme.tokens.spacing.s1)
     }
 
-    /// The width the strip's name takes after the workspace's pill at its
-    /// natural length: the separator, its gaps and the name; zero when the
-    /// bar names no strip. The workspace name leaves only its own width.
+    /// The width the strip's name takes after the workspace's pill at its natural length: the
+    /// separator, its gaps and the name; zero when the bar names no strip. The workspace name
+    /// leaves only its own width.
     pub(super) fn strips_natural_width(
         &self,
         text_renderer: &mut TextRenderer,
@@ -114,10 +112,9 @@ impl TopBarChrome {
         STRIP_CHEVRON_PX + f64::from(name) + 2.0 * Self::strip_name_gap(theme)
     }
 
-    /// Paint the shown strip's name between `x0` and `x1`, after the
-    /// workspace pill: the separator dim, the name elided to the room left.
-    /// The separator and the name are one target, which opens the strip
-    /// switcher ([`ChromeIntent::ShowStrips`]).
+    /// Paint the shown strip's name between `x0` and `x1` , after the workspace pill: the separator
+    /// dim, the name elided to the room left. The separator and the name are one target, which
+    /// opens the strip switcher ([`ChromeIntent::ShowStrips`]).
     pub(super) fn draw_strip_name(
         &mut self,
         scene: &mut Scene,
@@ -133,8 +130,8 @@ impl TopBarChrome {
         };
         let (x0, x1) = span;
         let gap = Self::strip_name_gap(theme);
-        // The separator and the name are one bar chip: a chevron and the
-        // label, opening the strip switcher.
+        // The separator and the name are one bar chip: a chevron and the label, opening the strip
+        // switcher.
         let chip = ui::widget::BarChipFace::new(&name, &[])
             .icons(STRIP_GLYPH)
             .label(&name)
@@ -157,8 +154,7 @@ impl TopBarChrome {
         );
     }
 
-    /// Where the strip's name was painted this frame, at the bar's height:
-    /// its part's bounds.
+    /// Where the strip's name was painted this frame, at the bar's height: its part's bounds.
     pub(super) fn strips_painted(&self) -> Vec<Rect> {
         std::iter::once(self.ws_strip_rect)
             .filter(|rect| !rect.is_zero_area())
@@ -188,8 +184,7 @@ impl TopBarChrome {
         theme.tokens.typography.style(TextRole::Label)
     }
 
-    /// The field the workspace's new name is typed in, where its name
-    /// stands.
+    /// The field the workspace's new name is typed in, where its name stands.
     pub(super) fn paint_workspace_name_field(
         &mut self,
         scene: &mut Scene,
@@ -235,8 +230,8 @@ impl TopBarChrome {
         );
     }
 
-    /// Let the painted name field take a pointer event, and copy its
-    /// selection back into the name the bar owns.
+    /// Let the painted name field take a pointer event, and copy its selection back into the name
+    /// the bar owns.
     pub(super) fn field_pointer(
         &mut self,
         event: &WindowEvent,
@@ -257,8 +252,8 @@ impl TopBarChrome {
         took
     }
 
-    /// Start renaming the workspace in place, from its current name, as the
-    /// workspace menu's Rename asks.
+    /// Start renaming the workspace in place, from its current name, as the workspace menu's Rename
+    /// asks.
     pub fn begin_workspace_rename(&mut self) {
         let text = self.workspace_name.clone();
         let end = text.len();
@@ -295,8 +290,7 @@ impl TopBarChrome {
         }
     }
 
-    /// Keys while the name is typed. Every key is the field's; returns
-    /// whether the event was one.
+    /// Keys while the name is typed. Every key is the field's; returns whether the event was one.
     fn workspace_rename_key(
         &mut self,
         event: &WindowEvent,
@@ -356,9 +350,8 @@ impl TopBarChrome {
         )
     }
 
-    /// While the workspace's name is typed, the field owns the keyboard and
-    /// a press anywhere else ends it. Returns whether the event was
-    /// consumed.
+    /// While the workspace's name is typed, the field owns the keyboard and a press anywhere else
+    /// ends it. Returns whether the event was consumed.
     pub(super) fn handle_workspace_rename_event(
         &mut self,
         event: &WindowEvent,
@@ -370,10 +363,9 @@ impl TopBarChrome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Some(ctx.logical(position));
-                // The name field is painted by the toolkit's TextInput but
-                // lives outside the retained tree; its pointer path is
-                // forwarded here so caret placement, drag selection and the
-                // context menu reach the same editor that paints it.
+                // The name field is painted by the toolkit's TextInput but lives outside the
+                // retained tree; its pointer path is forwarded here so caret placement, drag
+                // selection and the context menu reach the same editor that paints it.
                 self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                 false
             }
@@ -457,8 +449,7 @@ mod tests {
         }
     }
 
-    /// A workspace of three named strips, the first shown, with people on
-    /// the other two.
+    /// A workspace of three named strips, the first shown, with people on the other two.
     fn tree() -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Home");
         let mut games = Strip::new(StripId(11), "Games");
@@ -501,8 +492,8 @@ mod tests {
         let crumb = frame.ws_strip_rect;
         assert!(!crumb.is_zero_area(), "Workspace › Strip");
         assert!(crumb.x0 >= frame.ws_pill_rect.x1 - 0.5);
-        // No other strip, and no count of who is on one, anywhere in the
-        // bar: not as a target, not for assistive technology.
+        // No other strip, and no count of who is on one, anywhere in the bar: not as a target, not
+        // for assistive technology.
         let rects = frame.test_rects();
         for other in ["Games", "Quiet"] {
             assert!(
@@ -532,9 +523,8 @@ mod tests {
         assert!(audit.is_certified(), "{audit:?}");
     }
 
-    /// A bar names the strip its own display shows: on two displays, the one
-    /// the person works on shows the active strip, the other the strip it was
-    /// left showing.
+    /// A bar names the strip its own display shows: on two displays, the one the person works on
+    /// shows the active strip, the other the strip it was left showing.
     #[test]
     fn a_bar_names_the_strip_its_own_display_shows() {
         let mut tree = tree();
@@ -578,8 +568,8 @@ mod tests {
         assert_eq!(other.strip_name(), Some("Games"), "its own display's strip");
     }
 
-    /// Renaming the workspace types over the workspace's name, not over the
-    /// strip's name after it, which stays where the person sees it.
+    /// Renaming the workspace types over the workspace's name, not over the strip's name after it,
+    /// which stays where the person sees it.
     #[test]
     fn the_workspace_is_renamed_where_its_name_stands() {
         let mut one = tree();
@@ -613,8 +603,8 @@ mod tests {
         assert_eq!(frame.ws_pill_rect, pill, "the name is back as it was");
         assert!(frame.strips.field_rect.is_zero_area());
 
-        // The current name is selected: typing replaces it, with no press
-        // needed to reach the field.
+        // The current name is selected: typing replaces it, with no press needed to reach the
+        // field.
         frame.begin_workspace_rename();
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         Framed::harness_mut(&mut frame).type_text("Lounge");
@@ -627,9 +617,8 @@ mod tests {
             })
         );
 
-        // A press in the field is the field's, not the bar's: it puts one
-        // caret where the person pointed, so the selected name is no longer
-        // selected and typing there edits in place.
+        // A press in the field is the field's, not the bar's: it puts one caret where the person
+        // pointed, so the selected name is no longer selected and typing there edits in place.
         frame.begin_workspace_rename();
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         let field = frame.strips.field_rect.center();

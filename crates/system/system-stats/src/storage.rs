@@ -20,9 +20,6 @@ use crate::protocol::{DriveHealth, Refusal, Storage};
 /// Where the session's storage answers come from.
 pub trait StorageSource: Send + Sync {
     /// Describe the machine's storage now.
-    ///
-    /// # Errors
-    /// Why it could not be described.
     fn read(&self) -> Result<Storage, Refusal>;
 }
 

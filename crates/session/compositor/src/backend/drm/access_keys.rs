@@ -18,11 +18,9 @@ use crate::switch_scan::{Scan, Scanner, SwitchConfig};
 pub struct Assists {
     /// Modifiers stay down until the chord they were pressed for is typed.
     pub sticky_keys: bool,
-    /// How long a key must be held before it counts; `None` with slow keys
-    /// off.
+    /// How long a key must be held before it counts; `None` with slow keys off.
     pub slow_keys: Option<Duration>,
-    /// How soon a repeated press is contact bounce; `None` with bounce keys
-    /// off.
+    /// How soon a repeated press is contact bounce; `None` with bounce keys off.
     pub bounce_keys: Option<Duration>,
     /// Show a pressed key that was contact bounce instead of typing it.
     pub bounce_alert: bool,
@@ -56,8 +54,8 @@ pub struct AccessKeys {
 }
 
 impl AccessKeys {
-    /// Whether a press was dropped as contact bounce since the last call:
-    /// the caller shows it, for someone who cannot hear a key click.
+    /// Whether a press was dropped as contact bounce since the last call: the caller shows it, for
+    /// someone who cannot hear a key click.
     pub fn take_alert(&mut self) -> bool {
         std::mem::take(&mut self.alert)
     }
@@ -70,8 +68,8 @@ impl AccessKeys {
             self.bounce.reset();
         }
         if assists.slow_keys != self.assists.slow_keys {
-            // Presses still waiting never counted; deliveries already made
-            // keep their releases, which pass through with slow keys off.
+            // Presses still waiting never counted; deliveries already made keep their releases,
+            // which pass through with slow keys off.
             self.slow.reset();
         }
         if assists.switch != self.assists.switch {
@@ -88,8 +86,8 @@ impl AccessKeys {
         released
     }
 
-    /// Forget everything, releasing what the assists hold: for a session or
-    /// device boundary that may have lost releases.
+    /// Forget everything, releasing what the assists hold: for a session or device boundary that
+    /// may have lost releases.
     pub fn reset(&mut self, now: Instant) -> Vec<InputEvent> {
         self.slow.reset();
         self.bounce.reset();
@@ -100,9 +98,9 @@ impl AccessKeys {
         released
     }
 
-    /// The events `event` stands for at `now`: none for a brush, a bounce, a
-    /// key mouse keys took or a switch, its pointer motion and buttons for
-    /// mouse keys, the keys it types for everything else.
+    /// The events `event` stands for at `now` : none for a brush, a bounce, a key mouse keys took
+    /// or a switch, its pointer motion and buttons for mouse keys, the keys it types for everything
+    /// else.
     pub fn filter(&mut self, event: InputEvent, now: Instant) -> Vec<InputEvent> {
         let InputEvent::Key { keycode, pressed } = event else {
             return vec![event];
@@ -110,8 +108,8 @@ impl AccessKeys {
         if self.assists.switch.is_some()
             && let Some(action) = self.scanner.key(keycode, pressed, now)
         {
-            // A switch press steps the focus on or activates it; its release
-            // is swallowed so no client sees a switch key.
+            // A switch press steps the focus on or activates it; its release is swallowed so no
+            // client sees a switch key.
             return Scan::edges(action).into_iter().map(key_event).collect();
         }
         if let Some(delay) = self.assists.slow_keys {
@@ -127,9 +125,8 @@ impl AccessKeys {
         self.deliver(keycode, pressed, now)
     }
 
-    /// The events owed at `now` without any key edge: keys held past their
-    /// slow-keys delay, the focus walking on by itself and a mouse-keys
-    /// glide.
+    /// The events owed at `now` without any key edge: keys held past their slow-keys delay, the
+    /// focus walking on by itself and a mouse-keys glide.
     pub fn tick(&mut self, now: Instant) -> Vec<InputEvent> {
         let mut events = Vec::new();
         for keycode in self.slow.due(now) {
@@ -161,8 +158,8 @@ impl AccessKeys {
         [slow, mouse, scan].into_iter().flatten().min()
     }
 
-    /// A key edge past slow keys and switch scanning: bounce keys, mouse
-    /// keys and sticky keys in that order.
+    /// A key edge past slow keys and switch scanning: bounce keys, mouse keys and sticky keys in
+    /// that order.
     fn deliver(&mut self, keycode: u32, pressed: bool, now: Instant) -> Vec<InputEvent> {
         if let Some(window) = self.assists.bounce_keys {
             let verdict = if pressed {
@@ -221,18 +218,15 @@ const fn button_event(edge: ButtonEdge) -> InputEvent {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BounceVerdict {
     Accept,
-    /// Swallowed as contact bounce. A rejected press also swallows its
-    /// release, so the seat never sees half a keystroke.
+    /// Swallowed as contact bounce. A rejected press also swallows its release, so the seat never
+    /// sees half a keystroke.
     Reject,
 }
 
-/// Ignores a press of the key that was just released when it arrives within
-/// the window: the chatter of a worn switch, or a tremor that taps a key
-/// twice.
-///
-/// Only the most recently released key is remembered. Typing `aba` quickly
-/// is two different keys in between and never a bounce; the filter exists for
-/// the same key hitting twice in a row.
+/// Ignores a press of the key that was just released when it arrives within the window: the chatter
+/// of a worn switch, or a tremor that taps a key twice.
+/// Only the most recently released key is remembered. Typing `aba` quickly is two different keys in
+/// between and never a bounce; the filter exists for the same key hitting twice in a row.
 #[derive(Debug, Default)]
 pub struct BounceKeys {
     last_release: Option<(u32, Instant)>,
@@ -241,7 +235,7 @@ pub struct BounceKeys {
 }
 
 impl BounceKeys {
-    /// A physical press of `key` at `now`. A zero `window` accepts everything.
+    /// A physical press of `key` at `now` . A zero `window` accepts everything.
     pub fn press(&mut self, key: u32, now: Instant, window: Duration) -> BounceVerdict {
         let bounced = !window.is_zero()
             && self.last_release.is_some_and(|(last, released)| {
@@ -255,10 +249,9 @@ impl BounceKeys {
         }
     }
 
-    /// A physical release of `key` at `now`.
-    ///
-    /// The window restarts on every release, swallowed ones included, so a
-    /// switch that keeps chattering stays filtered for as long as it does.
+    /// A physical release of `key` at `now` .
+    /// The window restarts on every release, swallowed ones included, so a switch that keeps
+    /// chattering stays filtered for as long as it does.
     pub fn release(&mut self, key: u32, now: Instant) -> BounceVerdict {
         self.last_release = Some((key, now));
         if self.swallowed.remove(&key) {
@@ -268,8 +261,7 @@ impl BounceKeys {
         }
     }
 
-    /// Forget everything — after a session or device boundary that may have
-    /// lost releases.
+    /// Forget everything — after a session or device boundary that may have lost releases.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -286,23 +278,23 @@ pub enum PointerButton {
 /// What one keypad key means while mouse keys is on.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum KeypadKey {
-    /// Move in this direction, `-1`, `0` or `1` on each axis (screen
-    /// coordinates: `y` grows downwards).
+    /// Move in this direction, `-1` , `0` or `1` on each axis (screen coordinates: `y` grows
+    /// downwards).
     Move(i8, i8),
-    /// `5`: click the selected button.
+    /// `5` : click the selected button.
     Click,
-    /// `+`: double-click the selected button.
+    /// `+` : double-click the selected button.
     DoubleClick,
     /// `0` / Ins: press and hold the selected button, for dragging.
     Hold,
     /// `.` / Del: release every held button.
     Release,
-    /// `/`, `*`, `-`: choose the left, middle or right button.
+    /// `/` , `*` , `-` : choose the left, middle or right button.
     Select(PointerButton),
 }
 
-/// The mouse-keys meaning of an evdev keycode, or `None` for keys that keep
-/// their ordinary meaning (Num Lock and keypad Enter included).
+/// The mouse-keys meaning of an evdev keycode, or `None` for keys that keep their ordinary meaning
+/// (Num Lock and keypad Enter included).
 pub fn keypad_key(evdev: u32) -> Option<KeypadKey> {
     Some(match evdev {
         71 => KeypadKey::Move(-1, -1),                  // KP_7
@@ -331,8 +323,8 @@ pub struct ButtonEdge {
     pub pressed: bool,
 }
 
-/// How far one tap of a direction key moves the pointer, in logical pixels:
-/// small enough to land on a one-pixel target.
+/// How far one tap of a direction key moves the pointer, in logical pixels: small enough to land on
+/// a one-pixel target.
 pub const NUDGE_PX: f64 = 1.0; // pointer travel on the desktop, not themed UI spacing
 /// How long a direction key must be held before the pointer glides.
 pub const GLIDE_DELAY: Duration = Duration::from_millis(150);
@@ -365,8 +357,8 @@ pub fn glide_distance(held: Duration) -> f64 {
     }
 }
 
-/// The keypad as a pointer: direction keys glide with acceleration, the rest
-/// click, hold and release the selected button.
+/// The keypad as a pointer: direction keys glide with acceleration, the rest click, hold and
+/// release the selected button.
 #[derive(Debug)]
 pub struct MouseKeys {
     /// Direction keys currently down, by evdev code.
@@ -403,13 +395,13 @@ pub struct MouseKeysOutput {
 }
 
 impl MouseKeys {
-    /// The button `5`, `+` and `0` act on.
+    /// The button `5` , `+` and `0` act on.
     pub fn selected(&self) -> PointerButton {
         self.selected
     }
 
-    /// Offer a physical key edge. `None` means the key is not mouse keys'
-    /// to take and continues on as ordinary typing.
+    /// Offer a physical key edge. `None` means the key is not mouse keys' to take and continues on
+    /// as ordinary typing.
     pub fn key(&mut self, evdev: u32, pressed: bool, now: Instant) -> Option<MouseKeysOutput> {
         if !pressed {
             if !self.consumed.remove(&evdev) {
@@ -485,8 +477,7 @@ impl MouseKeys {
             .collect()
     }
 
-    /// The combined direction of every held direction key; opposite keys
-    /// cancel.
+    /// The combined direction of every held direction key; opposite keys cancel.
     fn direction(&self) -> (f64, f64) {
         let (x, y) = self
             .directions
@@ -498,8 +489,8 @@ impl MouseKeys {
                 )
             });
         let (x, y) = (f64::from(x.signum()), f64::from(y.signum()));
-        // A diagonal covers the same distance as a straight line in the
-        // same time, rather than √2 more.
+        // A diagonal covers the same distance as a straight line in the same time, rather than √2
+        // more.
         if x != 0.0 && y != 0.0 {
             (
                 x * std::f64::consts::FRAC_1_SQRT_2,
@@ -525,8 +516,7 @@ impl MouseKeys {
         (x * distance, y * distance)
     }
 
-    /// When the compositor must next call [`Self::motion`], if anything is
-    /// gliding.
+    /// When the compositor must next call [`Self::motion`], if anything is gliding.
     pub fn next_deadline(&self) -> Option<Instant> {
         if self.direction() == (0.0, 0.0) {
             return None;
@@ -538,8 +528,8 @@ impl MouseKeys {
         Some(from.max(glide_from).checked_add(TICK).unwrap_or(from))
     }
 
-    /// Stop gliding and release held buttons, returning their release edges.
-    /// Used when mouse keys is switched off or input state is reset.
+    /// Stop gliding and release held buttons, returning their release edges. Used when mouse keys
+    /// is switched off or input state is reset.
     pub fn reset(&mut self) -> Vec<ButtonEdge> {
         let releases = self.release_all();
         let selected = self.selected;
@@ -564,8 +554,8 @@ mod tests {
 
     // bounce keys
 
-    /// One step of a bounce-keys timing table: at `at` ms, `key` goes down
-    /// or up, and the filter should say `expect`.
+    /// One step of a bounce-keys timing table: at `at` ms, `key` goes down or up, and the filter
+    /// should say `expect` .
     struct Step {
         at: u64,
         key: u32,
@@ -624,8 +614,7 @@ mod tests {
                 // A clean keystroke.
                 down(0, A, OK),
                 up(80, A, OK),
-                // The same key 100 ms after release: a bounce, and its
-                // release goes with it.
+                // The same key 100 ms after release: a bounce, and its release goes with it.
                 down(180, A, NO),
                 up(200, A, NO),
                 // Still inside the window, which restarted at 200 ms.
@@ -1093,8 +1082,7 @@ mod tests {
         assert_eq!(filter.tick(t0 + ms(999)), Vec::<InputEvent>::new());
         assert_eq!(filter.tick(t0 + ms(1_000)), [key(15, true), key(15, false)]);
         assert_eq!(filter.next_deadline(), Some(t0 + ms(2_000)));
-        // The person's own press restarts the period, so nothing moves
-        // twice in a row.
+        // The person's own press restarts the period, so nothing moves twice in a row.
         let _ = filter.filter(key(F7, true), t0 + ms(1_900));
         let _ = filter.filter(key(F7, false), t0 + ms(1_950));
         assert_eq!(filter.next_deadline(), Some(t0 + ms(2_900)));

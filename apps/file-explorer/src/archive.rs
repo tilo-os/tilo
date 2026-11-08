@@ -80,11 +80,6 @@ pub fn cached(archive: &Path) -> Option<Arc<Vec<Entry>>> {
 /// Read the entries of `archive` and keep them for browsing it. Decodes the
 /// whole archive when it is a compressed tar: call it off the window's
 /// thread.
-///
-/// # Errors
-///
-/// The archive cannot be read or decoded, or holds an entry that would land
-/// outside it.
 pub fn index(archive: &Path, observer: &dyn Observer) -> io::Result<Arc<Vec<Entry>>> {
     if let Some(entries) = cached(archive) {
         return Ok(entries);
@@ -220,10 +215,6 @@ impl Listing {
 
 /// The direct children of `prefix` among an archive's `entries`, as a
 /// folder shows them.
-///
-/// # Errors
-///
-/// An unsafe `prefix`.
 pub fn children_of(entries: &[Entry], prefix: &Path) -> io::Result<Vec<Entry>> {
     let prefix = if prefix.as_os_str().is_empty() {
         PathBuf::new()
@@ -267,11 +258,6 @@ pub fn list(archive: &Path) -> io::Result<Vec<Entry>> {
 /// Write the single file `member` of `archive` to `output` (a new file),
 /// read-only: a member is opened by reading a copy of it, never by editing
 /// inside the archive.
-///
-/// # Errors
-///
-/// Returns an error when the archive cannot be read, holds no such regular
-/// file, or `output` exists.
 pub fn extract_member(archive: &Path, member: &Path, output: &Path) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -346,10 +332,6 @@ impl Staging {
     /// What the extraction came to: the one folder the archive holds at its
     /// top, else the staging folder itself (to be named after the archive).
     /// `true` with the path when it is the archive's own folder.
-    ///
-    /// # Errors
-    ///
-    /// The staging folder cannot be read.
     pub fn result(&self) -> io::Result<(PathBuf, bool)> {
         let mut children = fs::read_dir(&self.path)?;
         if let (Some(only), None) = (children.next().transpose()?, children.next())

@@ -722,17 +722,16 @@ impl SignedOp {
         encryption: EncryptionMetadata,
     ) -> Self {
         Self {
-            payload,
-            artifact,
-            author,
-            attestation_id,
-            kind,
-            timestamp,
-            seq,
             encryption: Some(encryption),
-            claims: Vec::new(),
-            surface: None,
-            signature: Signature::from_bytes([0u8; 64]),
+            ..Self::new_unsigned(
+                payload,
+                artifact,
+                author,
+                attestation_id,
+                kind,
+                timestamp,
+                seq,
+            )
         }
     }
 

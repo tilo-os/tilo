@@ -33,9 +33,6 @@ pub struct FieldSnapshot {
 
 impl FieldSnapshot {
     /// Decode bounded metadata; malformed declarations cannot become a context.
-    ///
-    /// # Errors
-    /// Refuses malformed, oversized, ambiguous or duplicate action references.
     pub fn decode(json: &str) -> Result<Self, String> {
         if json.len() > MAX_SNAPSHOT_BYTES {
             return Err("focused input context is too large".into());

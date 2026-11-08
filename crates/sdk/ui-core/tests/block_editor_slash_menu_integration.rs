@@ -19,7 +19,6 @@ fn char_press(c: &str) -> WindowEvent {
 fn slash_menu_converts_the_focused_block_or_leaves_it_on_escape() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `slash_h2_enter_converts_paragraph_to_heading2`.
     {
         let mut editor = BlockEditor::new();
         editor.set_focus(true);
@@ -47,7 +46,6 @@ fn slash_menu_converts_the_focused_block_or_leaves_it_on_escape() {
         assert!(matches!(editor.blocks()[0].kind, BlockKind::Heading(2)));
     }
 
-    // Case `slash_menu_escape_leaves_block_unchanged`.
     {
         let mut editor = BlockEditor::new();
         editor.set_focus(true);
@@ -58,7 +56,6 @@ fn slash_menu_converts_the_focused_block_or_leaves_it_on_escape() {
         assert!(matches!(editor.blocks()[0].kind, BlockKind::Paragraph));
     }
 
-    // Case `slash_menu_committed_kind_converts_focused_block`.
     {
         let mut editor = BlockEditor::new();
         editor.set_focus(true);

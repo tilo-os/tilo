@@ -1,7 +1,6 @@
-//! The overview's keyboard and pointer: the workspaces and the pictured windows
-//! walked by keys, presses that go somewhere, a window carried to another
-//! workspace or strip, a middle click that closes one, and a strip's name
-//! typed in place.
+//! The overview's keyboard and pointer: the workspaces and the pictured windows walked by keys,
+//! presses that go somewhere, a window carried to another workspace or strip, a middle click that
+//! closes one, and a strip's name typed in place.
 
 use tilo_desktop_model::TabId;
 use ui::num::{isize_of_usize, usize_of_isize};
@@ -33,9 +32,8 @@ impl OverviewPanel {
         self.navigation_key(key, mods.shift_key())
     }
 
-    /// The window selected by the keyboard is gone: the keyboard goes back
-    /// to the workspace you are in, and the Enter that was meant for the window
-    /// does nothing.
+    /// The window selected by the keyboard is gone: the keyboard goes back to the workspace you are
+    /// in, and the Enter that was meant for the window does nothing.
     pub(super) fn reconcile_window_selection(&mut self) {
         if let Some(tab) = self.window_selection
             && !self
@@ -99,8 +97,7 @@ impl OverviewPanel {
         true
     }
 
-    /// The last row the keyboard reaches: Join, New workspace, or the last
-    /// workspace.
+    /// The last row the keyboard reaches: Join, New workspace, or the last workspace.
     fn last_row(&self, count: usize) -> usize {
         count
             .saturating_add(usize::from(self.can_add()))
@@ -212,8 +209,8 @@ impl OverviewPanel {
         }
     }
 
-    /// Put the keyboard on pictured window `tab`; the picture is this
-    /// workspace's, so the workspace you are in is selected with it.
+    /// Put the keyboard on pictured window `tab` ; the picture is this workspace's, so the
+    /// workspace you are in is selected with it.
     pub fn select_window(&mut self, tab: TabId) {
         self.window_selection = Some(tab);
         self.window_interrupted = false;
@@ -257,7 +254,7 @@ impl OverviewPanel {
         self.bump();
     }
 
-    /// Do what strip `si`'s `control` says.
+    /// Do what strip `si` 's `control` says.
     pub(super) fn apply_strip_control(
         &mut self,
         picture: &Picture,
@@ -287,8 +284,7 @@ impl OverviewPanel {
         self.choose(OverviewPick::MoveStrip { strip, before });
     }
 
-    /// A key while a strip's name is typed: Enter keeps it, Escape keeps the
-    /// old one.
+    /// A key while a strip's name is typed: Enter keeps it, Escape keeps the old one.
     fn naming_key(&mut self, key: &Key, mods: ModifiersState) {
         let Some(naming) = self.naming.as_mut() else {
             return;
@@ -392,8 +388,7 @@ impl OverviewPanel {
         took
     }
 
-    /// Every pointer and touch event while the overview is up. Returns
-    /// whether it was taken.
+    /// Every pointer and touch event while the overview is up. Returns whether it was taken.
     pub(super) fn pointer(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         if self.naming_takes(event, scale_factor) {
             return true;
@@ -430,9 +425,9 @@ impl OverviewPanel {
         }
     }
 
-    /// A click or tap away from the pictured windows: a strip's name or
-    /// controls, a row that makes or joins a workspace, a site workspace's
-    /// Leave, a workspace to go to; anything else leaves the overview.
+    /// A click or tap away from the pictured windows: a strip's name or controls, a row that makes
+    /// or joins a workspace, a site workspace's Leave, a workspace to go to; anything else leaves
+    /// the overview.
     pub(super) fn click_at(&mut self, p: Point) {
         if self.strip_click(p) {
             return;
@@ -465,8 +460,7 @@ impl OverviewPanel {
         }
     }
 
-    /// A click or tap on the picture's strip names and controls. Returns
-    /// whether it landed on one.
+    /// A click or tap on the picture's strip names and controls. Returns whether it landed on one.
     fn strip_click(&mut self, p: Point) -> bool {
         let picture = self.picture();
         let Some(si) = picture
@@ -483,16 +477,15 @@ impl OverviewPanel {
             .map(|(control, _)| control);
         match control {
             Some(control) => self.apply_strip_control(&picture, si, control),
-            // The name itself: a strip this machine names is renamed in
-            // place.
+            // The name itself: a strip this machine names is renamed in place.
             None => self.begin_naming(&picture, si),
         }
         self.bump();
         true
     }
 
-    /// Presses that can become drags: the primary button on a pictured
-    /// window, and a finger anywhere. A middle click on a window closes it.
+    /// Presses that can become drags: the primary button on a pictured window, and a finger
+    /// anywhere. A middle click on a window closes it.
     fn press_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         let taken = match event {
             WindowEvent::MouseInput {
@@ -554,8 +547,8 @@ impl OverviewPanel {
                 let mine = self.press.is_some_and(|press| press.source == source);
                 match touch.phase {
                     TouchPhase::Started => {
-                        // A second finger makes it a gesture, not a tap or a
-                        // drag; the host's gestures take it.
+                        // A second finger makes it a gesture, not a tap or a drag; the host's
+                        // gestures take it.
                         let held = self.press.is_some();
                         if !held {
                             self.press = Some(OverviewPress::new(source, self.window_at(p), p));
@@ -605,9 +598,8 @@ impl OverviewPanel {
         }
     }
 
-    /// A pictured window let go at `at`: onto another workspace it moves
-    /// there, onto another strip of this one its window moves to that
-    /// strip.
+    /// A pictured window let go at `at` : onto another workspace it moves there, onto another strip
+    /// of this one its window moves to that strip.
     fn drop_window(&mut self, tab: TabId, at: Point) {
         if let Some(card) = self
             .hit_workspace(at)
@@ -633,19 +625,8 @@ impl OverviewPanel {
         }
     }
 
-    /// Start typing a new name for strip `strip` in place, as F2 or a press
-    /// on its name does; whether it can be named here.
-    pub fn rename_in_place(&mut self, strip: tilo_desktop_model::StripId) -> bool {
-        let picture = self.picture();
-        let Some(si) = picture.strips.iter().position(|s| s.id == strip) else {
-            return false;
-        };
-        self.begin_naming(&picture, si);
-        self.naming.is_some()
-    }
-
-    /// Carry pictured window `tab` to `to`, as a drag that has not been let
-    /// go yet; whether it is pictured.
+    /// Carry pictured window `tab` to `to` , as a drag that has not been let go yet; whether it is
+    /// pictured.
     pub fn carry(&mut self, tab: TabId, to: Point) -> bool {
         let picture = self.picture();
         let Some((si, wi, _)) = picture.find(tab) else {
@@ -662,8 +643,8 @@ impl OverviewPanel {
         true
     }
 
-    /// Put the keyboard on workspace or row `index` (past the workspaces: New
-    /// workspace, then Join).
+    /// Put the keyboard on workspace or row `index` (past the workspaces: New workspace, then
+    /// Join).
     pub(super) fn focus_row(&mut self, index: usize) {
         self.selection = Some(index);
         self.window_selection = None;
@@ -680,8 +661,8 @@ fn cap_strip_name(naming: &mut Naming) {
     }
 }
 
-/// The window of the nearest strip above (`up`) or below window `index`'s
-/// that has windows, whose centre is closest to its centre.
+/// The window of the nearest strip above (`up`) or below window `index` 's that has windows, whose
+/// centre is closest to its centre.
 fn window_in_next_strip(
     picture: &Picture,
     windows: &[(usize, usize, TabId)],

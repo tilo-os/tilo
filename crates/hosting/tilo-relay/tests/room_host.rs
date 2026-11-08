@@ -18,60 +18,10 @@ use tilo_relay::workspaces::{
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser};
+use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on, next_delta};
 
 /// A workspace the person's devices hold on the host before any room.
 const HOME: u64 = 0x686f_6d65;
-
-/// An endpoint whose key is the device's own, as a device dials with.
-async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
-}
-
-/// A room host on `device`'s own endpoint, routed as its embedder routes it.
-struct Hosted {
-    host: WorkspaceHost,
-    router: Router,
-    _state: tempfile::TempDir,
-}
-
-async fn host_on(user: &TestUser, device: &TestDevice) -> Hosted {
-    let state = tempfile::tempdir().unwrap();
-    let endpoint = device_endpoint(device).await;
-    let host = WorkspaceHost::open(
-        HostConfig::new(state.path().to_path_buf(), HostMode::Device),
-        HostIdentity {
-            user_public_key: user.user_pk,
-            device_signing_key: device.sk.clone(),
-            device_cert: device.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        endpoint.clone(),
-        None,
-    )
-    .await
-    .unwrap();
-    let mut router = Router::builder(endpoint);
-    for (alpn, handler) in host.protocols() {
-        router = router.accept(alpn, handler);
-    }
-    Hosted {
-        host,
-        router: router.spawn(),
-        _state: state,
-    }
-}
-
-impl Hosted {
-    async fn stop(self) {
-        self.router.shutdown().await.unwrap();
-        self.host.shutdown().await;
-    }
-}
 
 /// Subscribe `client` to `workspace_id` and wait until the host lets it in.
 async fn subscribe(client: &RelayClient, workspace_id: u64) {
@@ -127,20 +77,6 @@ async fn host_action<T: serde::de::DeserializeOwned>(
         panic!("the host's own actions complete: {status:?}");
     };
     serde_json::from_value(output.value.unwrap_or_default()).unwrap()
-}
-
-/// The next delta `client` receives.
-async fn next_delta(client: &RelayClient) -> Vec<u8> {
-    tilo_test_env::within("the delta arrives", async {
-        loop {
-            if let Envelope::Delta { delta, .. } =
-                client.recv().await.expect("the session stays open")
-            {
-                break delta;
-            }
-        }
-    })
-    .await
 }
 
 /// A session of `device` to its own person's `host`, pinned to that device.
@@ -213,7 +149,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let bob = TestUser::fresh("Bob");
     let bobs_phone = bob.enrol("phone", DeviceCapabilities::member());
-    let hosted = host_on(&alice, &laptop).await;
+    let hosted = host_on(&alice, &laptop, HostMode::Device).await;
     let room = hosted.host.workspaces().create("Plans").await.unwrap();
 
     // The laptop governs and serves the room itself: its join answers name
@@ -321,7 +257,7 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
-    let hosted = host_on(&alice, &laptop).await;
+    let hosted = host_on(&alice, &laptop, HostMode::Device).await;
     let local = hosted
         .host
         .connect_local(

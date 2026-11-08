@@ -478,7 +478,7 @@ mod registry {
                     .any(|(_, bytes)| bytes.as_slice() == package),
                 "review reads the exact package dist/ holds"
             );
-            let client = registry_client::RegistryClient::new(&self.url()).expect("client");
+            let client = app_registry::publisher::RegistryClient::new(&self.url()).expect("client");
             assert!(
                 client
                     .entry(package_id)

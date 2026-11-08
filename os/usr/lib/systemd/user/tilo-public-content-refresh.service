@@ -8,6 +8,10 @@ Description=Refresh this device's copies of public catalogues
 ConditionACPower=true
 
 [Service]
+# Nothing here is a person waiting: the work yields to the desktop while it
+# runs, and is what systemd-oomd takes memory back from first
+# (os/etc/systemd/user/background.slice.d/50-tilo-batch.conf).
+Slice=background.slice
 Type=oneshot
 # Nothing anybody waits for: never over a metered connection, whatever the
 # update policy says (os/usr/libexec/tilo-update-policy-check).

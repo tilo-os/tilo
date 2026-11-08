@@ -104,6 +104,7 @@ const SHOT_SOURCES: &[&str] = &[
     "quick_tile_shots.rs",
     "scrollbar_shots.rs",
     "search_showcase.rs",
+    "send_to_shots.rs",
     "soft_shadow_shots.rs",
     "table_shots.rs",
     "text_shots.rs",

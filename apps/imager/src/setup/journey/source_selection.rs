@@ -25,9 +25,6 @@ pub trait Sources {
     /// The Windows sources, when Windows roots were reviewed.
     fn windows_tree(&self, catalog: SteamCatalog) -> Option<Tree>;
     /// The Home sources of an explicitly granted Home.
-    ///
-    /// # Errors
-    /// Refuses unsafe grants, unsupported mounts and unreadable sources.
     fn home_tree(&self, home: &std::path::Path, catalog: SteamCatalog) -> Result<Tree, String>;
 }
 

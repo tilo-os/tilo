@@ -1,9 +1,7 @@
-//! The thread the collaboration plane runs on: this device's endpoint, bound
-//! on the device's own key, the peer actor served on it, and the commands the
-//! session hands it until it stops.
-//!
-//! The endpoint is what names this device on the workspaces' planes, and what
-//! carries every one of them.
+//! The thread the collaboration plane runs on: this device's endpoint, bound on the device's own
+//! key, the peer actor served on it, and the commands the session hands it until it stops.
+//! The endpoint is what names this device on the workspaces' planes, and what carries every one of
+//! them.
 
 use std::sync::Arc;
 
@@ -16,8 +14,8 @@ use super::{
     ChannelLink, DeviceActions, Engine, Enrolled, Outgoing, carry_out, endpoint_for, heard,
 };
 
-/// The runtime the collaboration plane's thread runs on: two workers of its
-/// own, so what the plane settles never waits behind what a session shows.
+/// The runtime the collaboration plane's thread runs on: two workers of its own, so what the plane
+/// settles never waits behind what a session shows.
 fn plane_runtime(
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
 ) -> Option<tokio::runtime::Runtime> {
@@ -36,9 +34,8 @@ fn plane_runtime(
     }
 }
 
-/// What the session's endpoint carries beside its workspaces: the channels it
-/// runs, and this device's action plane, which answers the person's other
-/// devices on it.
+/// What the session's endpoint carries beside its workspaces: the channels it runs, and this
+/// device's action plane, which answers the person's other devices on it.
 pub(crate) struct Serving {
     /// This device's endpoint, once it has bound.
     pub(crate) bound: Bound,
@@ -47,9 +44,8 @@ pub(crate) struct Serving {
 }
 
 impl Serving {
-    /// What the session serves on the endpoint it is about to bind: the
-    /// endpoint it fills in once bound, and what answers beside the
-    /// workspaces' traffic.
+    /// What the session serves on the endpoint it is about to bind: the endpoint it fills in once
+    /// bound, and what answers beside the workspaces' traffic.
     pub(crate) fn new(
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
         link: Option<Arc<ChannelLink>>,
@@ -69,19 +65,18 @@ impl Serving {
     }
 }
 
-/// What the session serves on this device's endpoint beside the workspaces'
-/// traffic: the channels they use, this device's action plane, and whatever
-/// else the session was handed — this device as an exit for the person's
-/// other devices.
+/// What the session serves on this device's endpoint beside the workspaces' traffic: the channels
+/// they use, this device's action plane, and whatever else the session was handed — this device as
+/// an exit for the person's other devices.
 pub(crate) struct Beside {
     pub(crate) link: Option<Arc<ChannelLink>>,
     pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
-    /// The protocols the session answers besides its own, handed over before
-    /// the endpoint binds: an endpoint's protocols are fixed once it is
-    /// bound, so whatever answers on it is here from the first pass.
+    /// The protocols the session answers besides its own, handed over before the endpoint binds: an
+    /// endpoint's protocols are fixed once it is bound, so whatever answers on it is here from the
+    /// first pass.
     pub(crate) protocols: tilo_network_actor::local_host::Protocols,
-    /// Where what admission takes in from another device is handed to this
-    /// device's apps: `None` on a session that serves no apps.
+    /// Where what admission takes in from another device is handed to this device's apps: `None` on
+    /// a session that serves no apps.
     pub(crate) documents: Option<super::PeerDocuments>,
 }
 
@@ -92,9 +87,8 @@ pub(crate) struct Bound {
     pub(crate) endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
 }
 
-/// What this device answers on from the moment its endpoint is bound: the
-/// peer actor the session's commands go to, the events it hears, and what
-/// runs beside it until the session stops.
+/// What this device answers on from the moment its endpoint is bound: the peer actor the session's
+/// commands go to, the events it hears, and what runs beside it until the session stops.
 struct Listening {
     endpoint: iroh::Endpoint,
     actor: tokio::sync::mpsc::Sender<NetCmd>,
@@ -104,8 +98,8 @@ struct Listening {
     attending: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// The thread: bind the endpoint, run the peer actor, and carry what it
-/// hears to the session's loop until it is told to stop.
+/// The thread: bind the endpoint, run the peer actor, and carry what it hears to the session's loop
+/// until it is told to stop.
 pub(super) fn run(
     identity: Option<HostIdentity>,
     engine: Option<Arc<Engine>>,
@@ -119,8 +113,7 @@ pub(super) fn run(
     let Some(runtime) = plane_runtime(&ready) else {
         return;
     };
-    // The channels' side of the plane, which the loop below carries what the
-    // session says to.
+    // The channels' side of the plane, which the loop below carries what the session says to.
     let link = beside.link.clone();
     runtime.block_on(async move {
         let Some(Listening {
@@ -143,8 +136,8 @@ pub(super) fn run(
         else {
             return;
         };
-        // What asks a workspace's host runs beside this loop, so what the
-        // session says meanwhile is still carried.
+        // What asks a workspace's host runs beside this loop, so what the session says meanwhile is
+        // still carried.
         let asking = Asking {
             landed: enrollments,
             endpoint,
@@ -183,9 +176,8 @@ pub(super) fn run(
     });
 }
 
-/// What asking a workspace's host needs, held for the plane's loop: the loop
-/// never waits on a host, so an ask runs on its own task and hands what became
-/// of it back as an [`Enrolled`].
+/// What asking a workspace's host needs, held for the plane's loop: the loop never waits on a host,
+/// so an ask runs on its own task and hands what became of it back as an [`Enrolled`].
 struct Asking {
     landed: std::sync::mpsc::Sender<Enrolled>,
     endpoint: iroh::Endpoint,
@@ -196,18 +188,16 @@ struct Asking {
     identity: Option<HostIdentity>,
 }
 
-/// One thing the plane asks a workspace's host for: someone's invitation
-/// redeemed into their workspace, or one of the person's own workspaces
-/// entered at the device hosting it.
+/// One thing the plane asks a workspace's host for: someone's invitation redeemed into their
+/// workspace, or one of the person's own workspaces entered at the device hosting it.
 enum Ask {
     Invitation(super::Enrolling),
     Entry(Box<super::Entering>),
 }
 
 impl Asking {
-    /// Ask `ask` beside the loop, and hand what became of it back. A session
-    /// built without a workspace engine answers at once that it takes nothing
-    /// in.
+    /// Ask `ask` beside the loop, and hand what became of it back. A session built without a
+    /// workspace engine answers at once that it takes nothing in.
     fn ask(&self, ask: Ask) {
         let (slot, workspace_id, member, name, missing) = match &ask {
             Ask::Invitation(request) => (
@@ -278,9 +268,8 @@ impl Asking {
     }
 }
 
-/// Bind this device's endpoint, serve the peer actor and its action plane on
-/// it, and say where the session's apps reach this device — or say why it
-/// could not, and answer nothing.
+/// Bind this device's endpoint, serve the peer actor and its action plane on it, and say where the
+/// session's apps reach this device — or say why it could not, and answer nothing.
 async fn listening(
     identity: Option<&HostIdentity>,
     engine: Option<&Arc<Engine>>,
@@ -317,21 +306,20 @@ async fn listening(
     };
     let publisher = endpoint.id();
     let addr = endpoint.addr();
-    // Nothing wakes the held-back relays from here: the peer actor does when
-    // it dials a host or a peer, and the session while a workspace it shows has
-    // someone else in it (`Client::note_reachability`).
+    // Nothing wakes the held-back relays from here: the peer actor does when it dials a host or a
+    // peer, and the session while a workspace it shows has someone else in it
+    // (`Client::note_reachability`).
     let reachability = tilo_endpoint_reachability::Reachability::defer(
         &endpoint,
         &deferred_relays,
         tokio::runtime::Handle::current(),
         Some(tilo_endpoint_reachability::REST_AFTER),
     );
-    // This device's action plane is served on the same endpoint: another of
-    // the person's devices reaches what this one publishes here, beside the
-    // workspaces' own traffic.
+    // This device's action plane is served on the same endpoint: another of the person's devices
+    // reaches what this one publishes here, beside the workspaces' own traffic.
     let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
-    // What the session serves beside its own planes: this device's exit for
-    // the person's other devices, when it offers one.
+    // What the session serves beside its own planes: this device's exit for the person's other
+    // devices, when it offers one.
     served.extend(protocols);
     let _ = bound.endpoint.set(endpoint.clone());
     if let Some(identity) = identity {
@@ -340,14 +328,13 @@ async fn listening(
             tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
             Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.plane()),
         ));
-        // The session takes it from here: what it installs answers, and an
-        // app's own-device actions leave through it.
+        // The session takes it from here: what it installs answers, and an app's own-device actions
+        // leave through it.
         let _ = actions.set(device);
     }
     if let (Some(identity), Some(engine)) = (identity, engine) {
-        // A link this device hands out names this endpoint, so the joins those
-        // links are redeemed by are answered here: this device's own owner
-        // admits whoever a link it signed is for.
+        // A link this device hands out names this endpoint, so the joins those links are redeemed
+        // by are answered here: this device's own owner admits whoever a link it signed is for.
         served.push((
             tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN.to_vec(),
             Box::<dyn iroh::protocol::DynProtocolHandler>::from(

@@ -501,10 +501,6 @@ fn ref_from_json(json: &Json) -> Option<ResourceRef> {
 }
 
 /// Encode a value as JSON, for registers, journals and change messages.
-///
-/// # Errors
-///
-/// Fails for host-internal values and non-finite floats.
 pub fn to_json(v: &Value) -> Result<Json, String> {
     Ok(match v {
         Value::Unit => Json::Null,
@@ -588,10 +584,6 @@ fn items_to_json(items: &[Value]) -> Result<Json, String> {
 }
 
 /// Decode what [`to_json`] produced.
-///
-/// # Errors
-///
-/// Fails on JSON that is not an encoded value.
 pub fn from_json(j: &Json) -> Result<Value, String> {
     Ok(match j {
         Json::Null => Value::Unit,

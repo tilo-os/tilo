@@ -99,9 +99,6 @@ fn unit_name(unit: &[Segment]) -> String {
 }
 
 /// Refuse a verb that changed `before` into `after` outside `writes`.
-///
-/// # Errors
-/// Names the first unit written outside the footprint.
 pub fn check<R: Model>(before: &R, after: &R, writes: &Writes) -> Result<(), Refusal> {
     let mut edits: Vec<crate::Edit<()>> = Vec::new();
     before.diff(after, &[], &mut edits);

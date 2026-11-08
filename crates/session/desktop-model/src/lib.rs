@@ -40,7 +40,9 @@ pub mod window_share;
 pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};
-pub use arrangement::{Arrangement, ArrangementKind, CANVAS_GAP, CanvasPlace};
+pub use arrangement::{
+    Arrangement, ArrangementKind, CANVAS_GAP, CanvasPlace, FloatCorner, FloatPlace,
+};
 pub use bots::WorkspaceBot;
 pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};
 pub use closed_tabs::{CLOSED_TABS_PER_WORKSPACE, ClosedTab, ClosedTabs, Leaving, Reopened};

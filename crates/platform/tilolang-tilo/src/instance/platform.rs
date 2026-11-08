@@ -46,9 +46,12 @@ pub trait Platform {
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String;
 
     /// Takes in a package's catalogues, `(locale, Fluent text)`, so [`Self::phrase`] says its
-    /// messages too (i18n.md). A platform without catalogues of its own shows the source words.
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        let _ = catalogues;
+    /// messages too (i18n.md). `window` is the package the window shows, whose languages choose
+    /// the language it speaks; without it, a package the window uses, whose words ride along in
+    /// that language and never choose it. A platform without catalogues of its own shows the
+    /// source words.
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        let _ = (window, catalogues);
     }
 
     /// What the words resolve at now: it moves when the person's language, or a catalogue of
@@ -131,7 +134,11 @@ pub struct PlatformWords(pub(super) Rc<dyn Platform>);
 
 impl Words for PlatformWords {
     fn add(&self, catalogues: &[(String, String)]) {
-        self.0.add_words(catalogues);
+        self.0.add_words(true, catalogues);
+    }
+
+    fn add_used(&self, catalogues: &[(String, String)]) {
+        self.0.add_words(false, catalogues);
     }
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {

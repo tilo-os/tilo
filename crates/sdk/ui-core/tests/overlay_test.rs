@@ -10,6 +10,7 @@
     reason = "in a test these are the assertion, not a hazard; pixel probes round f64 rects to u32"
 )]
 
+use crate::support::render::write_png;
 use std::collections::HashMap;
 use tilo_ui::widget::TaffyTreeExt;
 
@@ -53,16 +54,6 @@ const CANVAS_H: u32 = 720;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
     tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
-}
-
-fn dump(name: &str, rgba: &[u8]) {
-    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
-        return;
-    };
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = format!("{dir}/{name}.png");
-    tilo_ui::png::write_rgba8(&path, CANVAS_W, CANVAS_H, rgba).unwrap();
-    eprintln!("wrote {path}");
 }
 
 /// The edge pixel one step inside `panel`'s left side, mid-height, against
@@ -186,7 +177,6 @@ fn lay_out(widget: &mut dyn Widget, theme: &Theme) {
 fn overlay_panels_register_their_edge_in_both_themes() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();
-    // Case `modal_dialog_panel_edge_registers_in_both_themes`.
     {
         let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
         for (name, theme) in themes() {
@@ -205,12 +195,11 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let panel = dialog.get_rect();
             assert!(panel.width() > 100.0, "{name}: dialog laid out ({panel:?})");
             let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
-            dump(&format!("modal_dialog_{name}"), &rgba);
+            write_png(&format!("modal_dialog_{name}"), CANVAS_W, CANVAS_H, &rgba);
             assert_edge_registers(&rgba, panel, name, "modal-dialog");
         }
     }
 
-    // Case `popover_panel_edge_registers_in_both_themes`.
     {
         let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
         let anchor = Rect::new(240.0, 60.0, 400.0, 92.0);
@@ -230,12 +219,11 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let panel = popover.get_rect();
             assert!(panel.width() > 40.0, "{name}: popover laid out ({panel:?})");
             let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
-            dump(&format!("popover_{name}"), &rgba);
+            write_png(&format!("popover_{name}"), CANVAS_W, CANVAS_H, &rgba);
             assert_edge_registers(&rgba, panel, name, "popover");
         }
     }
 
-    // Case `permission_prompt_panel_edge_registers_in_both_themes`.
     // The permission prompt is a Panel too (HIG §9.5): its edge derives against
     // the ground and has to register against the prompt's `surfaces.overlay`
     // fill in both themes. `TILO_UI_SCREENSHOT_DIR` dumps
@@ -257,7 +245,12 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let presence = PresenceCtx::default();
             prompt.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
-            dump(&format!("permission_prompt_{name}"), &rgba);
+            write_png(
+                &format!("permission_prompt_{name}"),
+                CANVAS_W,
+                CANVAS_H,
+                &rgba,
+            );
             assert_edge_registers(&rgba, prompt.get_rect(), name, "permission-prompt");
         }
     }
