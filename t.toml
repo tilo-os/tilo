@@ -1646,7 +1646,7 @@ dispatch_inputs = { only = "", outputs = "1920x1080@1,1280x800@1.25", gl = "auto
 [[check]]
 name = "e2e-branch"
 run = "bash tools/ci/vm-e2e-branch.sh"
-needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/e2e-branch/**"]
@@ -1663,7 +1663,7 @@ name = "e2e-agents"
 # in each environment's shell, the person's answers on the sheet and their Stop
 # (scripts/vm-acceptance/acceptance/checks/agents_e2e.py).
 run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt && bash tools/ci/vm-acceptance.sh e2e-agents"
-needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/e2e-agents/report/**"]
@@ -1677,7 +1677,7 @@ on = ["dispatch"]
 # VMs: two boxes branched from one set-up box, a third of another person, on one local network.
 name = "e2e-remote"
 run = "bash tools/ci/e2e-remote.sh"
-needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/e2e-remote/**"]
@@ -2042,14 +2042,24 @@ secrets = ["TILO_PACKAGES_TOKEN"]
 [check.matrix]
 runtime = ["llama-cpp-cpu-x86_64", "llama-cpp-cpu-aarch64", "llama-cpp-vulkan-x86_64", "llama-cpp-vulkan-aarch64", "llama-cpp-cuda-x86_64", "vllm-cuda-x86_64"]
 
+# The date the llama.cpp runtime images are built at, oci-build.sh's SOURCE_DATE_EPOCH: the commit
+# time of the newest commit that changed what they are built from (source-date.sh), as for the
+# images above. Only this reads Git: a runtime build keyed by its commit built the same bytes again
+# at every commit, and each CUDA build takes the better part of an hour.
+[[check]]
+name = "source-date-local-model-runtimes"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/local-model-runtimes tools/release/local-model-runtime.sh dist/local-models/runtimes tools/ci/publish/oci-run.sh tools/ci/publish/lib.sh"
+git = true
+outputs = ["/target/source-date/local-model-runtimes"]
+default = false
+
 [[check]]
 name = "local-model-runtime-llama-cpp-{backend}-{arch}"
-run = "bash tools/release/local-model-runtime.sh build llama-cpp-{backend}-{arch} /target/local-model-runtimes/llama-cpp-{backend}-{arch}"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/local-model-runtimes)\nexport SOURCE_DATE_EPOCH\nbash tools/release/local-model-runtime.sh build llama-cpp-{backend}-{arch} /target/local-model-runtimes/llama-cpp-{backend}-{arch}\n"
+needs = ["source-date-local-model-runtimes"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
-# The runtime image is dated by its commit's time, which `oci-build.sh` reads from the log.
-git = true
 outputs = ["/target/local-model-runtimes/llama-cpp-{backend}-{arch}/*"]
 timeout_secs = 7200
 on = ["stable", "dispatch"]
@@ -2060,11 +2070,11 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "local-model-runtime-llama-cpp-cuda-x86_64"
-run = "bash tools/release/local-model-runtime.sh build llama-cpp-cuda-x86_64 /target/local-model-runtimes/llama-cpp-cuda-x86_64"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/local-model-runtimes)\nexport SOURCE_DATE_EPOCH\nbash tools/release/local-model-runtime.sh build llama-cpp-cuda-x86_64 /target/local-model-runtimes/llama-cpp-cuda-x86_64\n"
+needs = ["source-date-local-model-runtimes"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-git = true
 outputs = ["/target/local-model-runtimes/llama-cpp-cuda-x86_64/*"]
 timeout_secs = 10800
 on = ["stable", "dispatch"]
@@ -2585,9 +2595,8 @@ optional_needs = ["mirror-base"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
-# `oci-build.sh` dates the image by its commit's time, read from the log before it takes a
-# `--timestamp` of its own.
-git = true
+# No Git: the snapshot is dated by when it was resolved (rpms-build.sh), never by the commit, so
+# its key is the package set's and every OS layer above it is reused across commits that keep it.
 outputs = ["/target/publish/rpms/{arch}/image.oci.tar", "/target/publish/rpms/{arch}/digest", "/target/publish/rpms/{arch}/epoch"]
 timeout_secs = 10800
 default = false
@@ -3283,6 +3292,45 @@ requires = ["disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev-disk/{arch}/**"]
 git = true
+timeout_secs = 5400
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The development loop's dev image and disk: the dev image as os-dev-image-ARCH builds it, but
+# never published, so it needs neither what only a publication carries nor the commit
+# (TILO_DEV_LOOP=1, tools/ci/publish/os-image.sh): it keeps the OS image's own local model
+# catalog (the release's) in place of one naming this tree's runtimes, so asking for it builds
+# none of the local model runtimes (llama.cpp for the CPU, Vulkan and CUDA, vLLM) nor that
+# catalog; and it reads no Git, so a commit that changes none of its inputs is answered from the
+# cache instead of building the image and installing the disk again. Everything else is the same
+# build: the OS image, the dev components, the env-runtime, the install. Work on the disk, its
+# install or what boots on it asks for `os-dev-disk-lean-x86_64`; the end-to-end checks of boxes
+# boot it. Main's published dev images and disks, the gate and acceptance keep os-dev-image-ARCH
+# and os-dev-disk-ARCH: those name their commit, which publishing checks and the dev channel
+# moves forward by, and carry this tree's runtimes in their catalog.
+[[check]]
+name = "os-dev-image-lean-{arch}"
+run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
+needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+env = { TILO_DEV_LOOP = "1" }
+requires = ["disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/os-dev/{arch}/**"]
+timeout_secs = 3600
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "os-dev-disk-lean-{arch}"
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
+needs = ["os-dev-image-lean-{arch}", "signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/os-dev-disk/{arch}/**"]
 timeout_secs = 5400
 default = false
 [check.matrix]
