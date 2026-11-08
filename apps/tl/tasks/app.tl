@@ -891,23 +891,18 @@ view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
     )
 }
 
-/// A task's window: what it is and whether it is done, where it came from, what is written
-/// about it, its facts — when it is due, its project, how much it matters, who is doing it — as
-/// chips under them, then its subtasks, what was made from it, and what happened to it.
+/// A task as a page of its own, outside the list it stands in.
 view task_page(t: Task) {
     std.document(t) {
         task_body(t)
     }
 }
 
-/// A task where it stands: opened in the list it is an item of, or as the page of its own. What
-/// the page opens with is whether the task is done and what it is, where it came from, and what
-/// is written about it, one row lead in under the text the title leads to; what follows stands
-/// in its body.
+/// A task where it stands: opened in the list it is an item of, or as a page of its own.
 template view task_body(t: Task) {
     state step: Text
-    // What the page opens with: whether the task is done and what it is, where it came from,
-    // and what is written about it, one row lead in under the text the title leads to.
+    // Whether the task is done and what it is, where it came from, and what is written about
+    // it, one row lead in under the text the title leads to.
     stack(gap: .related) {
         row(gap: .related, align: .start) {
             ui.Checkbox(bind: t.done) {
