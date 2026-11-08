@@ -1,5 +1,6 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use tilo_desktop::activity::{ActivitySnapshot, ActivityView, WorkspaceActivityPane};
+use tilo_actions::remote::workspace_activity as wire;
+use tilo_desktop::activity::{ActivitySnapshot, WorkspaceActivityPane};
 use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
 
@@ -28,12 +29,21 @@ fn workspace_activity_review_keeps_live_heads() {
     let mut pane = WorkspaceActivityPane::new();
     pane.begin_view(tree.active.raw());
     pane.refresh(&mut tree);
-    pane.set_view(ActivityView::Replay);
     assert!(!pane.entries().is_empty(), "the rename is a feed change");
-    pane.set_author_filter(Some("absent-author".into()));
-    pane.set_author_filter(None);
+    // Reading the replay, like every review, is a read of the document.
+    let replay = pane.serve_replay();
+    assert!(!replay.pending, "the review read the history to its end");
+    let filtered = pane.serve_feed(
+        &wire::FeedQuery {
+            author: Some("absent-author".into()),
+            ..wire::FeedQuery::default()
+        },
+        &tree,
+    );
+    assert_eq!(filtered.total, 0, "a filter hides the rows nobody names");
+    let all = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+    assert!(all.total > 0, "the unfiltered history lists the rename");
     pane.finish_view(tree.active.raw());
-    assert!(!pane.replay_is_playing());
     assert_eq!(tree.doc.get_heads(), before);
 }
 
@@ -143,54 +153,6 @@ fn workspace_activity_names_workspace_events_and_leaves_bookkeeping_out() {
 }
 
 #[test]
-fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloads() {
-    use tilo_desktop::activity::view_actions::*;
-    let slot = WorkspaceSlot(u64::MAX - 3);
-    let workspace = Workspace::new(slot, "Same label");
-    let tree = DesktopTree {
-        active: slot,
-        workspaces: vec![workspace],
-        ..Default::default()
-    };
-    let descriptors = workspace_view_descriptors(&tree, true);
-    for (action, view) in [
-        ("room.activity.open", ActivityView::CatchUp),
-        ("room.activity.explore", ActivityView::Explore),
-        ("room.activity.replay", ActivityView::Replay),
-    ] {
-        let descriptor = descriptors.iter().find(|d| d.id == action).unwrap();
-        assert_eq!(
-            descriptor.request,
-            WorkspaceViewRequest::OpenActivity {
-                workspace: slot,
-                view
-            }
-        );
-        let action = descriptor.action();
-        assert_eq!(action.kind, tilo_actions::OperationKind::View);
-        assert_eq!(action.operation_type.as_deref(), Some(OPERATION_TYPE));
-        let operation = action.build_args([]).unwrap();
-        assert_eq!(operation.type_id, OPERATION_TYPE);
-        let encoded: serde_json::Value = serde_json::from_slice(&operation.payload).unwrap();
-        assert_eq!(encoded["workspace"], slot.0.to_string());
-        assert_eq!(
-            serde_json::from_value::<WorkspaceViewRequest>(encoded).unwrap(),
-            descriptor.request
-        );
-    }
-    assert!(
-        descriptors
-            .iter()
-            .any(|d| d.id == format!("workspace.select.{}", tree.id_of(slot).unwrap()))
-    );
-    assert!(
-        workspace_view_descriptors(&tree, false)
-            .iter()
-            .all(|d| matches!(d.request, WorkspaceViewRequest::Select { .. }))
-    );
-}
-
-#[test]
 fn workspace_activity_detached_record_origins_do_not_collide() {
     use tilo_desktop::activity::*;
     use ui::record::{RecordCheckout, RecordId, RecordKind};
@@ -232,25 +194,37 @@ fn workspace_activity_detached_record_origins_do_not_collide() {
     let mut pane = WorkspaceActivityPane::new();
     pane.refresh(&mut tree);
     pane.refresh_detached_records(&mut tree, inputs);
-    assert_eq!(pane.feed_coverage().referenced_records, 3);
-    assert_eq!(pane.feed_coverage().indexed_records, 2);
-    assert!(!pane.feed_coverage().is_complete());
-    let rows = pane.timeline().entries();
-    assert_eq!(rows.len(), 2, "setup bookkeeping is not a feed row");
+    let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+    assert_eq!(feed.entries.len(), 2, "setup bookkeeping is not a feed row");
     assert_eq!(
-        rows.iter()
-            .map(|r| r.id)
+        feed.entries
+            .iter()
+            .map(|entry| entry.id.as_str())
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        2
+        2,
+        "the same causal hash in two apps is two rows"
     );
     let mut apps = Vec::new();
-    for i in 0..2 {
-        pane.timeline_mut().set_selection(Some((i, i)));
-        let detail = pane.selection_detail().unwrap();
-        if let Some(app) = detail.resources.first().and_then(|r| r.app_id.clone()) {
+    for entry in &feed.entries {
+        let detail = pane.serve_detail(
+            &wire::DetailQuery {
+                range: wire::Range::one(&entry.id),
+                compare: true,
+            },
+            &mut tree,
+            None,
+        );
+        if let Some(app) = detail
+            .resources
+            .first()
+            .and_then(|resource| resource.app_id.clone())
+        {
             apps.push(app);
-            assert!(pane.compare_selection(&mut tree, None).is_some());
+            assert!(
+                detail.comparison.is_some(),
+                "a row compares what its change did"
+            );
         }
     }
     apps.sort();
@@ -324,10 +298,11 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
             document: Some(record),
         }],
     );
-    let labels = pane
-        .entries()
+    let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+    let labels = feed
+        .entries
         .iter()
-        .map(|row| row.summary.clone())
+        .map(|entry| entry.summary.clone())
         .collect::<Vec<_>>();
     assert_eq!(
         labels,
@@ -335,12 +310,12 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
         "no read marker, nothing that came from outside"
     );
     assert!(
-        pane.entries()
+        feed.entries
             .iter()
-            .any(|row| row.author.name == ui::history_source::UNKNOWN_AUTHOR_NAME),
+            .any(|entry| entry.author.name == ui::history_source::UNKNOWN_AUTHOR_NAME),
         "a change history cannot name still shows under Everyone"
     );
-    assert_eq!(pane.contributors(), ["Ada"]);
+    assert_eq!(feed.people, ["Ada"]);
 }
 
 #[test]
@@ -380,8 +355,13 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
             ..input
         }],
     );
-    assert_eq!(pane.entries(), settled);
-    assert!(!pane.feed_coverage().is_complete());
+    assert_eq!(
+        pane.entries(),
+        settled,
+        "a record it could not read keeps the rows it read"
+    );
+    let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+    assert_eq!(feed.entries.len(), settled.len());
     pane.refresh_detached_records(&mut tree, vec![]);
     assert_eq!(
         pane.entries().len(),
@@ -460,8 +440,6 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
     .unwrap();
     let mut pane = WorkspaceActivityPane::new();
     pane.begin_view(tree.active.raw());
-    pane.refresh(&mut tree);
-    pane.set_view(ActivityView::Replay);
     pane.refresh(&mut tree);
     let replay = pane.serve_replay();
     let first = replay

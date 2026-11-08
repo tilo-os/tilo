@@ -323,21 +323,22 @@ impl WorkspaceActivityPane {
             self.lens = lens;
             self.reinstall_filter();
         }
-        let groups_by_entry = self.groups_by_entry();
+        let groups = self.groups_by_entry();
         let refused = self.refusals_by_change();
-        let entries = self.timeline.entries();
+        let visible = (0..self.timeline.visible_len())
+            .filter_map(|index| self.timeline.visible_entry(index))
+            .collect::<Vec<_>>();
         wire::Feed {
             workspace: self.workspace_name.clone(),
             scope: wire_scope(self.scope),
-            total: entries.len(),
-            entries: entries
+            total: visible.len(),
+            entries: visible
                 .iter()
-                .enumerate()
                 .rev()
                 .take(query.page())
-                .map(|(index, entry)| {
+                .map(|entry| {
                     let refused = refused.get(&hex(&entry.id)).map(Vec::as_slice);
-                    self.wire_entry(entry, groups_by_entry.get(index), refused)
+                    self.wire_entry(entry, groups.get(&entry.id), refused)
                 })
                 .collect(),
             groups: self
@@ -366,12 +367,13 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// The named group each timeline entry sits in, by index.
-    fn groups_by_entry(&self) -> Vec<Option<String>> {
-        let mut groups = vec![None; self.timeline.entries().len()];
+    /// The named group each timeline entry sits in, by entry.
+    fn groups_by_entry(&self) -> HashMap<HistoryEntryId, Option<String>> {
+        let entries = self.timeline.entries();
+        let mut groups = HashMap::new();
         for (range, start, end) in self.named_positions() {
-            for slot in groups.iter_mut().take(end.saturating_add(1)).skip(start) {
-                *slot = Some(range.id.clone());
+            for entry in entries.iter().take(end.saturating_add(1)).skip(start) {
+                groups.insert(entry.id, Some(range.id.clone()));
             }
         }
         groups
@@ -486,10 +488,7 @@ impl WorkspaceActivityPane {
                     at_ms: millis(resume.timestamp),
                 },
             ),
-            away: self.last_active.is_some()
-                && self.last_active == self.presence_workspace
-                && self.away_digest.total_changes > 0
-                && self.digest == self.away_digest,
+            away: self.away_workspace.is_some(),
             sources_available: self.host.morning_sources_available()
                 && self.scope == WorkspaceScope::ThisWorkspace,
             sources,
@@ -748,13 +747,6 @@ impl WorkspaceActivityPane {
         }
         let shown = self.viewed_changes.entry(workspace).or_default();
         for id in viewed.entries.iter().filter_map(|hex| entry_id(hex)) {
-            if self
-                .external_entry
-                .as_ref()
-                .is_some_and(|entry| entry.id == id)
-            {
-                continue;
-            }
             shown.insert(
                 self.projected_origins
                     .get(&id)

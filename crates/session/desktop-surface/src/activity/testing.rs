@@ -399,3 +399,44 @@ impl ActivityHost for TestHost {
         true
     }
 }
+
+/// The app the fixture records belong to, as a host admits them.
+pub(crate) const RECORD_APP: &str = "so.tilo.tasks";
+
+/// Every record the active workspace holds in `records`, as a host admits it
+/// to the pane: the checkout its index names and the document as its app last
+/// wrote it.
+pub(crate) fn detached_records(
+    tree: &impl ActivityTree,
+    records: &ui::RecordStore,
+) -> Vec<super::DetachedRecordHistory> {
+    let held = tree
+        .active_workspace()
+        .and_then(|workspace| tree.workspace_records_held.get(&workspace.id()))
+        .cloned()
+        .unwrap_or_default();
+    held.into_iter()
+        .filter_map(|(id, kind)| {
+            let id = ui::RecordId::parse(&id)?;
+            let checkout = ui::RecordCheckout::new(id.clone(), ui::RecordKind::new(kind));
+            let document = records.read(&id, automerge::AutoCommit::clone);
+            Some(super::DetachedRecordHistory {
+                app: RECORD_APP.to_owned(),
+                checkout,
+                document,
+            })
+        })
+        .collect()
+}
+
+/// The tree and the store's records, read the way a host serves them.
+pub(crate) trait StoreRecords {
+    fn refresh_records(&mut self, tree: &mut impl ActivityTree, records: &ui::RecordStore);
+}
+
+impl StoreRecords for super::WorkspaceActivityPane {
+    fn refresh_records(&mut self, tree: &mut impl ActivityTree, records: &ui::RecordStore) {
+        let detached = detached_records(tree, records);
+        self.refresh_detached_records(tree, detached);
+    }
+}

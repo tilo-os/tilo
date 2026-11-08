@@ -64,7 +64,7 @@ fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_workspace_alone()
     let before = pane.serve_summary();
     assert_eq!(before.workspace, "Design review");
     assert!(!before.briefs.is_empty(), "a peer's changes are new");
-    let unread = pane.glance_signal(workspace).1;
+    let unread = pane.passive_unread;
     assert!(unread > 0);
 
     let outcome = pane
@@ -78,7 +78,7 @@ fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_workspace_alone()
     assert!(outcome.handled);
     let after = pane.serve_summary();
     assert!(after.briefs.is_empty(), "what was shown is no longer new");
-    assert_eq!(pane.glance_signal(workspace).1, 0);
+    assert_eq!(pane.passive_unread, 0);
     assert_eq!(tree.doc.get_heads(), heads, "seeing history writes nothing");
 }
 
@@ -99,7 +99,7 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
         pane.begin_summary(workspace);
     }
     let theirs_before = their_pane.serve_summary();
-    let their_unread = their_pane.glance_signal(workspace).1;
+    let their_unread = their_pane.passive_unread;
     assert!(!theirs_before.briefs.is_empty() && their_unread > 0);
 
     let shown_to_me = shown(&my_pane.serve_summary());
@@ -112,7 +112,7 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
         )
         .expect("marking what was shown viewed");
     assert!(my_pane.serve_summary().briefs.is_empty());
-    assert_eq!(my_pane.glance_signal(workspace).1, 0);
+    assert_eq!(my_pane.passive_unread, 0);
 
     // Whatever my device has that theirs lacks reaches theirs.
     let sent = mine.export_changes_since(&theirs.doc.get_heads());
@@ -127,7 +127,7 @@ fn two_people_in_one_workspace_each_see_their_own_whats_new() {
         theirs_before,
         "their what's new is as it was"
     );
-    assert_eq!(their_pane.glance_signal(workspace).1, their_unread);
+    assert_eq!(their_pane.passive_unread, their_unread);
 
     their_pane
         .serve_action(

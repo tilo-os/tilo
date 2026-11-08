@@ -11,17 +11,14 @@ use tilo_desktop_model::DesktopTree;
 pub mod describer;
 pub mod index;
 pub mod morning;
-pub mod view_actions;
-pub use view_actions::WorkspaceViewRequest;
 mod pane;
 mod replay;
 #[cfg(test)]
 mod testing;
 pub use index::*;
 pub use pane::{
-    ACTIVITY_ACKNOWLEDGE, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE, HISTORY_UNDO, Period,
-    ServedTree, TASKS_APP, WorkspaceActivityOutcome, WorkspaceActivityPane, WorkspaceScope,
-    is_document_write, is_personal, is_read, refused_to_agent,
+    ActivityView, Period, ServedTree, WorkspaceActivityOutcome, WorkspaceActivityPane,
+    WorkspaceScope, is_document_write, is_personal, is_read, refused_to_agent,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors

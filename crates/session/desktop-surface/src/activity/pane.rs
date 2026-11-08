@@ -1,6 +1,4 @@
-use super::morning::{
-    MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningCommand, MorningPreferences, MorningSource,
-};
+use super::morning::{MorningCommand, MorningPreferences, MorningSource};
 use tilo_sort::CompactSort as _;
 mod morning_sources;
 mod serve;
@@ -97,11 +95,6 @@ const FEED_OMIT_FACET: &str = "tilo.feed";
 const FEED_OMIT: &str = "omit";
 const FEED_HISTORY_ONLY: &str = "history";
 
-pub const HISTORY_COMPARE: &str = "history.compare";
-pub const HISTORY_UNDO: &str = "history.undo";
-pub const HISTORY_RESTORE: &str = "history.restore";
-pub const ACTIVITY_ACKNOWLEDGE: &str = "room.activity.acknowledge";
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ActivityView {
@@ -173,14 +166,6 @@ impl DetailAction {
 struct IndexedAgentRun {
     source_record: Option<RecordId>,
     run: AgentRun,
-}
-
-/// The agent runs a persisted record held at one revision, so an unchanged
-/// document on disk is not read and decoded again on every refresh.
-#[derive(Debug)]
-struct ColdAgentRuns {
-    revision: u64,
-    runs: Vec<AgentRun>,
 }
 
 /// The local user's most recent change that names a resource, for the
@@ -405,10 +390,6 @@ pub struct WorkspaceActivityPane {
     history_index: WorkspaceHistoryIndex,
     detached_records: Vec<super::index::DetachedRecordHistory>,
     projected_origins: HashMap<HistoryEntryId, WorkspaceHistoryId>,
-    /// One app-native event supplied by an explicit handoff (for example a
-    /// signed Files version). It remains visible while underlying indexes
-    /// catch up, but is excluded from unseen counts and Catch up prose.
-    external_entry: Option<HistoryEntry>,
     feed_coverage: FeedCoverage,
     pub(super) scope: WorkspaceScope,
     author: Option<String>,
@@ -435,9 +416,10 @@ pub struct WorkspaceActivityPane {
     /// Wall time gates the presentation; the frontier decides which changes
     /// actually happened during the absence.
     departures: HashMap<u64, WorkspaceDeparture>,
-    presence_workspace: Option<u64>,
     away_digest: ActivityDigest,
-    prepared_away_workspace: Option<u64>,
+    /// The workspace whose recap is on screen: what the view opened on after
+    /// long enough away.
+    pub(super) away_workspace: Option<u64>,
     catchup_frontier: WorkspaceSeenFrontier,
     passive_digest: ActivityDigest,
     passive_unread: usize,
@@ -479,7 +461,6 @@ pub struct WorkspaceActivityPane {
     /// Task receipts live beside the records they describe. They are indexed
     /// here so selecting any affected change can explain the whole task.
     agent_runs: Vec<IndexedAgentRun>,
-    cold_agent_runs: HashMap<RecordId, ColdAgentRuns>,
     agent_undo_notice: Option<(String, String)>,
     /// Records the last task undo did not reach, as sentences naming each:
     /// reported beside the run, never left out of it.
@@ -591,7 +572,6 @@ impl WorkspaceActivityPane {
             history_index: WorkspaceHistoryIndex::new(),
             detached_records: Vec::new(),
             projected_origins: HashMap::new(),
-            external_entry: None,
             feed_coverage: FeedCoverage::default(),
             scope: WorkspaceScope::default(),
             author: None,
@@ -604,9 +584,8 @@ impl WorkspaceActivityPane {
             seen_frontiers: HashMap::new(),
             viewed_changes: HashMap::new(),
             departures: HashMap::new(),
-            presence_workspace: None,
             away_digest: ActivityDigest::default(),
-            prepared_away_workspace: None,
+            away_workspace: None,
             catchup_frontier: WorkspaceSeenFrontier::default(),
             passive_digest: ActivityDigest::default(),
             passive_unread: 0,
@@ -637,7 +616,6 @@ impl WorkspaceActivityPane {
             narrative: None,
             narrative_request: None,
             agent_runs: Vec::new(),
-            cold_agent_runs: HashMap::new(),
             agent_undo_notice: None,
             unreverted: Vec::new(),
             open_agent_records: HashSet::new(),
@@ -668,33 +646,6 @@ impl WorkspaceActivityPane {
         self.timeline.entries()
     }
 
-    /// Install the exact app-native event selected by another app before its
-    /// Workspace Activity deep link is applied.
-    pub fn open_external_entry(&mut self, entry: HistoryEntry) {
-        let old = self.external_entry.as_ref().map(|entry| entry.id);
-        let rows = self
-            .timeline
-            .entries()
-            .iter()
-            .filter(|candidate| Some(candidate.id) != old)
-            .cloned()
-            .collect();
-        self.external_entry = Some(entry);
-        self.install_rows(rows);
-    }
-
-    pub fn visible_len(&self) -> usize {
-        self.timeline.visible_len()
-    }
-
-    pub fn visible_entry(&self, i: usize) -> Option<&HistoryEntry> {
-        self.timeline.visible_entry(i)
-    }
-
-    pub fn digest(&self) -> &ActivityDigest {
-        &self.digest
-    }
-
     /// Brief positions change when fresh work arrives. Retain the expanded
     /// work session so it cannot drift onto a different result.
     fn replace_digest(&mut self, digest: ActivityDigest) {
@@ -718,18 +669,23 @@ impl WorkspaceActivityPane {
 
     /// Snapshot the previous private frontier before the catch-up surface is
     /// shown. It advances only when the surface closes, so opening it cannot
-    /// erase the very summary the user came to read.
+    /// erase the very summary the user came to read. A return after long
+    /// enough away starts from the frontier this device left, so the recap
+    /// is exactly what others did in the meantime.
     pub fn begin_view(&mut self, workspace: u64) {
         self.viewed_changes.remove(&workspace);
         if self.scope != WorkspaceScope::ThisWorkspace {
             self.scope = WorkspaceScope::ThisWorkspace;
             self.invalidate();
         }
-        if self.prepared_away_workspace.take() == Some(workspace)
+        self.away_workspace = None;
+        if self.away_digest.total_changes > 0
+            && self.last_active == Some(workspace)
             && let Some(departure) = self.departures.get(&workspace)
         {
             self.catchup_frontier = departure.frontier.clone();
             self.digest = self.away_digest.clone();
+            self.away_workspace = Some(workspace);
             self.reset_narrative();
             return;
         }
@@ -742,70 +698,35 @@ impl WorkspaceActivityPane {
         self.reset_narrative();
     }
 
-    /// Observe the active-workspace edge before refreshing the history index.
-    /// Departure retains the last acknowledged frontier. Merely being in a
-    /// workspace must not count hidden or unpainted history as reviewed.
-    pub fn observe_workspace(&mut self, workspace: u64) {
-        if self.presence_workspace == Some(workspace) {
-            return;
-        }
-        if let Some(previous) = self.presence_workspace {
-            let frontier = self
-                .seen_frontiers
-                .get(&previous)
-                .cloned()
-                .unwrap_or_default();
-            let departed_at_secs = self
-                .now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.departures.insert(
-                previous,
-                WorkspaceDeparture {
-                    departed_at_secs,
-                    frontier,
-                },
-            );
-            if self.persistent_frontiers {
-                self.persist_frontiers();
-            }
-        }
-        self.presence_workspace = Some(workspace);
-        self.away_digest = ActivityDigest::default();
-    }
-
-    pub fn prepare_away_view(&mut self, workspace: u64) {
-        self.prepared_away_workspace = Some(workspace);
-    }
-
-    pub fn away_change_count(&self, workspace: u64) -> usize {
-        if self.presence_workspace == Some(workspace) {
-            self.away_digest.total_changes
-        } else {
-            0
-        }
-    }
-
     pub fn finish_view(&mut self, workspace: u64) {
         self.replay_playing = false;
-        let Some(viewed) = self.viewed_changes.remove(&workspace) else {
-            return;
-        };
+        self.away_workspace = None;
+        let viewed = self.viewed_changes.remove(&workspace).unwrap_or_default();
         let frontier = self.seen_frontiers.entry(workspace).or_default();
         for id in &viewed {
             frontier.acknowledge(id);
         }
+        let frontier = frontier.clone();
+        // Looking ends here: the next visit counts what others did since
+        // this frontier as a recap once enough time has passed.
+        self.departures.insert(
+            workspace,
+            WorkspaceDeparture {
+                departed_at_secs: self
+                    .now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                frontier: frontier.clone(),
+            },
+        );
+        if self.persistent_frontiers {
+            self.persist_frontiers();
+        }
         if self.last_active != Some(workspace) {
-            if self.persistent_frontiers {
-                self.persist_frontiers();
-            }
             return;
         }
-        self.catchup_frontier = frontier.clone();
-        if let Some(departure) = self.departures.get_mut(&workspace) {
-            departure.frontier = frontier.clone();
-        }
+        self.catchup_frontier = frontier;
         // Keep everything not exposed on screen in the catch-up immediately,
         // as well as in the persisted exceptions used by the next refresh.
         let pending: HashSet<_> = self
@@ -847,33 +768,6 @@ impl WorkspaceActivityPane {
         if self.persistent_frontiers {
             self.persist_frontiers();
         }
-    }
-
-    /// `(headline, unread, pulse)` consumed by passive chrome. `pulse` is a
-    /// stable projection of the newest content id, not a frame counter.
-    pub fn glance_signal(&self, workspace: u64) -> (Option<String>, usize, u64) {
-        if self.last_active != Some(workspace) {
-            return (None, 0, 0);
-        }
-        let unread = self.passive_unread;
-        let latest = self
-            .timeline
-            .entries()
-            .iter()
-            .max_by_key(|entry| entry.timestamp);
-        let pulse = latest.map_or(0, |entry| {
-            let mut bytes = [0_u8; 8];
-            bytes.copy_from_slice(&entry.id.as_bytes()[..8]);
-            u64::from_le_bytes(bytes)
-        });
-        (self.passive_digest.headline(), unread, pulse)
-    }
-
-    pub fn digest_for_workspace(&self, workspace: u64) -> ActivityDigest {
-        if self.last_active != Some(workspace) {
-            return ActivityDigest::default();
-        }
-        self.passive_digest.clone()
     }
 
     /// What "new" is counted from in `workspace`. One this device has never
@@ -930,81 +824,6 @@ impl WorkspaceActivityPane {
         self.host.save_departures(&self.departures);
     }
 
-    pub fn contributors(&self) -> &[String] {
-        &self.contributors
-    }
-
-    pub fn view(&self) -> ActivityView {
-        self.view
-    }
-
-    pub fn set_view(&mut self, view: ActivityView) {
-        if view != ActivityView::Replay {
-            self.replay_playing = false;
-        }
-        self.view = view;
-        self.expanded_brief = None;
-    }
-
-    pub fn period(&self) -> Period {
-        self.period
-    }
-
-    pub fn timeline(&self) -> &ActivityTimeline {
-        &self.timeline
-    }
-
-    pub fn timeline_mut(&mut self) -> &mut ActivityTimeline {
-        &mut self.timeline
-    }
-
-    pub fn has_comparison(&self) -> bool {
-        self.comparison.is_some()
-    }
-
-    /// The comparison Compare materialised for the selected changes: both
-    /// sides as full snapshots, and the patches between them.
-    pub fn comparison(&self) -> Option<&HistoryComparison> {
-        self.comparison.as_ref()
-    }
-
-    /// Checkpoints whose causal heads or historical projection were unavailable.
-    pub fn replay_unavailable_checkpoints(&self) -> usize {
-        self.replay_unavailable
-    }
-
-    pub fn replay_is_playing(&self) -> bool {
-        self.view == ActivityView::Replay && self.replay_playing
-    }
-
-    /// Diff, restore and undo for the selected explorer row — the same
-    /// door search, agents and assistive technology use.
-    pub fn selection_history_actions(&self) -> Vec<(&'static str, String)> {
-        let Some(detail) = self.selection_detail() else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        if self.selected_morning_source().is_some() {
-            out.push((
-                MORNING_SOURCE,
-                self.detail_action_label(DetailAction::MorningSource),
-            ));
-        }
-        if detail.can_compare {
-            out.push((HISTORY_COMPARE, t("activity-history-compare")));
-            if self.selection_is_writable(&detail) {
-                out.push((HISTORY_RESTORE, t("activity-history-restore")));
-            }
-        }
-        if detail.can_undo
-            && self.selected_agent_run().is_none()
-            && self.selection_is_writable(&detail)
-        {
-            out.push((HISTORY_UNDO, t("activity-history-undo")));
-        }
-        out
-    }
-
     /// Whether every selected change can be written back here: its history is
     /// one the host lets the model change.
     fn selection_is_writable(&self, detail: &HistorySelectionDetail) -> bool {
@@ -1017,64 +836,6 @@ impl WorkspaceActivityPane {
                 });
             self.host.writable(&origin)
         })
-    }
-
-    pub fn apply_selection_history_action(
-        &mut self,
-        id: &str,
-        tree: &mut impl ActivityTree,
-        records: Option<&RecordStore>,
-    ) -> WorkspaceActivityOutcome {
-        if let Some(workspace) = id.strip_prefix(&format!("{MORNING_SOURCE}.")) {
-            if workspace == self.workspace {
-                self.toggle_morning_selection();
-            }
-            return handled_outcome();
-        }
-        if id == MORNING_SOURCE {
-            self.toggle_morning_selection();
-            return handled_outcome();
-        }
-        if let Some((workspace, key)) = super::morning::decode_action(id, MORNING_OPEN) {
-            if workspace != self.workspace {
-                return handled_outcome();
-            }
-            return WorkspaceActivityOutcome {
-                handled: true,
-                open_target: self.activate_morning_source(key, false),
-                ..Default::default()
-            };
-        }
-        if let Some((workspace, key)) = super::morning::decode_action(id, MORNING_REMOVE) {
-            if workspace != self.workspace {
-                return handled_outcome();
-            }
-            self.remove_morning_source(key);
-            return handled_outcome();
-        }
-        for command in [
-            MorningCommand::Refresh,
-            MorningCommand::DraftRefresh,
-            MorningCommand::NextSource,
-        ] {
-            if let Some((workspace, key)) = super::morning::decode_action(id, command.prefix()) {
-                if workspace == self.workspace {
-                    self.submit_morning_command(key, command);
-                }
-                return handled_outcome();
-            }
-        }
-        if id == ACTIVITY_ACKNOWLEDGE {
-            self.finish_view(tree.active.raw());
-            return handled_outcome();
-        }
-        let action = match id {
-            HISTORY_COMPARE => DetailAction::Compare,
-            HISTORY_RESTORE => DetailAction::Restore,
-            HISTORY_UNDO => DetailAction::Undo,
-            _ => return WorkspaceActivityOutcome::default(),
-        };
-        self.apply_detail_action(action, tree, records)
     }
 
     pub fn selection_detail(&self) -> Option<HistorySelectionDetail> {
@@ -1193,12 +954,6 @@ impl WorkspaceActivityPane {
             return false;
         };
         (start.min(end)..=start.max(end)).contains(&at)
-    }
-
-    /// The reviewable task associated with the selected history change.
-    /// Kept small and read-only for integration tests and future deep links.
-    pub fn selected_agent_task(&self) -> Option<&AgentRun> {
-        self.selected_agent_run().map(|indexed| &indexed.run)
     }
 
     fn agent_name(&self, run: &AgentRun) -> String {
@@ -1616,66 +1371,6 @@ impl WorkspaceActivityPane {
         }
     }
 
-    pub fn set_period(&mut self, period: Period) {
-        if self.period != period {
-            self.period = period;
-            self.reinstall_filter();
-        }
-    }
-
-    pub fn set_author_filter(&mut self, author: Option<String>) {
-        if self.author != author {
-            self.author = author;
-            self.reinstall_filter();
-        }
-    }
-
-    pub fn apply_deep_link(&mut self, focus: ActivityDeepLink) {
-        if let Some(author) = focus.author {
-            self.author = Some(author);
-        }
-        if let Some(group) = focus.group_id {
-            self.lens = LensSelection::WorkGroup(group);
-            self.view = ActivityView::Explore;
-        }
-        if let Some(raw) = focus.entry_id.or(focus.resource_version) {
-            let id = HistoryEntryId::from_bytes(raw);
-            if let Some(index) = self
-                .timeline
-                .entries()
-                .iter()
-                .position(|entry| entry.id == id)
-            {
-                self.timeline.set_selection(Some((index, index)));
-                self.view = ActivityView::Explore;
-            }
-        }
-        if let Some(resource) = focus.resource_id {
-            let matching = self.timeline.entries().iter().position(|entry| {
-                let context_match = entry.context.as_ref().is_some_and(|context| {
-                    context.resource.as_ref().is_some_and(|item| {
-                        item.id == resource
-                            || item.id.strip_prefix("file:") == Some(resource.as_str())
-                    })
-                });
-                let origin_match = self.projected_origins.get(&entry.id).is_some_and(|origin| {
-                    matches!(
-                        &origin.origin,
-                        super::index::HistoryOrigin::Record { id, .. }
-                            if id.as_str() == resource
-                    )
-                });
-                context_match || origin_match
-            });
-            self.lens = LensSelection::Resource(resource);
-            self.view = ActivityView::Explore;
-            if let Some(index) = matching {
-                self.timeline.set_selection(Some((index, index)));
-            }
-        }
-        self.reinstall_filter();
-    }
-
     /// Op-class chips and author typeahead are the widget's own, left alone.
     fn reinstall_filter(&mut self) {
         let prior_selection = self.selected_ids();
@@ -1737,7 +1432,6 @@ impl WorkspaceActivityPane {
         self.derived.clear();
         self.scoped_tree_rows.clear();
         self.projected_origins.clear();
-        self.external_entry = None;
         self.named.clear();
         self.timeline.set_named_ranges(Vec::new());
         self.replay_frames.clear();
@@ -1996,24 +1690,6 @@ impl WorkspaceActivityPane {
         self.install_rows(rows);
     }
 
-    /// Join the workspace's shell history with every locally available record in
-    /// that workspace. The projected id map keeps callbacks compact while every
-    /// authoritative operation can still resolve the originating document.
-    pub fn refresh_records(&mut self, tree: &mut impl ActivityTree, records: &RecordStore) {
-        self.refresh_records_inner(tree, records, None);
-    }
-
-    /// Production aggregation additionally reads validated, local record
-    /// documents which are not mounted in an app's live record store.
-    pub fn refresh_records_with_local(
-        &mut self,
-        tree: &mut impl ActivityTree,
-        records: &RecordStore,
-        local: &dyn super::index::PersistedRecordHistory,
-    ) {
-        self.refresh_records_inner(tree, records, Some(local));
-    }
-
     /// Refresh one coherent admission of detached, app-qualified record owners.
     pub fn refresh_detached_records(
         &mut self,
@@ -2063,6 +1739,27 @@ impl WorkspaceActivityPane {
         self.passive_rows.clone_from(&rows);
         self.passive_digest =
             ActivityDigest::from_entries_with_ranges(&rows, SystemTime::UNIX_EPOCH, 5, &self.named);
+        let away = self
+            .departures
+            .get(&tree.active.raw())
+            .cloned()
+            .filter(|departure| away_recap_is_due(departure.departed_at_secs, self.now()));
+        let away_rows = away.map_or_else(Vec::new, |departure| {
+            others_work(
+                self.history_index.unseen_detached(
+                    &departure.frontier,
+                    tree,
+                    &self.detached_records,
+                ),
+                &local,
+            )
+        });
+        self.away_digest = ActivityDigest::from_entries_with_ranges(
+            &away_rows,
+            SystemTime::UNIX_EPOCH,
+            5,
+            &self.named,
+        );
         let rows = others_work(
             self.history_index.unseen_detached(
                 &self.catchup_frontier,
@@ -2086,192 +1783,6 @@ impl WorkspaceActivityPane {
         clippy::too_many_lines,
         reason = "Refreshing records keeps persisted history, live tree state and replay boundaries in one coherent update."
     )]
-    fn refresh_records_inner<T: ActivityTree>(
-        &mut self,
-        tree: &mut T,
-        records: &RecordStore,
-        local: Option<&dyn super::index::PersistedRecordHistory>,
-    ) {
-        if tree.document().pending_ops() > 0 {
-            self.defer_pending_tree(tree);
-            return;
-        }
-        self.history_index
-            .set_authors(self.source.authors().clone());
-        let query = match self.scope {
-            WorkspaceScope::ThisWorkspace => tree
-                .active_workspace()
-                .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.id()))
-                .unwrap_or_default(),
-            WorkspaceScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
-                tree.workspaces
-                    .iter()
-                    .map(tilo_desktop_model::Workspace::id),
-            ),
-        };
-        let changed = if let Some(local) = local {
-            self.history_index
-                .refresh_with_workspace_entries_and_local_records(
-                    tree,
-                    records,
-                    local,
-                    query,
-                    &self.scoped_tree_rows,
-                )
-        } else {
-            self.history_index.refresh_with_workspace_entries(
-                tree,
-                records,
-                query,
-                &self.scoped_tree_rows,
-            )
-        };
-        if changed {
-            self.feed_coverage = self.history_index.coverage().clone();
-            self.projected_origins.clear();
-            let record_workspaces: HashMap<String, Vec<String>> =
-                tree.workspaces
-                    .iter()
-                    .fold(HashMap::new(), |mut labels, workspace| {
-                        if let Some(records) = tree.workspace_records_held.get(&workspace.id()) {
-                            for id in records.keys() {
-                                labels
-                                    .entry(id.clone())
-                                    .or_default()
-                                    .push(workspace.name.clone());
-                            }
-                        }
-                        labels
-                    });
-            let rows: Vec<HistoryEntry> = self
-                .history_index
-                .entries()
-                .iter()
-                .map(|row| {
-                    let mut projected = row.timeline_entry();
-                    if self.scope == WorkspaceScope::AllWorkspaces
-                        && let super::index::HistoryOrigin::Record { id, .. } = &row.id.origin
-                        && let Some(labels) = record_workspaces.get(id.as_str())
-                    {
-                        let label = labels.join(" + ");
-                        projected.summary = format!("{label} \u{00b7} {}", projected.summary);
-                        let mut context = projected.context.take().unwrap_or_default();
-                        context
-                            .facets
-                            .push(ui::tilo_actions::ActionFacet::new("workspace", label));
-                        projected.context = Some(context);
-                    }
-                    self.projected_origins.insert(projected.id, row.id.clone());
-                    projected
-                })
-                .collect();
-            self.install_rows(rows);
-            self.timeline
-                .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
-        }
-        self.refresh_agent_runs(tree, records, local);
-
-        let workspace = tree.active.raw();
-        let passive_frontier = self.passive_frontier(workspace);
-        let unseen = |frontier: &WorkspaceSeenFrontier, tree: &mut T| {
-            if let Some(local) = local {
-                self.history_index
-                    .unseen_with_local_records(frontier, tree, records, local)
-            } else {
-                self.history_index.unseen(frontier, tree, records)
-            }
-        };
-        let local_user = self.local_user();
-        let passive_rows = others_work(unseen(&passive_frontier, tree), &local_user);
-        self.passive_unread = passive_rows.len();
-        self.passive_rows.clone_from(&passive_rows);
-        self.passive_digest = ActivityDigest::from_entries_with_ranges(
-            &passive_rows,
-            SystemTime::UNIX_EPOCH,
-            5,
-            &self.named,
-        );
-        self.away_digest = self
-            .departures
-            .get(&workspace)
-            .cloned()
-            .filter(|departure| away_recap_is_due(departure.departed_at_secs, self.now()))
-            .map_or_else(ActivityDigest::default, |departure| {
-                let rows = others_work(unseen(&departure.frontier, tree), &local_user);
-                ActivityDigest::from_entries_with_ranges(
-                    &rows,
-                    SystemTime::UNIX_EPOCH,
-                    5,
-                    &self.named,
-                )
-            });
-        let catchup_rows = others_work(unseen(&self.catchup_frontier, tree), &local_user);
-        self.replace_digest(ActivityDigest::from_entries_with_ranges(
-            &catchup_rows,
-            SystemTime::UNIX_EPOCH,
-            super::index::MAX_FEED_ENTRIES,
-            &self.named,
-        ));
-        self.reset_narrative();
-    }
-
-    fn refresh_agent_runs(
-        &mut self,
-        tree: &impl ActivityTree,
-        records: &RecordStore,
-        local: Option<&dyn super::index::PersistedRecordHistory>,
-    ) {
-        self.open_agent_records = records
-            .open_records()
-            .into_iter()
-            .map(|checkout| checkout.id)
-            .collect();
-        let mut indexed = ui::read_runs(tree.document())
-            .into_iter()
-            .map(|run| IndexedAgentRun {
-                source_record: None,
-                run,
-            })
-            .collect::<Vec<_>>();
-
-        let workspaces: HashSet<_> = match self.scope {
-            WorkspaceScope::ThisWorkspace => tree
-                .active_workspace()
-                .map(|workspace| [workspace.id()].into_iter().collect())
-                .unwrap_or_default(),
-            WorkspaceScope::AllWorkspaces => tree
-                .workspaces
-                .iter()
-                .map(tilo_desktop_model::Workspace::id)
-                .collect(),
-        };
-        let record_ids: BTreeSet<RecordId> = workspaces
-            .into_iter()
-            .filter_map(|workspace| tree.workspace_records_held.get(&workspace))
-            .flat_map(|held| held.keys())
-            .filter_map(|id| RecordId::parse(id))
-            .collect();
-        self.cold_agent_runs.retain(|id, _| record_ids.contains(id));
-        for id in record_ids {
-            let runs = records
-                .read(&id, ui::read_runs)
-                .or_else(|| local.and_then(|source| self.cold_agent_runs_of(source, &id)))
-                .unwrap_or_default();
-            indexed.extend(runs.into_iter().map(|run| IndexedAgentRun {
-                source_record: Some(id.clone()),
-                run,
-            }));
-        }
-        indexed.compact_sort_by(|a, b| {
-            b.run
-                .at
-                .cmp(&a.run.at)
-                .then_with(|| a.run.id.cmp(&b.run.id))
-        });
-        indexed.dedup_by(|a, b| a.source_record == b.source_record && a.run.id == b.run.id);
-        self.agent_runs = indexed;
-    }
-
     /// The agent runs of every detached record the host admitted, and of the
     /// workspace tree itself, each naming the record it came from.
     fn refresh_detached_agent_runs(&mut self, tree: &impl ActivityTree) {
@@ -2313,46 +1824,10 @@ impl WorkspaceActivityPane {
         self.agent_runs = indexed;
     }
 
-    /// The agent runs persisted record `id` carries, read from `source` only
-    /// when its revision moved since the last read.
-    fn cold_agent_runs_of(
-        &mut self,
-        source: &dyn super::index::PersistedRecordHistory,
-        id: &RecordId,
-    ) -> Option<Vec<AgentRun>> {
-        let revision = source.revision(id);
-        if let Some(revision) = revision
-            && let Some(cached) = self.cold_agent_runs.get(id)
-            && cached.revision == revision
-        {
-            return Some(cached.runs.clone());
-        }
-        let runs = ui::read_runs(&source.load_record(id)?);
-        match revision {
-            Some(revision) => {
-                self.cold_agent_runs.insert(
-                    id.clone(),
-                    ColdAgentRuns {
-                        revision,
-                        runs: runs.clone(),
-                    },
-                );
-            }
-            None => {
-                self.cold_agent_runs.remove(id);
-            }
-        }
-        Some(runs)
-    }
-
     /// A host bounded the retained desktop document's history projection.
     /// Call after refreshing records, which rebuilds the other coverage counts.
     pub fn mark_desktop_history_capped(&mut self) {
         self.feed_coverage.capped_records = self.feed_coverage.capped_records.saturating_add(1);
-    }
-
-    pub fn feed_coverage(&self) -> &FeedCoverage {
-        &self.feed_coverage
     }
 
     fn install_rows(&mut self, mut rows: Vec<HistoryEntry>) {
@@ -2372,11 +1847,6 @@ impl WorkspaceActivityPane {
             })
             .cloned()
             .collect();
-        if let Some(entry) = self.external_entry.clone()
-            && !rows.iter().any(|candidate| candidate.id == entry.id)
-        {
-            rows.push(entry);
-        }
         self.total_entries = rows.len();
         self.facet_index = HistoryFacetIndex::from_entries(&rows);
         self.replace_digest(ActivityDigest::from_entries_with_ranges(
@@ -2443,10 +1913,6 @@ impl WorkspaceActivityPane {
         self.narrative_request = request;
     }
 
-    pub fn narrative_request(&self) -> Option<NarrativeRequest> {
-        self.narrative_request.clone()
-    }
-
     pub fn set_scope(&mut self, scope: WorkspaceScope, tree: &impl ActivityTree) {
         if tree.document().pending_ops() > 0 {
             self.defer_pending_tree(tree);
@@ -2459,10 +1925,6 @@ impl WorkspaceActivityPane {
             self.scope = scope;
             self.apply_scope(tree);
         }
-    }
-
-    pub fn scope(&self) -> WorkspaceScope {
-        self.scope
     }
 
     pub fn authors_mut(&mut self) -> &mut AuthorDirectory {
@@ -2707,12 +2169,6 @@ impl WorkspaceActivityPane {
         true
     }
 
-    /// Rewrite the document to the state at `id`, as a **new forward
-    /// change** — the versions rolled past stay in the graph.
-    pub fn revert_to(&mut self, tree: &mut impl ActivityTree, id: &HistoryEntryId) -> bool {
-        self.revert_to_with_records(tree, None, id)
-    }
-
     fn revert_to_with_records(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -2875,9 +2331,6 @@ impl WorkspaceActivityPane {
         self.last_heads.clear();
     }
 }
-
-/// The app the workspace's tasks live in.
-pub const TASKS_APP: &str = "so.tilo.tasks";
 
 fn handled_outcome() -> WorkspaceActivityOutcome {
     WorkspaceActivityOutcome {

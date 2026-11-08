@@ -5,6 +5,11 @@ mod native_history {
     //! the desk.
 
     use super::*;
+    #[allow(
+        unused_imports,
+        reason = "the store-backed history refresh is a method of this trait"
+    )]
+    use crate::activity::testing::StoreRecords as _;
     use crate::activity::testing::TestHost;
     use tilo_automerge::ApplyIncoming as _;
 
@@ -91,7 +96,7 @@ mod native_history {
         let (mut snapshot, _written, authors) = native_history();
         let mut pane = native_pane();
         crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
-        pane.set_view(ActivityView::Explore);
+        pane.view = ActivityView::Explore;
         pane.refresh(&mut snapshot);
 
         let rows: Vec<String> = pane
@@ -125,7 +130,7 @@ mod native_history {
         let (mut snapshot, written, authors) = native_history();
         let mut pane = native_pane();
         crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
-        pane.set_view(ActivityView::Explore);
+        pane.view = ActivityView::Explore;
         pane.refresh(&mut snapshot);
 
         // The rows are oldest first: the newest is Ada closing Notes, so the
