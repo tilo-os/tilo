@@ -38,6 +38,94 @@ async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
         .unwrap()
 }
 
+/// The node a test's relay runs as: device `seed` of `root`, certified with
+/// `capabilities`.
+struct Host {
+    key: SigningKey,
+    cert: DeviceCert,
+}
+
+fn host(root: &SigningKey, seed: u8, capabilities: DeviceCapabilities) -> Host {
+    let (key, cert) = device(root, seed, capabilities);
+    Host { key, cert }
+}
+
+impl Host {
+    /// What the relay presents as its host node.
+    fn identity(&self) -> crate::daemon::RelayIdentity {
+        crate::daemon::RelayIdentity {
+            user_public_key: self.cert.user_public_key,
+            device_signing_key: self.key.clone(),
+            device_cert: self.cert.clone(),
+            revocations: RevocationList::new(),
+        }
+    }
+}
+
+/// A relay keeping its state under `state`, identified as `identity`.
+async fn relay_at(
+    state: &tempfile::TempDir,
+    identity: crate::daemon::RelayIdentity,
+    config: RelayConfig,
+) -> Relay {
+    Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            ..config
+        },
+        identity,
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap()
+}
+
+/// The web `relay` serves its pages, with every door a test does not open
+/// closed.
+fn web_of(relay: &Relay, host: &Host) -> Web {
+    web_with(relay, host, Sessions::new(relay.web_context().clone()))
+}
+
+/// [`web_of`], answering the browser sessions `sessions`.
+fn web_with(relay: &Relay, host: &Host, sessions: Arc<Sessions>) -> Web {
+    Web {
+        sessions,
+        host_info: HostInfo {
+            host_cert: host.cert.clone(),
+            address: None,
+        },
+        allowed_origins: vec![],
+        features: 0,
+        workspaces: relay.workspaces().cloned(),
+        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        profiles: envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            relay.state_root().join("profiles"),
+        ),
+        here: Arc::new(here::Here::new(None)),
+        country: None,
+        fetch: None,
+        live: None,
+        page_errors: page_errors::PageErrors::default(),
+        shelf: shelf::Shelf::default(),
+    }
+}
+
+/// Serve `web` on a loopback port in plain HTTP, as a page reaches it.
+async fn serve_web(web: Arc<Web>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    (addr, tokio::spawn(plain_accept_loop(listener, web)))
+}
+
+/// Stop serving `serving` and shut `relay` down.
+async fn stop(relay: Relay, serving: tokio::task::JoinHandle<()>) {
+    serving.abort();
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
 async fn post(
     addr: SocketAddr,
     path: &str,
@@ -183,28 +271,14 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
 async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     let signer = SigningKey::from_bytes(&[71; 32]);
     // A workspace service's node, which takes part in its workspaces' channels.
-    let (host_key, host) = device(
+    let host = host(
         &signer,
         73,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let (owner_key, owner) = device(&signer, 74, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap();
     workspaces
@@ -212,33 +286,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         .await
         .unwrap();
 
-    let sessions = Sessions::new(relay.web_context().clone());
-    let web = Arc::new(Web {
-        sessions,
-        host_info: HostInfo {
-            host_cert: host.clone(),
-            address: None,
-        },
-        allowed_origins: vec![],
-        features: 0,
-        workspaces: relay.workspaces().cloned(),
-        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
-        profiles: envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
-            relay.state_root().join("profiles"),
-        ),
-        here: Arc::new(here::Here::new(None)),
-        country: None,
-        fetch: None,
-        live: None,
-        page_errors: page_errors::PageErrors::default(),
-        shelf: shelf::Shelf::default(),
-    });
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let serving = tokio::spawn(plain_accept_loop(listener, web));
+    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
     let token = browser(addr, &owner_key, &owner).await;
     let (code, body) = post(addr, "/channel-keys", Some(token), Vec::new()).await;
     assert_eq!(
@@ -248,8 +296,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         String::from_utf8_lossy(&body)
     );
 
-    serving.abort();
-    crate::daemon::Relay::shutdown(relay).await;
+    stop(relay, serving).await;
 }
 
 /// The public directory and its doors answer any site's page without
@@ -262,34 +309,27 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
 )]
 async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
     let root = SigningKey::from_bytes(&[121; 32]);
-    let (host_key, host) = device(
+    let host = host(
         &root,
         122,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
+    let relay = relay_at(
+        &state,
+        host.identity(),
         RelayConfig {
-            state_root: state.path().into(),
             max_workspace_grants: Some(1),
             ..Default::default()
         },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
     )
-    .await
-    .unwrap();
+    .await;
     let workspaces = relay.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     workspaces
         .publish(
             &workspace,
-            &host,
+            &host.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
                 default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
@@ -297,33 +337,7 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
         )
         .await
         .unwrap();
-    let sessions = Sessions::new(relay.web_context().clone());
-    let web = Arc::new(Web {
-        sessions,
-        host_info: HostInfo {
-            host_cert: host.clone(),
-            address: None,
-        },
-        allowed_origins: vec![],
-        features: 0,
-        workspaces: relay.workspaces().cloned(),
-        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
-        profiles: envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
-            relay.state_root().join("profiles"),
-        ),
-        here: Arc::new(here::Here::new(None)),
-        country: None,
-        fetch: None,
-        live: None,
-        page_errors: page_errors::PageErrors::default(),
-        shelf: shelf::Shelf::default(),
-    });
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let serving = tokio::spawn(plain_accept_loop(listener, web));
+    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
 
     // The directory, from a site the host never configured.
     let head = format!(
@@ -430,8 +444,7 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
     let (status, head, _) = exchange(addr, &head, b"not json").await;
     assert_eq!(status, 204, "{head}");
 
-    serving.abort();
-    crate::daemon::Relay::shutdown(relay).await;
+    stop(relay, serving).await;
 }
 
 /// The shelf answers a site's own `/i/<handle>`: an inviter leaves sealed
@@ -446,54 +459,14 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
 
     let root = SigningKey::from_bytes(&[131; 32]);
-    let (host_key, host) = device(
+    let host = host(
         &root,
         132,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    let sessions = Sessions::new(relay.web_context().clone());
-    let web = Arc::new(Web {
-        sessions,
-        host_info: HostInfo {
-            host_cert: host.clone(),
-            address: None,
-        },
-        allowed_origins: vec![],
-        features: 0,
-        workspaces: relay.workspaces().cloned(),
-        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
-        profiles: envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
-            relay.state_root().join("profiles"),
-        ),
-        here: Arc::new(here::Here::new(None)),
-        country: None,
-        fetch: None,
-        live: None,
-        page_errors: page_errors::PageErrors::default(),
-        shelf: shelf::Shelf::default(),
-    });
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let serving = tokio::spawn(plain_accept_loop(listener, web));
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
 
     let handle = "abcdefghijklmnop";
     let delete = "a".repeat(43);
@@ -593,8 +566,7 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
         String::from_utf8_lossy(&body)
     );
 
-    serving.abort();
-    crate::daemon::Relay::shutdown(relay).await;
+    stop(relay, serving).await;
 }
 
 /// A browser handshake the host turns away says why, in a body the device
@@ -603,7 +575,7 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
 #[tokio::test]
 async fn refused_handshakes_carry_their_typed_reason() {
     let root = SigningKey::from_bytes(&[101; 32]);
-    let (host_key, host) = device(&root, 102, DeviceCapabilities::host());
+    let host = host(&root, 102, DeviceCapabilities::host());
     let (_, member) = device(&root, 103, DeviceCapabilities::member());
     let (_, revoked) = device(&root, 104, DeviceCapabilities::member());
     let stranger_root = SigningKey::from_bytes(&[105; 32]);
@@ -619,22 +591,10 @@ async fn refused_handshakes_carry_their_typed_reason() {
     let mut revocations = RevocationList::new();
     revocations.insert(entry).unwrap();
     let state = tempfile::tempdir().unwrap();
+    let mut identity = host.identity();
+    identity.revocations = revocations;
     exercise_handshake_refusal_reasons(
-        Relay::start_with_relay_mode(
-            RelayConfig {
-                state_root: state.path().into(),
-                ..Default::default()
-            },
-            crate::daemon::RelayIdentity {
-                user_public_key: host.user_public_key,
-                device_signing_key: host_key,
-                device_cert: host,
-                revocations,
-            },
-            iroh::RelayMode::Disabled,
-        )
-        .await
-        .unwrap(),
+        relay_at(&state, identity, RelayConfig::default()).await,
         &member,
         &revoked,
         &stranger,
@@ -737,7 +697,7 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let signer = SigningKey::from_bytes(&[81; 32]);
     let watcher = SigningKey::from_bytes(&[82; 32]);
-    let (host_key, host) = device(
+    let host = host(
         &signer,
         83,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
@@ -747,21 +707,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let (watch_key, watch) = device(&watcher, 86, DeviceCapabilities::member());
     let (laptop_key, laptop) = device(&signer, 87, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
     let workspace = workspaces.create("Lounge").await.unwrap();
     workspaces
@@ -803,47 +749,25 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         .await
         .unwrap();
 
-    let sessions = Sessions::new(relay.web_context().clone());
-    let web = Arc::new(Web {
-        sessions,
-        host_info: HostInfo {
-            host_cert: host.clone(),
-            address: None,
-        },
-        allowed_origins: vec!["https://app.example".into()],
-        features: protocol::FEATURE_FETCH_PROXY,
-        workspaces: relay.workspaces().cloned(),
-        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
-        profiles: envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
-            relay.state_root().join("profiles"),
-        ),
-        here: Arc::new(here::Here::new(None)),
-        country: None,
-        // The target is on loopback, which a host's proxy never reaches; the
-        // refusal of its own network is `tilo_net`'s to test. The workspace may
-        // receive what the two answers below carry, together.
-        fetch: Some(
-            tilo_net::proxy::host::FetchProxy::new(tilo_net::proxy::host::Config {
-                destinations: tilo_net::proxy::host::Destinations::Any,
-                budgets: tilo_net::proxy::host::Budgets {
-                    visitor_bytes: None,
-                    room_bytes: Some(52),
-                    ..Default::default()
-                },
+    let mut web = web_of(&relay, &host);
+    web.allowed_origins = vec!["https://app.example".into()];
+    web.features = protocol::FEATURE_FETCH_PROXY;
+    // The target is on loopback, which a host's proxy never reaches; the
+    // refusal of its own network is `tilo_net`'s to test. The workspace may
+    // receive what the two answers below carry, together.
+    web.fetch = Some(
+        tilo_net::proxy::host::FetchProxy::new(tilo_net::proxy::host::Config {
+            destinations: tilo_net::proxy::host::Destinations::Any,
+            budgets: tilo_net::proxy::host::Budgets {
+                visitor_bytes: None,
+                room_bytes: Some(52),
                 ..Default::default()
-            })
-            .unwrap(),
-        ),
-        live: None,
-        page_errors: page_errors::PageErrors::default(),
-        shelf: shelf::Shelf::default(),
-    });
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let serving = tokio::spawn(plain_accept_loop(listener, web));
+            },
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let (addr, serving) = serve_web(Arc::new(web)).await;
     let owner_token = browser(addr, &owner_key, &owner).await;
     let visiting = browser(addr, &watch_key, &watch).await;
 
@@ -1014,8 +938,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let (_, head, _) = fetch(None, "https://other.example").await;
     assert_eq!(header_value(&head, "access-control-allow-origin"), None);
 
-    serving.abort();
-    crate::daemon::Relay::shutdown(relay).await;
+    stop(relay, serving).await;
 }
 
 /// The live plane a page joins: the relay's own WebTransport listener, a grant
@@ -1039,14 +962,15 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let signer = SigningKey::from_bytes(&[71; 32]);
     let outsider_root = SigningKey::from_bytes(&[72; 32]);
-    let (host_key, host) = device(&signer, 73, DeviceCapabilities::host());
+    let host = host(&signer, 73, DeviceCapabilities::host());
     let (member_key, member) = device(&signer, 74, DeviceCapabilities::member());
     let (outsider_key, outsider) = device(&outsider_root, 75, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
-    let relay = Relay::start_with_relay_mode(
+    let relay = relay_at(
+        &state,
+        host.identity(),
         RelayConfig {
-            state_root: state.path().into(),
             // A guest of the host who is not a member of the workspace still
             // opens a session: the route, not the handshake, keeps them out.
             trust_policy: crate::policy::TrustPolicy::AllowList {
@@ -1057,16 +981,8 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
             },
             ..Default::default()
         },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
     )
-    .await
-    .unwrap();
+    .await;
     let admit = |devices: Vec<[u8; 32]>| tilo_peer_state::GovernedAccess {
         member_user_roots: vec![signer.verifying_key().to_bytes()],
         member_devices: devices,
@@ -1126,33 +1042,9 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)
     );
     drop(published);
-    let web = Arc::new(Web {
-        sessions,
-        host_info: HostInfo {
-            host_cert: host.clone(),
-            address: None,
-        },
-        allowed_origins: vec![],
-        features: 0,
-        workspaces: relay.workspaces().cloned(),
-        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
-        profiles: envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
-            relay.state_root().join("profiles"),
-        ),
-        here: Arc::new(here::Here::new(None)),
-        country: None,
-        fetch: None,
-        live: Some(Arc::new(live)),
-        page_errors: page_errors::PageErrors::default(),
-        shelf: shelf::Shelf::default(),
-    });
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let serving = tokio::spawn(plain_accept_loop(listener, web.clone()));
-    drop(web);
+    let mut web = web_with(&relay, &host, sessions);
+    web.live = Some(Arc::new(live));
+    let (addr, serving) = serve_web(Arc::new(web)).await;
 
     let ask = |workspace_of: &str| {
         postcard::to_allocvec(&LiveRequest {
@@ -1259,6 +1151,5 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         403
     );
 
-    serving.abort();
-    crate::daemon::Relay::shutdown(relay).await;
+    stop(relay, serving).await;
 }
