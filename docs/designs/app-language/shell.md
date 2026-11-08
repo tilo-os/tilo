@@ -152,6 +152,21 @@ show any resource's view in a place (`place_view`). It never draws trusted surfa
 asks, sign-in and lock stay the system's (§1). Looks stay the theme's: a style names roles, never
 colours, so every theme reaches it.
 
+**Two ways to change a desk.**
+- **Without an agent.** A person picks a shipped style and adjusts it in Settings. The adjustments
+  are the style's own actions on its own record: today `so.tilo.shell`'s `Shell` type in
+  `chrome.tl` (`bar_on`, `set_bar_size`, `dock_on`, `set_dock_zoom`, `move_part`, `reset`, …).
+  The Desk page of Settings shows the chosen style's settings view, the same way it shows any
+  app's. A style an agent writes gets settings the same way: by declaring actions on its own
+  record. Nothing in Settings is per style.
+- **With an agent, in conversation.** The person asks the canvas chat for a change ("put the
+  calendar where the dock is", "a desk that shows what happened while I was away"). The agent
+  composes `so.tilo.shell`'s exported parts (bar, dock, notices, quick settings, places, window
+  frames), or writes new views, and installs the result as described below.
+  - **Make it mine** turns a shipped style into the person's own package: a copy of its source
+    in their workspace, installed under their own package id, with the same parts.
+  - The agent edits that copy. Updates to the shipped style never overwrite it.
+
 **Agents make styles with the same commands a person types.**
 1. The agent writes the package's files into the person's workspace.
 2. It checks them: `tilolang check`, also available as a session action.
