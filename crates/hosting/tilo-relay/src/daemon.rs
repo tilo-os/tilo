@@ -475,7 +475,13 @@ impl Relay {
             path: cfg.full_replica_status.clone(),
             clock: replica_clock,
         };
-        #[cfg_attr(not(feature = "web"), allow(unused_variables))]
+        #[cfg_attr(
+            not(feature = "web"),
+            allow(
+                unused_variables,
+                reason = "without the web listener no page is told how to reach the packet relay"
+            )
+        )]
         let (packet_relay, relay_mode, pages_reach) = match cfg.packet_relay {
             Some(addr) if endpoint.is_none() && relay_mode.is_none() => {
                 let (server, url) = spawn_packet_relay(addr).await?;
