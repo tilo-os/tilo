@@ -545,6 +545,27 @@ impl Conversations {
     }
 }
 
+/// The person a message's author names, when it names one: the participant key (`person:<root>`,
+/// what a conversation's fields keep) or the bare id a record write attributes its change to
+/// ([`ActionCx::author`](tilo_resource::action)). Both spell one person — the second is what Chat
+/// writes a message's author as — so a message a person posted summons its conversation's agent
+/// however it was written, and the run answers for the person it names.
+fn person_of(author: &str) -> Option<String> {
+    match chat::record::Participant::parse(author) {
+        Some(chat::record::Participant::Person(root)) if !root.is_empty() => return Some(root),
+        // A participant key naming an agent, or an empty person.
+        Some(chat::record::Participant::Person(_) | chat::record::Participant::Agent(_)) => {
+            return None;
+        }
+        None => {}
+    }
+    // A bare id: not a participant key at all, and no agent's either.
+    (!author.is_empty()
+        && !author.contains(':')
+        && !author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX))
+    .then(|| author.to_owned())
+}
+
 /// The turns `chat` 's conversations give, read from `part` 's messages, and the agents the
 /// conversations take in.
 /// A conversation the pass has no message for is none: a direct conversation exists only as the id
@@ -594,10 +615,7 @@ fn turns(
                 .copied()
                 .filter(|(message_id, message)| {
                     !message.text.trim().is_empty()
-                        && matches!(
-                            chat::record::Participant::parse(&message.author.0),
-                            Some(chat::record::Participant::Person(who)) if !who.is_empty()
-                        )
+                        && person_of(&message.author.0).is_some()
                         && part
                             .messages
                             .get(&chat::record::reply_id(message_id, &key))
@@ -621,9 +639,7 @@ fn turns(
             let Some((message_id, message)) = summons else {
                 continue;
             };
-            let Some(chat::record::Participant::Person(starter)) =
-                chat::record::Participant::parse(&message.author.0)
-            else {
+            let Some(starter) = person_of(&message.author.0) else {
                 continue;
             };
             // The conversation's address in the workspace, as the desk and the apps name it, and
@@ -726,6 +742,33 @@ mod tests {
         );
         assert_eq!(entry.looked, Looked::by(ME));
         assert!(entry.run.active);
+    }
+
+    /// A message Chat writes names its author by the bare id the record write
+    /// gives, not by the `person:<root>` key its conversation keeps: both spell
+    /// one person, so a message a person posts in Chat summons its agent as
+    /// surely as one written under the key.
+    #[test]
+    fn a_message_written_by_a_bare_person_id_is_a_turn_too() {
+        let bare = "22503e79b0b80274014ec6333d3561ca89cb3209937b901c4bc2e4bedccc2f85";
+        let chat = workspace();
+        let head = part(vec![("m1", message(bare, "what is on my task list?", 10))]);
+        let entries = read(&chat, &head);
+        let [entry] = entries.as_slice() else {
+            panic!("one turn, not {entries:?}");
+        };
+        assert_eq!(entry.run.agent, AGENT);
+        assert_eq!(entry.run.starter, bare, "the run acts for that person");
+        assert_eq!(entry.run.instruction, "what is on my task list?");
+        assert!(
+            entry.run.active,
+            "the person's message waits for its answer"
+        );
+        assert_eq!(
+            person_of("agent-task:22222222-2222-4222-8222-222222222222"),
+            None,
+            "an agent's message is no person's turn"
+        );
     }
 
     #[test]

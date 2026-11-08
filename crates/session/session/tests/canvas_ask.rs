@@ -192,6 +192,45 @@ fn the_ask_is_the_persons_own_step() {
     assert_eq!(verb, "place", "asking is one arranging step");
 }
 
+/// What the person asked gives the agent the workspace keeps a turn: the run the broker hands it,
+/// read from the same source the broker reads (shell.md §8.1). The turn is the person's message,
+/// with the agent's id and the conversation's address, so the agent answering is answering this ask.
+#[test]
+fn the_ask_gives_the_kept_agent_a_turn() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    let workspace = workspace(&session);
+    let runs = session.conversation_runs();
+
+    let turns = wait_for(&mut session, "the agent's turn", |_session| {
+        let turns = runs.runs(&workspace).ok()?;
+        (!turns.is_empty()).then_some(turns)
+    });
+    assert_eq!(turns.len(), 1, "one ask is one turn: {turns:?}");
+    let turn = &turns[0];
+    assert_eq!(turn.agent, AGENT, "the agent the ask made is the one");
+    assert_eq!(
+        turn.instruction, "what is on my task list?",
+        "the turn is what the person asked"
+    );
+    let (address, message) = turn
+        .issue
+        .rsplit_once("/messages/")
+        .expect("the issue names the conversation's message");
+    assert!(
+        address.starts_with("chat.workspace/channels/"),
+        "the turn is in the conversation Chat holds: {address}"
+    );
+    assert_eq!(
+        turn.turn.as_ref().map(|turn| turn.message.as_str()),
+        Some(message),
+        "the turn answers that message"
+    );
+    assert!(turn.active, "the person's message waits for its answer");
+}
+
 /// A second ask brings the conversation's place forward instead of standing a second place of it
 /// (`shell.md` §8.1).
 #[test]

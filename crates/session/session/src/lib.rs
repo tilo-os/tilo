@@ -2355,6 +2355,17 @@ impl Session {
         self.shared.conversations.chat(workspace)
     }
 
+    /// The turns this session hands the broker as `TrackerRuns`: what the pass derives from each
+    /// workspace's conversations, as the broker reads them to decide who runs what. A test asks what
+    /// the ask made the agent's turn be without a broker beside it, through the same source the
+    /// broker reads.
+    #[must_use]
+    pub fn conversation_runs(
+        &self,
+    ) -> std::sync::Arc<dyn tilo_action_broker::services::TrackerRuns> {
+        self.shared.conversations.runs()
+    }
+
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the
     /// same door the desk's own pane reads through.
     #[must_use]
