@@ -52,8 +52,8 @@ fn a_generated_app_goes_from_new_to_a_release_awaiting_review() {
     // A fixed directory, not a random one: the compiler cache keys every
     // unit by its working directory and build-script output paths, so a new
     // path each run would rebuild the whole graph uncached.
-    let parent = OutsideDir::create(std::env::temp_dir().join("tilo-outside-repo"));
-    let parent_path = parent.0.canonicalize().expect("canonical temp dir");
+    let parent = OutsideDir::create(&checkout);
+    let parent_path = parent.path.canonicalize().expect("canonical temp dir");
     assert!(
         !parent_path.starts_with(&checkout),
         "the temporary directory must be outside the checkout"
@@ -331,27 +331,41 @@ fn json_result(command: &mut Command, what: &str) -> serde_json::Value {
     document["result"].take()
 }
 
-/// A directory removed before use and when the test ends.
+/// The checkout's directory outside it, removed before use and when the test
+/// ends, held under an exclusive lock meanwhile.
+///
+/// It is `/tmp/tilo-outside-repo-<checkout hash>`, not under `$TMPDIR`: the
+/// test environment (tools/with-test-environment.sh) gives every run a new
+/// random `$TMPDIR`. The same checkout always gets the same directory, two
+/// checkouts on one machine get two, and the lock makes a second run of the
+/// same checkout wait instead of deleting the first one's project.
 #[cfg(test)]
-struct OutsideDir(PathBuf);
+struct OutsideDir {
+    path: PathBuf,
+    _lock: std::fs::File,
+}
 
 #[cfg(test)]
 impl OutsideDir {
-    fn create(path: PathBuf) -> Self {
+    fn create(checkout: &Path) -> Self {
+        let digest = blake3::hash(checkout.as_os_str().as_encoded_bytes()).to_hex();
+        let path = PathBuf::from(format!("/tmp/tilo-outside-repo-{}", &digest[..16]));
+        let lock = std::fs::File::create(path.with_extension("lock")).expect("lock file");
+        lock.lock().expect("lock the outside directory");
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => panic!("remove {}: {error}", path.display()),
         }
         std::fs::create_dir_all(&path).expect("outside directory");
-        Self(path)
+        Self { path, _lock: lock }
     }
 }
 
 #[cfg(test)]
 impl Drop for OutsideDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
