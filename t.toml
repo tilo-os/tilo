@@ -673,11 +673,20 @@ on = ["stable", "dispatch", "idle"]
 heavy = true
 
 [[check]]
+name = "real-fuse-mounts-build"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before copying: cargo fails with a broken pipe if its output\n# is closed while it is still writing build messages.\ncargo test --locked -p tilo-fs --test integration_test --test cloud_mount --bin fs --no-run --message-format json | python3 -c '\nimport json, os, shutil, sys\nnames = {\"integration_test\": \"tilo-fs-integration-test\", \"cloud_mount\": \"tilo-fs-cloud-mount\"}\nout = os.path.join(os.environ[\"CARGO_TARGET_DIR\"], \"vm\")\nfor message in map(json.loads, sys.stdin):\n    if message.get(\"reason\") == \"compiler-artifact\" and message.get(\"executable\") and message[\"target\"][\"name\"] in names:\n        shutil.copy(message[\"executable\"], os.path.join(out, names[message[\"target\"][\"name\"]]))\n'\n"
+requires = ["arch=x86_64"]
+outputs = ["/target/vm/tilo-fs-integration-test", "/target/vm/tilo-fs-cloud-mount", "/target/debug/fs"]
+on = ["stable", "dispatch", "idle"]
+heavy = true
+
+[[check]]
 name = "real-fuse-mounts"
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-fs --test integration_test -- --nocapture --test-threads=1\ncargo test --locked -p tilo-fs --test cloud_mount -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# The mount serves callers that switch to other uids, and the kernel only lets a namespace map\n# a uid range it holds a capability for; a nested check has no capability and maps its own uid\n# alone, so switching to another uid fails. The micro-VM runs the check as real root.\nset -eu\ncd crates/system/fs\n/target/vm/tilo-fs-integration-test --nocapture --test-threads=1\n/target/vm/tilo-fs-cloud-mount --nocapture --test-threads=1\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
-requires = ["/dev/fuse", "/dev/fuse"]
-isolation = "nested"
+needs = ["real-fuse-mounts-build"]
+requires = ["arch=x86_64"]
+isolation = "vm"
 on = ["stable", "dispatch", "idle"]
 heavy = true
 
