@@ -225,6 +225,9 @@ pub enum Resealed {
     Absent,
     /// It is under none of the keys: another identity's, left as it is.
     Foreign,
+    /// It named the old device itself, so no re-seal could make it this
+    /// device's: it was dropped, and is rebuilt from the device's peers.
+    Reset,
 }
 
 impl Resealed {
@@ -236,15 +239,22 @@ impl Resealed {
             Self::AlreadyNew => "already-new",
             Self::Absent => "absent",
             Self::Foreign => "foreign",
+            Self::Reset => "reset",
         }
     }
 
     /// The outcome `word` names.
     #[must_use]
     pub fn parse(word: &str) -> Option<Self> {
-        [Self::Moved, Self::AlreadyNew, Self::Absent, Self::Foreign]
-            .into_iter()
-            .find(|outcome| outcome.as_str() == word.trim())
+        [
+            Self::Moved,
+            Self::AlreadyNew,
+            Self::Absent,
+            Self::Foreign,
+            Self::Reset,
+        ]
+        .into_iter()
+        .find(|outcome| outcome.as_str() == word.trim())
     }
 }
 

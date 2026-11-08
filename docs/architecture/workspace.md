@@ -74,7 +74,10 @@ read anything, `tilo-device-branch.service` compares the two
 
 - the recorded machine: nothing happens;
 - nothing recorded (an install from before the record, or the first boot):
-  the machine is recorded, nothing else;
+  the machine is recorded, nothing else. A copy of a machine that never booted
+  a build with this unit cannot be told from its source this way, and both
+  keep the one key: **boot the source once on such a build before branching
+  it**;
 - no firmware UUID (some hardware, any container): never re-keyed
   automatically;
 - another machine: this disk is a branch, and it re-keys.
@@ -99,6 +102,27 @@ again, so a boot stopped anywhere resumes at the next one:
 5. The machine is recorded and the journal, with the old key, deleted. A store
    that could not be re-sealed keeps the journal until a later boot re-seals
    it; the device acts with its new key meanwhile.
+
+State that names the old device itself, rather than being sealed to its key,
+cannot be re-sealed into the new one's, so it is dropped and rebuilt from the
+device's peers:
+
+- **Channel membership.** Each MLS group the copy holds names the source's
+  device as its member. The relay's channel member files (sealed under a key
+  its device key derives) are dropped at re-key; a session's (sealed under the
+  person's own vault) are dropped where the channel service finds them naming
+  another device (`channel_crypto::Error::OtherDevice`). Neither is ever used,
+  so the branch takes no leaf of its source's and cannot act as it. The
+  branch then asks for each channel as itself, and a participant admits it
+  with a `Welcome` and the key history, as for any further device of a member.
+  The source stays the member it was.
+- **Workspace membership.** The workspaces on the copied desk are held as the
+  source's device: a workspace whose governance holds no certificate for this
+  device is entered at its host as the person's further device, and stays on
+  the desk meanwhile.
+- **The person's own store.** The store the source kept is set aside beside it
+  (`documents.of-<source>`), and the person's records come back from their
+  other devices.
 
 The old device is **never revoked**: the machine it was copied from still is
 it.

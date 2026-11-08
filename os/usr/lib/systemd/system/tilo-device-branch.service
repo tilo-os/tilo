@@ -32,8 +32,13 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/tilo/device-private /var/lib/tilo/device
 # The machine id and the SSH host keys a copy shares with its source.
 ReadWritePaths=/etc
-# Each person's Secret Service re-seals their vault, running as them.
+# Each person's Secret Service re-seals their vault, running as them, in
+# their home.
 ProtectHome=no
+ReadWritePaths=-/home -/var/home
+# The relay's channel state names the old device and is dropped; it is the
+# relay account's, so removing it takes overriding its directories' modes.
+ReadWritePaths=-/var/lib/tilo-relay
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -46,7 +51,7 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE
 AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

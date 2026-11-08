@@ -344,6 +344,9 @@ pub(crate) struct ToEnter {
     pub(crate) name: String,
     /// The device hosting it.
     pub(crate) host: [u8; 32],
+    /// On this desk already, held as the device this machine was copied
+    /// from: it is entered as this device without leaving the desk.
+    pub(crate) held: bool,
 }
 
 /// What bringing the list onto this device's desk asks of the session.
@@ -831,7 +834,16 @@ impl Personal {
     /// A listed workspace is entered only at a host the list names: a device
     /// must never guess where someone's workspace lives, so an entry naming
     /// none is left until one lists it. This device enters nothing at itself.
-    pub(crate) fn adopt_into(&mut self, handle: &DesktopHandle) -> Adoption {
+    ///
+    /// A workspace on this desk whose governance does not know this device
+    /// (`unknown_here`) is one a machine copied from another holds as the
+    /// device it was copied from: it is entered as this device, at the device
+    /// hosting it, and stays on the desk meanwhile.
+    pub(crate) fn adopt_into(
+        &mut self,
+        handle: &DesktopHandle,
+        unknown_here: &dyn Fn(WorkspaceId) -> bool,
+    ) -> Adoption {
         let entries = entries_of(&self.directory);
         let mut adoption = Adoption::default();
         let present: Vec<WorkspaceId> =
@@ -851,8 +863,19 @@ impl Personal {
                 name: meta.name.clone(),
                 host: meta.host_devices.first().copied(),
             };
-            // On this desk already: nothing to enter.
+            // On this desk already: nothing to enter, unless it is held as
+            // the device this machine was copied from.
             if present.contains(workspace) {
+                if let Some(host) = entry.host.filter(|host| *host != self.device)
+                    && unknown_here(*workspace)
+                {
+                    adoption.enter.push(ToEnter {
+                        workspace: *workspace,
+                        name: entry.name.clone(),
+                        host,
+                        held: true,
+                    });
+                }
                 self.agreed.insert(*workspace, entry);
                 continue;
             }
@@ -863,6 +886,7 @@ impl Personal {
                 workspace: *workspace,
                 name: entry.name.clone(),
                 host,
+                held: false,
             });
             self.entering.insert(*workspace);
             self.agreed.insert(*workspace, entry);
@@ -1490,7 +1514,24 @@ impl crate::Shared {
                 personal.asked.clear();
                 behind = true;
             }
-            let adoption = personal.adopt_into(&self.handle);
+            // A workspace whose governance holds no certificate of this
+            // device's is held as the device this machine was copied from.
+            let device = personal.device;
+            let unknown_here = |workspace: WorkspaceId| {
+                self.engine.as_ref().is_some_and(|engine| {
+                    engine
+                        .owner()
+                        .with_current(workspace, |view| {
+                            Ok(!view
+                                .peer()
+                                .certificates()
+                                .iter()
+                                .any(|cert| cert.device_public_key == device))
+                        })
+                        .unwrap_or(false)
+                })
+            };
+            let adoption = personal.adopt_into(&self.handle, &unknown_here);
             for opened in adoption.enter {
                 self.enter_listed(&mut personal, &opened);
             }
@@ -1544,7 +1585,9 @@ impl crate::Shared {
         personal
             .asked
             .insert(opened.workspace, entering.host.clone());
-        engine.bind(entering.slot, entering.workspace_id);
+        if !opened.held {
+            engine.bind(entering.slot, entering.workspace_id);
+        }
         tracing::info!(
             target: JOIN_FLOW_TARGET,
             %workspace,
@@ -1555,9 +1598,12 @@ impl crate::Shared {
         match sync.enter(entering) {
             Ok(()) => {}
             Err(error) => {
-                engine.unbind(tilo_desktop_model::WorkspaceSlot::of_workspace(
-                    opened.workspace,
-                ));
+                // A workspace this desk held stays on it as it was.
+                if !opened.held {
+                    engine.unbind(tilo_desktop_model::WorkspaceSlot::of_workspace(
+                        opened.workspace,
+                    ));
+                }
                 tracing::warn!(%error, %workspace, "the person's workspace was not entered");
             }
         }
@@ -1891,24 +1937,40 @@ mod tests {
             )
             .expect("the person's own device's list is taken");
 
-        let adoption = b_list.adopt_into(&b);
+        let adoption = b_list.adopt_into(&b, &|_| false);
         assert_eq!(
             adoption.enter,
             vec![ToEnter {
                 workspace: a_id,
                 name: a_name.clone(),
                 host: a_device,
+                held: false,
             }],
             "the workspace made on their other device opens here"
         );
 
         // What the session does with it: the desk makes the workspace.
         open_here(&b, a_id, &a_name);
-        let again = b_list.adopt_into(&b);
+        let again = b_list.adopt_into(&b, &|_| false);
         assert!(
             again.enter.is_empty(),
             "a workspace now here is not opened again"
         );
+        // A machine copied from this one holds it on its desk as the device
+        // it was copied from: it is entered as this device, at its host, and
+        // stays on the desk.
+        let copied = b_list.adopt_into(&b, &|workspace| workspace == a_id);
+        assert_eq!(
+            copied.enter,
+            vec![ToEnter {
+                workspace: a_id,
+                name: a_name,
+                host: a_device,
+                held: true,
+            }]
+        );
+        assert!(copied.release.is_empty());
+        assert!(on_desk(&b).iter().any(|(id, _)| *id == a_id));
         b_list.publish_local(&b);
         assert_eq!(
             listed(&b_list, a_id).map(|listed| listed.host),
@@ -2030,7 +2092,7 @@ mod tests {
                 tilo_clock::unix_now_ns(),
             )
             .expect("the person's list");
-        let adoption = b_list.adopt_into(&b);
+        let adoption = b_list.adopt_into(&b, &|_| false);
         for opened in &adoption.enter {
             open_here(&b, opened.workspace, &opened.name);
         }
@@ -2052,7 +2114,7 @@ mod tests {
                 tilo_clock::unix_now_ns(),
             )
             .expect("the person's list");
-        let adoption = b_list.adopt_into(&b);
+        let adoption = b_list.adopt_into(&b, &|_| false);
         assert_eq!(
             adoption.release,
             vec![other],
@@ -2095,7 +2157,7 @@ mod tests {
                 tilo_clock::unix_now_ns(),
             )
             .expect("the person's list");
-        for opened in b_list.adopt_into(&b).enter {
+        for opened in b_list.adopt_into(&b, &|_| false).enter {
             open_here(&b, opened.workspace, &opened.name);
         }
         b_list.publish_local(&b);
@@ -2137,7 +2199,7 @@ mod tests {
                 tilo_clock::unix_now_ns(),
             )
             .expect("the person's list");
-        let adoption = b_list.adopt_into(&b);
+        let adoption = b_list.adopt_into(&b, &|_| false);
         assert_eq!(
             adoption.release,
             vec![a_id],
@@ -2147,7 +2209,7 @@ mod tests {
         tree.workspaces.retain(|workspace| workspace.id() != a_id);
         b.replace_tree(tree);
         assert!(
-            b_list.adopt_into(&b).enter.is_empty(),
+            b_list.adopt_into(&b, &|_| false).enter.is_empty(),
             "and a desk without it does not open it again"
         );
         assert!(
@@ -2187,6 +2249,7 @@ mod tests {
             workspace,
             name: "Notes".into(),
             host,
+            held: false,
         }
     }
 

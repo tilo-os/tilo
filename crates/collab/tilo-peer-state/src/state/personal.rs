@@ -868,6 +868,20 @@ impl PersonalStore {
         postcard::to_allocvec(&durable).map_err(err)
     }
 
+    /// The device that kept the store `bytes` holds, when they are a store
+    /// this build reads.
+    #[must_use]
+    pub fn kept_by(bytes: &[u8]) -> Option<[u8; 32]> {
+        // ignored-failure: bytes this build cannot read name no device; `restore` reports why
+        postcard::from_bytes::<Durable>(bytes)
+            .map(|durable| durable.device.device_public_key)
+            .or_else(|_| {
+                postcard::from_bytes::<DurablePlain>(bytes)
+                    .map(|plain| plain.device.device_public_key)
+            })
+            .ok()
+    }
+
     /// Open the store `bytes` holds, as `device`, which must be the device
     /// that kept them.
     ///

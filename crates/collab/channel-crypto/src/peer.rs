@@ -446,9 +446,7 @@ impl ChannelPeer {
             MemberRecord::Removed => None,
         };
         if owner.is_some_and(|owner| owner != device.as_bytes()) {
-            return Err(Error::InvalidState(
-                "peer state belongs to another device".into(),
-            ));
+            return Err(Error::OtherDevice);
         }
         Ok(Self {
             channel,
