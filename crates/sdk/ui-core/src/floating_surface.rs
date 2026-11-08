@@ -120,58 +120,6 @@ pub fn paint_material(
     crate::backdrop::fill(scene, transform, shape, material, theme);
 }
 
-/// The native allocation around retained interactive content, including the
-/// floating card's frame, its edge and the themed elevation. Content
-/// geometry stays unchanged: the extra pixels are a transparent frame gutter,
-/// not padding inserted into the app's layout or input coordinates.
-#[must_use]
-pub fn app_owned_content_window_rect(
-    content_rect: Rect,
-    shadow: &crate::tokens::Shadow,
-    rim_width: f64,
-) -> Rect {
-    let frame = content_rect.inflate(rim_width / 2.0, rim_width / 2.0);
-    crate::surface::shadow_bounds(content_rect, shadow).map_or(frame, |bounds| frame.union(bounds))
-}
-
-/// Paint the framework-owned frame around one interactive app-owned surface
-/// (an app's call or navigation card).
-///
-/// The frame is the one floating card
-/// ([`crate::widget::floating_surface::paint_card`]): its shape, shadow and
-/// edges, the same as a banner's or the palette's. Retained app content
-/// stands on the ordinary opaque Object ground inside it, not a translucent
-/// Panel material. The card's shape clips every app paint, and its edge is
-/// drawn last so square app backgrounds cannot erase the frame. The native
-/// allocation remains transparent outside the card and its shadow; hosts
-/// allocate it with [`app_owned_content_window_rect`].
-pub fn paint_app_owned_content(
-    scene: &mut vello::Scene,
-    transform: Affine,
-    content_rect: Rect,
-    theme: &crate::theme::Theme,
-    draw: impl FnOnce(&mut vello::Scene) -> bool,
-) -> bool {
-    use crate::widget::floating_surface as card;
-    use vello::kurbo::RoundedRect;
-    use vello::peniko::{BlendMode, Fill};
-
-    card::paint_card_shadow(scene, transform, content_rect, 1.0, theme);
-    card::paint_card_body_with(
-        scene,
-        transform,
-        content_rect,
-        theme.tokens.colors.surfaces.content,
-        theme,
-    );
-    let body = RoundedRect::from_rect(content_rect, card::card_radius(content_rect, theme));
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
-    let drawn = draw(scene);
-    scene.pop_layer();
-    card::paint_card_edge(scene, transform, content_rect, theme);
-    drawn
-}
-
 /// The app ↔ shell interface's one version: everything an app and the
 /// session shell say on the shell-ui connection (floating-surface
 /// lifecycle, the window's appearance, tabs, selection). The app's first
@@ -186,7 +134,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 25;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 26;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 mod wire;

@@ -18,7 +18,7 @@ use ui::floating_surface::{Recipient, RecipientKind};
 use crate::Shared;
 
 /// The app that keeps a workspace's conversations.
-const CHAT: &str = "so.tilo.chat";
+pub(crate) const CHAT: &str = "so.tilo.chat";
 
 /// The resource Chat publishes a workspace's conversations under.
 const CHAT_WORKSPACE: &str = "chat.workspace";
@@ -30,7 +30,8 @@ impl Shared {
     /// Send what a window's box holds: an agent named as a new one is made in
     /// the workspace and kept by this person, and the message reaches Chat as
     /// one action — `chat.workspace#send` — so one change carries every
-    /// recipient, what it is about and the words.
+    /// recipient, what it is about and the words. A report is filed where it
+    /// goes, and nothing opens over the window it is about.
     ///
     /// # Errors
     /// The workspace is not open here, an agent could not be made or admitted,
@@ -42,7 +43,6 @@ impl Shared {
         to: &[Recipient],
         attached: &[tilo_reference::Attached],
         text: &str,
-        bounds: Option<[f64; 4]>,
     ) -> Result<(), String> {
         let text = text.trim();
         if text.is_empty() && attached.is_empty() {
@@ -51,7 +51,7 @@ impl Shared {
         let (workspace, target) = match addressed(self.feedback.as_ref(), workspace, to)? {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to)?;
-                let target = send_target(&workspace, &resolved, attached, text, bounds)?;
+                let target = send_target(&workspace, &resolved, attached, text)?;
                 (workspace, target)
             }
             // A report is read where it lands, not floated over the window it was written over: it
@@ -198,15 +198,17 @@ fn report_target(
     )))
 }
 
-/// The one action a send is: Chat's `send` in `workspace` , carrying whom the message goes to, what
-/// it carries and its words. Everything else a send does — making an agent, opening where the
-/// message landed — is Chat's part of that same action, never a second invocation.
+/// The one action a send is: Chat's `send` in `workspace`, carrying whom the
+/// message goes to, what it carries and its words. Everything else a send
+/// does — making an agent, opening where the message landed — is Chat's part
+/// of that same action, never a second invocation, and where the window that
+/// sent it stands is this desk's own: the session opens the conversation
+/// there, from what the action answers.
 fn send_target(
     workspace: &str,
     to: &[Recipient],
     attached: &[tilo_reference::Attached],
     text: &str,
-    bounds: Option<[f64; 4]>,
 ) -> Result<Target, String> {
     let to = serde_json::to_value(to).map_err(|error| error.to_string())?;
     let attached = serde_json::to_value(attached).map_err(|error| error.to_string())?;
@@ -214,8 +216,7 @@ fn send_target(
         InvokeTarget::action(CHAT, workspace, CHAT_WORKSPACE, SEND)
             .with_argument("to", to)
             .with_argument("attached", attached)
-            .with_argument("text", text)
-            .with_argument("bounds", bounds),
+            .with_argument("text", text),
     )))
 }
 
@@ -240,7 +241,6 @@ mod tests {
             std::slice::from_ref(&ada),
             std::slice::from_ref(&carried),
             "look",
-            Some([210.0, 120.0, 530.0, 380.0]),
         )
         .expect("a send builds") else {
             panic!("a send invokes the chat");
@@ -261,8 +261,8 @@ mod tests {
         assert_eq!(attached, [carried]);
         assert_eq!(
             target.arguments.get("bounds"),
-            Some(&serde_json::json!([210.0, 120.0, 530.0, 380.0])),
-            "the box's place goes with it, so the conversation opens there"
+            None,
+            "where the box stood is the desk's to place the conversation by, not the chat's"
         );
     }
     /// A report's chip is the one place this computer sends reports: one send

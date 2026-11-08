@@ -25,7 +25,7 @@ use crate::widget::Widget as _;
 
 /// The size a window takes when it floats: the design's floating window,
 /// smaller than the strip's tile so it reads as lifted over the desk.
-pub(crate) const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
+pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
 /// The pointer's room above a floating window's bar where it is let go: the
 /// window hangs below and right of the hand, as a carried window does.
 const FLOAT_GRAB: (f64, f64) = (80.0, 14.0);

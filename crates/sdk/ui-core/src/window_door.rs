@@ -32,6 +32,12 @@ pub struct WindowRequest {
     /// collaboration one, when both are).
     #[serde(default)]
     pub shell_ui: bool,
+    /// The item the shell opened this window on, as the resource that names
+    /// it: what a window asked for by a launch that named nothing opens,
+    /// where the launch that made the process could not have said which
+    /// window it was for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<String>,
 }
 
 #[cfg(feature = "local-daemons")]
@@ -106,6 +112,21 @@ pub fn requested_instance() -> Option<u64> {
     #[cfg(feature = "local-daemons")]
     {
         transport::instance()
+    }
+    #[cfg(not(feature = "local-daemons"))]
+    {
+        None
+    }
+}
+
+/// The item the shell opened the window being built on, while one is: the
+/// resource the window shows once it is up. `None` for the process's first
+/// window, whose launch said what it opens.
+#[must_use]
+pub fn requested_reveal() -> Option<String> {
+    #[cfg(feature = "local-daemons")]
+    {
+        transport::requested_reveal()
     }
     #[cfg(not(feature = "local-daemons"))]
     {
@@ -360,6 +381,16 @@ mod transport {
         build()
     }
 
+    /// The item the window being built for a request opened on, if one is.
+    #[must_use]
+    pub fn requested_reveal() -> Option<String> {
+        BUILDING.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|opening| opening.request.reveal.clone())
+        })
+    }
+
     /// The instance of the window being built for a request, if one is.
     #[must_use]
     pub fn instance() -> Option<u64> {
@@ -428,6 +459,7 @@ mod transport {
                 instance: 41,
                 collaboration: true,
                 shell_ui: true,
+                reveal: Some("chat/channels/c_ada".into()),
             };
             send(&shell, &request, Some(&collaboration), Some(&shell_ui)).unwrap();
             let opening = receive(&app).unwrap().unwrap();
@@ -438,6 +470,7 @@ mod transport {
                 instance: 42,
                 collaboration: false,
                 shell_ui: false,
+                reveal: None,
             };
             send(&shell, &bare, None, None).unwrap();
             let opening = receive(&app).unwrap().unwrap();
@@ -454,6 +487,7 @@ mod transport {
                 instance: 1,
                 collaboration: true,
                 shell_ui: false,
+                reveal: None,
             };
             assert!(send(&shell, &request, None, None).is_err());
             runtime_portal::windows::send_open(&shell, &serde_json::to_vec(&request).unwrap(), &[])
@@ -471,6 +505,7 @@ mod transport {
                     instance: 9,
                     collaboration: true,
                     shell_ui: false,
+                    reveal: Some("chat/channels/c_ada".into()),
                 },
                 collaboration: connection(),
                 shell_ui: None,
@@ -479,14 +514,21 @@ mod transport {
             };
             let carried = opening.collaboration.is_some();
             assert_eq!(instance(), None);
+            assert_eq!(requested_reveal(), None);
             building(opening, || {
                 assert_eq!(instance(), Some(9));
+                assert_eq!(
+                    requested_reveal().as_deref(),
+                    Some("chat/channels/c_ada"),
+                    "the window opens on the item the shell named"
+                );
                 assert!(is_building());
                 assert_eq!(take_collaboration().is_some(), carried);
                 assert!(take_collaboration().is_none(), "taken once");
                 assert!(take_shell_ui().is_none());
             });
             assert_eq!(instance(), None);
+            assert_eq!(requested_reveal(), None);
             assert!(!is_building());
         }
     }

@@ -695,7 +695,7 @@ impl Moves {
         });
         let started = shared.launch.as_deref().is_some_and(|apps| {
             let workspace = apps.workspace_named(&crossing.to_id);
-            match apps.start_beside(&launch, &workspace, Some(crossing.tab)) {
+            match apps.start_beside(&launch, &workspace, Some(crossing.tab), None) {
                 Ok(()) => true,
                 Err(error) => {
                     tracing::warn!(

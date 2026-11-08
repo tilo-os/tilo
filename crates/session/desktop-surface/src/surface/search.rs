@@ -1299,7 +1299,7 @@ impl DesktopSurface {
             // window's new tab instead.
             Target::Launch { app, .. } => Some(
                 navigation::window_of_app(&shared.tree, &app)
-                    .map_or(Admitted::Launch(app), Admitted::Select),
+                    .map_or(Admitted::Launch(app, None), Admitted::Select),
             ),
             Target::Window { tab, .. } => route_of(&shared.tree, tab).map(Admitted::Select),
             Target::Command { id } => {

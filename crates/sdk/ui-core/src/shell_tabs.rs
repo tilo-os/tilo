@@ -47,6 +47,10 @@ pub enum TabRequest {
     /// For a window the app starts itself (a process it spawned), where the
     /// shell launches nothing.
     PlaceNextWindowBeside { background: bool },
+    /// Open another window of this app as a window of the desk, floating
+    /// over it where this window's send-to box last sent from, showing
+    /// `anchor`: the item that send landed in.
+    OpenFloated { anchor: String },
 }
 
 impl TabRequest {
@@ -71,6 +75,7 @@ impl TabRequest {
                 background,
                 instance,
             },
+            Self::OpenFloated { anchor } => Message::OpenFloated { anchor, instance },
         }
     }
 }
@@ -111,6 +116,13 @@ pub fn reopen_closed() {
 /// Place the next window this app maps as a tab right after this one.
 pub fn place_next_window_beside(background: bool) {
     push(TabRequest::PlaceNextWindowBeside { background });
+}
+
+/// Ask the desk for another window of this app, floating where this window's
+/// send-to box last sent from, showing `anchor`: the item that send landed
+/// in.
+pub fn open_floated(anchor: String) {
+    push(TabRequest::OpenFloated { anchor });
 }
 
 /// Every request queued on this thread, oldest first.
@@ -232,6 +244,7 @@ mod tests {
         close_this();
         reopen_closed();
         place_next_window_beside(false);
+        open_floated("chat.channels:1".into());
         assert_eq!(
             take_requests(),
             vec![
@@ -242,6 +255,9 @@ mod tests {
                 TabRequest::CloseThis,
                 TabRequest::ReopenClosed,
                 TabRequest::PlaceNextWindowBeside { background: false },
+                TabRequest::OpenFloated {
+                    anchor: "chat.channels:1".into()
+                },
             ]
         );
         for _ in 0..(MAX_PENDING * 2) {

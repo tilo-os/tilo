@@ -417,14 +417,6 @@ impl DraftComposer {
     pub fn private_plain(&self) -> Option<String> {
         self.host.widget().source().private_plain()
     }
-
-    pub(crate) fn share_private_store_from(&mut self, other: &Self) {
-        let private = other.host.widget().source().private.clone();
-        let private_selection = other.host.widget().source().private_selection.clone();
-        let source = self.host.widget_mut().source_mut();
-        source.private = private;
-        source.private_selection = private_selection;
-    }
 }
 
 impl MessageEditor {

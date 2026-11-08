@@ -432,7 +432,7 @@ impl Apps {
             let context = request.context.clone();
             let started = self.starting_tool(context.as_deref(), || {
                 if matches!(request.place, LaunchPlace::Beside { .. }) {
-                    self.start_beside(&request.launch, &workspace, None)
+                    self.start_beside(&request.launch, &workspace, None, None)
                 } else {
                     self.start(&request.launch, &workspace)
                 }
@@ -549,12 +549,13 @@ impl Apps {
         match self.starting(launch, workspace, instance) {
             Beginning::Raised => Ok(false),
             Beginning::Start { new_window } => {
-                self.start_window(launch, workspace, new_window, instance)
+                self.start_window(launch, workspace, new_window, instance, None)
             }
             Beginning::StartIn { tab } => {
-                let started = self.start_window(launch, workspace, false, Some(tab));
-                // The desk's own tab for this launch holds the place of the window that now fills
-                // the tab a saved window waited in: it goes, so the app is not left showing twice.
+                let started = self.start_window(launch, workspace, false, Some(tab), None);
+                // The desk's own tab for this launch holds the place of the
+                // window that now fills the tab a saved window waited in: it
+                // goes, so the app is not left showing twice.
                 if started.is_ok()
                     && let Some(theirs) = instance
                     && theirs != tab
@@ -778,7 +779,7 @@ impl Apps {
                     // A tab of the window in front is the desk's to arrange: the session opens the
                     // app the way it opens, and the desk puts the tab where the person asked.
                     OpenPlace::Focus | OpenPlace::TabHere => self.start(&launch, &workspace),
-                    OpenPlace::Beside => self.start_beside(&launch, &workspace, None),
+                    OpenPlace::Beside => self.start_beside(&launch, &workspace, None, None),
                 }
             }
             _ => self.deliver(target, arguments, &workspace),
@@ -795,7 +796,8 @@ impl Apps {
 
     /// Start `launch` as a window of its own, beside the tab its app already has: what
     /// the app's own ask for another window does. `instance` is the tab the window
-    /// takes, which the app is told.
+    /// takes, which the app is told, and `reveal` the item it opens on, when the
+    /// launch names none: the conversation a send landed in.
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
     pub fn start_beside(
@@ -803,8 +805,9 @@ impl Apps {
         launch: &Launch,
         workspace: &Workspace,
         instance: Option<u64>,
+        reveal: Option<&str>,
     ) -> Result<(), DoorError> {
-        self.start_window(launch, workspace, true, instance)
+        self.start_window(launch, workspace, true, instance, reveal)
             .map(|_| ())
     }
 
@@ -946,6 +949,7 @@ impl Apps {
         workspace: &Workspace,
         new_window: bool,
         instance: Option<u64>,
+        reveal: Option<&str>,
     ) -> Result<bool, DoorError> {
         let authored = self.authored(launch, workspace);
         let workspace = &authored;
@@ -1000,7 +1004,8 @@ impl Apps {
         let routable =
             planned.kind == Kind::Package && matches!(launch, Launch::Package { open: None, .. });
         let alone = self.start_alone(&planned, &asked, &workspace.id);
-        let reserved = doors.route_or_reserve(&planned.app, &workspace.id, routable, &alone);
+        let reserved =
+            doors.route_or_reserve(&planned.app, &workspace.id, routable, reveal, &alone);
         let reservation = match reserved {
             // The process running the app opens this window itself: nothing starts.
             Err(Routed::Opened) => {

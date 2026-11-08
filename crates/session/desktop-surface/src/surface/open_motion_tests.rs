@@ -85,6 +85,7 @@ impl Desk {
                 app: app.into(),
                 beside: None,
                 background: None,
+                float: None,
             })
             .unwrap();
         self.frames(60);

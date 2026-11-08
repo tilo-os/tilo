@@ -585,6 +585,7 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
         app: "host:org.example.Probe.desktop".into(),
         beside: None,
         background: None,
+        float: None,
     };
     policy.handle().dispatch(launch).unwrap();
     settle(&mut driver);
@@ -614,6 +615,7 @@ fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
         app: "so.tilo.notes".into(),
         beside: None,
         background: None,
+        float: None,
     };
     policy.handle().dispatch(launch).unwrap();
     settle(&mut driver);
@@ -647,6 +649,61 @@ fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
 }
 
 #[test]
+fn a_conversation_opens_floated_where_its_box_stood() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 1, "so.tilo.chat");
+    let content = policy
+        .content_rect(window_tab(&policy, 1))
+        .expect("the chat window's content stands on the desk");
+    let at = [
+        content.x0 + 40.0,
+        content.y0 + 120.0,
+        content.x0 + 520.0,
+        content.y0 + 480.0,
+    ];
+    assert!(
+        policy.open_floated("so.tilo.chat", at),
+        "the desk takes the float"
+    );
+    settle(&mut driver);
+
+    assert!(
+        policy.take_launches().is_empty(),
+        "the session starts the window the send landed in; the desk only holds its place"
+    );
+    let tab = tabs(&policy)
+        .into_iter()
+        .find(|(_, tile)| matches!(tile, TileContent::AppPlaceholder { .. }))
+        .map(|(tab, _)| tab)
+        .expect("the desk holds the tab the conversation's window takes");
+    let groups = groups(&policy);
+    let (group, _, active) = groups
+        .iter()
+        .find(|(_, tabs, _)| tabs.contains(&tab))
+        .expect("the floated tab sits in a group");
+    assert_eq!(*active, tab, "the conversation is the tab in front");
+    let float = policy
+        .handle()
+        .read(|tree| tree.workspaces.first()?.arrangement.float_of(*group))
+        .expect("the desk keeps where the conversation stands");
+    assert_eq!(
+        (float.width, float.height),
+        (480, 360),
+        "the size the box asked for"
+    );
+
+    // The session gives the place up when nothing came to fill it: the tab
+    // goes, and the window it was held for has nowhere to land.
+    policy.release_held("so.tilo.chat");
+    settle(&mut driver);
+    assert_eq!(
+        tabs(&policy).len(),
+        1,
+        "the place held for a window that never came is gone"
+    );
+}
+
+#[test]
 fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
     let (mut driver, mut policy) = mount();
     policy
@@ -655,6 +712,7 @@ fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
             app: "so.tilo.notes".into(),
             beside: None,
             background: None,
+            float: None,
         })
         .unwrap();
     settle(&mut driver);
@@ -683,6 +741,7 @@ fn a_launch_that_opens_no_window_takes_its_held_tab_back() {
         app: "so.tilo.notes".into(),
         beside: None,
         background: None,
+        float: None,
     };
     policy.handle().dispatch(launch).unwrap();
     settle(&mut driver);
@@ -706,6 +765,7 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
         app: "so.tilo.notes".into(),
         beside: None,
         background: None,
+        float: None,
     };
     policy.handle().dispatch(launch).unwrap();
     settle(&mut driver);

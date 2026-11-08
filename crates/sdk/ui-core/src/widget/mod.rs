@@ -3374,7 +3374,7 @@ pub(crate) use overflow_door::give_way;
 pub use overflow_door::{OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FloatAsk, GroupRow,
+    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_SIZE, FloatAsk, GroupRow,
     GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX,
     STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripLane, TabDropTarget, WheelJumpAccum,
     pan_within_canvas, wheel_jump_detents,

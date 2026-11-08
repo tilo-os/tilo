@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use tilo_desktop_model::{CanvasPlace, DesktopTree, FloatPlace, StripId, Workspace, WorkspaceSlot};
 use ui::kurbo::Rect;
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
-use ui::widget::{FloatAsk, GroupRow, Widget};
+use ui::widget::{FLOAT_SIZE, FloatAsk, GroupRow, Widget};
 
 use super::Shared;
 
@@ -106,9 +106,33 @@ pub(super) fn set(
     workspace.arrangement.set_float(group, float)
 }
 
-/// Lift the window `group` above the desk where it stands: a chord or a menu row asked, so it takes
-/// the floating size over the middle of the place it had in its strip. Returns whether the tree
-/// changed.
+/// Where a window an app asks for floats: the rect it stands at, in the
+/// desk's own pixels, and the work area it stands on. Only the rect's origin
+/// places it: a floating window takes [`FLOAT_SIZE`].
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Standing {
+    pub area: CanvasPlace,
+    pub at: Rect,
+}
+
+/// Stand the window `group` of the strip `strip` over the desk at
+/// `standing`: the place the app that asked for it gave, kept in the
+/// workspace's record so every member sees it there, at the size a floating
+/// window takes, since that is the window the desk draws. Returns whether the
+/// tree changed.
+pub(super) fn stand(shared: &mut Shared, strip: StripId, group: u64, standing: Standing) -> bool {
+    let at = Rect::from_origin_size(standing.at.origin(), FLOAT_SIZE);
+    set(
+        shared,
+        strip,
+        group,
+        Some(FloatPlace::of_rect(standing.area, place_of(at))),
+    )
+}
+
+/// Lift the window `group` above the desk where it stands: a chord or a
+/// menu row asked, so it takes the floating size over the middle of the
+/// place it had in its strip. Returns whether the tree changed.
 pub(super) fn lift(
     shared: &mut Shared,
     strip: StripId,

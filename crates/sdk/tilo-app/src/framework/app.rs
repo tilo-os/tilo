@@ -1394,7 +1394,9 @@ fn start_record(
             file,
             handoff: context.take_handoff(),
             lent: super::scenario::Lent::new(context.take_lent()),
-            reveal: std::cell::RefCell::new(revealed(target)),
+            reveal: std::cell::RefCell::new(
+                ui_core::window_door::requested_reveal().or_else(|| revealed(target)),
+            ),
         })
         .opening_with(opener)
         .showing_file_history(

@@ -215,7 +215,6 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
             to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
             attached: vec![carried],
             text: "can you look?".into(),
-            bounds: None,
         })
         .expect("Bob's box sends");
     let value = sent.value.expect("the send says where the message went");
@@ -226,10 +225,11 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
     );
     assert_eq!(value["accepted"].as_bool(), Some(true));
     bob_window.with_chat(|chat| {
-        assert_eq!(
+        assert_ne!(
             chat.active_channel,
             conversation.to_string(),
-            "the window opens where the message landed"
+            "the window that sent it goes on showing what it showed: the \
+             conversation opens as a window of the desk"
         );
     });
 
@@ -278,7 +278,6 @@ fn a_box_send_of_a_subject_alone_posts_the_message_without_words() {
             to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
             attached: vec![carried.clone()],
             text: String::new(),
-            bounds: None,
         })
         .expect("Bob's box sends the task alone");
 
@@ -314,16 +313,17 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
             to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
             attached: Vec::new(),
             text: "please look".into(),
-            bounds: None,
         })
         .expect("Bob's box sends");
     let value = sent.value.expect("the send says where the message went");
     assert_eq!(value["conversation"], conversation.to_string());
     bob_window.with_chat(|chat| {
-        assert_eq!(
+        assert_ne!(
             chat.active_channel,
             conversation.to_string(),
-            "the window opens the conversation the message made"
+            "the window that sent it goes on showing what it showed: the \
+             conversation opens as a window of the desk, floated where the \
+             box stood"
         );
     });
     let rows = crate::testing::mounted_rows(&mut bob_window, &conversation.to_string());
@@ -331,61 +331,38 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     assert_eq!(rows[0].text, "please look");
 }
 
-/// A send made in a box hands the conversation it opened to the desktop at the
-/// box's own bounds: the message and the conversation it landed in stand in
-/// one place, one gesture. The conversation stands in the card alone — the
-/// window goes on with what it showed, as it does when a conversation is
-/// floated out of a thread by hand.
+/// A send made in a box answers the conversation it landed in as the item
+/// that names it: the desk opens the window on it where the box stood, so the
+/// message and the conversation it reached are one gesture there. The window
+/// that sent goes on showing what it showed.
 #[test]
-fn a_box_send_opens_its_conversation_where_the_box_stood() {
+fn a_box_send_answers_the_conversation_it_landed_in() {
     use crate::effects::ChatEffect;
-    use ui::floating_surface::{FloatingRole, Recipient, RecipientKind};
-    use vello::kurbo::Rect;
+    use ui::floating_surface::{Recipient, RecipientKind};
 
     const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000e";
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
     let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
-    let stood = [210.0, 120.0, 530.0, 380.0];
+    let conversation = Chat::direct_id([Participant::person(ada), Participant::person(bob)]);
 
-    bob_window
+    let sent = bob_window
         .effect(&ChatEffect::Send {
-            to: vec![Recipient::found(RecipientKind::Person, ada.clone(), "Ada")],
+            to: vec![Recipient::found(
+                RecipientKind::Conversation,
+                conversation.to_string(),
+                "Ada",
+            )],
             attached: Vec::new(),
             text: "look at this".into(),
-            bounds: Some(stood),
         })
         .expect("Bob's box sends");
-
-    let request = bob_window
-        .with_chat(ui::widget::FloatingSurfaceProvider::take_floating_surface_request)
-        .flatten()
-        .expect("the send presents the conversation as a card");
+    let value = sent.value.expect("the send says where the message went");
     assert_eq!(
-        request.role,
-        FloatingRole::Conversation,
-        "the card is the conversation, not a copy of the window"
+        value["anchor"],
+        crate::effects::item_row_id("channels", conversation.as_str()),
+        "the send names the conversation as an item of the chat, so the desk opens it"
     );
-    assert_eq!(
-        request.initial_rect,
-        Some(Rect::new(stood[0], stood[1], stood[2], stood[3])),
-        "the card stands where the box stood"
-    );
-    bob_window.with_chat(|chat| {
-        let conversation = crate::record::Chat::direct_id([
-            crate::record::Participant::person(bob.clone()),
-            crate::record::Participant::person(ada.clone()),
-        ])
-        .to_string();
-        assert!(
-            chat.agent_surfaces.contains_key(&conversation),
-            "the conversation is the window's card"
-        );
-        assert_ne!(
-            chat.active_channel, conversation,
-            "the window shows the conversation in one place, not two"
-        );
-    });
 }
 
 /// What a person's card asks of Chat when they press Message: the row naming

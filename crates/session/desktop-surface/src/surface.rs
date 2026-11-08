@@ -17,8 +17,8 @@ use std::rc::Rc;
 use shown::ShownTabs;
 
 use tilo_desktop_model::{
-    DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, TileContent, WindowWidth,
-    Workspace, WorkspaceSlot,
+    CanvasPlace, DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, TileContent,
+    WindowWidth, Workspace, WorkspaceSlot,
 };
 use ui::automerge::{AutoCommit, ObjId};
 use ui::collaboration::PresencePayload;
@@ -1062,7 +1062,10 @@ impl DesktopSurface {
         if let Some(app) = open_app
             && !handle.focus_app(&app)
         {
-            self.shared.borrow_mut().queue.push(Admitted::Launch(app));
+            self.shared
+                .borrow_mut()
+                .queue
+                .push(Admitted::Launch(app, None));
         }
         let mut shared = self.shared.borrow_mut();
         let mut next = shared.presentation.clone();
@@ -1550,6 +1553,14 @@ impl DesktopSurface {
         }
     }
 
+    /// The work area the shown strip stands on, as of this surface's last
+    /// layout: where a window opened over the desk floats.
+    fn shown_area(&self, shared: &Shared) -> Option<CanvasPlace> {
+        let workspace = shared.tree.active_workspace()?;
+        let strip = navigation::active_strip(&shared.tree, workspace)?;
+        Some(floats::area_of(self.rows.get(&strip)?.get_rect()))
+    }
+
     /// Apply queued navigation to the tree, then to the live rows.
     #[allow(
         clippy::too_many_lines,
@@ -1567,13 +1578,13 @@ impl DesktopSurface {
                 let command = match command {
                     Admitted::Open(app) => navigation::resolve_open(&shared.tree, &app),
                     // A record already open in a window comes forward.
-                    Admitted::Launch(app) => match self
+                    Admitted::Launch(app, float) => match self
                         .tiles
                         .showing(&app)
                         .and_then(|tab| route_of(&shared.tree, tab))
                     {
                         Some(ids) => Admitted::Select(ids),
-                        None => Admitted::Launch(app),
+                        None => Admitted::Launch(app, float),
                     },
                     // The workspace's history is the Activity app's to show: it opens, or comes
                     // forward, and is offered the view.
@@ -1682,8 +1693,14 @@ impl DesktopSurface {
                         shared.tree.active_strip.insert(workspace, strip);
                     }
                     Admitted::Workspace(workspace) => shared.tree.active = workspace,
-                    Admitted::Launch(app) => {
-                        match launch::open(self.tiles.as_mut(), &mut shared, &app) {
+                    Admitted::Launch(app, float) => {
+                        let float = float.and_then(|at| {
+                            Some(floats::Standing {
+                                area: self.shown_area(&shared)?,
+                                at,
+                            })
+                        });
+                        match launch::open(self.tiles.as_mut(), &mut shared, &app, float) {
                             Some(op) => ops.push(op),
                             None => continue,
                         }

@@ -1510,10 +1510,12 @@ impl App {
             TabRequest::CloseThis => self.floating.close_window_requested = true,
             // A window this app starts itself is placed by the host's own
             // window manager, and there is no closed-tab history to reopen
-            // nor a group of tabs to step through.
+            // nor a group of tabs to step through; and no desk watches this
+            // window, so there is no desk to float another one over.
             TabRequest::ReopenClosed
             | TabRequest::CycleTab { .. }
-            | TabRequest::PlaceNextWindowBeside { .. } => {}
+            | TabRequest::PlaceNextWindowBeside { .. }
+            | TabRequest::OpenFloated { .. } => {}
         }
     }
 

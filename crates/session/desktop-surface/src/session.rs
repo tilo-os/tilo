@@ -482,6 +482,7 @@ impl Openings {
                         app,
                         beside: None,
                         background: None,
+                        float: None,
                     })
                     .map_err(|reason| ActionHostError::Unavailable { reason })
             });

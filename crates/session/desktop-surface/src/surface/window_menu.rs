@@ -663,6 +663,7 @@ pub fn command(tree: &DesktopTree, route: &RouteIds, id: &str, name: Option<&str
             app: app_of(tab)?,
             beside: Some(tab_id),
             background: None,
+            float: None,
         }),
         SPLIT_RIGHT => Verb::Chrome(ChromeEffect::SplitRight { tab: tab_id }),
         NEW_GROUP => Verb::Chrome(ChromeEffect::NewGroup { tab: tab_id }),

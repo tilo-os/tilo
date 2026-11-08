@@ -461,6 +461,7 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
         app: SETTINGS_APP.into(),
         beside: None,
         background: None,
+        float: None,
     };
     if let Err(error) = shared.handle.dispatch(launch) {
         // The person asked for Settings and it did not open: they hear why.

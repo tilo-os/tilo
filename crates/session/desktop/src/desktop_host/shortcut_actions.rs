@@ -121,6 +121,7 @@ impl DesktopChrome {
                             app,
                             beside: Some(route.tab),
                             background: None,
+                            float: None,
                         });
                     }
                     None => self.open_the_app_picker(),
@@ -432,6 +433,7 @@ impl DesktopChrome {
             app: app.to_owned(),
             beside: None,
             background: None,
+            float: None,
         });
     }
 
