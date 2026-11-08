@@ -521,8 +521,8 @@ mod tests {
         assert_eq!(restored, recents, "a kept list reads back in its order");
     }
 
-    /// A pick that reached a secret field is taken back, like a spelling of
-    /// another tone would be.
+    /// A pick that reached a secret field is taken back in the spelling the
+    /// person last used, and in any other it has.
     #[test]
     fn a_forgotten_emoji_is_gone_in_every_spelling() {
         let mut recents = EmojiRecents::default();
@@ -530,9 +530,8 @@ mod tests {
         recents.record("🎉");
         recents.record("👍🏽");
         assert!(recents.forget("👍"), "its other spelling is there");
-        assert_eq!(recents.items(), ["👍🏽", "🎉"], "the newest stays");
-        assert!(recents.forget("👍🏻"), "a tone of it is forgotten too");
-        assert_eq!(recents.items(), ["🎉"]);
+        assert_eq!(recents.items(), ["🎉"], "every spelling of it is gone");
+        assert!(!recents.forget("👍🏻"), "a tone of it is no longer there");
         assert!(!recents.forget("🍕"), "what was never there is no change");
     }
 
