@@ -31,6 +31,8 @@ mod history_access;
 pub use history_access::HistoryUnavailable;
 pub mod person;
 pub use person::StoredRecord;
+pub mod sync;
+pub use sync::{Outbound, RecordSync};
 pub mod transfer;
 pub mod workspace;
 

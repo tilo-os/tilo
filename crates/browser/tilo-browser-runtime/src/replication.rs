@@ -44,8 +44,8 @@ use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
-use ui::record::{RecordCheckout, RecordId, RecordStore};
-use ui::state::{DocumentFrontier, DocumentReplica};
+use ui::record::{RecordId, RecordStore, RecordSync};
+use ui::state::DocumentReplica;
 
 /// The desktop document's route. Changing it splits workspaces by build.
 pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
@@ -79,11 +79,6 @@ pub(crate) struct Attachment {
     pub permissions: ui::permissions::SharedPermissions,
 }
 
-struct Replica {
-    frontier: DocumentFrontier,
-    snapshotted: bool,
-}
-
 /// How a page sends its desktop to the workspace.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DesktopSending {
@@ -95,7 +90,7 @@ enum DesktopSending {
 
 struct Mounted {
     attachment: Attachment,
-    records: HashMap<(String, String), Replica>,
+    records: HashMap<(String, String), RecordSync>,
 }
 
 pub(crate) struct Joined {
@@ -1103,7 +1098,7 @@ impl Joined {
                                 .records
                                 .get_mut(&(route.app_id.clone(), route.record.clone()))
                             {
-                                replica.frontier.advance(heads);
+                                replica.advance(heads);
                             }
                         }
                         woken.insert(id);
@@ -1290,13 +1285,9 @@ impl Joined {
                 let replica = mounted
                     .records
                     .entry((app.clone(), record.clone()))
-                    .or_insert_with(|| Replica {
-                        frontier: DocumentFrontier::default(),
-                        snapshotted: false,
-                    });
+                    .or_default();
                 for mutation in &mutations {
-                    let (changed, observed) = store.merge_replica(&checkout, mutation.clone())?;
-                    replica.frontier.observe(observed);
+                    let changed = replica.merge(store, &checkout, mutation.clone())?;
                     if changed {
                         woken.insert(id);
                     }
@@ -1505,18 +1496,8 @@ impl Joined {
                     let replica = mounted.records.entry(key.clone()).or_insert_with(|| {
                         match delivered.remove(&key) {
                             // The workspace has the record as it delivered it.
-                            Some(heads) => {
-                                let mut frontier = DocumentFrontier::default();
-                                frontier.advance(heads);
-                                Replica {
-                                    frontier,
-                                    snapshotted: true,
-                                }
-                            }
-                            None => Replica {
-                                frontier: DocumentFrontier::default(),
-                                snapshotted: false,
-                            },
+                            Some(heads) => RecordSync::delivered(heads),
+                            None => RecordSync::new(),
                         }
                     });
                     let route = DocumentRoute {
@@ -1524,9 +1505,9 @@ impl Joined {
                         cluster_id: self.uuid.clone(),
                         record: key.1.clone(),
                     };
-                    match outbound(store, &checkout, replica) {
-                        Ok(Some((mutation, heads))) => {
-                            outgoing.push((route, mutation, (id, key, heads)));
+                    match replica.take_outbound(store, &checkout.id) {
+                        Ok(Some(next)) => {
+                            outgoing.push((route, next.mutation, (id, key, next.heads)));
                         }
                         Ok(None) => {}
                         Err(error) => warn(&format!("{}/{}: {error}", key.0, key.1)),
@@ -1561,8 +1542,7 @@ impl Joined {
                 .get_mut(&id)
                 .and_then(|m| m.records.get_mut(&key))
             {
-                replica.frontier.advance(heads);
-                replica.snapshotted = true;
+                replica.advance(heads);
             }
         }
         self.send_desktop();
@@ -1664,30 +1644,12 @@ impl Joined {
     }
 }
 
-type Outbound = (DocumentMutation, Vec<ui::automerge::ChangeHash>);
 /// A publication and the replica frontier it advances once accepted.
 type Pending = (
     DocumentRoute,
     DocumentMutation,
     (u64, (String, String), Vec<ui::automerge::ChangeHash>),
 );
-
-fn outbound(
-    store: &RecordStore,
-    checkout: &RecordCheckout,
-    replica: &mut Replica,
-) -> Result<Option<Outbound>, String> {
-    if !replica.snapshotted {
-        let (bytes, heads) = store
-            .replication_snapshot(&checkout.id)
-            .map_err(|error| error.to_string())?;
-        return Ok(Some((DocumentMutation::Snapshot(bytes), heads)));
-    }
-    let (delta, heads) = store
-        .replication_delta(&checkout.id, &mut replica.frontier)
-        .map_err(|error| error.to_string())?;
-    Ok((!delta.is_empty()).then_some((DocumentMutation::Incremental(delta), heads)))
-}
 
 /// Who wrote the newest change of the workspace's desktop, as its message names
 /// them (`history_log::commit`).

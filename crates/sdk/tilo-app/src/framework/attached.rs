@@ -34,8 +34,7 @@ use ui_core::collaboration::DocumentMutation;
 use ui_core::headless::FrameHarness;
 use ui_core::permissions::{PermissionContext, SharedPermissions, UserId};
 use ui_core::portable_storage::{PortableStorage, StorageKey};
-use ui_core::record::{RecordCheckout, RecordOwners, RecordStore};
-use ui_core::state::DocumentFrontier;
+use ui_core::record::{RecordCheckout, RecordOwners, RecordStore, RecordSync};
 
 /// The component instance a view mounts.
 const INSTANCE: u64 = 1;
@@ -57,16 +56,6 @@ impl ActionTransport for Landed {
     }
 }
 
-/// A record the view holds beside its own, as its sync stands.
-#[derive(Default)]
-struct Beside {
-    /// Everything taken or merged so far: what lies past it is this
-    /// participant's own.
-    frontier: DocumentFrontier,
-    /// This participant's changes set aside, untaken, while a peer's merged.
-    unsent: Vec<Vec<u8>>,
-}
-
 /// One record held in its app's view, attached and never drawn. See the
 /// module docs.
 pub struct AttachedView {
@@ -84,16 +73,12 @@ pub struct AttachedView {
     /// The task the invoker is carrying out, recorded with what it does.
     context: Option<tilo_actions::ActionContext>,
     landed: Landed,
-    /// Everything taken or merged so far: what lies past it is this
-    /// participant's own.
-    frontier: DocumentFrontier,
-    /// The whole document is still to be sent: the participant created it.
-    fresh: bool,
-    /// This participant's changes set aside, untaken, while a peer's merged.
-    unsent: Vec<Vec<u8>>,
+    /// What this participant sent of the record, and its own changes set
+    /// aside for the next publication.
+    sync: RecordSync,
     /// Each record the view holds beside its own (the parts of a chain), by
     /// id: what was taken or merged of it so far.
-    beside: std::collections::HashMap<ui_core::record::RecordId, Beside>,
+    beside: std::collections::HashMap<ui_core::record::RecordId, RecordSync>,
     /// Where the view keeps its records, and the workspace: what a record
     /// beside its own that a peer started is kept in before it opens.
     cache: PortableStorage,
@@ -303,12 +288,12 @@ impl AttachedView {
         // its view may make on open is a storage migration, which is sent
         // with the participant's first changes, as a window's is, so the
         // workspace and its other holders take it rather than diverge.
-        let mut frontier = DocumentFrontier::default();
-        let start = joined_at
-            .or_else(|| records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads));
-        if let Some(heads) = start {
-            frontier.advance(heads);
-        }
+        let started = joined_at.or_else(|| {
+            records
+                .with(&checkout.id, ui_core::automerge::AutoCommit::get_heads)
+                .filter(|_| !created)
+        });
+        let sync = started.map_or_else(RecordSync::new, RecordSync::delivered);
         Ok(Self {
             definition,
             checkout,
@@ -319,9 +304,7 @@ impl AttachedView {
             invoker: invoker.clone(),
             context: None,
             landed,
-            frontier,
-            fresh: created,
-            unsent: Vec::new(),
+            sync,
             beside: std::collections::HashMap::new(),
             cache: cache_kept,
             workspace: workspace.to_owned(),
@@ -670,47 +653,29 @@ impl AttachedView {
     /// The participant's changes since the last call, or `None`. The first
     /// call on a record the participant created returns it whole.
     pub fn take_changes(&mut self) -> Option<DocumentMutation> {
-        if std::mem::take(&mut self.fresh) {
-            self.unsent.clear();
-            let (bytes, heads) = self.records.replication_snapshot(&self.checkout.id).ok()?;
-            self.frontier.advance(heads);
-            return Some(DocumentMutation::Snapshot(bytes));
-        }
-        self.set_aside_own();
-        let own: Vec<u8> = std::mem::take(&mut self.unsent).concat();
-        (!own.is_empty()).then_some(DocumentMutation::Incremental(own))
+        let next = publish(&mut self.sync, &self.records, &self.checkout.id)?;
+        Some(next)
     }
 
     /// Merge a peer's change into the view's record. Incremental changes
     /// that build on nothing this record holds belong to another record (or
     /// arrived ahead of what they build on) and are left alone: `Ok(false)`.
     pub fn merge(&mut self, mutation: &DocumentMutation) -> Result<bool, String> {
-        if let DocumentMutation::Incremental(bytes) = mutation {
-            let mut incoming = ui_core::automerge::AutoCommit::new();
-            if tilo_automerge::ApplyIncoming::load_incoming(&mut incoming, bytes).is_err() {
-                return Ok(false);
-            }
-            let missing = incoming.get_missing_deps(&[]);
-            let known = self
+        if let DocumentMutation::Incremental(bytes) = mutation
+            && !self
                 .records
-                .with(&self.checkout.id, |doc| {
-                    missing
-                        .iter()
-                        .all(|hash| doc.get_change_by_hash(hash).is_some())
-                })
-                .unwrap_or(false);
-            if !known {
-                return Ok(false);
-            }
+                .with(&self.checkout.id, |doc| RecordSync::builds_on(doc, bytes))
+                .unwrap_or(false)
+        {
+            return Ok(false);
         }
         // What this participant did and has not taken stays its own.
-        if !self.fresh {
-            self.set_aside_own();
+        if self.sync.snapshotted() {
+            self.sync.set_aside(&self.records, &self.checkout.id).ok();
         }
-        let (changed, observed) = self
-            .records
-            .merge_replica(&self.checkout, mutation.clone())?;
-        self.frontier.observe(observed);
+        let changed = self
+            .sync
+            .merge(&self.records, &self.checkout, mutation.clone())?;
         self.frame.relayout();
         Ok(changed)
     }
@@ -781,18 +746,8 @@ impl AttachedView {
         &mut self,
         record: &ui_core::record::RecordId,
     ) -> Option<DocumentMutation> {
-        if self.beside.contains_key(record) {
-            self.set_aside_beside(record);
-            let held = self.beside.get_mut(record)?;
-            let own: Vec<u8> = std::mem::take(&mut held.unsent).concat();
-            (!own.is_empty()).then_some(DocumentMutation::Incremental(own))
-        } else {
-            let (bytes, heads) = self.records.replication_snapshot(record).ok()?;
-            let mut held = Beside::default();
-            held.frontier.advance(heads);
-            self.beside.insert(record.clone(), held);
-            Some(DocumentMutation::Snapshot(bytes))
-        }
+        let sync = self.beside.entry(record.clone()).or_default();
+        publish(sync, &self.records, record)
     }
 
     /// Merge a peer's change into `record`, a part of one of the app's
@@ -831,64 +786,48 @@ impl AttachedView {
                 .map_err(|error| error.to_string())?;
         }
         if let DocumentMutation::Incremental(bytes) = mutation
-            && !self.builds_on(record, bytes)
+            && !self
+                .records
+                .with(record, |doc| RecordSync::builds_on(doc, bytes))
+                .unwrap_or(false)
         {
             return Ok(false);
         }
-        // What this participant did and has not taken stays its own.
-        self.set_aside_beside(record);
-        let (changed, observed) = self.records.merge_replica(&checkout, mutation.clone())?;
-        self.beside
-            .entry(record.clone())
-            .or_default()
-            .frontier
-            .observe(observed);
+        // What this participant did and has not taken stays its own. A part
+        // first met through a peer's change is not this participant's to
+        // publish whole: it starts from what the record already holds.
+        if !self.beside.contains_key(record) {
+            let heads = self
+                .records
+                .with(record, ui_core::automerge::AutoCommit::get_heads)
+                .unwrap_or_default();
+            self.beside
+                .insert(record.clone(), RecordSync::delivered(heads));
+        }
+        let sync = self.beside.get_mut(record).expect("the part was just held");
+        if sync.snapshotted() {
+            sync.set_aside(&self.records, record).ok();
+        }
+        let changed = sync.merge(&self.records, &checkout, mutation.clone())?;
         self.frame.relayout();
         Ok(changed)
     }
+}
 
-    /// Whether the changes `bytes` build only on what `record` holds.
-    fn builds_on(&self, record: &ui_core::record::RecordId, bytes: &[u8]) -> bool {
-        let mut incoming = ui_core::automerge::AutoCommit::new();
-        if tilo_automerge::ApplyIncoming::load_incoming(&mut incoming, bytes).is_err() {
-            return false;
-        }
-        let missing = incoming.get_missing_deps(&[]);
-        self.records
-            .with(record, |doc| {
-                missing
-                    .iter()
-                    .all(|hash| doc.get_change_by_hash(hash).is_some())
-            })
-            .unwrap_or(false)
+/// What to publish next of `record` as `sync` stands: the record whole the
+/// first time, then this participant's own changes set aside since.
+fn publish(
+    sync: &mut RecordSync,
+    records: &RecordStore,
+    id: &ui_core::record::RecordId,
+) -> Option<DocumentMutation> {
+    if !sync.snapshotted() {
+        let whole = sync.take_outbound(records, id).ok()??;
+        sync.advance(whole.heads);
+        return Some(whole.mutation);
     }
-
-    /// Move this participant's changes to `record`, held beside the view's
-    /// own, past its frontier into its `unsent`.
-    fn set_aside_beside(&mut self, record: &ui_core::record::RecordId) {
-        let Some(held) = self.beside.get_mut(record) else {
-            return;
-        };
-        if let Ok((delta, heads)) = self.records.own_delta(record, &mut held.frontier) {
-            held.frontier.advance(heads);
-            if !delta.is_empty() {
-                held.unsent.push(delta);
-            }
-        }
-    }
-
-    /// Move this participant's changes past the frontier into `unsent`.
-    fn set_aside_own(&mut self) {
-        if let Ok((delta, heads)) = self
-            .records
-            .own_delta(&self.checkout.id, &mut self.frontier)
-        {
-            self.frontier.advance(heads);
-            if !delta.is_empty() {
-                self.unsent.push(delta);
-            }
-        }
-    }
+    sync.set_aside(records, id).ok()?;
+    sync.take_set_aside()
 }
 
 /// The heads of the record `document` holds: what a participant joining it
