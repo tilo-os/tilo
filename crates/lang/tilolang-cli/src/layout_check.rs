@@ -203,8 +203,9 @@ pub struct Options {
     /// that is not the declaration's default.
     pub states: Vec<String>,
     /// Controls pressed by the words they carry, in order, before each window is read: what a
-    /// person opens by pressing it (`--press "Since you looked"`), where a click is the only
-    /// way to reach it. A label under `keys`' rules: it reaches the window at the `dump` size.
+    /// person opens by pressing it (`--press "Since you looked"`, or the row of a task, which
+    /// opens where it stands), where a click is the only way to reach it. A label under
+    /// `keys`' rules: it reaches the window at the `dump` size.
     pub presses: Vec<String>,
     /// Key presses sent to each window before it is read, in order, as
     /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
@@ -1066,12 +1067,16 @@ fn primary_labels(meta: &tilolang::PackageMeta) -> Vec<&str> {
     labels
 }
 
-/// The test id of the first button under `node` named `label` that a person can press.
+/// The test id of the first control under `node` named `label` that a person can press: a
+/// button, or a row of a list or a tree, which a press opens where it stands.
 fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
     let pressable = node.semantics.as_ref().is_some_and(|access| {
         matches!(
             access.role,
-            ui::a11y::Role::Button | ui::a11y::Role::ToggleButton
+            ui::a11y::Role::Button
+                | ui::a11y::Role::ToggleButton
+                | ui::a11y::Role::ListItem
+                | ui::a11y::Role::TreeItem
         ) && !access.state.disabled
             && access.name.as_deref() == Some(label)
     });

@@ -67,10 +67,14 @@ pub enum Kind {
     /// window says everything in one language, so a German word in an English window (or the
     /// source standing in for a translation the window's own catalogues lack) is a fault.
     MixedLanguage,
+    /// An item standing open where it stands, outside the list that shows it: the row that
+    /// opened it is no row of a list the person sees, or more than one row of one list stands
+    /// open at a time.
+    OpenOutsideList,
 }
 
 impl Kind {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -93,6 +97,7 @@ impl Kind {
         Self::PastWindow,
         Self::TitleClippedWithRoom,
         Self::MixedLanguage,
+        Self::OpenOutsideList,
     ];
 
     pub fn name(self) -> &'static str {
@@ -119,6 +124,7 @@ impl Kind {
             Self::PastWindow => "past-window",
             Self::TitleClippedWithRoom => "title-clipped-with-room",
             Self::MixedLanguage => "mixed-language",
+            Self::OpenOutsideList => "open-outside-list",
         }
     }
 }
