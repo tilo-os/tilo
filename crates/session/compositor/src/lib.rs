@@ -1339,18 +1339,6 @@ impl Compositor {
         self.apply_idle(transitions)
     }
 
-    /// Light the panels without counting as input (a notification that wakes the screen): the lock
-    /// and idle timers stay as they are.
-    pub fn wake_displays(&mut self) -> Result<(), Error> {
-        let transitions = self
-            .data
-            .state
-            .idle
-            .session
-            .request_display_wake(std::time::Instant::now());
-        self.apply_idle(transitions)
-    }
-
     /// The machine is about to sleep: lock first when `lock_on_sleep` .
     pub fn prepare_for_sleep(
         &mut self,
@@ -1670,11 +1658,6 @@ impl Compositor {
         // asked, so it is resolved against the displays that are lit now.
         self.data.state.set_primary_output(config.primary.clone());
         Ok(())
-    }
-
-    /// Show the pointer at the person's size, in logical pixels.
-    pub fn set_cursor_size(&mut self, size: u32) {
-        self.data.state.cursor.set_size(size);
     }
 
     /// Type with the person's keyboard layout.
@@ -2107,39 +2090,6 @@ impl Compositor {
         };
         self.data.state.close_window(aim.id);
         true
-    }
-
-    /// What `seat` sees now: its window's pixels, or the screen its pointer is
-    /// on.
-    ///
-    /// # Errors
-    /// The display is asleep, the window is gone, or nothing could be drawn.
-    pub fn seat_screenshot(&mut self, seat: Seat) -> Result<Screenshot, String> {
-        let aim = self
-            .data
-            .state
-            .seat_view(seat)
-            .ok_or_else(|| "this seat has ended".to_owned())?;
-        let target = if let Some(window) = &aim.window {
-            capture::Target::window(&window.identifier)
-        } else {
-            let pointer = (self.data.state.pointer.x, self.data.state.pointer.y);
-            let name = self
-                .outputs()
-                .into_iter()
-                .find(|output| {
-                    output.rect.is_some_and(|(x, y, w, h)| {
-                        pointer.0 >= f64::from(x)
-                            && pointer.0 < f64::from(x.saturating_add(w))
-                            && pointer.1 >= f64::from(y)
-                            && pointer.1 < f64::from(y.saturating_add(h))
-                    })
-                })
-                .map(|output| output.name)
-                .ok_or_else(|| "no display is on to take a picture of".to_owned())?;
-            capture::Target::output(name)
-        };
-        self.read_back(&target).map_err(|error| error.to_string())
     }
 
     /// Cut every remote input: nothing from another device reaches the seat until the person allows
