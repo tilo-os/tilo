@@ -323,14 +323,23 @@ impl Relay {
             let _ = context.relay.carried_calls.set(workspaces.downgrade());
         }
         let host_cert = context.relay.identity.cert.clone();
-        let node_addr = self.node_addr();
+        // Where a page dials this host: its endpoint's key and addresses, and
+        // the relay it was told to reach it through. A page has no UDP socket,
+        // so without that relay an endpoint it binds carries no packet at all —
+        // and an endpoint names its relay only once it has connected to it,
+        // which a start that restarts on kept state opens its listener before.
+        let mut endpoint_addr = self.node_addr();
+        if let Some(relay) = &self.pages_reach {
+            endpoint_addr = endpoint_addr.with_relay_url(relay.clone());
+        }
+        let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
         let web = Arc::new(Web {
             context: context.clone(),
             host_info: HostInfo {
                 host_cert,
                 address: Some(HostAddress {
-                    endpoint_addr: node_addr.clone(),
-                    relay_url: node_addr.relay_urls().next().map(ToString::to_string),
+                    endpoint_addr,
+                    relay_url,
                 }),
             },
             allowed_origins: config.allowed_origins,

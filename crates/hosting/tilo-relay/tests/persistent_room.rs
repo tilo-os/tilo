@@ -401,9 +401,60 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
     );
 }
 
+/// A page reaches its host only through a relay, so `/host` names the host's
+/// own packet relay from its first answer: a host that restarts on kept state
+/// opens its listener within the first moments of starting, before its endpoint
+/// has finished connecting to the relay it runs, and a page told of no relay
+/// binds an endpoint that can carry nothing.
+#[test]
+fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
+    let scratch = tempfile::tempdir().unwrap();
+    let state = scratch.path().join("plaza");
+    std::fs::create_dir_all(state.join("secrets")).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let web_plain = plain.to_string();
+    let flags = ["--web-plain", &web_plain, "--packet-relay", "127.0.0.1:0"];
+
+    // The volume the first start left: the workspace it seeded, so the restart
+    // below serves its listener without seeding anything.
+    let room = start_with(&state, &root_file, &state.join("secrets"), &flags).unwrap();
+    announced(&room);
+    room.stop();
+
+    let room = start_with(&state, &root_file, &state.join("secrets"), &flags).unwrap();
+    let _ = announced(&room);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let info = runtime
+        .block_on(tilo_browser_peer::host_info(&Plain(plain)))
+        .expect("the host answers where its pages dial it");
+    let address = info.address.expect("the host names an endpoint");
+    let relay = address
+        .relay_url
+        .expect("the host names the packet relay it runs");
+    assert!(
+        relay.starts_with("http://127.0.0.1:"),
+        "the relay is the host's own, not a public one: {relay}"
+    );
+    let named = address
+        .endpoint_addr
+        .relay_urls()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        named,
+        [relay],
+        "the endpoint is dialled through the relay the page is told"
+    );
+    room.stop();
+}
+
 /// Plain HTTP/1.1 to the room's loopback listener: the page's `fetch`.
 struct Plain(std::net::SocketAddr);
-
 impl tilo_browser_peer::HttpClient for Plain {
     fn post(&self, path: &str, body: Vec<u8>) -> tilo_browser_peer::HttpFuture<'_> {
         use http_body_util::BodyExt as _;

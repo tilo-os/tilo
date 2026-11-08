@@ -119,6 +119,16 @@ async fn bind_endpoint(
     if let Some(endpoint) = slot {
         return Ok(endpoint.clone());
     }
+    // A page has no direct transport — every packet it sends goes through a
+    // relay — so an endpoint bound without one can never reach the host, and
+    // iroh shuts it down as soon as it is polled. A host that names no relay
+    // is unreachable from here, and says so.
+    #[cfg(target_arch = "wasm32")]
+    if relay.is_none() {
+        return Err(LinkError::Unavailable(
+            "the host named no relay a page can reach it through".into(),
+        ));
+    }
     let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key));
     if let Some(url) = relay {
