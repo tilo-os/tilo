@@ -166,6 +166,9 @@ pub use host_services::{MakeModelClients, ModelClients, builtin_model_clients};
 pub use host_services::{defer_model_clients, install_model_clients, model_clients_load_failed};
 #[cfg(target_arch = "wasm32")]
 mod link;
+// A pairing link drawn as the code a phone reads.
+#[cfg(target_arch = "wasm32")]
+mod qr_code;
 #[cfg(target_arch = "wasm32")]
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]

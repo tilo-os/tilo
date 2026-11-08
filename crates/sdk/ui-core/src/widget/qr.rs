@@ -32,6 +32,47 @@ use crate::widget::Widget;
 
 /// Default quiet-zone size in modules (the standard requires ≥4).
 pub const DEFAULT_QUIET_MODULES: usize = 4;
+/// The dark modules' colour in [`svg`]: fixed, so a page's dark theme never
+/// shows a black-on-black code a scanner cannot see.
+const SVG_DARK: &str = "#121214";
+/// The quiet zone and ground in [`svg`].
+const SVG_LIGHT: &str = "#ffffff";
+
+/// `payload` as SVG markup, for a page that shows the code as an image: the
+/// same matrix the widget paints, the quiet zone around it, and one path of
+/// dark modules in module units, so the markup scales to any size.
+///
+/// # Errors
+///
+/// The payload does not fit a code at [`EcLevel::M`]; the widget then shows
+/// the same reason inline.
+pub fn svg(payload: &str) -> Result<String, String> {
+    use std::fmt::Write as _;
+
+    let code = QrWidget::new(payload.as_bytes().to_vec());
+    if let Some(error) = code.error() {
+        return Err(error.to_owned());
+    }
+    let span = code.total_modules();
+    let mut path = String::new();
+    for y in 0..code.matrix_size {
+        for x in 0..code.matrix_size {
+            if code.module(x, y) {
+                let _ = write!(
+                    path,
+                    "M{} {}h1v1h-1z",
+                    x.saturating_add(code.quiet_modules),
+                    y.saturating_add(code.quiet_modules)
+                );
+            }
+        }
+    }
+    Ok(format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {span} {span}\" \
+         shape-rendering=\"crispEdges\"><rect width=\"{span}\" height=\"{span}\" \
+         fill=\"{SVG_LIGHT}\"/><path d=\"{path}\" fill=\"{SVG_DARK}\"/></svg>"
+    ))
+}
 
 /// Holds the source bytes plus the cached encoded matrix. Re-encodes when
 /// the payload changes via `set_payload` — the pairing-channel screen
@@ -375,6 +416,39 @@ impl Widget for QrWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page shows a pairing link as this markup: the code's own modules
+    /// with the quiet zone around them, and nothing else to draw.
+    #[test]
+    fn a_page_shows_a_link_as_one_svg_path() {
+        let markup = svg("HELLO").unwrap();
+        assert!(markup.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 29 29\""), "{markup}");
+        assert_eq!(markup.matches("<path ").count(), 1);
+        assert_eq!(markup.matches("<rect ").count(), 1);
+
+        // 159 bytes is version 9 at level M (version 8 holds 150): 53 modules
+        // a side, and the quiet zone around them.
+        let link = format!(
+            "https://tilo.coffee/#/@eu1.tilo.coffee/w/0123456789abcdef?pair={}",
+            "ab".repeat(48)
+        );
+        let code = QrWidget::new(link.as_bytes().to_vec());
+        assert!(code.error().is_none(), "{:?}", code.error());
+        assert_eq!(code.matrix_size, 53);
+        assert!(svg(&link).unwrap().contains("viewBox=\"0 0 61 61\""));
+        let finder = [
+            "1111111", "1000001", "1011101", "1011101", "1011101", "1000001", "1111111",
+        ];
+        for (left, top) in [(0, 0), (46, 0), (0, 46)] {
+            for (row, expected) in finder.iter().enumerate() {
+                let drawn: String = (0..7)
+                    .map(|x| if code.module(left + x, top + row) { '1' } else { '0' })
+                    .collect();
+                assert_eq!(drawn, *expected, "finder at {left},{top}");
+            }
+        }
+        assert!(svg("x".repeat(3000).as_str()).is_err());
+    }
 
     #[test]
     fn private_pairing_qr_marks_real_paint_and_clears_when_cancelled() {
