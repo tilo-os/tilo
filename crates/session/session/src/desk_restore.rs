@@ -134,6 +134,13 @@ impl Restore {
             let Some(saved) = self.waiting.pop_front() else {
                 return;
             };
+            // An app whose model the session runs itself has no window process: the tab the
+            // person left open is the place its root stands in, restored by the desk as every
+            // place is, and nothing starts for it
+            // (`docs/designs/app-language/one-app-model.md` §3).
+            if apps.serves(&saved.app) {
+                continue;
+            }
             // The person may have opened the app while its saved window was still waiting: its
             // window comes into that tab now, or came, and asking for it again would start the app
             // a second time.

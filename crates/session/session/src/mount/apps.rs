@@ -241,6 +241,14 @@ impl Apps {
         services.borrow().hosted(app)
     }
 
+    /// Whether a service of this session runs `app`'s model: its windows are places of the shell's
+    /// arrangement, drawn from the session's reading, and no window process of it starts
+    /// (`docs/designs/app-language/one-app-model.md` §3).
+    #[must_use]
+    pub fn serves(&self, app: &str) -> bool {
+        self.hosted(app).is_some()
+    }
+
     /// Place the root of the app `app` whose model the session runs, on the canvas of `workspace`,
     /// as the shell's own place: the place draws the app's default view over the session's
     /// reading of its root, and no window process of the app starts
