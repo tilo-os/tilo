@@ -500,11 +500,7 @@ impl DesktopSurface {
             } else {
                 shared
                     .tree
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| &workspace.strips)
-                    .flat_map(|strip| &strip.window_groups)
-                    .flat_map(|group| &group.tabs)
+                    .tabs()
                     .filter_map(|tab| {
                         let tilo_desktop_model::TileContent::Foreign { surface_id, .. } = &tab.tile
                         else {

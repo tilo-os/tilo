@@ -310,11 +310,9 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
             if store.package_and_home().0 != app {
                 continue;
             }
-            let Some(checkout) = store
-                .open_records()
-                .into_iter()
-                .find(|checkout| crate::desk_records::wire_record(&checkout.id) == record)
-            else {
+            let Some(checkout) = store.open_records().into_iter().find(|checkout| {
+                tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+            }) else {
                 continue;
             };
             if let Some(doc) = store.read(&checkout.id, AutoCommit::clone) {
@@ -840,7 +838,8 @@ impl Joined {
                     store.open_records().into_iter().map(move |checkout| {
                         (
                             app.clone(),
-                            crate::desk_records::wire_record(&checkout.id).to_owned(),
+                            tilo_desktop_surface::host::records::wire_record(&checkout.id)
+                                .to_owned(),
                         )
                     })
                 })
@@ -1081,7 +1080,7 @@ impl Joined {
                     continue;
                 }
                 let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    crate::desk_records::wire_record(&checkout.id) == route.record
+                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
                 }) else {
                     continue;
                 };
@@ -1140,11 +1139,9 @@ impl Joined {
                 if store.package_and_home().0 != route.app_id {
                     continue;
                 }
-                if let Some(checkout) = store
-                    .open_records()
-                    .into_iter()
-                    .find(|checkout| crate::desk_records::wire_record(&checkout.id) == route.record)
-                {
+                if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
+                }) {
                     store.note_workspace_answered(checkout.id);
                     woken.insert(id);
                 }
@@ -1187,11 +1184,9 @@ impl Joined {
                 if store.package_and_home().0 != route.app_id {
                     continue;
                 }
-                if let Some(checkout) = store
-                    .open_records()
-                    .into_iter()
-                    .find(|checkout| crate::desk_records::wire_record(&checkout.id) == route.record)
-                {
+                if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
+                }) {
                     store.workspace_settled(&checkout.id);
                     woken.insert(id);
                 }
@@ -1215,11 +1210,9 @@ impl Joined {
                 if store.package_and_home().0 != route.app_id {
                     continue;
                 }
-                if let Some(checkout) = store
-                    .open_records()
-                    .into_iter()
-                    .find(|checkout| crate::desk_records::wire_record(&checkout.id) == route.record)
-                {
+                if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
+                }) {
                     return store
                         .replication_snapshot(&checkout.id)
                         .map(|(bytes, _)| Some(bytes))
@@ -1275,11 +1268,9 @@ impl Joined {
                 if store.package_and_home().0 != app {
                     continue;
                 }
-                let Some(checkout) = store
-                    .open_records()
-                    .into_iter()
-                    .find(|checkout| crate::desk_records::wire_record(&checkout.id) == record)
-                else {
+                let Some(checkout) = store.open_records().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                }) else {
                     continue;
                 };
                 let replica = mounted
@@ -1479,7 +1470,7 @@ impl Joined {
                 for checkout in store.open_records() {
                     let key = (
                         app.clone(),
-                        crate::desk_records::wire_record(&checkout.id).to_owned(),
+                        tilo_desktop_surface::host::records::wire_record(&checkout.id).to_owned(),
                     );
                     // A record a join does not replay is asked for when a
                     // mount first opens it.

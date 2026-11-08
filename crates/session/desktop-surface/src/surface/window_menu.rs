@@ -73,14 +73,7 @@ impl DesktopHandle {
     #[must_use]
     pub fn window_subject(&self, tab: TabId) -> Option<WindowSubject> {
         let shared = self.shared.borrow();
-        let tab = shared
-            .tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|shown| shown.id == tab)?;
+        let tab = shared.tree.tab(tab)?;
         let app = match &tab.tile {
             TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
                 Some(app_id.clone())

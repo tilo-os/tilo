@@ -344,7 +344,7 @@ pub(crate) struct Shared {
     /// whose code has not loaded, one it does not run, or a record it does not
     /// read. Each is written back to the shared desk under the spelling it
     /// arrived in, as native keeps the record a window held
-    /// ([`crate::desk_records::adopted`]).
+    /// ([`tilo_desktop_surface::host::records::adopted`]).
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     /// The content, by hash, each tab opened with its app is to open: what
     /// another window handed over (a capture, a recording).
@@ -632,23 +632,7 @@ impl Shared {
     /// application and the record id, empty for the package's primary
     /// record.
     pub fn live_record_of(&self, tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
-        let app = tree
-            .workspaces
-            .iter()
-            .flat_map(|w| &w.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|candidate| candidate.id == tab)
-            .and_then(|tab| match &tab.tile {
-                TileContent::LocalApp { app_id, .. } => Some(app_id.clone()),
-                _ => None,
-            })?;
-        let records = self.records.borrow();
-        let checkout = records.get(&tab)?;
-        Some((
-            app,
-            crate::desk_records::wire_record(&checkout.id).to_owned(),
-        ))
+        tilo_desktop_surface::host::records::of_window(tree, &self.records.borrow(), tab)
     }
 }
 
@@ -1355,8 +1339,11 @@ impl Persistence {
         } else {
             // No workspace holds this desk: what the person changed is this page's
             // change of its own document.
-            let records =
-                crate::desk_records::live(&self.records.borrow(), &self.unbound.borrow(), &tree);
+            let records = tilo_desktop_surface::host::records::live(
+                &self.records.borrow(),
+                &self.unbound.borrow(),
+                &tree,
+            );
             let authors = live_authors(&self.authors.borrow(), &tree);
             tilo_desktop_model::desktop_doc::write_shared(&mut document, &tree, &records, &authors)
         };
@@ -1491,8 +1478,11 @@ pub(crate) fn shared_value(
     shared: &Shared,
 ) -> tilo_desktop_model::ownership::SharedDesktop {
     let tree = handle.shared_tree();
-    let records =
-        crate::desk_records::live(&shared.records.borrow(), &shared.unbound.borrow(), &tree);
+    let records = tilo_desktop_surface::host::records::live(
+        &shared.records.borrow(),
+        &shared.unbound.borrow(),
+        &tree,
+    );
     let authors = live_authors(&shared.authors.borrow(), &tree);
     tilo_desktop_model::ownership::SharedDesktop {
         tree,
@@ -1575,11 +1565,11 @@ pub(crate) fn return_to(
 
 /// The record each window of a stored desktop shows, as this page takes it
 /// over: bound where the window's application runs here, and held under the
-/// desk's own spelling otherwise ([`crate::desk_records::adopted`]).
+/// desk's own spelling otherwise ([`tilo_desktop_surface::host::records::adopted`]).
 fn adopted_records(
     desktop: &tilo_desktop_model::ownership::SharedDesktop,
 ) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
-    crate::desk_records::adopted(desktop, |app| {
+    tilo_desktop_surface::host::records::adopted(desktop, |app| {
         application(app).map(|definition| definition.record_kind.clone())
     })
 }

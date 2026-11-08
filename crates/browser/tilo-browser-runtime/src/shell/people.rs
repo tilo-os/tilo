@@ -18,12 +18,9 @@ use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::desk_edges::DockEdge;
 use tilo_desktop::follow_banner::{BannerFrame, FollowBanner};
 use tilo_desktop::here::Person;
-use tilo_desktop::people_overlay::{
-    LivePictures, PeerScreen, PeerWindow, PeopleHit, PeopleOverlayModel,
-};
+use tilo_desktop::people_overlay::{LivePictures, PeopleHit, PeopleOverlayModel, peer_screens};
 use tilo_desktop_model::{DesktopTree, TabId};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_relay_protocol::live::LiveRecord;
 use ui::kurbo::{Affine, Point, Rect};
 use ui::tokens::{EffectiveMotion, MotionSource};
 use ui::vello::Scene;
@@ -42,9 +39,9 @@ pub(super) struct Frame<'a> {
     pub own: Option<&'a RosterRow>,
     pub people: &'a [Person],
     pub tree: &'a DesktopTree,
-    /// The records this page shows, by the window showing each, as the
-    /// live layer names them: `(tab, app, record)`.
-    pub records: &'a [(TabId, String, String)],
+    /// The records this page shows, by the window showing each, as
+    /// presence names them: `(tab, app, its short digest)`.
+    pub records: &'a [(TabId, String, [u8; 8])],
     pub cursor: Option<Point>,
     /// Where the windows' content starts, below their bars: the banner
     /// hangs there, as the page's notices do, clear of the windows' own
@@ -295,7 +292,9 @@ impl PagePeople {
             ui::window_pictures::want(&[]);
             return;
         };
-        let screens = screens(frame);
+        let screens = peer_screens(frame.people, frame.tree, frame.records, &|app| {
+            crate::desktop::known_application(app).map(str::to_owned)
+        });
         // Live pictures only of the windows the open peek shows.
         let wanted: Vec<u64> = overlay
             .peeked()
@@ -509,159 +508,5 @@ impl ui::widget::Widget for PagePeople {
             self.pressed.push(hit);
         }
         ours
-    }
-}
-
-/// Each person's screen as their live layout gives it, each window matched
-/// against the records this page holds: a record held here is shared with
-/// this person, and its window here stands for theirs (its title, its live
-/// picture); any other shows as its app alone.
-fn screens(frame: &Frame<'_>) -> Vec<PeerScreen> {
-    frame
-        .people
-        .iter()
-        .filter_map(|person| {
-            let screen = person.screen.as_ref()?;
-            let (width, height) = screen.size;
-            let windows = screen
-                .windows
-                .iter()
-                .map(|window| {
-                    let here = frame.records.iter().find(|(_, app, record)| {
-                        *app == window.app
-                            && LiveRecord {
-                                app: app.clone(),
-                                record: record.clone(),
-                            }
-                            .short_digest()
-                                == window.record
-                    });
-                    let tab = here.map(|(tab, _, _)| *tab);
-                    PeerWindow {
-                        rect: window.rect,
-                        app: window.app.clone(),
-                        app_name: crate::desktop::known_application(&window.app)
-                            .map_or_else(|| window.app.clone(), str::to_owned),
-                        title: tab.and_then(|tab| tab_title(frame.tree, tab)),
-                        picture: tab.and_then(|tab| group_of(frame.tree, tab)),
-                        focused: window.focused,
-                    }
-                })
-                .collect();
-            Some(PeerScreen {
-                id: person.id.clone(),
-                aspect: if height > 0.0 {
-                    width / height
-                } else {
-                    16.0 / 10.0
-                },
-                windows,
-            })
-        })
-        .collect()
-}
-
-fn tab_title(tree: &DesktopTree, tab: TabId) -> Option<String> {
-    tree.workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .find(|t| t.id == tab)
-        .map(|t| t.title.clone())
-        .filter(|title| !title.trim().is_empty())
-}
-
-/// The window group `tab` is in, whose live picture stands for it.
-fn group_of(tree: &DesktopTree, tab: TabId) -> Option<u64> {
-    tree.workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .find(|group| group.tabs.iter().any(|t| t.id == tab))
-        .map(|group| group.id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_desktop::here::{Screen, ScreenWindow};
-    use tilo_desktop_model::IdMinter;
-
-    /// A window on someone's screen showing a record this page shows too
-    /// stands for theirs, with its title and live picture; any other shows
-    /// as its app and nothing more.
-    #[test]
-    fn only_what_this_page_holds_is_named_and_pictured() {
-        let mut minter = IdMinter::new(3);
-        let tab = tilo_desktop_model::Tab {
-            id: minter.mint(),
-            title: "Plans".into(),
-            tile: tilo_desktop_model::TileContent::LocalApp {
-                app_id: "so.tilo.notes".into(),
-                label: "Notes".into(),
-                note: String::new(),
-            },
-            app_title: None,
-            view: String::new(),
-            pinned: false,
-        };
-        let tab_id = tab.id;
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Lounge", vec![tab]);
-        let digest = |record: &str| {
-            LiveRecord {
-                app: "so.tilo.notes".into(),
-                record: record.into(),
-            }
-            .short_digest()
-        };
-        let window = |record: &str, focused| ScreenWindow {
-            app: "so.tilo.notes".into(),
-            record: digest(record),
-            rect: Rect::new(0.0, 0.0, 0.5, 1.0),
-            focused,
-        };
-        let person = Person {
-            id: "ada".into(),
-            user: None,
-            label: "Ada".into(),
-            devices: Vec::new(),
-            rgb: (1, 2, 3),
-            agent: false,
-            tab: None,
-            place: None,
-            status: None,
-            recent: None,
-            screen: Some(Screen {
-                size: (1600.0, 1000.0),
-                windows: vec![window("plans", true), window("diary", false)],
-            }),
-            availability: ui::Availability::Available,
-            call: None,
-        };
-        let records = [(tab_id, "so.tilo.notes".to_owned(), "plans".to_owned())];
-        let screens = screens(&Frame {
-            rect: Rect::new(0.0, 0.0, 1440.0, 900.0),
-            rows: &[],
-            own: None,
-            people: std::slice::from_ref(&person),
-            tree: &tree,
-            records: &records,
-            cursor: None,
-            content_top: 0.0,
-        });
-        let [screen] = screens.as_slice() else {
-            panic!("one screen: {screens:?}");
-        };
-        assert!((screen.aspect - 1.6).abs() < 1e-9);
-        let [shared, private] = screen.windows.as_slice() else {
-            panic!("two windows: {:?}", screen.windows);
-        };
-        assert_eq!(shared.title.as_deref(), Some("Plans"));
-        assert_eq!(shared.picture, group_of(&tree, tab_id));
-        assert!(shared.picture.is_some() && shared.focused);
-        assert!(!private.shared(), "a record this page does not hold");
-        assert_eq!((private.title.as_deref(), private.picture), (None, None));
-        assert_eq!(private.app, "so.tilo.notes", "its app is all it says");
     }
 }

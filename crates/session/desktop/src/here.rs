@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 use collab_types::presence::Shown;
-use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent};
+use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent, Workspace};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
@@ -994,10 +994,7 @@ pub fn guest_label() -> String {
 fn shown_window(tree: &DesktopTree, line: &HostLine) -> Option<TabId> {
     let tab = u64::from_str_radix(line.window.as_deref()?, 16).ok()?;
     tree.active_workspace()?
-        .strips
-        .iter()
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .tabs()
         .any(|t| t.id == tab)
         .then_some(tab)
 }
@@ -1007,9 +1004,7 @@ fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> 
     let tabs: HashMap<TabId, &str> = tree
         .active_workspace()
         .into_iter()
-        .flat_map(|w| &w.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .flat_map(Workspace::tabs)
         .filter_map(|tab| match &tab.tile {
             TileContent::LocalApp { app_id, .. } => Some((tab.id, app_id.as_str())),
             _ => None,

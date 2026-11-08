@@ -755,15 +755,16 @@ impl BrowserShell {
         // Every window here, by the record it shows as the live layer names
         // it: a window on someone's screen showing one of these is shared.
         let own = Some(own_row(&self.chrome.here.borrow(), theme));
-        let records: Vec<(TabId, String, String)> = tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
+        let records: Vec<(TabId, String, [u8; 8])> = tree
+            .tabs()
             .filter_map(|tab| {
                 let (app, record) = self.chrome.shared.live_record_of(&tree, tab.id)?;
-                Some((tab.id, app, record))
+                let digest = tilo_relay_protocol::live::LiveRecord {
+                    app: app.clone(),
+                    record,
+                }
+                .short_digest();
+                Some((tab.id, app, digest))
             })
             .collect();
         self.pinned.draw(

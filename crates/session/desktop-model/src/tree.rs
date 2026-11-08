@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::collaborator::Collaborator;
 use crate::ids::{GroupId, StripId, WorkspaceId, WorkspaceSlot};
+use crate::layout::Tab;
 use crate::partition::OutputPartition;
 use crate::serde_ids::deserialize_id_map;
 use crate::workspace::Workspace;
@@ -127,6 +128,18 @@ impl DesktopTree {
 
     pub fn active_workspace(&self) -> Option<&Workspace> {
         self.workspaces.iter().find(|w| w.slot == self.active)
+    }
+
+    /// Every window of the desk, in the tree's order: workspace by workspace, strip by strip,
+    /// group by group.
+    pub fn tabs(&self) -> impl Iterator<Item = &Tab> {
+        self.workspaces.iter().flat_map(Workspace::tabs)
+    }
+
+    /// The window `id` shows, wherever on the desk it is.
+    #[must_use]
+    pub fn tab(&self, id: crate::TabId) -> Option<&Tab> {
+        self.tabs().find(|tab| tab.id == id)
     }
 
     /// The workspace holding a window of `app`, the first in the tree's

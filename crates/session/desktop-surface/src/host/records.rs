@@ -1,44 +1,59 @@
-//! What each window of this page's desktop shows, as the workspace's shared
-//! desk names it: the records a joining page adopts and the records it writes
-//! back.
+//! What each window of a host's desktop shows, as the workspace's shared desk names it: the
+//! records a joining host adopts and the records it writes back.
 //!
-//! A shared desk names a window's record by its route ([`RecordId::route`]):
-//! the package primary's route is empty, every other record's is its id
-//! ([`wire_record`]). A page that joins a desk adopts the record each of its
-//! windows shows ([`adopted`]) and writes every one of them back ([`live`]),
-//! so it never holds a window on another record than the desk showed
-//! (`tilo_desktop_model::shared_record::guard` refuses such a write). What
-//! this page cannot bind yet — an application whose code has not loaded, one
-//! it does not run, or a record it does not read — keeps the desk's spelling
-//! verbatim, as native keeps the record a window held.
+//! A shared desk names a window's record by its route ([`RecordId::route`]): the package
+//! primary's route is empty, every other record's is its id ([`wire_record`]). A host that joins a
+//! desk adopts the record each of its windows shows ([`adopted`]) and writes every one of them back
+//! ([`live`]), so it never holds a window on another record than the desk showed
+//! (`tilo_desktop_model::shared_record::guard` refuses such a write). What a host cannot bind yet —
+//! an application whose code has not loaded, one it does not run, or a record it does not read —
+//! keeps the desk's spelling verbatim, as the desk keeps the record a window held.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{DesktopTree, TabId, TileContent};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 
-/// The record `id` travels under on the workspace's shared desk: its route,
-/// empty for the package's primary record.
-pub(crate) fn wire_record(id: &RecordId) -> &str {
+/// The record `id` travels under on the workspace's shared desk: its route, empty for the
+/// package's primary record.
+#[must_use]
+pub fn wire_record(id: &RecordId) -> &str {
     id.route()
 }
 
-/// `(tab, record)` for every window of `tree` whose component bound a record,
-/// or that keeps the record the desk showed it, in wire spelling.
-pub(crate) fn live(
-    bindings: &HashMap<TabId, RecordCheckout>,
-    held: &HashMap<TabId, String>,
+/// The application `tab` of `tree` runs, or `None` for a window that is not an application's.
+#[must_use]
+pub fn app_of(tree: &DesktopTree, tab: TabId) -> Option<&str> {
+    match &tree.tab(tab)?.tile {
+        TileContent::LocalApp { app_id, .. } => Some(app_id),
+        _ => None,
+    }
+}
+
+/// What `tab` shows, as presence names it: the application it runs and its record's wire spelling
+/// ([`wire_record`]), or `None` for a window no component bound a record to yet.
+#[must_use]
+pub fn of_window<S: BuildHasher>(
+    tree: &DesktopTree,
+    bindings: &HashMap<TabId, RecordCheckout, S>,
+    tab: TabId,
+) -> Option<(String, String)> {
+    let app = app_of(tree, tab)?;
+    let checkout = bindings.get(&tab)?;
+    Some((app.to_owned(), wire_record(&checkout.id).to_owned()))
+}
+
+/// `(tab, record)` for every window of `tree` whose component bound a record, or that keeps the
+/// record the desk showed it, in wire spelling.
+#[must_use]
+pub fn live<S: BuildHasher>(
+    bindings: &HashMap<TabId, RecordCheckout, S>,
+    held: &HashMap<TabId, String, S>,
     tree: &DesktopTree,
 ) -> Vec<(TabId, String)> {
-    let mut live = HashSet::new();
-    for workspace in &tree.workspaces {
-        for strip in &workspace.strips {
-            for group in &strip.window_groups {
-                live.extend(group.tabs.iter().map(|tab| tab.id));
-            }
-        }
-    }
+    let live: HashSet<TabId> = tree.tabs().map(|tab| tab.id).collect();
     let mut records: Vec<(TabId, String)> = bindings
         .iter()
         .filter(|(tab, _)| live.contains(tab))
@@ -53,22 +68,18 @@ pub(crate) fn live(
     records
 }
 
-/// The window records of `desk` this page takes as its own: bound to the
-/// record the desk shows for each window whose application `kind_of` runs
-/// (the kind of record its component mounts), and held under the desk's own
-/// spelling for every other one, until the application that binds it arrives
-/// or for good when none does.
-pub(crate) fn adopted(
+/// The window records of `desk` a host takes as its own: bound to the record the desk shows for
+/// each window whose application `kind_of` runs (the kind of record its component mounts), and
+/// held under the desk's own spelling for every other one, until the application that binds it
+/// arrives or for good when none does.
+#[must_use]
+pub fn adopted(
     desk: &SharedDesktop,
     kind_of: impl Fn(&str) -> Option<RecordKind>,
 ) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
     let apps: HashMap<TabId, &str> = desk
         .tree
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .tabs()
         .filter_map(|tab| match &tab.tile {
             TileContent::LocalApp { app_id, .. } => Some((tab.id, app_id.as_str())),
             _ => None,
@@ -153,10 +164,10 @@ mod tests {
             .then(|| RecordKind::new("test.record"))
     }
 
-    /// A page that joins a shared desk holds every window on the record the
-    /// desk shows, the package primary under the route it travels as.
+    /// A host that joins a shared desk holds every window on the record the desk shows, the
+    /// package primary under the route it travels as.
     #[test]
-    fn a_joining_page_adopts_every_record_the_desk_shows() {
+    fn a_joining_host_adopts_every_record_the_desk_shows() {
         let desk = desk(&[
             (1, "so.tilo.chat", ""),
             (2, "so.tilo.notes", "derived:default@tab:0000000000000002"),
@@ -175,13 +186,12 @@ mod tests {
         assert_eq!(
             live(&bound, &held, &desk.tree),
             desk.records,
-            "the page writes each record back as the desk showed it"
+            "the host writes each record back as the desk showed it"
         );
     }
 
-    /// An application whose code has not arrived, and one this page does not
-    /// run, keep their windows' records: the page writes them back verbatim
-    /// rather than leaving them out.
+    /// An application whose code has not arrived, and one a host does not run, keep their windows'
+    /// records: the host writes them back verbatim rather than leaving them out.
     #[test]
     fn a_window_whose_application_is_not_running_keeps_its_record() {
         let shown = desk(&[
@@ -201,8 +211,8 @@ mod tests {
             "no window's record is lost"
         );
 
-        // The page runs chat now: it binds that window to the record the desk
-        // showed, and keeps the one whose application it does not run.
+        // The host runs chat now: it binds that window to the record the desk showed, and keeps
+        // the one whose application it does not run.
         let (bound, held) = adopted(&shown, |app| running(app).filter(|_| app == "so.tilo.chat"));
         assert_eq!(bound[&1].id, RecordId::package_primary());
         assert!(held.contains_key(&3), "{held:?}");
@@ -214,16 +224,15 @@ mod tests {
             ]
         );
 
-        // A spelling no record reads as a route is held, not dropped, so the
-        // page still shows the desk what its window shows.
+        // A spelling no record reads as a route is held, not dropped, so the host still shows the
+        // desk what its window shows.
         let legacy = desk(&[(1, "so.tilo.chat", "@tilo:package-primary")]);
         let (bound, held) = adopted(&legacy, running);
         assert!(bound.is_empty(), "{bound:?}");
         assert_eq!(live(&bound, &held, &legacy.tree), legacy.records);
     }
 
-    /// The package primary travels as the empty route; every other record
-    /// travels as its id.
+    /// The package primary travels as the empty route; every other record travels as its id.
     #[test]
     fn the_primary_record_travels_as_its_route() {
         assert_eq!(wire_record(&RecordId::package_primary()), "");

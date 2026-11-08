@@ -383,13 +383,7 @@ mod tests {
         assert_eq!(rebuilt.workspaces[0].name, tree.workspaces[0].name);
         assert_eq!(rebuilt.workspaces[0].id(), tree.workspaces[0].id());
         let windows = |desk: &DesktopTree| -> Vec<(u64, String)> {
-            desk.workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .map(|tab| (tab.id, tab.title.clone()))
-                .collect()
+            desk.tabs().map(|tab| (tab.id, tab.title.clone())).collect()
         };
         assert_eq!(windows(&rebuilt), windows(&tree));
 

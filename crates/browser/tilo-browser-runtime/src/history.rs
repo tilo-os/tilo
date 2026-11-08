@@ -429,11 +429,7 @@ pub(crate) fn own_recent_actions(
     since_ms: u64,
 ) -> Vec<OwnAction> {
     let titles: HashMap<TabId, &str> = tree
-        .workspaces
-        .iter()
-        .flat_map(|w| &w.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
+        .tabs()
         .map(|tab| (tab.id, tab.title.as_str()))
         .collect();
     let mut authors = ui::AuthorDirectory::new();

@@ -17,6 +17,7 @@ pub mod activity;
 pub mod drill_in;
 pub mod floating_layer;
 pub mod history_log;
+pub mod host;
 pub mod i18n;
 pub mod navigation;
 pub mod notifications;

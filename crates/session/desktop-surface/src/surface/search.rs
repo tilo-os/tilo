@@ -407,12 +407,7 @@ impl DesktopHandle {
         let mut shared = self.shared.borrow_mut();
         let Some(app) = shared
             .tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|candidate| candidate.id == tab)
+            .tab(tab)
             .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
         else {
             return;

@@ -101,7 +101,6 @@ mod crash;
         reason = "only the browser page opens windows; the host runs its tests"
     )
 )]
-mod desk_records;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
@@ -168,11 +167,11 @@ pub use host_services::{defer_model_clients, install_model_clients, model_client
 mod link;
 // A pairing link drawn as the code a phone reads.
 #[cfg(target_arch = "wasm32")]
-mod qr_code;
-#[cfg(target_arch = "wasm32")]
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
+#[cfg(target_arch = "wasm32")]
+mod qr_code;
 // The page's user root: the envelope it is kept in, and what it signs.
 #[cfg(target_arch = "wasm32")]
 mod root_identity;
