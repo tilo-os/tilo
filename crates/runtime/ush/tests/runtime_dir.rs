@@ -42,7 +42,7 @@ fn a_guest_has_a_private_runtime_directory() {
         )
         .unwrap();
     let images = dir.path().join("images");
-    fixture_images(&images);
+    fixture_images(&images).expect("the guest's fixture images");
     let uid = rustix::process::geteuid().as_raw();
     let script = r#"bash -c 'echo "dir=$XDG_RUNTIME_DIR"; test -O "$XDG_RUNTIME_DIR" && echo owned; test -d "$XDG_RUNTIME_DIR" && test -w "$XDG_RUNTIME_DIR" && echo writable; echo x > "$XDG_RUNTIME_DIR/probe" && cat "$XDG_RUNTIME_DIR/probe"; echo "mode=$(stat -c %a "$XDG_RUNTIME_DIR") fs=$(stat -f -c %T "$XDG_RUNTIME_DIR")"'"#;
     let out = Command::new(tilo_test_env::package_binary!("tilo-ush"))

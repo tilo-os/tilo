@@ -107,6 +107,7 @@ fn allow(socket: &Path, app: Option<&str>, expiry: Expiry) -> ServeResponse {
 
 #[test]
 fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
+    crate::serve_handoff::require_trusted_loader!();
     let dir = tempfile::tempdir().unwrap();
     let _env = identities(dir.path(), OWNER, OWNER);
     let (socket, store) = serving(dir.path());
@@ -169,6 +170,7 @@ fn reason(response: &ServeResponse) -> String {
 
 #[test]
 fn the_host_shell_is_terminal_only_owner_only_and_asked_for_once() {
+    crate::serve_handoff::require_trusted_loader!();
     let dir = tempfile::tempdir().unwrap();
     let _env = identities(dir.path(), OWNER, OWNER);
     let (socket, store) = serving(dir.path());

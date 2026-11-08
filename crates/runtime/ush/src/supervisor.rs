@@ -2434,6 +2434,7 @@ mod tests {
     fn an_environment_asks_for_its_door_in_its_records_workspace_and_binds_it() {
         use std::io::{BufRead as _, Write as _};
         const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        crate::require_trusted_loader!();
         let dir = tempfile::tempdir().unwrap();
         let door = dir.path().join("agent.sock");
         let listener = tilo_files::native::socket::bind(&door).unwrap();
@@ -2535,6 +2536,7 @@ mod tests {
     #[test]
     fn a_workspace_session_is_planned_with_its_own_files_and_says_where_it_runs() {
         const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        crate::require_trusted_loader!();
         let dir = tempfile::tempdir().unwrap();
         let mut session = session_in(dir.path());
         let files = dir.path().join("files");
@@ -2619,6 +2621,7 @@ mod tests {
 
     #[test]
     fn the_plan_comes_from_the_record_its_images_and_its_grants() {
+        crate::require_trusted_loader!();
         let dir = tempfile::tempdir().unwrap();
         let session = session_in(dir.path());
         let mut env = tilo_test_env::ScopedEnv::new();

@@ -189,6 +189,22 @@ fn system_provider_available(base: &std::path::Path) -> bool {
     base.join("usr/bin/tilo").is_file() && base.join("usr/libexec/tilo-deployment").is_file()
 }
 
+/// Whether this machine runs the helper from a native loader it may trust. A
+/// nested runner that maps the host's root-owned files to its caller owns them
+/// as root-equivalent, and the helper refuses every host loader there.
+#[cfg(test)]
+macro_rules! require_trusted_loader {
+    () => {
+        tilo_test_env::require_capability!(
+            TrustedLoader,
+            $crate::helper_runtime::native_loader_trusted(),
+            "the helper's native loader"
+        );
+    };
+}
+#[cfg(test)]
+pub(crate) use require_trusted_loader;
+
 #[cfg(test)]
 mod tests {
     use super::*;

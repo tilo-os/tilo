@@ -29,10 +29,27 @@ use ush::records::Records;
 use ush::store::Store;
 use ush::supervisor::{ServeRequest, ServeResponse, decide_serve, recv_with_fd};
 
-/// The sandbox these tests drive a guest in: a user namespace to make
-/// one and the permission to enter it.
-macro_rules! require_sandbox {
+/// Whether this machine runs the helper from a native loader it may trust: a
+/// nested runner that maps the host's root-owned files to its caller owns them
+/// as root-equivalent, and the helper refuses every host loader there.
+macro_rules! require_trusted_loader {
     () => {
+        tilo_test_env::require_capability!(
+            TrustedLoader,
+            ush::helper_runtime::native_loader_trusted(),
+            "the helper's native loader"
+        );
+    };
+}
+pub(crate) use require_trusted_loader;
+
+/// The prologue of a test that drives a guest: the environment lock its
+/// children inherit, the sandbox it runs in (a user namespace, the permission
+/// to enter it, and a native loader the helper may trust), and proof that this
+/// machine builds the guest.
+macro_rules! require_guest {
+    () => {
+        let _guest = GUEST_ENV.lock().expect("guest env lock");
         tilo_test_env::require_capability!(
             UserNamespace,
             tilo_test_env::bubblewrap(),
@@ -42,6 +59,12 @@ macro_rules! require_sandbox {
             NamespaceEntry,
             namespace_entry(),
             "the guest's network namespace"
+        );
+        require_trusted_loader!();
+        assert_eq!(
+            guest_unavailable(),
+            None,
+            "the native guest must be observable"
         );
     };
 }
@@ -209,76 +232,81 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
 }
 
 /// Lay out the fixture images under `root` the way the supervisor finds
-/// them: `<hex id>/` trees and the current runtime's id.
-pub fn fixture_images(root: &Path) {
+/// them: `<hex id>/` trees and the current runtime's id. The closures come
+/// from the helper's own resolution, so a machine whose host loader the
+/// helper refuses fails here with that reason.
+pub fn fixture_images(root: &Path) -> std::io::Result<()> {
     let runtime = root.join(PackageId::from_bytes(RUNTIME).to_hex());
-    std::fs::create_dir_all(runtime.join("etc")).unwrap();
+    std::fs::create_dir_all(runtime.join("etc"))?;
     // base64 and tr: the run marks encode a command line and its directory.
     // stat: what a guest's own directories are.
     for program in ["bash", "id", "touch", "cat", "base64", "tr", "stat"] {
         let source = PathBuf::from("/usr/bin").join(program);
-        fixture_file(&runtime, &source);
-        if let Some(closure) = ush::helper_runtime::HelperRuntime::resolve(&source).unwrap() {
-            fixture_file(&runtime, &closure.loader);
+        fixture_file(&runtime, &source)?;
+        if let Some(closure) = ush::helper_runtime::HelperRuntime::resolve(&source)? {
+            fixture_file(&runtime, &closure.loader)?;
             for library in closure.libraries.values() {
-                fixture_file(&runtime, library);
+                fixture_file(&runtime, library)?;
             }
         }
     }
-    std::os::unix::fs::symlink("bash", runtime.join("usr/bin/sh")).unwrap();
+    std::os::unix::fs::symlink("bash", runtime.join("usr/bin/sh"))?;
     std::fs::write(
         runtime.join("etc/passwd"),
         "root:x:0:0:root:/root:/bin/bash\n",
-    )
-    .unwrap();
-    std::fs::write(runtime.join("etc/group"), "root:x:0:\n").unwrap();
+    )?;
+    std::fs::write(runtime.join("etc/group"), "root:x:0:\n")?;
 
     let tool = root.join(PackageId::from_bytes(TOOL).to_hex());
-    std::fs::create_dir_all(tool.join("usr/bin")).unwrap();
+    std::fs::create_dir_all(tool.join("usr/bin"))?;
     let command = tool.join("usr/bin").join(TOOL_COMMAND);
-    std::fs::write(&command, "#!/bin/sh\necho \"from the tool image\"\n").unwrap();
+    std::fs::write(&command, "#!/bin/sh\necho \"from the tool image\"\n")?;
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755))?;
     }
     std::fs::write(
         root.join("current-runtime"),
         PackageId::from_bytes(RUNTIME).to_string(),
-    )
-    .unwrap();
+    )?;
+    Ok(())
 }
 
 // Copy bytes into the fixture instead of putting another overlay-backed
 // host /usr underneath it. Guest root aliases resolve /lib* into /usr/lib*.
-fn fixture_file(runtime: &Path, source: &Path) {
-    let relative = source.strip_prefix("/").unwrap();
+fn fixture_file(runtime: &Path, source: &Path) -> std::io::Result<()> {
+    let relative = source.strip_prefix("/").map_err(std::io::Error::other)?;
     let relative = if relative.starts_with("lib") || relative.starts_with("lib64") {
         PathBuf::from("usr").join(relative)
     } else {
         relative.to_path_buf()
     };
     let destination = runtime.join(relative);
-    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
-    std::fs::copy(source, destination).unwrap();
+    std::fs::create_dir_all(destination.parent().unwrap_or(runtime))?;
+    std::fs::copy(source, destination).map(drop)
 }
 
-/// Can this machine build the guest at all? The probe performs the mounts
-/// the runtime performs — a user namespace mapping the real uid, `/usr` as a
-/// read-only overlay of the materialized runtime and tool lowers. It probes
-/// the subject the tests actually use, including on an overlay-backed host.
 /// Whether this process can prepare a guest's network namespace: make one
 /// and enter it, as the supervisor does before it starts any guest.
 pub fn namespace_entry() -> std::io::Result<()> {
     tilo_egress::Netns::create()?.open_inside().map(drop)
 }
 
-/// Why no guest can run on this machine, or `None`.
+/// Why no guest can run on this machine, or `None`: the probe performs the
+/// mounts the runtime performs — a user namespace mapping the real uid, `/usr`
+/// as a read-only overlay of the materialized runtime and tool lowers. It
+/// probes the subject the tests actually use, including on an overlay-backed
+/// host.
 pub fn guest_unavailable() -> Option<String> {
     let Some(bwrap) = which_bwrap() else {
         return Some("bwrap is not installed".into());
     };
     let dir = tempfile::tempdir().ok()?;
-    fixture_images(dir.path());
+    if let Err(error) = fixture_images(dir.path()) {
+        return Some(format!(
+            "the guest's fixture images cannot be built: {error}"
+        ));
+    }
     let lower = dir
         .path()
         .join(PackageId::from_bytes(TOOL).to_hex())
@@ -331,13 +359,7 @@ fn which_bwrap() -> Option<PathBuf> {
 /// A machine that cannot build the actual guest must fail this check.
 #[test]
 fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
-    let _guest = GUEST_ENV.lock().expect("guest env lock");
-    require_sandbox!();
-    assert_eq!(
-        guest_unavailable(),
-        None,
-        "the native guest must be observable"
-    );
+    require_guest!();
     run_handoff();
 }
 
@@ -346,13 +368,7 @@ fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
 /// marked with its line, directory and status.
 #[test]
 fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
-    let _guest = GUEST_ENV.lock().expect("guest env lock");
-    require_sandbox!();
-    assert_eq!(
-        guest_unavailable(),
-        None,
-        "the native guest must be observable"
-    );
+    require_guest!();
     let dir = tempfile::tempdir().expect("tempdir");
     let (_env, _store, socket, granted) = serve_fixture(dir.path());
     for name in ["one", "two", "three"] {
@@ -401,13 +417,7 @@ fn guests_started(store: &Store) -> usize {
 /// runs in it, its output piped back; the next ones run in the same guest.
 #[test]
 fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
-    let _guest = GUEST_ENV.lock().expect("guest env lock");
-    require_sandbox!();
-    assert_eq!(
-        guest_unavailable(),
-        None,
-        "the native guest must be observable"
-    );
+    require_guest!();
     let dir = tempfile::tempdir().expect("tempdir");
     let (_env, store, socket, granted) = serve_fixture(dir.path());
     std::fs::write(granted.join("notes.md"), "one\ntwo\n").unwrap();
@@ -488,16 +498,10 @@ fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
 /// command through the actual native guest, without a host-shell grant.
 #[test]
 fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
-    let _guest = GUEST_ENV.lock().expect("guest env lock");
-    require_sandbox!();
-    assert_eq!(
-        guest_unavailable(),
-        None,
-        "the native guest must be observable"
-    );
+    require_guest!();
     let dir = tempfile::tempdir().unwrap();
     let images = dir.path().join("images");
-    fixture_images(&images);
+    fixture_images(&images).expect("the guest's fixture images");
     let usr = dir.path().join("usr");
     std::fs::create_dir_all(usr.join("bin")).unwrap();
     std::fs::create_dir_all(usr.join("libexec")).unwrap();
@@ -648,7 +652,7 @@ fn serve_in_background(socket: &Path, store: &Store) {
 /// the record grants.
 fn serve_fixture(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {
     let images = dir.join("images");
-    fixture_images(&images);
+    fixture_images(&images).expect("the guest's fixture images");
 
     let mut env = tilo_test_env::ScopedEnv::new();
     // The supervisor re-execs itself to start a session. Under `cargo test`
@@ -751,7 +755,7 @@ const W2: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 /// its scoped variables, its store, its socket and the files folder.
 fn serve_with_files(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {
     let images = dir.join("images");
-    fixture_images(&images);
+    fixture_images(&images).expect("the guest's fixture images");
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_USH_BIN", tilo_test_env::package_binary!("tilo-ush"));
     env.set("TILO_USH_IMAGES", &images);
@@ -802,6 +806,7 @@ fn listed(response: &ServeResponse) -> Vec<String> {
 #[test]
 fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
+    require_trusted_loader!();
     let dir = tempfile::tempdir().expect("tempdir");
     let (_env, store, socket, _files) = serve_with_files(dir.path());
     let legacy = Records::at(store.records_root());
@@ -921,13 +926,7 @@ fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
 /// files around them.
 #[test]
 fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
-    let _guest = GUEST_ENV.lock().expect("guest env lock");
-    require_sandbox!();
-    assert_eq!(
-        guest_unavailable(),
-        None,
-        "the native guest must be observable"
-    );
+    require_guest!();
     let dir = tempfile::tempdir().expect("tempdir");
     let (_env, _store, socket, files) = serve_with_files(dir.path());
     let tree = |id: &str| files.join(".workspaces").join(id);
@@ -999,13 +998,7 @@ fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
 /// session's lease that the guest was not set up, not that a shell exited.
 #[test]
 fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_terminal() {
-    let _guest = GUEST_ENV.lock().expect("guest env lock");
-    require_sandbox!();
-    assert_eq!(
-        guest_unavailable(),
-        None,
-        "the native guest must be observable"
-    );
+    require_guest!();
     let dir = tempfile::tempdir().expect("tempdir");
     let (mut env, store, socket, _granted) = serve_fixture(dir.path());
     // A record that grants a host cannot start where the kernel refuses the
@@ -1087,6 +1080,7 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
 #[test]
 fn a_sandbox_that_cannot_be_built_is_explained() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
+    require_trusted_loader!();
     assert!(
         which_bwrap().is_some(),
         "the sandbox diagnostic test requires bwrap"
@@ -1094,7 +1088,7 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
     let unavailable = guest_unavailable();
     let dir = tempfile::tempdir().expect("tempdir");
     let images = dir.path().join("images");
-    fixture_images(&images);
+    fixture_images(&images).expect("the guest's fixture images");
     let public_command = dir.path().join("ush");
     std::os::unix::fs::symlink(tilo_test_env::package_binary!("tilo-ush"), &public_command)
         .unwrap();
@@ -1294,14 +1288,10 @@ fn start_reexec_supervisor(
 
 #[test]
 fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
-    require_sandbox!();
-    assert!(
-        guest_unavailable().is_none(),
-        "this regression must observe a real confined guest"
-    );
+    require_guest!();
     let dir = tempfile::tempdir().unwrap();
     let images = dir.path().join("images");
-    fixture_images(&images);
+    fixture_images(&images).expect("the guest's fixture images");
     let store = Store::at(dir.path().join("store"));
     store.ensure().unwrap();
     let granted = dir.path().join("granted");
@@ -1380,16 +1370,10 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
 /// ends.
 #[test]
 fn a_guest_reaches_the_session_through_its_own_agent_door() {
-    let _guest = GUEST_ENV.lock().expect("guest env lock");
-    require_sandbox!();
-    assert_eq!(
-        guest_unavailable(),
-        None,
-        "the native guest must be observable"
-    );
+    require_guest!();
     let dir = tempfile::tempdir().unwrap();
     let images = dir.path().join("images");
-    fixture_images(&images);
+    fixture_images(&images).expect("the guest's fixture images");
     let usr = dir.path().join("usr");
     std::fs::create_dir_all(usr.join("bin")).unwrap();
     std::fs::create_dir_all(usr.join("libexec")).unwrap();

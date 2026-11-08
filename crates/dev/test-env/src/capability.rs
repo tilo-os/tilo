@@ -54,6 +54,13 @@ pub enum Capability {
     /// sandbox's seccomp filter refuses `setns` even where it lets a job make
     /// namespaces.
     NamespaceEntry,
+    /// A native dynamic loader a helper may be run from: the installed host
+    /// loader, owned by root or, in a user service's id-mapped namespace,
+    /// mapped to the kernel's overflow uid on an immutable filesystem. A user
+    /// namespace that maps the host's root-owned files to the caller (a test
+    /// runner nesting an unprivileged process) is root-equivalent over them,
+    /// and such a helper refuses to trust the loader there.
+    TrustedLoader,
     /// An emulated TPM and the tools that drive it: `swtpm`, `tpm2-tools` and
     /// `cryptsetup` ([`crate::swtpm`]).
     Swtpm,
@@ -80,6 +87,7 @@ impl Capability {
         Self::Chown,
         Self::UserNamespace,
         Self::NamespaceEntry,
+        Self::TrustedLoader,
         Self::Swtpm,
         Self::KernelKeyring,
         Self::NetworkTunnel,
@@ -100,6 +108,7 @@ impl Capability {
             Self::Chown => "TILO_REQUIRE_CHOWN",
             Self::UserNamespace => "TILO_REQUIRE_USERNS",
             Self::NamespaceEntry => "TILO_REQUIRE_SETNS",
+            Self::TrustedLoader => "TILO_REQUIRE_LOADER",
             Self::Swtpm => "TILO_REQUIRE_SWTPM",
             Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
             Self::NetworkTunnel => "TILO_REQUIRE_TUN",
@@ -128,6 +137,7 @@ impl fmt::Display for Capability {
             Self::Chown => "giving files to another user",
             Self::UserNamespace => "user and mount namespaces",
             Self::NamespaceEntry => "entering namespaces (setns)",
+            Self::TrustedLoader => "a trusted native loader",
             Self::Swtpm => "an emulated TPM",
             Self::KernelKeyring => "the kernel keyring",
             Self::NetworkTunnel => "TUN devices with ip and nft",
