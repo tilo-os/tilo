@@ -127,6 +127,12 @@ impl crate::widget::Decorator for MenuButton {
         &mut self.button
     }
 
+    /// Its menu opens where the button stands, and the window's bar has no place to hang it: a
+    /// header holding one keeps its row.
+    fn window_slot_barrier(&self) -> bool {
+        true
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         Widget::sync(&mut self.button, state, path);
         // Admitted view actions execute after event dispatch. Consume their

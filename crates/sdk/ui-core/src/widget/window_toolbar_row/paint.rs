@@ -391,13 +391,26 @@ pub(super) fn paint_slots(
         );
     }
     for (i, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
-        let Some(icon) = Icon::from_name(&action.icon) else {
-            continue;
-        };
         let slot = Slot::Action(i);
         let mut lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
         lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
         lifted.destructive = action.destructive;
+        // A command that names itself stands as words where the row has room for them, its
+        // icon beside them; its icon alone where not.
+        if action.labelled && slots.actions_labelled {
+            let face = labelled_face(*rect, &action.name)
+                .hovered(lifted.hovered && lifted.enabled)
+                .pressed(lifted.pressed && lifted.enabled)
+                .toggled(lifted.on)
+                .disabled(!lifted.enabled);
+            posed(scene, transform, pose, (&slot, *rect), |scene, at| {
+                crate::widget::Button::paint(scene, at, tr, theme, &face);
+            });
+            continue;
+        }
+        let Some(icon) = Icon::from_name(&action.icon) else {
+            continue;
+        };
         posed(scene, transform, pose, (&slot, *rect), |scene, at| {
             paint_icon_button(scene, at, tr, theme, (*rect, icon), lifted);
         });

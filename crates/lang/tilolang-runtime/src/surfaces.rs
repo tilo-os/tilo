@@ -743,18 +743,17 @@ impl Core {
             );
             self.put_in_slot(shell, slot, node)?;
         }
-        if !rest.is_empty() {
-            let more = self.more_menu(&format!("{key}~{slot}~more"));
-            let at = self.push(more)?;
-            for (index, action) in rest.iter().enumerate() {
-                let item = Self::menu_item(action, &format!("{key}~{slot}~more-{index}"));
-                let child = self.push(item)?;
-                self.insert(at, usize::MAX, child)?;
-            }
-            self.put_at_in_slot(shell, slot, at)?;
-            self.costs
-                .publish(u64::try_from(rest.len()).unwrap_or(u64::MAX));
+        // What the view left unplaced stands in the bar's own "…", beside what does not fit in
+        // its row: one bar has one door, and the app's own menu beside it is a second "…" with
+        // nothing to tell them apart.
+        for (index, action) in rest.iter().enumerate() {
+            let mut node =
+                Self::action_button(action, &format!("{key}~{slot}~more-{index}"), entry, false);
+            node.props.insert("in_menu".to_owned(), on_off(true));
+            self.put_in_slot(shell, slot, node)?;
         }
+        self.costs
+            .publish(u64::try_from(rest.len()).unwrap_or(u64::MAX));
         Ok(())
     }
 

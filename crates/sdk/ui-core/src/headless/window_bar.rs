@@ -59,6 +59,23 @@ impl FrameHarness {
         self.window_bar
     }
 
+    /// Lay the whole window out at `viewport`, its bar included, under
+    /// `theme`: the app's frame gets the part under the bar, as the desktop
+    /// gives it one. The bar itself is laid out when it is drawn
+    /// ([`Self::window_bar_layout`], a capture).
+    ///
+    /// # Errors
+    /// As [`Self::relayout_themed`].
+    pub fn relayout_window_themed(
+        &mut self,
+        viewport: (u32, u32),
+        theme: crate::theme::Theme,
+    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.present_in_window_bar();
+        let frame = self.content_viewport(viewport);
+        self.relayout_themed(frame, theme)
+    }
+
     /// The History control the window lists beside the app's slots, as the
     /// desktop's bar (or, outside a session, the runner's slot row) shows
     /// it: none while the app has no History to open.
@@ -306,6 +323,16 @@ impl FrameHarness {
         }
     }
 
+    /// Where the app's frame stands in a window of `viewport`: how far below the window's top it
+    /// starts (the desktop's bar above it) and how tall it is, in the window's own pixels.
+    pub fn frame_extent(&self, viewport: (u32, u32)) -> (f64, f64) {
+        let (_, height) = self.content_viewport(viewport);
+        (
+            f64::from(viewport.1.saturating_sub(height)),
+            f64::from(height),
+        )
+    }
+
     /// Where a point of the window (a capture's picture, as the person sees
     /// it) is in the app's frame under the bar. The bar is the desktop's:
     /// a point on it is refused, never handed to the app.
@@ -406,6 +433,20 @@ impl FrameHarness {
         );
         lay_out_bar(&mut bar, width, &self.theme);
         bar
+    }
+
+    /// The window's bar as it lays itself out across a window `width` wide, as the desktop draws
+    /// it: the app's slots, the bar's own overflow, the History control and the window's own
+    /// controls, and the room it leaves empty. A capture, an inspector and a layout check read
+    /// the bar through it.
+    pub fn window_bar_layout(&mut self, width: f64) -> crate::window_toolbar::BarLayout {
+        if !self.window_bar {
+            return crate::window_toolbar::BarLayout {
+                spare: 0.0,
+                controls: Vec::new(),
+            };
+        }
+        self.painted_window_bar(width).bar_layout()
     }
 
     /// How the window's bar, as the desktop draws it across a window

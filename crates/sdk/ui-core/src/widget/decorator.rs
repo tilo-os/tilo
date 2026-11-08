@@ -444,6 +444,7 @@ decorator_trait! {
         fn name() -> &str;
         fn test_id() -> Option<&str>;
         fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
+        fn window_slot_barrier() -> bool;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;

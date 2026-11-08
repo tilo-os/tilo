@@ -1634,6 +1634,12 @@ pub trait Widget {
         None
     }
 
+    /// Whether this control opens a panel where it stands, which the window's bar has no place
+    /// to hang: a header holding one keeps its row rather than moving it into the bar.
+    fn window_slot_barrier(&self) -> bool {
+        false
+    }
+
     /// Downcast to the concrete widget, for hosts and tests that reach a
     /// known widget through `dyn Widget`. Default `None` (a widget may borrow
     /// and so not be `'static`); a widget opts in with `Some(self)`, and a

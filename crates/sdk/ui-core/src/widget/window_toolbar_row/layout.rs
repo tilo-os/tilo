@@ -51,6 +51,18 @@ pub(crate) struct Slots {
     pub views_menu: Rect,
     /// The actions standing in the row, the first of the declared ones.
     pub actions: Vec<Rect>,
+    /// The labelled actions in the row are text buttons
+    /// ([`crate::window_toolbar::ToolbarAction::labelled`]), not icons.
+    pub actions_labelled: bool,
+    /// The widths the leading actions' words need, whether or not the row shows
+    /// them (`0.0`: the action has no words).
+    pub leading_words: Vec<f64>,
+    /// The widths the actions' words need, whether or not the row shows them
+    /// (`0.0`: the action has no words).
+    pub action_words: Vec<f64>,
+    /// The room the location leaves empty in the row, beside its label: room a
+    /// label of the row's actions could stand in.
+    pub spare: f64,
     /// The overflow button (`Rect::ZERO`: every action is in the row).
     pub overflow: Rect,
     /// Which form of its label the location shows
@@ -194,6 +206,8 @@ pub(super) struct Measured {
     pub(super) tabs: Vec<f64>,
     /// Each leading action's text button width (`0.0`: not labelled).
     pub(super) leading: Vec<f64>,
+    /// Each action's text button width (`0.0`: not labelled).
+    pub(super) actions: Vec<f64>,
 }
 
 /// What the views and the location's forms were measured for.
@@ -202,6 +216,8 @@ pub(super) struct MeasureKey {
     pub(super) labels: Vec<String>,
     /// Each leading action's name where it is labelled, else empty.
     pub(super) leading: Vec<String>,
+    /// Each action's name where it is labelled, else empty.
+    pub(super) actions: Vec<String>,
     pub(super) forms: Vec<String>,
     pub(super) editable: bool,
     pub(super) picker: bool,
@@ -351,7 +367,7 @@ impl Slots {
         toolbar: &WindowToolbar,
         row: Rect,
         views: ViewsSize,
-        (forms, labels): (&LocationForms, &[f64]),
+        (forms, labels, action_labels): (&LocationForms, &[f64], &[f64]),
     ) -> Self {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
@@ -363,7 +379,7 @@ impl Slots {
             inline: 0,
             ..Kept::all(toolbar, 0)
         };
-        let room = Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow, &[])
+        let room = Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow, (&[], &[]))
             .location
             .width();
         let form = forms.fitting(room);
@@ -372,15 +388,16 @@ impl Slots {
             .as_ref()
             .map_or_else(|| forms.least(form, room), |notice| notice.least);
         let shown = (forms.width(form), least, form > 0);
-        let icons = Self::arranged(toolbar, row, views, shown, &[]);
-        let mut slots = if form == 0
-            && labels.iter().any(|width| *width > CONTROL_PX)
-            && icons.folds_nothing(toolbar)
-        {
-            let labelled = Self::arranged(toolbar, row, views, shown, labels);
+        let icons = Self::arranged(toolbar, row, views, shown, (&[], &[]));
+        let names = labels
+            .iter()
+            .chain(action_labels)
+            .any(|width| *width > CONTROL_PX);
+        let mut slots = if form == 0 && names && icons.folds_nothing(toolbar) {
+            let labelled = Self::arranged(toolbar, row, views, shown, (labels, action_labels));
             if labelled.folds_as(&icons) {
                 Self {
-                    labelled: true,
+                    labelled: labels.iter().any(|width| *width > 0.0),
                     ..labelled
                 }
             } else {
@@ -390,9 +407,16 @@ impl Slots {
             icons
         };
         slots.form = form;
+        // What the actions' words need, whether or not this layout shows them: a row that had
+        // room for a label and showed its icon instead is what a check reports.
+        slots.leading_words = labels.to_vec();
+        slots.action_words = action_labels.to_vec();
         if let Some(notice) = notice {
             slots.place_notice(notice, forms.width(form) + forms.chrome);
         }
+        // The room the location leaves empty beside its label, once the notice has its own: what
+        // a label of the actions could stand in.
+        slots.spare = (slots.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
         slots
     }
 
@@ -467,7 +491,7 @@ impl Slots {
         row: Rect,
         views: ViewsSize,
         (form_w, least, shortened): (f64, f64, bool),
-        labels: &[f64],
+        (labels, action_labels): (&[f64], &[f64]),
     ) -> Self {
         let row_actions = toolbar
             .row_actions()
@@ -504,7 +528,13 @@ impl Slots {
         for &place in &places {
             let mut inline = row_actions;
             loop {
-                let slots = Self::with_inline(toolbar, row, Kept { inline, ..all }, place, labels);
+                let slots = Self::with_inline(
+                    toolbar,
+                    row,
+                    Kept { inline, ..all },
+                    place,
+                    (labels, action_labels),
+                );
                 let room = if toolbar.location.is_some() {
                     slots.location.width() >= COMFORTABLE_LOCATION_PX.max(least)
                 } else {
@@ -529,7 +559,13 @@ impl Slots {
                 } else {
                     0
                 };
-            let slots = Self::with_inline(toolbar, row, Kept { inline, ..kept }, place, labels);
+            let slots = Self::with_inline(
+                toolbar,
+                row,
+                Kept { inline, ..kept },
+                place,
+                (labels, action_labels),
+            );
             let located = match place {
                 ViewsPlace::InLocation(least) => slots.location.width() >= least,
                 _ => {
@@ -598,7 +634,7 @@ impl Slots {
         row: Rect,
         kept: Kept,
         place: ViewsPlace,
-        labels: &[f64],
+        (labels, action_labels): (&[f64], &[f64]),
     ) -> Self {
         let mut slots = Self::default();
         let y0 = row.center().y - CONTROL_PX / 2.0;
@@ -652,13 +688,15 @@ impl Slots {
             trailing = true;
         }
         let mut actions = Vec::with_capacity(inline);
-        for _ in 0..inline {
-            let rect = Rect::new(x1 - CONTROL_PX, y0, x1, y0 + CONTROL_PX);
+        for index in (0..inline).rev() {
+            let width = CONTROL_PX.max(action_labels.get(index).copied().unwrap_or(0.0));
+            let rect = Rect::new(x1 - width, y0, x1, y0 + CONTROL_PX);
             x1 = rect.x0 - CONTROL_GAP;
             actions.push(rect);
             trailing = true;
         }
         actions.reverse();
+        slots.actions_labelled = action_labels.iter().take(inline).any(|width| *width > 0.0);
         slots.actions = actions;
         if trailing {
             x1 = x1 + CONTROL_GAP - SECTION_GAP;
@@ -721,13 +759,13 @@ impl Slots {
 
     /// Whether the forward button is in the overflow menu, the row having
     /// no room for it.
-    pub(super) fn forward_folded(&self, toolbar: &WindowToolbar) -> bool {
+    pub(crate) fn forward_folded(&self, toolbar: &WindowToolbar) -> bool {
         toolbar.navigation.is_some() && self.forward.area() <= 0.0
     }
 
     /// Whether the sidebar's toggle is in the overflow menu, the row having
     /// no room for it.
-    pub(super) fn sidebar_folded(&self, toolbar: &WindowToolbar) -> bool {
+    pub(crate) fn sidebar_folded(&self, toolbar: &WindowToolbar) -> bool {
         toolbar.sidebar.is_some() && self.sidebar.area() <= 0.0
     }
 

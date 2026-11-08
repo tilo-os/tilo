@@ -676,6 +676,9 @@ fn collect_slots(
     if is_app_search(widget) {
         return Some(());
     }
+    if widget.window_slot_barrier() {
+        return None;
+    }
     let id = widget.test_id().filter(|id| !id.is_empty()).map_or_else(
         || {
             let at: Vec<String> = path.iter().map(usize::to_string).collect();
