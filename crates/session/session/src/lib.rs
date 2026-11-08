@@ -1734,6 +1734,7 @@ impl Session {
         // (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
         if let Some(launch) = &options.launch {
             launch.lend_services(Rc::clone(&services));
+            launch.lend_arrangement(Rc::clone(&arrangement));
         }
         // The session's own controls, served beside its services: an app
         // reads what they are now and invokes what changes them the way it
@@ -2123,7 +2124,7 @@ impl Session {
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
-        mount::connectors::start_all(&session);
+        mount::connectors::reconcile(&session);
         if starts_locked {
             session.compositor.lock_now()?;
         }

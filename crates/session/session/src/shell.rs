@@ -1183,6 +1183,12 @@ impl crate::Session {
         if let Some(shell) = self.shell.as_mut() {
             shell.publish();
         }
+        // The desk's places are what the outside services keeping its records in step are due
+        // for: each workspace with a place of an app's records has that app's connector, and one
+        // that no longer shows any ends. Read every pass, so a place made, moved between
+        // workspaces or closed is followed on the pass it happened on, in every workspace of
+        // the desk, not only the one in front (`docs/architecture/apps.md` §1, §8).
+        crate::mount::connectors::reconcile(self);
         Ok(())
     }
 
