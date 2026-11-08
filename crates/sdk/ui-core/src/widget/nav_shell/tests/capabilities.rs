@@ -1138,3 +1138,55 @@ fn a_headers_actions_stand_at_their_columns_trailing_edge() {
         "the detail's action ends at the detail's edge {content}: {own:?}"
     );
 }
+
+/// A list offers its actions again as what it shows changes: the row takes the ones it is
+/// handed now, so an action that arrives with the icon it draws gives its label up for the
+/// icon, and the title keeps its words instead of standing cut beside it.
+#[test]
+fn a_row_gives_its_labels_up_when_its_actions_are_offered_again() {
+    let theme = Theme::dark();
+    let title = "Quarterly planning for the autumn release, and the review after it";
+    let primary = |icon: Option<Icon>| {
+        let button = Button::new("new", "New note")
+            .role(crate::widget::ButtonRole::Primary)
+            .on_view(|| {});
+        Box::new(match icon {
+            Some(icon) => button.with_icon(icon),
+            None => button,
+        }) as Element
+    };
+    let shell = NavShell::new()
+        .content(Probe::boxed("content").0)
+        .content_header(
+            title,
+            vec![labelled("pin", "Pin to the top", Icon::Pin), primary(None)],
+        );
+    let mut h = harness(shell, 560, 700, theme);
+    settle(&mut h, 560, 700);
+    let before = part_rect(&h, Part::Title(Column::Content));
+    let stood = part_rect(&h, Part::Action(Column::Content, 1));
+    assert!(
+        stood.width() > stood.height() * 1.5,
+        "an action with no icon to give up stands labelled ({stood:?})"
+    );
+
+    // The same action, offered again as the app draws it: its icon and its label.
+    h.root_mut::<NavShell>().set_content_header(
+        title,
+        vec![
+            labelled("pin", "Pin to the top", Icon::Pin),
+            primary(Some(Icon::Plus)),
+        ],
+    );
+    settle(&mut h, 560, 700);
+    let action = part_rect(&h, Part::Action(Column::Content, 1));
+    assert!(
+        action.width() < action.height() * 1.5,
+        "the action gave its label up ({action:?})"
+    );
+    let after = part_rect(&h, Part::Title(Column::Content));
+    assert!(
+        after.width() > before.width() + (stood.width() - action.width()) / 2.0,
+        "the title took the room the label gave up ({before:?} then {after:?})"
+    );
+}
