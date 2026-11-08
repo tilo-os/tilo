@@ -123,6 +123,20 @@ pub struct Staged {
     harness: FrameHarness,
 }
 
+impl Staged {
+    /// The app `app` of `packages` as the window's bar names it: its icon and its title, as the
+    /// launcher and the desktop's bar wear them.
+    fn name_window(harness: &mut FrameHarness, app: &str, packages: &Rc<Packages>) {
+        let meta = packages.1.iter().find(|meta| meta.app == app);
+        let title = meta.map_or_else(String::new, |meta| meta.title.clone());
+        let icon = meta
+            .and_then(|meta| meta.icon.as_deref())
+            .and_then(|declared| ui::icons::Icon::from_name(&declared.replace('_', "-")))
+            .unwrap_or(ui::icons::Icon::AppWindow);
+        harness.set_window_app(ui::widget::AppKind::App(icon), title);
+    }
+}
+
 /// How often the window and its instance may answer each other before a frame is taken as it
 /// is: the rows a list shows, then the rows those rows show.
 const EXCHANGES: usize = 8;
@@ -282,6 +296,10 @@ impl Staged {
         let harness =
             FrameHarness::new_with_theme(ui::State::new(), Box::new(window), viewport, theme);
         let mut staged = Self { instance, harness };
+        // The window a person sees: the desktop's bar over the app's frame, the app's slots in
+        // it, and the app told that the bar hosts them, as the desktop tells it.
+        Self::name_window(&mut staged.harness, app, packages);
+        staged.harness.present_in_window_bar();
         staged.exchange();
         Ok(staged)
     }
@@ -322,7 +340,7 @@ impl Staged {
         self.harness.set_input_scale(display_scale)?;
         self.harness.set_interaction_environment(input);
         self.harness
-            .relayout_themed(viewport, theme)
+            .relayout_window_themed(viewport, theme)
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
         // A motion that lands even when reduced (a cross-fade) runs out on the toolkit's clock.
@@ -512,7 +530,7 @@ impl Staged {
         theme.reduce_motion = false;
         self.harness.set_interaction_environment(input);
         self.harness
-            .relayout_themed(viewport, theme)
+            .relayout_window_themed(viewport, theme)
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
         self.settle()
@@ -529,6 +547,16 @@ impl Staged {
             self.harness.click_named(id)
         };
         pressed.map_err(|error| format!("pressing {id:?}: {error}"))?;
+        self.exchange();
+        self.settle()
+    }
+
+    /// Press one of the window's bar slots by its id, as the desktop hands the press over: the
+    /// shell's own Back, an action the app's page declared. The bar is the window's, so the press
+    /// reaches the app through it, never through a widget of the frame.
+    pub fn press_bar_slot(&mut self, id: &str) -> Result<(), String> {
+        self.harness
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
         self.exchange();
         self.settle()
     }
@@ -924,6 +952,58 @@ mod tests {
             .harness()
             .render_png(&captures.join(format!("{name}-agent-marker.png")));
         (before, staged.harness().render_rgba())
+    }
+
+    /// The bar the desktop draws over the app's frame keeps one "…" and shows each control
+    /// once: an app's own door to what does not fit is the bar's door, not a second one beside
+    /// it.
+    #[test]
+    fn the_window_bar_shows_each_control_once() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (960, 1080);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the window lies out");
+        let bar = staged.harness_mut().window_bar_layout(f64::from(width));
+        let named = |bar: &ui::window_toolbar::BarLayout| -> String {
+            bar.controls
+                .iter()
+                .map(|control| format!("{}:{}", control.slot, control.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let doors = bar
+            .controls
+            .iter()
+            .filter(|control| {
+                control.icon.as_deref() == Some(ui::icons::Icon::MoreHorizontal.name())
+            })
+            .count();
+        assert_eq!(doors, 1, "one bar keeps one \"…\": {}", named(&bar));
+        let problems = crate::layout_check::audit::bar(&bar);
+        assert!(
+            problems.is_empty(),
+            "the bar shows each control once: {:?} ({})",
+            problems.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            named(&bar),
+        );
     }
 
     /// The agent's mark on the control the tilolang Tasks app binds: an action the app
@@ -1702,7 +1782,7 @@ mod tests {
             );
             if width <= 390 {
                 assert!(
-                    crate::layout_check::back_chip(root, (width, height)),
+                    crate::layout_check::back_chip(&mut staged, (width, height)),
                     "a window too narrow for the list beside the document fills with it, and \
                      carries the shell's way back at {width}×{height}"
                 );
@@ -1837,20 +1917,17 @@ mod tests {
                 Some(task_type.clone()),
                 "the window shows the task as a page at {width}×{height}"
             );
-            {
-                let root = &staged.harness().inspection().root;
-                assert!(
-                    crate::layout_check::back_chip(root, (width, height)),
-                    "the page carries the shell's way back at {width}×{height}, not one of its own"
-                );
-                assert!(
-                    titled(root, label),
-                    "the page names the task in its heading at {width}×{height}"
-                );
-            }
+            assert!(
+                crate::layout_check::back_chip(&mut staged, (width, height)),
+                "the page carries the shell's way back at {width}×{height}, not one of its own"
+            );
+            assert!(
+                titled(&staged.harness().inspection().root, label),
+                "the page names the task in its heading at {width}×{height}"
+            );
 
             staged
-                .press(ui::widget::WINDOW_BACK, true)
+                .press_bar_slot(ui::widget::WINDOW_BACK)
                 .expect("the shell's back presses");
             staged.freshen().expect("the list comes back to rest");
             assert_ne!(

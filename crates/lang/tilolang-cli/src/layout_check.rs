@@ -1284,11 +1284,26 @@ fn first_row(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Optio
         .find_map(|child| first_row(child, viewport))
 }
 
-/// Whether the window shows its Back chip where a finger reaches it: how a person holding a
-/// narrow window comes back to the list it opened something from.
-fn back_chip(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
-    (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_BACK))
-        || node.children.iter().any(|child| back_chip(child, viewport))
+/// Whether the window shows its way back where a finger reaches it: how a person holding a
+/// narrow window comes back to the list it opened something from. The desktop's bar over the
+/// window carries it, as its own navigation or the shell's slot; an app in a window of its own
+/// draws a chip in its frame.
+fn back_chip(staged: &mut stage::Staged, viewport: (u32, u32)) -> bool {
+    fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
+        (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_BACK))
+            || node.children.iter().any(|child| in_frame(child, viewport))
+    }
+    if in_frame(&staged.harness().inspection().root, viewport) {
+        return true;
+    }
+    let bar = staged
+        .harness_mut()
+        .window_bar_layout(f64::from(viewport.0));
+    bar.controls.iter().any(|control| {
+        (control.slot == "back" || control.id == ui::widget::WINDOW_BACK)
+            && control.rect[2] > 0.0
+            && control.rect[3] > 0.0
+    })
 }
 
 /// Where a finger taps to open a row of the list the window shows now: the row it keeps
@@ -1506,11 +1521,11 @@ impl AppCheck<'_> {
                 tappable_row(&staged, viewport)
             };
             if tapped.is_none() {
-                if !back_chip(&staged.harness().inspection().root, viewport) {
+                if !back_chip(&mut staged, viewport) {
                     continue;
                 }
                 let shown = staged.front_target();
-                staged.press(ui::widget::WINDOW_BACK, true)?;
+                staged.press_bar_slot(ui::widget::WINDOW_BACK)?;
                 layer = format!("{layer}, then Back pressed");
                 for layout in of_size.iter().copied() {
                     staged.lay_out(
@@ -1711,9 +1726,19 @@ impl AppCheck<'_> {
         }
         self.ran = self.ran.saturating_add(1);
         let inspection = staged.harness().inspection();
+        // The bar the desktop draws over the frame: the app's own slots merged with the window's
+        // navigation, its one "…" and its controls.
+        let bar = staged
+            .harness_mut()
+            .window_bar_layout(f64::from(viewport.0));
         if self.dump == Some(viewport) {
+            let json = serde_json::to_string_pretty(&bar).map_err(|e| e.to_string())?;
+            eprintln!("== {} {label} at {layout} — the bar\n{json}", self.meta.app);
             let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
-            eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
+            eprintln!(
+                "== {} {label} at {layout} — the frame\n{json}",
+                self.meta.app
+            );
             if let Some(dir) = self.shots
                 && (layout.display_scale - 1.0).abs() < f64::EPSILON
                 && (layout.text_scale - 1.0).abs() < f32::EPSILON
@@ -1755,6 +1780,7 @@ impl AppCheck<'_> {
             ui::chrome::disclosure_gutter(&layout.theme()),
         ));
         problems.extend(mixed_language());
+        problems.extend(audit::bar(&bar));
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.
@@ -1814,7 +1840,7 @@ impl AppCheck<'_> {
                         family_slug(family)
                     ))
                 };
-                staged.harness().render_png(&file);
+                staged.harness_mut().render_window_png(&file);
             }
         }
         staged.lay_out(viewport, layout.theme(), layout.input(), 1.0)

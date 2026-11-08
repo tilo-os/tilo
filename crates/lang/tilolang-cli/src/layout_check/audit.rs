@@ -85,10 +85,17 @@ pub enum Kind {
     /// section goes by: a section's title stands on the column its content does, and a first
     /// level keeps no more than the one step a folding chevron hangs in front of it.
     FirstLevelIndent,
+    /// One bar showing one control twice: the same action under two ids, the same icon saying
+    /// the same words twice, or a second "…" beside the bar's own. One bar shows each control
+    /// once, and has one door to what does not fit in it.
+    DuplicateBarControl,
+    /// An action that asks for its words standing as its icon alone in a bar with room for those
+    /// words: a glyph nobody can name, where the bar could have said what it does.
+    IconOnlyBarAction,
 }
 
 impl Kind {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 29] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -116,6 +123,8 @@ impl Kind {
         Self::RepeatedPageTitle,
         Self::DoubleNavigation,
         Self::FirstLevelIndent,
+        Self::DuplicateBarControl,
+        Self::IconOnlyBarAction,
     ];
 
     pub fn name(self) -> &'static str {
@@ -147,6 +156,8 @@ impl Kind {
             Self::RepeatedPageTitle => "repeated-page-title",
             Self::DoubleNavigation => "double-navigation",
             Self::FirstLevelIndent => "first-level-indent",
+            Self::DuplicateBarControl => "duplicate-bar-control",
+            Self::IconOnlyBarAction => "icon-only-bar-action",
         }
     }
 }
@@ -1230,6 +1241,86 @@ impl Walk<'_> {
             detail,
         });
     }
+}
+
+/// The window's bar, as a finding names the widget it is about: the bar is the window's, not
+/// the app's.
+const BAR: &str = "WindowBar";
+
+/// What is wrong with one window's bar as it lays itself out across the window: a control it
+/// shows twice, and an action that asks for its words standing as its icon alone while the bar
+/// has room for those words.
+pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
+    let mut out = Vec::new();
+    for (index, control) in layout.controls.iter().enumerate() {
+        let Some(later) = layout.controls.get(index.saturating_add(1)..) else {
+            continue;
+        };
+        let Some(second) = later.iter().find(|second| same_control(control, second)) else {
+            continue;
+        };
+        let what = |control: &ui::window_toolbar::BarControl| {
+            if control.name.is_empty() {
+                control.id.clone()
+            } else {
+                format!("\"{}\"", control.name)
+            }
+        };
+        out.push(Problem {
+            kind: Kind::DuplicateBarControl,
+            keys: Vec::new(),
+            widget: BAR.to_owned(),
+            id: Some(control.id.clone()),
+            detail: format!(
+                "the bar shows {} and {} as one control: the {} control at x {:.0} and the {} \
+                 control at x {:.0}, where one bar shows each control once and keeps one \"…\" \
+                 for what does not fit in it",
+                what(control),
+                what(second),
+                control.slot,
+                control.rect[0],
+                second.slot,
+                second.rect[0],
+            ),
+        });
+    }
+    for control in &layout.controls {
+        // Drawn as its icon alone, narrower than the words it has, while the room stood empty
+        // beside it: a person cannot read what it does. A "…" is a glyph by design.
+        if control.menu || control.icon.is_none() || control.words <= 0.0 {
+            continue;
+        }
+        let missing = control.words - control.rect[2];
+        if missing <= EPSILON || layout.spare < missing {
+            continue;
+        }
+        out.push(Problem {
+            kind: Kind::IconOnlyBarAction,
+            keys: Vec::new(),
+            widget: BAR.to_owned(),
+            id: Some(control.id.clone()),
+            detail: format!(
+                "the bar draws \"{}\" as its icon alone while {:.0}px of its location stand empty \
+                 beside it, and the words need {:.0}px: a bar says what an action does where it \
+                 has room for the words",
+                control.name, layout.spare, control.words,
+            ),
+        });
+    }
+    out
+}
+
+/// Whether one bar shows `a` and `b` as the same control: the same action under two ids, or two
+/// controls one glyph or one name apart, which a person cannot tell from each other. One bar
+/// shows each control once, and keeps one "…" for what does not fit in it.
+fn same_control(a: &ui::window_toolbar::BarControl, b: &ui::window_toolbar::BarControl) -> bool {
+    if !a.id.is_empty() && a.id == b.id {
+        return true;
+    }
+    if a.icon.is_some() || b.icon.is_some() {
+        return a.icon == b.icon;
+    }
+    !a.name.is_empty() && a.name == b.name
 }
 
 /// Text whose widget needs more room than layout gave it: taller at its width than its box, or
@@ -2416,5 +2507,202 @@ mod tests {
             "a whole logical pixel is not a device pixel at 1.5x"
         );
         assert!(off_pixel(&window([20.0, 10.0, 100.0, 40.0]), 1.5).is_empty());
+    }
+
+    /// A bar's control: `id` in `slot`, named `name`, showing `icon`, asking for `words` wide of
+    /// them where it is a menu button (`menu`).
+    fn control(
+        slot: &'static str,
+        id: &str,
+        name: &str,
+        icon: Option<&str>,
+        words: f64,
+        menu: bool,
+    ) -> ui::window_toolbar::BarControl {
+        let control =
+            ui::window_toolbar::BarControl::new(slot, id, Rect::new(0.0, 0.0, 32.0, 28.0))
+                .named(name)
+                .icon(icon.map(str::to_owned))
+                .words(words);
+        if menu { control.menu() } else { control }
+    }
+
+    fn bar(
+        controls: Vec<ui::window_toolbar::BarControl>,
+        spare: f64,
+    ) -> ui::window_toolbar::BarLayout {
+        ui::window_toolbar::BarLayout { spare, controls }
+    }
+
+    fn kinds(layout: &ui::window_toolbar::BarLayout) -> Vec<Kind> {
+        super::bar(layout)
+            .into_iter()
+            .map(|problem| problem.kind)
+            .collect()
+    }
+
+    /// One bar shows each control once: the same action under two ids, or two controls one glyph
+    /// apart, is one control too many.
+    #[test]
+    fn a_bar_shows_each_control_once() {
+        let twice = bar(
+            vec![
+                control(
+                    "leading",
+                    "tasks~check",
+                    "Complete",
+                    Some("circle-check"),
+                    0.0,
+                    false,
+                ),
+                control(
+                    "action",
+                    "page~check",
+                    "Complete",
+                    Some("circle-check"),
+                    0.0,
+                    false,
+                ),
+                control(
+                    "overflow",
+                    "window-toolbar-more",
+                    "More",
+                    Some("more-horizontal"),
+                    0.0,
+                    true,
+                ),
+                control("close", "window-close", "Close", Some("x"), 0.0, false),
+            ],
+            0.0,
+        );
+        assert_eq!(
+            kinds(&twice),
+            vec![Kind::DuplicateBarControl],
+            "the two check circles are one control to a person"
+        );
+        // The app's own door beside the bar's own "…": one bar has one.
+        let doors = bar(
+            vec![
+                control(
+                    "action",
+                    "page~more",
+                    "More actions",
+                    Some("more-horizontal"),
+                    0.0,
+                    true,
+                ),
+                control(
+                    "overflow",
+                    "window-toolbar-more",
+                    "More",
+                    Some("more-horizontal"),
+                    0.0,
+                    true,
+                ),
+            ],
+            0.0,
+        );
+        assert_eq!(kinds(&doors), vec![Kind::DuplicateBarControl]);
+        // Every control of a window's own bar stands once: its navigation, its "…", its
+        // controls.
+        let window = bar(
+            vec![
+                control(
+                    "sidebar",
+                    "nav-shell-sidebar",
+                    "Show sidebar",
+                    None,
+                    0.0,
+                    false,
+                ),
+                control("back", "nav-shell-back", "Back", None, 0.0, false),
+                control(
+                    "action",
+                    "page~clear",
+                    "Clear done",
+                    Some("circle-check"),
+                    0.0,
+                    false,
+                ),
+                control(
+                    "overflow",
+                    "window-toolbar-more",
+                    "More",
+                    Some("more-horizontal"),
+                    0.0,
+                    true,
+                ),
+                control("history", "window-history", "History", None, 0.0, false),
+                control(
+                    "minimize",
+                    "window-minimize",
+                    "Minimize",
+                    Some("minus"),
+                    0.0,
+                    false,
+                ),
+                control(
+                    "maximize",
+                    "window-maximize",
+                    "Maximize",
+                    Some("maximize-2"),
+                    0.0,
+                    false,
+                ),
+                control("close", "window-close", "Close", Some("x"), 0.0, false),
+            ],
+            400.0,
+        );
+        assert!(kinds(&window).is_empty(), "{:?}", kinds(&window));
+    }
+
+    /// An action that asks for its words stands with them where the bar has room, and as its
+    /// icon only where it has not.
+    #[test]
+    fn a_bar_says_what_an_action_does_where_it_has_room_for_the_words() {
+        let icon = |spare: f64| {
+            bar(
+                vec![control(
+                    "action",
+                    "page~clear",
+                    "Clear done",
+                    Some("circle-check"),
+                    64.0,
+                    false,
+                )],
+                spare,
+            )
+        };
+        assert_eq!(kinds(&icon(400.0)), vec![Kind::IconOnlyBarAction]);
+        assert!(kinds(&icon(20.0)).is_empty(), "a narrow bar keeps the icon");
+        // A labelled action stands as wide as its words: the row gave it the room.
+        let labelled = bar(
+            vec![
+                ui::window_toolbar::BarControl::new(
+                    "action",
+                    "page~clear",
+                    Rect::new(0.0, 0.0, 64.0, 28.0),
+                )
+                .named("Clear done")
+                .icon(Some("circle-check".to_owned()))
+                .labelled()
+                .words(64.0),
+            ],
+            400.0,
+        );
+        assert!(kinds(&labelled).is_empty());
+        // An action that asks for no words, like a bar's own plus, is its icon alone.
+        let quiet = bar(
+            vec![control(
+                "action",
+                "page~add",
+                "New task",
+                Some("plus"),
+                0.0,
+                false,
+            )],
+            400.0,
+        );
+        assert!(kinds(&quiet).is_empty());
     }
 }

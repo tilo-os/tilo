@@ -172,22 +172,8 @@ fn wrong_in(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<String> {
         .collect()
 }
 
-/// Where the floating surface the widget `name` draws, a popover or a sheet, stands.
-fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
-    fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<Rect> {
-        if node.widget == name {
-            let [x, y, width, height] = node.rect;
-            return Some(Rect::new(x, y, x + width, y + height));
-        }
-        node.children.iter().find_map(|child| find(child, name))
-    }
-    find(&staged.harness().inspection().root, name)
-}
-
-/// Where the floating surface the widget `name` draws stands once it is shown: a page's fields
-/// carry popovers of their own, laid out only while open, so the first one is not the surface a
-/// press opened.
-fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
+/// Every place the widget `name` (`ui.ChangeMark`, `Popover`) is laid out, in tree order.
+fn rects(staged: &stage::Staged, name: &str) -> Vec<Rect> {
     fn all(node: &ui::headless::InspectionNode, name: &str, out: &mut Vec<Rect>) {
         if node.widget == name {
             let [x, y, width, height] = node.rect;
@@ -197,27 +183,23 @@ fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
             all(child, name, out);
         }
     }
-    let mut rects = Vec::new();
-    all(&staged.harness().inspection().root, name, &mut rects);
-    rects
-        .into_iter()
-        .find(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+    let mut out = Vec::new();
+    all(&staged.harness().inspection().root, name, &mut out);
+    out
 }
 
-/// Where the column title that says `said` stands once the layout ran.
-fn title_rect(staged: &stage::Staged, said: &str) -> Option<Rect> {
-    fn find(node: &ui::headless::InspectionNode, said: &str) -> Option<Rect> {
-        let names = node
-            .semantics
-            .as_ref()
-            .and_then(|semantics| semantics.name.as_deref());
-        if node.widget == "NavShellTitle" && names == Some(said) {
-            let [x, y, width, height] = node.rect;
-            return Some(Rect::new(x, y, x + width, y + height));
-        }
-        node.children.iter().find_map(|child| find(child, said))
-    }
-    find(&staged.harness().inspection().root, said)
+/// Where the floating surface the widget `name` draws, a popover or a sheet, stands.
+fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
+    rects(staged, name).into_iter().next()
+}
+
+/// Where the floating surface the widget `name` draws stands once it is shown: a page's fields
+/// carry popovers of their own, laid out only while open, so the first one is not the surface a
+/// press opened.
+fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
+    rects(staged, name)
+        .into_iter()
+        .find(|rect| rect.width() > 0.0 && rect.height() > 0.0)
 }
 
 /// The change marks the rows of the window's lists draw, by the row they stand in.
@@ -861,28 +843,6 @@ fn is_title_door(node: &ui::headless::InspectionNode) -> bool {
             .is_some_and(|id| id.ends_with("~more"))
 }
 
-/// The menus each window under `node` offers, one list per window: a column of the bar
-/// holds the rest of the window's actions in one menu, or a page of one thing holds them
-/// behind the "…" beside its title, and never both.
-fn menus_per_window(node: &ui::headless::InspectionNode, out: &mut Vec<Vec<String>>) {
-    if matches!(node.widget.as_str(), "WindowFrame" | "TilolangWindow") {
-        out.push(Vec::new());
-    }
-    if is_shell_door(node)
-        && let (Some(doors), Some(id)) = (out.last_mut(), node.test_id.as_deref())
-        && let Some(column) = id.strip_prefix("nav-shell-more-")
-    {
-        doors.push(column.to_owned());
-    } else if is_title_door(node)
-        && let Some(doors) = out.last_mut()
-    {
-        doors.push("title".to_owned());
-    }
-    for child in &node.children {
-        menus_per_window(child, out);
-    }
-}
-
 /// The window's menu on the page: the bar's door or the "…" beside a title, whichever
 /// the window draws. Its items are the host's, read where the view is built; here it must
 /// stand where the person reaches it.
@@ -896,11 +856,8 @@ fn shown_menu(node: &ui::headless::InspectionNode) -> Option<&ui::headless::Insp
 #[test]
 fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     // A window draws its main actions as buttons and keeps the rest behind one menu: never
-    // every action as a button of its own, one menu per column of its bar at most, and
-    // one menu beside the title of the thing it shows, on a desk or on a phone. A window
-    // of one thing keeps its commands beside that title, so no lone door stands on a bar
-    // with nothing else to say.
-    let columns = ["overview", "content", "sidebar"];
+    // every action as a button of its own, and one door to what does not fit in one bar. The
+    // desktop's bar over the window is where they stand, at a desk's width and in a hand's.
     for size in [(1280, 800), (390, 844)] {
         tilo_ui_host::i18n::ensure();
         let packages = tasks_packages();
@@ -922,26 +879,31 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
         staged
             .lay_out(size, ui::Theme::light(), input, 1.0)
             .expect("the app lays out");
-        let mut windows = Vec::new();
-        menus_per_window(&staged.harness().inspection().root, &mut windows);
-        assert!(!windows.is_empty(), "the app shows a window at {size:?}");
-        let mut menus = 0;
-        for (window, doors) in windows.iter().enumerate() {
-            for door in doors {
-                assert!(
-                    columns.contains(&door.as_str()) || door == "title",
-                    "window {window} heads a menu of {door:?} at {size:?}"
-                );
-                assert!(
-                    doors.iter().filter(|held| *held == door).count() == 1,
-                    "window {window} heads a second menu of {door:?} at {size:?}"
-                );
-            }
-            menus += doors.len();
-        }
+        let bar = staged.harness_mut().window_bar_layout(f64::from(size.0));
+        let buttons = bar
+            .controls
+            .iter()
+            .filter(|control| control.slot == "leading" || control.slot == "action")
+            .count();
         assert!(
-            menus > 0,
-            "a window keeps the rest of its actions in a menu at {size:?}"
+            buttons <= ui::window_toolbar::MAX_LEADING + ui::window_toolbar::MAX_ACTIONS,
+            "a window draws no more actions as buttons than its bar holds at {size:?}: {buttons}"
+        );
+        let menus: Vec<&ui::window_toolbar::BarControl> =
+            bar.controls.iter().filter(|control| control.menu).collect();
+        assert!(
+            !menus.is_empty(),
+            "a window keeps the rest of its actions in a menu at {size:?}: {bar:?}"
+        );
+        assert!(
+            menus
+                .iter()
+                .all(|menu| menu.rect[2] > 0.0 && menu.rect[3] > 0.0),
+            "the window's menu stands where the person reaches it at {size:?}: {menus:?}"
+        );
+        assert!(
+            menus.iter().all(|menu| !menu.id.is_empty()),
+            "the window's menu is named at {size:?}: {menus:?}"
         );
     }
 }
@@ -1148,21 +1110,22 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
             header.children[0].kind, "ui.ChangeMark",
             "the window's mark stands first among the header's actions: {header:?}"
         );
-        // A node in the tree is not a pixel: the mark stands beside "Today", in its row, and the
-        // frame has its ink there.
+        // A node in the tree is not a pixel: the mark stands in the window's own header row,
+        // over the rows it counts, and the frame has its ink there.
         let mark = floating_rect(&away, "ChangeMark").expect("the window's mark is laid out");
-        let today = title_rect(&away, "Today").expect("the list column's title is laid out");
         assert!(
             mark.width() > 40.0 && mark.height() > 20.0,
             "the mark has room to stand in the header: {mark:?}"
         );
+        let listed = rects(&away, "ListRow");
+        assert!(!listed.is_empty(), "the window lists the tasks it marks");
         assert!(
-            mark.y0 <= today.y1 && mark.y1 >= today.y0,
-            "the mark stands in the title's row: title {today:?}, mark {mark:?}"
+            listed.iter().all(|row| mark.y1 <= row.y0),
+            "the mark stands over the rows it counts, not among them: mark {mark:?}, rows {listed:?}"
         );
         assert!(
-            mark.x0 > today.x0 && mark.x1 <= 1280.0,
-            "the mark stands in the header, inside the window it counts: title {today:?}, mark {mark:?}"
+            mark.x0 >= 0.0 && mark.x1 <= 1280.0,
+            "the mark stands inside the window it counts: {mark:?}"
         );
         let rgba = away.harness().render_rgba();
         let (wide, tall) = (1280usize, 800usize);
@@ -1244,13 +1207,14 @@ fn a_catch_up_hangs_inside_the_window_it_belongs_to() {
             .expect("the app lays out narrow with its catch-up open");
         let sheet =
             shown_floating_rect(&narrow, "Popover").expect("the catch-up hangs over the window");
+        let (_, frame) = narrow.harness().frame_extent((390, 844));
         assert!(
             sheet.x0 >= 0.0
                 && sheet.x1 <= 390.0
-                && sheet.y1 <= 844.0
-                && sheet.y1 >= 820.0
+                && sheet.y1 <= frame
+                && sheet.y1 >= frame - 24.0
                 && sheet.width() >= 300.0,
-            "a narrow window holds the catch-up as a sheet across its foot: {sheet:?}"
+            "a narrow window holds the catch-up as a sheet across its foot: {sheet:?} of {frame}"
         );
         let wrong = wrong_in(&narrow, (390, 844));
         assert!(
