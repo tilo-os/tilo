@@ -1073,8 +1073,6 @@ d-uhzjvuan = People button
 d-uvwnwa4d = Agent chip
     .w-stop = Stop
 
-d-e7u7zirf = Agent line
-
 d-teccuwja = Quick settings
     .w-quick-settings = Quick settings
 

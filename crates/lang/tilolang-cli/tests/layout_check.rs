@@ -206,6 +206,50 @@ fn a_board_lane_draws_every_card_it_has_room_for() {
     );
 }
 
+/// A view another app's page draws is laid out there, so it is reached for the package that
+/// defines it though none of that package's own windows shows it; a row view of a type inside a
+/// collection of a union is opened on an item of that type; and a view nothing calls is named as
+/// one to delete, apart from a view a view calls that no scenario reaches.
+#[test]
+fn a_view_another_app_draws_and_a_union_items_row_view_are_reached_while_a_dead_view_is_named() {
+    let dir = manifest().join("tests/layout_check/reach");
+    let report = layout_check::check(&Options {
+        dirs: vec![dir.join("drawer"), dir.join("drawn")],
+        search: vec![dir],
+        ..Options::default()
+    })
+    .expect("the fixtures lay out");
+    let unreached: Vec<(&str, bool)> = report
+        .unreached
+        .iter()
+        .map(|view| (view.view.as_str(), view.called))
+        .collect();
+    assert_eq!(
+        unreached,
+        [
+            ("layoutdrawn › behind", true),
+            ("layoutdrawn › orphan", false)
+        ],
+        "the row another app draws and the note's row are reached, and the two no layout \
+         shows say which they are:\n{}",
+        layout_check::render(&report)
+    );
+    let rendered = layout_check::render(&report);
+    assert!(
+        rendered.contains(
+            "note: no view calls layoutdrawn › orphan: nothing can draw it, so delete it"
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "note: no scenario reaches layoutdrawn › behind: a view calls it, so a scenario must \
+             reach the view that draws it"
+        ),
+        "{rendered}"
+    );
+}
+
 /// A view whose body is a bare `if let` leaves no widget of its own: absent, it draws nothing,
 /// and present, what it draws is the view it calls. Each still ran, so each is reached.
 #[test]

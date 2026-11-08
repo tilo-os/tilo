@@ -382,14 +382,16 @@ impl Staged {
                 continue;
             };
             for field in &schema.fields {
-                if let (Some(item_ty), Some(tilolang_tilo::DynValue::Collection(items))) =
-                    (&field.record, record.get(&field.id))
-                {
-                    out.extend(items.ids().map(|id| ResourceRef {
-                        id: format!("{doc}/{}", id.as_str()),
-                        ty: item_ty.clone(),
-                    }));
-                }
+                // Each item's type is its own: a collection of a union of record types (a
+                // category, a channel or a direct message) declares none for the field, so the
+                // item's record is the only thing that says which type it is.
+                let Some(tilolang_tilo::DynValue::Collection(items)) = record.get(&field.id) else {
+                    continue;
+                };
+                out.extend(items.iter().map(|(id, item)| ResourceRef {
+                    id: format!("{doc}/{}", id.as_str()),
+                    ty: item.schema().id.clone(),
+                }));
             }
         }
         out

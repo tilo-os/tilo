@@ -288,15 +288,32 @@ fn family_slug(family: &str) -> String {
         .to_owned()
 }
 
+/// A view no layout showed a node of: the app and view (`app › view`), and whether any view of
+/// any app called it.
+#[derive(Debug, serde::Serialize)]
+pub struct Unreached {
+    /// `app › view`.
+    pub view: String,
+    /// Whether a view calls it, its own package's or one that uses it: a view nothing calls is
+    /// one no window can show, and one something calls is a screen no scenario reached.
+    pub called: bool,
+}
+
+impl std::fmt::Display for Unreached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.view)
+    }
+}
+
 /// What a check found.
 #[derive(Debug, serde::Serialize)]
 pub struct Report {
     pub findings: Vec<Finding>,
     /// Allow-list entries nothing showed for any more.
     pub stale: Vec<String>,
-    /// Views no layout showed a node of (`app › view`), a list's rows included: no scenario
-    /// reaches them.
-    pub unreached: Vec<String>,
+    /// Views no layout showed a node of (`app › view`), a list's rows included: either nothing
+    /// calls them or no scenario reaches them.
+    pub unreached: Vec<Unreached>,
     /// Layouts run, over every scenario of every app.
     pub layouts: usize,
     pub elapsed_ms: u64,
@@ -419,14 +436,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
         .into_iter()
         .flat_map(BTreeMap::into_values)
         .collect();
-    let mut unreached = Vec::new();
-    for (held, shown) in apps.iter().zip(&shown) {
-        for view in &held.meta.views {
-            if view.presents.is_none() && view.row_of.is_none() && !shown.contains(&view.name) {
-                unreached.push(format!("{} › {}", held.short, view.name));
-            }
-        }
-    }
+    let unreached = unreached_views(&apps, &shown);
     let mut seen = BTreeSet::new();
     for finding in &mut findings {
         finding.id = finding.id();
@@ -441,6 +451,38 @@ pub fn check(options: &Options) -> Result<Report, String> {
         layouts: layouts_run,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
+}
+
+/// The views no layout showed a node of: a view its window draws off a call or from the
+/// system's own surfaces (a row view, a proposal view) is not one.
+///
+/// A view drawn in any app's layout was laid out there, so what every app showed is what every
+/// view is held to (Today draws Chat's Unread place). A view no call anywhere names is one no
+/// window can show, and one a call names is a screen no scenario reached.
+fn unreached_views(apps: &[App], shown: &[Shown]) -> Vec<Unreached> {
+    let drawn: Shown = shown.iter().flatten().cloned().collect();
+    let called: BTreeSet<(String, String)> = apps
+        .iter()
+        .flat_map(|held| held.sources.called())
+        .map(|(app, view)| (app.to_owned(), view.to_owned()))
+        .collect();
+    let mut out = Vec::new();
+    for held in apps {
+        for view in &held.meta.views {
+            if view.presents.is_some() || view.row_of.is_some() {
+                continue;
+            }
+            let key = (held.meta.app.clone(), view.name.clone());
+            if drawn.contains(&key) {
+                continue;
+            }
+            out.push(Unreached {
+                view: format!("{} › {}", held.short, view.name),
+                called: called.contains(&key),
+            });
+        }
+    }
+    out
 }
 
 /// Stage the person the run lays its windows out for, in place of whatever locale this machine
@@ -516,6 +558,15 @@ impl App {
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
 
+/// The views some layout showed, as `(app, view name)`: a view drawn in any app's layout is laid
+/// out there, so it is reached for the package that defines it (Today draws Chat's Unread place).
+type Shown = BTreeSet<(String, String)>;
+
+/// Whether `shown` holds the view `name` of `app`.
+fn shows(shown: &Shown, app: &str, name: &str) -> bool {
+    shown.contains(&(app.to_owned(), name.to_owned()))
+}
+
 /// One scenario of one app on one layer, the window laid out every way people lay one out.
 struct Scene {
     app: usize,
@@ -545,7 +596,7 @@ impl Scene {
 
     /// The views nothing showed yet, opened on the scenario whose resources they take, with
     /// what every scene before this one showed.
-    fn opens(&self, shown: &BTreeSet<String>) -> Unit {
+    fn opens(&self, shown: &Shown) -> Unit {
         Unit {
             scene: self.at(),
             what: What::Opens {
@@ -564,7 +615,7 @@ impl Scene {
 
     /// Whether opening a view on this scenario may show one nothing showed yet: the views of
     /// types it did not open, and the views the system shows on surfaces of its own.
-    fn needs_opens(&self, apps: &[App], shown: &BTreeSet<String>) -> bool {
+    fn needs_opens(&self, apps: &[App], shown: &Shown) -> bool {
         let Some(app) = apps.get(self.app) else {
             return false;
         };
@@ -575,14 +626,14 @@ impl Scene {
                     .views
                     .iter()
                     .find(|v| v.id == default.view)
-                    .is_some_and(|v| !shown.contains(&v.name))
+                    .is_some_and(|v| !shows(shown, &meta.app, &v.name))
         });
         default
             || switch_views(meta)
                 .iter()
-                .any(|(view, _)| !shown.contains(&view.name))
+                .any(|(view, _)| !shows(shown, &meta.app, &view.name))
             || surface_views(meta).iter().any(|view| {
-                !shown.contains(&view.name)
+                !shows(shown, &meta.app, &view.name)
                     && view
                         .params
                         .first()
@@ -612,7 +663,7 @@ enum What {
     /// The scenario as staged, laid out every way.
     Scenario,
     /// The scenario with the views nothing showed yet opened on it, laid out every way.
-    Opens { shown: BTreeSet<String> },
+    Opens { shown: Shown },
     /// The scenario with each of its primary actions pressed, at every size.
     Press,
     /// The scenario at every size it is held in the hand, with the row it opened tapped as a
@@ -627,7 +678,7 @@ struct Found {
     /// Layouts run.
     layouts: usize,
     /// The views some layout showed a node of.
-    shown: BTreeSet<String>,
+    shown: Shown,
     /// The `--press` labels a control carried in this unit of work.
     pressed: BTreeSet<String>,
 }
@@ -732,7 +783,7 @@ fn run_opens(
     scenes: &[Scene],
     phase: &[Found],
     options: &Options,
-) -> Result<(Vec<Found>, Vec<BTreeSet<String>>), String> {
+) -> Result<(Vec<Found>, Vec<Shown>), String> {
     let mut per_app: Vec<Vec<usize>> = vec![Vec::new(); apps.len()];
     for (index, scene) in scenes.iter().enumerate() {
         if let Some(held) = per_app.get_mut(scene.app) {
@@ -806,7 +857,7 @@ fn run_opens(
         });
     }
     let mut opened: Vec<Found> = (0..scenes.len()).map(|_| Found::default()).collect();
-    let mut shown: Vec<BTreeSet<String>> = vec![BTreeSet::new(); apps.len()];
+    let mut shown: Vec<Shown> = vec![Shown::new(); apps.len()];
     for (app, slot) in slots.into_iter().enumerate() {
         let Some(result) = slot.into_inner().unwrap_or_else(PoisonError::into_inner) else {
             continue;
@@ -1187,7 +1238,7 @@ struct AppCheck<'a> {
     text: &'a mut ui::TextRenderer,
     ran: usize,
     /// The views some layout showed a node of.
-    shown: BTreeSet<String>,
+    shown: Shown,
     /// The `--press` labels a control carried, so a label no layout carries at all is the one
     /// the run reports: a mark a window shows in one scenario and not another is pressed where
     /// it stands.
@@ -1238,7 +1289,9 @@ impl AppCheck<'_> {
                 continue;
             };
             // The root's own view is the window's first column already.
-            if self.shown.contains(&view.name) || self.meta.roots.contains(&default.ty) {
+            if shows(&self.shown, &self.meta.app, &view.name)
+                || self.meta.roots.contains(&default.ty)
+            {
                 continue;
             }
             let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
@@ -1248,7 +1301,7 @@ impl AppCheck<'_> {
             self.run(staged, &format!("{title}, then a {} opened", view.name))?;
         }
         for view in surface_views(self.meta) {
-            if self.shown.contains(&view.name) {
+            if shows(&self.shown, &self.meta.app, &view.name) {
                 continue;
             }
             let [param] = view.params.as_slice() else {
@@ -1268,7 +1321,7 @@ impl AppCheck<'_> {
         // type: a project laid out as a board as well as the list it opens on.
         let meta = self.meta;
         for (view, ty) in switch_views(meta) {
-            if self.shown.contains(&view.name) {
+            if shows(&self.shown, &self.meta.app, &view.name) {
                 continue;
             }
             let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
@@ -1651,12 +1704,10 @@ impl AppCheck<'_> {
     }
 
     /// Remember the views shown in `key`: the view the node is of, and every view whose call
-    /// holds it.
+    /// holds it — of this app or of any other whose views this window draws.
     fn note_key(&mut self, key: &str) {
         for (app, view) in self.sources.views_in(key) {
-            if app == self.meta.app {
-                self.shown.insert(view.to_owned());
-            }
+            self.shown.insert((app.to_owned(), view.to_owned()));
         }
     }
 
@@ -1766,11 +1817,37 @@ pub fn render(report: &Report) -> String {
             "note: the allow-list names `{stale}`, which no longer shows: take it out"
         );
     }
-    if !report.unreached.is_empty() {
+    let named = |views: Vec<&Unreached>| {
+        views
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>()
+            .join(", ")
+    };
+    let dead: Vec<&Unreached> = report
+        .unreached
+        .iter()
+        .filter(|view| !view.called)
+        .collect();
+    if !dead.is_empty() {
+        let one = dead.len() == 1;
         let _ = writeln!(
             out,
-            "note: no layout showed {}: no scenario reaches them",
-            report.unreached.join(", ")
+            "note: no view calls {}: nothing can draw {}, so delete {}",
+            named(dead),
+            if one { "it" } else { "them" },
+            if one { "it" } else { "them" },
+        );
+    }
+    let missed: Vec<&Unreached> = report.unreached.iter().filter(|view| view.called).collect();
+    if !missed.is_empty() {
+        let one = missed.len() == 1;
+        let _ = writeln!(
+            out,
+            "note: no scenario reaches {}: a view calls {}, so a scenario must reach the view that draws {}",
+            named(missed),
+            if one { "it" } else { "each" },
+            if one { "it" } else { "them" },
         );
     }
     let new = report.new_findings().count();
