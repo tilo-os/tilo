@@ -222,20 +222,36 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     common::until(&mut session, "the typed draft", |session| {
         session.shell_says(TYPED)
     });
-    // Pressing send posts what was typed through Chat's own `post`: the channel then says it.
+    // Pressing send posts what was typed through Chat's own `post`: the channel's reading the
+    // place draws then holds a message saying it, which is what the page shows again — the
+    // page's own message, not the draft still standing in the field.
     let answer = common::control(
         &mut session,
         &socket,
         &json!({"op": "click_named", "name": "Send"}),
     );
     assert_eq!(answer, json!({"ok": {}}), "the Send button takes the press");
-    common::until(&mut session, "the posted message", |session| {
-        session.shell_says(TYPED)
+    // Every message the channel's reading holds, by its text: the posted one is among them,
+    // which a draft in the field never is (the reading is what Chat's record says).
+    let reading = |session: &Session| {
+        session
+            .read(CHANNEL)
+            .unwrap_or_else(|| panic!("the session serves {CHANNEL}"))
+    };
+    let posted = |session: &Session| {
+        reading(session)["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|message| message["text"].as_str() == Some(TYPED))
+    };
+    common::until(&mut session, "the message in the channel", |session| {
+        posted(session)
     });
     assert!(
-        session.shell_says(TYPED),
-        "the channel shows what was posted: {:?}; the shell refused {:?}",
-        session.accessible_labels(),
+        posted(&session),
+        "the channel's record holds the posted message: {:?}; the shell refused {:?}",
+        reading(&session)["messages"],
         session.shell_refusals()
     );
     shot(&mut session, root.path(), "posted.png");

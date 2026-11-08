@@ -679,7 +679,45 @@ impl ChatViewService {
     }
 }
 
-/// The channel's `post` action, as the service publishes it on a channel's item: a message from
+/// One conversation as a place's resource, the way Chat publishes a channel of its record: its
+/// item id (`chat.workspace/channels/<id>`), its `page` view (Chat's own `#[view(default)]` over
+/// the channel's type), its type, and the composer's `post`. A place made from it shows the
+/// channel through that view — never the app's window, which is what a resource naming no view
+/// falls back to.
+///
+/// A workspace channel is named with its `#`, as Chat writes a channel; a conversation kept with
+/// participants (the ask) is named plainly, as the window names a conversation, never with a
+/// `#` it does not wear.
+#[must_use]
+pub(crate) fn channel_resource(
+    id: &str,
+    name: &str,
+    is_channel: bool,
+) -> tilo_actions::ResourceSpec {
+    let label = if is_channel {
+        format!("#{name}")
+    } else {
+        name.to_owned()
+    };
+    let mut spec = tilo_actions::ResourceSpec::new(
+        format!("chat.workspace/channels/{id}"),
+        "chat.workspace.channels",
+        label,
+    )
+    .with_view(tilo_actions::ResourceViewSpec::new(
+        "page",
+        name.to_owned(),
+        "open",
+    ))
+    .with_type(tilo_actions::ResourceType {
+        noun: tilo_actions::Noun::new("channel", "channels"),
+        app: tilo_actions::Noun::new("Chat", "Chat"),
+        root: false,
+    });
+    spec.app_id = Some("chat".to_owned());
+    spec.with_action(post_action())
+}
+
 /// The channel's `post` action, as the service publishes it on a channel's item: a message from
 /// the person typing, in the channel it names — the very verb Chat's own composer runs. It is
 /// the one definition of the verb a place's composer reaches; a service publishing a channel
@@ -726,31 +764,8 @@ impl tilo_service::Service for ChatViewService {
                 // the record keeps with its two participants, which `is_channel` calls no
                 // workspace channel but which the canvas places all the same).
                 //
-                // A workspace channel is named with its `#`, as Chat writes a channel; a
-                // conversation kept with participants (the ask) is named plainly, as the window
-                // names a conversation, never with a `#` it does not wear.
-                let label = if conversation.is_channel() {
-                    format!("#{}", conversation.name)
-                } else {
-                    conversation.name.clone()
-                };
-                let mut spec = tilo_actions::ResourceSpec::new(
-                    format!("chat.workspace/channels/{}", id.as_str()),
-                    "chat.workspace.channels",
-                    label,
-                )
-                .with_view(tilo_actions::ResourceViewSpec::new(
-                    "page",
-                    conversation.name.clone(),
-                    "open",
-                ))
-                .with_type(tilo_actions::ResourceType {
-                    noun: tilo_actions::Noun::new("channel", "channels"),
-                    app: tilo_actions::Noun::new("Chat", "Chat"),
-                    root: false,
-                });
-                spec.app_id = Some("chat".to_owned());
-                spec = spec.with_action(post_action());
+                let spec =
+                    channel_resource(id.as_str(), &conversation.name, conversation.is_channel());
                 specs.push(spec);
             }
         }

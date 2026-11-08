@@ -703,6 +703,11 @@ pub struct SessionLink {
     /// own views, and unloads once no place shows that app.
     packages: RefCell<BTreeMap<String, std::sync::Arc<[u8]>>>,
     packages_fresh: Cell<bool>,
+    /// The verbs the session's resources publish that no loaded package declares, by resource
+    /// and verb ([`tilolang_tilo::runtime::published`]): what the shell's runtime sends to the app
+    /// publishing them. `None` until the session publishes one.
+    published: RefCell<Option<tilolang_tilo::runtime::published::Published>>,
+    published_fresh: Cell<bool>,
     /// The resources a view composed in a place read before their readings came in, by id,
     /// each with its type: what the session publishes next ([`SessionLink::take_wanted`]).
     wanted: RefCell<BTreeMap<String, String>>,
@@ -1600,6 +1605,7 @@ impl Origin for SessionOrigin {
         self.link.fresh.get()
             || self.link.arrangement_fresh.get()
             || self.link.packages_fresh.get()
+            || self.link.published_fresh.get()
             || !self.link.readings_fresh.borrow().is_empty()
     }
 

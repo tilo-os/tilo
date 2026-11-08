@@ -357,10 +357,9 @@ impl Shell {
         if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
-            let placed = tilo_surface_host::shell_part::readings::placed_records(
-                arrangement,
-                &services.resources(),
-            );
+            let resources = services.resources();
+            let placed =
+                tilo_surface_host::shell_part::readings::placed_records(arrangement, &resources);
             let mut packages = std::collections::BTreeMap::new();
             let app_of = tilo_surface_host::shell_part::readings::app_of;
             let mut apps: std::collections::BTreeSet<&str> =
@@ -381,6 +380,15 @@ impl Shell {
                 })
             });
             self.link.publish_packages(packages);
+            // The verbs of the apps the shell's runtime does not load — Chat's channel and its
+            // `post`, which the session's own service answers — so a place's view sends its
+            // action to the app publishing it, as it sends any package's to that package's door.
+            self.link.publish_published_actions(
+                tilo_surface_host::shell_part::readings::published_actions(
+                    &resources,
+                    &self.link.packages_loaded(),
+                ),
+            );
             for (id, ty) in placed {
                 if !self.reading.contains_key(&id) {
                     fresh.push((id.clone(), ty.clone()));

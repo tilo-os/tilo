@@ -26,6 +26,22 @@ impl SessionLink {
         true
     }
 
+    /// The verbs the session's resources publish that no loaded package declares, by resource
+    /// and verb ([`tilolang_tilo::runtime::published`]): the shell's runtime sends a view's action of
+    /// one to the app publishing it, as it sends any other app's action to that app's door.
+    /// Whether they differ from the last.
+    pub fn publish_published_actions(
+        &self,
+        published: tilolang_tilo::runtime::published::Published,
+    ) -> bool {
+        if self.published.borrow().as_ref() == Some(&published) {
+            return false;
+        }
+        *self.published.borrow_mut() = Some(published);
+        self.published_fresh.set(true);
+        true
+    }
+
     /// The packages of the apps whose resources the places show, by app id, each its compiled
     /// module: the shell's runtime loads each it has not, so the places draw those resources
     /// through their app's own views, and unloads every other app's, with the readings of its
@@ -51,6 +67,18 @@ impl SessionLink {
     #[must_use]
     pub fn package_apps(&self) -> Vec<String> {
         self.packages.borrow().keys().cloned().collect()
+    }
+
+    /// The apps whose package the shell's runtime loads here, each with the module it loads:
+    /// the ones whose declared actions are their package's, so no published verb of theirs is
+    /// counted ([`published_actions`]).
+    #[must_use]
+    pub fn packages_loaded(&self) -> BTreeMap<String, String> {
+        self.packages
+            .borrow()
+            .keys()
+            .map(|app| (app.clone(), app.clone()))
+            .collect()
     }
 
     /// The resources the shell's views read before their readings came in, by id, each with
@@ -138,6 +166,55 @@ pub fn app_of(ty: &str) -> Option<&str> {
     ty.split_once('#').map(|(app, _)| app)
 }
 
+/// The verbs each resource of `resources`, the session's catalogue, publishes that no loaded
+/// package of `loaded` declares ([`tilolang_tilo::runtime::published`]): the resource's id, the verb's
+/// id, the app that runs it, and the arguments it takes after the resource (`channel`, `text`).
+///
+/// A verb of an app whose package the shell loads here is that package's declared action
+/// (`chat.workspace#rename-channel`), and is not counted: the runtime resolves a declared action
+/// before it looks a published one up. A verb with no parameter tilolang code can give is left
+/// out, as the catalogue leaves it out of a package's actions.
+#[must_use]
+pub fn published_actions(
+    resources: &[ui::tilo_actions::ResourceSpec],
+    loaded: &BTreeMap<String, String>,
+) -> tilolang_tilo::runtime::published::Published {
+    let mut published = tilolang_tilo::runtime::published::Published::default();
+    collect_published(resources, loaded, &mut published);
+    published
+}
+
+fn collect_published(
+    resources: &[ui::tilo_actions::ResourceSpec],
+    loaded: &BTreeMap<String, String>,
+    out: &mut tilolang_tilo::runtime::published::Published,
+) {
+    for resource in resources {
+        let Some(app) = resource.app() else {
+            collect_published(&resource.children, loaded, out);
+            continue;
+        };
+        // The app's package loading here declares its own actions already.
+        if !loaded.contains_key(app) {
+            for action in &resource.actions {
+                out.insert(
+                    resource.id.as_str(),
+                    action.id.as_str(),
+                    tilolang_tilo::runtime::published::PublishedAction {
+                        app: app.to_owned(),
+                        params: action
+                            .params()
+                            .iter()
+                            .map(|param| param.name.to_string())
+                            .collect(),
+                    },
+                );
+            }
+        }
+        collect_published(&resource.children, loaded, out);
+    }
+}
+
 /// The apps whose views this process links as Rust apps (one-app-model.md §2): a resource of one
 /// of their types is drawn by the app's own view, not by a package's, and its reading is followed
 /// though the app publishes no module.
@@ -190,11 +267,11 @@ impl SessionOrigin {
     /// unload every other app's, with the readings of its resources: an app nothing shows
     /// costs the shell nothing. Whether a package came or went.
     pub(super) fn poll_packages(&mut self, cx: &OriginCx<'_>) -> bool {
+        let mut moved = self.poll_published(cx);
         if !self.link.packages_fresh.replace(false) {
-            return false;
+            return moved;
         }
         let wanted = self.link.packages.borrow().clone();
-        let mut moved = false;
         let gone: Vec<String> = self
             .loaded
             .iter()
@@ -231,7 +308,22 @@ impl SessionOrigin {
                 }
             }
         }
+        // The verbs of the apps the runtime does not load. A package that loads here declares
+        // its own actions, so the table is taken after the packages are, and it names only what
+        // a package does not.
         moved
+    }
+
+    /// Hand the runtime the verbs the session's resources publish that no loaded package
+    /// declares ([`tilolang_tilo::runtime::published`]): a view's action of one is sent to the app
+    /// publishing it, the same path another app's declared action takes. Whether it changed.
+    fn poll_published(&mut self, cx: &OriginCx<'_>) -> bool {
+        if !self.link.published_fresh.replace(false) {
+            return false;
+        }
+        let published = self.link.published.borrow().clone().unwrap_or_default();
+        cx.host.runtime().set_published_actions(published);
+        true
     }
 }
 

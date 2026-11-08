@@ -391,6 +391,14 @@ impl Catalog {
     pub fn remember(&mut self, id: &str, target: Target) {
         self.by_id.insert(id.to_owned(), target);
     }
+
+    /// Remember `resource` as its app publishes it: the app, the views it publishes, and what it
+    /// is called — the same target the door's tree yields for it, so a place made from a resource
+    /// the session has just published shows it through its app's own view, never as the app's
+    /// window.
+    pub fn remember_resource(&mut self, resource: &ResourceSpec) {
+        collect_targets(resource, &mut self.by_id);
+    }
 }
 
 /// Every resource of `resource` and its children, by id, with the views it publishes primary first.

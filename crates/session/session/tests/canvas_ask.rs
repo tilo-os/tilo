@@ -344,3 +344,28 @@ fn the_conversations_page_posts_through_the_sessions_own_channel() {
         "the posted message is new since the reading before it: {posted_id} in {was:?}"
     );
 }
+
+/// The ask places the conversation as the resource Chat publishes: its channel, shown through
+/// Chat's own default `page` view. A place that named no view would stand the app's window —
+/// a blank frame — instead of the conversation the person asked in (shell.md §8.1, "The view").
+#[test]
+fn the_ask_places_the_channels_page_not_the_apps_window() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    let place = wait_for(&mut session, "the conversation placed", |session| {
+        arrangement(session)
+            .places
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))
+    });
+    assert_eq!(
+        place.shown_as, "page",
+        "the place shows the channel's own page, drawn by Chat's view: {place:?}"
+    );
+    assert_eq!(
+        place.shows, "chat",
+        "the place is Chat's channel, never the app's window: {place:?}"
+    );
+}

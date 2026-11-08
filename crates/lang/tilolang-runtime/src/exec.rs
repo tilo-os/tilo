@@ -870,6 +870,11 @@ impl Core {
         if self.foreign_action(&aref.action) {
             return self.invoke_foreign(aref);
         }
+        // A verb the resource's app publishes without a package loading here (a channel's
+        // `post`) is that app's too: the same door, the same attribution.
+        if let Some(invocation) = self.published_invocation(aref) {
+            return self.invoke_published(&invocation?);
+        }
         let mut chain = Vec::new();
         push_chain(&mut chain, aref.author.as_ref());
         let ctx = ExecCtx {
@@ -926,6 +931,78 @@ impl Core {
             .borrow()
             .action_package(action)
             .is_some_and(|pkg| pkg.foreign)
+    }
+
+    /// The invocation a view's action of a *published* verb makes: the action `aref` names, on
+    /// the resource its first argument names, when no loaded package declares it and the host
+    /// publishes it on that resource ([`crate::published`]).
+    ///
+    /// A published verb is the resource's own, as a declared action is its package's: Chat's
+    /// channel publishes `post`, and the app that publishes it runs it. This is one path for
+    /// both languages — a Rust view naming `post` on the channel it shows, and a tilolang view
+    /// naming it, make the same invocation with the same arguments by name.
+    fn published_invocation(
+        &self,
+        aref: &ActionRef,
+    ) -> Option<Result<crate::delegate::Invocation, RuntimeError>> {
+        if self
+            .registry
+            .borrow()
+            .action_package(&aref.action)
+            .is_some()
+        {
+            return None;
+        }
+        let Some(Value::Ref(subject)) = aref.args.first() else {
+            return None;
+        };
+        let id = subject.target.id_string();
+        let published = self.published.borrow();
+        let Some(verb) = published.get(&id, &aref.action) else {
+            return None;
+        };
+        // The verb's parameters as its app declares them, after the resource the address names
+        // (`post(channel: Text, text: Text)`); the resource is the subject, never an argument.
+        let args: Vec<(String, Value)> = verb
+            .params
+            .iter()
+            .cloned()
+            .zip(aref.args.iter().skip(1).cloned())
+            .collect();
+        Some(Ok(crate::delegate::Invocation::Action {
+            app: verb.app.clone(),
+            action: aref.action.clone(),
+            name: aref.action.clone(),
+            args,
+            class: crate::meta::EffectClass::Undoable,
+            destructive: false,
+            author: aref.author.clone(),
+            subject: Some(ResourceRef::clone(&subject.target)),
+            from: aref.from.clone(),
+        }))
+    }
+
+    /// Send the published invocation `invocation` on, as [`Core::invoke_foreign`] sends an
+    /// action of a declared foreign app's.
+    fn invoke_published(
+        &self,
+        invocation: &crate::delegate::Invocation,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        use crate::delegate::Invoked;
+        let invoker = self.invoker.borrow();
+        let Some(invoker) = invoker.as_ref() else {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is published by `{}`, an app this host does not run, and it makes no \
+                 invocation of it",
+                invocation.name(),
+                invocation.app()
+            )));
+        };
+        Ok(match invoker.invoke(invocation) {
+            Invoked::Done(result) => InvokeOutcome::Done(result),
+            Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
+            Invoked::Refused(_) | Invoked::Asks(_) => InvokeOutcome::Denied,
+        })
     }
 
     /// Invoke `aref` where its app runs: the host's invoker sends it on as a child of the code
@@ -1340,8 +1417,36 @@ impl Core {
             from: step.from.clone().or_else(|| journal.from.clone()),
             at: step.at.clone(),
         };
+        // A verb the resource's app publishes without a package loading here: the same door,
+        // sent as a step of the run that asked for it.
+        if let Some(invocation) = self.published_invocation(&aref) {
+            let invocation = invocation?;
+            match self.invoke_published(&invocation) {
+                Ok(InvokeOutcome::Done(result)) => {
+                    journal.entries.push(JournalEntry::Invoked {
+                        action: aref.action.clone(),
+                        result,
+                    });
+                    Ok(None)
+                }
+                Ok(InvokeOutcome::Denied) => {
+                    journal.entries.push(JournalEntry::Denied {
+                        action: step.action.clone(),
+                        reason: "denied by authority".to_owned(),
+                    });
+                    Ok(None)
+                }
+                Ok(InvokeOutcome::Suggested(_)) => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
+                Err(error) => {
+                    journal.entries.push(JournalEntry::Failed {
+                        action: aref.action.clone(),
+                        reason: error.to_string(),
+                    });
+                    Ok(None)
+                }
+            }
         // A host that holds no records sends the invocation on to the app that does.
-        if self.invoker.borrow().is_some() {
+        } else if self.invoker.borrow().is_some() {
             let invocation = self.invocation_of(&aref)?;
             match self.delegated_step(&aref.action, &invocation)? {
                 Delegated::Ran(entry) => {
