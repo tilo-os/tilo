@@ -2245,10 +2245,9 @@ fn heard(
     Option<tokio::task::JoinHandle<()>>,
 ) {
     let (admissions, attending) = match identity {
-        Some(identity) => {
+        Some(_) => {
             let (say, hear) = tokio::sync::mpsc::unbounded_channel();
-            let attending =
-                tokio::spawn(async move { take_in(hear, &identity, link, documents).await });
+            let attending = tokio::spawn(async move { take_in(hear, link, documents).await });
             (Some(say), Some(attending))
         }
         None => (None, None),
@@ -2273,7 +2272,6 @@ fn heard(
 /// holds up the collaboration plane.
 async fn take_in(
     mut replayed: tokio::sync::mpsc::UnboundedReceiver<native_ingress::Input>,
-    identity: &HostIdentity,
     link: Option<Arc<ChannelLink>>,
     documents: Option<PeerDocuments>,
 ) {
@@ -2296,37 +2294,33 @@ async fn take_in(
                 .first()
                 .is_some_and(|first: &native_ingress::Input| !first.same_session(&input))
             {
-                admit(run, identity, link.as_deref(), documents.as_ref()).await;
+                admit(run, link.as_deref(), documents.as_ref()).await;
                 run = Vec::new();
             }
             run.push(input);
         }
-        admit(run, identity, link.as_deref(), documents.as_ref()).await;
+        admit(run, link.as_deref(), documents.as_ref()).await;
     }
 }
 
 /// Admit one session's inputs, as one commit of the workspace they belong to.
 async fn admit(
     inputs: Vec<native_ingress::Input>,
-    identity: &HostIdentity,
     link: Option<&ChannelLink>,
     documents: Option<&PeerDocuments>,
 ) {
     let Some(workspace) = inputs.first().map(native_ingress::Input::workspace) else {
         return;
     };
-    let identity = identity.clone();
-    let admitted = match tokio::task::spawn_blocking(move || {
-        native_ingress::Input::admit_batch(inputs, &identity)
-    })
-    .await
-    {
-        Ok(admitted) => admitted,
-        Err(error) => {
-            tracing::warn!(%error, %workspace, "a workspace's state was not taken in");
-            return;
-        }
-    };
+    let admitted =
+        match tokio::task::spawn_blocking(move || native_ingress::Input::admit_batch(inputs)).await
+        {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                tracing::warn!(%error, %workspace, "a workspace's state was not taken in");
+                return;
+            }
+        };
     let mut replay_wanted = false;
     for (input, report) in admitted.inputs {
         match report {

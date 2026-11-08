@@ -203,9 +203,7 @@ impl ActorState {
         let Some(link) = self.native_links.get(&ws) else {
             return;
         };
-        let Some(input) = Input::heard(Arc::clone(&link.scope), heard) else {
-            return;
-        };
+        let input = Input::heard(Arc::clone(&link.scope), heard);
         self.tally.note(super::heard_kind(&input));
         self.publish_to_subscriber(ws, super::NetEvent::NativeInput(input))
             .await;

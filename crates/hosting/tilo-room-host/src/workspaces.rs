@@ -1411,14 +1411,57 @@ impl Workspaces {
     }
 
     /// Serve `workspace`'s replica over the direct link, keeping its history
-    /// at the host's store.
+    /// at the host's store, and answer what its members ask there.
     fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
         )
         .with_store(Arc::clone(&self.inner.store));
-        self.inner.direct.serve(link)
+        self.inner.direct.serve(link.clone())?;
+        self.answer_content(workspace, &link);
+        Ok(())
+    }
+
+    /// Answer what `workspace`'s members ask for content of `link`: what this
+    /// host keeps, or word that it keeps none, addressed to whoever asked.
+    /// The link carries each ask on to the workspace's other members itself.
+    fn answer_content(
+        &self,
+        workspace: &GovernedWorkspace,
+        link: &tilo_peer_state::direct::DirectSync,
+    ) {
+        let name = workspace.workspace().to_owned();
+        let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
+        let link = link.clone();
+        let mut heard = link.heard();
+        tokio::spawn(async move {
+            while let Ok(frame) = heard.recv().await {
+                // The host this link served is gone: so is the answer.
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                if !matches!(
+                    frame.message,
+                    neighbour_wire::NeighbourMsg::RecordContentWant { .. }
+                ) {
+                    continue;
+                }
+                let Ok(body) = postcard::to_allocvec(&frame.message) else {
+                    continue;
+                };
+                for answer in workspaces.content_answer(&name, &body) {
+                    match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&answer) {
+                        Ok(message) => {
+                            let _ = link.send(message);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "a content answer did not encode");
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Run the transform an offloadable action declares for the workspaces
@@ -2716,6 +2759,7 @@ impl Workspaces {
         let epoch = publisher.reconcile(&mut workspace.record.published);
         let workspace_id = workspace.workspace_id();
         let (publications, unreadable) = workspace.unpublished(&host.records);
+        self.announce(workspace, &publications);
         if let Err(error) = unreadable {
             // What precedes it is still published, in order.
             publisher.push(
@@ -2737,6 +2781,29 @@ impl Workspaces {
         self.observe_calls(workspace);
         self.governance_moved(workspace);
         Ok(())
+    }
+
+    /// Hand the governance `workspace` just committed to its direct link: the
+    /// link carries it to the member devices it holds, and to this device's
+    /// own replica when the workspace is hosted here, so a member's device
+    /// follows a decision at once rather than at its next catch-up.
+    fn announce(&self, workspace: &GovernedWorkspace, publications: &[publisher::Publication]) {
+        if publications.is_empty() {
+            return;
+        }
+        let Some(link) = self.inner.direct.link(workspace.workspace_id()) else {
+            return;
+        };
+        for publication in publications {
+            match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&publication.commit.body) {
+                Ok(message) => {
+                    if let Err(error) = link.send(message) {
+                        tracing::debug!(%error, "governance did not reach the workspace's links");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "a governance publication did not encode"),
+            }
+        }
     }
 
     /// Note `workspace`'s governance as it now stands, then tell whoever

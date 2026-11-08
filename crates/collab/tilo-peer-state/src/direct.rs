@@ -60,7 +60,8 @@ pub struct DirectSync(Arc<Inner>);
 /// A frame a link brought into this device's engine, as its engine sees it.
 #[derive(Clone)]
 pub struct Heard {
-    /// The device that sent it: the key the connection authenticated.
+    /// The device that authored it: what its signed content names, else the
+    /// device whose frame the host forwarded.
     pub author: [u8; 32],
     pub message: NeighbourMsg,
     /// Whether the workspace took it in.
@@ -68,9 +69,18 @@ pub struct Heard {
     /// Whether it came from the other device's retained history rather than
     /// live traffic.
     pub retained: bool,
-    /// What the workspace's admission decided, for a link whose device owns
-    /// its workspace: the frame is already in, and this says how.
-    pub report: Option<Result<crate::AdmissionReport, String>>,
+    /// What the workspace's admission decided: the frame is already in, and
+    /// this says how.
+    pub report: Result<crate::AdmissionReport, String>,
+}
+
+/// A frame on its way to this device's links, with the device that authored
+/// it: a workspace's host forwards a member's frame under the member's name,
+/// so every member knows whose it is.
+#[derive(Clone)]
+struct Authored {
+    from: [u8; 32],
+    message: NeighbourMsg,
 }
 
 /// The streams of a dialled link after the other device admitted this one:
@@ -78,6 +88,10 @@ pub struct Heard {
 pub struct Dialed {
     connection: Connection,
     control: Control,
+    /// Subscribed when the dial was answered: what this device sends from
+    /// then on is the link's to carry, never lost between the dial and the
+    /// link running.
+    live: broadcast::Receiver<Authored>,
 }
 
 impl Dialed {
@@ -87,7 +101,8 @@ impl Dialed {
     ///
     /// As [`DirectSync::connect`].
     pub async fn run(self, link: &DirectSync) -> Result<(), String> {
-        link.link(&self.connection, true, self.control).await
+        link.link(&self.connection, true, self.control, self.live)
+            .await
     }
 }
 
@@ -106,11 +121,15 @@ struct Inner {
     /// The sealed history this device keeps for the workspace, when it is a
     /// store device.
     store: Option<Arc<Store>>,
-    outgoing: broadcast::Sender<NeighbourMsg>,
+    outgoing: broadcast::Sender<Authored>,
     heard: broadcast::Sender<Heard>,
     changed: watch::Sender<u64>,
     /// Set once the other device's retained history is in hand.
     caught_up: watch::Sender<bool>,
+    /// This device is the workspace's host on its links: what they bring in,
+    /// it sends on to its other links, so a member's frame reaches every
+    /// member through one path.
+    fan_out: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for DirectSync {
@@ -145,6 +164,28 @@ impl DirectSync {
             heard: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
+            fan_out: std::sync::atomic::AtomicBool::new(false),
+        }))
+    }
+
+    /// The same link's channels and device, syncing `replica` and keeping
+    /// `store`: what a link with more of the workspace to itself is.
+    fn sharing(
+        &self,
+        replica: Replica,
+        admission: Option<Admission>,
+        store: Option<Arc<Store>>,
+    ) -> Self {
+        Self(Arc::new(Inner {
+            replica,
+            admission,
+            key: self.0.key.clone(),
+            store,
+            outgoing: self.0.outgoing.clone(),
+            heard: self.0.heard.clone(),
+            changed: self.0.changed.clone(),
+            caught_up: self.0.caught_up.clone(),
+            fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
         }))
     }
 
@@ -152,17 +193,12 @@ impl DirectSync {
     /// devices that ask: what a store device does with every link. Call it
     /// before cloning the link to its handlers.
     #[must_use]
-    pub fn with_store(self, store: Arc<Store>) -> Self {
-        Self(Arc::new(Inner {
-            replica: self.0.replica.clone(),
-            admission: self.0.admission.clone(),
-            key: self.0.key.clone(),
-            store: Some(store),
-            outgoing: self.0.outgoing.clone(),
-            heard: self.0.heard.clone(),
-            changed: self.0.changed.clone(),
-            caught_up: self.0.caught_up.clone(),
-        }))
+    pub fn with_store(&self, store: Arc<Store>) -> Self {
+        self.sharing(
+            self.0.replica.clone(),
+            self.0.admission.clone(),
+            Some(store),
+        )
     }
 
     /// Admit every frame this link brings into `owner`'s live replica of
@@ -170,21 +206,16 @@ impl DirectSync {
     /// what a link brings is durable as it lands, and the device's own engine
     /// decides it. The link then syncs that replica.
     pub fn owning(
-        self,
+        &self,
         owner: crate::owner::NativeWorkspaceOwner,
         workspace: tilo_desktop_model::WorkspaceId,
     ) -> Result<Self, String> {
         let replica = owner.replica(workspace)?;
-        Ok(Self(Arc::new(Inner {
+        Ok(self.sharing(
             replica,
-            admission: Some(Admission { owner, workspace }),
-            key: self.0.key.clone(),
-            store: self.0.store.clone(),
-            outgoing: self.0.outgoing.clone(),
-            heard: self.0.heard.clone(),
-            changed: self.0.changed.clone(),
-            caught_up: self.0.caught_up.clone(),
-        })))
+            Some(Admission { owner, workspace }),
+            self.0.store.clone(),
+        ))
     }
 
     /// The replica this link syncs.
@@ -215,8 +246,10 @@ impl DirectSync {
         let message = write(&mut self.0.replica.lock(), &self.0.key, SystemTime::now())?;
         self.0.changed.send_modify(bump);
         self.keep(&message);
-        // No open link is no error: the next one catches up from the replica.
-        let _ = self.0.outgoing.send(message.clone());
+        self.outgoing(Authored {
+            from: self.device(),
+            message: message.clone(),
+        });
         Ok(message)
     }
 
@@ -250,9 +283,23 @@ impl DirectSync {
     /// [`Self::publish`]).
     pub fn send(&self, message: NeighbourMsg) -> Result<(), String> {
         self.keep(&message);
-        // No open link is no error: the next one catches up from the replica.
-        let _ = self.0.outgoing.send(message);
+        self.outgoing(Authored {
+            from: self.device(),
+            message,
+        });
         Ok(())
+    }
+
+    /// Hand `authored` to every open link; no open link is no error, as the
+    /// next one catches up from the replica.
+    fn outgoing(&self, authored: Authored) {
+        let _ = self.0.outgoing.send(authored);
+    }
+
+    /// Whether this device is the workspace's host on its links
+    /// ([`Serving::serve`]).
+    fn fans_out(&self) -> bool {
+        self.0.fan_out.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Dial the device at `addr` from `endpoint` and answer its admission,
@@ -282,9 +329,12 @@ impl DirectSync {
             return Err(refuse(&connection, &reason));
         }
         self.certificate()?;
+        // Subscribed before the dial returns: the caller may send at once.
+        let live = self.0.outgoing.subscribe();
         Ok(Dialed {
             connection,
             control: Control { send, recv },
+            live,
         })
     }
 
@@ -318,11 +368,11 @@ impl DirectSync {
         let (own_cert, host_cert) = (member.certificate()?, host.certificate()?);
         let live_mine = member.0.outgoing.subscribe();
         let live_theirs = host.0.outgoing.subscribe();
-        for message in host.catch_up()? {
-            member.admit(own, theirs, Some(&host_cert), message, false)?;
+        for authored in host.catch_up()? {
+            member.admit(authored.from, Some(&host_cert), authored.message, false)?;
         }
-        for message in member.catch_up()? {
-            host.admit(theirs, own, Some(&own_cert), message, false)?;
+        for authored in member.catch_up()? {
+            host.admit(authored.from, Some(&own_cert), authored.message, false)?;
         }
         member.replay_from(host)?;
         member.0.caught_up.send_replace(true);
@@ -342,7 +392,7 @@ impl DirectSync {
             for message in &frames {
                 let author = store::author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
-                self.admit(author, host.device(), None, message.clone(), true)?;
+                self.admit(author, None, message.clone(), true)?;
             }
             store::advance(&mut cursors, &frames);
             if !more {
@@ -380,7 +430,9 @@ impl DirectSync {
         if named != self.workspace_number()? {
             return Err(refuse(&connection, "this device holds no such workspace"));
         }
-        self.link(&connection, false, Control { send, recv }).await
+        let live = self.0.outgoing.subscribe();
+        self.link(&connection, false, Control { send, recv }, live)
+            .await
     }
 
     /// Sync with the device on the other end of `connection` until the link
@@ -390,22 +442,23 @@ impl DirectSync {
         connection: &Connection,
         dialing: bool,
         control: Control,
+        live: broadcast::Receiver<Authored>,
     ) -> Result<(), String> {
         let remote = *connection.remote_id().as_bytes();
         if let Err(reason) = self.admits(remote) {
             return Err(refuse(connection, &reason));
         }
         let certificate = self.certificate()?;
-        // Subscribe before taking the catch-up, so a change published in
-        // between is sent after it rather than lost.
-        let live = self.0.outgoing.subscribe();
+        // Taken after the catch-up, which the caller subscribed before: a
+        // change published in between reaches the link after the history
+        // rather than not at all.
         let catch_up = self.catch_up()?;
         let send = connection
             .open_uni()
             .await
             .map_err(|error| error.to_string())?;
-        let sending = send_all(send, remote, catch_up, live);
-        let receiving = self.receive_all(remote, &certificate, connection);
+        let sending = send_authored(send, remote, catch_up, live);
+        let receiving = self.receive_all(&certificate, connection);
         let history = async {
             let done = if dialing {
                 self.ask_store(control).await
@@ -437,7 +490,7 @@ impl DirectSync {
             for message in &frames {
                 let author = store::author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
-                self.admit(author, author, None, message.clone(), true)?;
+                self.admit(author, None, message.clone(), true)?;
             }
             store::advance(&mut cursors, &frames);
             if more {
@@ -501,7 +554,7 @@ impl DirectSync {
     /// owner, the governance and a checkpoint of every document. A member
     /// device of another person cannot sign checkpoints others' writes
     /// depend on; its own writes reach the other device live.
-    fn catch_up(&self) -> Result<Vec<NeighbourMsg>, String> {
+    fn catch_up(&self) -> Result<Vec<Authored>, String> {
         let device = self.0.key.verifying_key().to_bytes();
         let mut replica = self.0.replica.lock();
         let cert = replica
@@ -527,17 +580,22 @@ impl DirectSync {
             );
         }
         drop(replica);
-        Ok(messages)
+        Ok(messages
+            .into_iter()
+            .map(|message| Authored {
+                from: device,
+                message,
+            })
+            .collect())
     }
 
-    /// Admit every frame `remote` sends until its stream ends. A frame the
-    /// replica refuses is that message's verdict, not the link's: the link
+    /// Admit every frame the other device sends until its stream ends. A
+    /// frame the replica refuses is that message's verdict, not the link's: the link
     /// stays up for the frames after it, and the device files what it refused
     /// as its own verdict in the workspace document, so the write's author
     /// reads why it is not here.
     async fn receive_all(
         &self,
-        remote: [u8; 32],
         certificate: &tilo_user_identity::DeviceCert,
         connection: &Connection,
     ) -> Result<(), String> {
@@ -545,34 +603,40 @@ impl DirectSync {
             .accept_uni()
             .await
             .map_err(|error| error.to_string())?;
-        while let Some(message) = read_frame(&mut recv).await? {
-            self.admit(remote, remote, Some(certificate), message, false)?;
+        while let Some(authored) = read_authored(&mut recv).await? {
+            self.admit(authored.from, Some(certificate), authored.message, false)?;
         }
         Ok(())
     }
 
-    /// Take `message` in as `author`'s frame, admitted into this device's
-    /// workspace, kept at its store and handed to its engine. `certificate` is
-    /// the author's, which a store needs to file what the workspace refuses;
-    /// a store replaying its own history has only the frame's author.
+    /// Take `message` in as `claimed`'s frame, admitted into this device's
+    /// workspace, kept at its store and handed to its engine. What the frame
+    /// itself signs names its author over what the link says; `certificate`
+    /// is the carrier's, which a store needs to file what the workspace
+    /// refuses.
     fn admit(
         &self,
-        author: [u8; 32],
-        remote: [u8; 32],
+        claimed: [u8; 32],
         certificate: Option<&tilo_user_identity::DeviceCert>,
         message: NeighbourMsg,
         retained: bool,
     ) -> Result<(), String> {
+        let author = store::author_of(&message).unwrap_or(claimed);
         let heard = match &self.0.admission {
-            Some(admission) => self.admit_owned(admission, author, remote, message, retained)?,
-            None => self.admit_local(author, remote, certificate, message, retained)?,
+            Some(admission) => self.admit_owned(admission, author, message, retained)?,
+            None => self.admit_local(author, certificate, message, retained)?,
         };
         self.keep(&heard.message);
         if heard.landed {
             self.0.changed.send_modify(bump);
-            // What a link admits, the other links see: the device carrying a
-            // workspace is its members' one path.
-            let _ = self.0.outgoing.send(heard.message.clone());
+        }
+        // The workspace's host is its members' one path: what one member's
+        // link brings reaches every other, under the member's own name.
+        if self.fans_out() && heard.report.is_ok() {
+            self.outgoing(Authored {
+                from: heard.author,
+                message: heard.message.clone(),
+            });
         }
         let _ = self.0.heard.send(heard);
         Ok(())
@@ -584,14 +648,13 @@ impl DirectSync {
         &self,
         admission: &Admission,
         author: [u8; 32],
-        remote: [u8; 32],
         message: NeighbourMsg,
         retained: bool,
     ) -> Result<Heard, String> {
         let origin = if retained {
             TransportOrigin::RetainedRelayDelta(author)
         } else {
-            TransportOrigin::RelayDelta(remote)
+            TransportOrigin::RelayDelta(author)
         };
         let report = admission.owner.receive(
             admission.workspace,
@@ -612,7 +675,7 @@ impl DirectSync {
             message,
             landed,
             retained,
-            report: Some(report),
+            report,
         })
     }
 
@@ -622,7 +685,6 @@ impl DirectSync {
     fn admit_local(
         &self,
         author: [u8; 32],
-        remote: [u8; 32],
         certificate: Option<&tilo_user_identity::DeviceCert>,
         message: NeighbourMsg,
         retained: bool,
@@ -630,14 +692,14 @@ impl DirectSync {
         let origin = if retained {
             TransportOrigin::RetainedRelayDelta(author)
         } else {
-            TransportOrigin::RelayDelta(remote)
+            TransportOrigin::RelayDelta(author)
         };
         let mut replica = self.0.replica.lock();
         let now = SystemTime::now();
         let mut landed = false;
-        match replica.receive_from(origin, message.clone(), now) {
-            Ok(outcome) => {
-                landed = outcome.changed || outcome.metadata_changed;
+        let report = match replica.receive_from_report(origin, message.clone(), now) {
+            Ok(report) => {
+                landed = report.changed || report.metadata_changed;
                 // Filing what the workspace refused takes the author's
                 // certificate, which a replay of this device's own history
                 // does not carry.
@@ -649,6 +711,7 @@ impl DirectSync {
                         now,
                     )? || landed;
                 }
+                Ok(report)
             }
             Err(reason) => {
                 // A document write the workspace refuses is its author's
@@ -661,22 +724,21 @@ impl DirectSync {
                     landed = replica.workspace_mut().refuse_write(
                         certificate,
                         &message,
-                        &reason,
+                        &reason.to_string(),
                         &self.0.key,
                         now,
                     )?;
-                } else {
-                    tracing::warn!(%reason, "a direct link dropped a frame the workspace refused");
                 }
+                Err(reason.to_string())
             }
-        }
+        };
         drop(replica);
         Ok(Heard {
             author,
             message,
             landed,
             retained,
-            report: None,
+            report,
         })
     }
 
@@ -745,6 +807,11 @@ fn refuse(connection: &Connection, reason: &str) -> String {
 
 impl ProtocolHandler for DirectSync {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        // A connection this device accepts is a member's, so this device is
+        // the workspace's host on it.
+        self.0
+            .fan_out
+            .store(true, std::sync::atomic::Ordering::Release);
         self.serve(connection)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
@@ -784,6 +851,9 @@ impl Serving {
     /// The link's replica names no workspace id.
     pub fn serve(&self, link: DirectSync) -> Result<(), String> {
         let workspace = link.workspace_number()?;
+        link.0
+            .fan_out
+            .store(true, std::sync::atomic::Ordering::Release);
         self.links.write_recover().insert(workspace, link);
         Ok(())
     }
@@ -807,7 +877,9 @@ impl ProtocolHandler for Serving {
             let link = self
                 .link(named)
                 .ok_or_else(|| refuse(&connection, "this host holds no such workspace"))?;
-            link.link(&connection, false, Control { send, recv }).await
+            let live = link.0.outgoing.subscribe();
+            link.link(&connection, false, Control { send, recv }, live)
+                .await
         };
         serve
             .await
@@ -903,9 +975,10 @@ pub(crate) fn bump(count: &mut u64) {
     *count = count.wrapping_add(1);
 }
 
-/// Take every frame `live` publishes into `device`'s workspace, as `remote`'s.
+/// Take every frame `live` publishes into `device`'s workspace, in its
+/// author's name.
 async fn forward(
-    mut live: broadcast::Receiver<NeighbourMsg>,
+    mut live: broadcast::Receiver<Authored>,
     remote: [u8; 32],
     device: &DirectSync,
     certificate: &tilo_user_identity::DeviceCert,
@@ -913,8 +986,10 @@ async fn forward(
 ) -> Result<(), String> {
     loop {
         match live.recv().await {
-            Ok(message) if from_device(&message, remote) => {}
-            Ok(message) => device.admit(remote, remote, Some(certificate), message, retained)?,
+            Ok(authored) if from_device(&authored.message, remote) => {}
+            Ok(authored) => {
+                device.admit(authored.from, Some(certificate), authored.message, retained)?;
+            }
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 return Err("the link fell behind the device's changes".into());
             }
@@ -931,12 +1006,65 @@ pub(crate) fn from_device(message: &NeighbourMsg, device: [u8; 32]) -> bool {
             envelope.author.as_bytes() == &device || *peer == peer_handle(&device)
         }
         NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key == device,
+        // The frames carrying no signature of their own name their author in
+        // the handle the workspace knows it by.
+        NeighbourMsg::RecordContentWant { requester, .. } => *requester == peer_handle(&device),
+        NeighbourMsg::RecordContentPiece { responder, .. }
+        | NeighbourMsg::RecordContentLacks { responder, .. } => *responder == peer_handle(&device),
+        NeighbourMsg::LivePresence { peer, .. } | NeighbourMsg::Heartbeat { peer, .. } => {
+            *peer == peer_handle(&device)
+        }
         _ => false,
     }
 }
 
+/// Write `catch_up`, then every frame published live that `remote` did not
+/// author, to `send`, under the name of the device that authored each.
+async fn send_authored(
+    mut send: SendStream,
+    remote: [u8; 32],
+    catch_up: Vec<Authored>,
+    mut live: broadcast::Receiver<Authored>,
+) -> Result<(), String> {
+    for authored in &catch_up {
+        write_authored(&mut send, authored).await?;
+    }
+    loop {
+        match live.recv().await {
+            Ok(authored) if from_device(&authored.message, remote) => {}
+            Ok(authored) => write_authored(&mut send, &authored).await?,
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                return Err("the link fell behind the device's changes".into());
+            }
+            Err(broadcast::error::RecvError::Closed) => return Ok(()),
+        }
+    }
+}
+
+/// Write `authored` as this link's next record: the device that authored it,
+/// then its frame.
+async fn write_authored(send: &mut SendStream, authored: &Authored) -> Result<(), String> {
+    let bytes = postcard::to_allocvec(&(authored.from, &authored.message))
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err("frame too large".into());
+    }
+    crate::frames::write_frame(send, &bytes).await
+}
+
+/// The next frame this link brought, with its author, or `None` once the
+/// other side finished its stream.
+async fn read_authored(recv: &mut RecvStream) -> Result<Option<Authored>, String> {
+    match crate::frames::read_frame(recv, MAX_FRAME_BYTES).await? {
+        Some(bytes) => postcard::from_bytes::<([u8; 32], NeighbourMsg)>(&bytes)
+            .map(|(from, message)| Some(Authored { from, message }))
+            .map_err(|error| error.to_string()),
+        None => Ok(None),
+    }
+}
+
 /// Write `catch_up`, then every message published live that `remote` did not
-/// send, to `send`.
+/// send, to `send`. The device-store link's plain frames.
 pub(crate) async fn send_all(
     mut send: SendStream,
     remote: [u8; 32],

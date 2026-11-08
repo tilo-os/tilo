@@ -1,16 +1,15 @@
-//! The content a joined workspace's records reference, on the workspace's relay
-//! session. This device asks the workspace for a hash its record lacks with the
-//! workspace's presence, which the host fans out to every member; a member
-//! keeping it answers this device alone through the host. Requests from
-//! other members are answered the same way, from what the profile's content
-//! store keeps under the record's workspace and app.
+//! The content a joined workspace's records reference, on the workspace's
+//! direct link. This device asks the workspace for a hash its record lacks on
+//! its link; the host fans the request out to every member, and a member
+//! keeping the content answers on its own link, from what the profile's
+//! content store keeps under the record's workspace and app.
 
 use super::Joined;
 use neighbour_wire::NeighbourMsg;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use tilo_action_broker::{
     record_content::{
@@ -21,30 +20,6 @@ use tilo_action_broker::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::peer_handle;
-
-/// Devices whose key this device remembers for an answer.
-const MAX_REMEMBERED_REQUESTERS: usize = 256;
-
-/// Who asked a joined workspace for content, by the handle their requests name.
-#[derive(Default)]
-pub(super) struct Requesters(Mutex<HashMap<(WorkspaceId, ContentPeer), [u8; 32]>>);
-
-impl Requesters {
-    fn remember(&self, workspace: WorkspaceId, peer: ContentPeer, device: [u8; 32]) {
-        if let Ok(mut requesters) = self.0.lock() {
-            if requesters.len() >= MAX_REMEMBERED_REQUESTERS
-                && !requesters.contains_key(&(workspace, peer))
-            {
-                requesters.clear();
-            }
-            requesters.insert((workspace, peer), device);
-        }
-    }
-
-    fn device(&self, workspace: WorkspaceId, peer: ContentPeer) -> Option<[u8; 32]> {
-        self.0.lock().ok()?.get(&(workspace, peer)).copied()
-    }
-}
 
 /// The profile's content store, read and written as the desktop session
 /// reaches its own: through the scope a record's content lives under.
@@ -80,7 +55,7 @@ impl ContentShelf for ProfileShelf {
     }
 }
 
-/// The joined workspaces' relay sessions as the route of their records' content.
+/// The joined workspaces' links as the route of their records' content.
 struct JoinedPeers(Arc<Joined>);
 
 impl ContentPeers for JoinedPeers {
@@ -97,19 +72,14 @@ impl ContentPeers for JoinedPeers {
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
         };
-        if let Ok(bytes) = postcard::to_allocvec(&message) {
-            let _ = live.publish_presence(bytes);
-        }
+        let _ = live.send(message);
     }
 
     fn answer(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
         let Some(workspace) = WorkspaceId::parse(&route.cluster_id) else {
             return;
         };
-        let (Some(live), Some(device)) = (
-            self.0.live(workspace),
-            self.0.requesters.device(workspace, peer),
-        ) else {
+        let Some(live) = self.0.live(workspace) else {
             return;
         };
         let message = NeighbourMsg::RecordContentPiece {
@@ -122,19 +92,14 @@ impl ContentPeers for JoinedPeers {
             offset: piece.offset,
             bytes: piece.bytes,
         };
-        if let Ok(frame) = postcard::to_allocvec(&message) {
-            let _ = live.publish_record_content(device, frame);
-        }
+        let _ = live.send(message);
     }
 
     fn lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
         let Some(workspace) = WorkspaceId::parse(&route.cluster_id) else {
             return;
         };
-        let (Some(live), Some(device)) = (
-            self.0.live(workspace),
-            self.0.requesters.device(workspace, peer),
-        ) else {
+        let Some(live) = self.0.live(workspace) else {
             return;
         };
         let message = NeighbourMsg::RecordContentLacks {
@@ -144,13 +109,11 @@ impl ContentPeers for JoinedPeers {
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
         };
-        if let Ok(frame) = postcard::to_allocvec(&message) {
-            let _ = live.publish_record_content(device, frame);
-        }
+        let _ = live.send(message);
     }
 
-    /// The host the workspace's session is connected to, and the members it
-    /// reports connected: this device reaches them only through it.
+    /// The host the workspace's link is connected to, and the members whose
+    /// frames it heard: this device reaches them only through it.
     fn sources(&self, route: &CrdtRoute) -> ContentSources {
         let Some(workspace) = WorkspaceId::parse(&route.cluster_id) else {
             return ContentSources::default();
@@ -196,14 +159,9 @@ impl Joined {
         peer_handle(&self.custody.device_signing_key.verifying_key().to_bytes())
     }
 
-    /// A member of `workspace` asked it for content, with presence `author`
-    /// published. Returns whether `message` was such a request.
-    pub(super) fn content_wanted(
-        &self,
-        workspace: WorkspaceId,
-        author: [u8; 32],
-        message: &NeighbourMsg,
-    ) -> bool {
+    /// A member of `workspace` asked it for content. Returns whether `message`
+    /// was such a request.
+    pub(super) fn content_wanted(&self, workspace: WorkspaceId, message: &NeighbourMsg) -> bool {
         let NeighbourMsg::RecordContentWant {
             requester,
             app_id,
@@ -213,16 +171,12 @@ impl Joined {
         else {
             return false;
         };
-        if *requester != peer_handle(&author)
-            || *requester == self.own_handle()
-            || WorkspaceId::parse(cluster_id) != Some(workspace)
-        {
+        if *requester == self.own_handle() || WorkspaceId::parse(cluster_id) != Some(workspace) {
             return true;
         }
         let Some(content) = self.content.get().cloned() else {
             return true;
         };
-        self.requesters.remember(workspace, *requester, author);
         let route = CrdtRoute::app(app_id.clone(), cluster_id.clone());
         let (peer, hash) = (*requester, hash.clone());
         // The host admitted the member to the workspace, which lets it read.
@@ -232,26 +186,35 @@ impl Joined {
 
     /// A piece of content another member sent this device through the
     /// host, or word that a device keeps none of what this one asked for.
-    pub(super) fn content_arrived(&self, workspace: WorkspaceId, from: [u8; 32], frame: &[u8]) {
-        if let Ok(NeighbourMsg::RecordContentLacks {
+    pub(super) fn content_arrived(
+        &self,
+        workspace: WorkspaceId,
+        from: [u8; 32],
+        message: &NeighbourMsg,
+    ) {
+        if let NeighbourMsg::RecordContentLacks {
             responder,
             requester,
             app_id,
             cluster_id,
             hash,
-        }) = postcard::from_bytes(frame)
+        } = message
         {
-            if responder == peer_handle(&from)
-                && requester == self.own_handle()
-                && WorkspaceId::parse(&cluster_id) == Some(workspace)
+            if *responder == peer_handle(&from)
+                && *requester == self.own_handle()
+                && WorkspaceId::parse(cluster_id) == Some(workspace)
                 && let Some(content) = self.content.get().cloned()
             {
-                let route = CrdtRoute::app(app_id, cluster_id);
+                let (route, responder, hash) = (
+                    CrdtRoute::app(app_id.clone(), cluster_id.clone()),
+                    *responder,
+                    hash.clone(),
+                );
                 tilo_rt::app().spawn_blocking(move || content.peer_lacks(&route, responder, &hash));
             }
             return;
         }
-        let Ok(NeighbourMsg::RecordContentPiece {
+        let NeighbourMsg::RecordContentPiece {
             responder,
             requester,
             app_id,
@@ -260,25 +223,25 @@ impl Joined {
             total,
             offset,
             bytes,
-        }) = postcard::from_bytes(frame)
+        } = message
         else {
             return;
         };
-        if responder != peer_handle(&from)
-            || requester != self.own_handle()
-            || WorkspaceId::parse(&cluster_id) != Some(workspace)
+        if *responder != peer_handle(&from)
+            || *requester != self.own_handle()
+            || WorkspaceId::parse(cluster_id) != Some(workspace)
         {
             return;
         }
         let Some(content) = self.content.get().cloned() else {
             return;
         };
-        let route = CrdtRoute::app(app_id, cluster_id);
+        let route = CrdtRoute::app(app_id.clone(), cluster_id.clone());
         let piece = ContentPiece {
-            hash,
-            total,
-            offset,
-            bytes,
+            hash: hash.clone(),
+            total: *total,
+            offset: *offset,
+            bytes: bytes.clone(),
         };
         tilo_rt::app().spawn_blocking(move || content.peer_piece(&route, &piece));
     }

@@ -491,12 +491,10 @@ impl std::fmt::Debug for Input {
 
 impl Input {
     /// The input a link's [`Heard`](crate::direct::Heard) frame is, for the
-    /// workspace `scope` pins: `None` for a link whose device does not own
-    /// the workspace, which admits nothing here.
+    /// workspace `scope` pins.
     #[must_use]
-    pub fn heard(scope: Arc<Scope>, heard: crate::direct::Heard) -> Option<Self> {
-        heard.report.as_ref()?;
-        Some(Self { scope, heard })
+    pub fn heard(scope: Arc<Scope>, heard: crate::direct::Heard) -> Self {
+        Self { scope, heard }
     }
     #[must_use]
     pub fn workspace(&self) -> WorkspaceId {
@@ -531,13 +529,7 @@ impl Input {
     /// What the workspace's admission decided for this frame, as the link
     /// found it.
     pub fn admit(&self) -> Result<crate::AdmissionReport, String> {
-        self.report()
-    }
-    fn report(&self) -> Result<crate::AdmissionReport, String> {
-        self.heard
-            .report
-            .clone()
-            .unwrap_or_else(|| Err("a link admitted no frame here".to_owned()))
+        self.heard.report.clone()
     }
     /// Whether `other` came over the same link as this one: what
     /// [`Self::admit_batch`] keeps together.
@@ -557,7 +549,7 @@ impl Input {
             inputs: inputs
                 .into_iter()
                 .map(|input| {
-                    let report = input.report();
+                    let report = input.admit();
                     (input, report)
                 })
                 .collect(),
