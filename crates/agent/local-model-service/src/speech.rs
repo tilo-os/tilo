@@ -1,15 +1,11 @@
 //! Receipt-checked local speech and the worker's bounded PCM protocol.
 //!
-//! The native engine is for the owned worker process. The compositor uses
-//! its pipe protocol; it never calls the C decoder or opens a model itself.
-#[cfg(feature = "whisper")]
-use std::ffi::{CString, c_char, c_void};
+//! The decoder belongs to the owned worker process. The compositor uses its
+//! pipe protocol; it never loads a model or decodes audio itself.
 use std::fs::{self, OpenOptions};
 use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
-#[cfg(feature = "whisper")]
-use std::ptr::NonNull;
 
 use zeroize::Zeroizing;
 
@@ -20,11 +16,15 @@ use crate::{InProcessCapability, installed_in_process_model};
 pub mod activity;
 #[cfg(feature = "whistle-aot")]
 mod aot;
+#[cfg(feature = "whisper")]
+mod engine;
 mod model;
 #[cfg(feature = "whisper")]
 mod recognition;
 pub use model::SealedSpeechModel;
 pub mod worker;
+#[cfg(feature = "whisper")]
+pub use engine::SpeechEngine;
 #[cfg(feature = "whisper")]
 pub use recognition::SpeechRecognition;
 
@@ -160,235 +160,6 @@ pub fn confine_worker() -> Result<(), SpeechError> {
         .map_err(|_| SpeechError::WorkerStopped)?;
     seccomp::install(&seccomp::parser_program().map_err(|_| SpeechError::WorkerStopped)?)
         .map_err(|_| SpeechError::WorkerStopped)
-}
-
-#[cfg(feature = "whisper")]
-unsafe extern "C" {
-    fn tilo_speech_load_fd(fd: i32, length: usize) -> *mut c_void;
-    fn tilo_speech_load(bytes: *mut u8, length: usize) -> *mut c_void;
-    fn tilo_speech_ready(context: *mut c_void) -> bool;
-    fn tilo_speech_threads(context: *mut c_void, threads: i32) -> bool;
-    fn tilo_speech_flash_attention(context: *mut c_void) -> bool;
-    fn tilo_speech_vocabulary(context: *mut c_void, text: *const c_char, length: usize) -> bool;
-    fn tilo_speech_free(context: *mut c_void);
-    fn tilo_speech_accepts(context: *mut c_void, language: *const c_char) -> bool;
-    fn tilo_speech_enable_draft_interrupt() -> bool;
-    fn tilo_speech_draft_mode(context: *mut c_void, enabled: bool);
-    fn tilo_speech_transcribe(
-        context: *mut c_void,
-        samples: *const f32,
-        count: i32,
-        language: *const c_char,
-        output: *mut u8,
-        capacity: usize,
-    ) -> i32;
-}
-
-/// An exclusively owned CPU decoder. Its opaque pointer is neither Send nor
-/// Sync. Keep this in the worker; parent cancellation terminates that owned
-/// process even while native inference is busy. No Rust callback is installed.
-#[cfg(feature = "whisper")]
-pub struct SpeechEngine(NonNull<c_void>);
-#[cfg(feature = "whisper")]
-impl SpeechEngine {
-    /// Install the owned worker's lock-free provisional-inference stop signal.
-    /// Call before Ready; failure never advertises support or opens capture.
-    pub fn enable_draft_interrupt() -> Result<(), SpeechError> {
-        // SAFETY: called once in the owned worker; the native signal handler
-        // only stores a lock-free atomic flag and never touches Rust state.
-        if unsafe { tilo_speech_enable_draft_interrupt() } {
-            Ok(())
-        } else {
-            Err(SpeechError::WorkerStopped)
-        }
-    }
-
-    /// Mark only the synchronous draft call as eligible for interruption.
-    pub fn draft_mode(&mut self, enabled: bool) {
-        // SAFETY: this owner changes the live context only between native
-        // calls. Final inference always clears this mode before decoding.
-        unsafe { tilo_speech_draft_mode(self.0.as_ptr(), enabled) };
-    }
-
-    /// Observe the attention strategy actually passed to the loaded native
-    /// engine. Qualification must not infer this from filenames or timings.
-    pub fn flash_attention_enabled(&self) -> bool {
-        // SAFETY: the exclusively owned live context returns one metadata
-        // boolean; no model/audio pointers or text cross this query.
-        unsafe { tilo_speech_flash_attention(self.0.as_ptr()) }
-    }
-
-    /// Configure bounded native vocabulary tokens without rewriting output.
-    /// Set before starting a new recognition session. Failed replacement clears
-    /// the old binding; do not reuse a recognition draft cache across changes.
-    pub fn set_vocabulary(&mut self, hints: &[String]) -> Result<(), SpeechError> {
-        // SAFETY: the exclusively owned live context synchronously wipes its
-        // token array; the static NUL string is valid even for empty input.
-        if !unsafe { tilo_speech_vocabulary(self.0.as_ptr(), c"".as_ptr(), 0) } {
-            return Err(SpeechError::Protocol);
-        }
-        if hints.len() > 256 {
-            return Err(SpeechError::Protocol);
-        }
-        let mut text = Zeroizing::new(String::new());
-        for hint in hints {
-            if hint.is_empty()
-                || hint.chars().count() > 128
-                || !hint.chars().any(char::is_alphabetic)
-                || hint.chars().any(|c| c.is_control() || c.is_whitespace())
-                || hint.contains("<|")
-                || hint.contains("|>")
-            {
-                return Err(SpeechError::Protocol);
-            }
-            if text.len().saturating_add(hint.len()).saturating_add(1) > 16 * 1024 {
-                return Err(SpeechError::Protocol);
-            }
-            text.push_str(hint);
-            text.push('\n');
-        }
-        let length = text.len();
-        text.push('\0');
-        // SAFETY: bounded, NUL-terminated UTF-8 remains live for this synchronous
-        // call. The native context stores only its bounded owned token array.
-        if unsafe { tilo_speech_vocabulary(self.0.as_ptr(), text.as_ptr().cast(), length) } {
-            Ok(())
-        } else {
-            Err(SpeechError::Protocol)
-        }
-    }
-    /// Parse the verified immutable descriptor after worker confinement.
-    /// No native file path or Rust callback crosses this boundary.
-    pub fn load_file(model: &SealedSpeechModel) -> Result<Self, SpeechError> {
-        use std::os::fd::AsRawFd as _;
-        use std::os::unix::fs::FileExt as _;
-        model.check_seals()?;
-        let mut magic = [0_u8; 4];
-        if model.size() < 64
-            || model.file().read_exact_at(&mut magic, 0).is_err()
-            || &magic != b"lmgg"
-        {
-            return Err(SpeechError::ModelReceipt);
-        }
-        let length = usize::try_from(model.size()).map_err(|_| SpeechError::ModelReceipt)?;
-        // SAFETY: the sealed descriptor remains live during synchronous C++
-        // reads; native code retains neither descriptor nor callback userdata.
-        let pointer = unsafe { tilo_speech_load_fd(model.file().as_raw_fd(), length) };
-        NonNull::new(pointer)
-            .map(Self)
-            .ok_or(SpeechError::Recognition)
-    }
-
-    /// Load already receipt-checked model bytes synchronously in the worker.
-    pub fn load(bytes: &mut [u8]) -> Result<Self, SpeechError> {
-        if bytes.len() < 64
-            || u64::try_from(bytes.len()).map_or(true, |len| len > MAX_MODEL_BYTES)
-            || !bytes.starts_with(b"lmgg")
-        {
-            return Err(SpeechError::ModelReceipt);
-        }
-        // SAFETY: the exclusive slice remains alive throughout synchronous
-        // loading. The C++ loader copies weights and retains no input pointer.
-        let pointer = unsafe { tilo_speech_load(bytes.as_mut_ptr(), bytes.len()) };
-        NonNull::new(pointer)
-            .map(Self)
-            .ok_or(SpeechError::Recognition)
-    }
-    /// Match the worker's one- or two-CPU budget without oversubscribing it.
-    /// Query the available CPUs before confinement, then pass only this count.
-    pub fn set_threads(&mut self, threads: usize) -> Result<(), SpeechError> {
-        let threads = i32::try_from(threads).map_err(|_| SpeechError::Protocol)?;
-        // SAFETY: the exclusive context is live; this stores only a bounded
-        // integer and creates no threads or retained pointers.
-        if unsafe { tilo_speech_threads(self.0.as_ptr(), threads) } {
-            Ok(())
-        } else {
-            Err(SpeechError::Protocol)
-        }
-    }
-    /// Allocate CPU decoder arenas after releasing the verified input bytes.
-    /// Call before announcing readiness or opening a microphone.
-    pub fn prepare(&mut self) -> Result<(), SpeechError> {
-        // SAFETY: this exclusively owned handle stays live throughout the
-        // synchronous arena allocation; no input pointers are retained.
-        if unsafe { tilo_speech_ready(self.0.as_ptr()) } {
-            Ok(())
-        } else {
-            Err(SpeechError::Recognition)
-        }
-    }
-    /// Confirm engine language support before opening a microphone.
-    /// # Errors
-    /// Rejects invalid/unsupported language codes; auto never translates.
-    pub fn language(&self, language: &str) -> Result<CString, SpeechError> {
-        if language.is_empty()
-            || language.len() > 16
-            || !language.bytes().all(|byte| byte.is_ascii_lowercase())
-        {
-            return Err(SpeechError::UnsupportedLanguage);
-        }
-        let language = CString::new(language).map_err(|_| SpeechError::UnsupportedLanguage)?;
-        // SAFETY: both pointers are live for the synchronous metadata query;
-        // context ownership excludes concurrent inference or destruction.
-        if unsafe { tilo_speech_accepts(self.0.as_ptr(), language.as_ptr()) } {
-            Ok(language)
-        } else {
-            Err(SpeechError::UnsupportedLanguage)
-        }
-    }
-    /// Decode 16 kHz mono samples, replacing a draft rather than appending
-    /// competing hypotheses. Caller supplies complete bounded phrase audio.
-    pub fn transcribe(
-        &mut self,
-        samples: &[f32],
-        language: &CString,
-    ) -> Result<String, SpeechError> {
-        if samples.len() > MAX_SAMPLES || samples.iter().any(|sample| !sample.is_finite()) {
-            return Err(SpeechError::AudioTooLong);
-        }
-        if samples.len() < SAMPLE_RATE / 4 || samples.iter().all(|sample| *sample == 0.0) {
-            return Ok(String::new());
-        }
-        let count = i32::try_from(samples.len()).map_err(|_| SpeechError::AudioTooLong)?;
-        let mut output = Zeroizing::new(vec![0; MAX_TEXT_BYTES]);
-        // SAFETY: all slices and the NUL-terminated language live throughout
-        // the synchronous call; capacity exactly bounds every C++ output write.
-        // Params stay in C++, no foreign struct layout or callbacks cross FFI.
-        let result = unsafe {
-            tilo_speech_transcribe(
-                self.0.as_ptr(),
-                samples.as_ptr(),
-                count,
-                language.as_ptr(),
-                output.as_mut_ptr(),
-                output.len(),
-            )
-        };
-        let length = usize::try_from(result).map_err(|_| match result {
-            -2 => SpeechError::UnsupportedLanguage,
-            -4 => SpeechError::TextTooLong,
-            -5 => SpeechError::DraftInterrupted,
-            _ => SpeechError::Recognition,
-        })?;
-        let text = std::str::from_utf8(output.get(..length).ok_or(SpeechError::TextTooLong)?)
-            .map_err(|_| SpeechError::Recognition)?;
-        // ASR segment whitespace is not a spoken Enter/paragraph command.
-        // Normalize whitespace before the compositor's control-character gate.
-        if text
-            .chars()
-            .any(|ch| ch.is_control() && !ch.is_whitespace())
-        {
-            return Err(SpeechError::Recognition);
-        }
-        Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
-    }
-}
-#[cfg(feature = "whisper")]
-impl Drop for SpeechEngine {
-    fn drop(&mut self) {
-        // SAFETY: exactly this owner releases this live context exactly once.
-        unsafe { tilo_speech_free(self.0.as_ptr()) };
-    }
 }
 
 pub struct SpeechInput {
@@ -536,9 +307,9 @@ mod tests {
     #[cfg(feature = "whisper")]
     #[test]
     fn short_or_invalid_model_headers_never_reach_the_native_parser() {
-        for mut bytes in [Vec::new(), vec![0; 64], b"lmgg".to_vec()] {
+        for bytes in [Vec::new(), vec![0; 64], b"lmgg".to_vec()] {
             assert!(matches!(
-                SpeechEngine::load(&mut bytes),
+                SpeechEngine::load(&bytes),
                 Err(SpeechError::ModelReceipt)
             ));
         }

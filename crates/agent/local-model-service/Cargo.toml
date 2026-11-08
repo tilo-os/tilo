@@ -6,14 +6,9 @@ publish.workspace = true
 license.workspace = true
 description = "Verified, content-addressed local-model runtime service for Tilo."
 
-# Fast quality reports cc unused despite build.rs using it for compiler
-# discovery and C++ bridge compilation; retain that required build dependency.
-[package.metadata.cargo-machete]
-ignored = ["cc"]
-
 [features]
 default = ["whisper"]
-whisper = []
+whisper = ["dep:whisper-rs-sys"]
 # Explicit isolated native qualification; never selected by normal consumers.
 nemo-review = []
 # Isolated public-module interpretation; never selected by the speech worker.
@@ -108,6 +103,7 @@ zeroize.workspace = true
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 tar.workspace = true
 zstd.workspace = true
+whisper-rs-sys = { version = "=0.15.0", optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
@@ -116,10 +112,6 @@ settings-store = { path = "../../system/settings-store" }
 wasmi = { version = "=1.1.0", default-features = false, features = ["std", "simd"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
-
-[build-dependencies]
-cc = "=1.2.56"
-libc.workspace = true
 
 [lints]
 workspace = true

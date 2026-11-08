@@ -76,6 +76,17 @@ RUSTUP_AUTO_INSTALL = { value = "0", force = false }
 # sccache's server exits after 600 s without a new request, even with one
 # long compile in flight; the client then compiles it again locally.
 SCCACHE_IDLE_TIMEOUT = { value = "0", force = false }
+# whisper.cpp's CMake build picks CPU flags for the machine it is compiled on
+# unless told otherwise. Hold it to the repository's OS floor: x86-64-v3 on
+# x86, armv8-a on ARM, so an image built on a newer runner still runs.
+GGML_NATIVE = { value = "OFF", force = false }
+GGML_CPU_ARM_ARCH = { value = "armv8-a", force = false }
+# ggml otherwise wraps every compile in whatever ccache or sccache is on PATH.
+# Cargo already decides on caching.
+GGML_CCACHE = { value = "OFF", force = false }
+# Use the reviewed bindings the crate publishes for exactly this whisper.cpp
+# version, so the build needs no libclang and no host-specific regeneration.
+WHISPER_DONT_GENERATE_BINDINGS = { value = "1", force = false }
 # Scope GNU C/assembler options to Linux targets, too. Global CFLAGS would
 # send -Wa,--noexecstack to MSVC/Apple clang while building the host Imager.
 CFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }

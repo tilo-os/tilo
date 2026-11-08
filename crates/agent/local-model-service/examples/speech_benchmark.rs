@@ -345,7 +345,7 @@ mod qualification {
         // descriptor. Production memory/dump/death limits apply before loading.
         unsafe { local_model_service::speech::worker::prepare() }
             .map_err(|_| "worker limits failed")?;
-        let (mut model, probes) = prepare(&options)?;
+        let (model, probes) = prepare(&options)?;
         println!(
             "SPEECH_BENCHMARK_INPUT {}",
             serde_json::json!({
@@ -355,7 +355,7 @@ mod qualification {
         );
         local_model_service::speech::confine_worker().map_err(|_| "confinement failed")?;
         let start = Instant::now();
-        let mut engine = SpeechEngine::load(&mut model).map_err(|_| "model load failed")?;
+        let mut engine = SpeechEngine::load(&model).map_err(|_| "model load failed")?;
         drop(model);
         engine.prepare().map_err(|_| "decoder allocation failed")?;
         println!(
