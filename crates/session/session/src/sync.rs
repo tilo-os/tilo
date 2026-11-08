@@ -304,6 +304,9 @@ pub struct Entering {
     pub name: String,
     /// Where the device hosting it is reached, as its host signed it.
     pub host: tilo_peer_state::join::TransportHint,
+    /// Already on this desk, held as the device this machine was copied
+    /// from: an entry that does not land leaves it where it is.
+    pub held: bool,
 }
 
 /// What became of an enrollment or an entry, and the workspace it was for.
@@ -318,6 +321,8 @@ pub struct Enrolled {
     pub name: Option<String>,
     /// `Ok` once this device holds the workspace and takes part in it.
     pub result: Result<(), String>,
+    /// The entry was for a workspace already on this desk ([`Entering::held`]).
+    pub held: bool,
 }
 
 /// The session's client of the collaboration plane: the workspaces it shows,

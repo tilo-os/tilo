@@ -673,6 +673,176 @@ impl Person {
     }
 }
 
+impl Person {
+    /// A machine copied from `source`, one of this person's devices, as
+    /// `tilo-vm vm branch` copies a disk: `source`'s whole directory, taken
+    /// while its session is stopped, after `source` booted once on a build
+    /// that records its machine. The copy boots on a machine of its own, so
+    /// the boot's own re-key ([`branch::settle`]) gives it a device key of
+    /// its own; this person then certifies that key, as one approval on a
+    /// device holding their root does, and the copy installs the certificate
+    /// as a device that joined without the root does.
+    ///
+    /// On a real copy the state sits at the same path. Here the copy is
+    /// elsewhere, and the secret store files the master key of the session's
+    /// channel vault under the vault's path, so that key is filed under the
+    /// copy's path as well: what the copied disk would have found.
+    pub fn branch(&self, source: &Device) -> (Device, tilo_user_identity::branch::Branched) {
+        use sha2::Digest as _;
+        use tilo_user_identity::branch::{self, Branch, Machine, Settled};
+        assert!(
+            source.child.is_none(),
+            "a disk is copied while its machine is off"
+        );
+        let source_machine = Machine::parse("4c4c4544-0042-3510-8048-b4c04f4d3232").unwrap();
+        let branch_machine = Machine::parse("8a1f02d6-91c4-4f0e-9b9a-2d1f5c3e7a10").unwrap();
+        let boot = |paths: &IdentityPaths, machine: &Machine| {
+            branch::settle(
+                paths,
+                Some(machine),
+                &Branch {
+                    // Nothing a test device keeps is sealed to its key: its
+                    // secrets are in the file store `TILO_SECRETS_DIR` names,
+                    // under a key of that store's own.
+                    stores: vec![],
+                    machine: None,
+                    now_ns: tilo_clock::unix_now_ns(),
+                    after: &|_| Ok(()),
+                },
+            )
+            .expect("the boot settles which device this is")
+        };
+        assert!(matches!(
+            boot(&source.identity(), &source_machine),
+            Settled::Recorded
+        ));
+
+        let home = tempfile::tempdir().expect("a directory for the copy");
+        copy_machine(source.directory(), home.path());
+        let vault = |root: &Path| {
+            let root = root.join("state/tilo/collaboration/mls");
+            format!(
+                "mls-master-{}",
+                hex::encode(sha2::Sha256::digest(root.as_os_str().as_encoded_bytes()))
+            )
+        };
+        refile_secret(
+            &home.path().join("secrets"),
+            "so.tilo.collaboration.mls",
+            &vault(source.directory()),
+            &vault(home.path()),
+        );
+
+        let paths = IdentityPaths::under(home.path().join("identity"));
+        let Settled::Branched(branched) = boot(&paths, &branch_machine) else {
+            panic!("the copy did not re-key");
+        };
+        // The copy holds no root: its certificate waits for the person.
+        assert!(matches!(
+            branched.certification,
+            branch::Certification::Pending(_)
+        ));
+        let mut cert = DeviceCert {
+            user_public_key: self.public,
+            device_public_key: branched.device,
+            device_label: branched.label.clone(),
+            capabilities: source.cert.capabilities.clone(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
+            .expect("a device certificate digest");
+        cert.signature = self
+            .root
+            .sign(&digest)
+            .expect("the person's root signs the copy");
+        tilo_user_identity::persist::install_device_cert(&paths, &cert, tilo_clock::unix_now_ns())
+            .expect("the copy installs the certificate its person signed");
+        let control = home.path().join("control.sock");
+        (
+            Device {
+                person: self.name.clone(),
+                label: branched.label.clone(),
+                cert,
+                control,
+                home,
+                child: None,
+            },
+            *branched,
+        )
+    }
+}
+
+/// File the secret `app` keeps under `from` in the file store at `dir` under
+/// `to` as well, as that store seals it: bound to its app and name, under the
+/// store's own key. The store is opened directly because a process opens the
+/// store `TILO_SECRETS_DIR` names once, and this test's is not the copy's.
+fn refile_secret(dir: &Path, app: &str, from: &str, to: &str) {
+    use sha2::Digest as _;
+    use tilo_seal::{Context, Label, SymmetricKey, envelope};
+    let record = |name: &str| [app.as_bytes(), &[0], name.as_bytes()].concat();
+    let file = |record: &[u8]| {
+        dir.join(format!(
+            "{}.secret",
+            hex::encode(sha2::Sha256::digest(record))
+        ))
+    };
+    let key =
+        SymmetricKey::from_slice(&std::fs::read(dir.join("store.key")).expect("the store's key"))
+            .expect("the store's key");
+    let Ok(sealed) = std::fs::read(file(&record(from))) else {
+        return;
+    };
+    let secret = envelope::open(
+        &key,
+        Context::new(Label::FileSecretStore, &record(from)),
+        &sealed,
+    )
+    .expect("the copied secret opens");
+    let resealed = envelope::seal(
+        &key,
+        Context::new(Label::FileSecretStore, &record(to)),
+        &secret,
+    )
+    .expect("the secret seals");
+    let target = file(&record(to));
+    std::fs::write(&target, resealed).expect("the secret is filed");
+    std::fs::set_permissions(
+        &target,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .expect("a mode");
+}
+
+/// Copy a stopped machine's directory as a disk copy carries it: every file
+/// with its mode and every link as a link. What lives only while the machine
+/// runs (its runtime directory, sockets) and this harness's own logs are not
+/// on the disk.
+fn copy_machine(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("a copied directory");
+    for entry in std::fs::read_dir(from).expect("a readable directory") {
+        let entry = entry.expect("a directory entry");
+        let name = entry.file_name();
+        if name == "runtime" || name == "app-logs" {
+            continue;
+        }
+        let target = to.join(&name);
+        let kind = entry.file_type().expect("an entry's kind");
+        if kind.is_dir() {
+            copy_machine(&entry.path(), &target);
+            let mode = std::fs::metadata(entry.path()).expect("a directory's mode");
+            std::fs::set_permissions(&target, mode.permissions()).expect("a mode");
+        } else if kind.is_symlink() {
+            let link = std::fs::read_link(entry.path()).expect("a link");
+            std::os::unix::fs::symlink(link, &target).expect("a copied link");
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target).expect("a copied file");
+        }
+        // A socket or a pipe lives only while the machine runs.
+    }
+}
+
 /// One device of one person, running a session of its own on this machine.
 pub struct Device {
     /// The person whose device this is.
