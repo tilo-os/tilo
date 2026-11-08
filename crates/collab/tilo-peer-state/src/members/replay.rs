@@ -38,20 +38,9 @@ use super::op::{MEMBERS_KEY, MembershipOpCommand, OpId, SignedMembershipOp};
 #[must_use]
 pub fn ops(doc: &AutoCommit) -> BTreeMap<OpId, SignedMembershipOp> {
     let mut held = BTreeMap::new();
-    let Some((Value::Object(automerge::ObjType::Map), map)) =
-        doc.get(ROOT, MEMBERS_KEY).ok().flatten()
-    else {
-        return held;
-    };
-    for key in doc.keys(&map) {
-        let Some((Value::Scalar(value), _)) = doc.get(&map, key.as_str()).ok().flatten() else {
-            continue;
-        };
-        let ScalarValue::Bytes(bytes) = value.as_ref() else {
-            continue;
-        };
+    for bytes in raw(doc).into_values() {
         // ignored-failure: an operation that does not prove its author governs nothing
-        let Ok(op) = SignedMembershipOp::verified(bytes) else {
+        let Ok(op) = SignedMembershipOp::verified(&bytes) else {
             continue;
         };
         // ignored-failure: an operation that cannot be keyed by its own id governs nothing
@@ -404,7 +393,9 @@ pub fn growth(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Result<usi
             match held.get(&key) {
                 Some(held) if held == &bytes => {}
                 Some(_) => return Err("the workspace's membership operations were changed".into()),
-                None => return Err("the workspace's membership operations were removed".into()),
+                None => {
+                    return Err("the workspace's membership operations were removed".into());
+                }
             }
         }
     }
@@ -425,19 +416,30 @@ pub fn growth(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Result<usi
     Ok(added)
 }
 
-/// The workspace document's membership operations as stored, by key.
-fn raw(doc: &AutoCommit) -> BTreeMap<String, Vec<u8>> {
+/// The workspace document's membership operations as stored, by operation key:
+/// each under its own root key ([`super::op::op_key`]), and — in a document
+/// written before operations had a key each — in the map [`MEMBERS_KEY`] names.
+pub(crate) fn raw(doc: &AutoCommit) -> BTreeMap<String, Vec<u8>> {
     let mut held = BTreeMap::new();
-    let Some((Value::Object(automerge::ObjType::Map), map)) =
-        doc.get(ROOT, MEMBERS_KEY).ok().flatten()
-    else {
-        return held;
-    };
-    for key in doc.keys(&map) {
-        if let Some((Value::Scalar(value), _)) = doc.get(&map, key.as_str()).ok().flatten()
+    for key in doc.keys(ROOT) {
+        let Some(op_key) = super::op::keyed(&key) else {
+            continue;
+        };
+        if let Some((Value::Scalar(value), _)) = doc.get(ROOT, key.as_str()).ok().flatten()
             && let ScalarValue::Bytes(bytes) = value.as_ref()
         {
-            held.insert(key, bytes.clone());
+            held.insert(op_key.to_owned(), bytes.clone());
+        }
+    }
+    if let Some((Value::Object(automerge::ObjType::Map), map)) =
+        doc.get(ROOT, MEMBERS_KEY).ok().flatten()
+    {
+        for key in doc.keys(&map) {
+            if let Some((Value::Scalar(value), _)) = doc.get(&map, key.as_str()).ok().flatten()
+                && let ScalarValue::Bytes(bytes) = value.as_ref()
+            {
+                held.insert(key, bytes.clone());
+            }
         }
     }
     held

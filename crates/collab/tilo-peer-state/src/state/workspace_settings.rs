@@ -253,7 +253,7 @@ impl PeerGovernanceMut<'_> {
         if doc.get_heads() == before {
             return Ok(false);
         }
-        self.peer.apply_governance_doc(doc, &before, key, now)
+        self.peer.write_governance(doc, &before, key, now)
     }
 }
 

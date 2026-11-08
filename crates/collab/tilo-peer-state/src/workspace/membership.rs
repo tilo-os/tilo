@@ -281,8 +281,19 @@ pub fn authorize(
     let written = governance_of(Some(after));
     // A membership batch changes the membership and nothing else governed: any
     // other part is an operation's, checked where that operation is
-    // ([`admit_operations`]).
-    if !super::changed_rows(Some(at), Some(after), false).is_empty() {
+    // ([`admit_operations`]). A workspace whose log does not start yet has no
+    // operation to name anything with, so a membership batch there may still
+    // write the parts its own rules decide — the identities and the settings
+    // below — and no other part, as the rows governed before the log.
+    let changed = super::changed_rows(Some(at), Some(after), false);
+    let its_own = if crate::members::starts(at, workspace) {
+        changed.is_empty()
+    } else {
+        changed
+            .iter()
+            .all(|row| matches!(row, GovernanceRow::Identities | GovernanceRow::Settings))
+    };
+    if !its_own {
         return Err(MembershipRefusal::NotMembership);
     }
     let held = tilo_desktop_model::projection::workspace_policy_of(at, workspace);

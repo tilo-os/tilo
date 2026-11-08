@@ -3,9 +3,9 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, MembershipError, NeighbourMsg, ROOT, ReadDoc, RecordReaders, RevocationList, Role,
-    SigningKey, Subject, SystemTime, Transactable, TransportOrigin, administrator_grant_id, err,
-    governed_map, member_role_from_role, now_ns, workspace,
+    GrantId, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role, SigningKey,
+    Subject, SystemTime, Transactable, administrator_grant_id, err, governed_map,
+    member_role_from_role, now_ns, workspace,
 };
 
 impl PeerGovernance<'_> {
@@ -412,7 +412,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, an entry's root
+    /// Returns an error if the change is not `key`'s device's to make, an entry's root
     /// may not revoke its device here, or governance cannot be updated.
     pub fn publish_governed_revocations(
         self,
@@ -420,7 +420,6 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
         let owner = self.peer.core.owner;
         let mut doc = self
             .peer
@@ -484,7 +483,7 @@ impl PeerGovernanceMut<'_> {
         }
         if changed {
             doc.commit();
-            self.peer.apply_governance_doc(doc, &before, key, now)?;
+            self.peer.write_governance(doc, &before, key, now)?;
         } else {
             self.peer.core.revocations = verified;
         }
@@ -534,19 +533,12 @@ impl PeerGovernanceMut<'_> {
             .ok_or("workspace governance missing")?;
         let mut document = (**cached).clone();
         document.set_actor(self.peer.workspace_actor_of(key));
+        let before = document.get_heads();
         match crate::governance::admit_invited_member(&mut document, redemption, now)? {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
-            crate::governance::AdmissionOutcome::Applied { changes } => {
-                let workspace = self.peer.core.workspace.clone();
-                let outcome = self.peer.receive_from(
-                    TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-                    NeighbourMsg::SyncResp {
-                        changes,
-                        room: workspace,
-                    },
-                    now,
-                )?;
-                Ok(outcome.changed || outcome.metadata_changed)
+            crate::governance::AdmissionOutcome::Applied { .. } => {
+                self.peer
+                    .write_governance(document.into(), &before, key, now)
             }
         }
     }
@@ -619,21 +611,7 @@ impl PeerGovernanceMut<'_> {
         )
         .map_err(err)?;
         doc.commit();
-        let changes = doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect();
-        let workspace = self.peer.core.workspace.clone();
-        let outcome = self.peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                changes,
-                room: workspace,
-            },
-            now,
-        )?;
-        Ok(outcome.changed || outcome.metadata_changed)
+        self.peer.write_governance(doc, &before, key, now)
     }
     /// Take out of the workspace's governance every device row whose
     /// certificate has expired: a device whose certificate no longer verifies
@@ -647,10 +625,9 @@ impl PeerGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, a row does not
+    /// Returns an error if the change is not `key`'s device's to make, a row does not
     /// read back, or governance cannot be updated.
     pub fn forget_expired_devices(self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
         let Some(doc) = self
             .peer
             .core
@@ -708,28 +685,14 @@ impl PeerGovernanceMut<'_> {
             doc.delete(&identities, hex::encode(device)).map_err(err)?;
         }
         doc.commit();
-        let changes = doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect();
-        let workspace = self.peer.core.workspace.clone();
-        let outcome = self.peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                changes,
-                room: workspace,
-            },
-            now,
-        )?;
-        Ok(outcome.changed || outcome.metadata_changed)
+        self.peer.write_governance(doc, &before, key, now)
     }
 
     /// Change a governed collaborator's workspace role.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, the user is the owner or
+    /// Returns an error if the change is not `key`'s device's to make, the user is the owner or
     /// absent from governed admission history, or governance cannot be updated.
     pub fn set_member_role(
         self,
@@ -765,7 +728,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, `name` is not
+    /// Returns an error if the change is not `key`'s device's to make, `name` is not
     /// a display name ([`tilo_user_identity::display_name`]), the person has
     /// no admitted device here, or governance cannot be updated.
     pub fn name_person(
@@ -775,7 +738,6 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
         let name = tilo_user_identity::display_name(name)
             .map_err(tilo_user_identity::DisplayNameError::reason)?;
         let mut doc = self
@@ -811,21 +773,7 @@ impl PeerGovernanceMut<'_> {
             doc.put(&peers, id, name).map_err(err)?;
         }
         doc.commit();
-        let changes = doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect();
-        let workspace = self.peer.core.workspace.clone();
-        let outcome = self.peer.receive_from(
-            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp {
-                changes,
-                room: workspace,
-            },
-            now,
-        )?;
-        Ok(outcome.changed || outcome.metadata_changed)
+        self.peer.write_governance(doc, &before, key, now)
     }
     /// Rewrite each administrator's grant still in the shape workspaces held
     /// before [`tilo_action_policy::roles::administrator_grant`] (on the
@@ -892,7 +840,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer or governance
+    /// Returns an error if the change is not `key`'s device's to make or governance
     /// cannot be updated.
     pub fn remove_governed_grants(
         self,
@@ -916,14 +864,14 @@ impl PeerGovernanceMut<'_> {
             }
         }
         doc.commit();
-        self.peer.apply_governance_doc(doc, &before, key, now)
+        self.peer.write_governance(doc, &before, key, now)
     }
     /// Write grants the governance writer decided, such as those an assigned
     /// grant set expands to, keyed by their ids.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, a grant has no
+    /// Returns an error if the change is not `key`'s device's to make, a grant has no
     /// id or names another workspace, or governance cannot be updated.
     pub fn put_governed_grants(
         self,
@@ -958,14 +906,14 @@ impl PeerGovernanceMut<'_> {
             .map_err(err)?;
         }
         doc.commit();
-        self.peer.apply_governance_doc(doc, &before, key, now)
+        self.peer.write_governance(doc, &before, key, now)
     }
     /// Remove a governed collaborator and their grants; someone removing
     /// themselves also takes their own devices' rows.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, the user is the structural
+    /// Returns an error if the change is not `key`'s device's to make, the user is the structural
     /// owner or not a member, or governance cannot be updated.
     pub fn remove_member(
         self,
@@ -1031,7 +979,7 @@ impl PeerGovernanceMut<'_> {
             }
         }
         doc.commit();
-        self.peer.apply_governance_doc(doc, &before, key, now)
+        self.peer.write_governance(doc, &before, key, now)
     }
 }
 

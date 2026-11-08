@@ -65,7 +65,36 @@ impl GovernanceRow {
         Self::Log,
     ];
 
-    /// The document keys that hold this part.
+    /// The digest of this part of `doc`: every value it holds, whatever shape
+    /// a writer gave it, and in one order on every device.
+    fn digest(self, doc: Option<&AutoCommit>) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        let Some(doc) = doc else {
+            return *hasher.finalize().as_bytes();
+        };
+        let mut encoded = Vec::new();
+        if self == Self::Log {
+            for (key, bytes) in crate::members::replay::raw(doc) {
+                encoded.extend_from_slice(key.as_bytes());
+                encoded.push(0);
+                encoded.extend_from_slice(&bytes);
+                encoded.push(0xff);
+            }
+        } else {
+            for key in self.keys() {
+                encoded.extend_from_slice(key.as_bytes());
+                encoded.push(0xff);
+                if let Ok(Some((value, object))) = doc.get(ROOT, *key) {
+                    encode(doc, &value, &object, &mut encoded);
+                }
+            }
+        }
+        hasher.update(&encoded);
+        *hasher.finalize().as_bytes()
+    }
+
+    /// The document keys that hold this part, other than the operation log,
+    /// which [`GovernanceRow::digest`] reads as the operations it holds.
     fn keys(self) -> &'static [&'static str] {
         match self {
             Self::Owner => &["owner"],
@@ -83,7 +112,7 @@ impl GovernanceRow {
             Self::Bots => &BOT_KEYS,
             Self::Checkpoints => &CHECKPOINT_KEYS,
             Self::Hosts => &[HOSTS_KEY],
-            Self::Log => &[crate::members::MEMBERS_KEY],
+            Self::Log => &[],
         }
     }
 
@@ -106,7 +135,7 @@ impl GovernanceRow {
 pub fn governance_rows(doc: Option<&AutoCommit>) -> BTreeMap<GovernanceRow, [u8; 32]> {
     GovernanceRow::ALL
         .into_iter()
-        .map(|row| (row, digest(doc, row.keys())))
+        .map(|row| (row, row.digest(doc)))
         .collect()
 }
 
@@ -125,28 +154,35 @@ pub fn changed_rows(
             *row != GovernanceRow::Log
                 && (membership || *row != GovernanceRow::Membership)
                 && written.get(row) != Some(digest)
+                && !(*row == GovernanceRow::Media && refreshed_media(before, after))
         })
         .map(|(row, _)| row)
         .collect()
 }
 
-/// The digest of what `doc` holds under `keys`: every value, whatever shape a
-/// writer gave it, and in one order on every device.
-fn digest(doc: Option<&AutoCommit>, keys: &[&str]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    let Some(doc) = doc else {
-        return *hasher.finalize().as_bytes();
+/// Whether `after`'s media policy is `before`'s with only the authorization
+/// basis and revision renewed: what [`super::media::refresh_authorization`]
+/// writes beside the change to the rows that basis is made of, and never a
+/// policy anyone chose. It is the change's own doing, so it is no part of what
+/// the change has to be permitted for.
+fn refreshed_media(before: Option<&AutoCommit>, after: Option<&AutoCommit>) -> bool {
+    let (Some(before), Some(after)) = (before, after) else {
+        return false;
     };
-    let mut encoded = Vec::new();
-    for key in keys {
-        encoded.extend_from_slice(key.as_bytes());
-        encoded.push(0xff);
-        if let Ok(Some((value, object))) = doc.get(ROOT, *key) {
-            encode(doc, &value, &object, &mut encoded);
-        }
-    }
-    hasher.update(&encoded);
-    *hasher.finalize().as_bytes()
+    let (Ok(Some(held)), Ok(Some(written))) =
+        (super::media::parse(before), super::media::parse(after))
+    else {
+        return false;
+    };
+    let renewed = super::media::WorkspaceMediaV1 {
+        authorization_basis: written.authorization_basis,
+        authorization_revision: written.authorization_revision,
+        ..held.clone()
+    };
+    renewed == written
+        && held.authorization_revision.checked_add(1) == Some(written.authorization_revision)
+        && super::media::security_basis(after, &[])
+            .is_ok_and(|basis| basis == written.authorization_basis)
 }
 
 /// `value` at `object`, as bytes that are the same on every device holding it.

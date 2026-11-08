@@ -113,6 +113,19 @@ fn hold_record(doc: &mut AutoCommit, record: &str) {
     .unwrap();
 }
 
+/// `doc` with no membership operation left in it, as an older build wrote the
+/// workspace: its rows govern its membership.
+fn without_operations(doc: &AutoCommit) -> AutoCommit {
+    let mut legacy = doc.clone();
+    for key in doc.keys(ROOT).collect::<Vec<_>>() {
+        if crate::members::op::keyed(&key).is_some() || key == crate::members::MEMBERS_KEY {
+            legacy.delete(ROOT, key.as_str()).unwrap();
+        }
+    }
+    legacy.commit();
+    legacy
+}
+
 fn take_ownership(doc: &mut AutoCommit, root: [u8; 32]) {
     doc.put(ROOT, "owner", person_id(root)).unwrap();
 }
@@ -1065,9 +1078,7 @@ fn rows_a_batch_moves_beside_an_operation_are_refused_before_the_log_starts() {
     let workspace = started();
     // The same document with its genesis dropped: a workspace on an older
     // build, its rows governing its membership.
-    let mut legacy = workspace.doc.clone();
-    legacy.delete(ROOT, "members_v2").unwrap();
-    legacy.commit();
+    let legacy = without_operations(&workspace.doc);
     assert!(!crate::members::starts(&legacy, WORKSPACE));
     let guest = rooted(0x52).1;
     let admin = hex::encode(workspace.admin.device_public_key);

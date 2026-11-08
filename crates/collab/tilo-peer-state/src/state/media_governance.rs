@@ -1,34 +1,14 @@
 //! Native governance transactions. Public policy data is never an authority proof.
 use super::facades::{PeerMediaGovernance, PeerMediaGovernanceMut};
 use super::{
-    BTreeMap, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc, RevocationList, Role, Route,
-    SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin, err, workspace,
+    BTreeMap, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc, RevocationList, Route, SigningKey,
+    StatePeer, SystemTime, Transactable, TransportOrigin, err, workspace,
 };
 use workspace::media::{self, WorkspaceMediaV1};
 
 impl StatePeer {
     fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        self.require_governance_writer(key, now)?;
-        let member = self.membership(key.verifying_key().to_bytes(), now)?;
-        if member.role != Role::Owner
-            || workspace::governance_of(self.core.workspace_doc.as_deref())
-                .owner
-                .as_deref()
-                != Some(&hex::encode(self.core.owner))
-        {
-            return Err("media governor is not the structural owner".into());
-        }
-        if !member.allows(
-            &tilo_action_policy::roles::governance_action(
-                &self.core.workspace,
-                tilo_action_policy::roles::governance::SETTINGS,
-            ),
-            tilo_action_policy::roles::GOVERNANCE_KIND,
-            now,
-        ) {
-            return Err("media governor lacks exact workspace administration".into());
-        }
-        Ok(())
+        self.require_governance_action(key, tilo_action_policy::roles::governance::SETTINGS, now)
     }
 }
 impl PeerMediaGovernance<'_> {
@@ -115,7 +95,7 @@ impl PeerMediaGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer or the policy cannot be
+    /// Returns an error if the change is not `key`'s device's to make or the policy cannot be
     /// refreshed.
     pub fn reconcile_media_governance(
         self,
@@ -200,9 +180,9 @@ impl PeerMediaGovernanceMut<'_> {
             }
         }
         doc.commit();
-        // apply_governance_doc stages its receive; failed refresh cannot mutate self.
+        // write_governance stages its receive; failed refresh cannot mutate self.
         let mut candidate = self.peer.clone();
-        candidate.apply_governance_doc(doc, &before, key, now)?;
+        candidate.write_governance(doc, &before, key, now)?;
         candidate
             .media()
             .validate_media_governance_for_publication()?;

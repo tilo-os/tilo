@@ -29,7 +29,7 @@ pub fn at_heads(doc: &AutoCommit, legacy_heads: &[Vec<u8>]) -> Option<AutoCommit
 /// holds no operation at all.
 #[must_use]
 pub fn needs_genesis(doc: &AutoCommit) -> bool {
-    if doc.get(ROOT, super::MEMBERS_KEY).ok().flatten().is_some() {
+    if !super::replay::raw(doc).is_empty() {
         return false;
     }
     doc.get(ROOT, tilo_desktop_model::projection::WORKSPACE_MEMBERS_KEY)
@@ -63,20 +63,14 @@ pub fn genesis_op(
     )
 }
 
-/// Write `op` into `doc`'s operation map.
+/// Write `op` into `doc` under the key of its own id.
 pub fn put_op(doc: &mut AutoCommit, op: &SignedMembershipOp) -> Result<OpId, String> {
     let id = op.id()?;
-    let map = match doc
-        .get(ROOT, super::MEMBERS_KEY)
-        .map_err(|error| error.to_string())?
-    {
-        Some((automerge::Value::Object(automerge::ObjType::Map), map)) => map,
-        Some(_) => return Err("the workspace's membership operations are not a map".into()),
-        None => doc
-            .put_object(ROOT, super::MEMBERS_KEY, automerge::ObjType::Map)
-            .map_err(|error| error.to_string())?,
-    };
-    doc.put(&map, id.to_key(), ScalarValue::Bytes(op.to_bytes()?))
-        .map_err(|error| error.to_string())?;
+    doc.put(
+        ROOT,
+        super::op::op_key(id).as_str(),
+        ScalarValue::Bytes(op.to_bytes()?),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(id)
 }

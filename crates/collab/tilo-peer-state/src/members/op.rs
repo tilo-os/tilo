@@ -3,9 +3,11 @@
 //!
 //! An operation is immutable and names itself: [`SignedMembershipOp::id`] is
 //! the BLAKE3 of the bytes every device stores. The workspace document keeps
-//! them in one map ([`MEMBERS_KEY`]), so a receiver never has to choose
-//! between two writers' rows: it keeps both operations and derives the
-//! membership from the set ([`super::replay`]).
+//! each under a root key of its own ([`op_key`]), so a receiver never has to
+//! choose between two writers' rows: it keeps both operations and derives the
+//! membership from the set ([`super::replay`]). Two devices writing the
+//! workspace's first operation at once write two keys, where two maps to
+//! merge would be two objects only one device's history could keep.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -14,9 +16,21 @@ use tilo_user_identity::DeviceCert;
 
 use crate::workspace::GovernanceRow;
 
-/// The workspace document key holding every membership operation, by
-/// [`SignedMembershipOp::id`] in hex.
+/// The prefix of the workspace document keys holding membership operations,
+/// each [`SignedMembershipOp::id`] in hex after it.
 pub const MEMBERS_KEY: &str = "members_v2";
+
+/// The document key `id`'s operation is stored under.
+#[must_use]
+pub fn op_key(id: OpId) -> String {
+    format!("{MEMBERS_KEY}/{}", id.to_key())
+}
+
+/// The operation key a document key names, when it names one.
+#[must_use]
+pub fn keyed(key: &str) -> Option<&str> {
+    key.strip_prefix(MEMBERS_KEY)?.strip_prefix('/')
+}
 
 /// What an operation signs over, before anything else: a device that signs
 /// this domain string for some other purpose signs no operation.

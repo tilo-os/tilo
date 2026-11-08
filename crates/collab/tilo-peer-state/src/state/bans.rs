@@ -13,7 +13,7 @@ impl PeerGovernanceMut<'_> {
     /// who decided it, recorded on the block.
     ///
     /// # Errors
-    /// Returns an error if `key` is not the governance writer, the person is
+    /// Returns an error if the change is not `key`'s device's to make, the person is
     /// the structural owner, or governance cannot be updated.
     pub fn ban_member(
         self,
@@ -38,7 +38,7 @@ impl PeerGovernanceMut<'_> {
     /// Let a banned person be admitted again: revoke their block.
     ///
     /// # Errors
-    /// Returns an error if `key` is not the governance writer or governance
+    /// Returns an error if the change is not `key`'s device's to make or governance
     /// cannot be updated.
     pub fn unban_member(
         self,

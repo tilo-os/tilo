@@ -296,9 +296,15 @@ impl PeerWorkspaceMut<'_> {
             return outcome;
         }
         if key.verifying_key().to_bytes() != caller.device_public_key
-            && self.peer.require_governance_writer(key, now).is_err()
+            && self
+                .peer
+                .certificate(&key.verifying_key().to_bytes(), now)
+                .map_err(|error| error.to_string())?
+                .user_public_key
+                != caller.user_public_key
         {
-            // Only the owner's devices write on another device's behalf.
+            // A device acts for its own person: another person's certificate is
+            // not one its signature may stand for.
             return Err("a membership change is signed by its caller's own device".into());
         }
         if matches!(
@@ -349,7 +355,10 @@ impl StatePeer {
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
             let grant =
                 roles::app_authorship(&self.core.workspace, app, Subject::Person(member.person));
-            if self.require_governance_writer(key, now).is_ok() {
+            if self
+                .require_governance_action(key, roles::governance::GRANT, now)
+                .is_ok()
+            {
                 return self
                     .governance_mut()
                     .put_governed_grants(&[grant], key, now);

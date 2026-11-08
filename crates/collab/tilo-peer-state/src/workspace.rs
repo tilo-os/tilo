@@ -624,7 +624,9 @@ pub fn only_reader_writes_differ(before: Option<&AutoCommit>, after: &AutoCommit
                 _ => None,
             },
         };
-        key.is_some_and(|key| READER_WRITES.contains(&key))
+        key.is_some_and(|key| {
+            READER_WRITES.contains(&key) || crate::members::op::keyed(key).is_some()
+        })
     })
 }
 

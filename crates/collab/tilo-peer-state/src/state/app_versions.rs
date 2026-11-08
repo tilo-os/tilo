@@ -111,7 +111,6 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
         let mut doc = self
             .core
             .workspace_doc
@@ -136,7 +135,7 @@ impl StatePeer {
             None => doc.delete(&versions, app).map_err(err)?,
         }
         doc.commit();
-        self.apply_governance_doc(doc, &before, key, now)
+        self.write_governance(doc, &before, key, now)
     }
 
     /// The surface the workspace runs `app` with, when it chose a version.
