@@ -249,8 +249,8 @@ made `r` when none after it did. A store with an index keeps the last change of 
 a list groups or sorts by it at the cost of one value a row, never of a row's history:
 `group: t -> changed(t, .done)?.at.day()`. `v.is(edit)` asks whether the action `edit` made it, by the action itself, never
 its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers the same:
-`actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
-`host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
+`actions(m).any(a -> a.is(edit))`. A version also says which run made it (`.run`, a
+`host.Run`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
 keeps its versions) and which `.fields` it changed. A resource can be made from another one:
 an invocation carries the resource it is made from when the host or the invoker names one, the
 change records it, and the resource it created says so, `created(r)?.from` — an

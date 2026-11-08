@@ -556,7 +556,7 @@ view suggestions<R>(of: R) {
 }
 
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
-/// consecutive changes by one person or by one task run, is an entry saying who made it, what
+/// consecutive changes by one person or by one run, is an entry saying who made it, what
 /// they did and when — one sentence, wrapping as a sentence does, the face of whoever made it
 /// beside it. What they did is what its last change says (`version_said`), worked out from the
 /// fields the change wrote, the person looking as "You". What the sentence leaves out stands
@@ -596,14 +596,14 @@ view history<R>(of: R) {
                                     ui.Text(v.actor, role: .label)
                                     // A run's own words stand under its sentence: its changes are
                                     // what it did, and it names them all.
-                                    if s.task == .none {
+                                    if s.run == .none {
                                         std.version_said(v)
                                     }
                                 }
                                 ui.Text("·", role: .caption, secondary: true)
                                 ui.Time(s.at, role: .caption, secondary: true)
                                 spacer()
-                                if let run = s.task {
+                                if let run = s.run {
                                     ui.Button(
                                         phrase("tilolang-history-undo-run"),
                                         role: .plain,
@@ -623,12 +623,12 @@ view history<R>(of: R) {
                                     }
                                 }
                             }
-                            if let run = s.task {
+                            if let run = s.run {
                                 ui.Text(run.title, role: .caption, secondary: true)
                             }
                             if s.changes == 1 {
                                 if let v = s.versions.last() {
-                                    std.version_notes(v, spoken: s.task == .none)
+                                    std.version_notes(v, spoken: s.run == .none)
                                 }
                             } else if s.changes > 1 {
                                 ui.Text(
@@ -662,7 +662,7 @@ view history<R>(of: R) {
                                                     }
                                                 }
                                             }
-                                            std.version_notes(v, spoken: s.task == .none)
+                                            std.version_notes(v, spoken: s.run == .none)
                                         }
                                     }
                                 } else {

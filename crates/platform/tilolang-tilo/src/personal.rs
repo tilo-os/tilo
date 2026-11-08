@@ -13,7 +13,7 @@
 //! ```text
 //! $personal/<person>/views/<window>/<state>                the value, as JSON
 //! $personal/<person>/seen/<resource>/{change,at}           the newest version they saw, and when
-//! $personal/<person>/runs/<run>                            a task run they reviewed
+//! $personal/<person>/runs/<run>                            a run they reviewed
 //! ```
 //!
 //! A record kept while a view's state was still split into two kinds holds each value one map
@@ -49,7 +49,7 @@ pub const OWNER: &str = tilolang::HOST_APP;
 pub const VIEW_STATE: &str = "view-state";
 /// The verb keeping one seen mark.
 pub const SEEN: &str = "seen";
-/// The verb keeping the task runs a person reviewed.
+/// The verb keeping the runs a person reviewed.
 pub const RUNS: &str = "seen-runs";
 /// The verb a delivered reminder was kept by. Retired with the reminder scheduler: a reminder is
 /// now an effect an app schedules through `uses`, so the record no longer keeps deliveries.
@@ -92,7 +92,7 @@ pub struct Seen {
     pub mark: SeenMark,
 }
 
-/// One task run a person reviewed.
+/// One run a person reviewed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reviewed {
     /// Whose review it is.
@@ -102,14 +102,14 @@ pub struct Reviewed {
 }
 
 /// What the workspace's record of each person's own state holds: the window and lens state they
-/// set, what they have seen, and the task runs they reviewed.
+/// set, what they have seen, and the runs they reviewed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PersonalState {
     /// How their windows show their resources, and where they are in them.
     pub slots: Vec<Slot>,
     /// Per resource, the newest version they saw.
     pub seen: Vec<Seen>,
-    /// The task runs they reviewed.
+    /// The runs they reviewed.
     pub runs: Vec<Reviewed>,
 }
 
@@ -221,7 +221,7 @@ pub enum Keep {
         resource: String,
         mark: Option<SeenMark>,
     },
-    /// The task runs `person` reviewed.
+    /// The runs `person` reviewed.
     Runs { person: String, runs: Vec<String> },
     /// `person` was told the reminder `reminder`: no device of theirs tells it again. Retired
     /// with the platform's reminder scheduler; the variant stays so entries written by it still
@@ -502,7 +502,7 @@ fn marks(doc: &Doc) -> Result<Vec<Seen>, ModelError> {
     Ok(marks)
 }
 
-/// The task runs people reviewed.
+/// The runs people reviewed.
 fn reviewed(doc: &Doc) -> Vec<Reviewed> {
     let mut reviewed: Vec<Reviewed> = Vec::new();
     for (person, held) in people(doc) {

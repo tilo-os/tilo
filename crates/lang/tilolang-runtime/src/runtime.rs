@@ -1081,13 +1081,13 @@ impl Runtime {
         self.core.mark_seen(person, at)
     }
 
-    /// The task runs `person` reviewed, as their own record keeps them: every version of one is
+    /// The runs `person` reviewed, as their own record keeps them: every version of one is
     /// seen. A view that read what is unseen runs again when they move.
     pub fn set_seen_runs(&self, person: &str, runs: &[String]) {
         self.core.set_seen_runs(person, runs);
     }
 
-    /// `person` reviewed the task run `run` (its group, *Mark all seen*): every version it made
+    /// `person` reviewed the run `run` (its group, *Mark all seen*): every version it made
     /// is seen, in every app, and the host is handed it to keep ([`Self::take_seen`]). Whether
     /// it was not reviewed already.
     pub fn mark_run_seen(&self, person: &str, run: &str) -> bool {

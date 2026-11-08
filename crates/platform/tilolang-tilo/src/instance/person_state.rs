@@ -8,7 +8,7 @@ use super::Instance;
 
 impl Instance {
     /// What the person has seen, as their entries of the workspace's record keep it: per
-    /// resource the newest version they saw (`None` takes a mark back), and the task runs they
+    /// resource the newest version they saw (`None` takes a mark back), and the runs they
     /// reviewed. What `unseen(r)` and the marks the host draws read; each view that read one
     /// runs again.
     pub fn set_seen(

@@ -373,7 +373,7 @@ impl Inner {
                 who: note.invoker.clone(),
                 at,
                 action: note.action.clone(),
-                task: note.group.clone(),
+                run: note.group.clone(),
                 from: note.from.clone(),
                 count: note.count.max(1),
                 // No change yet: the action was invoked on top of every change this device

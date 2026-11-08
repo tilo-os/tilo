@@ -5,7 +5,7 @@
 //! a bound control edits a field, a window shows its resource. As each node of a view is built,
 //! the host reads [`crate::seen::unseen`] there and marks it:
 //!
-//! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which task run; a row a list
+//! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which run; a row a list
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
 //!   is read where it happened. A row that is itself new, in a list that stands a divider where
 //!   its unseen part starts (`unread:`), takes no mark: the divider says it is new;
@@ -317,7 +317,7 @@ impl Core {
             mark.props.insert("noun_one".to_owned(), Value::Text(one));
             mark.props.insert("noun".to_owned(), Value::Text(many));
         }
-        if let Some(run) = &newest.task {
+        if let Some(run) = &newest.run {
             mark.props
                 .insert("run".to_owned(), Value::Text(run.title.clone()));
         }
@@ -329,7 +329,7 @@ impl Core {
             "count".to_owned(),
             Value::Int(i64::try_from(unseen.len()).unwrap_or(i64::MAX)),
         );
-        if let Some(run) = &newest.task
+        if let Some(run) = &newest.run
             && !mark.events.contains_key("activate")
         {
             let review = Value::Action(ActionRef::new(
@@ -632,9 +632,9 @@ impl Core {
                     viewer,
                 ));
             }
-            // A step of a task run offers the run, as the mark did: pressing it shows what the
+            // A step of a run offers the run, as the mark did: pressing it shows what the
             // run did.
-            if let Some(run) = versions.last().and_then(|v| v.task.as_ref()) {
+            if let Some(run) = versions.last().and_then(|v| v.run.as_ref()) {
                 let mut review = UiNode::empty("ui.Button", &format!("{group_key}~run"));
                 review
                     .props
@@ -706,7 +706,7 @@ impl Core {
         line.children.push(face);
         // The line leads with the name, as history writes a sentence: name, then what they did
         // ("Scout marked it done"). A face alone does not say who.
-        let mine = version.task.is_none() && viewer.0 == version.who;
+        let mine = version.run.is_none() && viewer.0 == version.who;
         let mut who = UiNode::empty("ui.Text", &format!("{key}~who"));
         who.props.insert(
             "value".to_owned(),

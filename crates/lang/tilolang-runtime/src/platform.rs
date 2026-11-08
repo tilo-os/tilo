@@ -428,19 +428,13 @@ impl Core {
         self.ret_h(Value::Principal(crate::ids::Principal(who)))
     }
 
-    /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
+    /// A version of `of` as a `host.Version`: who, when, what, the run, its kind, the
     /// fields it changed by name, the resource, what its action says it does, what it did, its
     /// icon, each field it changed with what it held before and after, and how many items the
     /// change was made over; then the id of the action that made it and of its change, which
     /// code compares rather than reads (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
-        let task = v.task.as_ref().map(|run| {
-            Box::new(Value::Tuple(vec![
-                Value::Text(run.id.clone()),
-                Value::Text(run.task().to_owned()),
-                Value::Text(run.title.clone()),
-            ]))
-        });
+        let run = v.run.as_ref().map(|run| Box::new(run_value(run)));
         let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
         let named: Vec<String> = v
             .fields
@@ -475,7 +469,7 @@ impl Core {
             .as_ref()
             .and_then(|a| a.icon.clone())
             .map(|icon| Box::new(Value::Text(icon)));
-        let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
+        let mine = v.run.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
         let actor = self.actor(&v.who, mine);
         // Who proposed the action the person accepted, by the name the workspace calls them.
         let suggested = v.suggested_by.as_ref().map_or_else(String::new, |who| {
@@ -493,7 +487,7 @@ impl Core {
             Value::Principal(Principal(v.who)),
             Value::Text(v.at),
             Value::Text(self.action_label(&v.action)),
-            Value::Opt(task),
+            Value::Opt(run),
             Value::Text(v.kind.word().to_owned()),
             Value::List(fields),
             Value::resource(of),
@@ -997,15 +991,9 @@ impl Core {
             };
             let who = Value::Principal(Principal(last.who.clone()));
             let at_time = Value::Text(last.at.clone());
-            let task = Value::Opt(last.task.as_ref().map(|run| {
-                Box::new(Value::Tuple(vec![
-                    Value::Text(run.id.clone()),
-                    Value::Text(run.task().to_owned()),
-                    Value::Text(run.title.clone()),
-                ]))
-            }));
+            let run = Value::Opt(last.run.as_ref().map(|run| Box::new(run_value(run))));
             let mine =
-                last.task.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
+                last.run.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
             // How many changes the step folds: versions of one change are one command over many
             // items, which history says the count of and Undo takes back together.
             let changes = {
@@ -1026,7 +1014,7 @@ impl Core {
             out.push(Value::Tuple(vec![
                 who,
                 at_time,
-                task,
+                run,
                 Value::List(versions),
                 Value::Bool(mine),
                 Value::Int(i64::try_from(changes).unwrap_or(i64::MAX)),
@@ -1035,17 +1023,17 @@ impl Core {
         Ok(Value::List(out))
     }
 
-    /// `changes(of: run)` of the `host.TaskRun` held at `h`: every version it made, oldest
+    /// `changes(of: run)` of the `host.Run` held at `h`: every version it made, oldest
     /// first, each of the resource it is a version of.
     fn run_changes_value(&self, h: i32) -> HResult<Value> {
         let run = match self.val(h)? {
             Value::Tuple(fields) => match fields.into_iter().next() {
                 Some(Value::Text(id)) => id,
-                _ => return trap("changes: a task run names its group first"),
+                _ => return trap("changes: a run names its group first"),
             },
             other => {
                 return trap(format!(
-                    "changes: expected a task run, got {}",
+                    "changes: expected a run, got {}",
                     other.kind_name()
                 ));
             }
@@ -1338,7 +1326,7 @@ impl Core {
         Ok(found)
     }
 
-    /// The task runs `person` reviewed, as the runtime holds them.
+    /// The runs `person` reviewed, as the runtime holds them.
     pub(crate) fn seen_runs(&self, person: &str) -> Vec<String> {
         match self
             .view_states
@@ -1537,7 +1525,7 @@ impl Core {
         newest
     }
 
-    /// The task runs `person` reviewed are `runs` now.
+    /// The runs `person` reviewed are `runs` now.
     pub(crate) fn set_seen_runs(&self, person: &str, runs: &[String]) {
         let key = crate::seen::runs_key(person);
         let mut sorted = runs.to_vec();
@@ -2405,10 +2393,19 @@ impl Core {
     }
 }
 
+/// The run `run` as a `host.Run`: its group, the work it is a run of, and what it was asked.
+fn run_value(run: &crate::store::Run) -> Value {
+    Value::Tuple(vec![
+        Value::Text(run.id.clone()),
+        Value::Text(run.of().to_owned()),
+        Value::Text(run.title.clone()),
+    ])
+}
+
 /// Whether `next`, the version after `last`, folds into the same step of history: both made in
-/// the same task run, or both by the same person outside any run.
+/// the same run, or both by the same person outside any run.
 fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool {
-    match (&last.task, &next.task) {
+    match (&last.run, &next.run) {
         (Some(a), Some(b)) => a.id == b.id,
         (None, None) => last.who == next.who,
         _ => false,

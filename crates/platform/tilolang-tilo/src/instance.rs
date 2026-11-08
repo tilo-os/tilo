@@ -74,7 +74,7 @@ pub enum HistoryAsk {
     Redo,
     /// Take back the step the change (a change id of the record) is part of.
     UndoStep(String),
-    /// Take back every step of the task run (its group).
+    /// Take back every step of the run (its group).
     UndoRun(String),
 }
 

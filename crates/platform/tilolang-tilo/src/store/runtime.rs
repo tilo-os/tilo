@@ -555,7 +555,7 @@ impl Store for TiloStore {
             .built_versions()
             .values()
             .flatten()
-            .filter(|v| v.task.as_ref().is_some_and(|task| task.id == run))
+            .filter(|v| v.run.as_ref().is_some_and(|held| held.id == run))
             .cloned()
             .collect();
         out.sort_by(|a, b| {

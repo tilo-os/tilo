@@ -27,7 +27,7 @@ use std::sync::LazyLock;
 use automerge::ReadDoc as _;
 use serde_json::{Value as Json, json};
 use tilolang::pred::Lit;
-use tilolang_runtime::store::{FieldValue, Left, Reflected, Scalar, TaskRun, Version, VersionKind};
+use tilolang_runtime::store::{FieldValue, Left, Reflected, Run, Scalar, Version, VersionKind};
 use tilolang_runtime::value::ResourceRef;
 
 use tilo_resource::Doc;
@@ -118,10 +118,10 @@ impl Stamp {
             "change": self.version.change,
             "op": self.version.op,
         });
-        if let (Some(task), Some(map)) = (&self.version.task, held.as_object_mut()) {
+        if let (Some(run), Some(map)) = (&self.version.run, held.as_object_mut()) {
             map.insert(
                 "task".to_owned(),
-                serde_json::to_value(task).unwrap_or(Json::Null),
+                serde_json::to_value(run).unwrap_or(Json::Null),
             );
         }
         if let (Some(from), Some(map)) = (&self.version.from, held.as_object_mut()) {
@@ -156,10 +156,10 @@ impl Stamp {
         };
         let text = |key: &str| json.get(key).and_then(Json::as_str).map(str::to_owned);
         // An index written before versions named their run holds none.
-        let task = match json.get("task") {
+        let run = match json.get("task") {
             None => None,
-            Some(task) => match serde_json::from_value(task.clone()) {
-                Ok(task) => Some(task),
+            Some(run) => match serde_json::from_value(run.clone()) {
+                Ok(run) => Some(run),
                 Err(error) => {
                     tracing::warn!(%error, "the index holds a version whose run does not decode");
                     return None;
@@ -195,7 +195,7 @@ impl Stamp {
                 fields,
                 at: text("at")?,
                 action: text("action")?,
-                task,
+                run,
                 change: text("change").unwrap_or_default(),
                 op: json.get("op").and_then(Json::as_u64)?,
                 from,
@@ -219,20 +219,20 @@ impl Stamp {
 /// revert from History; [`tilolang_runtime::store::STEP_ACTION`]).
 pub const STEP_ACTION: &str = tilolang_runtime::store::STEP_ACTION;
 
-/// The task run a change's context names: its group, when it is a task's.
-pub fn task_of(context: &tilo_actions::ActionContext) -> Option<TaskRun> {
+/// The run a change's context names: its group, when its kind is a run's (`TASK_RUN_GROUP`).
+pub fn run_of(context: &tilo_actions::ActionContext) -> Option<Run> {
     let group = context.group.as_ref()?;
-    (group.kind == tilo_actions::context::TASK_RUN_GROUP).then(|| TaskRun {
+    (group.kind == tilo_actions::context::TASK_RUN_GROUP).then(|| Run {
         id: group.id.clone(),
         title: group.label.clone(),
     })
 }
 
 /// The versions `change` made, one per resource it changed, when it is a tilolang action's
-/// change: who, when, by which action, in which task run, and what it did to each.
+/// change: who, when, by which action, in which run, and what it did to each.
 #[must_use]
 pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
-    let Some((stamp, action, task)) = read(change) else {
+    let Some((stamp, action, run)) = read(change) else {
         return Vec::new();
     };
     // The items it put into a collection (`DynEdit::Insert`), in the order of the edits: an
@@ -252,7 +252,7 @@ pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
         .made()
         .into_iter()
         .map(|made| Version {
-            task: task.clone(),
+            run: run.clone(),
             kind: made.kind,
             fields: made.fields,
             placed: items_inserted_into(&inserted, &made.resource),
@@ -331,9 +331,9 @@ pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
     Some((stamp, action.changed()))
 }
 
-/// The version `change` made, its action and its task run, when it is a tilolang action's
+/// The version `change` made, its action and its run, when it is a tilolang action's
 /// change.
-fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>)> {
+fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<Run>)> {
     let context = change
         .message()
         .and_then(tilo_actions::ActionContext::from_change_message)?;
@@ -359,14 +359,14 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>
         .at
         .clone()
         .unwrap_or_else(|| tilolang::calendar::time_text(change.timestamp()));
-    let task = task_of(&context);
+    let run = run_of(&context);
     let hash = change.hash().to_string();
     let stamp = Stamp {
         version: Version {
             who: action.authorship.invoker.clone(),
             at,
             action: action.action_id.clone(),
-            task: task.clone(),
+            run: run.clone(),
             change: hash,
             op: change.start_op().get(),
             from: action.authorship.from.clone(),
@@ -375,7 +375,7 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>
             ..Version::default()
         },
     };
-    Some((stamp, action, task))
+    Some((stamp, action, run))
 }
 
 /// The versions a resource's log holds that a view reads of it without reading the log: the
@@ -430,7 +430,7 @@ impl Ends {
         held.who == other.who
             && held.at == other.at
             && held.action == other.action
-            && held.task == other.task
+            && held.run == other.run
             && held.count == other.count
             && held.from.as_ref().map(ResourceRef::id_string)
                 == other.from.as_ref().map(ResourceRef::id_string)
@@ -664,7 +664,7 @@ pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
             who: invoker.actor.clone(),
             at: tilolang::calendar::time_text(change.timestamp()),
             action: STEP_ACTION.to_owned(),
-            task: task_of(&context),
+            run: run_of(&context),
             change: hash,
             op: change.start_op().get(),
             count: 1,

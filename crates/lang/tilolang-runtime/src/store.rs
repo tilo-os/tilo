@@ -342,9 +342,9 @@ pub struct ChangeNote {
     /// reads a resource's versions from. The store fills it in when it commits.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub touched: Vec<String>,
-    /// The task run it was made in.
+    /// The run it was made in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<TaskRun>,
+    pub group: Option<Run>,
     /// The resource the invocation was made from, when it was made from one (`from` in a
     /// create action's menu, an agent's program): what the resources it created were made from
     /// ([`Version::from`], [`Store::linked`]).
@@ -388,7 +388,7 @@ pub const EDIT_TEXT_ACTION: &str = "edit-text";
 pub const EDIT_FLAG_ACTION: &str = "edit-flag";
 
 /// One version of a resource, as history keeps it: who made it, when, by which action, in
-/// which task run, and what it did to the resource.
+/// which run, and what it did to the resource.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     pub who: String,
@@ -396,8 +396,9 @@ pub struct Version {
     pub at: String,
     /// The action's id (`$create` for a resource the host made).
     pub action: String,
-    /// The task run that made it; `None` for a change made outside a run.
-    pub task: Option<TaskRun>,
+    /// The run that made it; `None` for a change made outside a run.
+    #[serde(rename = "task")]
+    pub run: Option<Run>,
     /// What it did to the resource.
     pub kind: VersionKind,
     /// The fields it changed, by id; empty for a version that made or removed the resource.
@@ -465,23 +466,23 @@ pub struct Left {
     pub ty: Option<TypeId>,
 }
 
-/// One run of a task, as the changes it made are stamped.
+/// One run, as the changes it made are stamped.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TaskRun {
-    /// The run's group (`runtime_collab::task_run_group`): `<task>@<run>`.
+pub struct Run {
+    /// The run's group (`runtime_collab::task_run_group`): `<work>@<run>`.
     pub id: String,
-    /// What the run was asked, as its task was titled when it ran.
+    /// What the run was asked, as it was titled when it ran.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
 }
 
-impl TaskRun {
-    /// The task it is a run of: its group up to the `@`.
+impl Run {
+    /// The id of the work it is a run of: its group up to the `@`.
     #[must_use]
-    pub fn task(&self) -> &str {
+    pub fn of(&self) -> &str {
         self.id
             .split_once('@')
-            .map_or(self.id.as_str(), |(task, _)| task)
+            .map_or(self.id.as_str(), |(work, _)| work)
     }
 }
 
@@ -670,7 +671,7 @@ pub fn versions_in<'c>(
                     .clone()
                     .unwrap_or_else(|| crate::core::EPOCH.to_owned()),
                 action: note.action.clone(),
-                task: note.group.clone(),
+                run: note.group.clone(),
                 kind,
                 fields: Vec::new(),
                 resource: id.clone(),
@@ -1733,7 +1734,7 @@ pub trait Store {
         removed_of_log(self, holder, field, item)
     }
 
-    /// Every version the task run `run` (its group) made, of every resource, oldest first:
+    /// Every version the run `run` (its group) made, of every resource, oldest first:
     /// what `changes(of: run)` reads.
     ///
     /// # Errors

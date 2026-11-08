@@ -18,13 +18,13 @@ draws it.
 
 ## 2. The record
 
-A version names the task run that made it:
+A version names the run that made it:
 
 ```
-type Version { by: Person | Agent, at: Time, action: Text, task: TaskRun?, kind: .created | .changed | .removed, fields: Set<Text> }
+type Version { by: Person | Agent, at: Time, action: Text, run: Run?, kind: .created | .changed | .removed, fields: Set<Text> }
 ```
 
-`task` comes from the change's group stamp; the runtime fills it, nothing new is stored.
+`run` comes from the change's group stamp; the runtime fills it, nothing new is stored.
 Removals are versions too, so a removed record stays answerable (`history(r)` of a removed `r`
 says who removed it, in which run).
 
@@ -103,7 +103,7 @@ On a phone, watching is a notification per finished step whose activation shows 
 
 ## 6. Order
 
-1. `Version.task` and `kind`, `changes(of:)`, `unseen(r)`, seen marks in the own record.
+1. `Version.run` and `kind`, `changes(of:)`, `unseen(r)`, seen marks in the own record.
    Tested with a run that creates, changes and removes records in two apps.
 2. Host-drawn marks on list rows, bound fields and windows; activation opens the step. Pixel
    tests on Notes and Tasks with a scripted run.

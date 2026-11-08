@@ -39,11 +39,11 @@ pub enum ViewEvent {
         /// column only (`open(r, front: false)`, a selection the keyboard moves).
         front: bool,
     },
-    /// A change mark was activated: show what the task run `run` (its group) did, where it
+    /// A change mark was activated: show what the run `run` (its group) did, where it
     /// changed `target`.
     Review { run: String, target: ResourceRef },
     /// `undo(v)` or `undo(run)` was pressed: take back, through the platform's history, the
-    /// step a version is part of, or every step of a task run.
+    /// step a version is part of, or every step of a run.
     Undo(UndoAsk),
     /// *Mark all seen* was pressed and moved `count` marks: the window says so, and the person
     /// can take the move back with it.
@@ -55,7 +55,7 @@ pub enum ViewEvent {
 pub enum UndoAsk {
     /// The step the change `change` (a version's) of `target` is part of.
     Step { change: String, target: ResourceRef },
-    /// Every step of the task run `run` (its group).
+    /// Every step of the run `run` (its group).
     Run { run: String },
 }
 

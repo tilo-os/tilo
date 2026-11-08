@@ -177,7 +177,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Version",
         id: "host-version",
-        doc: "A version of a resource, as history keeps it: who made it, when, by which action, in which task run, and what it did.",
+        doc: "A version of a resource, as history keeps it: who made it, when, by which action, in which run, and what it did.",
         fields: &[
             ("who", "Principal", "Who made it: a person, or an agent."),
             ("at", "Time", "When it was made."),
@@ -187,9 +187,9 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "The action that made it, by its label, or by its name read as words when it declares none.",
             ),
             (
-                "task",
-                "Option<TaskRun>",
-                "The task run that made it; `.none` for a change made outside a run.",
+                "run",
+                "Option<Run>",
+                "The run that made it; `.none` for a change made outside a run.",
             ),
             (
                 "kind",
@@ -210,7 +210,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "mine",
                 "Bool",
-                "Whether the person looking made it, outside any task run: one they may undo on its own.",
+                "Whether the person looking made it, outside any run: one they may undo on its own.",
             ),
             (
                 "actor",
@@ -270,20 +270,20 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Step",
         id: "host-step",
-        doc: "A step of a resource's history as people read it: consecutive versions by the same person, or by the same task run, folded into one.",
+        doc: "A step of a resource's history as people read it: consecutive versions by the same person, or by the same run, folded into one.",
         fields: &[
             ("who", "Principal", "Who made it: a person, or an agent."),
             ("at", "Time", "When its last version was made."),
             (
-                "task",
-                "Option<TaskRun>",
-                "The task run that made it; `.none` for changes made outside a run.",
+                "run",
+                "Option<Run>",
+                "The run that made it; `.none` for changes made outside a run.",
             ),
             ("versions", "List<Version>", "Its versions, oldest first."),
             (
                 "mine",
                 "Bool",
-                "Whether the person looking made it, outside any task run.",
+                "Whether the person looking made it, outside any run.",
             ),
             (
                 "changes",
@@ -329,20 +329,24 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
-        name: "TaskRun",
-        id: "host-task-run",
-        doc: "One run of a task: what an agent did for the person who started it, kept and undone as one unit.",
+        name: "Run",
+        id: "host-run",
+        doc: "One run: what an agent or a script did for the person who started it, kept and undone as one unit.",
         fields: &[
             (
                 "id",
                 "Text",
                 "The run's group, which every change it made is stamped with.",
             ),
-            ("task", "Text", "The task it is a run of, by its id."),
+            (
+                "of",
+                "Text",
+                "The id of the work it is a run of, which its group opens with.",
+            ),
             (
                 "title",
                 "Text",
-                "What the run was asked, as its task is titled when it ran.",
+                "What the run was asked, as it was titled when it ran.",
             ),
         ],
     },

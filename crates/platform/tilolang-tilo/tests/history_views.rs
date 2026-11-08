@@ -1,6 +1,6 @@
 //! History in views (`std.history`): each step says who made it and what it did; a change shows
 //! what each field held before and after as the field's type shows it (a title as text, a due
-//! day as a day), read from the change itself; consecutive changes by one person or one task run
+//! day as a day), read from the change itself; consecutive changes by one person or one run
 //! fold into one entry; and Undo on an entry takes back exactly that step, or the whole run,
 //! through the record's history verb.
 

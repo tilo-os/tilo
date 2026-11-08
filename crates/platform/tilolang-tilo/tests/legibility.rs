@@ -64,7 +64,7 @@ fn kinds(versions: &[Version]) -> Vec<VersionKind> {
 fn runs(versions: &[Version]) -> Vec<Option<&str>> {
     versions
         .iter()
-        .map(|v| v.task.as_ref().map(|t| t.id.as_str()))
+        .map(|v| v.run.as_ref().map(|t| t.id.as_str()))
         .collect()
 }
 
@@ -252,7 +252,7 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
     let last = renamed.last().unwrap();
     assert_eq!(last.who, AGENT);
     assert_eq!(last.fields, [field(&ada, NOTES_APP, "Note", "title")]);
-    assert_eq!(last.task.as_ref().unwrap().title, "Tidy my notes and tasks");
+    assert_eq!(last.run.as_ref().unwrap().title, "Tidy my notes and tasks");
     assert_eq!(
         kinds(&store.versions(&made).unwrap()),
         [VersionKind::Created]
@@ -275,7 +275,7 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
         let last = versions.last().unwrap();
         assert_eq!(last.kind, VersionKind::Removed, "{removed:?}: {versions:?}");
         assert_eq!(last.who, AGENT);
-        assert_eq!(last.task.as_ref().map(|t| t.id.as_str()), Some(RUN));
+        assert_eq!(last.run.as_ref().map(|t| t.id.as_str()), Some(RUN));
     }
 
     // The run's changes, across both apps, oldest first: each resource it touched.
@@ -418,9 +418,9 @@ action drop(s: Shelf, b: Book) {
 /// in all.
 action describe(b: Book) -> Text {
     let fresh = unseen(b)
-    if let last = history(b).last(), run = last.task {
+    if let last = history(b).last(), run = last.run {
         let field = last.fields.first() ?? "-"
-        "{fresh.len()} unseen; last {last.kind} {field} by {run.title} ({run.task}); run made {changes(of: run).len()}"
+        "{fresh.len()} unseen; last {last.kind} {field} by {run.title} ({run.of}); run made {changes(of: run).len()}"
     } else {
         "{fresh.len()} unseen; no run"
     }
