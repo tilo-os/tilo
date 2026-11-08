@@ -92,6 +92,10 @@ pub struct McpServer<H> {
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
     /// The program connection to the task's host, once its first program started it.
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
+    /// The person's other devices as the host reaches them, which
+    /// [`crate::remote_door::DEVICES_TOOL`] lists; `None` for a host that
+    /// reaches none.
+    devices: Option<std::sync::Arc<dyn crate::remote_door::DeviceDirectory>>,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -649,6 +653,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             uploads: std::sync::Mutex::default(),
             programs: std::sync::Mutex::default(),
             task_hosts: None,
+            devices: None,
             task: tokio::sync::Mutex::new(None),
         }
     }
@@ -657,6 +662,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
         self.task_hosts = hosts;
+        self
+    }
+    /// List the person's devices as `devices` reaches them, with
+    /// [`crate::remote_door::DEVICES_TOOL`].
+    #[must_use]
+    pub fn with_devices(
+        mut self,
+        devices: Option<std::sync::Arc<dyn crate::remote_door::DeviceDirectory>>,
+    ) -> Self {
+        self.devices = devices;
         self
     }
     /// Offer the tools `surface` names.
@@ -1233,6 +1248,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if self.host.content_puts().is_some() {
             tools.extend(put::tool_definitions());
         }
+        if self.devices.is_some() {
+            tools.push(crate::remote_door::tool_definition());
+        }
         tools
     }
     /// Attribute every invocation of this connection to one agent run, so
@@ -1358,6 +1376,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(call) if put::is_put_tool(&call.name) => {
                 Ok(self.put_call(&call.name, call.arguments).await)
             }
+            Ok(call) if call.name == crate::remote_door::DEVICES_TOOL => match &self.devices {
+                Some(devices) => {
+                    let reach = devices.reach().await;
+                    Ok(json!({
+                        "content": [{"type": "text", "text": crate::remote_door::listing(&reach)}],
+                        "isError": false
+                    }))
+                }
+                None => Err("Unknown tool".into()),
+            },
             Ok(call)
                 if self.surface == Surface::Agent
                     && agent::tool_definitions().iter().any(|definition| {
