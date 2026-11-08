@@ -264,16 +264,15 @@ impl PeerStore for PageStore {
     }
 }
 
-/// HTTP through the page: `post(path, session, body)` resolves to
+/// HTTP through the page: `post(path, body)` resolves to
 /// `{status, body}`, rejecting only when the host was not reached.
 struct PageHttp(Function);
 
 impl HttpClient for PageHttp {
-    fn post(&self, path: &str, session: Option<&str>, body: Vec<u8>) -> HttpFuture<'_> {
-        let called = self.0.call3(
+    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        let called = self.0.call2(
             &JsValue::NULL,
             &path.into(),
-            &session.map_or(JsValue::NULL, JsValue::from),
             &Uint8Array::from(body.as_slice()).into(),
         );
         Box::pin(async move {
@@ -341,7 +340,7 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
     body: Vec<u8>,
 ) -> Result<T, JsError> {
     let path = format!("{}{route}", tilo_relay_protocol::web::API_PREFIX);
-    let (status, bytes) = post.post(&path, None, body).await.map_err(js_error)?;
+    let (status, bytes) = post.post(&path, body).await.map_err(js_error)?;
     if status != 200 {
         return Err(js_error(format!("host answered {status}")));
     }

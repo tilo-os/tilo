@@ -282,24 +282,17 @@ fn random_key() -> [u8; 32] {
 struct Plain(String);
 
 impl tilo_browser_peer::HttpClient for Plain {
-    fn post(
-        &self,
-        path: &str,
-        session: Option<&str>,
-        body: Vec<u8>,
-    ) -> tilo_browser_peer::HttpFuture<'_> {
+    fn post(&self, path: &str, body: Vec<u8>) -> tilo_browser_peer::HttpFuture<'_> {
         let url = format!("{}{path}", self.0);
-        let session = session.map(str::to_owned);
         Box::pin(async move {
             let client = client()?;
-            let mut request = client
+            let response = client
                 .post(&url)
                 .header("content-type", "application/octet-stream")
-                .body(body);
-            if let Some(session) = session {
-                request = request.header(tilo_relay_protocol::web::SESSION_HEADER, session);
-            }
-            let response = request.send().await.map_err(|error| error.to_string())?;
+                .body(body)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
             let status = response.status().as_u16();
             let body = response
                 .bytes()

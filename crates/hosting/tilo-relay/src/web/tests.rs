@@ -6,7 +6,7 @@
 use super::*;
 use crate::RelayConfig;
 use crate::peer::FetchGrants as _;
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use tilo_peer_state::join::MemberRole;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -84,19 +84,13 @@ async fn relay_at(
 /// The web `relay` serves its pages, with every door a test does not open
 /// closed.
 fn web_of(relay: &Relay, host: &Host) -> Web {
-    web_with(relay, host, Sessions::new(relay.web_context().clone()))
-}
-
-/// [`web_of`], answering the browser sessions `sessions`.
-fn web_with(relay: &Relay, host: &Host, sessions: Arc<Sessions>) -> Web {
     Web {
-        sessions,
+        context: relay.web_context().clone(),
         host_info: HostInfo {
             host_cert: host.cert.clone(),
             address: None,
         },
         allowed_origins: vec![],
-        features: 0,
         workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: Arc::new(envelopes::Envelopes::of(
@@ -128,18 +122,10 @@ async fn stop(relay: Relay, serving: tokio::task::JoinHandle<()>) {
     crate::daemon::Relay::shutdown(relay).await;
 }
 
-async fn post(
-    addr: SocketAddr,
-    path: &str,
-    token: Option<[u8; 32]>,
-    body: Vec<u8>,
-) -> (u16, Vec<u8>) {
+async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
     let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let token = token.map_or_else(String::new, |token| {
-        format!("{SESSION_HEADER}: {}\r\n", hex::encode(token))
-    });
     let header = format!(
-        "POST {API_PREFIX}{path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{token}Content-Length: {}\r\n\r\n",
+        "POST {API_PREFIX}{path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
         body.len()
     );
     socket.write_all(header.as_bytes()).await.unwrap();
@@ -176,48 +162,6 @@ async fn post(
     } else {
         (status, body.to_vec())
     }
-}
-
-async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 32] {
-    browser_as(addr, key, cert, false).await
-}
-
-/// A browser session, in the background when `background`.
-async fn browser_as(
-    addr: SocketAddr,
-    key: &SigningKey,
-    cert: &DeviceCert,
-    background: bool,
-) -> [u8; 32] {
-    let (status, body) = post(
-        addr,
-        "/session",
-        None,
-        postcard::to_allocvec(&crate::auth::Hello::new(cert.clone(), [9; 32])).unwrap(),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let challenge: protocol::SessionChallenge = postcard::from_bytes(&body).unwrap();
-    let finish = SessionFinish {
-        handshake: challenge.handshake,
-        ack2: crate::auth::HelloAck2 {
-            sig_over_server_nonce: key
-                .sign(&crate::auth::client_challenge_digest(
-                    &challenge.ack.server_nonce,
-                ))
-                .to_bytes(),
-        },
-        background,
-    };
-    let (status, body) = post(
-        addr,
-        "/session/finish",
-        None,
-        postcard::to_allocvec(&finish).unwrap(),
-    )
-    .await;
-    assert_eq!(status, 200);
-    protocol::decode_grant(&body).unwrap().0.token
 }
 
 #[test]
@@ -278,7 +222,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         73,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let (owner_key, owner) = device(&signer, 74, DeviceCapabilities::member());
+    let (_, owner) = device(&signer, 74, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
@@ -289,8 +233,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         .unwrap();
 
     let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
-    let token = browser(addr, &owner_key, &owner).await;
-    let (code, body) = post(addr, "/channel-keys", Some(token), Vec::new()).await;
+    let (code, body) = post(addr, "/channel-keys", Vec::new()).await;
     assert_eq!(
         code,
         404,
@@ -571,79 +514,6 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     stop(relay, serving).await;
 }
 
-/// A browser handshake the host turns away says why, in a body the device
-/// decodes: a stranger is not admitted, a revoked device is revoked, and a
-/// handshake the host does not know is to be run again.
-#[tokio::test]
-async fn refused_handshakes_carry_their_typed_reason() {
-    let root = SigningKey::from_bytes(&[101; 32]);
-    let host = host(&root, 102, DeviceCapabilities::host());
-    let (_, member) = device(&root, 103, DeviceCapabilities::member());
-    let (_, revoked) = device(&root, 104, DeviceCapabilities::member());
-    let stranger_root = SigningKey::from_bytes(&[105; 32]);
-    let (_, stranger) = device(&stranger_root, 106, DeviceCapabilities::member());
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: root.verifying_key().to_bytes(),
-        revoked_device_public_key: revoked.device_public_key,
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-    let mut revocations = RevocationList::new();
-    revocations.insert(entry).unwrap();
-    let state = tempfile::tempdir().unwrap();
-    let mut identity = host.identity();
-    identity.revocations = revocations;
-    exercise_handshake_refusal_reasons(
-        relay_at(&state, identity, RelayConfig::default()).await,
-        &member,
-        &revoked,
-        &stranger,
-    )
-    .await;
-}
-
-async fn exercise_handshake_refusal_reasons(
-    relay: Relay,
-    member: &DeviceCert,
-    revoked: &DeviceCert,
-    stranger: &DeviceCert,
-) {
-    let sessions = Sessions::new(relay.web_context().clone());
-    let hello = |cert: &DeviceCert| crate::auth::Hello::new(cert.clone(), [7; 32]);
-    let refusal = |error: SessionError| {
-        // On the wire the reason is the 403's postcard body.
-        let response = session_status(&error);
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        match error {
-            SessionError::Denied(refusal) => refusal,
-            other => panic!("not a typed refusal: {other:?}"),
-        }
-    };
-    assert!(sessions.hello(&hello(member)).is_ok(), "the owner's device");
-    assert_eq!(
-        refusal(sessions.hello(&hello(stranger)).unwrap_err()),
-        protocol::SessionRefusal::NotAdmitted
-    );
-    assert_eq!(
-        refusal(sessions.hello(&hello(revoked)).unwrap_err()),
-        protocol::SessionRefusal::DeviceRevoked
-    );
-    let unknown = sessions
-        .finish(
-            &[0; 16],
-            &crate::auth::HelloAck2 {
-                sig_over_server_nonce: [0; 64],
-            },
-        )
-        .map(|_| ())
-        .unwrap_err();
-    assert_eq!(refusal(unknown), protocol::SessionRefusal::Handshake);
-    drop(sessions);
-    relay.shutdown().await;
-}
-
 /// One request to the listener at `addr`: its status, its header block
 /// (lowercased) and its body.
 async fn exchange(addr: SocketAddr, head: &str, body: &[u8]) -> (u16, String, Vec<u8>) {
@@ -752,7 +622,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
 
     let mut web = web_of(&relay, &host);
     web.allowed_origins = vec!["https://app.example".into()];
-    web.features = protocol::FEATURE_FETCH_PROXY;
     // The target is on loopback, which a host's proxy never reaches; the
     // refusal of its own network is `tilo_net`'s to test. The workspace may
     // receive what the two answers below carry, together.
@@ -810,7 +679,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let path = format!("{}?{}", route.path(), route.query().unwrap());
     let fetch = |token: Option<String>, origin: &'static str| {
         let token = token.map_or_else(String::new, |token| {
-            format!("{SESSION_HEADER}: {token}\r\n")
+            format!("{}: {token}\r\n", tilo_relay_protocol::web::SESSION_HEADER)
         });
         let head = format!(
             "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: {origin}\r\nx-tilo-proxy: 1\r\n{token}\r\n"

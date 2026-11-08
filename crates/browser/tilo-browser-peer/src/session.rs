@@ -34,7 +34,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::{
     Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame,
 };
-use tilo_relay_client::https::LinkError;
+use tilo_relay_client::LinkError;
 use tilo_relay_session::RelayClient;
 
 mod connect;
@@ -81,27 +81,15 @@ enum Refusal {
 }
 
 fn refusal(error: &LinkError) -> Refusal {
-    use tilo_relay_protocol::web::SessionRefusal;
     match error {
-        LinkError::Denied(SessionRefusal::NotAdmitted) => {
-            Refusal::Final(NOT_ADMITTED.0, NOT_ADMITTED.1)
-        }
-        LinkError::Denied(SessionRefusal::DeviceRevoked) => Refusal::Final(
-            "device-revoked",
-            "This browser was removed from your devices, so it can’t open this workspace anymore.",
-        ),
-        LinkError::Denied(SessionRefusal::CertificateInvalid) => Refusal::Final(
-            "certificate-rejected",
-            "The workspace’s host did not accept how this browser signed in.",
-        ),
         LinkError::HostChanged => {
             Refusal::Final("host-changed", "This workspace’s host was set up again.")
         }
-        // A stale handshake is simply run again.
-        LinkError::Denied(SessionRefusal::Handshake)
-        | LinkError::Unavailable(_)
-        | LinkError::Malformed(_)
-        | LinkError::Sign(_) => Refusal::Reachability,
+        LinkError::Unavailable(_) | LinkError::Malformed(_) | LinkError::Sign(_) => {
+            Refusal::Reachability
+        }
+        // A host that turns a device away closes its handshake without a
+        // word, so its own reason never reaches the page.
         LinkError::Refused(_) => Refusal::Unexplained,
         // Another peer protocol version: whichever side is behind updates
         // (docs/architecture/compatibility.md). This page is the host's
@@ -3679,30 +3667,13 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_that_says_why_decides_and_a_proxys_page_never_counts() {
-        use tilo_relay_protocol::web::SessionRefusal;
+    fn a_changed_host_stops_the_page_and_a_proxys_page_never_counts() {
         let code = |error| match refusal(&error) {
             Refusal::Final(code, _) => code,
             Refusal::Unexplained => "unexplained",
             Refusal::Reachability => "reachability",
         };
-        assert_eq!(
-            code(LinkError::Denied(SessionRefusal::NotAdmitted)),
-            "not-admitted"
-        );
-        assert_eq!(
-            code(LinkError::Denied(SessionRefusal::DeviceRevoked)),
-            "device-revoked"
-        );
-        assert_eq!(
-            code(LinkError::Denied(SessionRefusal::CertificateInvalid)),
-            "certificate-rejected"
-        );
         assert_eq!(code(LinkError::HostChanged), "host-changed");
-        assert_eq!(
-            code(LinkError::Denied(SessionRefusal::Handshake)),
-            "reachability"
-        );
         // An HTML error page from a proxy does not decode: reachability.
         assert_eq!(
             code(LinkError::Malformed("unexpected end of input".into())),

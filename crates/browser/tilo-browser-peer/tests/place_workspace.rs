@@ -14,7 +14,6 @@ mod support;
 // This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
 tilo_automerge_isolate::test_worker!();
 
-use tilo_browser_peer::Host;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, start_peer, start_workspace_host};
@@ -32,7 +31,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     let workspace = "0b7c6f0e-2d55-4f3a-9c1e-5a8d2b4e6f10";
     let workspace_id = tilo_relay_protocol::room_workspace_id(workspace).unwrap();
     let page = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         laptop.cert.clone(),
         host_device.cert.clone(),
         laptop.key.clone(),
@@ -50,7 +49,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     assert_eq!(summary.workspace_id, workspace_id);
     // Placed once: a page joining again keeps the workspace as it is.
     let again = start_peer(
-        Host::Https(host.https()),
+        host.iroh(),
         laptop.cert.clone(),
         host_device.cert.clone(),
         laptop.key.clone(),

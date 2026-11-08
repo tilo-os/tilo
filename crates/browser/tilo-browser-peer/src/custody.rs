@@ -26,7 +26,7 @@ use tilo_user_identity::{
 
 use crate::session::Host;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_client::https::LinkError;
+use tilo_relay_client::LinkError;
 
 /// Longest a certification request waits for an approver.
 pub const CERTIFICATION_WAIT_NS: u64 = 5 * 60 * 1_000_000_000;

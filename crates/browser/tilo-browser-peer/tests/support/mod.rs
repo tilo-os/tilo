@@ -264,7 +264,6 @@ pub async fn start_host_serving(
             allowed_origins: Vec::new(),
             plain_listen,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy,
         })
@@ -308,7 +307,6 @@ pub async fn start_workspace_host(
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
         })

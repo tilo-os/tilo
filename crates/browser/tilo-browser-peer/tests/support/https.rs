@@ -29,12 +29,7 @@ impl DevHttps {
         })
     }
 
-    async fn request(
-        &self,
-        path: &str,
-        session: Option<&str>,
-        body: Vec<u8>,
-    ) -> Result<(u16, Vec<u8>), String> {
+    async fn request(&self, path: &str, body: Vec<u8>) -> Result<(u16, Vec<u8>), String> {
         let tcp = tokio::net::TcpStream::connect(self.addr)
             .await
             .map_err(|error| error.to_string())?;
@@ -48,12 +43,9 @@ impl DevHttps {
                 .await
                 .map_err(|error| error.to_string())?;
         tokio::spawn(connection);
-        let mut request = hyper::Request::post(path)
+        let request = hyper::Request::post(path)
             .header(hyper::header::HOST, "localhost")
             .header(hyper::header::CONTENT_TYPE, "application/octet-stream");
-        if let Some(session) = session {
-            request = request.header(tilo_relay_protocol::web::SESSION_HEADER, session);
-        }
         let request = request
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
             .map_err(|error| error.to_string())?;
@@ -74,9 +66,8 @@ impl DevHttps {
 }
 
 impl HttpClient for DevHttps {
-    fn post(&self, path: &str, session: Option<&str>, body: Vec<u8>) -> HttpFuture<'_> {
+    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
         let path = path.to_owned();
-        let session = session.map(str::to_owned);
-        Box::pin(async move { self.request(&path, session.as_deref(), body).await })
+        Box::pin(async move { self.request(&path, body).await })
     }
 }

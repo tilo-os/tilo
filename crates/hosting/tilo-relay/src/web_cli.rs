@@ -379,7 +379,6 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         allowed_origins: args.allowed_origins.clone(),
         plain_listen: args.web_plain,
         public_origin: args.public_origin.clone(),
-        limits: web_limits(),
         country: args
             .country_header
             .clone()
@@ -485,14 +484,6 @@ fn fetch_proxy_config() -> tilo_net::proxy::host::Config {
 /// caps without a config file.
 fn env_count(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.trim().parse().ok()
-}
-
-fn web_limits() -> tilo_relay::web::WebLimits {
-    let defaults = tilo_relay::web::WebLimits::default();
-    tilo_relay::web::WebLimits {
-        max_sessions: env_count("TILO_RELAY_MAX_WEB_SESSIONS").unwrap_or(defaults.max_sessions),
-        max_handshakes: env_count("TILO_RELAY_MAX_HANDSHAKES").unwrap_or(defaults.max_handshakes),
-    }
 }
 
 /// Start the listener `run --web` asked for, if any.

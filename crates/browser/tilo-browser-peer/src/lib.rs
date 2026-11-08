@@ -62,6 +62,7 @@ pub use session::{
     TransportPhase,
 };
 pub use tilo_live::live::Track;
-pub use tilo_relay_client::https::{HttpClient, HttpFuture, LinkError, host_info};
+pub use tilo_relay_client::LinkError;
+pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info};
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

@@ -1,8 +1,9 @@
 //! Who is here in a hosted workspace and what they are doing.
 //! Two sources meet here. A workspace's live layer names the members present now (people and
 //! agents), their colour, the record they focus and an agent's own activity line. The host answers
-//! `/here` with each person's one-line status and a summary of their last minutes, built from the
-//! titles of the actions they took (`tilo_relay_protocol::web::HERE_PATH`). Neither is written to
+//! the `HereRequest` the page posts over its session with each person's one-line status and a
+//! summary of their last minutes, built from the titles of the actions they took
+//! (`tilo_relay_protocol::web::HereRequest`). Neither is written to
 //! the workspace's desktop document: the bar, the People popover and the windows read them as
 //! ambient presence.
 //! A person may be here from several devices at once (each browser tab is a device of its own).

@@ -143,16 +143,16 @@ const options = (runtime, store, extra = {}) => ({
 /** What the workspace's members said, as the session hands it to the page. */
 const say = (runtime, said, durable = []) => runtime.peer.emit(runtime.peer.phase, durable, said);
 
-test('httpsPost posts bodies with the session header to the host origin', async () => {
+test('httpsPost posts bodies to the host origin', async () => {
   const seen = [];
   const post = httpsPost('https://host.example:8443', async (url, init) => {
     seen.push({url, init});
     return {status: 204, arrayBuffer: async () => new ArrayBuffer(0)};
   });
-  const answer = await post('/peer/v1/send', 'ab', new Uint8Array([1]));
+  const answer = await post('/peer/v1/host', new Uint8Array([1]));
   assert.equal(answer.status, 204);
-  assert.equal(seen[0].url, 'https://host.example:8443/peer/v1/send');
-  assert.equal(seen[0].init.headers['x-tilo-session'], 'ab');
+  assert.equal(seen[0].url, 'https://host.example:8443/peer/v1/host');
+  assert.deepEqual(seen[0].init.body, new Uint8Array([1]));
   assert.equal(seen[0].init.credentials, 'omit');
   assert.throws(() => httpsPost('http://host.example'), TypeError);
 });
@@ -707,9 +707,6 @@ test('leaving the page withdraws its presence from the workspace at once; back o
   const page = new EventTarget();
   globalThis.addEventListener = page.addEventListener.bind(page);
   globalThis.removeEventListener = page.removeEventListener.bind(page);
-  const navigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  const beacons = [];
-  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {sendBeacon: (url, body) => { beacons.push([url, body]); return true; }}});
   try {
     const runtime = fakeRuntime();
     const peer = await connect(options(runtime, memoryStore()));
@@ -719,14 +716,11 @@ test('leaving the page withdraws its presence from the workspace at once; back o
     await tick();
     assert.equal(peer.live.state, 'live', 'a page kept to come back to stays');
     assert.deepEqual(runtime.peer.left, [], 'and keeps its place');
-    assert.deepEqual(beacons, [], 'and its host session');
     page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: false}));
     await tick();
     assert.equal(peer.live.state, 'closed');
     assert.deepEqual(runtime.peer.left, [WORKSPACE],
       'the members take it down at once, not when its keepalive stops');
-    assert.deepEqual(beacons, [['https://host.example:8443/peer/v1/session/end', 'ce'.repeat(32)]],
-      'the host hears the page went, its session token the body');
     // Back online, the session tries again now instead of after its backoff.
     page.dispatchEvent(new Event('online'));
     assert.equal(runtime.peer.retries, 1);
@@ -736,8 +730,6 @@ test('leaving the page withdraws its presence from the workspace at once; back o
   } finally {
     delete globalThis.addEventListener;
     delete globalThis.removeEventListener;
-    if (navigator) Object.defineProperty(globalThis, 'navigator', navigator);
-    else delete globalThis.navigator;
   }
 });
 

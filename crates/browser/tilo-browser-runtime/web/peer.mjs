@@ -35,8 +35,6 @@ import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
-/** Where a leaving page ends its host session, the token its body (tilo-relay-protocol's `SESSION_END_PATH`). */
-const SESSION_END_PATH = '/peer/v1/session/end';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -202,19 +200,19 @@ const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 /** A host served over plain HTTP on this machine (`tilo-relay workspace --web-plain`). */
 const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
 
-/** `post(path, session, body)` over `fetch` to the host origin: https, or
- * loopback http for local review (no certificate exception needed). */
+/** `post(path, body)` over `fetch` to the host origin: https, or loopback
+ * http for local review (no certificate exception needed). */
 export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...args)) {
   const base = new URL(origin);
   const secure = base.protocol === 'https:' || isLoopbackHttp(base);
   if (!secure || base.pathname !== '/' || base.search || base.hash) {
     throw new TypeError('host origin must be an https (or loopback http) origin');
   }
-  return async (path, session, body) => {
-    const headers = {'content-type': 'application/octet-stream'};
-    if (session) headers['x-tilo-session'] = session;
+  return async (path, body) => {
     const response = await fetcher(new URL(path, base).href, {
-      method: 'POST', headers, body, credentials: 'omit', cache: 'no-store', redirect: 'error',
+      method: 'POST',
+      headers: {'content-type': 'application/octet-stream'},
+      body, credentials: 'omit', cache: 'no-store', redirect: 'error',
     });
     return {status: response.status, body: new Uint8Array(await response.arrayBuffer())};
   };
@@ -757,17 +755,13 @@ async function connect({
 
   // Leaving the page leaves the workspace's live plane at once: closing its
   // sessions withdraws this page's announcement, so everyone else takes its
-  // pointer and face down now, not when the link times out. Its host
-  // session ends with it, by beacon (the one request a leaving page still
-  // sends), so the workspace stops counting the page now too, not once its polls
-  // are missed. A page kept to come back to (`persisted`) is frozen, not
-  // gone.
+  // pointer and face down now, not when the link times out, and its host
+  // session ends with it. A page kept to come back to (`persisted`) is frozen,
+  // not gone.
   const page = typeof globalThis.addEventListener === 'function' ? globalThis : null;
   const leavePage = event => {
     if (event?.persisted) return;
     stopLive();
-    const token = disposed ? undefined : peer?.sessionToken?.();
-    if (token) globalThis.navigator?.sendBeacon?.(new URL(SESSION_END_PATH, origin).href, token);
   };
   page?.addEventListener('pagehide', leavePage);
   // Back online, the session reconnects now rather than when its backoff

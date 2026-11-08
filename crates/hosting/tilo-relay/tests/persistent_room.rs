@@ -405,20 +405,12 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
 struct Plain(std::net::SocketAddr);
 
 impl tilo_browser_peer::HttpClient for Plain {
-    fn post(
-        &self,
-        path: &str,
-        session: Option<&str>,
-        body: Vec<u8>,
-    ) -> tilo_browser_peer::HttpFuture<'_> {
+    fn post(&self, path: &str, body: Vec<u8>) -> tilo_browser_peer::HttpFuture<'_> {
         use http_body_util::BodyExt as _;
-        let mut request = hyper::Request::post(path)
+        let request = hyper::Request::post(path)
             .header(hyper::header::HOST, "localhost")
-            .header(hyper::header::CONTENT_TYPE, "application/octet-stream");
-        if let Some(session) = session {
-            request = request.header(tilo_relay_protocol::web::SESSION_HEADER, session);
-        }
-        let request = request.body(http_body_util::Full::new(bytes::Bytes::from(body)));
+            .header(hyper::header::CONTENT_TYPE, "application/octet-stream")
+            .body(http_body_util::Full::new(bytes::Bytes::from(body)));
         let addr = self.0;
         Box::pin(async move {
             let request = request.map_err(|error| error.to_string())?;
@@ -695,7 +687,6 @@ async fn ask_door_raw(
     Plain(plain)
         .post(
             &format!("/peer/v1/directory/{workspace}/join"),
-            None,
             serde_json::to_vec(&join).unwrap(),
         )
         .await
@@ -725,7 +716,7 @@ async fn directory_page(
 ) -> tilo_relay_protocol::directory::DirectoryPage {
     use tilo_browser_peer::HttpClient as _;
     let (status, body) = Plain(plain)
-        .post("/peer/v1/directory", None, Vec::new())
+        .post("/peer/v1/directory", Vec::new())
         .await
         .unwrap();
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
@@ -1280,7 +1271,6 @@ fn answers_the_door(
         Plain(plain)
             .post(
                 &format!("/peer/v1/directory/{workspace}/errors"),
-                None,
                 br#"{"kind":"error","message":"boom","page":"/","build":"abc"}"#.to_vec(),
             )
             .await

@@ -190,7 +190,6 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             allowed_origins: vec![page_origin],
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
         },
@@ -279,7 +278,6 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
         })
