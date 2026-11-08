@@ -5,7 +5,7 @@
 // Pages are served from 127.0.0.1, a secure context, so OPFS, Web Locks and
 // WebGPU are available.
 import {spawn} from 'node:child_process';
-import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync} from 'node:fs';
+import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync, statfsSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {homedir, tmpdir} from 'node:os';
 import {extname, join, normalize} from 'node:path';
@@ -110,17 +110,23 @@ function chromeBinary() {
  * (/dev/shm, else $XDG_RUNTIME_DIR), as tilo_paths::memory_temp_dir gives app
  * test profiles, else the temp directory. Nothing in it needs durability, and on
  * disk Chromium's exit waits on the profile's writeback: on a busy shared disk
- * its threads sat in the kernel past every shutdown deadline. */
+ * its threads sat in the kernel past every shutdown deadline.
+ *
+ * A page's own store lives in the profile, so a directory with less room than
+ * one page's work fills up and every save after it fails: a job container's
+ * /dev/shm is 64 MiB, which one browser fills. */
+const profileRoom = 1 << 30;
+
 function throwawayDir() {
   for (const dir of [process.platform === 'linux' ? '/dev/shm' : null, process.env.XDG_RUNTIME_DIR]) {
     if (!dir) continue;
     try {
-      if (statSync(dir).isDirectory()) {
-        accessSync(dir, fsConstants.W_OK);
-        return dir;
-      }
+      if (!statSync(dir).isDirectory()) continue;
+      accessSync(dir, fsConstants.W_OK);
+      const room = statfsSync(dir);
+      if (room.bavail * room.bsize >= profileRoom) return dir;
     } catch {
-      // Not there or not writable: the next one.
+      // Not there, not writable, or nothing to say about its room: the next one.
     }
   }
   return tmpdir();
