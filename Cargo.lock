@@ -18943,6 +18943,7 @@ dependencies = [
  "bao-tree",
  "blake3",
  "bytes",
+ "channel-crypto",
  "clap",
  "cloud-source",
  "cloud-source-dav",

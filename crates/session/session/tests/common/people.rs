@@ -589,12 +589,34 @@ impl std::fmt::Display for Watched<'_> {
 /// site lets its desk author the workspace's records, as a workspace's host does before its people
 /// open windows there.
 pub fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
+    two_people_at_a_site_carrying(&[], |_| {})
+}
+
+/// [`two_people_at_a_site`] for people whose devices carry the Files app: a session reads the apps
+/// it has when it starts, so each device has them before its session does, and the workspace
+/// lets them author its records, as a host lets the first-party apps author theirs.
+pub fn two_people_at_a_site_with_files() -> (Site, Person, Person, Device, Device) {
+    two_people_at_a_site_carrying(&[FILES_APP], Device::install_files)
+}
+
+/// The app whose record a workspace's tree is.
+pub const FILES_APP: &str = "so.tilo.file-explorer";
+
+/// The two people's laptops in the site's workspace, each carrying what `install` puts in its
+/// store before its session starts, and the workspace letting `authored` author its records.
+fn two_people_at_a_site_carrying(
+    authored: &[&str],
+    install: impl Fn(&Device),
+) -> (Site, Person, Person, Device, Device) {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
     let site = Site::start(&ada, "Studio");
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
-    let ada_laptop = joined(&site, &ada, "Ada's laptop");
-    let bob_laptop = joined(&site, &bob, "Bob's laptop");
+    let authored: Vec<&str> = std::iter::once(tilo_desktop_model::ownership::DESKTOP_APP)
+        .chain(authored.iter().copied())
+        .collect();
+    site.author_apps(&authored);
+    let ada_laptop = joined_carrying(&site, &ada, "Ada's laptop", &install);
+    let bob_laptop = joined_carrying(&site, &bob, "Bob's laptop", &install);
     site.wait_for_member(bob.public);
     (site, ada, bob, ada_laptop, bob_laptop)
 }
@@ -608,7 +630,19 @@ pub fn two_devices_of_one_person() -> (Site, Person, Device, Device) {
 /// A device of `person`'s, joined to the workspace `site` serves and holding it: what the owner's
 /// invitation admits, as a device redeems it.
 fn joined(site: &Site, person: &Person, label: &str) -> Device {
+    joined_carrying(site, person, label, &|_| {})
+}
+
+/// [`joined`] for a device carrying what `install` puts in its store, which it has before its
+/// session starts.
+pub fn joined_carrying(
+    site: &Site,
+    person: &Person,
+    label: &str,
+    install: &impl Fn(&Device),
+) -> Device {
     let mut device = person.device(label);
+    install(&device);
     let invitation = site.invite(person.public, WorkspaceRole::Editor);
     device.join(&invitation);
     device.wait_holding(&site.workspace);
