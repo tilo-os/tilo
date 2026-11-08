@@ -156,6 +156,22 @@ A list that opens its rows elsewhere instead — in a pane beside it, a window o
 it where the view gives one, and `std.browse` puts the pane beside the list when the caller says
 its rows have a window of their own.
 
+A window asked to show an item — a reference pressed, an agent's suggestion taken up, a capture
+staging what a scenario made — puts the question to its own view: `on show(x: Task): <action>`
+states what showing an item of `Task` means here, as the action to apply in the view's state,
+computed from the item alone. A list states the two things a person does with it by hand:
+
+```
+on show(x: Task): set(place, place_of(x)).then(set(opened, x))
+```
+
+`place_of` is the app's own function, answering which of the places the window offers holds the
+item; the effect is that the item's row opens where it stands and the window follows it to that
+place. A view that states nothing opens the item's own page (`default view`), and a type the view
+does not answer for opens there too. The app says what showing an item means in its window; the
+shell never guesses a place from a row's shape, so a scenario that returns a task lands in the
+list that holds it, not on a page over a place the person was not looking at.
+
 ## 4. Customizing a component: a ladder
 
 How deeply a view may make its UI its own, from saying nothing to shipping Rust. Each rung is a

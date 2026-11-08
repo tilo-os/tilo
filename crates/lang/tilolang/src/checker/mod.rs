@@ -795,15 +795,15 @@ impl Checker<'_> {
             .iter()
             .find(|(key, view)| key.app == env.app && *view == c.name);
         if let Some((key, _)) = row_of {
-            self.row_view_body(&c.name, &key.name, &rest, v.body_span);
+            self.row_view_body(&c.name, &key.name, rest, v.body_span);
             self.st.ui.list_row_ok = true;
-        } else if self.st.subject.is_some() && self.body_is_row(&rest) {
+        } else if self.st.subject.is_some() && self.body_is_row(rest) {
             // A view of one item whose body is its row is that item's row wherever it is
             // drawn: the parameters after the item are what the place around it states, which
             // is how a place states a fact once instead of every row repeating it.
             self.st.ui.list_row_ok = true;
         }
-        self.view_body(&rest);
+        self.view_body(rest);
         let mut f = self.end(FuncKind::View, &c.name, &format!("v_{}", c.id));
         f.nparams = c.params.len();
         f

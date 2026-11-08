@@ -468,11 +468,13 @@ impl ViewInstance {
             target: Rc::new(target.clone()),
             author: None,
         });
-        let made = self.core.call_pure(
+        let made = self.core.call_in_view(
             &pkg,
             &show.func.id,
             &show.func.params,
             &[item],
+            &self.live.window,
+            &self.live.viewer,
             &show.func.result,
         )?;
         let Value::Action(mut aref) = made else {
