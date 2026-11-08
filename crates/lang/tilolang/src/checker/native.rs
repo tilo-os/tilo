@@ -910,7 +910,7 @@ impl Checker<'_> {
         let key = concat(self.node_key(c), Ex::str("#person"));
         let n = self.new_node(&crate::toolkit::kind(&d.name), key);
         for a in args.iter().filter(|a| is_bind(a)) {
-            self.binding_prop(n, d, &a.value, &d.bindings);
+            self.binding_prop(n, d, &a.value);
         }
         // Who may be picked, and which of them is "Me": the workspace's, never a copy the app
         // keeps.

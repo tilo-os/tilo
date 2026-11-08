@@ -12,7 +12,7 @@ default view page_view for Page
 /// The page: its title to edit, and who edited it last, by name.
 view page_view(p: Page) {
     stack {
-        ui.TextInput(value: p.title, placeholder: "Title")
+        ui.TextInput(bind: p.title, placeholder: "Title")
         if let u = updated(p) {
             text("Edited by {u.who}")
         }

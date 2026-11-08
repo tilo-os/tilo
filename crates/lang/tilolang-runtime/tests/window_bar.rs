@@ -478,7 +478,7 @@ view all(q: Quiets) {
 }
 view quiet_page(q: Quiet) {
     std.document(q) {
-        ui.TextInput(value: q.title, placeholder: "Title")
+        ui.TextInput(bind: q.title, placeholder: "Title")
     }
 }
 "#;

@@ -314,11 +314,11 @@ view home(t: Tasks) {
                     stack {
                         // On Today, what is added is due today unless it says when.
                         if place == "is:today" {
-                            ui.TextInput(value: draft, placeholder: "New task for today") {
+                            ui.TextInput(bind: draft, placeholder: "New task for today") {
                                 on submit: quick_add(t, draft, .none, true).then(set(draft, ""))
                             }
                         } else {
-                            ui.TextInput(value: draft, placeholder: "New task") {
+                            ui.TextInput(bind: draft, placeholder: "New task") {
                                 on submit: quick_add(t, draft).then(set(draft, ""))
                             }
                         }
@@ -363,7 +363,7 @@ view project_list(p: Project, draft: State<Text>) {
             ui.Docked {
                 foot: {
                     stack {
-                        ui.TextInput(value: draft, placeholder: "New task in {p.name}") {
+                        ui.TextInput(bind: draft, placeholder: "New task in {p.name}") {
                             on submit: quick_add(tasks, draft, p).then(set(draft, ""))
                         }
                     }

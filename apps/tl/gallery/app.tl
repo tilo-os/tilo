@@ -162,7 +162,7 @@ view parts(b: Basics, last: State<Text>) {
             ui.Chip("Due Friday", icon: .calendar)
             ui.Avatar(b.owner, name: .some("Ada Lovelace"))
         }
-        ui.TextInput(value: b.note, placeholder: "A note for the team")
+        ui.TextInput(bind: b.note, placeholder: "A note for the team")
     }
     ui.Card(title: "This week", count: 3) {
         ui.PropertyList {
@@ -195,7 +195,7 @@ view backlog_list(b: Backlog) {
             ui.Docked {
                 foot: {
                     row(gap: .related) {
-                        ui.RichInput(value: b.draft, placeholder: "Message the team", fill)
+                        ui.RichInput(bind: b.draft, placeholder: "Message the team", fill)
                         ui.Button("Send", icon: .send, icon_only: true)
                     }
                 }

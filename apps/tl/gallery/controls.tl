@@ -61,15 +61,15 @@ view controls(c: Controls) {
     state last: Text = ""
     std.page(c) {
         ui.Section("Boxes and switches") {
-            ui.Checkbox(value: c.by_email, label: .some("Send by email"))
-            ui.Toggle(value: c.repeating, label: .some("Repeat weekly"))
+            ui.Checkbox(bind: c.by_email, label: .some("Send by email"))
+            ui.Toggle(bind: c.repeating, label: .some("Repeat weekly"))
             ui.ControlRow(label: .some("Archived"), selected: c.archived) {
                 ui.Text("Archived items stay for 30 days.", role: .caption, secondary: true)
             }
         }
         ui.Section("Numbers") {
             ui.NumberInput(
-                value: c.share,
+                bind: c.share,
                 label: .some("Share"),
                 min: .some(0.0),
                 max: .some(1.0),
@@ -77,7 +77,7 @@ view controls(c: Controls) {
                 precision: .some(2),
             )
             ui.Slider(
-                value: c.share,
+                bind: c.share,
                 label: .some("Time"),
                 max: .some(1.0),
                 step: .some(0.05),
@@ -86,7 +86,7 @@ view controls(c: Controls) {
         }
         ui.Section("Choices") {
             ui.Dropdown(
-                value: c.room,
+                bind: c.room,
                 options: ["Studio", "Gallery", "Annex"],
                 placeholder: .some("Choose a room"),
             )
@@ -102,7 +102,7 @@ view controls(c: Controls) {
             }
         }
         ui.Section("Cases") {
-            ui.EnumField(value: c.urgency, label: .some("Urgency")) {
+            ui.EnumField(bind: c.urgency, label: .some("Urgency")) {
                 ui.EnumOption("No hurry", name: "none")
                 ui.EnumOption("Low", name: "low")
                 ui.EnumOption("Medium", name: "medium")
@@ -111,14 +111,10 @@ view controls(c: Controls) {
         }
         ui.Section("People") {
             ui.Text("Who looks after it", role: .caption, secondary: true)
-            ui.PersonField(
-                value: c.owner,
-                people: .some(workspace.members),
-                me: .some(workspace.me),
-            )
+            ui.PersonField(bind: c.owner, people: .some(workspace.members), me: .some(workspace.me))
             ui.Text("Who reviews it, still to be picked", role: .caption, secondary: true)
             ui.PersonField(
-                value: c.reviewer,
+                bind: c.reviewer,
                 people: .some(workspace.members),
                 me: .some(workspace.me),
             )
@@ -129,15 +125,15 @@ view controls(c: Controls) {
             }
         }
         ui.Section("Days and times") {
-            ui.DateField(value: c.starts, label: .some("Starts"), optional: false)
-            ui.DateField(value: c.ends, label: .some("Ends"), optional: true)
-            ui.DatePicker(value: c.starts)
-            ui.TimeField(value: c.clock)
-            ui.TimePicker(value: c.clock, label: .some("At"))
+            ui.DateField(bind: c.starts, label: .some("Starts"), optional: false)
+            ui.DateField(bind: c.ends, label: .some("Ends"), optional: true)
+            ui.DatePicker(bind: c.starts)
+            ui.TimeField(bind: c.clock)
+            ui.TimePicker(bind: c.clock, label: .some("At"))
         }
         ui.Section("Colours") {
             ui.ColorPicker(
-                value: c.accent,
+                bind: c.accent,
                 swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"],
                 columns: .some(3),
             )
@@ -148,13 +144,13 @@ view controls(c: Controls) {
             )
         }
         ui.Section("Text") {
-            ui.EditableLabel(value: c.title)
+            ui.EditableLabel(bind: c.title)
             ui.ShortcutRecorder(
-                value: c.shortcut,
+                bind: c.shortcut,
                 default: .some("Ctrl+K"),
                 label: .some("Open with"),
             )
-            ui.Autocomplete(value: c.recipient, placeholder: .some("Who it goes to")) {
+            ui.Autocomplete(bind: c.recipient, placeholder: .some("Who it goes to")) {
                 ui.Suggestion("ada@example.com")
                 ui.Suggestion("bo@example.com", label: .some("Bo"))
             }

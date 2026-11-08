@@ -42,7 +42,7 @@ version they have seen. Showing a resource on screen does not set it; the person
 ## 3. Marks in place, with no app code
 
 The UI host already knows which resource each part of a view is bound to: a list's rows are
-`ui.ListItem(item:)` references to items, `ui.TextInput(value: n.title)` binds a field, every
+`ui.ListItem(item:)` references to items, `ui.TextInput(bind: n.title)` binds a field, every
 window shows a resource. The host draws marks from `unseen(r)` at those points:
 
 | Where | Mark |

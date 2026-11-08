@@ -51,6 +51,14 @@ view contact_row(c: Contact) {
   the app names the cases it offers in the description's slot, and a pick is the case's name.
   A primitive that is a component (`text`, `input`, `checkbox`, ...)
   is its shorter name and nothing else.
+- `bind:` is the one way a control edits a place: the binding's own name is no argument, so
+  `ui.TextInput(value: n.title)` and `input(value: query)` are errors saying to write
+  `bind: n.title` and `bind: query`. What a control *shows* is `value:`: the value the view
+  gives it, which the control does not write back. A control that shows a value the view does
+  not hold declares a `change` event, and the person's change runs the view's own action:
+  `ui.Slider(value: volume, label: .some("Volume")) { on change(v): device.set_volume(sound, v) }`.
+  The same `value:` shows a read-only `ui.BlockEditor`'s text (`ui.BlockEditor(x.notes)`) and a
+  row's trailing figure (`ui.ListRow(title: c.name, value: "12")`).
 - A box bound to a value writes that field when it is pressed, unless the view names what a
   press means: `ui.Checkbox(bind: t.done) { on check: check(t) }` and
   `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,

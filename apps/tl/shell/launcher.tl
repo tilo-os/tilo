@@ -23,7 +23,7 @@ view launcher(d: Desk) {
     }
     ui.FloatingPanel {
         header: {
-            ui.TextInput(value: query, placeholder: "Search apps, windows, actions and files") {
+            ui.TextInput(bind: query, placeholder: "Search apps, windows, actions and files") {
                 on submit: session.search(query: .some(query))
             }
         }

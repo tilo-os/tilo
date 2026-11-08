@@ -125,7 +125,7 @@ fn pin_height(s: ArrangementStrip) -> Int {
 /// instead. `x` and `y` are where the caret was, in canvas pixels.
 view canvas_entry(a: Arrangement) {
     state typed: Text = ""
-    ui.TextInput(value: typed, placeholder: "Find something, or ask") {
+    ui.TextInput(bind: typed, placeholder: "Find something, or ask") {
         on submit: session
             .place_found(
                 text: typed,

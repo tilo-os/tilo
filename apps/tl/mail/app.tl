@@ -820,7 +820,7 @@ view conversation(t: Thread) {
             ui.Docked(page_column: true) {
                 foot: {
                     row {
-                        ui.TextInput(value: draft, placeholder: "Reply to {t.subject}", fill) {
+                        ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
                             on submit: answer(t, draft).then(set(draft, ""))
                         }
                         ui.Button("Reply", icon: .send, icon_only: true) {

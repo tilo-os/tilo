@@ -28,7 +28,7 @@ view overview(d: Desk) {
                     on press: session.join_workspace()
                 }
             }
-            ui.TextInput(value: query, placeholder: "Search windows across your workspaces") {
+            ui.TextInput(bind: query, placeholder: "Search windows across your workspaces") {
                 on submit: session.search(query: .some(query))
             }
             rooms_here(d)

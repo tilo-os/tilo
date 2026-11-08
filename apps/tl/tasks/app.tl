@@ -998,7 +998,7 @@ template view task_body(t: Task) {
                     task_outline_row(x, t.project, under)
                 }
             }
-            ui.TextInput(value: step, placeholder: "Add a subtask") {
+            ui.TextInput(bind: step, placeholder: "Add a subtask") {
                 on submit: add_subtask(tasks, t, step).then(set(step, ""))
             }
         }

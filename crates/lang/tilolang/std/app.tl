@@ -112,7 +112,7 @@ template view add_entry(placeholder: Text, create: Action) {
                 }
             }
         }
-        ui.TextInput(value: typed, placeholder: placeholder, entry: true) {
+        ui.TextInput(bind: typed, placeholder: placeholder, entry: true) {
             on submit: create.then(set(typed, ""))
         }
     }

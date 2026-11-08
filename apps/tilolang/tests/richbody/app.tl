@@ -64,7 +64,7 @@ view note_row(n: Note) {
 /// A note's window: its title, its body as rich text, and what happened to it.
 view note_editor(n: Note) {
     std.document(n) {
-        ui.TextInput(value: n.title, placeholder: "Untitled")
+        ui.TextInput(bind: n.title, placeholder: "Untitled")
         ui.BlockEditor(bind: n.body, placeholder: "Write something")
         std.history(n)
     }

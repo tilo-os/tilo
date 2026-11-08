@@ -41,7 +41,7 @@ view notices(d: Desk) {
                         icon: .bell,
                     )
                 } else {
-                    ui.TextInput(value: query, placeholder: "Search notifications")
+                    ui.TextInput(bind: query, placeholder: "Search notifications")
                     if shown.is_empty() {
                         ui.EmptyState(
                             "Nothing matches that",
