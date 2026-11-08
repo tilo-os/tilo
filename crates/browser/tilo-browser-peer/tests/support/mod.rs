@@ -613,3 +613,24 @@ fn random_bytes() -> [u8; 32] {
     getrandom::fill(&mut bytes).unwrap();
     bytes
 }
+
+/// [`host_info`] on a runtime of its own, for a test that reads the host's
+/// certificate from outside an async context (a fixture that starts a real
+/// service in `Lounge`'s place).
+pub fn host_info_blocking(client: &dyn tilo_browser_peer::HttpClient) -> DeviceCert {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime to read the host's certificate");
+    runtime
+        .block_on(tilo_browser_peer::host_info(client))
+        .expect("the host's certificate")
+        .host_cert
+}
+
+/// [`ready`], blocking the calling thread, for a step that runs inside a
+/// fixture's synchronous setup: the caller must be on a multi-thread runtime,
+/// where blocking one worker leaves the others driving the sessions.
+pub fn ready_blocking(peers: &[&PeerHandle]) {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(ready(peers)));
+}

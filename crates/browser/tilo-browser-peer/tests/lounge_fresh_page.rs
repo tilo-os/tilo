@@ -1,0 +1,804 @@
+//! A fresh page joining a real Lounge, as the deployment rehearsal: the
+//! image's own entrypoint with eu1's environment, `tilo-relay room
+//! --persistent` on a copy of the deployment's state, watched by pages that
+//! were never here before.
+//!
+//! This is the deployment's own composition, not a fixture: the host is
+//! `os/containers/tilo-lounge/entrypoint.sh` given eu1's `TILO_ROOMS_*`
+//! (`apps/tilo-eu1/deployment.yaml`), the state volume is the operator's
+//! copy of production, and the pages go through the host's real door
+//! (`/host`, `/join`, and the session the door serves) with invitations the
+//! host itself mints. What it asks about are the records people use — Chat's
+//! and the shared desktop's — and what it checks is what a person sees: the
+//! records' keys arrive, Chat's history opens, Chat's composer is there, the
+//! desk shows the members' windows, and a second page sees the first page's
+//! pointer.
+//!
+//! It runs only when the operator names the state volume, so an ordinary
+//! test run skips it:
+//!
+//! ```text
+//! TILO_LOUNGE_STATE=/path/to/copy TILO_LOUNGE_REFOUND=so.tilo.browser-desktop:desktop \
+//!   cargo test -p tilo-browser-peer -p workspace-unify --test lounge_fresh_page -- --nocapture
+//! ```
+//!
+//! `TILO_LOUNGE_REFOUND` is passed to the host as `TILO_ROOMS_REFOUND`, the
+//! way the deployment will set it.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    reason = "a rehearsal fixture: a failed step is the answer, and it says which check failed"
+)]
+
+mod support;
+
+tilo_automerge_isolate::test_worker!();
+
+use std::io::{BufRead, BufReader, Write as _};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
+
+use std::time::Duration;
+use tilo_browser_peer::HttpFuture;
+
+use collab_types::DocumentMutation;
+use collab_types::presence::Presence;
+use ed25519_dalek::SigningKey;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use tilo_browser_peer::invite::{ask_to_join, guest_certificate};
+use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
+use tilo_relay_protocol::workspaces::{
+    JoinReply, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+};
+use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
+/// The shared desktop every member sees: the record the deployment refounds.
+const DESKTOP_APP: &str = "so.tilo.browser-desktop";
+const DESKTOP_RECORD: &str = "desktop";
+/// Chat's app.
+const CHAT_APP: &str = "so.tilo.chat";
+
+/// The Lounge image's own entrypoint in this checkout.
+fn entrypoint() -> std::path::PathBuf {
+    let built = std::env::current_exe().expect("the test binary's own path");
+    built
+        .ancestors()
+        .map(|dir| dir.join("os/containers/tilo-lounge/entrypoint.sh"))
+        .find(|entrypoint| entrypoint.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "no Lounge image entrypoint in any directory above {}",
+                built.display()
+            )
+        })
+}
+
+/// A PATH holding the relay this run built, so the image's `exec tilo-relay`
+/// runs it.
+fn relay_on_path() -> std::ffi::OsString {
+    let relay = tilo_test_env::sibling_binary("tilo-relay", "tilo-relay");
+    let programs = relay.parent().expect("the relay's directory").to_path_buf();
+    let mut paths = vec![programs];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).expect("a PATH")
+}
+
+/// The Lounge, as eu1 runs it.
+struct Lounge {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    /// The plain listener the deployment's ingress forwards the workspace to.
+    plain: String,
+    /// The workspace's UUID.
+    workspace: String,
+    host_cert: DeviceCert,
+    /// Where the host's iroh endpoint answers: what a page's session dials,
+    /// which is what `/host` publishes.
+    address: tilo_relay_protocol::web::HostAddress,
+    /// The host's door: the plain listener the deployment's ingress forwards
+    /// the workspace to, which serves `/host` and `/join` (and, before this
+    /// build, the workspace's session too).
+    door: Arc<Plain>,
+    /// The snapshot's owner root: the workspace's owner, from the volume.
+    owner_root: SigningKey,
+    _state: tempfile::TempDir,
+}
+
+impl Drop for Lounge {
+    fn drop(&mut self) {
+        if let Some(mut stdin) = self.stdin.take() {
+            let _ = stdin.write_all(OperatorCommand::Shutdown {}.to_line().as_bytes());
+            let _ = stdin.flush();
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Lounge {
+    /// The state volume: the operator's copy, with the deployment's secret in
+    /// it where the entrypoint reads it. The operator's copy is a directory
+    /// holding what the pod mounts: `state/` (the volume) and `secrets/` (the
+    /// mounted secret files). A plain copy of the volume alone is taken as it
+    /// is.
+    fn volume(from: &std::path::Path) -> (tempfile::TempDir, std::path::PathBuf) {
+        let snapshot = if from.join("state").is_dir() {
+            from.join("state")
+        } else {
+            from.to_path_buf()
+        };
+        let state = tempfile::tempdir().expect("a state volume for the run");
+        let copied = Command::new("cp")
+            .arg("-a")
+            .arg(format!("{}/.", snapshot.display()))
+            .arg(state.path())
+            .status()
+            .expect("cp runs");
+        assert!(copied.success(), "the snapshot copies into the volume");
+        assert!(
+            state.path().join("lounge/room-id").is_file(),
+            "the volume holds the workspace's id: {}",
+            state.path().join("lounge").display()
+        );
+        let mounted = [
+            from.join("secrets/room-root-lounge"),
+            from.join("secrets/room-root"),
+            snapshot.join("secrets/room-root-lounge"),
+            snapshot.join("secrets/room-root"),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "the snapshot carries the owner root under {}/secrets",
+                from.display()
+            )
+        });
+        let secrets = state.path().join("secrets");
+        std::fs::create_dir_all(&secrets).expect("the secrets directory");
+        let root_file = secrets.join("room-root-lounge");
+        std::fs::copy(&mounted, &root_file).expect("the owner root");
+        (state, root_file)
+    }
+
+    fn start(from: &std::path::Path, refound: Option<&str>) -> Self {
+        let (state, root_file) = Self::volume(from);
+        let owner_root = read_root(&root_file);
+        let entrypoint = entrypoint();
+        let mut command = Command::new("sh");
+        command
+            .arg(&entrypoint)
+            .env("PATH", relay_on_path())
+            // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it,
+            // without the Discord, mail and model secrets: this run starts no
+            // bridge that needs them.
+            .env("TILO_ROOMS_PERSISTENT", "lounge")
+            .env("TILO_ROOMS_NAME", "Lounge")
+            .env(
+                "TILO_ROOMS_DESCRIPTION",
+                "The Tilo community: chat, notes and a shared desktop",
+            )
+            .env("TILO_ROOMS_DEFAULT_ROLE", "editor")
+            .env("TILO_ROOMS_LAYOUT", "shared")
+            .env("TILO_ROOMS_ADMISSION", "invite")
+            .env("TILO_ROOMS_RELAY_ORIGIN", "https://127.0.0.1")
+            .env("TILO_ROOMS_WEB_ENTRY", "https://tilo.coffee/")
+            .env(
+                "TILO_ROOMS_SITE_ORIGINS",
+                "https://tilo.coffee,https://tilo.so",
+            )
+            .env("TILO_ROOMS_ROOT_FILE", &root_file)
+            .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
+            // The deployment starts without seeding Chat: the volume's record
+            // cannot be served to new members until it is founded again.
+            .env("TILO_ROOMS_SEED_APPS", "")
+            .env("TILO_ROOMS_STATE", state.path())
+            .env("TILO_ROOMS_WEB", "127.0.0.1:0")
+            .env("TILO_ROOMS_RELAY_PLAIN", "127.0.0.1:0")
+            .env("TILO_ROOMS_LIVE", "127.0.0.1:0")
+            .env("TILO_ROOMS_HTTP", "127.0.0.1:0")
+            .env("TILO_SECRETS_DIR", state.path().join("secrets"))
+            .env("TILO_RELAY_LOG", "info")
+            .env(
+                "TILO_SOURCE_REVISION",
+                "0123456789abcdef0123456789abcdef01234567",
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        if let Some(refound) = refound {
+            command.env("TILO_ROOMS_REFOUND", refound);
+        }
+        // The image lays every version of each built-in app's `surface.toml`
+        // at this one path and the host publishes them into its content plane
+        // at start (`tools/ci/publish/lounge-context.sh`). The image has them;
+        // a rehearsal can name the same set built from its checkout.
+        if let Some(surfaces) = std::env::var_os("TILO_LOUNGE_SURFACES") {
+            command.env("TILO_SURFACES", surfaces);
+        }
+        let mut child = command.spawn_locked().expect("the Lounge starts");
+        let stdin = Some(child.stdin.take().expect("the room's operator input"));
+        let stdout = child.stdout.take().expect("the room's operator output");
+        let (sender, events) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(event) = OperatorEvent::from_line(&line) {
+                    let _ = sender.send(event);
+                }
+            }
+        });
+        let started = loop {
+            let event = events
+                .recv_timeout(Duration::from_secs(600))
+                .expect("the Lounge says it started");
+            if matches!(event, OperatorEvent::Started { .. }) {
+                break event;
+            }
+        };
+        let OperatorEvent::Started {
+            workspace: Some(workspace),
+            plain_origin: Some(plain),
+            certificate_sha256: Some(sha256),
+            ..
+        } = started
+        else {
+            panic!(
+                "a persistent room announces its workspace, its plain listener and its certificate: {started:?}"
+            );
+        };
+        let _ = sha256;
+        // The door answers on loopback as `localhost:PORT`; a page's session
+        // no longer rides it, but `/host` and `/join` do.
+        let door = Arc::new(Plain(plain.trim_end_matches('/').to_owned()));
+        let info = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(tilo_browser_peer::host_info(door.as_ref()))
+        })
+        .expect("the host's certificate");
+        let host_cert = info.host_cert;
+        let address = info.address.expect("the host publishes its iroh endpoint");
+        Self {
+            child,
+            stdin,
+            plain,
+            workspace,
+            host_cert,
+            address,
+            door,
+            owner_root,
+            _state: state,
+        }
+    }
+
+    /// The workspace's owner as a device of theirs: what the door's
+    /// administration asks as.
+    fn owner_device(&self) -> Person {
+        let key = SigningKey::from_bytes(&[0x5a; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: self.owner_root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "the Lounge's operator".into(),
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &self.owner_root).unwrap();
+        Person {
+            root: self.owner_root.clone(),
+            key,
+            cert,
+        }
+    }
+
+    /// Mint an invitation for `to` through the host's own mechanism: the
+    /// owner's device asks its session's workspace administration, as a
+    /// member does from a page.
+    fn invite(&self, to: &Person) -> Vec<u8> {
+        let owner = self.owner_device();
+        let page = self.page(&owner);
+        page.join_placed(&self.workspace, "Lounge").unwrap();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(support::ready(&[&page]))
+        });
+        let (done, reply) = std::sync::mpsc::sync_channel(1);
+        page.rooms_then(
+            WorkspacesRequest::Invite {
+                workspace: self.workspace.clone(),
+                request_id: [7; 32],
+                role: WorkspaceRole::Editor,
+                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: Some("The Lounge".into()),
+                wait_list_entry: None,
+                recipient: Some(to.root.verifying_key().to_bytes()),
+            },
+            Box::new(move |result| {
+                let _ = done.send(result);
+            }),
+        )
+        .unwrap();
+        let reply = reply
+            .recv_timeout(Duration::from_secs(180))
+            .expect("the host answers the invite")
+            .expect("the host takes the invitation");
+        page.close();
+        match reply {
+            WorkspacesReply::Invitation {
+                signed_invitation, ..
+            } => signed_invitation,
+            other => panic!("the Lounge issued no invitation: {other:?}"),
+        }
+    }
+
+    /// A page of `who`'s device on this host's door.
+    fn page(&self, who: &Person) -> PeerHandle {
+        support::start_peer(
+            Host {
+                addr: self.address.endpoint_addr.clone(),
+                relay_url: self
+                    .address
+                    .relay_url
+                    .as_deref()
+                    .and_then(|url| url.parse().ok()),
+            },
+            who.cert.clone(),
+            self.host_cert.clone(),
+            who.key.clone(),
+        )
+    }
+}
+
+fn read_root(path: &std::path::Path) -> SigningKey {
+    let hex = std::fs::read_to_string(path).expect("the owner root reads");
+    let bytes: [u8; 32] = hex::decode(hex.trim())
+        .expect("the root is hex")
+        .try_into()
+        .expect("the root is 32 bytes");
+    SigningKey::from_bytes(&bytes)
+}
+
+/// A person the workspace has never seen: a root of their own and a device
+/// they certified with it.
+struct Person {
+    root: SigningKey,
+    key: SigningKey,
+    cert: DeviceCert,
+}
+
+async fn person(name: &str) -> Person {
+    let root = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let cert = guest_certificate(
+        &root,
+        key.verifying_key().to_bytes(),
+        name,
+        tilo_clock::unix_now_ns(),
+    )
+    .await
+    .unwrap();
+    Person { root, key, cert }
+}
+
+/// A page that joins and takes part: `who`'s device, admitted by `invitation`.
+async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> PeerHandle {
+    let asked = ask_to_join(
+        lounge.door.as_ref(),
+        invitation,
+        &who.cert,
+        &who.key,
+        [9; 32],
+        "Fresh visitor",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(asked, JoinReply::Admitted { .. }),
+        "the invitation admits the page: {asked:?}"
+    );
+    let page = lounge.page(who);
+    page.join_placed(&lounge.workspace, "Lounge").unwrap();
+    support::ready(&[&page]).await;
+    page
+}
+
+/// The messages of `channel` in the page's Chat, read through Chat's own
+/// model over the record and message parts the page received.
+fn chat_messages(
+    frames: &std::collections::BTreeMap<DocumentRoute, Vec<DocumentMutation>>,
+    workspace: &str,
+    channel: &str,
+) -> Vec<chat::model::Message> {
+    let record = DocumentRoute {
+        app_id: CHAT_APP.to_owned(),
+        cluster_id: workspace.to_owned(),
+        record: String::new(),
+    };
+    let Some(chat_doc) = frames.get(&record).and_then(|frames| record_of(frames)) else {
+        println!("the page received no frames of Chat's record");
+        return Vec::new();
+    };
+    let state = chat::projection::read(&chat_doc);
+    println!(
+        "the page's Chat record: {} channel(s) {:?}",
+        state.channels.len(),
+        state
+            .channels
+            .ids()
+            .map(|id| id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    );
+    let mut parts = Vec::new();
+    for index in 0..8u64 {
+        let part = DocumentRoute {
+            app_id: CHAT_APP.to_owned(),
+            cluster_id: workspace.to_owned(),
+            record: chat::parts::part(index).route().to_owned(),
+        };
+        let Some(document) = frames.get(&part).and_then(|frames| record_of(frames)) else {
+            continue;
+        };
+        if let Ok(held) = tilo_app::tilo_resource::Reader::<chat::parts::ChatPart>::read(&document)
+        {
+            parts.push((index, std::rc::Rc::clone(held.state())));
+        }
+    }
+    println!("the page holds {} of Chat's message part(s)", parts.len());
+    let messages = chat::messages::Messages::new(parts);
+    state.message_rows(&messages, channel)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
+    let Ok(snapshot) = std::env::var("TILO_LOUNGE_STATE") else {
+        eprintln!("skipped: TILO_LOUNGE_STATE names a copy of the deployment's state");
+        return;
+    };
+    let refound = std::env::var("TILO_LOUNGE_REFOUND").ok();
+    let lounge = Lounge::start(std::path::Path::new(&snapshot), refound.as_deref());
+    println!("the Lounge started; its workspace is {}", lounge.workspace);
+
+    let visitor = person("Fresh visitor").await;
+    let invitation = lounge.invite(&visitor);
+    println!("the host minted an invitation for the visitor");
+
+    let page = fresh_page(&lounge, &visitor, &invitation).await;
+    let room_id = tilo_relay_protocol::room_workspace_id(&lounge.workspace).unwrap();
+    println!("the fresh page joined the Lounge");
+
+    let desktop = DocumentRoute {
+        app_id: DESKTOP_APP.to_owned(),
+        cluster_id: lounge.workspace.clone(),
+        record: DESKTOP_RECORD.to_owned(),
+    };
+    let chat = DocumentRoute {
+        app_id: CHAT_APP.to_owned(),
+        cluster_id: lounge.workspace.clone(),
+        record: String::new(),
+    };
+    page.open_route(chat.clone()).unwrap();
+    page.open_route(desktop.clone()).unwrap();
+    // 1. The records' keys: each record's channel is the page's, ready.
+    // Their admission is the workspace's participants' (the host's own device
+    // among them), not a note's, so this waits on the two routes themselves.
+    let mut channels = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        channels = page.status().channels;
+        let ready = [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)]
+            .into_iter()
+            .all(|(app, record)| {
+                channels.lines().any(|line| {
+                    line.starts_with(&format!("route {app}/{record} ")) && line.contains(": ready;")
+                })
+            });
+        if ready || tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    println!("--- the page's channels:\n{channels}");
+    for (app, record) in [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)] {
+        let prefix = format!("route {app}/{record} ");
+        let line = channels
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("the page holds no channel for {app}/{record}:\n{channels}"));
+        assert!(
+            line.contains(": ready;"),
+            "{app}/{record}'s keys arrive: {line}"
+        );
+    }
+    println!("CHECK record keys: ready for Chat and the shared desktop");
+
+    // 2. Chat's history: its record and message parts open, and the messages
+    // read through Chat's own model, as the window shows them.
+    // Chat's record and its message part, gathered until both arrive or the
+    // page says it stopped waiting for them; what still waits is said as the
+    // page says it.
+    let mut frames: std::collections::BTreeMap<DocumentRoute, Vec<DocumentMutation>> =
+        Default::default();
+    let part = DocumentRoute {
+        app_id: CHAT_APP.to_owned(),
+        cluster_id: lounge.workspace.clone(),
+        record: chat::parts::part(0).route().to_owned(),
+    };
+    let started = std::time::Instant::now();
+    let wait = tokio::time::Instant::now() + Duration::from_secs(300);
+    let mut arrived_at = None;
+    loop {
+        for event in page.drain() {
+            if let PeerEvent::Document(document) = event
+                && let Some(mutation) = document.mutation()
+            {
+                frames
+                    .entry(document.route.clone())
+                    .or_default()
+                    .push(mutation);
+            }
+        }
+        let waiting = held_frames(&page);
+        if frames.contains_key(&chat) && frames.contains_key(&part) {
+            arrived_at.get_or_insert(started.elapsed());
+        }
+        // Done once nothing waits any more, or once the record and its part
+        // have been here a while and the page says no more will come.
+        if (arrived_at.is_some() && waiting.is_empty()) || tokio::time::Instant::now() >= wait {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    println!("the page received Chat's record after {arrived_at:?}");
+    let history = chat_messages(&frames, &lounge.workspace, "c_general");
+    println!(
+        "CHECK chat history: {} message(s) in #general",
+        history.len()
+    );
+    println!("--- what the page still waits on:\n{}", held_frames(&page));
+
+    // 3. The desk: the members' windows, as the shared desktop record holds
+    // them, read through the desktop model the window draws.
+    let desk = frames
+        .get(&desktop)
+        .and_then(|frames| record_of(frames))
+        .and_then(|doc| tilo_desktop_model::shared_record::read(&doc, None));
+    let windows: Vec<String> = desk
+        .as_ref()
+        .map(|desk| {
+            desk.tree
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter().map(|tab| tab.title.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    println!("CHECK desk: {} window(s) {windows:?}", windows.len());
+
+    // 4. A second page, another person the workspace never saw, sees the
+    // first page's pointer on the desk.
+    let other = person("Second visitor").await;
+    let second_invitation = lounge.invite(&other);
+    let second = fresh_page(&lounge, &other, &second_invitation).await;
+    second.open_route(desktop.clone()).unwrap();
+    let first_device = visitor.cert.device_public_key;
+    let second_device = other.cert.device_public_key;
+    let (tab, at) = (0x41, (12.0f32, 34.0f32));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let mut heard = Vec::new();
+    let mut live_seen = 0usize;
+    let mut live_peers = std::collections::BTreeSet::new();
+    let mut seen = None;
+    loop {
+        // The first page says where its pointer is; presence is a live frame
+        // the host fans out and never keeps, so it says it again while the
+        // second page listens.
+        page.publish_live(
+            room_id,
+            Presence::pointing(&lounge.workspace, tab, at.0, at.1)
+                .encode()
+                .expect("a presence frame"),
+        )
+        .unwrap();
+        page.publish_presence(
+            room_id,
+            vec![Presence::desktop(
+                &lounge.workspace,
+                collab_types::presence::Payload::Status {
+                    text: "here".into(),
+                    automatic: false,
+                },
+            )],
+        )
+        .unwrap();
+        let (frames, people) = live_frames(&second, 1).await;
+        live_seen = live_seen.saturating_add(frames.len());
+        live_peers.extend(people);
+        heard.extend(frames);
+        if let Some(found) = pointer_on(&heard, second_device, &lounge.workspace, tab) {
+            seen = Some(found);
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+    }
+    println!(
+        "the first page's live note: {:?}; the second's: {:?}",
+        page.live_note(),
+        second.live_note()
+    );
+    let roster = |page: &PeerHandle| {
+        page.status()
+            .room_members
+            .get(&lounge.workspace)
+            .map_or(0, |at| at.len())
+    };
+    println!(
+        "the workspace's roster: {} on the first page, {} on the second",
+        roster(&page),
+        roster(&second)
+    );
+    println!(
+        "the second page heard {live_seen} live frame(s) from {} device(s); its channels:\n{}",
+        live_peers.len(),
+        second.status().channels
+    );
+    println!(
+        "CHECK second page: the first page's ({:02x?}) pointer over tab {tab:#x} at {seen:?}",
+        &first_device[..4]
+    );
+    assert!(
+        seen.is_some_and(|(x, y)| (x - at.0).abs() < 0.5 && (y - at.1).abs() < 0.5),
+        "the second page sees the first page's pointer where it put it: {seen:?}"
+    );
+
+    second.close();
+    page.close();
+}
+
+/// The record `route`'s frames make, applied in the order they arrived.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the frames are a route's, taken as they came"
+)]
+fn record_of(frames: &[DocumentMutation]) -> Option<automerge::AutoCommit> {
+    let mut doc: Option<automerge::AutoCommit> = None;
+    for mutation in frames {
+        match mutation {
+            DocumentMutation::Snapshot(bytes) => {
+                doc = automerge::AutoCommit::load(bytes).ok();
+            }
+            // A change over a base the page never saw (a tail without its
+            // checkpoint) applies to nothing here; the checkpoint decides
+            // what a reader of the window has.
+            DocumentMutation::Incremental(bytes) => {
+                if let Some(doc) = doc.as_mut() {
+                    // A change whose base the page did not receive applies
+                    // to nothing: it is a tail without its checkpoint, and
+                    // what a reader of the window has is the checkpoint.
+                    let _ = doc.load_incremental(bytes);
+                }
+            }
+        }
+    }
+    doc
+}
+
+/// What `page` says it still waits on, per record: its own account of what
+/// each held frame wants.
+fn held_frames(page: &PeerHandle) -> String {
+    let status = page.status();
+    let mut lines = Vec::new();
+    for (route, held) in &status.routes {
+        if held.waiting() > 0 {
+            lines.push(format!(
+                "{}/{}: {} waiting — {} for its keys, {} for its app surface, {} for its governance",
+                route.app_id,
+                route.record,
+                held.waiting(),
+                held.awaiting_keys,
+                held.awaiting_surface,
+                held.awaiting_governance
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+/// Every live frame `page` heard over `secs`, and the devices that said
+/// anything: presence is a live frame the host fans out and never keeps, so
+/// the frames are gathered over a while and replayed into a board.
+async fn live_frames(
+    page: &PeerHandle,
+    secs: u64,
+) -> (
+    Vec<([u8; 32], Vec<u8>)>,
+    std::collections::BTreeSet<[u8; 32]>,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    let mut frames = Vec::new();
+    let mut people = std::collections::BTreeSet::new();
+    loop {
+        for event in page.drain() {
+            match event {
+                PeerEvent::Live { from, frame, .. } => frames.push((from, frame)),
+                PeerEvent::LivePlane { from, .. } => {
+                    people.insert(from);
+                }
+                _ => {}
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return (frames, people);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Where `page` holds another member's pointer over `tab`, read off the board
+/// the page keeps: the frames it heard, merged, placed over the tile the desk
+/// shows `tab` in.
+fn pointer_on(
+    heard: &[([u8; 32], Vec<u8>)],
+    own: [u8; 32],
+    workspace: &str,
+    tab: u64,
+) -> Option<(f32, f32)> {
+    let mut board = tilo_live::presence::Board::new(workspace, own);
+    let now = tilo_clock::unix_now_ms() as f64;
+    for (from, body) in heard {
+        if let Some(frame) = tilo_live::presence::decode(body) {
+            board.hear(*from, &frame, now);
+        }
+    }
+    let tiles = [tilo_live::presence::Tile {
+        tab,
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 1000.0,
+    }];
+    board
+        .placed(&tiles, now)
+        .into_iter()
+        .find(|placed| placed.tab == tab)
+        .map(|placed| (placed.x as f32, placed.y as f32))
+}
+
+/// The host's plain listener, as a page's `fetch`: HTTP/1.1 to it, no TLS
+/// (the deployment's ingress terminates TLS in front of it).
+struct Plain(String);
+
+impl tilo_browser_peer::HttpClient for Plain {
+    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        let url = format!("{}{path}", self.0);
+        Box::pin(async move {
+            let client = tilo_net::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|error| error.to_string())?;
+            let request = client
+                .post(&url)
+                .header("content-type", "application/octet-stream")
+                .body(body);
+            let response = request.send().await.map_err(|error| error.to_string())?;
+            let status = response.status().as_u16();
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| error.to_string())?
+                .to_vec();
+            Ok((status, bytes))
+        })
+    }
+}
