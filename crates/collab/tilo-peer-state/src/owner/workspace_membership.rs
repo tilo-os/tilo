@@ -86,7 +86,6 @@ impl NativeWorkspaceOwner {
                     let outgoing = crate::owner::publication::prepare(
                         &crate::owner::publication::request(message)?,
                     )?;
-                    crate::owner::publication::reserve(&candidate, &outgoing)?;
                     crate::owner::publication::append_local(&mut candidate, outgoing)?;
                 }
             }

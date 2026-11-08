@@ -453,7 +453,7 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     )
 }
 /// Workspace for `bytes` in the outgoing custody.
-pub(crate) fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
+fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
     let publication = state(view)?;
     let total = bounds(publication)?;
     if publication.entries.len() >= MAX_ENTRIES
@@ -732,7 +732,27 @@ fn append(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> 
     Ok(())
 }
 pub(crate) fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
-    append(view, bytes)
+    if !view.hosted_here() {
+        return append(view, bytes);
+    }
+    // The workspace's own device is its keeper: what it admits is already
+    // where the workspace's records live, and no one else answers a publish.
+    // Nothing waits here, and what an earlier record kept waiting is released
+    // with this commit, so custody of a device-hosted workspace stays empty.
+    let publication = view
+        .record
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?;
+    if publication.entries.is_empty() {
+        return Ok(());
+    }
+    publication.entries.clear();
+    publication.revision = publication
+        .revision
+        .checked_add(1)
+        .ok_or("native publication revision exhausted")?;
+    Ok(())
 }
 pub(crate) fn has_exact(view: &NativeCommittedView, bytes: &[u8]) -> Result<bool, String> {
     Ok(state(view)?

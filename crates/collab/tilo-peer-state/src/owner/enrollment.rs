@@ -534,7 +534,8 @@ impl NativeWorkspaceOwner {
             .map_err(|e| e.to_string())?
             .is_some()
         {
-            if !publication::has_exact(&candidate, &outgoing)?
+            if !candidate.hosted_here()
+                && !publication::has_exact(&candidate, &outgoing)?
                 && !publication::retry_covered(&candidate, &outgoing)?
             {
                 return Err("exact local admission has no retained publication custody".into());
@@ -545,7 +546,6 @@ impl NativeWorkspaceOwner {
                 aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
             });
         }
-        publication::reserve(&candidate, &outgoing)?;
         candidate
             .peer
             .admit_new_local_document(&app, &record, *envelope, now)?;

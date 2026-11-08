@@ -193,7 +193,6 @@ impl NativeWorkspaceOwner {
             now,
         )?;
         let outgoing = publication::prepare(&publication::request(&message)?)?;
-        publication::reserve(&candidate, &outgoing)?;
         publication::append_local(&mut candidate, outgoing)?;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = candidate
