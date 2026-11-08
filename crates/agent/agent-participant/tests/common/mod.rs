@@ -100,6 +100,18 @@ fn json(doc: &automerge::AutoCommit) -> String {
     serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
 }
 
+/// The chat `doc` holds its channel of `kind` in, as the sidebar names it.
+pub fn channel(
+    doc: &automerge::AutoCommit,
+    kind: chat::model::ChannelKind,
+) -> chat::model::Channel {
+    chat::projection::read(doc)
+        .channel_rows()
+        .into_iter()
+        .find(|channel| channel.kind == kind)
+        .unwrap()
+}
+
 /// Add a channel named `name` to the chat document `doc`, made by `author`.
 pub fn add_channel(
     doc: &mut automerge::AutoCommit,

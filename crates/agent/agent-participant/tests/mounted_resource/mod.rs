@@ -192,11 +192,7 @@ pub async fn run() {
         "Lounge",
         Some(chat::model::ChannelKind::Voice),
     );
-    let channel = chat::projection::read(&doc)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .unwrap();
+    let channel = common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -306,11 +302,7 @@ pub async fn run() {
         }
     })
     .await;
-    let voice_channel = chat::projection::read(&doc)
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
-        .unwrap();
+    let voice_channel = common::channel(&doc, chat::model::ChannelKind::Voice);
     if voice_journey {
         use tilo_browser_peer::{PeerEvent, VoiceEvent};
         native
