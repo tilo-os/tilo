@@ -14,6 +14,7 @@
 //! owner, the workspace governance and a checkpoint of every document. Then it
 //! carries every message this device publishes while the link lasts.
 
+use crate::actions::now_ns;
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -341,14 +342,6 @@ impl ProtocolHandler for DirectSync {
 
 pub(crate) fn bump(count: &mut u64) {
     *count = count.wrapping_add(1);
-}
-
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()
-        .and_then(|since| u64::try_from(since.as_nanos()).ok())
-        .unwrap_or(u64::MAX)
 }
 
 /// Write `catch_up`, then every message published live, to `send`.

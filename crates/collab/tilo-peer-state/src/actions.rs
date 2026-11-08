@@ -1428,7 +1428,7 @@ impl ActionHost for RemoteDevice {
     }
 }
 
-fn now_ns() -> u64 {
+pub(crate) fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()

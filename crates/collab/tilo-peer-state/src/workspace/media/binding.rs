@@ -1,8 +1,7 @@
 //! Exact Chat binding data, read from any admitted document.
+use super::basis::{strict_error, visit_error};
 use super::{CallPhaseV1, ChatCallBindingV1, MediaPolicyError, WorkspaceMediaV1, read::Error};
-use crate::workspace::read::{
-    self, LegacyRead, ReadError, Selection, WorkspaceRead, WorkspaceValue,
-};
+use crate::workspace::read::{self, LegacyRead, Selection, WorkspaceRead, WorkspaceValue};
 use automerge::{ObjId, ReadDoc};
 
 pub(crate) struct Binding {
@@ -34,20 +33,6 @@ impl Binding {
 }
 fn policy(error: MediaPolicyError) -> Error {
     Error::Policy(error)
-}
-fn strict_error(error: ReadError<MediaPolicyError>) -> Error {
-    match error {
-        ReadError::Malformed => policy(MediaPolicyError::Malformed),
-        ReadError::Capacity => Error::Capacity,
-        ReadError::Visitor(error) => policy(error),
-    }
-}
-fn visit_error(error: ReadError<Error>) -> Error {
-    match error {
-        ReadError::Malformed => policy(MediaPolicyError::Malformed),
-        ReadError::Capacity => Error::Capacity,
-        ReadError::Visitor(error) => error,
-    }
 }
 trait ObjectIdWrite: WorkspaceRead {
     // None means the exact ID cannot fit the binding's existing byte limit.

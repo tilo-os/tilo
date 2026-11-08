@@ -182,11 +182,26 @@ pub fn enroll_into(
     Ok(governor)
 }
 pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+    certificate_with(root, key, label, DeviceCapabilities::primary())
+}
+
+/// `key`'s ordinary member certificate for `root`'s person.
+pub fn member_certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+    certificate_with(root, key, label, DeviceCapabilities::member())
+}
+
+/// `key`'s certificate for `root`'s person, with `capabilities` and no expiry.
+pub fn certificate_with(
+    root: &SigningKey,
+    key: &SigningKey,
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
-        capabilities: DeviceCapabilities::primary(),
+        capabilities,
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],

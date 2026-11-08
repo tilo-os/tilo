@@ -1,39 +1,12 @@
 //! The history one retained publication stands for, each built once.
 //!
 //! A publication's history is the publication applied with every change it
-//! depends on, taken from the admitted record: the walk loads the
-//! publication, then fetches all of its missing dependencies at once and
-//! applies them, and again, until nothing is missing. The document that walk
-//! builds is the recovery's payload, so its every byte is reserved and later
-//! compared: [`build`] must build exactly that document, change for change
-//! and in the same order.
-//!
-//! The walk as written cost the record's size once per change in its
-//! history: each dependency was rebuilt from the record's op set
-//! (`get_change_by_hash`), and each round walked and re-sorted everything the
-//! history queued so far. Every committed edit of a shared document ran it
-//! for each publication the governor had not yet acknowledged, so an edit of
-//! a long document cost seconds. [`build`] takes the record's changes in one
-//! pass, finds each round's missing dependencies among the changes that round
-//! fetched (none of the earlier ones can name a new one), and hands the
-//! history a round's changes only when one of them can apply — which is when
-//! the walk applied anything; a round before that only queued. The history
-//! therefore receives the same changes in the same order and builds the same
-//! document, for the record's size once.
-//!
-//! Even once, that is the whole record per edit. A device's next edit
-//! usually depends on everything its previous edit's history holds, and the
-//! walk then applies that history's changes first, in the same order, and the
-//! edit's few new changes after them. [`extended`] works out from the
-//! changes' metadata alone the order in which the walk would apply them, and
-//! when a remembered history is exactly the start of that order, copies it and
-//! applies the rest: the same changes in the same order again, for the size of
-//! the edit (and a copy).
-//!
-//! A history depends only on the publication's bytes and on changes named by
-//! their hashes, so it is remembered by those bytes; a remembered history is
-//! reused only while the admitted record still holds its heads, and with them
-//! every change it contains.
+//! depends on, in the order a recovery applies them: [`build`] loads the
+//! publication and fetches its missing dependencies at once, and [`extended`]
+//! reuses a remembered history when it is exactly the start of that order. A
+//! history depends only on the publication's bytes and on changes named by
+//! their hashes, so it is reused only while the admitted record still holds
+//! its heads.
 use super::err;
 use automerge::{Automerge, Change, ChangeHash, ReadDoc};
 use collab_types::DocumentMutation;
