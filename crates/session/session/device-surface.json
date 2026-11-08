@@ -1714,7 +1714,7 @@
         {
           "id": "open-tray-item",
           "label": "Open",
-          "description": "Open or close the running application's tray item `key`: its window, or its menu when the item is one",
+          "description": "Open or close the running application's tray item `key` : its window, or its menu when the item is one",
           "kind": "outside",
           "params": [
             {
@@ -1726,7 +1726,7 @@
         },
         {
           "id": "invitations",
-          "label": "The invitations this device's person made into a workspace that can still be",
+          "label": "The invitations this device's person made into a workspace that can still be redeemed, in",
           "description": "The invitations this device's person made into a workspace that can still be redeemed, in the words the workspace's host lists them by",
           "kind": "outside",
           "params": [
@@ -1739,7 +1739,7 @@
         },
         {
           "id": "issue-invitation",
-          "label": "Make an invitation into a workspace from this device: the link to hand to whoever is",
+          "label": "Make an invitation into a workspace from this device: the link to hand to whoever is being",
           "description": "Make an invitation into a workspace from this device: the link to hand to whoever is being invited, which their device joins with",
           "kind": "outside",
           "params": [
@@ -1804,7 +1804,7 @@
         {
           "id": "stop-agent",
           "label": "Stop",
-          "description": "End the agent `agent`'s work here: the connection the person admitted closes and its presence leaves the bar",
+          "description": "End the agent `agent` 's work here: the connection the person admitted closes and its presence leaves the bar",
           "kind": "outside",
           "params": [
             {
@@ -1816,8 +1816,8 @@
         },
         {
           "id": "close-surface",
-          "label": "Close the surface `surface`, when it is the one up",
-          "description": "Close the surface `surface`, when it is the one up.",
+          "label": "Close the surface `surface` , when it is the one up",
+          "description": "Close the surface `surface` , when it is the one up.",
           "kind": "outside",
           "params": [
             {
