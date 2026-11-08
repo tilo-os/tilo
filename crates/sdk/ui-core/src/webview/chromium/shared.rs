@@ -435,15 +435,16 @@ impl Claim {
             server.stop();
         }
         // Giving the claim up here, not at the end of the scope, frees the
-        // profile before the host is marked exited. A page holds no claim to
-        // free: there is no local socket, so `Ownership` carries nothing.
-        {
-            let _claim = self;
-        }
+        // profile before the host is marked exited.
+        self.give_up();
         if let Some(server) = server {
             server.mark_host_exited();
         }
     }
+
+    /// Ends this claim. A page holds nothing to free: there is no local
+    /// socket, so `Ownership` carries nothing there.
+    fn give_up(self) {}
 
     /// Keeps the profile claimed for the rest of this process's life: its
     /// host never confirmed its exit, so a second host on the profile could
