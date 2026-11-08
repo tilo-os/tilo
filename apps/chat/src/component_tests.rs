@@ -687,21 +687,19 @@ fn two_real_components_open_the_existing_recordless_chat_migrating_it_once() {
     doc.commit();
     let heads = doc.base_heads();
     let actor = doc.get_actor().clone();
+    let key = StorageKey::Primary {
+        package: definition.app_id().into(),
+        workspace: workspace.into(),
+    };
     cache
-        .hydrate(
-            StorageKey::Primary {
-                package: definition.app_id().into(),
-                workspace: workspace.into(),
-            },
-            doc.save(),
-            Some(actor.to_bytes().to_vec()),
-        )
+        .hydrate(key.clone(), doc.save(), Some(actor.to_bytes().to_vec()))
         .unwrap();
     let records = RecordOwners::portable(cache.clone())
         .open(definition.app_id(), workspace)
         .unwrap();
-    let views =
-        Rc::new(ui::application_view::InstanceViewStore::portable(cache, workspace).unwrap());
+    let views = Rc::new(
+        ui::application_view::InstanceViewStore::portable(cache.clone(), workspace).unwrap(),
+    );
     let permissions = ui::permissions::SharedPermissions::new(
         ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner),
     );
@@ -744,7 +742,11 @@ fn two_real_components_open_the_existing_recordless_chat_migrating_it_once() {
             )
         })
         .unwrap();
-    assert_eq!(opened_actor, actor);
+    // A page writes a record under a writer it mints, so opening it here does not reuse the
+    // writer the saved row carried: the row keeps the minted one.
+    assert_ne!(opened_actor, actor, "the page mints its writer");
+    let kept = cache.get(&key).map(|row| row.actor);
+    assert_eq!(kept, Some(Some(opened_actor.to_bytes().to_vec())), "kept");
     assert_eq!(changes.len(), 1, "one migration: {opened:?}");
     let migrated = changes[0]
         .message()
