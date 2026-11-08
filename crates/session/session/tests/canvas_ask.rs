@@ -260,3 +260,87 @@ fn a_second_ask_brings_the_conversation_forward() {
         "the conversation's own place is the one it stands in"
     );
 }
+
+/// The conversation the canvas places is usable in a real session, not only in a development one:
+/// the channel the ask made is published by the session's own `ChatViewService`, and its `post`
+/// verb — the one the page's composer runs — writes a message the reading the place draws then
+/// holds. No `dev-rust-views` fixture takes part: this is the path every person's session takes.
+#[test]
+fn the_conversations_page_posts_through_the_sessions_own_channel() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    ask(&mut session, "what is on my task list?");
+    let place = wait_for(&mut session, "the conversation placed", |session| {
+        arrangement(session)
+            .places
+            .into_iter()
+            .find(|place| place.record.contains("/channels/"))
+    });
+    // The channel the ask placed, as the session publishes it (`chat.workspace/channels/<id>`).
+    let address = place.record;
+    assert!(
+        address.starts_with("chat.workspace/channels/"),
+        "the place shows the conversation Chat holds: {address}"
+    );
+    // The service serves the channel's reading before anything is typed: the page a place draws
+    // is the ask conversation, holding the person's question.
+    let before = session
+        .read(&address)
+        .unwrap_or_else(|| panic!("the session serves the channel's reading: {address}"));
+    assert!(
+        before.to_string().contains("what is on my task list?"),
+        "the reading holds the person's question: {before}"
+    );
+    // Post through the page's own verb, as pressing its Send does: the channel's `post`, with the
+    // words the composer holds. The session's door routes it to the service that publishes it.
+    let mut arguments = serde_json::Map::new();
+    let channel = address
+        .trim_start_matches("chat.workspace/channels/")
+        .to_owned();
+    arguments.insert("channel".into(), serde_json::Value::String(channel));
+    arguments.insert(
+        "text".into(),
+        serde_json::Value::String("looks good".into()),
+    );
+    session
+        .invoke(&address, "post", &arguments)
+        .unwrap_or_else(|error| panic!("the channel's post runs: {error:?}"));
+    // The reading the place draws now holds the message the composer posted: a message of the
+    // reading, written by the person seated here, whose id was not there before. This is the
+    // thing the page's composer must get right — a message, attributed to the person, that a
+    // second read serves — not merely bytes somewhere in the reading.
+    let after = session
+        .read(&address)
+        .unwrap_or_else(|| panic!("the session still serves the channel's reading"));
+    let message_ids = |reading: &serde_json::Value| -> Vec<String> {
+        reading["messages"]
+            .as_array()
+            .map(|messages| {
+                messages
+                    .iter()
+                    .filter_map(|message| message["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let was = message_ids(&before);
+    let posted = after["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages.iter().find(|message| {
+                message["text"].as_str() == Some("looks good")
+                    && message["author"].as_str() == Some(PERSON)
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!("the page holds the person's posted message: {after}");
+        });
+    let posted_id = posted["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the posted message has an id: {posted}"));
+    assert!(
+        !was.iter().any(|id| id == posted_id),
+        "the posted message is new since the reading before it: {posted_id} in {was:?}"
+    );
+}
