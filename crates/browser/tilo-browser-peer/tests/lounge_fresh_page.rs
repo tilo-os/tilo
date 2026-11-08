@@ -97,8 +97,6 @@ fn relay_on_path() -> std::ffi::OsString {
 struct Lounge {
     child: Child,
     stdin: Option<ChildStdin>,
-    /// The plain listener the deployment's ingress forwards the workspace to.
-    plain: String,
     /// The workspace's UUID.
     workspace: String,
     host_cert: DeviceCert,
@@ -171,9 +169,32 @@ impl Lounge {
         (state, root_file)
     }
 
+    /// The Lounge on a fresh state volume: nothing of the deployment's state,
+    /// a generated owner root, and a workspace the host makes as it starts.
+    /// This is the shape a first deployment starts in, and it needs no copy of
+    /// production to prove what two pages do there.
+    fn fresh() -> Self {
+        let state = tempfile::tempdir().expect("a state volume for the run");
+        let secrets = state.path().join("secrets");
+        std::fs::create_dir_all(&secrets).expect("the secrets directory");
+        let root_file = secrets.join("room-root-lounge");
+        let owner_root = SigningKey::generate(&mut UnwrapErr(SysRng));
+        std::fs::write(&root_file, hex::encode(owner_root.to_bytes())).expect("the owner root");
+        Self::start_at(state, root_file, Some(owner_root), None)
+    }
+
     fn start(from: &std::path::Path, refound: Option<&str>) -> Self {
         let (state, root_file) = Self::volume(from);
-        let owner_root = read_root(&root_file);
+        Self::start_at(state, root_file, None, refound)
+    }
+
+    fn start_at(
+        state: tempfile::TempDir,
+        root_file: std::path::PathBuf,
+        owner_root: Option<SigningKey>,
+        refound: Option<&str>,
+    ) -> Self {
+        let owner_root = owner_root.unwrap_or_else(|| read_root(&root_file));
         let entrypoint = entrypoint();
         let mut command = Command::new("sh");
         command
@@ -269,7 +290,6 @@ impl Lounge {
         Self {
             child,
             stdin,
-            plain,
             workspace,
             host_cert,
             address,
@@ -314,7 +334,10 @@ impl Lounge {
         page.rooms_then(
             WorkspacesRequest::Invite {
                 workspace: self.workspace.clone(),
-                request_id: [7; 32],
+                // The host takes one request per id, and a second invitation is
+                // a request of its own: the id names this ask, not a fixed
+                // number two asks would share.
+                request_id: *blake3::hash(&to.root.verifying_key().to_bytes()).as_bytes(),
                 role: WorkspaceRole::Editor,
                 expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
                 inviter_name: Some("The Lounge".into()),
@@ -341,9 +364,25 @@ impl Lounge {
 
     /// A page of `who`'s device on this host's door.
     fn page(&self, who: &Person) -> PeerHandle {
+        // A page has no UDP socket: every packet it sends goes through the
+        // relay its host names, which is the only way it reaches the host.
+        // The IP addresses `/host` publishes are the host's own — a native
+        // device dials them, a page cannot — so the page is given the
+        // endpoint's key and the relay, and nothing else: exactly what a
+        // browser in the Lounge has.
+        let by_relay = iroh::EndpointAddr::new(self.address.endpoint_addr.id);
+        let by_relay = match self
+            .address
+            .relay_url
+            .as_deref()
+            .and_then(|url| url.parse().ok())
+        {
+            Some(relay) => by_relay.with_relay_url(relay),
+            None => self.address.endpoint_addr.clone(),
+        };
         support::start_peer(
             Host {
-                addr: self.address.endpoint_addr.clone(),
+                addr: by_relay,
                 relay_url: self
                     .address
                     .relay_url
@@ -489,10 +528,9 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     // 1. The records' keys: each record's channel is the page's, ready.
     // Their admission is the workspace's participants' (the host's own device
     // among them), not a note's, so this waits on the two routes themselves.
-    let mut channels = String::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
-    loop {
-        channels = page.status().channels;
+    let channels = loop {
+        let channels = page.status().channels;
         let ready = [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)]
             .into_iter()
             .all(|(app, record)| {
@@ -501,10 +539,10 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
                 })
             });
         if ready || tokio::time::Instant::now() >= deadline {
-            break;
+            break channels;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    };
     println!("--- the page's channels:\n{channels}");
     for (app, record) in [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)] {
         let prefix = format!("route {app}/{record} ");
@@ -602,11 +640,9 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         // The first page says where its pointer is; presence is a live frame
         // the host fans out and never keeps, so it says it again while the
         // second page listens.
-        page.publish_live(
+        page.publish_presence(
             room_id,
-            Presence::pointing(&lounge.workspace, tab, at.0, at.1)
-                .encode()
-                .expect("a presence frame"),
+            vec![Presence::pointing(&lounge.workspace, tab, at.0, at.1)],
         )
         .unwrap();
         page.publish_presence(
@@ -620,7 +656,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
             )],
         )
         .unwrap();
-        let (frames, people) = live_frames(&second, 1).await;
+        let (frames, people) = presence_frames(&second, 1).await;
         live_seen = live_seen.saturating_add(frames.len());
         live_peers.extend(people);
         heard.extend(frames);
@@ -664,6 +700,112 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
 
     second.close();
     page.close();
+}
+
+/// Two pages join a persistent Lounge host through its invite door on a fresh
+/// state volume, and the second sees where the first put its pointer.
+///
+/// This is the deployment's own composition (`os/containers/tilo-lounge/
+/// entrypoint.sh` starting `tilo-relay room --persistent`), with nothing of
+/// production: the host makes its workspace and its owner root as it starts,
+/// and both people are guests the host invites through the door it serves. It
+/// is the fast check of the one thing a member's page needs to see another
+/// member move: both pages join the workspace's live plane over the host's
+/// packet relay, the first says where its pointer is on that plane's presence
+/// track, and the second's board places it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
+    let lounge = Lounge::fresh();
+    println!("the Lounge started; its workspace is {}", lounge.workspace);
+
+    let first = person("First visitor").await;
+    let second = person("Second visitor").await;
+    let first_invitation = lounge.invite(&first);
+    let second_invitation = lounge.invite(&second);
+    let page = fresh_page(&lounge, &first, &first_invitation).await;
+    let other = fresh_page(&lounge, &second, &second_invitation).await;
+    println!("both pages joined the Lounge");
+    let workspace_id = room_id(&lounge);
+    // Both pages are in the workspace's live plane before anything is said:
+    // a page says presence only on a plane it joined, and a plane joined
+    // after the word would not draw it.
+    wait_for_plane(&page).await;
+    wait_for_plane(&other).await;
+
+    let (tab, at) = (0x41, (12.0f32, 34.0f32));
+    let bound = Duration::from_secs(10);
+    let mut heard = Vec::new();
+    let mut live_peers = std::collections::BTreeSet::new();
+    let mut seen = None;
+    // The first page says where its pointer is, once, and the second page's
+    // board draws it: what a person's page does when they move the pointer,
+    // measured from the word leaving the first page to the second drawing it.
+    let started = std::time::Instant::now();
+    page.publish_presence(
+        workspace_id,
+        vec![Presence::pointing(&lounge.workspace, tab, at.0, at.1)],
+    )
+    .unwrap();
+    loop {
+        gather_presence(&other, &mut heard, &mut live_peers);
+        if let Some(found) = pointer_on(
+            &heard,
+            second.cert.device_public_key,
+            &lounge.workspace,
+            tab,
+        ) {
+            seen = Some(found);
+            break;
+        }
+        if started.elapsed() >= bound {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let elapsed = started.elapsed();
+    let live_seen = heard.len();
+    println!(
+        "the first page's live note: {:?}; the second's: {:?}",
+        page.live_note(),
+        other.live_note()
+    );
+    println!(
+        "the second page heard {live_seen} live frame(s) from {} device(s), the pointer after {elapsed:?}; its channels:\n{}",
+        live_peers.len(),
+        other.status().channels
+    );
+    assert!(
+        seen.is_some_and(|(x, y)| (x - at.0).abs() < 0.5 && (y - at.1).abs() < 0.5),
+        "the second page sees the first page's pointer where it put it within {bound:?}: {seen:?}"
+    );
+
+    other.close();
+    page.close();
+}
+
+/// Wait until `page` is in the workspace's live plane: the plane reports the
+/// devices it reads and the objects it heard, which it lists only once joined.
+async fn wait_for_plane(page: &PeerHandle) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let channels = page.status().channels;
+        if channels
+            .lines()
+            .any(|line| line.starts_with("plane ") && line.contains(" epoch "))
+        {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the page never joined the workspace's live plane; its channels:\n{channels}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The workspace's id as a page numbers it.
+fn room_id(lounge: &Lounge) -> u64 {
+    tilo_relay_protocol::room_workspace_id(&lounge.workspace).unwrap()
 }
 
 /// The record `route`'s frames make, applied in the order they arrived.
@@ -715,10 +857,13 @@ fn held_frames(page: &PeerHandle) -> String {
     lines.join("\n")
 }
 
-/// Every live frame `page` heard over `secs`, and the devices that said
+/// Every presence frame `page` heard over `secs`, and the devices that said
 /// anything: presence is a live frame the host fans out and never keeps, so
-/// the frames are gathered over a while and replayed into a board.
-async fn live_frames(
+/// the frames are gathered over a while and replayed into a board. A page
+/// takes another device's presence off its plane's presence track
+/// ([`PeerEvent::LivePlane`] with `Track::Presence`): the plane opened the
+/// scope's seal, and the body is the [`Presence`] frame the device said.
+async fn presence_frames(
     page: &PeerHandle,
     secs: u64,
 ) -> (
@@ -729,20 +874,36 @@ async fn live_frames(
     let mut frames = Vec::new();
     let mut people = std::collections::BTreeSet::new();
     loop {
-        for event in page.drain() {
-            match event {
-                PeerEvent::Live { from, frame, .. } => frames.push((from, frame)),
-                PeerEvent::LivePlane { from, .. } => {
-                    people.insert(from);
-                }
-                _ => {}
-            }
-        }
+        gather_presence(page, &mut frames, &mut people);
         if tokio::time::Instant::now() >= deadline {
             return (frames, people);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Take every presence frame `page` holds now into `frames` (with its sender)
+/// and `people`, and report whether it held any.
+fn gather_presence(
+    page: &PeerHandle,
+    frames: &mut Vec<([u8; 32], Vec<u8>)>,
+    people: &mut std::collections::BTreeSet<[u8; 32]>,
+) -> bool {
+    let mut heard = false;
+    for event in page.drain() {
+        if let PeerEvent::LivePlane {
+            from,
+            track: tilo_live::live::Track::Presence,
+            body,
+            ..
+        } = event
+        {
+            people.insert(from);
+            frames.push((from, body));
+            heard = true;
+        }
+    }
+    heard
 }
 
 /// Where `page` holds another member's pointer over `tab`, read off the board

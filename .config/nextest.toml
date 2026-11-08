@@ -86,6 +86,19 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(lounge_e2e)"
 setup = "lounge-siblings"
 
+# The browser peer's Lounge test starts the same room service the deployment
+# runs, so it is built the same way: a program of another package, with the
+# feature `agents` that gives it the `room` subcommand.
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-browser-peer) and binary(lounge_fresh_page)"
+setup = "lounge-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-browser-peer) and binary(lounge_fresh_page)"
+setup = "lounge-siblings"
+
 # Chat's acceptance drives the app itself, as a desktop starts it: the app, the
 # launcher that starts it and the runtime host the app runs on are packages of
 # other crates, which Cargo builds for no test of the session's.
